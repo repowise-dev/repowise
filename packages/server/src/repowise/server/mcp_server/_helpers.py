@@ -152,6 +152,16 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
 # ---------------------------------------------------------------------------
 
 
+def clean_signature(signature: str | None) -> str:
+    """Collapse a stored signature onto one line.
+
+    Signatures indexed from CRLF files carry literal ``\\r\\n`` plus the
+    original indentation. Whitespace runs collapse to single spaces; the text
+    is unchanged otherwise.
+    """
+    return " ".join((signature or "").split())
+
+
 def _is_workspace_mode() -> bool:
     """Return True if the MCP server is running in workspace mode."""
     return _state._registry is not None

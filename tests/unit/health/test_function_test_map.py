@@ -116,10 +116,10 @@ def test_the_analyzer_maps_tests_over_the_whole_graph() -> None:
         graph.add_node(symbol, node_type="symbol", name=symbol.rsplit("::", 1)[-1], file_path=path)
         graph.add_edge(path, symbol, edge_type="defines")
     graph.add_edge(f"{T}::test_parse", "core.py::parse", edge_type="calls")
-    assert HealthAnalyzer(graph)._function_tests() == {
+    assert HealthAnalyzer(graph).test_index.function_tests() == {
         "core.py::parse": (MappedTest(f"{T}::test_parse", 1),)
     }
-    assert HealthAnalyzer(None)._function_tests() is None
+    assert HealthAnalyzer(None).test_index.function_tests() is None
 
 
 @pytest.fixture

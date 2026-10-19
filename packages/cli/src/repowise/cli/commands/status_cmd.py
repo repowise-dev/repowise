@@ -659,18 +659,32 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         )
         return
 
-    # State table. Printed before the page query runs, not after: the query is
-    # unguarded, and on a wiki.db whose schema predates the current models it
-    # raises. Ordering it first means a reader still gets the sync state that
-    # tells them the index is old.
+    # The page query runs first so the state table can show its totals, but
+    # its error is held until the state table is printed: on a wiki.db whose
+    # schema predates the current models it raises, and a reader should still
+    # get the sync state that tells them the index is old.
+    counts: dict[str, int] = {}
+    total_db_tokens = 0
+    page_query_error: Exception | None = None
+    if has_db:
+        try:
+            counts, total_db_tokens = run_async(_query_pages(repo_path))
+        except Exception as exc:
+            page_query_error = exc
+
+    # Totals from the live rows when the query worked. state.json counts
+    # tombstoned pages too, and its token total is stamped only by init, so
+    # beside the per-type table below it disagreed with it.
+    total_pages = sum(counts.values()) if counts else state.get("total_pages", 0)
+    total_tokens = total_db_tokens if counts else state.get("total_tokens", 0)
     state_table = Table(title="Sync State")
     state_table.add_column("Key", style="cyan")
     state_table.add_column("Value")
     state_table.add_row("Last sync commit", state.get("last_sync_commit", "—") or "—")
-    state_table.add_row("Total pages", str(state.get("total_pages", 0)))
+    state_table.add_row("Total pages", str(total_pages))
     state_table.add_row("Provider", state.get("provider", "—") or "—")
     state_table.add_row("Model", state.get("model", "—") or "—")
-    state_table.add_row("Total tokens", f"{state.get('total_tokens', 0):,}")
+    state_table.add_row("Total tokens", f"{total_tokens:,}")
     state_table.add_row("Index storage", format_bytes(storage_bytes))
     state_table.add_row(
         "Scope",
@@ -720,7 +734,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")
         return
 
-    counts, total_db_tokens = run_async(_query_pages(repo_path))
+    if page_query_error is not None:
+        raise page_query_error
     if counts:
         pages_table = Table(title="Pages by Type")
         pages_table.add_column("Page Type", style="cyan")

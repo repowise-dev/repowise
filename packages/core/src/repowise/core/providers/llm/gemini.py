@@ -5,7 +5,8 @@ Runs the synchronous SDK call in a thread pool to avoid blocking asyncio.
 
 Recommended models:
     - gemini-3.5-flash-lite  — fast + cheap (default)
-    - gemini-3-flash-preview         — higher quality
+    - gemini-3.8-flash       — higher quality
+    - gemini-4-argon         — highest quality
 """
 
 from __future__ import annotations

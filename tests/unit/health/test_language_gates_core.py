@@ -1,13 +1,26 @@
-"""Core surfaces built from rows in memory honour the layer x language gates."""
+"""Core surfaces built from rows in memory honour the layer x language gates.
+
+They run on the audit's gated table (no shipped row is gated), so the gated
+state stays covered."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.analysis.actions.build import build_dead
 from repowise.core.analysis.change_health.service import _limits
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.generation.page_generator.helpers import build_dead_code_map
+from tests.unit.server.mcp.test_language_gates import AUDIT_GATED
+
+
+@pytest.fixture(autouse=True)
+def _audit_gated(monkeypatch):
+    from repowise.core.analysis import finding_registry
+
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
 
 
 def _dead(path: str) -> dict:

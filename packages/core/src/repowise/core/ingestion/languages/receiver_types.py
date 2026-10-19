@@ -217,6 +217,12 @@ _KT_ANNOTATED = re.compile(
 _KT_CONSTRUCTED = re.compile(
     r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\((?![^()]*\)\s*\.)"
 )
+# `val x = Foo { ... }`: a constructor whose only argument is a trailing lambda.
+# The match ends at the `{`; `scan_declarations` keeps it only when the lambda
+# ends the statement, so `Foo { }.build()` is not a `Foo`.
+_KT_CONSTRUCTED_LAMBDA = re.compile(
+    r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)[ \t]*(?=\{)"
+)
 
 # Swift annotates after the name: `let x: Foo`, `var x: Foo` and every parameter
 # spelling are `name: Type`. Anchored on the colon, not the opening bracket,
@@ -248,7 +254,7 @@ _SWIFT_CONSTRUCTED = re.compile(
 # out `{Dao d = const Dao()}` too. An initialising formal (`Repo(this.api)`)
 # spells no type: the field it assigns already carries one.
 _DART_TYPED = re.compile(
-    rf"(?<![\w.])(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,)}}]))"
+    rf"(?<![\w.])(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,)}}]|in\b))"
 )
 
 # `final x = Foo()`, `var`/`const`, with `new`/`const` before the type. The
@@ -332,7 +338,7 @@ _JAVA_PATTERN_VARIABLE = re.compile(
 # IMPLICIT_FIELD_LANGUAGES: a field is read through its receiver (``c.parent``),
 # so it types a chain hop and never a bare name.
 _GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL, _GO_FIELD, _GO_EMBEDDED_FIELD)
-_KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED)
+_KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED, _KT_CONSTRUCTED_LAMBDA)
 _SWIFT_FAMILY = (_SWIFT_ANNOTATED, _SWIFT_CONSTRUCTED)
 _DART_FAMILY = (_DART_TYPED, _DART_CONSTRUCTED)
 _PY_FAMILY = (_PY_ANNOTATED, _PY_CONSTRUCTED, _PY_SELF_ANNOTATED, _PY_SELF_CONSTRUCTED)
@@ -1004,6 +1010,10 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     inside = _inside_parentheses(cleaned) if language in _PARAMETERS_AT_CLASS_SCOPE else None
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
+            if pattern is _KT_CONSTRUCTED_LAMBDA and not _ends_statement(
+                cleaned, _lambda_end(cleaned, match.end()), language
+            ):
+                continue
             raw = match.group("type")
             if raw not in resolved:
                 resolved[raw] = _usable_type_name(raw, language)
@@ -1115,6 +1125,8 @@ _LANGUAGE_STATEMENT_ENDS = {"python": frozenset("\n"), "dart": frozenset(";")}
 _NEXT_LINE_CONTINUES = {
     language: re.compile(r"[.?:+\-*/%&|=!<>]|(?:as|is)\b") for language in ("kotlin", "swift")
 }
+_SWIFT_OPTIONAL_BINDING_PREFIX = re.compile(r"(?:\b(?:if|guard|while)|,)\s*$")
+_SWIFT_BINDING_ENDS = re.compile(r"[{,]|\belse\b")
 
 
 def _call_end(text: str, index: int) -> int:
@@ -1137,12 +1149,57 @@ def _call_end(text: str, index: int) -> int:
     return -1
 
 
-def _call_ends_statement(cleaned: str, opened: int, language: str) -> bool:
+def _lambda_end(text: str, index: int) -> int:
+    """Index just past the ``}`` closing the ``{`` at *index*, or -1."""
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char in _QUOTES:
+            index += 1
+            while index < len(text) and text[index] != char:
+                index += 2 if char != "`" and text[index] == "\\" else 1
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return -1
+
+
+def _after_trailing_lambda(text: str, end: int) -> int:
+    """*end*, or past a Kotlin trailing lambda that starts on the same line.
+
+    ``f(a) { .. }`` is still the call ``f``: the lambda is its last argument.
+    """
+    brace = end
+    while brace < len(text) and text[brace] in " \t":
+        brace += 1
+    if brace < len(text) and text[brace] == "{":
+        return _lambda_end(text, brace)
+    return end
+
+
+def _call_ends_statement(cleaned: str, opened: int, language: str, start: int = 0) -> bool:
     """Does the call whose ``(`` ends just before *opened* end its statement?"""
     end = _call_end(cleaned, opened)
+    if end >= 0 and language == "kotlin":
+        end = _after_trailing_lambda(cleaned, end)
+    return _ends_statement(cleaned, end, language, start)
+
+
+def _ends_statement(cleaned: str, end: int, language: str, start: int = 0) -> bool:
+    """Does the expression ending at *end* end its statement (-1: it never ends)?"""
     if end < 0:
         return False
     rest = cleaned[end:].lstrip(" \t\n" if language == "dart" else " \t")
+    if (
+        language == "swift"
+        and _SWIFT_OPTIONAL_BINDING_PREFIX.search(cleaned[:start])
+        and _SWIFT_BINDING_ENDS.match(rest)
+    ):
+        return True
     if rest and rest[0] not in _LANGUAGE_STATEMENT_ENDS.get(language, _STATEMENT_ENDS):
         return False
     continues = _NEXT_LINE_CONTINUES.get(language)
@@ -1162,7 +1219,7 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
     found: list[CallAssignment] = []
     for match in pattern.finditer(cleaned):
-        if not _call_ends_statement(cleaned, match.end(), language):
+        if not _call_ends_statement(cleaned, match.end(), language, match.start()):
             continue
         found.append(
             CallAssignment(
@@ -1330,7 +1387,7 @@ def types_by_class(
 # is whatever ranging over ``expr``'s container yields in its position. Two
 # scans feed it, the clauses and the containers they may range over, and the
 # resolver joins them, since only it can type ``expr`` itself.
-RANGE_LANGUAGES = frozenset({"go"})
+RANGE_LANGUAGES = frozenset({"go", "dart"})
 
 # What ranging over each container shape yields, the group name giving the
 # position: ``[]T``, ``[N]T`` and a variadic ``...T`` an int index, then a
@@ -1375,10 +1432,50 @@ _GO_RANGE = re.compile(
 )
 
 
+# Dart's ``for (final p in head[.member[()]])``, and ``await for`` over a
+# stream, declare one variable with no type spelled: it is the element of the
+# container walked. A written type (``for (Repo p in xs)``) is read by
+# ``_DART_TYPED`` and never reaches here, since ``Repo`` is no ``[a-z_]`` name.
+# The variable is the clause's *value*; Dart has no key position.
+_DART_NAME = r"[a-z_]\w*"
+_DART_TYPE_NAME = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
+
+# ``List<T>``, ``Iterable<T>``, ``Set<T>``, ``Queue<T>`` and ``Stream<T>`` yield a
+# ``T``, nullable element included. A ``Map`` is not iterable, and a nested
+# generic (``List<List<T>>``) or an un-awaited ``Future<List<T>>`` is no shape
+# here, so each yields nothing.
+_DART_ITERABLE = r"(?:List|Iterable|Set|Queue|Stream)"
+_DART_ELEMENT_SHAPES = (
+    re.compile(rf"{_DART_ITERABLE}\s*<\s*(?P<value>{_DART_TYPE_NAME})\??\s*>"),
+)
+
+# The whole spelling, nested arguments too, so the element shape refuses it
+# instead of the declaration going unseen.
+_DART_CONTAINER = rf"{_DART_ITERABLE}\s*<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>"
+
+# A parameter, a local or a field, ``List<T> name`` with an optional ``final``
+# before it and ``?`` after the type. The closer is kept, as ``_DART_TYPED``
+# keeps it: ``;`` or ``=`` makes a field at class scope, unless the match sits
+# inside parentheses (``Repo({List<T> xs = const []})``), which owns none.
+_DART_CONTAINER_DECLARATIONS = (
+    re.compile(
+        rf"(?<![\w.])(?P<type>{_DART_CONTAINER})\??\s+(?P<name>{_DART_NAME})\s*"
+        rf"(?=(?P<closer>[=;,)}}]))"
+    ),
+)
+
+_DART_FOR_IN = re.compile(
+    rf"\bfor\s*\(\s*(?:final|var)\s+(?P<value>{_DART_NAME})\s+in\s+"
+    rf"(?P<head>{_DART_NAME})(?:\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?\s*\)"
+)
+
+
 class RangeClause(NamedTuple):
     """One ``for key, value := range head[.member[()]]`` at one line.
 
     ``value`` is empty when only one variable is declared; ``_`` names none.
+    Dart's ``for (final value in head[.member[()]])`` fills ``value`` alone:
+    it has no key position.
     """
 
     line: int
@@ -1402,25 +1499,34 @@ def scan_ranges(text: str, language: str) -> RangeScan:
         return RangeScan((), ())
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    if language == "dart":
+        clause_pattern, declaration_patterns = _DART_FOR_IN, _DART_CONTAINER_DECLARATIONS
+        inside = _inside_parentheses(cleaned)
+    else:
+        clause_pattern, declaration_patterns = _GO_RANGE, _GO_CONTAINER_DECLARATIONS
+        inside = None
     clauses = tuple(
         RangeClause(
             bisect_right(starts, match.start()),
-            match.group("key"),
-            match.group("value") or "",
+            match.groupdict().get("key") or "",
+            match.groupdict().get("value") or "",
             match.group("head"),
             match.group("member") or "",
             bool(match.group("call")),
         )
-        for match in _GO_RANGE.finditer(cleaned)
+        for match in clause_pattern.finditer(cleaned)
     )
     containers = sorted(
         Declaration(
             bisect_right(starts, match.start()),
             match.group("name"),
             match.group("type"),
+            ""
+            if inside is not None and inside(match.start())
+            else (match.groupdict().get("closer") or ""),
             member=bool(match.groupdict().get("member")),
         )
-        for pattern in _GO_CONTAINER_DECLARATIONS
+        for pattern in declaration_patterns
         for match in pattern.finditer(cleaned)
     )
     return RangeScan(clauses, tuple(containers))
@@ -1443,7 +1549,8 @@ def range_element_types(
             return None
         return _usable_type_name(raw, language)[0]
 
-    for shape in _GO_ELEMENT_SHAPES:
+    shapes = _DART_ELEMENT_SHAPES if language == "dart" else _GO_ELEMENT_SHAPES
+    for shape in shapes:
         match = shape.fullmatch(spelling)
         if match is not None:
             groups = match.groupdict()

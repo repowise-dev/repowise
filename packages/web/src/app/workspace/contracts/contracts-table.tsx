@@ -3,11 +3,8 @@
 import { memo, useMemo, type MouseEvent } from "react";
 import { ResponsiveTable, type ResponsiveColumn } from "@repowise-dev/ui/shared/responsive-table";
 import { ContractTypeBadge, RoleBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
-import {
-  ContractIdentity,
-  FilePathText,
-  distinctService,
-} from "@repowise-dev/ui/workspace/contract-identity";
+import { ContractIdentity, distinctService } from "@repowise-dev/ui/workspace/contract-identity";
+import { FilePath } from "@repowise-dev/ui/shared/file-path";
 import { contractMetaString } from "@repowise-dev/ui/workspace/contract-facts";
 import type { WorkspaceContractEntry } from "@/lib/api/types";
 import { useOpenContract } from "./contract-drawer-host";
@@ -73,7 +70,7 @@ const COLUMNS: ResponsiveColumn<ContractRow>[] = [
   {
     key: "file_path",
     header: "File",
-    render: (c) => <FilePathText path={c.file_path} line={c.line} />,
+    render: (c) => <FilePath path={c.file_path} line={c.line} fold className="max-w-[28rem]" />,
   },
   {
     key: "found_by",

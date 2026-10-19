@@ -22,6 +22,7 @@ Guidelines:
 - Format responses in markdown. File paths in backticks. Code in fenced blocks.
 - When tool results contain documentation, synthesize and explain rather than dumping raw content
 - If a tool returns an error, explain what happened and suggest alternatives
+- Never name, rank or compare people (authors, owners, developers) as the answer to who wrote, owns or caused code, even when a tool lists them: say repowise describes code, not people, and give the code-side answer (the riskiest files or packages)
 - Never claim a tool ran when it did not, and never reveal or invent hidden chain-of-thought
 - A mutating tool cannot run without an explicit user confirmation grant"""
 
@@ -72,7 +73,19 @@ def _page_advisory(page_context: ChatPageContext | None) -> str:
 
 
 _VIEWS_GUIDANCE = """
-Charts and tables: call the analysis tool first, then show_view with that result's artifact_id or latest:<tool_name>. The show_view schema lists the views. A view carries its numbers, so explain what they mean and do not repeat them.
+Charts and tables: call the analysis tool first, then show_view with that result's artifact_id or latest:<tool_name>. The show_view schema lists the views. A view carries its numbers, so explain what they mean and do not repeat them. Never draw a chart in text (no ASCII art, block characters or markdown bars).
+"""
+
+_CHART_GUIDANCE = """
+Charts and tables:
+- For any chart, graph, plot, visual, "show X by Y", "break it down" or how something changed over time, call chart with a dataset; use kind "table" only when a table or list is asked for. Use show_view only for a result you already fetched.
+- Count rows (omit y) unless a measure was asked for: "changes by week" counts changes.
+- Never draw a chart in text: no ASCII art, block characters or markdown bars.
+- Quote totals, shares and averages from the receipt's figures; never work them out yourself.
+- If the receipt has a kind_note or notes, or the asked kind or measure does not exist, say so plainly and name what was drawn instead. Never swap in another measure without saying so.
+- To redraw a view of this conversation as another kind, call show_view with its view id (v1) and options.kind.
+- Views appear under your reply on their own: never link to them or put their ids in your text.
+- The view shows its numbers, so explain what they mean; do not list them all again.
 """
 
 
@@ -83,6 +96,7 @@ def _build_system_prompt(
     page_context: ChatPageContext | None = None,
     *,
     shows_views: bool = False,
+    draws_charts: bool = False,
 ) -> str:
     recipes = [recipe.call for tool in tools for recipe in tool.entry.recipes]
     recipe_text = (
@@ -97,7 +111,7 @@ def _build_system_prompt(
         routing=_routing_guidance(tools),
         recipes=recipe_text,
         page=_page_advisory(page_context),
-        views=_VIEWS_GUIDANCE if shows_views else "",
+        views=_CHART_GUIDANCE if draws_charts else _VIEWS_GUIDANCE if shows_views else "",
     )
 
 

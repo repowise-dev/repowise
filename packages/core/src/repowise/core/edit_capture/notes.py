@@ -27,6 +27,7 @@ import secrets
 import subprocess
 from pathlib import Path
 
+from ..analysis.git_cli import run_git
 from .store import NOTES_LEDGER, append_jsonl, load_state, read_jsonl, save_state, sidecar_dir
 
 NOTES_REF = "refs/notes/ai"
@@ -36,17 +37,8 @@ FETCH_REFSPEC = f"+{NOTES_REF}:{NOTES_REF}"
 
 
 def _git(repo: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        input=stdin,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=None if stdin is not None else subprocess.DEVNULL,
-        check=False,
-    )
+    # Ceiling: no timeout; a wedged git blocks this call.
+    return run_git(args, repo, input=stdin, timeout=None)
 
 
 def session_key(tool: str, session: str) -> str:

@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.change_health.file_scores import (
+    SCORE_BASIS,
+    FileScoreDelta,
+    score_change,
+)
 from repowise.core.analysis.change_health.models import ChangeFinding, ChangeHealthDelta
 from repowise.core.analysis.review_directive import (
     CoveringTestEvidence,
@@ -24,6 +29,11 @@ TOP_FINDINGS_LIMIT = 3
 
 #: Reasons carried on the directive.
 REASON_LIMIT = 3
+
+#: Deleted sources listed with where their code went.
+MOVED_TO_LIMIT = 10
+#: Per-file score rows carried in ``health_delta.files``.
+FILE_ROWS_LIMIT = 10
 
 #: Findings whose next-action is carried in the default response.
 _ACTIONABLE_FINDINGS = 2
@@ -175,15 +185,33 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     if delta.head is not None:
         block["head"] = delta.head.as_dict()
     if delta.fingerprint is not None:
-        block["analyzer"] = delta.fingerprint.as_dict()
+        block["analyzer"] = {**delta.fingerprint.as_dict(), "context": delta.context}
     if len(delta.findings) > len(emitted):
         block["findings_reduced_reason"] = "top_findings_cap"
         block["all_findings_via"] = _call(revspec, extra="include=['findings']")
+    block.update(_nonzero(improved=delta.improved_total, moved=delta.moved_total))
+    if delta.moved_to:
+        block["moved_to"] = dict(list(delta.moved_to.items())[:MOVED_TO_LIMIT])
+    if delta.files:
+        block.update(_file_scores(delta.files))
     if delta.skipped:
         block["skipped"] = _skipped(delta.skipped)
     if delta.limits:
         block["limits"] = delta.limits
     return block
+
+
+def _file_scores(rows: list[FileScoreDelta]) -> dict[str, Any]:
+    """The changed files' scores before and after, and their base-nloc average."""
+    out: dict[str, Any] = {
+        "score_basis": SCORE_BASIS,
+        "files": [r.as_dict() for r in rows[:FILE_ROWS_LIMIT]],
+        "files_total": len(rows),
+    }
+    change = score_change(rows)
+    if change is not None:
+        out["score_change"] = change.as_dict()
+    return out
 
 
 def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
@@ -211,6 +239,8 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
         row["lines"] = [finding.line_start, finding.line_end or finding.line_start]
     if finding.severity_before:
         row["severity_before"] = finding.severity_before
+    if finding.moved_from:
+        row["moved_from"] = finding.moved_from
     if finding.opportunity_id:
         row["opportunity_id"] = finding.opportunity_id
         row["opportunity_rank"] = finding.opportunity_rank
@@ -231,10 +261,9 @@ def finding_detail(finding: ChangeFinding, revspec: str | None) -> dict[str, Any
 # -- internals --------------------------------------------------------------
 
 
-
-
-
-
+def _nonzero(**counts: int) -> dict[str, int]:
+    """Only the counts that are set, so an ordinary change's block does not grow."""
+    return {name: count for name, count in counts.items() if count}
 
 
 def _counts(findings: list[ChangeFinding], attribute: str) -> dict[str, int]:

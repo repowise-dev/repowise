@@ -10,6 +10,9 @@ is done once for the period: the HEAD and window outcomes are read at, and the
 deep fix-history walk the risk item stands on (one ``git log`` primes every
 change's walk, see
 :func:`~repowise.core.analysis.change_risk.fix_history.prime_fix_pressure`).
+With no start date a period covers the :data:`DEFAULT_WINDOW_DAYS` before the
+newest indexed commit (see :meth:`PeriodRequest.resolved`), so a first run on a
+long history does not build a checklist for every change it ever merged.
 Builds in a page run side by side, each on its own read session, and each is
 kept the moment it finishes, so an interrupt or a failed build loses only the
 builds still running. A checklist another writer kept meanwhile (the server,
@@ -21,8 +24,8 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -31,6 +34,7 @@ import structlog
 
 from repowise.core.changes import collect
 from repowise.core.changes.evidence import ChangeEvidence
+from repowise.core.events.snapshot import RECENT_DAYS
 
 logger = structlog.get_logger(__name__)
 
@@ -42,6 +46,9 @@ DEFAULT_CONCURRENCY = 4
 #: Wall seconds per checklist built at :data:`DEFAULT_CONCURRENCY`, measured on
 #: a mid-size repository (rw-demo, 32 changes); used only for an estimate.
 SECONDS_PER_BUILD = 3.0
+#: Days a period with no start date covers, back from the newest indexed commit
+#: (the recent-activity window the rest of the index measures).
+DEFAULT_WINDOW_DAYS = RECENT_DAYS
 #: Pages in a row the fix-history walk may answer nothing before it is dropped.
 _PRIME_MISSES = 3
 
@@ -56,7 +63,10 @@ class PeriodRequest:
     """Which changes a period pass reads, and how it builds missing checklists.
 
     *since* is inclusive and *until* exclusive, on ``merged_at``; ``None``
-    leaves that side open. *refresh* rebuilds every checklist; without *build*
+    leaves that side open, except that a request with no *since* and a
+    *window_days* starts that many days before the newest indexed commit (or
+    *until*, when earlier); ``window_days=None`` covers every indexed change.
+    *refresh* rebuilds every checklist; without *build*
     nothing is built, and a change with no kept checklist comes with ``None``.
     *plan* is told how many checklists will be built before the first starts;
     *progress* is told about each build.
@@ -64,11 +74,31 @@ class PeriodRequest:
 
     since: datetime | None = None
     until: datetime | None = None
+    window_days: int | None = DEFAULT_WINDOW_DAYS
     refresh: bool = False
     build: bool = True
     concurrency: int = DEFAULT_CONCURRENCY
     progress: Progress | None = None
     plan: Plan | None = None
+
+    async def resolved(self, session: Any, repo_id: str) -> PeriodRequest:
+        """This request with its start date fixed. *window_days* is kept only
+        when the start came from it, so a caller can say which period it read."""
+        from sqlalchemy import func, select
+
+        from repowise.core.persistence.models import GitCommit
+
+        if self.since is not None or not self.window_days:
+            return replace(self, window_days=None)
+        newest = await session.scalar(
+            select(func.max(GitCommit.committed_at)).where(GitCommit.repository_id == repo_id)
+        )
+        if newest is None:  # nothing indexed to measure back from
+            return replace(self, window_days=None)
+        anchor = newest if newest.tzinfo else newest.replace(tzinfo=UTC)
+        if self.until is not None and self.until < anchor:
+            anchor = self.until
+        return replace(self, since=anchor - timedelta(days=self.window_days))
 
 
 @dataclass(frozen=True)
@@ -210,6 +240,7 @@ async def period_evidence(
     """``(row, checklist)`` for each change *request* names, newest first."""
     from repowise.core.persistence.crud import ChangeFilter, list_change_keys
 
+    request = await request.resolved(session, repo_id)
     keys = await list_change_keys(
         session, repo_id, ChangeFilter(since=request.since, until=request.until)
     )
@@ -238,6 +269,7 @@ async def period_evidence(
 
 __all__ = [
     "DEFAULT_CONCURRENCY",
+    "DEFAULT_WINDOW_DAYS",
     "PAGE",
     "SECONDS_PER_BUILD",
     "PeriodRequest",

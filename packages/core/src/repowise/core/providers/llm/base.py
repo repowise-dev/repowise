@@ -41,6 +41,7 @@ ModelOptionSource = Literal["api", "local", "fallback"]
 _FIXED_TEMPERATURE_PREFIXES = (
     # OpenAI reasoning era
     "gpt-5",
+    "gpt-6",
     "o1",
     "o3",
     "o4",

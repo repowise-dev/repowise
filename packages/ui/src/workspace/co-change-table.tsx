@@ -4,6 +4,7 @@ import * as React from "react";
 import { EmptyState } from "../shared/empty-state";
 import { InfoTip } from "../shared/info-tip";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
+import { FilePath } from "../shared/file-path";
 import { cn } from "../lib/cn";
 import { formatDate, formatDateTime } from "../lib/format";
 import { PAIR_MICRO as MICRO } from "../coupling/pair-drawer-parts";
@@ -35,45 +36,20 @@ export function coChangeKey(cc: WorkspaceCoChangeEntry): string {
 // files and the strength stay at every width.
 const HIDE_BELOW_MD = "max-md:hidden";
 
-function splitPath(path: string): [dir: string, base: string] {
-  const i = path.lastIndexOf("/");
-  return i < 0 ? ["", path] : [path.slice(0, i + 1), path.slice(i + 1)];
-}
-
 /**
- * A repository as a quiet micro-label over its path: directory dim, filename
- * full strength and never cut, so the part a reader recognises survives any
- * width. In a row the directory truncates (full path in the DOM and the
- * title); with `wrap`, where the exact file must be legible, lines break only
- * after a "/".
+ * A repository as a quiet micro-label over its path. In a row the file name
+ * leads and the directory clips; with `wrap`, where the exact file must be
+ * legible, the whole path wraps only after a "/".
  */
 export function RepoPath({ repo, path, wrap = false }: { repo: string; path: string; wrap?: boolean }) {
-  const [dir, base] = splitPath(path);
-  if (wrap) {
-    return (
-      <div className="min-w-0">
-        <span className={cn(MICRO, "block")}>{repo}</span>
-        <p className="min-w-0 font-mono text-xs leading-5 [overflow-wrap:break-word]">
-          {dir.split("/").filter(Boolean).map((seg, i) => (
-            <React.Fragment key={i}>
-              <span className="text-[var(--color-text-tertiary)]">{seg}/</span>
-              <wbr />
-            </React.Fragment>
-          ))}
-          <span className="font-medium text-[var(--color-text-primary)]">{base}</span>
-        </p>
-      </div>
-    );
-  }
   return (
     <div className="min-w-0">
       <span className={cn(MICRO, "block")}>{repo}</span>
-      <span className="flex min-w-0 font-mono text-xs leading-5" title={path}>
-        {dir && <span className="truncate text-[var(--color-text-tertiary)]">{dir}</span>}
-        <span className="max-w-full shrink-0 font-medium text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
-          {base}
-        </span>
-      </span>
+      <FilePath
+        path={path}
+        mode={wrap ? "full" : "name-first"}
+        className="leading-5 text-[var(--color-text-primary)]"
+      />
     </div>
   );
 }

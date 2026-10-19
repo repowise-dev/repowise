@@ -514,7 +514,7 @@ def wire_tsconfig_resolver(
     """
     # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
     # .svelte component's imports go through the same TS/JS resolver.
-    _ts_langs = {"typescript", "javascript", "svelte", "vue"}
+    _ts_langs = {"typescript", "javascript", "svelte", "vue", "astro"}
 
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()

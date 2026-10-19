@@ -818,6 +818,79 @@ async def test_find_suspects_is_offered_on_the_local_backend_and_runs(store, mon
 
 
 # ---------------------------------------------------------------------------
+# chart: chat-only, local backend, one call to a stored view
+# ---------------------------------------------------------------------------
+
+
+class _FakeLocal:
+    """A local backend over FakeTools; built lazily so the import stays in the test."""
+
+    @staticmethod
+    def make():
+        from repowise.server.chat_tools import LocalToolBackend
+
+        class FakeLocal(LocalToolBackend):
+            def __init__(self) -> None:
+                super().__init__("/tmp/demo", repo_alias="demo")
+                self.inner = FakeTools()
+
+            def catalog_for(self, policy, principal):
+                return self.inner.catalog_for(policy, principal)
+
+            async def execute(self, name, arguments):
+                return await self.inner.execute(name, arguments)
+
+        return FakeLocal()
+
+
+async def test_chart_draws_a_dataset_and_the_next_turn_redraws_it(store, monkeypatch):
+    import repowise.server.chat_chart as chat_chart_mod
+    from repowise.server.chat_datasets import DatasetRows
+    from repowise.server.chat_references import CHART_TOOL
+
+    rows = [{"health_band": band} for band in ("good", "good", "fair")]
+
+    async def fake_rows(name, repo):
+        assert (name, repo) == ("files", "demo")
+        return DatasetRows(rows=rows, as_of="4c1e31fe3a9b", stale=False)
+
+    monkeypatch.setattr(chat_chart_mod, "load_rows", fake_rows)
+    spec = {"dataset": "files", "x": "health_band", "kind": "pie"}
+    provider = ScriptedProvider([[_tool("t1", CHART_TOOL, spec)], [_text("two thirds are good")]])
+    session = await _open(store, provider, tools=_FakeLocal.make())
+    events = await _collect(session.stream("health bands as a donut"))
+
+    assert CHART_TOOL in provider.calls[0]["tools"]
+    view = next(e for e in events if e["type"] == "view")["view"]
+    assert view["chart_type"] == "donut" and view["source"]["tool_name"] == CHART_TOOL
+    receipt = json.loads(provider.calls[1]["messages"][-1]["content"])
+    assert receipt["figures"]["total"] == 3 and "kind 'pie' read as 'donut'" in receipt["notes"]
+    stored = (await store.messages(session.id))[-1].content
+    assert [v["chart_type"] for v in stored["views"]] == ["donut"]
+
+    redraw = {"artifact_id": "v1", "view": "chart", "options": {"kind": "table"}}
+    again = ScriptedProvider([[_tool("t2", SHOW_VIEW_TOOL, redraw)], [_text("as a table")]])
+    result = await (
+        await _open(store, again, tools=_FakeLocal.make(), conversation_id=session.id)
+    ).send("show that as a table")
+    assert [v["kind"] for v in result.views] == ["table"]
+    assert result.views[0]["rows"] == view["data"]["rows"]
+
+
+async def test_chart_is_offered_only_on_the_local_backend(store):
+    from repowise.server.chat_references import CHART_TOOL
+
+    remote = ScriptedProvider([[_text("x")]])
+    await (await _open(store, remote)).send("q")
+    assert CHART_TOOL not in remote.calls[0]["tools"]
+
+    narrow = ScriptedProvider([[_text("x")]])
+    policy = SessionPolicy(tool_allowlist=frozenset({"get_risk", SHOW_VIEW_TOOL}))
+    await (await _open(store, narrow, tools=_FakeLocal.make(), policy=policy)).send("q")
+    assert CHART_TOOL not in narrow.calls[0]["tools"]
+
+
+# ---------------------------------------------------------------------------
 # show_view references across the conversation
 # ---------------------------------------------------------------------------
 

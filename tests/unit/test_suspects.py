@@ -137,6 +137,46 @@ def test_person_trailers_never_reach_the_text(tmp_path):
     assert "Ann" not in got[head][0] and "Bob" not in got[head][0]
 
 
+def test_a_change_text_is_read_from_git_once(monkeypatch, tmp_path):
+    """A commit's text never changes, so a long-lived server reads each one once."""
+    from repowise.core.suspects import git_text
+
+    sha_a, sha_b = "a" * 40, "b" * 40
+    asked: list[list[str]] = []
+
+    def fake_log(_repo, args, shas):
+        asked.append(list(shas))
+        if args[0].startswith("--format"):
+            return "".join(f"\x00{s}\nbody {s[0]}\n" for s in shas)
+        return "".join(f"\x00{s}\n@@ -1 +1 @@ def f_{s[0]}(\n" for s in shas)
+
+    monkeypatch.setattr(git_text, "_log", fake_log)
+    monkeypatch.setattr(git_text, "_TEXTS", type(git_text._TEXTS)())
+    first = git_text.read_change_texts(tmp_path, [(sha_a, 1)])
+    asked.clear()
+    both = git_text.read_change_texts(tmp_path, [(sha_a, 1), (sha_b, 1)])
+    assert both[sha_a] == first[sha_a] == ("body a", ("f_a",))
+    assert both[sha_b] == ("body b", ("f_b",))
+    assert asked == [[sha_b], [sha_b]]
+
+
+def test_git_never_inherits_stdin_and_cannot_hang(monkeypatch, tmp_path):
+    # Under the stdio MCP server on Windows an inherited stdin pipe blocks git.
+    import subprocess
+
+    from repowise.core.suspects import git_text
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(git_text.subprocess, "run", fake_run)
+    assert git_text._git(tmp_path, "ls-files") is None
+    assert seen["stdin"] is subprocess.DEVNULL and seen["timeout"] > 0
+
+
 def test_text_evidence_skips_filler_and_the_repo_name_but_is_never_empty():
     cands = [
         Candidate("a", "repowise shows the invoice total", NOW, ("billing/invoice.py",)),

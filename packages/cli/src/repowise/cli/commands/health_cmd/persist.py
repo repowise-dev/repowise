@@ -96,6 +96,27 @@ def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
         return None
 
 
+def _load_short_history(repo_path: object) -> set[str]:
+    """Files whose recorded history is too thin to count; empty when the store cannot answer."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import get_short_history_paths
+
+    async def _do() -> set[str]:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return set()
+            session, repo_id = opened
+            return await get_short_history_paths(session, repo_id)
+
+    try:
+        return run_async(_do())
+    except (SQLAlchemyError, OSError):
+        # A marker beside the score, never a reason to fail the report.
+        return set()
+
+
 def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str]] | None:
     """The health analysis the last ``init``/``update`` stored, read without writing.
 
@@ -131,8 +152,8 @@ def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str
             metrics = await get_health_metrics(session, repo_id)
             if not metrics:
                 return None
-            # KPIs count what the scores counted, file-held findings included.
-            findings = await get_health_findings(session, repo_id, file_holds=False)
+            # Every row the scores counted, withheld types included.
+            findings = await get_health_findings(session, repo_id, include_withheld=True)
             hotspots = await get_hotspot_file_paths(session, repo_id)
             languages = await get_file_language_map(session, repo_id)
         kpis = compute_kpis(metrics, hotspots, deductions=deduction_by_path(findings))

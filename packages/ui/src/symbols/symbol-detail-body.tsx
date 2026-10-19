@@ -15,7 +15,8 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { StatGrid, StatTile } from "../shared/stat-grid";
 import { scoreBadgeClass } from "../health/tokens";
-import { formatRelativeTimeOrNull, formatTopPercentile, truncatePath } from "../lib/format";
+import { formatRelativeTimeOrNull, formatTopPercentile } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { cn } from "../lib/cn";
 import { SymbolCallGraph } from "./symbol-call-graph";
 
@@ -316,9 +317,7 @@ export function SymbolDetailBody({
                 key={p.file_path}
                 className="flex items-center justify-between gap-2 font-mono text-xs"
               >
-                <span className="truncate text-[var(--color-text-secondary)]" title={p.file_path}>
-                  {truncatePath(p.file_path, 40)}
-                </span>
+                <FilePath path={p.file_path} fold className="text-[var(--color-text-secondary)]" />
                 <span className="tabular-nums text-[var(--color-text-tertiary)]">
                   {p.co_change_count}×
                 </span>
@@ -385,11 +384,8 @@ export function SymbolDetailBody({
           <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
             Parent file
           </span>
-          <a
-            href={fileTo}
-            className="truncate font-mono text-xs text-[var(--color-accent-primary)] hover:underline"
-          >
-            {data.identity.file_path}
+          <a href={fileTo} className="min-w-0 hover:underline">
+            <FilePath path={data.identity.file_path} mode="full" accent />
           </a>
           {data.file_context?.health_score != null && (
             <span
@@ -411,7 +407,8 @@ export function SymbolDetailBody({
       {onOpenBlastRadius && (
         <Button variant="outline" size="sm" onClick={onOpenBlastRadius}>
           <Radius className="mr-1.5 h-3.5 w-3.5" />
-          View blast radius for {truncatePath(id.file_path, 28)}
+          View blast radius for{" "}
+          <FilePath path={id.file_path} mode="middle-ellipsis" className="max-w-[16rem]" />
         </Button>
       )}
     </div>

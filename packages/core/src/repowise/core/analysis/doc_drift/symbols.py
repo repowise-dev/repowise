@@ -31,6 +31,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.git_cat_file import cat_file_batch
 from repowise.core.ingestion.change_detector import ChangeDetector
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.models import ParsedFile
@@ -451,21 +452,15 @@ def _parse_at(
     """Each ``(commit, path)`` parsed, from one ``cat-file --batch``."""
     if not files:
         return {}
-    request = "".join(f"{sha}:./{path}\n" for sha, path in files).encode("utf-8")
-    ran = git_run(root, "cat-file", "--batch", stdin=request, timeout=_GIT_TIMEOUT_SECONDS)
-    if ran is None or ran[0] != 0:
+    req_specs = [f"{sha}:./{path}" for sha, path in files]
+    read = cat_file_batch(str(root), req_specs, on_missing="omit", timeout=_GIT_TIMEOUT_SECONDS)
+    if read is None:
         return None
-    data, pos, out = ran[1], 0, {}
-    # Each object is ``<oid> blob <size>\n<bytes>\n``, or one ``missing`` line.
-    for key in files:
-        end = data.find(b"\n", pos)
-        header = data[pos:end].split(b" ")
-        pos = end + 1
-        if len(header) != 3 or header[1] != b"blob":
+    out = {}
+    for key, (_, blob) in zip(files, read, strict=True):
+        if blob is None:
             continue
-        size = int(header[2])
-        parsed = detector.parse_bytes(data[pos : pos + size], key[1])
-        pos += size + 1
+        parsed = detector.parse_bytes(blob, key[1])
         if parsed is not None:
             out[key] = parsed
     return out

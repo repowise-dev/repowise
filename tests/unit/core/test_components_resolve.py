@@ -310,7 +310,12 @@ def test_dead_code_that_never_ran_is_unavailable_not_zero():
     assert (ran["dead_code"]["findings"], ran["dead_code"]["basis"]) == (0, "inferred")
 
 
-def test_gated_languages_are_left_out_of_health_and_dead_code():
+def test_gated_languages_are_left_out_of_health_and_dead_code(monkeypatch):
+    # No shipped row is gated: run on the audit's gated table.
+    from repowise.core.analysis import finding_registry
+    from tests.unit.server.mcp.test_language_gates import AUDIT_GATED
+
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
     health_rows = {
         "A.java": {"score": 2.0, "nloc": 100},
         "b.py": {"score": 8.0, "nloc": 100},
@@ -327,7 +332,12 @@ def test_gated_languages_are_left_out_of_health_and_dead_code():
     assert dead["method"].endswith("; 1 file(s) in gated languages excluded")
 
 
-def test_only_gated_files_make_health_and_dead_code_unavailable():
+def test_only_gated_files_make_health_and_dead_code_unavailable(monkeypatch):
+    # No shipped row is gated: run on the audit's gated table.
+    from repowise.core.analysis import finding_registry
+    from tests.unit.server.mcp.test_language_gates import AUDIT_GATED
+
+    monkeypatch.setattr(finding_registry, "LANGUAGE_GATES", AUDIT_GATED)
     facts = rollup_component(
         ["A.java", "B.cs"], test_files=set(), git_rows={},
         health_rows={"A.java": {"score": 2.0, "nloc": 10}, "B.cs": {"score": 3.0, "nloc": 10}},
