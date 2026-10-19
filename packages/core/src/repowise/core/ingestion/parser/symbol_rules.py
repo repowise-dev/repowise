@@ -54,7 +54,9 @@ def _keep_ts_overloads_beside_a_body(symbols: list[Symbol], node_types: list[str
     That is an ambient declaration (``declare function``, a ``.d.ts``), not an
     overload, and it never was a symbol.
     """
-    bodied = {s.id for s, t in zip(symbols, node_types, strict=True) if t not in _TS_OVERLOAD_SIGNATURES}
+    bodied = {
+        s.id for s, t in zip(symbols, node_types, strict=True) if t not in _TS_OVERLOAD_SIGNATURES
+    }
     return [
         s
         for s, t in zip(symbols, node_types, strict=True)
@@ -87,7 +89,6 @@ def _is_declaration(
     if export_type is not None:
         return export_type.is_forward_declaration
     return _is_bodiless_cpp_type(language, node_type, def_node)
-
 
 
 _FSHARP_BINDING_NODE_TYPES = ("function_declaration_left", "value_declaration_left")
@@ -275,6 +276,18 @@ def _is_split_annotation_chain(node: Node | None) -> bool:
             return True
         node = node.named_children[1]
     return False
+
+
+def _restore_kotlin_annotations(
+    symbols: list[Symbol],
+    recovered: dict[int, tuple[int, str]],
+) -> None:
+    """Restore annotation lines and decorator text on recovered Kotlin symbols."""
+    for symbol in symbols:
+        entry = recovered.get(symbol.start_line)
+        if entry is not None and symbol.parent_name is None:
+            symbol.start_line, text = entry
+            symbol.decorators = [text, *symbol.decorators]
 
 
 def _declared_modifiers(def_node: Node, node_types: frozenset[str], src: str) -> tuple[str, ...]:

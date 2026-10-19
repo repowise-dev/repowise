@@ -655,6 +655,99 @@ def _detect_in(language: str, ext: str, src: str):
     return plans[0]
 
 
+_URI_PARTS_JAVA = """
+class UriParts {
+  static Map<String, Object> parts(URI uri, Writer log) throws IOException {
+    var out = new HashMap<String, Object>();
+    String host = uri.getHost();
+    String path = uri.getPath();
+    String query = uri.getQuery();
+    int port = uri.getPort();
+    if (host == null) {
+      throw new IllegalArgumentException("no host");
+    }
+    out.put("host", host);
+    if (path != null) {
+      out.put("path", path);
+      int dot = path.lastIndexOf('.');
+      if (dot >= 0) {
+        out.put("extension", path.substring(dot + 1));
+        log.write("extension\\n");
+      }
+    }
+    if (port != -1) {
+      out.put("port", port);
+      log.write("port\\n");
+    }
+    if (query != null) {
+      out.put("query", query);
+      log.write("query\\n");
+    }
+    return out;
+  }
+}
+"""
+
+
+def test_issue_3823_uri_parts_plan_has_known_type_and_checked_exception():
+    plan = _detect_in("java", "java", _URI_PARTS_JAVA)
+
+    assert plan.plan["new_symbol"]["signature_text"] == (
+        "private static void extractedHelper(Writer log, HashMap<String, Object> out, "
+        "String path, int port, String query) throws IOException {"
+    )
+
+
+def test_java_extraction_inside_caught_io_exceptions_does_not_add_throws():
+    import re
+
+    src = _URI_PARTS_JAVA.replace(" throws IOException", "")
+    src = re.sub(
+        r'(?m)^(\s*)log\.write\((.*)\);$',
+        r'\1try { log.write(\2); } catch (IOException e) { out.put("logError", e); }',
+        src,
+    )
+
+    plan = _detect_in("java", "java", src)
+
+    assert "throws IOException" not in plan.plan["new_symbol"]["signature_text"]
+    assert "HashMap<String, Object> out" in plan.plan["new_symbol"]["signature_text"]
+    span = plan.plan["span"]
+    lifted = src.splitlines()[span["start"] - 1 : span["end"]]
+    assert sum("catch (IOException e)" in line for line in lifted) == 3
+
+
+def test_issue_3823_try_resource_type_flows_through_detector():
+    src = _URI_PARTS_JAVA.replace(
+        "static Map<String, Object> parts(URI uri, Writer log) throws IOException {",
+        "static Map<String, Object> parts(URI uri) {\n    try (Writer log = open()) {",
+    ).replace(
+        "var out = new HashMap<String, Object>();",
+        "Map<String, Object> out = new HashMap<>();",
+    ).replace(
+        "    return out;\n  }\n}",
+        "    return out;\n    }\n  }\n}",
+    )
+    plan = _detect_in("java", "java", src)
+
+    assert "Writer log" in plan.plan["new_symbol"]["signature_text"]
+    assert "<type>" not in plan.plan["new_symbol"]["signature_text"]
+
+
+def test_issue_3823_var_call_type_stays_judgment_at_detector_boundary():
+    from repowise.core.analysis.health.refactoring.preconditions import classify_step
+
+    src = _URI_PARTS_JAVA.replace(
+        "var out = new HashMap<String, Object>();", "var out = createMap();"
+    )
+    plan = _detect_in("java", "java", src)
+    applicability = classify_step(plan)
+
+    assert "<type> out" in plan.plan["new_symbol"]["signature_text"]
+    assert applicability.classification == "judgment"
+    assert "type_unresolved" in applicability.reasons
+
+
 def test_detector_emits_suggestion_for_flagged_function():
     findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
     suggestions = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))

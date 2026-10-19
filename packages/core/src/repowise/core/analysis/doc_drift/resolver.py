@@ -48,8 +48,6 @@ _HTML_ANCHOR_RE = re.compile(
     re.I,
 )
 
-_PARENT_SEGMENT_RE = re.compile(r"[^/]+/\.\./")
-
 
 @dataclass
 class Resolution:
@@ -246,18 +244,30 @@ def _scan_manifests(manifest_text: dict[str, str]) -> tuple[frozenset[str], froz
 
 
 def join_relative(doc: str, target: str) -> str:
-    """Resolve *target* as written relative to the document that names it."""
+    """Resolve *target* as written relative to the document that names it.
+
+    Segments are normalized, not character-stripped: ``lstrip("./")`` removed
+    the leading dot of ``.github/workflows/ci.yml`` (a real repository path)
+    and rewrote ``../../other-repo/README.md`` into an internal path. A
+    ``..`` that survives normalization escapes the repository root and is kept
+    as written, so the caller reads the target as external rather than as a
+    file this repository must hold.
+    """
     doc_dir = doc.rsplit("/", 1)[0] if "/" in doc else ""
     if not doc_dir:
         return target
-    joined = f"{doc_dir}/{target}"
-    # Collapse "a/b/../c" without touching the filesystem.
-    while True:
-        collapsed = _PARENT_SEGMENT_RE.sub("", joined, count=1)
-        if collapsed == joined:
-            break
-        joined = collapsed
-    return joined.lstrip("./")
+    parts: list[str] = []
+    for segment in f"{doc_dir}/{target}".split("/"):
+        if segment == ".":
+            continue
+        if segment == "..":
+            if parts and parts[-1] != "..":
+                parts.pop()
+            else:
+                parts.append("..")
+            continue
+        parts.append(segment)
+    return "/".join(parts)
 
 
 def _exists(idx: RepoIndex, target: str) -> bool:

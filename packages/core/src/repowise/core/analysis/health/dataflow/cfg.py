@@ -432,19 +432,55 @@ class _CFGBuilder:
         self._raises.append(RaiseSite(st.start_point[0] + 1, kind, exc, caught))
 
     def _record_arm_raises(self, switch: Node) -> None:
-        """The raises in a ``switch`` / ``match`` the graph keeps whole. The
-        statement is one graph node, so its arms are walked here, once, and
-        only within it: nested functions and lambdas are not entered."""
-        scopes = self.lmap.function_kinds | self.lmap.lambda_kinds
-        stack = list(reversed(switch.named_children))
-        while stack:
-            node = stack.pop()
-            if node.type in self.lmap.raise_kinds:
-                self._record_exit(node)
-            elif node.type not in scopes:
-                stack.extend(reversed(node.named_children))
+        """The raises and nested try regions in a ``switch`` / ``match`` the
+        graph keeps whole. The statement is one graph node, so its arms are
+        walked here, once, and only within it: nested functions and lambdas are
+        not entered."""
+        for child in switch.named_children:
+            self._walk_arm_node(child)
 
-    def _build_if(self, if_node: Node, cur: BasicBlock) -> BasicBlock:
+    def _walk_arm_node(self, node: Node) -> None:
+        scopes = self.lmap.function_kinds | self.lmap.lambda_kinds
+        if node.type in self.lmap.raise_kinds:
+            self._record_exit(node)
+        elif node.type in self.lmap.try_kinds:
+            clauses = [c for c in node.children if c.type in self.lmap.catch_kinds]
+            heads = [self._handler(c) for c in clauses]
+            body = node.child_by_field_name("body")
+            else_clause = next((c for c in node.children if c.type == "else_clause"), None)
+            finally_clause = next((c for c in node.children if c.type == "finally_clause"), None)
+
+            self._guards.append(tuple(heads))
+            if body is not None:
+                for child in body.children:
+                    self._walk_arm_node(child)
+            self._guards.pop()
+
+            if else_clause is not None:
+                for child in else_clause.children:
+                    self._walk_arm_node(child)
+
+            handlers = []
+            for clause, head in zip(clauses, heads, strict=True):
+                self._handling.append(head)
+                handler_entry = self._new("handler")
+                handler_out = self._process_seq(
+                    self._body_stmts(self._block_of(clause)), handler_entry
+                )
+                self._handling.pop()
+                handlers.append(replace(head, completes=handler_out is not None))
+
+            if finally_clause is not None:
+                for child in finally_clause.children:
+                    self._walk_arm_node(child)
+
+            parts = (body, else_clause, clauses, finally_clause)
+            self._regions.append(_try_region(node, parts, tuple(handlers)))
+        elif node.type not in scopes:
+            for child in node.named_children:
+                self._walk_arm_node(child)
+
+    def _build_if(self, if_node: Node, cur: BasicBlock) -> BasicBlock | None:
         cur.kind = "branch"
         self._record_head(cur, if_node)
         join = self._new("join")
@@ -470,7 +506,7 @@ class _CFGBuilder:
             self._build_py_else_chain(alts, cur, join)
         else:
             self._build_c_alternative(if_node, cur, join)
-        return join
+        return join if join.predecessors else None
 
     def _build_py_else_chain(self, alts: list[Node], cur: BasicBlock, join: BasicBlock) -> None:
         """Python ``elif`` / ``else`` clause chain off *cur*'s false edge."""

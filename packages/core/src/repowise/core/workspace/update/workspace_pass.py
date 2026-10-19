@@ -293,57 +293,71 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
     """Update one stale repo under the pass's concurrency limit."""
     alias, path, new_head, first_time = repo
     async with update_pass.semaphore:
-        if update_pass.on_repo_start:
-            update_pass.on_repo_start(alias)
-
-        # Ensure the .repowise/ dir exists before the pipeline runs so
-        # first-time indexing has a place to put wiki.db and state.json.
-        (path / ".repowise").mkdir(parents=True, exist_ok=True)
-
-        # Per-repo single-flight lock. The post-commit hook fires a
-        # new ``repowise update`` for every commit; without this guard,
-        # rapid-fire commits race on save_state, each pass starts from
-        # the same stale base, and the wiki never converges to HEAD.
-        # Check + acquire are one atomic exclusive create.
-        existing = _try_acquire_lock(path, new_head)
-        if existing is not None:
-            return _defer_in_flight_repo(alias, path, new_head, existing)
-
         try:
-            update_started = time.monotonic()
-            result = await update_single_repo_index(
-                path,
-                commit_depth=update_pass.commit_depth,
-                exclude_patterns=update_pass.exclude_patterns,
-                include_working_tree=update_pass.include_working_tree,
+            if update_pass.on_repo_start:
+                update_pass.on_repo_start(alias)
+
+            # Ensure the .repowise/ dir exists before the pipeline runs so
+            # first-time indexing has a place to put wiki.db and state.json.
+            (path / ".repowise").mkdir(parents=True, exist_ok=True)
+
+            # Per-repo single-flight lock. The post-commit hook fires a
+            # new ``repowise update`` for every commit; without this guard,
+            # rapid-fire commits race on save_state, each pass starts from
+            # the same stale base, and the wiki never converges to HEAD.
+            # Check + acquire are one atomic exclusive create.
+            existing = _try_acquire_lock(path, new_head)
+            if existing is not None:
+                return _defer_in_flight_repo(alias, path, new_head, existing)
+
+            try:
+                update_started = time.monotonic()
+                result = await update_single_repo_index(
+                    path,
+                    commit_depth=update_pass.commit_depth,
+                    exclude_patterns=update_pass.exclude_patterns,
+                    include_working_tree=update_pass.include_working_tree,
+                )
+                if result.updated and result.phase_timings is None:
+                    result.phase_timings = {"run": time.monotonic() - update_started}
+            finally:
+                _release_lock(path)
+            result.alias = alias
+            result.first_time_indexed = first_time and result.updated
+
+            if result.updated and new_head:
+                _write_repo_state(path, alias, new_head, first_time, result)
+                # Keep the DB freshness stamp in lockstep with last_sync_commit.
+                # The no-relevant-changes incremental path returns updated=True
+                # without re-running DB persistence, so the row would otherwise
+                # lag HEAD; a no-op when persistence already stamped it.
+                await reconcile_repo_head_commit(path, new_head)
+                # Drop any stale pending marker now that we've advanced to
+                # new_head (a bailed sibling update may have written one).
+                clear_stale_update_pending(path, new_head)
+
+            # Update workspace config entry
+            if result.updated:
+                entry = update_pass.ws_config.get_repo(alias)
+                if entry is not None:
+                    entry.indexed_at = datetime.now(UTC).isoformat()
+                    entry.last_commit_at_index = new_head
+        except Exception as exc:
+            result = RepoUpdateResult(
+                alias=alias,
+                updated=False,
+                error=str(exc),
             )
-            if result.updated and result.phase_timings is None:
-                result.phase_timings = {"run": time.monotonic() - update_started}
-        finally:
-            _release_lock(path)
-        result.alias = alias
-        result.first_time_indexed = first_time and result.updated
-
-        if result.updated and new_head:
-            _write_repo_state(path, alias, new_head, first_time, result)
-            # Keep the DB freshness stamp in lockstep with last_sync_commit.
-            # The no-relevant-changes incremental path returns updated=True
-            # without re-running DB persistence, so the row would otherwise
-            # lag HEAD; a no-op when persistence already stamped it.
-            await reconcile_repo_head_commit(path, new_head)
-            # Drop any stale pending marker now that we've advanced to
-            # new_head (a bailed sibling update may have written one).
-            clear_stale_update_pending(path, new_head)
-
-        # Update workspace config entry
-        if result.updated:
-            entry = update_pass.ws_config.get_repo(alias)
-            if entry is not None:
-                entry.indexed_at = datetime.now(UTC).isoformat()
-                entry.last_commit_at_index = new_head
 
         if update_pass.on_repo_done:
-            update_pass.on_repo_done(result)
+            try:
+                update_pass.on_repo_done(result)
+            except Exception as exc:
+                # Do not retry a callback that may already have emitted output.
+                # Keep the original update error if reporting it also failed.
+                _log.warning("Workspace update callback failed for %s", alias, exc_info=True)
+                if result.error is None:
+                    result = RepoUpdateResult(alias=alias, updated=False, error=str(exc))
 
         return result
 
@@ -433,6 +447,10 @@ def _collect_update_results(
     results: list[RepoUpdateResult],
 ) -> list[str]:
     """Append each gathered result to *results*; return the updated aliases."""
+    for r in update_results:
+        if isinstance(r, BaseException) and not isinstance(r, Exception):
+            raise r
+
     changed_aliases: list[str] = []
     for r in update_results:
         if isinstance(r, Exception):

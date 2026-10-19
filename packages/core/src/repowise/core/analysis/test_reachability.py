@@ -34,7 +34,7 @@ source file references it, which is real evidence and a much cruder one. A test
 importing a module pulls in every symbol the module defines while the test body
 may touch one function.
 
-Measured against a real ``coverage run --contexts=test`` on this repository,
+Measured against real per-test coverage on this repository,
 over the slice where per-test attribution is complete and both sides see the
 same 37 test files (159 production files provably executed):
 
@@ -942,25 +942,32 @@ async def _imported_names(
     session: AsyncSession, repo_id: str, targets: list[str]
 ) -> list[tuple[str, str, frozenset[str]]]:
     """``(importer, imported file, names)`` for every import edge into *targets*."""
-    params: dict[str, Any] = {"repo_id": repo_id}
-    tgt = _in_clause("p", targets, params)
-    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), params)
-    rows = await session.execute(
-        text(
-            "SELECT source_node_id, target_node_id, imported_names_json FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets})"
-        ),
-        params,
-    )
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), shared)
+    targets = list(dict.fromkeys(targets))
     out = []
-    for source, target, names_json in rows:
-        try:
-            names = json.loads(names_json or "[]")
-        except (TypeError, ValueError):
-            names = []
-        out.append((source, target, frozenset(n for n in names if isinstance(n, str))))
+    for start in range(0, len(targets), _IN_BATCH):
+        params = dict(shared)
+        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT source_node_id, target_node_id, imported_names_json FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets})"
+            ),
+            params,
+        )
+        out.extend((source, target, _names_of(names_json)) for source, target, names_json in rows)
     return out
+
+
+def _names_of(names_json: str | None) -> frozenset[str]:
+    """The names an import edge records; unreadable JSON records none."""
+    try:
+        names = json.loads(names_json or "[]")
+    except (TypeError, ValueError):
+        return frozenset()
+    return frozenset(n for n in names if isinstance(n, str))
 
 
 @dataclass(frozen=True)
@@ -1128,24 +1135,34 @@ def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:
     return ",".join(f":{prefix}{i}" for i in range(len(values)))
 
 
+#: Values one ``IN`` list binds. SQLite refuses a statement with more variables
+#: than SQLITE_MAX_VARIABLE_NUMBER (999 before 3.32, 32766 after), and the lists
+#: below are a change's files or every file and symbol of a repository.
+_IN_BATCH = 500
+
+
 async def _edges_from(
     session: AsyncSession, repo_id: str, sources: list[str], edge_types: list[str]
 ) -> list[tuple[str, str]]:
     """``(source, target)`` pairs leaving *sources* along *edge_types*."""
-    if not sources:
-        return []
-    params: dict[str, Any] = {"repo_id": repo_id}
-    src = _in_clause("s", sources, params)
-    ets = _in_clause("e", edge_types, params)
-    rows = await session.execute(
-        text(
-            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
-        ),
-        params,
-    )
-    return [(s, t) for s, t in rows]
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", edge_types, shared)
+    out: list[tuple[str, str]] = []
+    # Each source is in one batch only, so a pair is distinct across batches too.
+    sources = list(dict.fromkeys(sources))
+    for start in range(0, len(sources), _IN_BATCH):
+        params = dict(shared)
+        src = _in_clause("s", sources[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
+            ),
+            params,
+        )
+        out.extend((s, t) for s, t in rows)
+    return out
 
 
 async def _edges_into(
@@ -1162,27 +1179,31 @@ async def _edges_into(
     loading every row, and the two walks should not disagree about how they read
     it.
     """
-    if not targets:
-        return []
-    params: dict[str, Any] = {"repo_id": repo_id}
-    tgt = _in_clause("p", targets, params)
-    ets = _in_clause("e", edge_types, params)
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", edge_types, shared)
     origin_filter = ""
     if excluded_origins:
         # NULL means the row predates the vocabulary, not "unknown", so it has
         # to survive the filter, and a bare NOT IN would drop it.
-        bad = _in_clause("o", sorted(excluded_origins), params)
+        bad = _in_clause("o", sorted(excluded_origins), shared)
         origin_filter = f" AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad}))"
-    rows = await session.execute(
-        text(
-            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
-            f"{_LEGACY_CONFTEST_FILTER}"
-        ),
-        params,
-    )
-    return [(s, t) for s, t in rows]
+    out: list[tuple[str, str]] = []
+    # Each target is in one batch only, so a pair is distinct across batches too.
+    targets = list(dict.fromkeys(targets))
+    for start in range(0, len(targets), _IN_BATCH):
+        params = dict(shared)
+        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
+                f"{_LEGACY_CONFTEST_FILTER}"
+            ),
+            params,
+        )
+        out.extend((s, t) for s, t in rows)
+    return out
 
 
 def rank_tests(target: str, tests: Collection[str]) -> list[str]:

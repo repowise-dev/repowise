@@ -91,8 +91,10 @@ async def find_suspects(
     *until* defaults to the symptom time, else now; *since* to 14 days before it.
     """
     from repowise.core.attribution import attribution_enabled
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
     from repowise.core.persistence.crud import get_co_change_partners, list_changes
     from repowise.core.persistence.crud.changes import ChangeFilter
+    from repowise.core.repo_config import load_repo_config
 
     repo_path = Path(repo_path)
     until = _aware(until or symptom.at or datetime.now(UTC))
@@ -104,8 +106,12 @@ async def find_suspects(
     rows = [r for r in rows if r.merged_at is not None]
     window = {"since": since.isoformat(), "until": until.isoformat()}
     if not rows:
-        return {"window": window, "candidates": 0, "suspects": [], "note": NOTE}
+        return {
+            "window": window, "candidates": 0, "candidates_capped": False,
+            "suspects": [], "note": NOTE,
+        }
 
+    commit_limit = int(load_repo_config(repo_path).get("commit_limit") or 0) or _DEFAULT_COMMIT_LIMIT
     files_of = {
         r.change_id: tuple(f["path"] for f in json.loads(r.files_json or "[]")) for r in rows
     }
@@ -144,6 +150,7 @@ async def find_suspects(
     return {
         "window": window,
         "candidates": len(candidates),
+        "candidates_capped": len(rows) >= commit_limit,
         # Changes git could not read: ranked on their title and files alone.
         "texts_missing": sum(1 for r in rows if r.head_sha not in texts),
         "symptom_files": list(named),
