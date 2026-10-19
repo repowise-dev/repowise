@@ -24,25 +24,35 @@ from dataclasses import dataclass
 import structlog
 
 from .concept_tree.vocabulary import HouseTerm, phrase_pattern, term_words
+from .declared_glossary import DeclaredTerm, declared_avoid_index, phrase_key
 
 log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
 class SelectedTerm:
-    """One mined term that earned a place on a page."""
+    """One term that earned a place on a page.
+
+    Mined by default. A term from a glossary the team authored carries
+    ``status="declared"`` instead, and is the authority on how the thing is
+    named: the whole point of the declared half is that a person wrote it down.
+    """
 
     term: str
     #: The repository's own sentence, or ``None``. Never invented — a term the
     #: repository named without defining is still a term, and writing a
     #: definition for it is the one thing the vocabulary miner refuses to do.
+    #: For a declared term this is the team's own sentence instead, quoted for
+    #: the same reason and never paraphrased.
     definition: str | None
     #: The document or source file the sentence was read from, falling back to
     #: the first document that named the term. Always a real path.
     source_path: str
     #: How many parts of the system name it. The strength of the corroboration
     #: rather than a fact about the repository, so it ranks and it logs; the
-    #: overview does not render it.
+    #: overview does not render it. Zero on a declared term that is not in the
+    #: code yet, which is the signal rather than a defect: a word the team
+    #: decided on before the code caught up.
     corroborating_pages: int
     #: Whether the codebase defines a symbol by this name. A term that is also
     #: a symbol may be rendered in backticks; a coined one may not, because the
@@ -57,6 +67,19 @@ class SelectedTerm:
     #: when it is not semantically adequate to publish as the definition.
     definition_evidence: str | None = None
     definition_evidence_source: str | None = None
+    #: ``"declared"`` when a person wrote this term down as canonical, else
+    #: ``"mined"``. The distinction is carried onto the page rather than
+    #: inferred from which list a row came out of.
+    status: str = "mined"
+    #: The synonyms the team marked wrong for this concept, as written.
+    avoid: tuple[str, ...] = ()
+    #: The bounded context the term belongs to, or ``None`` for a repository
+    #: that declares one vocabulary for the whole tree.
+    context: str | None = None
+    #: Set on a mined term whose phrase the declared glossary avoids: the
+    #: canonical term to use instead. Demoted, never deleted — it is evidence
+    #: the code says one thing and the team another.
+    demoted_by: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -245,13 +268,145 @@ def clamp(text: str, limit: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _corroborated(
+    term: str,
+    *,
+    titles: Sequence[str],
+    corpus: Sequence[str],
+    folded: Sequence[str],
+) -> tuple[str, ...]:
+    """The module groups whose titles/summaries name *term*, sorted."""
+    # Sorted, not in corpus order. Everything else this function returns is
+    # derived only from its inputs' *contents*, and a field that reordered
+    # with the corpus would make two runs over an unchanged repository
+    # disagree whenever module grouping shuffled.
+    words = term_words(term)
+    if not words:
+        return ()
+    # ASCII only. ``str.lower()`` and ``re.I`` disagree on a few code points —
+    # "İ".lower() is two characters — so on a non-ASCII lead word the cheap
+    # test can reject a pair the regex would have matched. Those terms skip
+    # the prefilter and pay the regex.
+    lead = words[0].lower() if words[0].isascii() else None
+    pattern = phrase_pattern(term)
+    return tuple(
+        sorted(
+            titles[i]
+            for i, entry in enumerate(corpus)
+            if (lead is None or lead in folded[i]) and pattern.search(entry)
+        )
+    )
+
+
+def corroboration_corpus(module_names: Iterable[str]) -> tuple[list[str], list[str], list[str]]:
+    """``(titles, corpus, folded)`` — the pre-computed form the helpers take.
+
+    Three lists rather than one because the prefilter and the regex read
+    different spellings of the same corpus, and recomputing them per term is
+    the expensive part of a selection that runs over every term on every page.
+    """
+    corpus = [name for name in module_names if name]
+    # Each entry is a group's title followed by its summary, so the first line
+    # is the group's name — what to call the place a term turned up.
+    titles = [entry.split("\n", 1)[0].strip() for entry in corpus]
+    # The regex is the expensive part and nearly every (term, group) pair is a
+    # miss, so a substring test on the term's first word rejects most pairs
+    # before it runs. The same trick is what made the miner itself 3.3× faster.
+    folded = [entry.lower() for entry in corpus]
+    return titles, corpus, folded
+
+
+def select_declared_terms(
+    declared: Sequence[DeclaredTerm],
+    module_names: Iterable[str],
+    house_terms: Sequence[HouseTerm] = (),
+) -> list[SelectedTerm]:
+    """Every term the team declared, each with whatever corroboration it has.
+
+    The carve-out the DDD framing asks for, and the one rule that separates
+    this from the mined path: **a declared term is never dropped for lack of
+    corroboration.** ``select_terms`` gates on the structure — bind-or-drop is
+    right for vocabulary a document invented and the code never confirmed — but
+    a word a person wrote down and the code has not caught up to yet is a
+    signal, not noise. It reaches the page carrying ``corroborating_pages == 0``
+    and renders as "not yet in code".
+
+    Corroboration is still computed, because "where is this used" is a column a
+    reader acts on and a declared term that *is* in the code should say where.
+
+    The definition is the team's own sentence, quoted. It is not put through
+    :func:`is_definition`: that test exists to separate a sentence about a term
+    from the shell fragment nearest to it in mined prose, and applying it to a
+    `CONTEXT.md` would delete perfectly good one-line definitions for being
+    terse. The author is the authority on what their sentence means.
+    """
+    titles, corpus, folded = corroboration_corpus(module_names)
+    #: Mined terms, by phrase, so a declared term can take the symbol flag the
+    #: miner already worked out for the same phrase.
+    mined_by_key: dict[str, HouseTerm] = {}
+    for term in house_terms:
+        mined_by_key.setdefault(phrase_key(term.term), term)
+
+    selected: list[SelectedTerm] = []
+    for declared_term in declared:
+        corroboration = _corroborated(
+            declared_term.term, titles=titles, corpus=corpus, folded=folded
+        )
+        mined = mined_by_key.get(phrase_key(declared_term.term))
+        selected.append(
+            SelectedTerm(
+                term=declared_term.term,
+                definition=declared_term.definition,
+                # Always a real path: the glossary file itself. A declared term
+                # needs no document to have named it — the team named it.
+                source_path=declared_term.source_path,
+                corroborating_pages=len(corroboration),
+                is_indexed_symbol=bool(mined and mined.is_indexed_symbol),
+                corroborating_names=corroboration,
+                # No evidence fallback: the definition is the team's sentence,
+                # and there is nothing the miner found that should stand behind
+                # or beside it.
+                definition_evidence=None,
+                definition_evidence_source=None,
+                status="declared",
+                avoid=declared_term.avoid,
+                context=declared_term.context,
+            )
+        )
+    if selected:
+        log.info(
+            "house_vocabulary.declared_selected",
+            declared=len(declared),
+            kept=len(selected),
+            sources=sorted({t.source_path for t in selected}),
+            terms=[t.term for t in selected[:12]],
+        )
+    return selected
+
+
 def select_terms(
     house_terms: Sequence[HouseTerm],
     module_names: Iterable[str],
     *,
     limit: int | None = None,
+    declared: Sequence[DeclaredTerm] = (),
 ) -> list[SelectedTerm]:
-    """The mined terms worth publishing, in the order they go on a page.
+    """The terms worth publishing, in the order they go on a page.
+
+    Three rules, in order of who is the authority:
+
+    1. **A declared term is the canonical word.** It leads the page, it is
+       never dropped for lack of corroboration (see
+       :func:`select_declared_terms`), and a mined term spelling the same
+       phrase is folded into it rather than listed a second time under a
+       different status.
+    2. **A mined term whose phrase the glossary marks ``_Avoid_`` is demoted.**
+       Kept, not deleted, and ranked last with ``demoted_by`` naming the word
+       to use instead: the row is evidence that the code says one thing and the
+       team agreed on another, and silently dropping it is how a glossary
+       becomes something nobody can audit.
+    3. **Everything else is mined**, selected by structural corroboration
+       exactly as before.
 
     Ranked by document frequency alone the mined terms are not publishable: on
     this repository the top of that list holds the repository's own name,
@@ -298,28 +453,21 @@ def select_terms(
     # before it runs. The same trick is what made the miner itself 3.3× faster.
     folded = [entry.lower() for entry in corpus]
 
+    declared_terms = select_declared_terms(declared, module_names, house_terms)
+    declared_keys = {phrase_key(term.term) for term in declared_terms}
+    avoided = declared_avoid_index(declared)
     selected: list[SelectedTerm] = []
+    demoted: list[SelectedTerm] = []
     for term in house_terms:
-        words = term_words(term.term)
-        if not words:
+        key = phrase_key(term.term)
+        if not key:
             continue
-        # ASCII only. ``str.lower()`` and ``re.I`` disagree on a few code
-        # points — "İ".lower() is two characters — so on a non-ASCII lead word
-        # the cheap test can reject a pair the regex would have matched. Those
-        # terms skip the prefilter and pay the regex.
-        lead = words[0].lower() if words[0].isascii() else None
-        pattern = phrase_pattern(term.term)
-        # Sorted, not in corpus order. Everything else this function returns is
-        # derived only from its inputs' *contents*, and a field that reordered
-        # with the corpus would make two runs over an unchanged repository
-        # disagree whenever module grouping shuffled.
-        matched = tuple(
-            sorted(
-                titles[i]
-                for i, entry in enumerate(corpus)
-                if (lead is None or lead in folded[i]) and pattern.search(entry)
-            )
-        )
+        if key in declared_keys:
+            # The same phrase, already on the page as the canonical word. One
+            # row per concept: listing both would present a choice the team
+            # already made.
+            continue
+        matched = _corroborated(term.term, titles=titles, corpus=corpus, folded=folded)
         hits = len(matched)
         if not hits:
             continue
@@ -354,31 +502,46 @@ def select_terms(
             # A term with no path at all cannot be cited, and an uncitable row
             # is the shape of claim this wiki does not make.
             continue
-        selected.append(
-            SelectedTerm(
-                term=term.term,
-                definition=definition,
-                source_path=source,
-                corroborating_pages=hits,
-                is_indexed_symbol=term.is_indexed_symbol,
-                corroborating_names=matched,
-                definition_evidence=definition_evidence,
-                definition_evidence_source=(
-                    term.definition_source if definition_evidence else None
-                ),
-            )
+        row = SelectedTerm(
+            term=term.term,
+            definition=definition,
+            source_path=source,
+            corroborating_pages=hits,
+            is_indexed_symbol=term.is_indexed_symbol,
+            corroborating_names=matched,
+            definition_evidence=definition_evidence,
+            definition_evidence_source=(
+                term.definition_source if definition_evidence else None
+            ),
+            demoted_by=avoided.get(key),
         )
+        (demoted if row.demoted_by else selected).append(row)
 
     selected.sort(key=lambda t: (len(term_words(t.term)) == 1, -t.corroborating_pages, t.term))
-    kept = selected if limit is None else selected[:limit]
+    demoted.sort(
+        key=lambda t: (len(term_words(t.term)) == 1, -t.corroborating_pages, t.term)
+    )
+    if demoted:
+        log.info(
+            "house_vocabulary.avoided_term_demoted",
+            count=len(demoted),
+            terms=[t.term for t in demoted[:12]],
+            canonical=sorted({t.demoted_by or "" for t in demoted}),
+        )
+    # Declared first, in the order the team wrote them; then the mined terms
+    # the structure confirmed; then whatever the glossary marks wrong. The
+    # order is the whole ranking rule, and it is total.
+    ranked = declared_terms + selected + demoted
+    kept = ranked if limit is None else ranked[:limit]
     log.info(
         "house_vocabulary.selected",
         mined=len(house_terms),
+        declared=len(declared_terms),
         corroborated=len(selected),
         kept=len(kept),
         terms=[t.term for t in kept[:12]],
     )
-    if house_terms and not selected:
+    if house_terms and not selected and not declared_terms:
         # The documents name things the structure does not. That is a real
         # answer about a repository — marketing vocabulary with no cluster
         # behind it — but it is also what a corroboration corpus arriving empty
@@ -390,3 +553,4 @@ def select_terms(
             module_names=len(corpus),
         )
     return kept
+

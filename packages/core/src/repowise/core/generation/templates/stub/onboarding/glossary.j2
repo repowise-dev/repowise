@@ -1,36 +1,66 @@
 {#- The glossary. Deterministic on every run, not only under --no-prose.
 
-    Every cell is mined: the term, the repository's own sentence about it, the
-    parts of the system that name it, and the document the sentence came from.
-    There is nothing here for a model to add that would not be an invention,
-    and this is the page where an invented definition does the most damage —
-    the reader consults it precisely because they cannot check the answer.
+    Every cell is mined or written by the team: the term, the sentence about it,
+    the parts of the system that name it, and the document it came from. There
+    is nothing here for a model to add that would not be an invention, and this
+    is the page where an invented definition does the most damage — the reader
+    consults it precisely because they cannot check the answer.
+
+    Two tables when the repository has declared a glossary. The team's own
+    terms come first and carry the columns that only a declared term can have
+    (Avoid, Context, Status); the mined terms follow in the table this page has
+    always rendered. With no declared glossary the second table is the whole
+    page, byte for byte as before.
 
     The spec sets ``deterministic=True``, so the prompt template that every
     other subkind has does not exist for this one; this file is the page.
 -#}
 # Glossary
 
+{% if ctx.declared -%}
+{{ ctx.entries | length }} terms `{{ ctx.repo_name }}` uses for itself. {{ ctx.declared }} of them were declared by the team in a glossary they author, and those are the authority on naming; the rest are read from the repository's own documentation. Every definition is a sentence someone wrote, quoted rather than written — a term nobody defined is left blank rather than filled in.
+{%- else -%}
 {{ ctx.entries | length }} term{{ "s" if ctx.entries | length != 1 else "" }} `{{ ctx.repo_name }}` uses for itself, read from its own documentation. Each definition is the repository's own sentence, quoted rather than written — a term the repository names without defining is left blank rather than filled in.
+{%- endif %}
+
+{% if ctx.declared -%}
+## Declared terms (the authority on naming)
+
+| Canonical | What it is | Avoid | Context | Where it is used | Written in |
+|---|---|---|---|---|---|
+{% for e in ctx.entries if e.status == "declared" -%}
+{#- oneline before table_cell: truncating after escaping can cut a ``\|`` in
+    half and leave the backslash orphaned at the end of the cell. -#}
+| **{{ e.term | table_cell }}** | {% if e.definition %}{{ e.definition | oneline(220) | table_cell }}{% else %}—{% endif %} | {% if e.avoid %}{{ e.avoid | map("table_cell") | join(", ") }}{% else %}—{% endif %} | {% if e.context %}{{ e.context | table_cell }}{% else %}—{% endif %} | {% if e.used_in %}{{ e.used_in | map("table_cell") | join(" · ") }}{% else %}not yet in code{% endif %} | `{{ e.source_path | table_cell }}` |
+{% endfor %}
+{%- if ctx.not_yet_in_code %}
+{{ ctx.not_yet_in_code }} of these {{ "term carries" if ctx.not_yet_in_code == 1 else "terms carry" }} no corroboration from the code yet. They are kept on purpose: a word the team agreed on and the codebase has not caught up to is the gap worth seeing, not a row to drop.
+{% endif %}
+{%- if ctx.demoted %}
+{{ ctx.demoted }} term{{ "s" if ctx.demoted != 1 else "" }} below are marked _avoid_ by this glossary. They are listed rather than removed because they are where the code and the glossary disagree, and the row says which word to use instead.
+{% endif %}
+{% endif -%}
+{% if ctx.entries | selectattr("status", "equalto", "mined") | list %}
+## Terms the repository uses
+
+{% if ctx.declared %}Mined from `{{ ctx.repo_name }}`'s own documents and admitted only where the codebase's structure names the term too.{% else %}Every row is read from `{{ ctx.repo_name }}`'s own documents.{% endif %}
 
 | Term | What the repository says it is | Where it is used | Written in |
 |---|---|---|---|
-{% for e in ctx.entries -%}
-{#- oneline before table_cell: truncating after escaping can cut a ``\|`` in
-    half and leave the backslash orphaned at the end of the cell. -#}
-| {% if e.is_indexed_symbol %}`{{ e.term | table_cell }}`{% else %}**{{ e.term | table_cell }}**{% endif %} | {% if e.definition %}{{ e.definition | oneline(220) | table_cell }}{% else %}—{% endif %} | {% if e.used_in %}{{ e.used_in | map("table_cell") | join(" · ") }}{% else %}—{% endif %} | `{{ e.source_path | table_cell }}` |
+{% for e in ctx.entries if e.status == "mined" -%}
+| {% if e.is_indexed_symbol %}`{{ e.term | table_cell }}`{% else %}**{{ e.term | table_cell }}**{% endif %}{% if e.demoted_by %} (use `{{ e.demoted_by | table_cell }}`){% endif %} | {% if e.definition %}{{ e.definition | oneline(220) | table_cell }}{% else %}—{% endif %} | {% if e.used_in %}{{ e.used_in | map("table_cell") | join(" · ") }}{% else %}—{% endif %} | `{{ e.source_path | table_cell }}` |
 {% endfor %}
-
+{% endif %}
 ## Where these came from
 
-{{ ctx.defined }} of {{ ctx.entries | length }} term{{ "s" if ctx.entries | length != 1 else "" }} carry a definition the repository wrote. They were read from:
+{{ ctx.defined }} of {{ ctx.entries | length }} term{{ "s" if ctx.entries | length != 1 else "" }} carry a definition someone wrote. They were read from:
 
 {% for path in ctx.sources -%}
 - `{{ path }}`
 {% endfor %}
 
 {% if ctx.mined > ctx.corroborated %}
-{{ ctx.mined }} candidate terms were mined in all, and {{ ctx.corroborated }} survived. A term reaches this page only when the codebase's own structure names it too — the parts of the system in the third column are grouped from the dependency graph, with no knowledge of the documents — so vocabulary the documentation uses without the code confirming it is left off.
+{{ ctx.mined }} candidate terms were mined in all, and {{ ctx.corroborated }} survived. A term reaches this page only when the codebase's own structure names it too — the parts of the system in the third column are grouped from the dependency graph, with no knowledge of the documents — so vocabulary the documentation uses without the code confirming it is left off{% if ctx.declared %}, unless the team declared it{% endif %}.
 {% endif %}
 {% if ctx.corroborated > ctx.entries | length %}
 The {{ ctx.entries | length }} most corroborated are listed; {{ ctx.corroborated - ctx.entries | length }} more were left off for length.
@@ -47,5 +77,6 @@ The {{ ctx.entries | length }} most corroborated are listed; {{ ctx.corroborated
 ---
 
 *Every term, definition and path on this page is quoted from the repository's
-own documents. Nothing here is written by a model, so two builds of an
-unchanged repository produce this page byte for byte.*
+own documents, or written by the team in its own glossary. Nothing here is
+written by a model, so two builds of an unchanged repository produce this page
+byte for byte.*

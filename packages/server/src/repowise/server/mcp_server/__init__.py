@@ -63,6 +63,7 @@ _TOOL_MODULES: dict[str, str] = {
     "get_dead_code": "tool_dead_code",
     "get_dependency_path": "tool_dependency",
     "get_execution_flows": "tool_flows",
+    "get_glossary": "tool_glossary",
     "get_health": "tool_health",
     "get_overview": "tool_overview",
     "get_risk": "tool_risk",
