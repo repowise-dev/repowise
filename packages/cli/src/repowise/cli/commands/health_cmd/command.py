@@ -588,7 +588,7 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
     console.print(
         f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
         f"{production_str}"
-        f"Hotspot:[bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
+        f"Hotspot: [bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
         f"Worst: [bold]{kpis.get('worst_performer_score') or '?'}[/bold]/10 "
         f"({kpis.get('worst_performer_path') or 'n/a'})"
     )

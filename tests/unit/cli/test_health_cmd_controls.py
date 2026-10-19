@@ -192,6 +192,7 @@ def test_the_headline_names_production_code_while_tests_are_in_it() -> None:
         return console.file.getvalue()
 
     base = {"average_health": 8.0, "production_average": 6.0, "file_count": 2}
-    assert "Production code: 6.0/10" in headline(**base, production_file_count=1)
+    assert "Production code: 6.0/10 · Hotspot: ?/10" in headline(**base, production_file_count=1)
     # Narrowed to production, the two figures are one.
-    assert "Production code" not in headline(**base, production_file_count=2)
+    narrowed = headline(**base, production_file_count=2)
+    assert "Production code" not in narrowed and "Hotspot: ?/10" in narrowed
