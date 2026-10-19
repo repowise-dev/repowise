@@ -183,9 +183,6 @@ class RevisionHealthAnalyzer:
         return builder.build()
 
 
-<<<<<<< HEAD
-def _file_info(path: str, language: str, raw: bytes, roots: PytestRoots | None = None) -> FileInfo:
-=======
 def _index_kwargs(index: IndexInputs) -> dict[str, Any]:
     return {
         "git_meta_map": index.git_meta,
@@ -195,8 +192,7 @@ def _index_kwargs(index: IndexInputs) -> dict[str, Any]:
     }
 
 
-def _file_info(path: str, language: str, raw: bytes) -> FileInfo:
->>>>>>> origin/main
+def _file_info(path: str, language: str, raw: bytes, roots: PytestRoots | None = None) -> FileInfo:
     """A FileInfo whose ``abs_path`` is the repo-relative key.
 
     The health pass reads every byte through the injected source reader, which
