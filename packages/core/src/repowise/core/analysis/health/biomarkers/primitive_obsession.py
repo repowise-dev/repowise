@@ -9,8 +9,10 @@ Constructors get a small grace allowance — wide dataclass-style ctors are an
 idiomatic pattern, not a smell. A constructor is known by its node kind or by
 carrying its type's name, so a Java or C# constructor gets it too.
 
-Two narrowings keep the finding to signatures someone can actually fix:
+These narrowings keep the finding to signatures someone can actually fix:
 
+- Test material is skipped. Its wide signatures are fixture builders and
+  fakes shaped by the code under test.
 - A signature set by another declaration is skipped: an override, an
   interface or trait implementation, a native binding. Its parameters belong
   to the base method, the interface or the foreign ABI, and an SPI hook with
@@ -19,18 +21,15 @@ Two narrowings keep the finding to signatures someone can actually fix:
   scalars or strings. A wide list of rich domain types is already the value
   objects this smell asks for. Untyped parameters are left out of that
   majority, and a wholly untyped signature (unannotated Python or JavaScript)
-  is judged on the count alone, as before.
+  is judged on the count alone.
 - A parameter a framework binds by annotation (``@PathVariable``) is the
   route's or the data format's, so only the remaining ones are counted.
 
 A wide signature only counts as obsession in a file with enough substance to
 *have* a design (`_MIN_FILE_NLOC`). In a tiny module a long parameter list is
 almost always an idiomatic config/builder/forwarder entry point rather than a
-value object that wants extracting — and an empirical defect-prediction analysis
-across a 13-repo corpus confirmed the firing is anti-predictive there (it flags
-clean small utility files), inverting discrimination on the small-file size
-band. The floor keeps the smell where it carries signal without touching its
-scoring weight; larger modules and the per-function param logic are unchanged.
+value object that wants extracting, and on a 13-repo defect corpus the firing
+there was anti-predictive.
 """
 
 from __future__ import annotations
@@ -41,10 +40,7 @@ from .base import BiomarkerResult, FileContext
 
 _PARAM_THRESHOLD = 5
 _CTOR_GRACE = 2  # constructors get +2 free params before the smell trips
-# A wide signature in a module below this many non-blank lines is idiomatic
-# (config/builder/DTO), not a design smell — empirically anti-predictive of
-# defects on small files. Tuned on the defect benchmark's small-file size band.
-_MIN_FILE_NLOC = 60
+_MIN_FILE_NLOC = 60  # see the module docstring
 
 
 class PrimitiveObsessionDetector:
@@ -52,7 +48,7 @@ class PrimitiveObsessionDetector:
     category = "size_and_complexity"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if ctx.nloc < _MIN_FILE_NLOC:
+        if ctx.nloc < _MIN_FILE_NLOC or ctx.is_test_material:
             return []
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:

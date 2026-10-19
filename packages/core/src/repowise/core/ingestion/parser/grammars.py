@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
@@ -71,7 +72,6 @@ def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | 
     if err is not None:
         log.warning("Failed to compile query", language=lang, error=err)
     return query
-
 
 
 # Languages that intentionally have no AST parser.  Derived from the
@@ -267,3 +267,110 @@ def _parse_tree(
                 grammar_tag = "tsx"
                 language = tsx_language
     return root, parse_errors, grammar_tag, language
+
+
+# Kotlin modifier words a declaration may carry between its annotations and its
+# keyword. tree-sitter-kotlin also accepts most of them as identifiers, which is
+# what lets ``private fun f() {}`` read as an infix call.
+_KOTLIN_MODIFIER_WORDS = (
+    "public|private|internal|protected|abstract|open|final|sealed|data|enum|annotation|"
+    "inner|value|inline|noinline|crossinline|tailrec|operator|infix|external|suspend|"
+    "override|lateinit|const|vararg|expect|actual|companion|fun"
+)
+_KOTLIN_DECLARATION_HEAD = re.compile(
+    rb"(?:(?:" + _KOTLIN_MODIFIER_WORDS.encode() + rb")\s+)*"
+    rb"(?:fun|class|interface|object|val|var)\b"
+)
+
+
+def _kotlin_leading_annotations(top: Node) -> tuple[list[Node], Node | None]:
+    """Return annotations leading a top-level expression and the node after them."""
+    node = top
+    if (
+        node.type == "assignment"
+        and node.children
+        and node.children[0].type == "annotated_expression"
+    ):
+        node = node.children[0]
+
+    annotations: list[Node] = []
+    while node is not None and node.type == "annotated_expression":
+        annotations.extend(c for c in node.children if c.type == "annotation")
+        node = next(
+            (
+                c
+                for c in node.children
+                if c.is_named and c.type not in ("annotation", "line_comment", "block_comment")
+            ),
+            None,
+        )
+
+    return (annotations, node) if annotations and node is not None else ([], None)
+
+
+def _blank_kotlin_annotations(source: bytes, annotations: list[Node]) -> bytes:
+    """Blank annotation bytes while preserving newlines and byte offsets."""
+    blanked = bytearray(source)
+    for node in annotations:
+        for i in range(node.start_byte, node.end_byte):
+            if blanked[i] not in (0x0A, 0x0D):
+                blanked[i] = 0x20
+    return bytes(blanked)
+
+
+def _recover_kotlin_annotated_declarations(
+    language: Language,
+    root: Node,
+    source: bytes,
+) -> tuple[Node, bytes, dict[int, tuple[int, str]]]:
+    """Re-parse top-level Kotlin declarations hidden by multi-annotation expressions."""
+    found: list[tuple[list[Node], Node]] = []
+
+    for top in root.children:
+        if top.type not in ("annotated_expression", "assignment"):
+            continue
+
+        annotations, rest = _kotlin_leading_annotations(top)
+        if rest is None:
+            continue
+
+        head = source[rest.start_byte : rest.start_byte + 160]
+        if _KOTLIN_DECLARATION_HEAD.match(head):
+            found.append((annotations, rest))
+
+    if not found:
+        return root, source, {}
+
+    blanked = _blank_kotlin_annotations(
+        source,
+        [annotation for annotations, _ in found for annotation in annotations],
+    )
+    new_root = Parser(language).parse(blanked).root_node
+
+    # Keep the original parse if blanking makes it worse.
+    if len(_collect_error_nodes(new_root)) > len(_collect_error_nodes(root)):
+        return root, source, {}
+
+    by_start = {child.start_byte: child for child in new_root.children}
+    recovered: dict[int, tuple[int, str]] = {}
+
+    for annotations, rest in found:
+        first = min(annotations, key=lambda annotation: annotation.start_byte)
+        end = max(annotation.end_byte for annotation in annotations)
+
+        decl = by_start.get(rest.start_byte)
+        modifiers = (
+            next((child for child in decl.children if child.type == "modifiers"), None)
+            if decl
+            else None
+        )
+        if modifiers is not None:
+            end = max(end, modifiers.end_byte)
+
+        text = source[first.start_byte : end].decode("utf-8", errors="replace")
+        recovered[rest.start_point[0] + 1] = (
+            first.start_point[0] + 1,
+            text,
+        )
+
+    return new_root, blanked, recovered

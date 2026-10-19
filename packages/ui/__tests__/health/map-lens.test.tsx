@@ -17,9 +17,16 @@ import {
 } from "../../src/health/code-health-map.js";
 import { MapFieldList } from "../../src/health/map/inspector.js";
 import { buildScene, groupBatches } from "../../src/health/map/paint.js";
-import { layoutField } from "../../src/health/map/layout.js";
+import { deriveAreaIndex } from "../../src/health/map/areas.js";
+import { layoutAreas, layoutFiles } from "../../src/health/map/area-layout.js";
 import { healthRampFill } from "../../src/health/tokens.js";
-import { mapFile as f, nodeAt, stubMapEnvironment } from "./map-test-utils.js";
+import { mapFile as f, nextFrame, nodeAt, stubMapEnvironment } from "./map-test-utils.js";
+
+/** The flat feed laid out as the map lays it out. */
+function placeAll(files: CodeHealthMapFile[]) {
+  const index = deriveAreaIndex(files);
+  return layoutFiles(files, index, layoutAreas(index));
+}
 
 beforeAll(stubMapEnvironment);
 
@@ -129,31 +136,20 @@ describe("batches", () => {
     f(`m${i % 3}/f${i}.py`, 20 + i, `m${i % 3}`, { score: i % 2 ? 9 : 3 }),
   );
 
-  it("groups the field by fill, so a frame is one fill per colour", () => {
-    const scene = buildScene(layoutField(files));
+  it("groups each host's files by fill, so a frame is one fill per colour per drawn disc", () => {
+    const scene = buildScene(placeAll(files));
     const fills = scene.nodes.map((n) => OVERLAY_SPECS.health.fill(n.file));
-    const batches = groupBatches(scene, fills, null, -1, () => false, () => [0, 0, 0]);
-    expect(batches).toHaveLength(new Set(fills).size);
+    const batches = groupBatches(scene, fills, null, () => false, () => [0, 0, 0]);
+    expect(batches).toHaveLength(scene.hosts.length * new Set(fills).size);
     expect(batches.reduce((n, b) => n + b.nodes.length, 0)).toBe(files.length);
-  });
-
-  it("spends opacity on focus alone, never on data", () => {
-    // A lens that also dimmed by burden left a reader unable to tell a quiet
-    // file from one sitting in an unfocused galaxy.
-    const scene = buildScene(layoutField(files));
-    const fills = scene.nodes.map((n) => OVERLAY_SPECS.health.fill(n.file));
-    expect(groupBatches(scene, fills, null, -1, () => false, () => [0, 0, 0]).every((b) => !b.faded)).toBe(true);
-    const focused = groupBatches(scene, fills, null, 0, () => false, () => [0, 0, 0]);
-    for (const b of focused) {
-      for (const i of b.nodes) expect(b.faded).toBe(scene.galaxyOf[i] !== 0);
-    }
+    for (const b of batches) for (const i of b.nodes) expect(scene.hostOfNode[i]).toBe(b.host);
   });
 
   it("pairs the old and new fill during a lens tween", () => {
-    const scene = buildScene(layoutField(files));
+    const scene = buildScene(placeAll(files));
     const health = scene.nodes.map((n) => OVERLAY_SPECS.health.fill(n.file));
     const perf = scene.nodes.map((n) => OVERLAY_SPECS.performance.fill(n.file));
-    const tween = groupBatches(scene, perf, health, -1, () => false, (c) => (c === perf[0] ? [1, 1, 1] : [0, 0, 0]));
+    const tween = groupBatches(scene, perf, health, () => false, (c) => (c === perf[0] ? [1, 1, 1] : [0, 0, 0]));
     expect(tween.reduce((n, b) => n + b.nodes.length, 0)).toBe(files.length);
     expect(new Set(tween.map((b) => `${b.from}|${b.to}`)).size).toBeGreaterThan(0);
   });
@@ -263,7 +259,7 @@ describe("what the field costs to draw", () => {
     const files = Array.from({ length: 300 }, (_, i) =>
       f(`core/f${i}.py`, 200 - (i % 150), i % 2 ? "core" : "ui"),
     );
-    const placed = layoutField(files).flatMap((g) => g.nodes.map((n) => n.file.file_path));
+    const placed = placeAll(files).nodes.map((n) => n.file.file_path);
     expect(placed).toHaveLength(300);
     expect(new Set(placed).size).toBe(300);
   });
@@ -280,11 +276,12 @@ describe("what the field costs to draw", () => {
 describe("the hover card", () => {
   const files = [f("core/deep/nested/alpha.py", 120, "core"), f("ui/beta.py", 60, "ui")];
 
-  it("opens at the pointer rather than in a corner of the canvas", () => {
+  it("opens at the pointer rather than in a corner of the canvas", async () => {
     // A card pinned to one corner makes every identification a round trip
     // across the field, and the pointer has usually left the node by the time
     // the eye gets back.
     const { getByTestId } = render(<CodeHealthMap files={files} />);
+    await nextFrame();
     fireEvent.mouseMove(getByTestId("map-canvas"), nodeAt(files, "core/deep/nested/alpha.py"));
     const card = getByTestId("map-hover-card");
     expect(card.textContent).toContain("alpha.py");
@@ -294,12 +291,13 @@ describe("the hover card", () => {
     expect(card.getAttribute("style")).toMatch(/left:/);
   });
 
-  it("closes when the pointer leaves the node, and tells the host", () => {
+  it("closes when the pointer leaves the node, and tells the host", async () => {
     const onHoverFile = vi.fn();
     const { getByTestId, queryByTestId } = render(
       <CodeHealthMap files={files} onHoverFile={onHoverFile} />,
     );
     const canvas = getByTestId("map-canvas");
+    await nextFrame();
     fireEvent.mouseMove(canvas, nodeAt(files, "ui/beta.py"));
     expect(queryByTestId("map-hover-card")).toBeInTheDocument();
     fireEvent.mouseMove(canvas, { clientX: 2, clientY: 2 });
@@ -311,46 +309,44 @@ describe("the hover card", () => {
 describe("keyboard", () => {
   const files = [f("core/a.py", 120, "core"), f("core/b.py", 60, "core"), f("ui/c.py", 40, "ui")];
 
-  it("reaches every file through one tab stop", () => {
+  it("reaches every area and file through one tab stop", () => {
     const onSelectFile = vi.fn();
-    const { getByRole, container, getByTestId } = render(
-      <CodeHealthMap files={files} onSelectFile={onSelectFile} />,
+    const onAreaChange = vi.fn();
+    const { getByRole, container, getByTestId, rerender } = render(
+      <CodeHealthMap files={files} onSelectFile={onSelectFile} onAreaChange={onAreaChange} area="" />,
     );
     // One focusable region for the whole field. Thousands of tab stops is not
     // navigation, and a canvas with none is not reachable.
     expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     const field = getByRole("group", { name: /Code health map/ });
+    // The cursor shows once the keys are used: right to ui, left back to core.
+    fireEvent.keyDown(field, { key: "ArrowRight" });
+    fireEvent.keyDown(field, { key: "ArrowLeft" });
+    expect(getByTestId("map-field").getAttribute("data-keyboard-cursor")).toBe("core"); // biggest first
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onAreaChange).toHaveBeenCalledWith("core");
 
-    fireEvent.keyDown(field, { key: "Enter" }); // into the first module
-    fireEvent.keyDown(field, { key: "ArrowRight" }); // second file in it
+    rerender(<CodeHealthMap files={files} onSelectFile={onSelectFile} onAreaChange={onAreaChange} area="core" />);
+    fireEvent.keyDown(field, { key: "ArrowRight" }); // second file in core
     expect(getByTestId("map-field").getAttribute("data-keyboard-cursor")).toBe("core/b.py");
     fireEvent.keyDown(field, { key: "Enter" });
     expect(onSelectFile).toHaveBeenCalledWith("core/b.py");
   });
 
   it("announces where the cursor is", () => {
-    const { getByRole, container } = render(<CodeHealthMap files={files} />);
+    const { getByRole, container } = render(<CodeHealthMap files={files} area="core" onAreaChange={vi.fn()} />);
     const field = getByRole("group", { name: /Code health map/ });
-    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.keyDown(field, { key: "ArrowRight" });
+    fireEvent.keyDown(field, { key: "ArrowLeft" });
     const live = container.querySelector('[aria-live="polite"]');
     expect(live?.textContent).toContain("core/a.py");
   });
 
-  it("Escape climbs back out to the modules", () => {
-    const { getByRole, queryByText, getByTestId } = render(<CodeHealthMap files={files} />);
-    const field = getByRole("group", { name: /Code health map/ });
-    fireEvent.keyDown(field, { key: "Enter" });
-    expect(queryByText("← Overview")).toBeInTheDocument();
-    fireEvent.keyDown(field, { key: "Escape" });
-    expect(getByTestId("map-field").hasAttribute("data-keyboard-cursor")).toBe(false);
-  });
-
   it("describes the field in words for a screen reader", () => {
     const { container } = render(<CodeHealthMap files={files} />);
-    expect(container.textContent).toMatch(/3 files drawn in \d+ groups/);
+    expect(container.textContent).toMatch(/3 files in 2 folders/);
   });
 });
-
 
 describe("the navigable list beside the field", () => {
   const files = [

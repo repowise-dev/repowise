@@ -160,6 +160,7 @@ def _file_signals_to_dict(s: FileSignals) -> dict:
         "lines_deleted_90d": s.lines_deleted_90d,
         "commit_count_90d": s.commit_count_90d,
         "age_days": s.age_days,
+        "history": s.history,
         "primary_owner_name": s.primary_owner_name,
         "primary_owner_commit_pct": s.primary_owner_commit_pct,
         "recent_owner_name": s.recent_owner_name,

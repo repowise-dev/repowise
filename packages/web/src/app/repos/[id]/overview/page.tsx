@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
 import { ApiClientError } from "@/lib/api/client";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { getActions } from "@/lib/api/actions";
 import { getProviders } from "@/lib/api/providers";
-import { getCommitsPage } from "@/lib/api/git";
+import { overviewAskSuggestions } from "@/lib/overview-ask";
 import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { QuickActionsWrapper } from "@/components/dashboard/quick-actions-wrapper";
 import { AskAnythingRow } from "@/components/overview/ask-anything-row";
@@ -39,10 +40,6 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
     return null;
   }
 }
-
-/** Rows shown in the activity section. Fetched server-side so the list is in
- *  the initial HTML instead of waterfalling in after paint. */
-const COMMIT_LIMIT = 6;
 
 /** The header's chips: language, branch, head commit, size and last sync. */
 function identityMeta(
@@ -82,9 +79,8 @@ export default async function OverviewPage({ params }: Props) {
 
   // Every fetch the page needs, in one wave, on the server. Nothing below
   // renders client-side: this is a static read, so a hydration boundary would
-  // only buy a slower first paint and worse indexability. The commits call
-  // replaces a client-side SWR fetch that used to waterfall in after paint.
-  const [summary, providers, commitsPage, actions] = await Promise.all([
+  // only buy a slower first paint and worse indexability.
+  const [summary, providers, actions] = await Promise.all([
     // Only a 404 means the repo is gone; any other failure reaches the route
     // error boundary instead of reading as "not found".
     getOverviewSummary(id).catch((err: unknown) => {
@@ -92,11 +88,11 @@ export default async function OverviewPage({ params }: Props) {
       throw err;
     }),
     safeFetch(() => getProviders()),
-    safeFetch(() => getCommitsPage(id, { sort: "date", limit: COMMIT_LIMIT })),
     safeFetch(() => getActions(id)),
   ]);
   if (!summary) notFound();
 
+  const tOverview = await getTranslations("overview");
   const { repo, stats, health, sync } = summary;
   const isFresh = stats.file_count === 0;
   const base = `/repos/${id}`;
@@ -148,24 +144,17 @@ export default async function OverviewPage({ params }: Props) {
 
   // Coupling and the language graph take the shared defaults; `chat` is absent
   // because this app answers that need with the ask box below instead of a
-  // route, and `settings`/`costs` exist here and are what the index-size and
-  // savings reads link to.
-  const routes: OverviewRoutes = {
-    base,
-    settings: `${base}/settings`,
-    costs: `${base}/costs`,
-  };
+  // route.
+  const routes: OverviewRoutes = { base, costs: `${base}/costs` };
 
   return (
     <OverviewBody
       summary={summary}
       routes={routes}
-      commits={commitsPage?.items ?? []}
-      totalNloc={totalNloc}
       LinkComponent={Link}
       slots={{
         header,
-        ask: <AskAnythingRow repoId={id} />,
+        ask: <AskAnythingRow repoId={id} suggestions={overviewAskSuggestions(summary, tOverview)} />,
         beforeExplore: <PublishOverviewSection repoId={id} />,
         // A server that predates actions returns 404; the page then keeps the
         // attention areas in their old place rather than showing an empty list.

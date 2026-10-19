@@ -26,10 +26,13 @@ from repowise.core.analysis.health.perf.opportunities import model_state
 from repowise.core.analysis.health.perf.serving import (
     PerformanceQuery,
     PlanLink,
+    area_facet,
     evidence_payload,
     fold_facets,
+    fold_scoped_facets,
     plan_link,
     rescope_summary,
+    scope_counts,
     serialize,
     summary_payload,
     unresolved_detail,
@@ -43,6 +46,7 @@ from repowise.core.persistence.crud import (
     list_evidence_for_opportunities,
     list_opportunity_evidence,
     list_performance_opportunities,
+    performance_area_counts,
     performance_facet_counts,
 )
 from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, unit_counts
@@ -63,6 +67,11 @@ class PerformancePage:
     counts: dict[str, Any] = field(default_factory=dict)
     #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
     gated: dict[str, dict] = field(default_factory=dict)
+    #: Causes per dashboard scope (``now``, ``production``, ``all``) before the
+    #: narrowing filters. Only with scoped facets.
+    scopes: dict[str, int] = field(default_factory=dict)
+    #: The query's causes by area (``serving.area_facet``). Only with scoped facets.
+    areas: dict[str, Any] = field(default_factory=dict)
 
 
 class PerformanceHealthService:
@@ -94,6 +103,9 @@ class PerformanceHealthService:
         evidence_per_item: int = 0,
         with_facets: bool = False,
         with_summary: bool = False,
+        row_decisions: bool = False,
+        scoped_facets: bool = False,
+        area_depth: int | None = None,
     ) -> PerformancePage:
         """One page and its plan links, plus whatever else the caller renders.
 
@@ -106,9 +118,13 @@ class PerformanceHealthService:
         every open opportunity, which is the only way to report the counts a
         filter control needs. It stays a single indexed aggregate over a table
         that already holds one row per cause rather than one per observation.
+
+        ``scoped_facets`` counts every facet inside the query's own scope
+        (its default-queue verdict and default states included), so the counts
+        sum to the rows; the agent surface keeps the unscoped counts.
         """
         judged = not (
-            query.default_queue
+            (query.default_queue or query.queue)
             and await any_unjudged(self._session, self._repository_id, "causes")
         )
         rows, total = await list_performance_opportunities(
@@ -124,7 +140,12 @@ class PerformanceHealthService:
         evidence = await self._evidence_for(rows, evidence_per_item)
         items = [
             {
-                **serialize(row, links[row.opportunity_id], summary=query.view == "summary"),
+                **serialize(
+                    row,
+                    links[row.opportunity_id],
+                    summary=query.view == "summary",
+                    decisions=row_decisions,
+                ),
                 **(
                     evidence_block(
                         evidence.get(row.opportunity_id, []), row.observations_total, 0
@@ -136,12 +157,23 @@ class PerformanceHealthService:
             for row in rows
         ]
         emitted = query.offset + len(items)
+        facets: dict[str, list[dict[str, Any]]] = {}
+        scopes: dict[str, int] = {}
+        areas: dict[str, Any] = {}
+        if with_facets and scoped_facets:
+            facets, scopes, areas = await self._scoped_facets(
+                query, judged=judged, area_depth=area_depth
+            )
+        elif with_facets:
+            facets = await self._facets(query)
         return PerformancePage(
             items=items,
             total=total,
             offset=query.offset,
             next_offset=emitted if emitted < total else None,
-            facets=await self._facets(query) if with_facets else {},
+            facets=facets,
+            scopes=scopes,
+            areas=areas,
             summary=await self.summary(query.contexts) if with_summary else {},
             counts=(
                 await unit_counts(
@@ -185,6 +217,46 @@ class PerformanceHealthService:
             public_id = None if plan is None else refactoring_plan_id(plan, self._repository)
             links[row.opportunity_id] = plan_link(row, plan, public_id)
         return links
+
+    async def _scoped_facets(
+        self, query: PerformanceQuery, *, judged: bool, area_depth: int | None = None
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], dict[str, Any]]:
+        """Facets counted inside the query's scope and area, each scope's size,
+        and the causes by area: one grouped aggregate and one per-file count."""
+        filters = query.store_filters(judged=judged)
+        grouped = await performance_facet_counts(
+            self._session,
+            self._repository_id,
+            file_paths=query.file_paths,
+            area_prefix=filters["area_prefix"],
+            include_unverified=self._include_unverified,
+            scoped=True,
+        )
+        by_file = await performance_area_counts(
+            self._session,
+            self._repository_id,
+            include_unverified=self._include_unverified,
+            **filters,
+        )
+        # The scope sizes describe the whole repository, so an opened area
+        # does not shrink the scope control; that needs the unnarrowed groups.
+        whole = (
+            grouped
+            if query.area is None
+            else await performance_facet_counts(
+                self._session,
+                self._repository_id,
+                file_paths=query.file_paths,
+                include_unverified=self._include_unverified,
+                scoped=True,
+            )
+        )
+        queue_judged = not await any_unjudged(self._session, self._repository_id, "causes")
+        return (
+            fold_scoped_facets(grouped, query, judged=judged),
+            scope_counts(whole, judged=queue_judged),
+            area_facet(by_file, base=query.area, depth=area_depth),
+        )
 
     async def _facets(self, query: PerformanceQuery) -> dict[str, list[dict[str, Any]]]:
         """Counts per filter value, each cross-filtered by the *other* filters."""

@@ -288,7 +288,7 @@ def test_every_request_filter_is_part_of_the_cache_key(make_repo):
     plain = DeltaRequest(str(repo.path), "HEAD")
     # repo_path and revspec reach the key through the service and the resolved pair.
     for field in dataclasses.fields(DeltaRequest):
-        if field.name in ("repo_path", "revspec"):
+        if field.name in ("repo_path", "revspec", "dependents"):
             continue
         narrowed = dataclasses.replace(plain, **{field.name: ("vendor/",)})
         assert service._cache_key(narrowed, pair) != service._cache_key(plain, pair), field.name
@@ -296,6 +296,9 @@ def test_every_request_filter_is_part_of_the_cache_key(make_repo):
         joined = dataclasses.replace(plain, **{field.name: ("a,b",)})
         split = dataclasses.replace(plain, **{field.name: ("a", "b")})
         assert service._cache_key(joined, pair) != service._cache_key(split, pair), field.name
+    counted = dataclasses.replace(plain, dependents={"app.py": 3})
+    recounted = dataclasses.replace(plain, dependents={"app.py": 4})
+    assert len({service._cache_key(r, pair) for r in (plain, counted, recounted)}) == 3
 
 
 async def test_include_paths_as_a_string_filters_like_the_list(tool, make_repo):

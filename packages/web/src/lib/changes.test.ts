@@ -78,9 +78,11 @@ describe("Commits page views", () => {
   it("reads only the known views and keeps the commit view param-free", () => {
     expect(parseCommitsView("changes")).toBe("changes");
     expect(parseCommitsView("events")).toBe("events");
+    expect(parseCommitsView("review")).toBe("review");
     expect(parseCommitsView(undefined)).toBe("commits");
     expect(parseCommitsView("anything")).toBe("commits");
     expect(commitsViewHref("r1", "commits")).toBe("/repos/r1/commits");
     expect(commitsViewHref("r1", "events")).toBe("/repos/r1/commits?view=events");
+    expect(commitsViewHref("r1", "review")).toBe("/repos/r1/commits?view=review");
   });
 });

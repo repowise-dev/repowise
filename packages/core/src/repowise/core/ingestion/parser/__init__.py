@@ -48,7 +48,7 @@ from ..extractors.imports.ts_js import _cjs_imports, _is_dynamic_esm_import
 from ..extractors.visibility import ts_export_aliases
 from ..language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from ..models import FileInfo, Import, ParsedFile, Symbol, compute_content_hash
-from ..parser_helpers import _run_query
+from ..parser_helpers import _collect_error_nodes, _run_query
 from ..python_local_refs import local_refs_from_tree, parse_python_module
 from ..python_registrars import registering_functions
 from ..sfc_source import component_call_sites, prepare_source
@@ -78,6 +78,7 @@ from .grammars import (
     _get_language,
     _load_compiled_query,
     _parse_tree,
+    _recover_kotlin_annotated_declarations,
     failed_query_languages,
     grammar_tag_for,
     log,
@@ -112,6 +113,7 @@ from .symbol_rules import (
     _node_text,
     _refine_symbol_kind,
     _refine_visibility,
+    _restore_kotlin_annotations,
     _rust_outer_attributes,
     _symbol_end_line,
 )
@@ -194,6 +196,17 @@ class ASTParser:
         source = prepare_source(lang, source, path=file_info.path)
 
         root, parse_errors, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
+
+        recovered_annotations: dict[int, tuple[int, str]] = {}
+        if lang == "kotlin":
+            root, source, recovered_annotations = _recover_kotlin_annotated_declarations(
+                language,
+                root,
+                source,
+            )
+            if recovered_annotations:
+                parse_errors = _collect_error_nodes(root)
+
         src = source.decode("utf-8", errors="replace")
 
         # Execute the compiled query ONCE per file; every pass below reads
@@ -204,6 +217,7 @@ class ASTParser:
         symbols = _finalize_symbols(
             _extract_symbols(matches, config, file_info, src), root, src, file_info
         )
+        _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
         calls = _extract_calls(matches, config, file_info, src, symbols)
         # An SFC's markup tags (``<Foo />``) are component calls the TS buffer lost.
@@ -295,9 +309,7 @@ def _derive_exports(symbols: list[Symbol]) -> list[str]:
 _DEFAULT_PARSER: ASTParser | None = None
 
 
-def _python_module_facts(
-    src: str, symbols: list[Symbol]
-) -> tuple[frozenset[str], frozenset[str]]:
+def _python_module_facts(src: str, symbols: list[Symbol]) -> tuple[frozenset[str], frozenset[str]]:
     """``(local_refs, registrars)`` for a Python module, from one ``ast`` parse.
 
     See ``python_local_refs`` and ``python_registrars``.
@@ -321,4 +333,3 @@ def parse_file(file_info: FileInfo, source: bytes) -> ParsedFile:
     if _DEFAULT_PARSER is None:
         _DEFAULT_PARSER = ASTParser()
     return _DEFAULT_PARSER.parse_file(file_info, source)
-

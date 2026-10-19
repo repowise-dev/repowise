@@ -175,7 +175,7 @@ describe("NextActions", () => {
     expect(details).not.toBeNull();
     expect(details).not.toHaveAttribute("open");
     // The count is the default time frame's, the same one its chip shows.
-    expect(within(details!.querySelector("summary")!).getByText("1 suggested")).toBeInTheDocument();
+    expect(within(details!.querySelector("summary")!).getByRole("heading", { name: "Do next · 1" })).toBeInTheDocument();
 
     details!.open = true;
     fireEvent.click(within(details!).getByRole("radio", { name: /This quarter/ }));
@@ -183,10 +183,27 @@ describe("NextActions", () => {
       "aria-checked",
       "true",
     );
-    expect(screen.getByText("2 suggested")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Do next · 2" })).toBeInTheDocument();
     // React only writes `open` when the prop changes, so a rerender keeps a
     // section the user opened open.
     expect(details!.open).toBe(true);
+  });
+});
+
+describe("the row prompt", () => {
+  it("opens the agent prompt from the row without opening the drawer", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} loadPrompt={loadPrompt} />);
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt for your agent: Raise test coverage/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Why it is on the list")).toBeNull();
+    expect(loadPrompt).toHaveBeenCalledWith(action(), expect.any(String));
+  });
+
+  it("is absent when the host has no prompt", () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    expect(screen.queryByRole("button", { name: /Copy prompt for your agent/ })).toBeNull();
   });
 });
 

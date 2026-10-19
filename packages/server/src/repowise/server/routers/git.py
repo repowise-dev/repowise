@@ -27,6 +27,7 @@ from repowise.core.analysis.change_risk import (
     score_change,
     scores_excluding,
 )
+from repowise.core.analysis.history import DeltaStamp, delta_currency
 from repowise.core.analysis.owners import people_resolver
 from repowise.core.analysis.risk_semantics import change_risk_authority
 from repowise.core.attribution import (
@@ -47,11 +48,13 @@ from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
 from repowise.core.persistence.sql import is_missing_table
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
+from repowise.server.routers._history_filters import HistoryParams, history_params
 from repowise.server.routers._local_git import (
     repo_attribution_on,
     resolve_local_repo,
     revision_exists,
 )
+from repowise.server.routers.held_origins import HOLD_QUERY, INCLUDE_QUERY
 from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
@@ -77,6 +80,22 @@ from repowise.server.schemas import (
     RiskHistogramBucket,
     RiskRangeResponse,
 )
+from repowise.server.schemas.git import HotspotFacets, HotspotPage
+from repowise.server.schemas.history import PeriodHealthSummaryResponse
+from repowise.server.services.areas import held_origins
+from repowise.server.services.history.commits import (
+    CommitHistory,
+    commit_history,
+    commit_period_summary,
+)
+from repowise.server.services.history.health import (
+    current_stamp,
+    finding_fields,
+    period_response,
+)
+from repowise.server.services.hotspots import FILTERS as HOTSPOT_FILTERS
+from repowise.server.services.hotspots import SORTS as HOTSPOT_SORTS
+from repowise.server.services.hotspots import HotspotQuery, is_accelerating, list_hotspots
 from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
@@ -129,6 +148,7 @@ def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
         bug_magnet=bool(r.bug_magnet),
         last_fix_at=r.last_fix_at,
         original_path=r.original_path,
+        accelerating=is_accelerating(r.commit_count_30d, r.commit_count_90d, r.age_days),
     )
 
 
@@ -166,16 +186,27 @@ async def _author_commit_counts(session: AsyncSession, repo_id: str) -> dict[str
     return counts
 
 
+def _attribution_fields(r: GitCommit) -> dict:
+    return {
+        "agent_name": r.agent_name,
+        "agent_autonomy_tier": r.agent_autonomy_tier,
+        "agent_confidence": r.agent_confidence,
+        "attribution": commit_label(r.attribution, r.agent_name),
+    }
+
+
 def _commit_fields(
     r: GitCommit,
     normalizer: RiskNormalizer,
     author_counts: dict[str, int] | None = None,
     *,
     attribution_on: bool,
+    history: CommitHistory | None = None,
 ) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization).
 
-    Attribution fields stay None when attribution is off for the repository.
+    Attribution fields stay None when attribution is off for the repository;
+    the health delta and hotspot touches come from *history* when given.
     """
     risk = _commit_risk(r)
     top_driver = risk.top_driver.label if risk and risk.top_driver else None
@@ -204,16 +235,8 @@ def _commit_fields(
             if author_counts is not None
             else None
         ),
-        **(
-            {
-                "agent_name": r.agent_name,
-                "agent_autonomy_tier": r.agent_autonomy_tier,
-                "agent_confidence": r.agent_confidence,
-                "attribution": commit_label(r.attribution, r.agent_name),
-            }
-            if attribution_on
-            else {}
-        ),
+        **(_attribution_fields(r) if attribution_on else {}),
+        **(history.fields(r.sha) if history is not None else {}),
     }
 
 
@@ -223,8 +246,11 @@ def _commit_from_row(
     author_counts: dict[str, int] | None = None,
     *,
     attribution_on: bool,
+    history: CommitHistory | None = None,
 ) -> CommitResponse:
-    fields = _commit_fields(r, normalizer, author_counts, attribution_on=attribution_on)
+    fields = _commit_fields(
+        r, normalizer, author_counts, attribution_on=attribution_on, history=history
+    )
     return CommitResponse(**fields)
 
 
@@ -253,9 +279,10 @@ async def _commit_files(session: AsyncSession, repo_id: str, sha: str) -> list[C
 
 
 async def _commit_health(
-    session: AsyncSession, repo_id: str, sha: str
+    session: AsyncSession, repo_id: str, sha: str, stamp: DeltaStamp
 ) -> CommitHealthResponse | None:
-    """What the commit did to health. None when it was never scanned."""
+    """What the commit did to health. None when it was never scanned, or only
+    by an analyzer too old to read; ``stale`` when an older one wrote it."""
     try:
         delta = await crud.get_commit_health(session, repo_id, sha)
         rows = await crud.get_commit_health_findings(session, repo_id, sha) if delta else []
@@ -265,31 +292,20 @@ async def _commit_health(
         if not is_missing_table(exc):
             raise
         return None
-    if delta is None:
+    currency = delta_currency(delta, stamp) if delta is not None else "absent"
+    if currency == "absent":
         return None
     return CommitHealthResponse(
         status=delta.status,
+        stale=currency == "stale",
         introduced_count=delta.introduced_count,
         worsened_count=delta.worsened_count,
         resolved_count=delta.resolved_count,
+        improved_count=delta.improved_count,
+        moved_count=delta.moved_count,
         files_analyzed=delta.files_analyzed,
         files_skipped=delta.files_skipped,
-        findings=[
-            CommitHealthFindingResponse(
-                change_kind=f.change_kind,
-                dimension=f.dimension,
-                biomarker_type=f.biomarker_type,
-                severity=f.severity,
-                severity_before=f.severity_before,
-                path=f.file_path,
-                symbol=f.symbol,
-                line_start=f.line_start,
-                line_end=f.line_end,
-                attribution_basis=f.attribution_basis,
-                reason=f.reason,
-            )
-            for f in rows
-        ],
+        findings=[CommitHealthFindingResponse(**finding_fields(f)) for f in rows],
     )
 
 
@@ -301,6 +317,7 @@ def _commit_detail_from_row(
     health: CommitHealthResponse | None = None,
     *,
     attribution_on: bool,
+    history: CommitHistory | None = None,
 ) -> CommitDetailResponse:
     """Map a commit row to its detail view, recomputing the risk-driver
     breakdown from the persisted Kamei features + author experience.
@@ -320,7 +337,9 @@ def _commit_detail_from_row(
         for d in (risk.top_drivers if risk else [])
     ]
     return CommitDetailResponse(
-        **_commit_fields(r, normalizer, author_counts, attribution_on=attribution_on),
+        **_commit_fields(
+            r, normalizer, author_counts, attribution_on=attribution_on, history=history
+        ),
         drivers=drivers,
         agent_channel=r.agent_channel if attribution_on else None,
         files=files or [],
@@ -336,6 +355,7 @@ async def get_commits(
     kind: str = Query("all", pattern="^(all|high|fixes)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    params: HistoryParams = Depends(history_params),
     session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[CommitResponse]:
     """Per-commit change-risk feed — the review-priority queue.
@@ -346,7 +366,10 @@ async def get_commits(
     attribution is off), and ``kind`` to the ``high``
     review-priority band or to ``fixes``. Each commit carries a
     **repo-relative** ``risk_percentile`` + ``review_priority`` so the ranking
-    is portable across repos (the absolute calibration band is not).
+    is portable across repos (the absolute calibration band is not), and leads
+    with ``health_delta`` (what it made better or worse) and ``touches_hotspot``.
+    ``author``, ``area``, ``since``/``until``, ``delta`` and ``touches_hotspot``
+    narrow the repository, like the other filters.
     """
     attribution_on = await repo_attribution_on(session, repo_id)
     if not attribution_on:
@@ -355,22 +378,23 @@ async def get_commits(
     # The high band is a tercile of the repo's own scores, so the boundary has
     # to be resolved before the page is cut rather than derived per row.
     high_cut = normalizer.high_cut
-    total = await crud.count_git_commits(
-        session, repo_id, authorship=authorship, kind=kind, high_cut=high_cut
-    )
+    stamp = await current_stamp(session, repo_id)
+    where = params.commit_filter(authorship=authorship, kind=kind, high_cut=high_cut, stamp=stamp)
+    total = await crud.count_git_commits(session, repo_id, where=where)
     rows = await crud.get_git_commits(
         session,
         repo_id,
         limit=limit,
         offset=offset,
         sort=sort,
-        authorship=authorship,
-        kind=kind,
-        high_cut=high_cut,
+        where=where,
     )
     author_counts = await _author_commit_counts(session, repo_id)
+    history = await commit_history(session, repo_id, [r.sha for r in rows], stamp)
     items = [
-        _commit_from_row(r, normalizer, author_counts, attribution_on=attribution_on)
+        _commit_from_row(
+            r, normalizer, author_counts, attribution_on=attribution_on, history=history
+        )
         for r in rows
     ]
     next_offset = offset + limit if offset + limit < total else None
@@ -507,6 +531,19 @@ async def get_commit_stats(
     )
 
 
+@router.get("/{repo_id}/commits/health-summary", response_model=PeriodHealthSummaryResponse)
+async def get_commit_health_summary(
+    repo_id: str,
+    params: HistoryParams = Depends(history_params),
+    session: AsyncSession = Depends(get_db_session),
+) -> PeriodHealthSummaryResponse:
+    """How many commits under the filters made health better, worse, both or
+    neither, and the findings behind it; improvements first."""
+    where = params.commit_filter(stamp=await current_stamp(session, repo_id))
+    summary = await commit_period_summary(session, repo_id, where)
+    return period_response(summary, params.since, params.until)
+
+
 _HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 supporting diff-shape score
 
 
@@ -620,7 +657,8 @@ async def get_commit(
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     author_counts = await _author_commit_counts(session, repo_id)
     files = await _commit_files(session, repo_id, row.sha)
-    health = await _commit_health(session, repo_id, row.sha)
+    stamp = await current_stamp(session, repo_id)
+    health = await _commit_health(session, repo_id, row.sha, stamp)
     return _commit_detail_from_row(
         row,
         normalizer,
@@ -628,6 +666,7 @@ async def get_commit(
         files,
         health,
         attribution_on=await repo_attribution_on(session, repo_id),
+        history=await commit_history(session, repo_id, [row.sha], stamp),
     )
 
 
@@ -648,43 +687,49 @@ async def get_git_metadata(
     return response
 
 
-@router.get("/{repo_id}/hotspots", response_model=Paginated[HotspotResponse])
-async def get_hotspots(
-    repo_id: str,
+def _hotspot_query(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=200, description="Path or owner substring, case-insensitive."),
+    filter: str = Query("all", pattern=f"^({'|'.join(HOTSPOT_FILTERS)})$"),
+    sort: str = Query("score", pattern=f"^({'|'.join(HOTSPOT_SORTS)})$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    hold: str = HOLD_QUERY,
+    include: str = INCLUDE_QUERY,
+) -> HotspotQuery:
+    return HotspotQuery(
+        limit=limit,
+        offset=offset,
+        q=q,
+        filter=filter,
+        sort=sort,
+        descending=order == "desc",
+        held=held_origins(hold, include),
+    )
+
+
+@router.get("/{repo_id}/hotspots", response_model=HotspotPage)
+async def get_hotspots(
+    repo_id: str,
+    query: HotspotQuery = Depends(_hotspot_query),
     session: AsyncSession = Depends(get_db_session),
-) -> Paginated[HotspotResponse]:
-    """Return the highest-churn files (hotspots), paginated.
+) -> HotspotPage:
+    """Hotspots ranked by temporal hotspot score, one page at a time.
 
-    The previous response shape was a bare list capped at 100 rows — large
-    repos with thousands of hotspots silently lost the long tail. Callers
-    should treat the envelope's ``total`` as authoritative and request
-    further pages via ``offset``.
+    ``total`` counts the rows this filter and search match; ``facets`` count
+    every filter over the searched set, so a chip can say "N of total". Each
+    row's ``rank`` is its place by score in the scope, whatever the sort.
     """
-
-    base = select(GitMetadata).where(
-        GitMetadata.repository_id == repo_id,
-        GitMetadata.is_hotspot.is_(True),
-    )
-    total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
-
-    paged = (
-        base.order_by(
-            GitMetadata.temporal_hotspot_score.desc().nulls_last(),
-            GitMetadata.churn_percentile.desc(),
-        )
-        .limit(limit)
-        .offset(offset)
-    )
-    rows = (await session.execute(paged)).scalars().all()
-    items = [_hotspot_from_row(r) for r in rows]
-    next_offset = offset + limit if offset + limit < total else None
-    return Paginated[HotspotResponse](
+    listing = await list_hotspots(session, repo_id, query)
+    items = [_hotspot_from_row(r).model_copy(update={"rank": rank}) for r, rank in listing.rows]
+    end = query.offset + query.limit
+    next_offset = end if end < listing.total else None
+    return HotspotPage(
         items=items,
-        total=total,
+        total=listing.total,
         has_more=next_offset is not None,
         next_offset=next_offset,
+        facets=HotspotFacets(**listing.facets),
     )
 
 

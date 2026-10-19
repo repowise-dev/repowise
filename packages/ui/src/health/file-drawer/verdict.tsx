@@ -9,10 +9,11 @@
 
 import { ExternalLink, Wrench } from "lucide-react";
 import { bandForScore, formatScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
-import type { FileHealthTrend } from "@repowise-dev/types/health";
+import type { FileHealthTrend, FileSignals } from "@repowise-dev/types/health";
 import { AiPromptButton } from "../ai-prompt-button";
 import { AiPromptModal, fileChatContext } from "../ai-prompt-modal";
 import { buildFileHealthAiPrompt } from "../ai-prompt-builder";
+import { ScoreSplit } from "../score-split";
 import { Sparkline } from "../sparkline";
 import { HEALTH_UNSUPPORTED_LABEL } from "../map/lens";
 import { deltaColor, formatDelta, healthBandColor } from "../tokens";
@@ -27,6 +28,8 @@ import { QUIET_LINK } from "./shared";
 export function VerdictSection({
   metric,
   trend,
+  breakdown,
+  signals,
   model,
   planTarget,
   fullPage,
@@ -35,6 +38,8 @@ export function VerdictSection({
 }: {
   metric: HealthDrawerMetric;
   trend: FileHealthTrend | null | undefined;
+  breakdown: HealthFileDrawerProps["breakdown"];
+  signals: FileSignals | null | undefined;
   model: DrawerModel;
   planTarget: string | null;
   fullPage: string | undefined;
@@ -44,6 +49,9 @@ export function VerdictSection({
   return (
     <section aria-label="Verdict" className="flex flex-col gap-3">
       <ScoreRow metric={metric} trend={trend} />
+      {metric.score != null ? (
+        <ScoreSplit categories={breakdown?.categories} signals={signals} />
+      ) : null}
       <VerdictSentence
         verdict={model.verdict}
         show={metric.score != null || model.findings.length > 0}

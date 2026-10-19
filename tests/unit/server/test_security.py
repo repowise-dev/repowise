@@ -50,7 +50,12 @@ async def test_list_security_empty(client: AsyncClient) -> None:
 async def test_security_summary_scanned_at(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     url = f"/api/repos/{repo['id']}/security/summary"
-    assert (await client.get(url)).json() == {"scanned_at": None}
+    assert (await client.get(url)).json() == {
+        "scanned_at": None,
+        "total": 0,
+        "class_counts": {"source": 0, "test": 0, "docs": 0},
+        "source_high": 0,
+    }
 
     await _insert(app.state.session_factory, repo["id"], snippet="x")
     assert (await client.get(url)).json()["scanned_at"] is not None

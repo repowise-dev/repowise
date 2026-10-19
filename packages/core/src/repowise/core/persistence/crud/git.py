@@ -14,6 +14,8 @@ from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, upd
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.health.signals import HISTORY_MIN_COMMITS as _HISTORY_MIN_COMMITS
+from ...analysis.health.signals import history_basis as _history_basis
 from ...co_change import CoChangePartner, parse_partners
 from ..models import (
     Change,
@@ -36,6 +38,7 @@ from ._shared import (
     _row_inserter,
     _row_updater,
 )
+from .history import CommitFilter, commit_filter_clauses
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
@@ -165,6 +168,19 @@ async def get_hotspot_file_paths(session: AsyncSession, repository_id: str) -> s
         )
     )
     return {row[0] for row in result.all() if row[0] is not None}
+
+
+async def get_short_history_paths(session: AsyncSession, repository_id: str) -> set[str]:
+    """The files whose recorded history ``signals.history_basis`` reads as short."""
+    result = await session.execute(
+        select(
+            GitMetadata.file_path, GitMetadata.commit_count_total, GitMetadata.history_only
+        ).where(
+            GitMetadata.repository_id == repository_id,
+            GitMetadata.commit_count_total < _HISTORY_MIN_COMMITS,
+        )
+    )
+    return {row.file_path for row in result.all() if _history_basis(row)}
 
 
 #: The only git fields dead-code confidence is scored from
@@ -794,56 +810,15 @@ async def clear_attribution_if_disabled(session: AsyncSession, repository_id: st
     return True
 
 
-def _commit_authorship_clause(authorship: str | None):
-    """Optional authorship predicate over the three-state label: ``agent``,
-    ``human`` (human-attested only; a commit without a marker is never human)
-    or ``unknown``. ``None`` / ``"all"`` means no filtering."""
-    if authorship == "agent":
-        return GitCommit.agent_name.is_not(None)
-    if authorship == "human":
-        return GitCommit.attribution == "human_attested"
-    if authorship == "unknown":
-        return and_(
-            GitCommit.agent_name.is_(None),
-            or_(GitCommit.attribution.is_(None), GitCommit.attribution == "unknown"),
-        )
-    return None
-
-
-def _commit_kind_clause(kind: str | None, high_cut: float | None):
-    """Optional predicate for the review-priority band or bug-fix commits.
-
-    ``high`` compares against the repo's own moderate/high boundary on the
-    score axis, which is where the tercile actually falls; deriving it per row
-    would mean ranking every commit before paging any of them.
-    """
-    if kind == "fixes":
-        return GitCommit.is_fix.is_(True)
-    if kind == "high":
-        if high_cut is None:
-            return None
-        return GitCommit.change_risk_score >= high_cut
-    return None
-
-
 async def count_git_commits(
     session: AsyncSession,
     repository_id: str,
-    *,
-    authorship: str | None = None,
-    kind: str | None = None,
-    high_cut: float | None = None,
+    where: CommitFilter | None = None,
 ) -> int:
     """Count persisted commits for a repository, under the same filters."""
-    stmt = (
-        select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repository_id)
+    stmt = select(func.count()).select_from(GitCommit).where(
+        GitCommit.repository_id == repository_id, *commit_filter_clauses(where)
     )
-    for clause in (
-        _commit_authorship_clause(authorship),
-        _commit_kind_clause(kind, high_cut),
-    ):
-        if clause is not None:
-            stmt = stmt.where(clause)
     result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
 
@@ -895,27 +870,20 @@ async def get_git_commits(
     limit: int = 50,
     offset: int = 0,
     sort: str = "risk",
-    authorship: str | None = None,
-    kind: str | None = None,
-    high_cut: float | None = None,
+    where: CommitFilter | None = None,
 ) -> list[GitCommit]:
     """Return a page of commits, sorted by change-risk (default) or recency.
 
     ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
     priority order); ``sort="date"`` ranks by ``committed_at`` descending.
-    ``authorship`` narrows to ``agent`` / ``human`` / ``unknown``; ``kind`` narrows to the
-    ``high`` review-priority band or to ``fixes``. Both filter the repository
-    rather than the page, so a filter still answers when the page it would
-    have filtered is uniform.
+    *where* (:class:`~repowise.core.persistence.crud.history.CommitFilter`)
+    filters the repository rather than the page, so a filter still answers
+    when the page it would have filtered is uniform.
     """
     order = GitCommit.committed_at.desc() if sort == "date" else GitCommit.change_risk_score.desc()
-    stmt = select(GitCommit).where(GitCommit.repository_id == repository_id)
-    for clause in (
-        _commit_authorship_clause(authorship),
-        _commit_kind_clause(kind, high_cut),
-    ):
-        if clause is not None:
-            stmt = stmt.where(clause)
+    stmt = select(GitCommit).where(
+        GitCommit.repository_id == repository_id, *commit_filter_clauses(where)
+    )
     result = await session.execute(stmt.order_by(order).limit(limit).offset(offset))
     return list(result.scalars().all())
 
@@ -1126,6 +1094,22 @@ async def prune_fix_events_for_missing_paths(
         delete(FixEvent).where(
             FixEvent.repository_id == repository_id,
             FixEvent.file_path.in_(stale),
+        )
+    )
+    await session.flush()
+    return int(deleted.rowcount or 0)
+
+
+async def prune_fix_events_for_shas(
+    session: AsyncSession, repository_id: str, shas: set[str]
+) -> int:
+    """Drop the fix events of commits the fix rule no longer names a fix."""
+    if not shas:
+        return 0
+    deleted = await session.execute(
+        delete(FixEvent).where(
+            FixEvent.repository_id == repository_id,
+            FixEvent.fix_sha.in_(sorted(shas)),
         )
     )
     await session.flush()

@@ -1,4 +1,4 @@
-"""Complex Conditional — compound boolean expressions inside one branch.
+"""Compound condition — compound boolean expressions inside one branch.
 
 Flags ``if`` / ``while`` / ``for`` / ternary / case guards whose
 condition is glued together from three or more boolean operators

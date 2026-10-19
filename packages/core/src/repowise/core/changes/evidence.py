@@ -65,6 +65,11 @@ KINDS: tuple[str, ...] = (
     "outcomes",
 )
 
+#: Kinds a checklist's status counts leave out. Health leads a change row from
+#: its commits' stored deltas, so counting the checklist's own health row would
+#: flag the same fact twice, from a second source.
+SUMMARY_SKIPPED_KINDS: frozenset[str] = frozenset({"health_delta"})
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceItem:

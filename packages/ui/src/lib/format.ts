@@ -132,7 +132,14 @@ export function formatLOC(n: number): string {
   return String(n);
 }
 
-/** Truncate a file path keeping as many trailing components as fit: src/very/long/path/file.py → …/long/path/file.py */
+/**
+ * Truncate a file path keeping as many trailing components as fit:
+ * src/very/long/path/file.py → …/long/path/file.py
+ *
+ * @deprecated Render paths with `<FilePath>` (`shared/file-path`), which clips
+ * by the box width and keeps the full path in the tooltip and accessible name.
+ * Kept for plain-string contexts and existing callers.
+ */
 export function truncatePath(path: string, maxChars = 60): string {
   if (path.length <= maxChars) return path;
   const parts = path.split("/");
@@ -153,7 +160,7 @@ export function truncatePath(path: string, maxChars = 60): string {
  * basename is already unique keeps it. Each path grows by one trailing segment
  * per round until it is unique or has no segments left.
  *
- * Prefer {@link truncatePath} for a path shown on its own; this is for many
+ * Prefer `<FilePath>` for a path shown on its own; this is for many
  * paths displayed side by side, where a bare basename can be ambiguous.
  */
 export function disambiguateBasenames(paths: Iterable<string>): Map<string, string> {
