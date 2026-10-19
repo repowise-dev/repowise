@@ -2,7 +2,7 @@
 
 import { useState, type MouseEvent } from "react";
 import type * as React from "react";
-import { CircleSlash, Eye, GitBranch, MoreHorizontal, Sparkles } from "lucide-react";
+import { CircleSlash, Eye, GitBranch, MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
@@ -10,7 +10,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
 import { PreviewBadge } from "../health/preview-badge";
+import { RowPromptAction } from "../health/row-prompt-action";
 import {
   deadCodeRiskFactorLabel,
   type DeadCodeFinding,
@@ -96,17 +98,13 @@ export function FindingIdentity({ finding, href, onNavigate, mark }: FindingIden
         <a
           href={href}
           onClick={onLinkClick}
-          className="block truncate font-mono text-xs text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline"
-          title={finding.file_path}
+          className="flex min-w-0 text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline"
         >
-          {finding.file_path}
+          <FilePath path={finding.file_path} fold />
         </a>
       ) : (
-        <span
-          className="block truncate font-mono text-xs text-[var(--color-text-primary)]"
-          title={finding.file_path}
-        >
-          {finding.file_path}
+        <span className="flex min-w-0 text-[var(--color-text-primary)]">
+          <FilePath path={finding.file_path} fold />
         </span>
       )}
       {finding.symbol_name && (
@@ -278,6 +276,12 @@ export function FindingRowActions({
   return (
     <span onClick={(e) => e.stopPropagation()}>
       <span className="flex items-center justify-end gap-1">
+        {onGeneratePrompt && (
+          <RowPromptAction
+            subject={finding.file_path}
+            onClick={() => onGeneratePrompt(finding.id)}
+          />
+        )}
         {finding.status === "open" ? (
           <Button
             size="sm"
@@ -322,10 +326,6 @@ export function FindingRowActions({
                 )}
               </>
             )}
-            {onGeneratePrompt &&
-              menuItem("Draft AI cleanup prompt", Sparkles, () =>
-                onGeneratePrompt(finding.id),
-              )}
             {graphHref && (
               <a
                 href={graphHref(finding.file_path)}

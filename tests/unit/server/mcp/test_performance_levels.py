@@ -463,9 +463,15 @@ async def test_rest_and_the_agent_surface_project_the_same_rows(
             actionability=None,
             view="detail",
             sort="rank",
+            proof=None,
+            role=None,
+            queue=False,
+            area=None,
+            area_depth=None,
             file_paths=None,
             limit=6,
             offset=0,
+            include_unverified=False,
             session=session,
         )
 
@@ -516,3 +522,38 @@ async def test_a_plan_is_validated_by_a_test_named_for_its_file_when_no_edge_rea
     assert "tests/test_a.py" in opportunity["validation"]["tests"]
     assert plan["validation"]["via"] == "name-match"
     assert "pytest tests/test_a.py" in plan["validation"]["commands"]
+
+
+@pytest.mark.asyncio
+async def test_the_mcp_queue_shapes_do_not_grow(setup_mcp, materialized):
+    """The dashboard's summary rows carry fix, gain and effort; the agent
+    surface's do not, and its default rows keep exactly their keys."""
+    from repowise.server.mcp_server import get_health
+
+    default = await get_health(include=["performance"], only=["performance_opportunities"])
+    summary = await get_health(
+        include=["performance"],
+        only=["performance_opportunities"],
+        performance_view="summary",
+    )
+    assert set(default["performance_opportunities"][0]) == {
+        "actionability_reason", "actionability_state", "affected_call_sites_total",
+        "affected_files_total", "biomarker_type", "biomarker_types",
+        "biomarker_types_emitted", "biomarker_types_total", "boundary_kind", "confidence",
+        "evidence", "evidence_emitted", "evidence_next_cursor", "evidence_reduced_reason",
+        "evidence_total", "evidence_truncated", "execution_context", "facets", "file_path",
+        "fix", "gain_text", "intervention_kind", "intervention_symbol", "lower_priority",
+        "may_lead", "observations_total", "opportunity_id", "performance_model_version",
+        "plan_economics", "plan_id", "plan_reason", "plan_reference", "plan_status",
+        "plan_steps", "plan_steps_emitted", "plan_steps_total", "prerequisites",
+        "prerequisites_emitted", "prerequisites_total", "provenance", "rank_factors",
+        "rank_position", "rank_score", "reliable_entry_reachability",
+        "resource_fingerprints", "resource_fingerprints_emitted",
+        "resource_fingerprints_total", "shared_path_suffix", "shared_path_suffix_emitted",
+        "shared_path_suffix_total", "siblings", "siblings_emitted", "siblings_total",
+        "terminal_sink", "terminal_sinks", "terminal_sinks_emitted", "terminal_sinks_total",
+        "validation", "why_ranked", "why_ranked_emitted", "why_ranked_total",
+    }
+    assert not {"fix", "gain_text", "plan_economics"} & set(
+        summary["performance_opportunities"][0]
+    )

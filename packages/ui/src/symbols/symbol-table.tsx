@@ -21,7 +21,7 @@ import { ResultsFooter } from "../shared/results-footer";
 import { RowActions } from "../shared/row-actions";
 import { VirtualizedTable } from "../shared/virtualized-table";
 import { docsPagePath, filePageId } from "../shared/entity/routes";
-import { truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { cn } from "../lib/cn";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
@@ -360,9 +360,7 @@ export function SymbolTable({
                   <Badge variant={sym.kind === "class" ? "accent" : "default"}>{sym.kind}</Badge>
                 </td>
                 <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-[200px] max-w-[420px] hidden sm:table-cell">
-                  <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
-                    {truncatePath(sym.file_path)}:{sym.start_line}
-                  </span>
+                  <FilePath path={sym.file_path} line={sym.start_line} fold className="flex" />
                 </td>
                 <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden md:table-cell text-right">
                   <span

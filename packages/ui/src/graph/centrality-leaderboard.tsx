@@ -4,6 +4,8 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, Crown, Info } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../lib/cn";
+import { FilePath } from "../shared/file-path";
+import { isFileNodeId } from "./node-id";
 
 export interface CentralityNode {
   node_id: string;
@@ -44,6 +46,16 @@ function score(node: CentralityNode, metric: "pagerank" | "betweenness" | "degre
   if (metric === "pagerank") return node.pagerank;
   if (metric === "betweenness") return node.betweenness ?? 0;
   return (node.in_degree ?? 0) + (node.out_degree ?? 0);
+}
+
+/** A node's label when it has one; a bare file id reads as a path. */
+function NodeLabel({ nodeId, label }: { nodeId: string; label?: string | null | undefined }) {
+  if (label || !isFileNodeId(nodeId)) {
+    return (
+      <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">{label ?? nodeId}</p>
+    );
+  }
+  return <FilePath path={nodeId} fold className="flex text-[var(--color-text-primary)]" />;
 }
 
 export function CentralityLeaderboard({
@@ -149,9 +161,7 @@ export function CentralityLeaderboard({
                       {i + 1}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
-                        {n.label ?? n.node_id}
-                      </p>
+                      <NodeLabel nodeId={n.node_id} label={n.label} />
                       <div className="mt-0.5 h-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
                         <div
                           className="h-full bg-[var(--color-accent-primary)]"

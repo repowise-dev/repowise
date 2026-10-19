@@ -4,6 +4,7 @@ import type { FileDetailResponse } from "@repowise-dev/types/files";
 import { isExternal, nodeKind } from "@repowise-dev/types";
 import { EmptyState } from "../shared/empty-state";
 import { formatLOC, truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
 import { FileSection, Fig } from "./file-section";
 
@@ -258,10 +259,10 @@ function NeighborColumn({
             <li key={id} className="min-w-0">
               <A
                 href={symbol ? symbolHref(id) : fileHref(id)}
-                className="block truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
-                title={id}
+                className="flex min-w-0 font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
+                title={symbol ? id : undefined}
               >
-                {truncatePath(id, 40)}
+                {symbol ? <span className="truncate">{truncatePath(id, 40)}</span> : <FilePath path={id} fold />}
               </A>
             </li>
           );

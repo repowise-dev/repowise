@@ -1038,7 +1038,7 @@ class GitIndexer:
 
     def capture_new_fix_events(
         self, *, known_shas: set[str] | None = None
-    ) -> tuple[list[dict], int, set[str]]:
+    ) -> tuple[list[dict], int, set[str], set[str]]:
         """Build ``fix_events`` rows for fix commits not already persisted.
 
         The incremental counterpart to the tracing ``index_repo`` runs inline,
@@ -1047,16 +1047,16 @@ class GitIndexer:
         the rest. An update with no new fix commits does the walk and stops,
         which is why it stays inside the +1s budget.
 
-        Returns ``(rows, oldest_fix_ts, tracked_paths)``. Both trailing values
-        come back even when there are no new rows, because the caller still has
-        two prunes to do: events that aged out of the window, and events for
-        files that no longer exist. A fresh index never produces the latter, so
-        without that second prune an update accumulates rows for deleted files
-        and drifts away from what a re-index would hold.
+        Returns ``(rows, oldest_fix_ts, tracked_paths, retracted_shas)``. The
+        trailing values come back even when there are no new rows, because the
+        caller still has three prunes to do: events that aged out of the window,
+        events for files that no longer exist, and *known_shas* the fix rule no
+        longer names. A fresh index produces none of them, so without the prunes
+        an update drifts away from what a re-index would hold.
         """
         repo = self._get_repo()
         if repo is None:
-            return [], 0, set()
+            return [], 0, set(), set()
         try:
             tracked = {fp for fp in self._get_tracked_files(repo) if not _should_skip_index(fp)}
             walk = collect_fix_commits(
@@ -1067,10 +1067,13 @@ class GitIndexer:
             )
             rows, ok = self._build_fix_events(walk)
             self._record_git_episodes(walk)
-            return rows, (walk.oldest_fix_ts if ok else 0), tracked
+            retracted = set()
+            if ok and walk.shas is not None:
+                retracted = set(known_shas or ()) - walk.shas
+            return rows, (walk.oldest_fix_ts if ok else 0), tracked, retracted
         except Exception as exc:
             logger.debug("incremental_fix_events_failed", error=str(exc))
-            return [], 0, set()
+            return [], 0, set(), set()
         finally:
             with contextlib.suppress(Exception):
                 repo.close()

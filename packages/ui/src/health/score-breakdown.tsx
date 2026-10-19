@@ -4,6 +4,7 @@ import {
   biomarkerLabel,
   type BiomarkerCategory,
 } from "./biomarker-glossary";
+import { SCORE_FLOOR } from "@repowise-dev/types/health";
 import { type Severity } from "./tokens";
 import { ImpactFigure } from "./impact-figure";
 import { SeverityMark } from "./severity-mark";
@@ -54,6 +55,15 @@ export interface ScoreBreakdownProps {
   showFindings?: boolean;
 }
 
+/** "10.0 − X = score", naming the floor when the deductions go past it. */
+function arithmetic(score: number, totalDeduction: number): string {
+  const head = `10.0 − ${totalDeduction.toFixed(2)} = `;
+  const raw = 10 - totalDeduction;
+  if (raw >= SCORE_FLOOR || score > SCORE_FLOOR) return head + score.toFixed(1);
+  const shown = raw.toFixed(2).replace(/^-(0\.00)$/, "$1").replace(/^-/, "−");
+  return `${head}${shown}, floored at ${SCORE_FLOOR.toFixed(1)}`;
+}
+
 export function ScoreBreakdown({
   score,
   totalDeduction,
@@ -67,7 +77,7 @@ export function ScoreBreakdown({
           it already shows at four times the size. What this section is for is
           the subtraction, not the total. */}
       <p className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        10.0 − {totalDeduction.toFixed(2)} = {score.toFixed(1)}
+        {arithmetic(score, totalDeduction)}
       </p>
 
       <div className="space-y-2.5">
@@ -110,7 +120,7 @@ export function ScoreBreakdown({
                 </span>
                 <span
                   className="cursor-help tabular-nums text-[var(--color-text-tertiary)]"
-                  title="The cap is the most this category is allowed to subtract from the 10-point score, no matter how many findings it has."
+                  title="The cap is the most this category can subtract from the 10-point score. Code categories approach it gradually as findings add up; history stops at it."
                 >
                   −{c.applied_deduction.toFixed(2)}
                   {cap != null ? <> / cap −{cap.toFixed(1)}</> : null}

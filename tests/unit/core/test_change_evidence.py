@@ -224,6 +224,17 @@ def test_a_kept_checklist_reads_reaching_tests_under_the_current_rule():
     row = SimpleNamespace(evidence_json=dump_evidence(kept))
     assert evidence_summary(row)["attention"] == 0
 
+    # Health leads the row from its own rollup; its checklist row is not counted.
+    health = {**item, "kind": "health_delta", "label": "Health delta", "details": []}
+    kept = {**kept, "items": [health]}
+    row = SimpleNamespace(evidence_json=dump_evidence(kept))
+    assert evidence_summary(row) | {"generated_at": None} == {
+        "generated_at": None,
+        "ok": 0,
+        "attention": 0,
+        "unknown": 0,
+    }
+
 
 def test_every_item_reads_as_a_plain_line():
     """Each kind words its value; no raw key, boolean or dict reaches a reader."""

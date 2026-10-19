@@ -24,6 +24,8 @@ import {
 } from "@/lib/api/dead-code";
 import { getJob } from "@/lib/api/jobs";
 import { useTranslations } from "next-intl";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { useRepoFileCount } from "@/lib/hooks/use-repo";
 
 const POLL_INTERVAL_MS = 3_000;
 /** Give up watching after this long; the job may still be running server-side. */
@@ -53,6 +55,7 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
   const t = useTranslations("risk");
   const router = useRouter();
   const ledeLabels = useLedeLabels();
+  const fileCount = useRepoFileCount(repoId);
   const prefix = `/repos/${repoId}`;
 
   const adapter: DeadCodeAdapter = {
@@ -69,7 +72,16 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
     navigate: (href) => router.push(href),
   };
 
-  return <DeadCodeView adapter={adapter} ledeLabels={ledeLabels} />;
+  // The clean state names its scope once the file count lands.
+  const clean = {
+    title:
+      fileCount != null
+        ? t("deadCodeClean.titleScoped", { files: formatNumber(fileCount) })
+        : t("deadCodeClean.title"),
+    description: t("deadCodeClean.body"),
+  };
+
+  return <DeadCodeView adapter={adapter} ledeLabels={ledeLabels} clean={clean} />;
 }
 
 /** The lede copy from the catalog; exported for its test. */

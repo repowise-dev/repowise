@@ -148,13 +148,12 @@ over data already in the database.
 from __future__ import annotations
 
 import json
-from collections import OrderedDict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeAlias
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.execution_graph import (
@@ -163,7 +162,8 @@ from repowise.core.analysis.execution_graph import (
     file_of_symbol,
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
+from repowise.core.persistence.index_cache import IndexStampCache
+from repowise.core.persistence.models import GraphNode
 from repowise.core.test_paths import paired_test_names
 
 from .dead_code.file_reachability import BARREL_FILENAMES
@@ -199,6 +199,7 @@ __all__ = [
     "ReachDistance",
     "ReachedBy",
     "any_tests_reaching",
+    "cached_files_reached_by_tests",
     "cached_test_files",
     "call_graph_from_db",
     "call_graph_from_graph",
@@ -280,30 +281,30 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     walk is seeded with a change's files; this question is seeded with the
     repository, and a per-level ``IN`` list over every file is the shape it was
     explicitly not built for.
+
+    The view carries no call-site lines: reachability reads only ``declares``
+    and the forward/reverse adjacency, and ``call_lines_json`` was most of the
+    read's cost (measured on this repository, 189k edges: 8.4 s cold with the
+    column, under 2 s without it).
     """
     wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES)]
     params: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", wanted, params)
     rows = await session.execute(
         text(
-            "SELECT source_node_id, target_node_id, edge_type, resolution_origin, "
-            "call_lines_json "
+            "SELECT source_node_id, target_node_id, edge_type, resolution_origin "
             "FROM graph_edges WHERE repository_id = :repo_id "
             f"AND edge_type IN ({ets}) "
             "ORDER BY source_node_id, target_node_id, edge_type"
         ),
         params,
     )
-    edge_rows = []
-    for src, dst, edge_type, origin, call_lines_json in rows:
-        try:
-            call_lines = json.loads(call_lines_json or "[]")
-        except (TypeError, ValueError):
-            call_lines = []
-        edge_rows.append((src, dst, edge_type, origin, call_lines))
-    # No spawn lines here: test reachability reads only forward/reverse, never
-    # first-hop sites, ``spawn_only`` or roles, and a spawned callee is still reached.
-    return ExecutionGraphIndex(edge_rows=edge_rows)
+    # No call or spawn lines here: test reachability reads only forward/reverse,
+    # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
+    # still reached.
+    return ExecutionGraphIndex(
+        edge_rows=((src, dst, edge_type, origin, None) for src, dst, edge_type, origin in rows)
+    )
 
 
 def files_reached_by_tests(
@@ -434,37 +435,7 @@ async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
 # Do next both walk from them. Ceiling: Do next's per-file reach is still
 # walked once per index; persisting it at index time (the engine's
 # ``RepoTestIndex.reached_files`` set, stored as a per-file bool) is the upgrade path.
-_CACHE_SIZE = 32
-_cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
-
-
-async def _index_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
-    """What moves when an index run rewrites the graph: the repository row and
-    the file metrics written beside the graph rows (the stamp Fix first uses).
-    One statement, so a cached answer costs one read."""
-    repo = Repository.id == repo_id
-    metrics = HealthFileMetric.repository_id == repo_id
-    columns = (
-        select(Repository.head_commit).where(repo),
-        select(Repository.updated_at).where(repo),
-        select(Repository.graph_edges_parser_fingerprint).where(repo),
-        select(func.max(HealthFileMetric.updated_at)).where(metrics),
-        select(func.count()).select_from(HealthFileMetric).where(metrics),
-    )
-    row = (await session.execute(select(*(c.scalar_subquery() for c in columns)))).one()
-    return tuple(row)
-
-
-async def _cache_key(session: AsyncSession, repo_id: str, *parts: Any) -> tuple[Any, ...]:
-    bind = str(session.bind.url) if session.bind is not None else None
-    return (bind, repo_id, await _index_stamp(session, repo_id), *parts)
-
-
-def _remember(key: tuple[Any, ...], value: Any) -> Any:
-    _cache[key] = value
-    while len(_cache) > _CACHE_SIZE:
-        _cache.popitem(last=False)
-    return value
+_cache = IndexStampCache(32)
 
 
 def clear_test_map_cache() -> None:
@@ -473,11 +444,24 @@ def clear_test_map_cache() -> None:
 
 async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
     """:func:`load_test_files`, read once per index state; frozen because it is shared."""
-    key = await _cache_key(session, repo_id, "test_files")
+    key = await _cache.key(session, repo_id, "test_files")
     if key in _cache:
-        _cache.move_to_end(key)
-        return _cache[key]
-    return _remember(key, frozenset(await load_test_files(session, repo_id)))
+        return _cache.get(key)
+    return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
+
+
+async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """:func:`files_reached_by_tests` over the stored graph, walked once per index state.
+
+    The Tests page asks this on every load and the answer moves only when an
+    index run rewrites the graph, so the bulk edge read is paid once per index.
+    """
+    key = await _cache.key(session, repo_id, "files_reached")
+    if key in _cache:
+        return _cache.get(key)
+    test_files = set(await cached_test_files(session, repo_id))
+    view = await call_graph_from_db(session, repo_id)
+    return _cache.remember(key, frozenset(files_reached_by_tests(view, test_files)))
 
 
 async def any_tests_reaching(
@@ -490,16 +474,15 @@ async def any_tests_reaching(
     For the rest, :func:`tests_reaching_through_helpers`. Cached per index state.
     """
     seeds = tuple(sorted(set(targets)))
-    key = await _cache_key(session, repo_id, "any_reach", seeds)
+    key = await _cache.key(session, repo_id, "any_reach", seeds)
     if key in _cache:
-        _cache.move_to_end(key)
-        return _cache[key]
+        return _cache.get(key)
     test_files = set(await cached_test_files(session, repo_id))
     found = await tests_reaching_by_tier(session, repo_id, list(seeds), test_files=test_files)
     rest = [s for s in seeds if s not in found]
     if rest:
         found |= await tests_reaching_through_helpers(session, repo_id, rest, test_files)
-    return _remember(key, found)
+    return _cache.remember(key, found)
 
 
 async def tests_reaching_through_helpers(

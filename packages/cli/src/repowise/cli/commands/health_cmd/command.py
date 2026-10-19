@@ -40,6 +40,7 @@ from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
@@ -48,6 +49,7 @@ from .persist import (
     _load_persisted_coverage_map,
     _load_queue_counts,
     _load_recommendations,
+    _load_short_history,
     _load_stored_report,
     _persist_health,
 )
@@ -177,6 +179,19 @@ FIX_FIRST_ROWS = 3
     help="Print a ready-to-paste health badge (Markdown) for this repo's README.",
 )
 @click.option(
+    "--score",
+    "score_paths",
+    multiple=True,
+    type=click.Path(),
+    help="Score these files as they are on disk now (repeatable), with history "
+    "and coverage from the index. No update needed.",
+)
+@click.option(
+    "--against",
+    default=None,
+    help="With --score: also score the files at this revision and show the change.",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -198,6 +213,8 @@ def health_command(
     counts: str,
     trend_view: bool,
     badge_view: bool,
+    score_paths: tuple[str, ...],
+    against: str | None,
     verbose: bool,
 ) -> None:
     """Code-health scores from markers (CCN, nesting, brain-method).
@@ -227,6 +244,11 @@ def health_command(
 
     repo_path = _resolve_repo_path(path, no_workspace, repo_alias, status)
     status.print(f"[bold]repowise health[/bold] — {repo_path}")
+    if score_paths:
+        _render_score_view(repo_path, score_paths, against, opts, badge_view)
+        return
+    if against is not None:
+        raise click.UsageError("--against needs --score <paths>.")
     if _render_stored_view(repo_path, status, opts):
         return
 
@@ -265,6 +287,18 @@ def _withheld(finding: Any, excluded: frozenset[str]) -> bool:
     return not is_served("health", finding.biomarker_type, finding.file_path, excluded)
 
 
+def _render_score_view(
+    repo_path: Path, paths: tuple[str, ...], against: str | None, opts: _Options, badge: bool
+) -> None:
+    """``--score``: the files as they are on disk, beside *against* when given."""
+    from .live_score import render_live, repo_paths, score_live
+
+    clashing = opts.view_flags() + (["--badge"] if badge else [])
+    if clashing:
+        raise click.UsageError(f"--score does not combine with {', '.join(clashing)}.")
+    render_live(score_live(repo_path, repo_paths(repo_path, paths), against), opts.fmt)
+
+
 @dataclass(frozen=True)
 class _Options:
     """The options that pick a view and narrow the report."""
@@ -286,6 +320,20 @@ class _Options:
         return (
             parse_scope(self.scope) != DEFAULT_SCOPE or parse_counts(self.counts) != DEFAULT_COUNTS
         )
+
+    def view_flags(self) -> list[str]:
+        """The view and narrowing flags that were passed, by their CLI names."""
+        flags = {
+            "--file": self.file_filter,
+            "--module": self.module_filter,
+            "--refactoring-targets": self.refactoring_targets,
+            "--plan": self.plan_id,
+            "--recompute": self.recompute,
+            "--generate-code": self.generate_code,
+            "--trend": self.trend_view,
+            "--scope/--counts": self.controls_set,
+        }
+        return [name for name, value in flags.items() if value]
 
     def keeps(self, file_path: str) -> bool:
         """Whether ``--file`` and ``--module`` keep a row on *file_path*."""
@@ -431,6 +479,7 @@ def _render_json(
     repo_path: Path, report: Any, metrics_sorted: list[Any], findings: list[Any], opts: _Options
 ) -> None:
     excluded = excluded_types()
+    short_history = _load_short_history(repo_path)
     click.echo(
         json.dumps(
             {
@@ -440,20 +489,7 @@ def _render_json(
                 # Findings, causes, plans and Fix first items, as every
                 # surface counts them; ``shown`` is 0, nothing is listed.
                 "queue_counts": _load_queue_counts(repo_path),
-                "metrics": [
-                    {
-                        "file_path": m.file_path,
-                        "score": m.score,
-                        "max_ccn": m.max_ccn,
-                        "max_nesting": m.max_nesting,
-                        "nloc": m.nloc,
-                        "has_test_file": m.has_test_file,
-                        "line_coverage_pct": m.line_coverage_pct,
-                        "branch_coverage_pct": m.branch_coverage_pct,
-                        "duplication_pct": m.duplication_pct,
-                    }
-                    for m in metrics_sorted
-                ],
+                "metrics": [_json_metric(m, short_history) for m in metrics_sorted],
                 "findings": [
                     {
                         "biomarker_type": f.biomarker_type,
@@ -471,6 +507,21 @@ def _render_json(
             indent=2,
         )
     )
+
+
+def _json_metric(m: Any, short_history: set[str]) -> dict[str, Any]:
+    return {
+        "file_path": m.file_path,
+        "score": m.score,
+        "max_ccn": m.max_ccn,
+        "max_nesting": m.max_nesting,
+        "nloc": m.nloc,
+        "has_test_file": m.has_test_file,
+        "line_coverage_pct": m.line_coverage_pct,
+        "branch_coverage_pct": m.branch_coverage_pct,
+        "duplication_pct": m.duplication_pct,
+        **({"history": "short"} if m.file_path in short_history else {}),
+    }
 
 
 def _render_md(report: Any, findings: list[Any]) -> None:
@@ -508,7 +559,7 @@ def _render_table(
     # Lead with the finding count, density and coverage, not the bounded /10
     # average. Metrics carry no language, so it comes with the report.
     _render_performance_section(report, findings, languages)
-    _render_files_table(metrics_sorted)
+    _render_files_table(metrics_sorted, _load_short_history(repo_path))
     _render_findings_table(findings)
 
 
@@ -545,7 +596,7 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         console.print(f"[dim]Code health {note}.[/dim]")
 
 
-def _render_files_table(metrics_sorted: list[Any]) -> None:
+def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> None:
     from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
 
     table = Table(title=f"Lowest-scoring files ({min(len(metrics_sorted), 20)})")
@@ -559,13 +610,19 @@ def _render_files_table(metrics_sorted: list[Any]) -> None:
         score_color = BAND_TERMINAL_COLOR[band_for(m.score)]
         table.add_row(
             m.file_path,
-            f"[{score_color}]{m.score:.1f}[/{score_color}]",
+            f"[{score_color}]{m.score:.1f}[/{score_color}]"
+            + ("*" if m.file_path in short_history else ""),
             str(m.max_ccn),
             str(m.max_nesting),
             str(m.nloc),
             "✓" if m.has_test_file else "—",
         )
     console.print(table)
+    if any(m.file_path in short_history for m in metrics_sorted[:20]):
+        console.print(
+            f"[dim]* Short history (under {HISTORY_MIN_COMMITS} commits): most history "
+            "markers need more, so the score is mostly code shape.[/dim]"
+        )
 
 
 def _render_findings_table(findings: list[Any]) -> None:
@@ -600,8 +657,6 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
     """
     from repowise.core.analysis.communities import file_community_labels
     from repowise.core.analysis.health import HealthAnalyzer
-    from repowise.core.analysis.health.config import HealthConfig
-
     graph_builder, parsed_files = _parse_tree(repo_path)
     git_meta_map: dict = {}
     try:
@@ -623,14 +678,11 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         duplication_cache_dir=Path(repo_path) / ".repowise",
         repo_root=repo_path,
     )
-    # Any .repowise/health-rules.json the user keeps in the repo.
-    health_cfg = HealthConfig.load(repo_path)
-    analyzer_cfg = (
-        health_cfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-        if (health_cfg.disabled_biomarkers or health_cfg.rules)
-        else None
+    from .live_score import analyzer_config
+
+    report = analyzer.analyze(
+        analyzer_config(repo_path, [pf.file_info.path for pf in parsed_files])
     )
-    report = analyzer.analyze(analyzer_cfg)
     if persist:
         _persist_health(repo_path, report=report)
     hotspots = {p for p, m in git_meta_map.items() if m.get("is_hotspot")}

@@ -41,6 +41,8 @@ export interface FixFirstListProps {
   /** Closed by default, under the score: the headline keeps the first screen
    *  and the toggle's count says how much is behind it. */
   defaultOpen?: boolean | undefined;
+  /** Section heading. Callers with i18n pass their translated string. */
+  title?: string | undefined;
 }
 
 export function FixFirstList({
@@ -57,6 +59,7 @@ export function FixFirstList({
   LinkComponent,
   flush = false,
   defaultOpen = false,
+  title = "Highest-interest technical debt",
 }: FixFirstListProps) {
   // Every row starts as its one or two scan lines; the detail opens per row.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -111,7 +114,7 @@ export function FixFirstList({
 
   return (
     <OverviewSection
-      title="Fix first"
+      title={title}
       flush={flush}
       collapsible
       defaultOpen={defaultOpen}

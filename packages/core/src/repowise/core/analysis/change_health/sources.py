@@ -156,7 +156,7 @@ class GitRevisionSource:
             return self._resolve_range(*parts)
         return self._resolve_commit(revspec)
 
-    def _sha(self, ref: str) -> str:
+    def commit_sha(self, ref: str) -> str:
         out = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
             self.repo_path,
@@ -167,7 +167,7 @@ class GitRevisionSource:
         return out
 
     def _resolve_working_tree(self) -> RevisionPair:
-        head = self._sha("HEAD")
+        head = self.commit_sha("HEAD")
         # Untracked files are part of the uncommitted change, as change risk
         # and the changed lines count them.
         if self.hunks:
@@ -188,7 +188,7 @@ class GitRevisionSource:
         )
 
     def _resolve_commit(self, ref: str) -> RevisionPair:
-        head = self._sha(ref)
+        head = self.commit_sha(ref)
         parent = _git(
             ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}^"],
             self.repo_path,
@@ -209,8 +209,8 @@ class GitRevisionSource:
         )
 
     def _resolve_range(self, base: str, sep: str, head: str) -> RevisionPair:
-        base_sha = self._sha(base)
-        head_sha = self._sha(head)
+        base_sha = self.commit_sha(base)
+        head_sha = self.commit_sha(head)
         if sep == "...":
             # Same meaning as change risk and changed lines: no merge-base (a
             # shallow clone) is an error, not a silent two-dot diff.

@@ -54,7 +54,7 @@ def _mark_function_facts(
 
 #: Function-size findings whose fix starts at the deepest nested block.
 _DEEPEST_BLOCK_MARKERS = frozenset(
-    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
+    {"complex_method", "nested_complexity", "brain_method", "large_method", "repeated_nesting"}
 )
 
 

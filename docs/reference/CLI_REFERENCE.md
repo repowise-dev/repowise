@@ -1130,6 +1130,8 @@ When a listed finding or plan sits on a language its layer serves as a preview, 
 | `--counts` | `everything` (default) or `code_shape`. `code_shape` drops the git-derived half of the deduction, which rises as a file is worked on — the reading that answers whether the code itself is improving. |
 | `--refactoring-targets` | Print the refactoring queue the index stored: one opportunity per file with its structured, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps and Break Cycle as advisory evidence, in the same order MCP and the web UI serve. Reads the index, so it needs `repowise init` first. See [REFACTORING.md](../layers/REFACTORING.md) |
 | `--recompute` | Analyze the working tree in-process instead of reading the stored analysis. A whole-repo `table` run writes the result back to the index (scores, findings, a trend snapshot); `json`, `md` and `--file`/`--module` runs never write. Slow on a large repo; the only option outside an indexed one. With `--refactoring-targets`, `--scope` and `--counts` apply only here. |
+| `--score <path>` | Score these files as they are on disk now (repeatable), before an update or a PR. Structure comes from the bytes; history, coverage, test pairing and dependents from the index, so a file reads as the next update would score it. With no index, the code-shape reading. `--format json` gives `files` and `score_change`. |
+| `--against <rev>` | With `--score`: also score the files at this revision and print before, after and the change, plus the average weighted by nloc at `<rev>`. |
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
 | `--plan <id>` | Print one stored refactoring plan as the prompt an agent applies; with `--format json`, its recipe (preconditions, steps, postconditions). Reads the index. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
@@ -1147,6 +1149,7 @@ repowise health --refactoring-targets                 # the stored queue, as MCP
 repowise health --generate-code packages/server/app.py::handler   # LLM patch for one target
 repowise health --trend                               # snapshot history + alerts
 repowise health --counts code_shape                   # ignore the git-derived half
+repowise health --score src/app.py --against origin/main   # live score, before and after
 repowise coverage add coverage.lcov   # ingest coverage, then:
 repowise health --recompute           # fold it into the scores now (or wait for the next update)
 repowise health --format json | jq .kpis              # machine-readable

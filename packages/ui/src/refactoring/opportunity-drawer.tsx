@@ -30,7 +30,8 @@ import { Layers, Sparkles, Terminal } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { CollapsibleSection } from "../shared/collapsible-section";
-import { formatNumber } from "../lib/format";
+import { disambiguateBasenames, formatNumber } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
 import { CodeBlock } from "./plan-detail";
@@ -212,6 +213,10 @@ function DrawerBody({
   );
   const name = detail.file_path.split("/").pop() ?? detail.file_path;
   const others = detail.affected_files.filter((f) => f !== detail.file_path);
+  const otherLabels = React.useMemo(
+    () => disambiguateBasenames(detail.affected_files),
+    [detail.affected_files],
+  );
   // The opportunity resolved but its steps did not load. Everything else in the
   // drawer, triage included, still describes a real opportunity.
   const stepsUnavailable = detail.details_status === "unavailable";
@@ -266,9 +271,12 @@ function DrawerBody({
         <SheetTitle className="mt-0.5 break-words font-mono text-sm font-semibold text-[var(--color-text-primary)]">
           {name}
         </SheetTitle>
-        <p className="mt-1 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-          {detail.file_path}
-        </p>
+        <FilePath
+          path={detail.file_path}
+          mode="full"
+          copyable
+          className="mt-1 block text-[var(--color-text-tertiary)]"
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--color-border-default)] px-5 py-2.5 text-xs text-[var(--color-text-secondary)]">
@@ -468,13 +476,13 @@ function DrawerBody({
                     {href ? (
                       <a
                         href={href}
-                        className="break-all font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
+                        className="flex min-w-0 text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
                       >
-                        {f}
+                        <FilePath path={f} mode="distinguishing" labels={otherLabels} />
                       </a>
                     ) : (
-                      <span className="break-all font-mono text-xs text-[var(--color-text-secondary)]">
-                        {f}
+                      <span className="flex min-w-0 text-[var(--color-text-secondary)]">
+                        <FilePath path={f} mode="distinguishing" labels={otherLabels} />
                       </span>
                     )}
                   </li>
@@ -586,17 +594,13 @@ function StepCard({
         {step.target_symbol || meta.label}
       </button>
 
-      <p className="mt-0.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+      <p className="mt-0.5 text-[var(--color-text-tertiary)]">
         {href ? (
           <a href={href} className="underline-offset-2 hover:underline">
-            {step.file_path}
-            {span ? `:${span}` : ""}
+            <FilePath path={step.file_path} line={span || null} mode="full" />
           </a>
         ) : (
-          <>
-            {step.file_path}
-            {span ? `:${span}` : ""}
-          </>
+          <FilePath path={step.file_path} line={span || null} mode="full" />
         )}
       </p>
 

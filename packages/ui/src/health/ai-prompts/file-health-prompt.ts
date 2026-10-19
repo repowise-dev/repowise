@@ -1,6 +1,7 @@
 import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
 import { biomarkerInfo, CATEGORY_LABEL, splitByOrigin } from "../biomarker-glossary";
+import { performanceCauseLine } from "./performance-causes";
 import { findingEntries, historyContextBlock, rankByImpact, remainderRollup } from "./findings";
 import {
   bulletList,
@@ -191,7 +192,7 @@ function leadingCause(file: FileHealthPromptInput): string | null {
 
 function categoryLine(c: FileHealthPromptCategory): string {
   const label = CATEGORY_LABEL[c.category as keyof typeof CATEGORY_LABEL] ?? c.category;
-  const cap = c.cap != null ? `, capped at −${c.cap.toFixed(1)}` : "";
+  const cap = c.cap != null ? `, bounded at −${c.cap.toFixed(1)}` : "";
   // A capped category's figure is a floor, not a measurement.
   const note = c.capped ? " — **at its ceiling**, so this understates the category" : "";
   return `${label}: −${c.applied_deduction.toFixed(2)} from ${c.finding_count} finding${pluralS(
@@ -245,27 +246,10 @@ function processSignals(signals: FileHealthPromptSignals | null | undefined): st
   return bulletList([...churnFacts(signals), ...topologyFacts(signals)]);
 }
 
-function causeLine(c: PerformanceOpportunity): string {
-  // Titled by marker and location, as every other surface titles a cause; the
-  // fix strategy is not the cause's name.
-  const first = c.evidence[0];
-  const symbol = c.intervention_symbol ?? first?.function_name ?? null;
-  const at = symbol ? ` in \`${symbol}\`` : "";
-  const line = first?.line_start != null ? ` (line ${first.line_start})` : "";
-  const reach =
-    c.affected_call_sites_total > 1
-      ? ` Reaches ${c.affected_call_sites_total} call sites across ${c.affected_files_total} file${pluralS(
-          c.affected_files_total,
-        )}.`
-      : "";
-  const fix = c.fix ? ` Recorded fix: ${c.fix.strategy} (${c.fix.safety}). ${c.fix.rationale}` : "";
-  return `**${biomarkerInfo(c.biomarker_type).label}**${at}${line} — ${c.actionability_reason}${reach}${fix}`;
-}
-
 function performanceCauses(causes: PerformanceOpportunity[]): string | null {
   if (causes.length === 0) return null;
   return [
-    bulletList(causes.slice(0, MAX_FILE_HEALTH_CAUSES).map(causeLine)),
+    bulletList(causes.slice(0, MAX_FILE_HEALTH_CAUSES).map(performanceCauseLine)),
     causes.length > MAX_FILE_HEALTH_CAUSES
       ? `…and ${causes.length - MAX_FILE_HEALTH_CAUSES} more open on this file.`
       : null,
