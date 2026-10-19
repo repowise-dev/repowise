@@ -39,17 +39,28 @@ silence), the same precision-first default as the def/use dialect.
 handlers / ``finally`` it can raise into from the state before it and from each
 of its blocks. Those block edges are ``raise_edges``, since an exception can
 leave a block mid-way: in ``x = 1; y = g(); x = 2`` the handler sees ``x = 1``.
+The same walk records each ``try``'s clauses and each error exit with the
+handler that catches it (:mod:`raises`).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from ..complexity.languages import LanguageNodeMap
+from .raises import (
+    Handler,
+    RaiseSite,
+    TryRegion,
+    catches,
+    error_exit,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from .dialects.base import DefUseDialect
 
 # Upper bound on basic blocks per function. A structured CFG has roughly one
 # block per branch/loop arm, so a few hundred is already an extreme function;
@@ -144,9 +155,14 @@ class CFG:
     function_start_line: int = 0
     # ``(src, dst)`` edges an exception can take from inside *src*, mid-block.
     raise_edges: frozenset[tuple[int, int]] = frozenset()
+    # Error exits, ``try`` statements and Go ``defer`` lines, in source order.
+    raises: tuple[RaiseSite, ...] = ()
+    try_regions: tuple[TryRegion, ...] = ()
+    defers: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         self._by_id: dict[int, BasicBlock] = {b.id: b for b in self.blocks}
+        self._at: dict[int, tuple[int, int]] | None = None
 
     @property
     def entry(self) -> BasicBlock:
@@ -158,6 +174,17 @@ class CFG:
 
     def block(self, block_id: int) -> BasicBlock:
         return self._by_id[block_id]
+
+    def statement_at(self, line: int) -> tuple[int, int] | None:
+        """``(block id, index)`` of the narrowest statement holding *line*;
+        None when no statement does. Built on first use."""
+        if self._at is None:
+            best: dict[int, tuple[int, int, int]] = {}
+            for b in self.blocks:
+                for k, st in enumerate(b.statements):
+                    _narrowest(best, st, b.id, k)
+            self._at = {ln: (bid, k) for ln, (_w, bid, k) in best.items()}
+        return self._at.get(line)
 
     def successors(self, block: BasicBlock) -> list[BasicBlock]:
         return [self._by_id[s] for s in block.successors]
@@ -188,6 +215,15 @@ class CFG:
         return out
 
 
+def _narrowest(best: dict[int, tuple[int, int, int]], st: Statement, bid: int, k: int) -> None:
+    """Keep *st* (statement *k* of block *bid*) on each of its lines where it
+    is narrower than what *best* holds."""
+    width = st.end_line - st.start_line
+    for ln in range(st.start_line, st.end_line + 1):
+        if ln not in best or width < best[ln][0]:
+            best[ln] = (width, bid, k)
+
+
 @dataclass
 class _LoopCtx:
     """Jump targets for ``break`` / ``continue`` within the enclosing loop."""
@@ -203,14 +239,27 @@ class _CFGBuilder:
     mutable state (the block list, the id counter, and the loop-target stack).
     """
 
-    def __init__(self, lmap: LanguageNodeMap, *, max_blocks: int) -> None:
+    def __init__(
+        self, lmap: LanguageNodeMap, *, max_blocks: int, dialect: DefUseDialect | None = None
+    ) -> None:
         self.lmap = lmap
+        self.dialect = dialect
         self.max_blocks = max_blocks
         self.blocks: list[BasicBlock] = []
         self._next_id = 0
         self._loops: list[_LoopCtx] = []
         self.exit_block: BasicBlock | None = None
         self._raise_edges: set[tuple[int, int]] = set()
+        # Handlers of each ``try`` whose body is being built, innermost last,
+        # and the handler clauses being built: what a raise there meets.
+        self._guards: list[tuple[Handler, ...]] = []
+        self._handling: list[Handler] = []
+        self._raises: list[RaiseSite] = []
+        self._regions: list[TryRegion] = []
+        self._defers: list[int] = []
+        self._jump_kinds = (
+            lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+        )
 
     # -- low-level graph ops --------------------------------------------------
 
@@ -245,6 +294,7 @@ class _CFGBuilder:
         self._raises_to(region, dst)
 
     def _record_stmt(self, block: BasicBlock, node: Node) -> None:
+        self._record_exit(node)
         block.statements.append(
             Statement(node.type, node.start_point[0] + 1, node.end_point[0] + 1, node=node)
         )
@@ -286,6 +336,10 @@ class _CFGBuilder:
         ``doc_comment``), the same idiom nloc counting uses."""
         if block is None:
             return []
+        # A C-family arm without braces is the statement itself
+        # (``if (x) throw e;``): its children are not statements.
+        if block.type in self._jump_kinds:
+            return [block]
         kids = [c for c in block.named_children if "comment" not in c.type]
         while len(kids) == 1 and kids[0].type in self.lmap.block_kinds:
             kids = [c for c in kids[0].named_children if "comment" not in c.type]
@@ -307,6 +361,9 @@ class _CFGBuilder:
             entry_id=entry.id,
             exit_id=self.exit_block.id,
             raise_edges=frozenset(self._raise_edges),
+            raises=tuple(sorted(self._raises, key=lambda r: r.line)),
+            try_regions=tuple(sorted(self._regions, key=lambda r: r.start_line)),
+            defers=tuple(self._defers),
         )
 
     def _process_seq(self, stmts: list[Node], cur: BasicBlock | None) -> BasicBlock | None:
@@ -353,6 +410,39 @@ class _CFGBuilder:
             else:
                 self._record_stmt(cur, st)
         return cur
+
+    # -- error exits ----------------------------------------------------------
+
+    def _record_exit(self, st: Node) -> None:
+        """Record *st* as an error exit (or a ``defer``) when it is one."""
+        if st.type == "defer_statement":
+            self._defers.append(st.start_point[0] + 1)
+            return
+        if st.type in self.lmap.switch_kinds:
+            self._record_arm_raises(st)
+            return
+        found = error_exit(st, self.lmap, self._handling[-1] if self._handling else None)
+        if found is None:
+            return
+        kind, exc, raised = found
+        caught = None
+        if kind in ("raise", "rethrow"):
+            guards = (h for hs in reversed(self._guards) for h in hs)
+            caught = next((h.start_line for h in guards if catches(h.types, raised)), None)
+        self._raises.append(RaiseSite(st.start_point[0] + 1, kind, exc, caught))
+
+    def _record_arm_raises(self, switch: Node) -> None:
+        """The raises in a ``switch`` / ``match`` the graph keeps whole. The
+        statement is one graph node, so its arms are walked here, once, and
+        only within it: nested functions and lambdas are not entered."""
+        scopes = self.lmap.function_kinds | self.lmap.lambda_kinds
+        stack = list(reversed(switch.named_children))
+        while stack:
+            node = stack.pop()
+            if node.type in self.lmap.raise_kinds:
+                self._record_exit(node)
+            elif node.type not in scopes:
+                stack.extend(reversed(node.named_children))
 
     def _build_if(self, if_node: Node, cur: BasicBlock) -> BasicBlock:
         cur.kind = "branch"
@@ -535,12 +625,15 @@ class _CFGBuilder:
         # handlers and the ``finally`` (which also runs on a body ``return``).
         # Blocks are numbered in creation order: a region's blocks are the
         # ones created from its first id on.
+        clauses = [c for c in try_node.children if c.type in self.lmap.catch_kinds]
+        heads = [self._handler(c) for c in clauses]
         first = len(self.blocks)
         body_entry = self._new()
         self._edge(cur, body_entry)
-        body_out = self._process_seq(
-            self._body_stmts(try_node.child_by_field_name("body")), body_entry
-        )
+        body = try_node.child_by_field_name("body")
+        self._guards.append(tuple(heads))
+        body_out = self._process_seq(self._body_stmts(body), body_entry)
+        self._guards.pop()
         protected = self.blocks[first:]
         if finally_clause is not None:
             self._protect(cur, protected, normal_join)
@@ -560,20 +653,71 @@ class _CFGBuilder:
         elif body_out is not None:
             self._edge(body_out, normal_join)
 
-        for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
+        handlers = self._build_handlers(clauses, heads, cur, protected, normal_join, finally_clause)
+        parts = (body, else_clause, clauses, finally_clause)
+        self._regions.append(_try_region(try_node, parts, handlers))
+        return join
+
+    def _build_handlers(
+        self,
+        clauses: list[Node],
+        heads: list[Handler],
+        cur: BasicBlock,
+        protected: list[BasicBlock],
+        normal_join: BasicBlock,
+        finally_clause: Node | None,
+    ) -> tuple[Handler, ...]:
+        """Each handler clause of a ``try``, reached from its *protected*
+        body; returns them with whether each can complete normally."""
+        handlers = []
+        for handler, head in zip(clauses, heads, strict=True):
             first = len(self.blocks)
             handler_entry = self._new("handler")
+            # The clause head (``except E as e:``) reads the exception type and
+            # binds its name; the dialect says which (``handler_def_use``).
+            self._record_head(handler_entry, handler)
             self._protect(cur, protected, handler_entry)
+            self._handling.append(head)
             handler_out = self._process_seq(
                 self._body_stmts(self._block_of(handler)), handler_entry
             )
+            self._handling.pop()
+            handlers.append(replace(head, completes=handler_out is not None))
             if handler_out is not None:
                 self._edge(handler_out, normal_join)
             # A handler that returns or raises part-way still runs ``finally``.
             if finally_clause is not None:
                 self._raises_to(self.blocks[first:], normal_join)
+        return tuple(handlers)
 
-        return join
+    def _handler(self, clause: Node) -> Handler:
+        """What *clause* names and binds, from the language's dialect; with
+        none, a handler whose types match no raise."""
+        types, name = self.dialect.handler_head(clause) if self.dialect else ((), None)
+        return Handler(clause.start_point[0] + 1, clause.end_point[0] + 1, types, name)
+
+
+def _try_region(
+    try_node: Node,
+    parts: tuple[Node | None, Node | None, list[Node], Node | None],
+    handlers: tuple[Handler, ...],
+) -> TryRegion:
+    """*try_node*'s lines and its clauses': *parts* is its body, ``else``,
+    handler clauses and ``finally``."""
+    body, else_clause, clauses, finally_clause = parts
+    nodes = [body, else_clause, *clauses, finally_clause]
+    return TryRegion(
+        try_node.start_point[0] + 1,
+        try_node.end_point[0] + 1,
+        _lines(body) or (0, 0),
+        tuple(x for x in map(_lines, nodes) if x is not None),
+        handlers,
+        _lines(finally_clause),
+    )
+
+
+def _lines(node: Node | None) -> tuple[int, int] | None:
+    return (node.start_point[0] + 1, node.end_point[0] + 1) if node is not None else None
 
 
 def build_cfg(
@@ -581,6 +725,7 @@ def build_cfg(
     lmap: LanguageNodeMap,
     *,
     max_blocks: int = _DEFAULT_MAX_BLOCKS,
+    dialect: DefUseDialect | None = None,
 ) -> CFG:
     """Build the control-flow graph for one function AST node.
 
@@ -588,6 +733,8 @@ def build_cfg(
     ``_collect_function_nodes`` yields); *lmap* is its language's
     ``LanguageNodeMap``. Raises :class:`CFGGuardTrippedError` if the function
     exceeds *max_blocks* -- callers building over a corpus should catch it and
-    skip the function (the :mod:`gating` harness does).
+    skip the function (the :mod:`gating` harness does). *dialect* says what
+    each exception handler names (``handler_head``); without it no raise is
+    counted as caught.
     """
-    return _CFGBuilder(lmap, max_blocks=max_blocks).build(fn_node)
+    return _CFGBuilder(lmap, max_blocks=max_blocks, dialect=dialect).build(fn_node)

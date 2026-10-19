@@ -211,6 +211,20 @@ broken plugin cannot derail the pipeline.
 
 ---
 
+## Loading plugins and choosing a seam
+
+A distribution declares an entry point in the `repowise.plugins` group (or a
+module is listed in `REPOWISE_PLUGINS` as `module` or `module:attr`), and
+repowise imports it once, calling the target if it is callable, so its
+registrations land in the registries above. A plugin that fails to load is
+reported by `repowise plugins` and never stops startup. Named seams use
+`SeamRegistry` from `repowise.core.registry.plugins`: the local default
+registers first and stays chosen unless the plugin passes `default=True` or
+`REPOWISE_SEAM_<NAME>` names another implementation. Both variables are read
+from the process environment only, never from a repo's `.repowise/.env`.
+
+---
+
 ## Defaults stay the defaults
 
 The seams add a layer of indirection but no behavior change for users

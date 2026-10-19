@@ -17,6 +17,7 @@ from typing import Any
 import structlog
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
+from repowise.core.providers.llm.error_hints import describe_provider_error
 
 from .. import onboarding as _onboarding
 from ..agent_digest import MODULE_SIGNALS_KEY, module_signals, split_questions
@@ -34,6 +35,7 @@ from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
     STUB_FALLBACK_ERROR,
+    STUB_FALLBACK_HINT,
     STUB_PAGE_CONFIDENCE,
     GeneratedPage,
     compute_page_id,
@@ -77,6 +79,9 @@ def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> Gener
     page it had, which is all of them.
     """
     page.metadata[STUB_FALLBACK_ERROR] = str(exc)[:500]
+    hint = describe_provider_error(exc)
+    if hint is not None:
+        page.metadata[STUB_FALLBACK_HINT] = hint.as_dict()
     page.confidence = STUB_PAGE_CONFIDENCE
     log.warning(
         "page_generation.stub_fallback",

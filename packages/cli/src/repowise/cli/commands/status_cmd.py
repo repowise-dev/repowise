@@ -23,6 +23,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.cli.ui.brand import format_bytes
+from repowise.cli.ui.result_panels import keyless_upgrade_note
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.index_scope import resolve_index_scope
 
@@ -281,14 +282,21 @@ def _query_health_line(repo_path: Path) -> str | None:
     from repowise.core.analysis.health.grading import (
         BAND_LABEL,
         BAND_TERMINAL_COLOR,
-        band_for,
+        analysed_note,
         format_score,
+        headline_band,
     )
 
     worst_repr = format_score(worst_score) if worst_score is not None else "—"
 
-    band = band_for(float(data["average_health"]))
-    band_color = BAND_TERMINAL_COLOR[band]
+    band = headline_band(data["average_health"], data.get("analysed_share"))
+    if band is not None:
+        band_color = BAND_TERMINAL_COLOR[band]
+        band_part = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
+    else:
+        band_part = ""
+    note = analysed_note(data["file_count"], data.get("unanalysed_file_count") or 0)
+    note_part = f" · {note}" if note else ""
     # Maintainability and performance are co-surfaced pillars; show each when the
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
@@ -308,8 +316,8 @@ def _query_health_line(repo_path: Path) -> str | None:
     hotspot = data.get("hotspot_health")
     hotspot_part = f"{format_score(hotspot)} (hotspots) · " if hotspot is not None else ""
     return (
-        f"[bold]Health:[/bold] {format_score(data['average_health'])} (avg) "
-        f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
+        f"[bold]Health:[/bold] {format_score(data['average_health'])} (avg)"
+        f"{band_part}{note_part} · "
         f"{hotspot_part}"
         f"{worst_repr} (worst: {worst_path})"
         f"{maint_part}"
@@ -651,18 +659,32 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         )
         return
 
-    # State table. Printed before the page query runs, not after: the query is
-    # unguarded, and on a wiki.db whose schema predates the current models it
-    # raises. Ordering it first means a reader still gets the sync state that
-    # tells them the index is old.
+    # The page query runs first so the state table can show its totals, but
+    # its error is held until the state table is printed: on a wiki.db whose
+    # schema predates the current models it raises, and a reader should still
+    # get the sync state that tells them the index is old.
+    counts: dict[str, int] = {}
+    total_db_tokens = 0
+    page_query_error: Exception | None = None
+    if has_db:
+        try:
+            counts, total_db_tokens = run_async(_query_pages(repo_path))
+        except Exception as exc:
+            page_query_error = exc
+
+    # Totals from the live rows when the query worked. state.json counts
+    # tombstoned pages too, and its token total is stamped only by init, so
+    # beside the per-type table below it disagreed with it.
+    total_pages = sum(counts.values()) if counts else state.get("total_pages", 0)
+    total_tokens = total_db_tokens if counts else state.get("total_tokens", 0)
     state_table = Table(title="Sync State")
     state_table.add_column("Key", style="cyan")
     state_table.add_column("Value")
     state_table.add_row("Last sync commit", state.get("last_sync_commit", "—") or "—")
-    state_table.add_row("Total pages", str(state.get("total_pages", 0)))
+    state_table.add_row("Total pages", str(total_pages))
     state_table.add_row("Provider", state.get("provider", "—") or "—")
     state_table.add_row("Model", state.get("model", "—") or "—")
-    state_table.add_row("Total tokens", f"{state.get('total_tokens', 0):,}")
+    state_table.add_row("Total tokens", f"{total_tokens:,}")
     state_table.add_row("Index storage", format_bytes(storage_bytes))
     state_table.add_row(
         "Scope",
@@ -699,11 +721,21 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         state_table.add_row("Full upgrade", scope["upgrade"]["status"])
     console.print(state_table)
 
+    # A template-only scope is a finished keyless index, not a broken one —
+    # name the upgrade commands here too, since "Full upgrade  pending" above
+    # names no command on its own (#3105). Mirrors the init closing note.
+    if scope["content_provenance"] == "template":
+        note = keyless_upgrade_note(
+            scope["search"]["semantic"] == "available", scope["search"]["next_command"]
+        )
+        console.print(f"[dim]{note}[/dim]")
+
     if not has_db:
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")
         return
 
-    counts, total_db_tokens = run_async(_query_pages(repo_path))
+    if page_query_error is not None:
+        raise page_query_error
     if counts:
         pages_table = Table(title="Pages by Type")
         pages_table.add_column("Page Type", style="cyan")

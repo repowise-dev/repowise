@@ -50,6 +50,48 @@ function plural(n: number, one: string, many: string): string {
   return `${formatNumber(n)} ${n === 1 ? one : many}`;
 }
 
+/** The chips that filter the list to the subsets the lede names. */
+function LedeChips({
+  facets,
+  quickWinsActive,
+  onToggleQuickWins,
+  onSeeStructural,
+}: Pick<
+  RefactoringLedeProps,
+  "facets" | "onToggleQuickWins" | "onSeeStructural"
+> & { quickWinsActive: boolean }) {
+  const quickWins = facets?.effort?.S ?? 0;
+  const structuralShown = sumStructural(facets?.lead_type);
+  const showQuickWins = onToggleQuickWins && (quickWins > 0 || quickWinsActive);
+  const showStructural = onSeeStructural && structuralShown > 0;
+  if (!showQuickWins && !showStructural) return null;
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1"
+      role="group"
+      aria-label="Filter the list"
+    >
+      {showQuickWins ? (
+        <FilterChip active={quickWinsActive} onClick={onToggleQuickWins}>
+          Quick wins{" "}
+          <span className="font-mono tabular-nums">{formatNumber(quickWins)}</span>
+        </FilterChip>
+      ) : null}
+      {showStructural ? (
+        <button
+          type="button"
+          onClick={onSeeStructural}
+          className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        >
+          See the{" "}
+          <span className="font-mono tabular-nums">{formatNumber(structuralShown)}</span>{" "}
+          structural
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function RefactoringLede({
   summary,
   counts,
@@ -92,11 +134,6 @@ export function RefactoringLede({
   const structural = sumStructural(summary.by_lead_type);
   const local = Math.max(0, total - structural);
 
-  const quickWins = facets?.effort?.S ?? 0;
-  const structuralShown = sumStructural(facets?.lead_type);
-  const showQuickWins = onToggleQuickWins && (quickWins > 0 || quickWinsActive);
-  const showStructural = onSeeStructural && structuralShown > 0;
-
   return (
     <PageLede
       label="Open opportunities"
@@ -127,31 +164,12 @@ export function RefactoringLede({
           person&apos;s judgment first.
         </p>
       ) : null}
-      {showQuickWins || showStructural ? (
-        <div
-          className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1"
-          role="group"
-          aria-label="Filter the list"
-        >
-          {showQuickWins ? (
-            <FilterChip active={quickWinsActive} onClick={onToggleQuickWins}>
-              Quick wins{" "}
-              <span className="font-mono tabular-nums">{formatNumber(quickWins)}</span>
-            </FilterChip>
-          ) : null}
-          {showStructural ? (
-            <button
-              type="button"
-              onClick={onSeeStructural}
-              className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-            >
-              See the{" "}
-              <span className="font-mono tabular-nums">{formatNumber(structuralShown)}</span>{" "}
-              structural
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+      <LedeChips
+        facets={facets}
+        quickWinsActive={quickWinsActive}
+        onToggleQuickWins={onToggleQuickWins}
+        onSeeStructural={onSeeStructural}
+      />
     </PageLede>
   );
 }

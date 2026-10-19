@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import get_args
 
 import pytest
 
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, LowPriority, low_priority
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "repowise.core.analysis.health.worth",
+        "repowise.core.analysis.health.perf.opportunities",
+        "repowise.core.analysis.health.perf.actionability",
+        "repowise.core.analysis.health.perf.opportunity_rank",
+    ],
+)
+def test_health_module_imports_cleanly_in_fresh_interpreter(module: str) -> None:
+    """Importing worth must not pull complexity before worth is initialized."""
+    subprocess.run([sys.executable, "-c", f"import {module}"], check=True)
 
 
 @pytest.mark.parametrize(

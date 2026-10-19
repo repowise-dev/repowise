@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.change_health.file_scores import (
+    SCORE_BASIS,
+    FileScoreDelta,
+    score_change,
+)
 from repowise.core.analysis.change_health.models import ChangeFinding, ChangeHealthDelta
 from repowise.core.analysis.review_directive import (
     CoveringTestEvidence,
@@ -24,6 +29,11 @@ TOP_FINDINGS_LIMIT = 3
 
 #: Reasons carried on the directive.
 REASON_LIMIT = 3
+
+#: Deleted sources listed with where their code went.
+MOVED_TO_LIMIT = 10
+#: Per-file score rows carried in ``health_delta.files``.
+FILE_ROWS_LIMIT = 10
 
 #: Findings whose next-action is carried in the default response.
 _ACTIONABLE_FINDINGS = 2
@@ -91,20 +101,16 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
 
     Names the scope and the tests to extend from the rows' hints, riskiest
     file first, so the agent writes the missing test where the suite already
-    exercises the code. Stale coverage leads instead: its gaps are not real yet.
+    exercises the code. Files changed since the coverage was measured lead
+    instead: they carry no figure until the tests run again.
     """
+    if stale := _stale_action(block):
+        return stale
     uncovered = block["coverable_line_count"] - block["covered_line_count"] if block else 0
     if uncovered <= 0:
         return _partial_action(block)
     lines = f"{uncovered} changed executable line{'' if uncovered == 1 else 's'}"
     lines += _scope_words(block["scope"].get("label") or "")
-    if block["scope"]["freshness"] == "stale":
-        # Stale line numbers describe other code: the fix is a fresh run first.
-        return (
-            "Stored coverage predates this change: re-run the tests with coverage, then "
-            "`repowise coverage add` (the hook does it automatically) and call again "
-            f"({lines} read as uncovered until then)"
-        )
     tests = _hinted_tests(block["files"])
     text = f"{lines} {'is' if uncovered == 1 else 'are'} uncovered; "
     if tests:
@@ -112,10 +118,22 @@ def patch_coverage_action(block: dict[str, Any] | None) -> str | None:
     return text + "add tests for them (patch_coverage.files)"
 
 
+def _stale_action(block: dict[str, Any] | None) -> str | None:
+    """Re-measure first when changed files have no figure because they changed since."""
+    stale = ((block or {}).get("file_counts") or {}).get("stale_file", 0)
+    if not stale:
+        return None
+    return (
+        "Stored coverage predates this change: re-run the tests with coverage, then "
+        "`repowise coverage add` (the hook does it automatically) and call again "
+        f"({stale} changed file{'' if stale == 1 else 's'} not measured until then)"
+    )
+
+
 def _partial_action(block: dict[str, Any] | None) -> str | None:
     """The next action when every changed line ran but some took only part of their branches."""
     partial = _partial_line_count(block)
-    if not partial or block["scope"]["freshness"] == "stale":
+    if not partial:
         return None
     lines = f"{partial} changed line{'' if partial == 1 else 's'}"
     lines += _scope_words(block["scope"].get("label") or "")
@@ -167,15 +185,33 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     if delta.head is not None:
         block["head"] = delta.head.as_dict()
     if delta.fingerprint is not None:
-        block["analyzer"] = delta.fingerprint.as_dict()
+        block["analyzer"] = {**delta.fingerprint.as_dict(), "context": delta.context}
     if len(delta.findings) > len(emitted):
         block["findings_reduced_reason"] = "top_findings_cap"
         block["all_findings_via"] = _call(revspec, extra="include=['findings']")
+    block.update(_nonzero(improved=delta.improved_total, moved=delta.moved_total))
+    if delta.moved_to:
+        block["moved_to"] = dict(list(delta.moved_to.items())[:MOVED_TO_LIMIT])
+    if delta.files:
+        block.update(_file_scores(delta.files))
     if delta.skipped:
         block["skipped"] = _skipped(delta.skipped)
     if delta.limits:
         block["limits"] = delta.limits
     return block
+
+
+def _file_scores(rows: list[FileScoreDelta]) -> dict[str, Any]:
+    """The changed files' scores before and after, and their base-nloc average."""
+    out: dict[str, Any] = {
+        "score_basis": SCORE_BASIS,
+        "files": [r.as_dict() for r in rows[:FILE_ROWS_LIMIT]],
+        "files_total": len(rows),
+    }
+    change = score_change(rows)
+    if change is not None:
+        out["score_change"] = change.as_dict()
+    return out
 
 
 def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
@@ -203,6 +239,8 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
         row["lines"] = [finding.line_start, finding.line_end or finding.line_start]
     if finding.severity_before:
         row["severity_before"] = finding.severity_before
+    if finding.moved_from:
+        row["moved_from"] = finding.moved_from
     if finding.opportunity_id:
         row["opportunity_id"] = finding.opportunity_id
         row["opportunity_rank"] = finding.opportunity_rank
@@ -223,10 +261,9 @@ def finding_detail(finding: ChangeFinding, revspec: str | None) -> dict[str, Any
 # -- internals --------------------------------------------------------------
 
 
-
-
-
-
+def _nonzero(**counts: int) -> dict[str, int]:
+    """Only the counts that are set, so an ordinary change's block does not grow."""
+    return {name: count for name, count in counts.items() if count}
 
 
 def _counts(findings: list[ChangeFinding], attribute: str) -> dict[str, int]:

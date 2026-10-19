@@ -156,7 +156,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Type | Providers | Consumers |
 |------|-----------|-----------|
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
+| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
@@ -187,6 +187,10 @@ contracts:
   detect_socket: true
   detect_topics: true
   detect_data: true
+  # Directory-name regex (full match, ignoring case) marking a .NET project whose
+  # types are MassTransit messages. The default is shown; widen it to match your
+  # own project naming, e.g. '(?:.+\.)?contracts?' to accept singular names too.
+  contract_project_pattern: '(?:.+\.)?contracts'
   # Map a consumer base token or absolute host to the repo it targets, so a
   # call whose base is unresolved at parse time links as an exact match.
   service_bases:
@@ -205,6 +209,23 @@ A route or topic that exists only in a test is a fixture, not a service contract
 Calls to a literal
 third-party host (Stripe, Formspree, ...) that is not a workspace service are
 excluded from matching and reported under the `external_host` diagnostics reason.
+
+**MassTransit.** A message is routed by its .NET type, so its contract id is
+`topic::<namespace>:<type>` (lowercased), not a string. A type counts as a message
+only when it is declared at the top level of a non-generic type in a project under a
+directory matching `contracts.contract_project_pattern` (configurable; the default
+matches `Contracts` and `<Prefix>.Contracts`), in any repo of the workspace. A
+`Send` or `Publish` argument that is not one of those types never produces a
+contract, which keeps non-bus `Send` calls out unless they pass an indexed message
+type. Producers are `Publish`, `Send`, `SchedulePublish`, `ScheduleSend`,
+`ScheduleRecurringSend` (generic and argument forms), `Respond`, `IRequestClient<T>`
+and saga `Init<T>`, plus extension methods that wrap them; receivers declared as
+`IMediator`, `ISender` or `IPublisher` are skipped. Consumers are `IConsumer<T>`
+(including `Fault<T>`), closed open-generic consumers and registration helpers, and
+saga events. A name that matches two messages is skipped, not guessed, and a bare
+name is matched by its short name only when the repo declares no other type with
+that name. Adding or removing a message type, or changing the pattern, re-extracts
+every repo.
 
 ### Package Dependency Scanning
 
@@ -521,6 +542,7 @@ Conformance and the cycle finder answer *per-relationship* questions (is this ed
 Workspace init registers the MCP server with your editors (skip with `--no-editor-setup`). The MCP server is workspace-aware:
 
 - **Default repo context**, queries go to the primary repo unless you specify otherwise
+- **Target routing**, `get_context`, `get_symbol`, `get_risk` and `get_health` send a path that only another repo has to that repo, and accept `<alias>:<path>` targets ([details](../agent/MCP_TOOLS.md#workspace-mode))
 - **Cross-repo context**, single-repo tools add co-change and contract evidence from the other repos
 - **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (the cross-repo topology), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time; see [MCP_TOOLS.md](../agent/MCP_TOOLS.md#workspace-mode)
 - **Opt-in workspace tools**, off by default and enabled with `mcp.tools` in `.repowise/config.yaml`: `get_blast_radius` ([Cross-Repo Blast Radius](#cross-repo-blast-radius)), `get_conformance` ([Architecture Conformance](#architecture-conformance)) and `get_architecture` ([Architecture Metrics](#architecture-metrics))
@@ -540,6 +562,8 @@ my-workspace/
     system_graph.json              # Service-granular system graph + diagnostics
     breaking_changes.json          # Breaking provider changes vs the last index
     conformance.json               # Architecture rule violations + dependency cycles
+    workspace.db                   # Workspace store: symbol and path index, components,
+                                   # recent changes, per-repo health and freshness
   .claude/
     CLAUDE.md                      # Workspace-level CLAUDE.md for AI editors
   backend/
@@ -547,6 +571,8 @@ my-workspace/
   frontend/
     .repowise/
 ```
+
+`workspace.db` is derived from each repo's own index and refreshed after every workspace update and whenever a repo is re-indexed, so deleting it is always safe: it is rebuilt the next time it is needed.
 
 What lives in each repo's `.repowise/` is described in
 [CONFIG.md](../reference/CONFIG.md#the-repowise-directory).

@@ -331,6 +331,7 @@ async def _stored(
                 threshold=threshold,
                 # The flag overrides its config key, as for a report.
                 config=replace(cfg, min_coverable_lines=min_lines),
+                repo_path=str(root),
             )
         except SQLAlchemyError as exc:
             raise CannotEvaluateError(

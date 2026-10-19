@@ -276,7 +276,7 @@ def test_keyless_weak_reply_serves_the_ranked_list_and_one_guidance_line():
     )
 
     assert set(out) == {
-        "answer", "confidence", "retrieval_quality", "degraded", "best_guesses",
+        "answer", "confidence", "degraded", "best_guesses",
         "candidate_files", "code_rationale", "_meta",
     }
     assert "src/pkg/f0.py first" in out["answer"] and "search_codebase" in out["answer"]

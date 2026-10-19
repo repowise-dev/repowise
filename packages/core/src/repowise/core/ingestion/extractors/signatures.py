@@ -43,7 +43,17 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         node_type == "function_signature" and def_node.child_by_field_name("parameters")
     ):
         # TS/JS use return_type; Go uses result
-        return f"function {name}{params_text}{_ret(('return_type', 'result'))}"
+        returns = _ret(("return_type", "result")) or _kotlin_return(def_node, src)
+        return f"function {name}{params_text}{returns}"
+    if node_type == "function_signature":
+        # Dart: the return type is the unfielded nodes ahead of the name.
+        name_node = def_node.child_by_field_name("name")
+        returns = ""
+        for child in def_node.children if name_node is not None else ():
+            if child == name_node:
+                break
+            returns += node_text(child, src)
+        return f"{name}{params_text} -> {returns}" if returns else f"{name}{params_text}"
     if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
         base = f"class {name}"
         if params_text:
@@ -51,8 +61,17 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return base
     if node_type == "interface_declaration":
         return f"interface {name}"
+    if node_type == "annotation_type_declaration":
+        return f"@interface {name}"
+    if node_type == "annotation_type_element_declaration":
+        # Java: an element takes no arguments and its declared type is what it returns.
+        return f"{name}(){_ret(('type',))}"
     if node_type == "type_alias_declaration":
         return f"type {name}"
+    if node_type == "type_alias" and any(c.type == "typealias" for c in def_node.children):
+        # Kotlin: keep the aliased type, which a call through the alias constructs.
+        target = def_node.children[-1]
+        return f"typealias {name} = {node_text(target, src)}"
     if node_type == "enum_declaration":
         return f"enum {name}"
     if node_type in ("method_definition", "method_signature"):
@@ -99,3 +118,19 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"
+
+
+def _kotlin_return(def_node: Node, src: str) -> str:
+    """`` -> T`` for a Kotlin function: the unfielded type after ``(..):``."""
+    after_parameters = False
+    colon = False
+    for child in def_node.children:
+        if child.type == "function_value_parameters":
+            after_parameters = True
+        elif after_parameters and child.type == ":":
+            colon = True
+        elif colon:
+            return f" -> {node_text(child, src)}"
+        elif after_parameters:
+            return ""
+    return ""

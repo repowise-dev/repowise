@@ -168,7 +168,16 @@ export function CodeHealthLede({
   // they are not a verdict this projection has earned: clamp(10 - structure)
   // reads systematically higher, and almost every repo would print "Excellent"
   // under it. The figure and the spread still say where the repo sits.
-  const healthChip = codeShape ? undefined : healthBand(health);
+  // A `null` band means the server withheld it: too few code files were
+  // analysed for the average to speak for the repo. Absent on an older server.
+  const healthChip = codeShape || summary.band === null ? undefined : healthBand(health);
+  const unanalysed = summary.unanalysed_file_count ?? 0;
+  // The share is stated whenever files were left out, so a figure over a few
+  // files never reads as the whole repo.
+  const filesLabel =
+    unanalysed > 0
+      ? `${formatNumber(summary.file_count)} of ${formatNumber(summary.file_count + unanalysed)} code files`
+      : `${formatNumber(summary.file_count)} files`;
 
   const stats: RibbonStat[] = [
     { label: "Files", value: formatNumber(summary.file_count), hint: FILES_HINT },
@@ -261,7 +270,7 @@ export function CodeHealthLede({
         <p>
           Across{" "}
           <strong className="font-semibold text-[var(--color-text-primary)]">
-            {formatNumber(summary.file_count)} files
+            {filesLabel}
           </strong>
           , weighted by lines of code.
           {hotspot != null && (
@@ -309,7 +318,7 @@ export function CodeHealthLede({
             <p>
               Built from complexity, duplication, coverage
               {codeShape ? "" : ", churn and ownership"}.
-              <UnanalysedNote count={summary.unanalysed_file_count ?? 0} />
+              <UnanalysedNote count={unanalysed} />
             </p>
             {perf != null && (
               // Not "performance risk": this is a score on the same ladder as
@@ -361,7 +370,7 @@ export function CodeHealthLede({
           {formatScore(health)}
         </span>
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          out of 10 across {formatNumber(summary.file_count)} files
+          out of 10 across {filesLabel}
         </span>
         {healthChip ? (
           <span className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">

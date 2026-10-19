@@ -587,6 +587,7 @@ async def setup_mcp(factory, fts, vector_store, populated_db, tmp_path):
     mcp_mod._embedder_status = None
     mcp_mod._release_check = None
     mcp_mod._release_announced = None
+    mcp_mod._keyless_note_announced = False
 
 
 @pytest.fixture

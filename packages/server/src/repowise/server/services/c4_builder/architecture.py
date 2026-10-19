@@ -6,6 +6,7 @@ import logging
 import os
 from bisect import bisect_left
 from collections import defaultdict
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -29,6 +30,7 @@ from repowise.core.persistence.crud import (
     upsert_kg_project_meta,
     upsert_kg_tour_steps,
 )
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata, Page
 
 from .models import (
@@ -408,17 +410,21 @@ async def _migrate_kg_file_to_db(
             await session.rollback()
 
 
-async def build_architecture_view(
-    session: AsyncSession,
-    repo_id: str,
-    include_symbols: bool = False,
-) -> ArchitectureView:
-    from . import load_repo
+class _NodeFacts(NamedTuple):
+    """Per-node enrichment the ArchNode rows are built from."""
 
-    repo = await load_repo(session, repo_id)
+    git_by_path: dict[str, GitMetadata]
+    dead_files: set[str]
+    page_map: dict[str, str]
+    curated_meta: dict[str, tuple[str, str, list[str]]]
+    pr_pcts: dict[int, float]
+    in_degree: dict[str, int]
+    out_degree: dict[str, int]
 
-    empty = ArchitectureView(
-        project_name=repo.name if repo else repo_id,
+
+def _empty_view(project_name: str) -> ArchitectureView:
+    return ArchitectureView(
+        project_name=project_name,
         project_description="",
         layers=[],
         nodes=[],
@@ -431,31 +437,18 @@ async def build_architecture_view(
         frameworks=[],
         external_systems=[],
     )
-    if repo is None:
-        return empty
 
-    # -- Load nodes --
-    node_query = select(GraphNode).where(GraphNode.repository_id == repo_id)
-    if not include_symbols:
-        node_query = node_query.where(GraphNode.node_type == "file")
-    result = await session.execute(node_query)
-    all_nodes: list[GraphNode] = list(result.scalars())
-    if not all_nodes:
-        return empty
 
-    node_id_set = {n.node_id for n in all_nodes}
-    file_nodes = [n for n in all_nodes if n.node_type == "file"]
+def _view_edges(
+    all_edges: list[GraphEdge], node_id_set: set[str], include_symbols: bool
+) -> list[GraphEdge]:
+    """The edges this view returns.
 
-    # -- Load edges --
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
-    all_edges: list[GraphEdge] = list(edge_result.scalars())
-
-    # The edges this view actually returns. Degree is counted from the same
-    # list the arrows are drawn from: counting every row instead made one
-    # response disagree with itself, because a file's out-degree included the
-    # `defines` edge to each symbol it declares and none of those are shown
-    # when symbols are excluded.
-    view_edges = [
+    Degree is counted from the same list the arrows are drawn from: counting
+    every row instead made a file's out-degree include the ``defines`` edge to
+    each symbol it declares, none of which are shown when symbols are excluded.
+    """
+    return [
         e
         for e in all_edges
         if (include_symbols or e.edge_type not in _SYMBOL_EDGE_TYPES)
@@ -463,165 +456,210 @@ async def build_architecture_view(
         and e.target_node_id in node_id_set
     ]
 
+
+def _degrees(view_edges: list[GraphEdge]) -> tuple[dict[str, int], dict[str, int]]:
+    """``(in_degree, out_degree)`` per node over *view_edges*."""
     in_degree: dict[str, int] = defaultdict(int)
     out_degree: dict[str, int] = defaultdict(int)
     for e in view_edges:
         out_degree[e.source_node_id] += 1
         in_degree[e.target_node_id] += 1
+    return in_degree, out_degree
 
-    # -- External systems --
-    externals = await _external_views(session, repo_id)
 
-    # -- Enrichment: git metadata --
+async def _load_enrichment(
+    session: AsyncSession, repo_id: str
+) -> tuple[dict[str, GitMetadata], set[str], dict[str, str]]:
+    """Git metadata by path, unreachable files, and wiki page summaries by target."""
     git_result = await session.execute(
         select(GitMetadata).where(GitMetadata.repository_id == repo_id)
     )
     git_by_path: dict[str, GitMetadata] = {gm.file_path: gm for gm in git_result.scalars()}
 
-    # -- Enrichment: dead code --
     dead_result = await session.execute(
         select(DeadCodeFinding.file_path).where(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             DeadCodeFinding.kind == "unreachable_file",
         )
     )
     dead_files: set[str] = {row[0] for row in dead_result.all()}
 
-    # -- Enrichment: wiki pages --
     page_result = await session.execute(
         select(Page.target_path, Page.summary).where(
             Page.repository_id == repo_id,
         )
     )
     page_map: dict[str, str] = {row[0]: row[1] for row in page_result.all()}
+    return git_by_path, dead_files, page_map
 
-    def _find_page_summary(path: str) -> str:
-        hit = page_map.get(path)
+
+def _find_page_summary(page_map: dict[str, str], path: str) -> str:
+    """The summary of *path*'s page, else of its nearest ancestor's."""
+    hit = page_map.get(path)
+    if hit:
+        return hit
+    parent = path
+    while "/" in parent:
+        parent = parent.rsplit("/", 1)[0]
+        hit = page_map.get(parent)
         if hit:
             return hit
-        parent = path
-        while "/" in parent:
-            parent = parent.rsplit("/", 1)[0]
-            hit = page_map.get(parent)
-            if hit:
-                return hit
-        return ""
+    return ""
 
-    # -- Pagerank percentiles --
-    pr_values = [n.pagerank for n in all_nodes]
-    pr_pcts = _percentile_ranks(pr_values)
 
-    # -- Layers (4-tier cascade: DB → file auto-migrate → communities → directories) --
+def _repo_kg_file(local_path: str | None) -> dict | None:
+    """The file-based knowledge graph under *local_path*, if one is there."""
+    if not local_path:
+        return None
+    for kg_dir in (".repowise", ".understand-anything"):
+        candidate = os.path.join(local_path, kg_dir, "knowledge-graph.json")
+        if os.path.isfile(candidate):
+            return _load_knowledge_graph(candidate)
+    return None
+
+
+async def _raw_layers(
+    session: AsyncSession,
+    repo: Any,
+    repo_id: str,
+    node_id_set: set[str],
+    file_nodes: list[GraphNode],
+) -> tuple[list[dict], dict | None]:
+    """Layers by the cascade DB, file KG (migrated on first read), communities, directories.
+
+    Returns the layers and the file KG when one was loaded.
+    """
     db_layers = await get_kg_layers(session, repo_id)
-    kg: dict | None = None
-    raw_layers: list[dict]
     if db_layers:
-        raw_layers = _layers_from_db(db_layers, node_id_set)
-    else:
-        # Auto-migrate file-based KG to DB on first read
-        if repo and repo.local_path:
-            for kg_dir in (".repowise", ".understand-anything"):
-                candidate = os.path.join(repo.local_path, kg_dir, "knowledge-graph.json")
-                if os.path.isfile(candidate):
-                    kg = _load_knowledge_graph(candidate)
-                    break
-        if kg and kg.get("layers"):
-            # Migration runs in its own session and commits there; a failure
-            # cannot roll back the caller's session. On failure we degrade to
-            # serving this read from the already-loaded file-based KG.
-            try:
-                await _migrate_kg_file_to_db(session, repo_id, kg)
-            except Exception:
-                logger.warning("kg_file_to_db_migration_failed", exc_info=True)
-            raw_layers = _layers_from_knowledge_graph(kg, node_id_set)
-        elif any(n.community_id and n.community_id > 0 for n in file_nodes):
-            raw_layers = _layers_from_communities(file_nodes)
-        else:
-            raw_layers = _layers_from_directories(file_nodes)
+        return _layers_from_db(db_layers, node_id_set), None
+    kg = _repo_kg_file(repo.local_path if repo else None)
+    if kg and kg.get("layers"):
+        # Migration runs in its own session and commits there; a failure
+        # cannot roll back the caller's session. On failure we degrade to
+        # serving this read from the already-loaded file-based KG.
+        try:
+            await _migrate_kg_file_to_db(session, repo_id, kg)
+        except Exception:
+            logger.warning("kg_file_to_db_migration_failed", exc_info=True)
+        return _layers_from_knowledge_graph(kg, node_id_set), kg
+    if any(n.community_id and n.community_id > 0 for n in file_nodes):
+        return _layers_from_communities(file_nodes), kg
+    return _layers_from_directories(file_nodes), kg
 
-    # -- Curated node meta (type/summary/tags) — file if just loaded, else DB --
-    # node_id -> (node_type, summary, tags)
-    curated_meta: dict[str, tuple[str, str, list[str]]] = {}
+
+async def _curated_meta(
+    session: AsyncSession, repo_id: str, kg: dict | None
+) -> dict[str, tuple[str, str, list[str]]]:
+    """``node_id -> (node_type, summary, tags)`` from the file KG if loaded, else the DB."""
+    curated: dict[str, tuple[str, str, list[str]]] = {}
     if kg:
         for meta in file_node_meta_from_kg_nodes(kg.get("nodes", [])):
-            curated_meta[meta["node_id"]] = (meta["node_type"], meta["summary"], meta["tags"])
+            curated[meta["node_id"]] = (meta["node_type"], meta["summary"], meta["tags"])
     else:
         for row in await get_kg_node_meta(session, repo_id):
             row_tags = json.loads(row.tags_json) if row.tags_json else []
-            curated_meta[row.node_id] = (row.node_type, row.summary, row_tags)
+            curated[row.node_id] = (row.node_type, row.summary, row_tags)
+    return curated
 
-    # -- Build ArchNodes --
-    arch_nodes: list[ArchNode] = []
-    for i, n in enumerate(all_nodes):
-        gm = git_by_path.get(n.node_id) or git_by_path.get(n.file_path or "")
-        page_summary = _find_page_summary(n.node_id)
-        curated_type, curated_summary, curated_tags = curated_meta.get(n.node_id, ("", "", []))
 
-        if n.node_type == "file":
-            name = n.node_id.rsplit("/", 1)[-1]
-            file_path = n.node_id
-            line_range = None
-            summary = curated_summary or page_summary or f"Handles {_top_dir(n.node_id)} logic"
-        else:
-            name = n.name or n.node_id.rsplit("::", 1)[-1]
-            file_path = n.file_path
-            line_range = (n.start_line, n.end_line) if n.start_line and n.end_line else None
-            summary = curated_summary or page_summary or ""
-
-        arch_nodes.append(
-            ArchNode(
-                id=n.node_id,
-                node_type=curated_type or n.node_type,
-                name=name,
-                file_path=file_path,
-                line_range=line_range,
-                summary=summary,
-                complexity=_classify_complexity(
-                    n.symbol_count, (n.end_line or 0) - (n.start_line or 0)
-                ),
-                tags=curated_tags or _tags_for(n.node_id, n.node_type, n.language),
-                language=n.language or None,
-                pagerank=n.pagerank,
-                pagerank_percentile=round(pr_pcts.get(i, 0.0), 1),
-                betweenness=n.betweenness,
-                in_degree=in_degree.get(n.node_id, 0),
-                out_degree=out_degree.get(n.node_id, 0),
-                community_id=n.community_id if n.community_id else None,
-                is_entry_point=n.is_entry_point,
-                is_test=n.is_test,
-                is_hotspot=gm.is_hotspot if gm else False,
-                is_dead=n.node_id in dead_files,
-                has_doc=n.node_id in page_map,
-                primary_owner=gm.primary_owner_name if gm else None,
-                primary_owner_pct=gm.primary_owner_commit_pct if gm else None,
-                bus_factor=gm.bus_factor if gm else None,
-            )
+def _node_location(
+    n: GraphNode, summary: str
+) -> tuple[str, str | None, tuple[int, int] | None, str]:
+    """``(name, file_path, line_range, summary)`` for a file or a symbol node."""
+    if n.node_type == "file":
+        return (
+            n.node_id.rsplit("/", 1)[-1],
+            n.node_id,
+            None,
+            summary or f"Handles {_top_dir(n.node_id)} logic",
         )
+    name = n.name or n.node_id.rsplit("::", 1)[-1]
+    line_range = (n.start_line, n.end_line) if n.start_line and n.end_line else None
+    return name, n.file_path, line_range, summary or ""
 
-    # -- Build ArchEdges --
-    arch_edges: list[ArchEdge] = []
-    for e in view_edges:
-        arch_edges.append(
-            ArchEdge(
-                source=e.source_node_id,
-                target=e.target_node_id,
-                edge_type=e.edge_type,
-                direction="forward",
-                weight=e.confidence,
-                confidence=e.confidence,
-            )
+
+def _git_fields(gm: GitMetadata | None) -> dict[str, Any]:
+    """The ArchNode fields read from a file's git metadata."""
+    if not gm:
+        return {
+            "is_hotspot": False,
+            "primary_owner": None,
+            "primary_owner_pct": None,
+            "bus_factor": None,
+        }
+    return {
+        "is_hotspot": gm.is_hotspot,
+        "primary_owner": gm.primary_owner_name,
+        "primary_owner_pct": gm.primary_owner_commit_pct,
+        "bus_factor": gm.bus_factor,
+    }
+
+
+def _arch_node(i: int, n: GraphNode, facts: _NodeFacts) -> ArchNode:
+    """One graph node as an ArchNode, enriched with git, docs and curated meta."""
+    gm = facts.git_by_path.get(n.node_id) or facts.git_by_path.get(n.file_path or "")
+    page_summary = _find_page_summary(facts.page_map, n.node_id)
+    curated_type, curated_summary, curated_tags = facts.curated_meta.get(n.node_id, ("", "", []))
+    name, file_path, line_range, summary = _node_location(n, curated_summary or page_summary)
+    git = _git_fields(gm)
+
+    return ArchNode(
+        id=n.node_id,
+        node_type=curated_type or n.node_type,
+        name=name,
+        file_path=file_path,
+        line_range=line_range,
+        summary=summary,
+        complexity=_classify_complexity(n.symbol_count, (n.end_line or 0) - (n.start_line or 0)),
+        tags=curated_tags or _tags_for(n.node_id, n.node_type, n.language),
+        language=n.language or None,
+        pagerank=n.pagerank,
+        pagerank_percentile=round(facts.pr_pcts.get(i, 0.0), 1),
+        betweenness=n.betweenness,
+        in_degree=facts.in_degree.get(n.node_id, 0),
+        out_degree=facts.out_degree.get(n.node_id, 0),
+        community_id=n.community_id if n.community_id else None,
+        is_entry_point=n.is_entry_point,
+        is_test=n.is_test,
+        is_hotspot=git["is_hotspot"],
+        is_dead=n.node_id in facts.dead_files,
+        has_doc=n.node_id in facts.page_map,
+        primary_owner=git["primary_owner"],
+        primary_owner_pct=git["primary_owner_pct"],
+        bus_factor=git["bus_factor"],
+    )
+
+
+def _arch_edges(view_edges: list[GraphEdge]) -> list[ArchEdge]:
+    return [
+        ArchEdge(
+            source=e.source_node_id,
+            target=e.target_node_id,
+            edge_type=e.edge_type,
+            direction="forward",
+            weight=e.confidence,
+            confidence=e.confidence,
         )
+        for e in view_edges
+    ]
 
-    # -- Tour (DB first, fallback to file-based KG already loaded above) --
+
+async def _tour(session: AsyncSession, repo_id: str, kg: dict | None) -> list[ArchTourStep]:
+    """The tour from the DB, else from the file KG already loaded."""
     db_tour_steps = await get_kg_tour_steps(session, repo_id)
-    tour: list[ArchTourStep] = []
     if db_tour_steps:
-        tour = _tour_from_db(db_tour_steps)
-    elif kg:
-        tour = _tour_from_knowledge_graph(kg)
+        return _tour_from_db(db_tour_steps)
+    if kg:
+        return _tour_from_knowledge_graph(kg)
+    return []
 
-    # -- Curated entry points (file if just loaded, else DB; empty otherwise) --
+
+async def _entry_points(
+    session: AsyncSession, repo_id: str, kg: dict | None, node_id_set: set[str]
+) -> tuple[list[str], list[str]]:
+    """Curated entry points and candidates in the view (file KG if loaded, else DB)."""
     entry_points: list[str] = []
     entry_candidates: list[str] = []
     if kg:
@@ -635,8 +673,11 @@ async def build_architecture_view(
             entry_candidates = json.loads(project_meta.entry_candidates_json or "[]")
     entry_points = [p for p in entry_points if p in node_id_set]
     entry_candidates = [p for p in entry_candidates if p in node_id_set]
+    return entry_points, entry_candidates
 
-    # -- Finalize layers with complexity distribution --
+
+def _arch_layers(raw_layers: list[dict], arch_nodes: list[ArchNode]) -> list[ArchLayer]:
+    """Layers with each one's complexity distribution."""
     node_complexity: dict[str, str] = {an.id: an.complexity for an in arch_nodes}
     arch_layers: list[ArchLayer] = []
     for idx, rl in enumerate(raw_layers):
@@ -660,27 +701,67 @@ async def build_architecture_view(
                 display_order=rl.get("display_order", idx),
             )
         )
+    return arch_layers
 
-    # -- Summary stats --
-    langs: set[str] = set()
-    for n in all_nodes:
-        if n.language:
-            langs.add(n.language)
 
-    fw_names = [e.name for e in externals if e.category == "framework"]
+async def build_architecture_view(
+    session: AsyncSession,
+    repo_id: str,
+    include_symbols: bool = False,
+) -> ArchitectureView:
+    from . import load_repo
+
+    repo = await load_repo(session, repo_id)
+    empty = _empty_view(repo.name if repo else repo_id)
+    if repo is None:
+        return empty
+
+    node_query = select(GraphNode).where(GraphNode.repository_id == repo_id)
+    if not include_symbols:
+        node_query = node_query.where(GraphNode.node_type == "file")
+    result = await session.execute(node_query)
+    all_nodes: list[GraphNode] = list(result.scalars())
+    if not all_nodes:
+        return empty
+
+    node_id_set = {n.node_id for n in all_nodes}
+    file_nodes = [n for n in all_nodes if n.node_type == "file"]
+
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    view_edges = _view_edges(list(edge_result.scalars()), node_id_set, include_symbols)
+    in_degree, out_degree = _degrees(view_edges)
+
+    externals = await _external_views(session, repo_id)
+    git_by_path, dead_files, page_map = await _load_enrichment(session, repo_id)
+    pr_pcts = _percentile_ranks([n.pagerank for n in all_nodes])
+    raw_layers, kg = await _raw_layers(session, repo, repo_id, node_id_set, file_nodes)
+    facts = _NodeFacts(
+        git_by_path=git_by_path,
+        dead_files=dead_files,
+        page_map=page_map,
+        curated_meta=await _curated_meta(session, repo_id, kg),
+        pr_pcts=pr_pcts,
+        in_degree=in_degree,
+        out_degree=out_degree,
+    )
+
+    arch_nodes = [_arch_node(i, n, facts) for i, n in enumerate(all_nodes)]
+    arch_edges = _arch_edges(view_edges)
+    tour = await _tour(session, repo_id, kg)
+    entry_points, entry_candidates = await _entry_points(session, repo_id, kg, node_id_set)
 
     return ArchitectureView(
         project_name=repo.name,
         project_description="",
-        layers=arch_layers,
+        layers=_arch_layers(raw_layers, arch_nodes),
         nodes=arch_nodes,
         edges=arch_edges,
         tour=tour,
         total_files=len(file_nodes),
         total_symbols=sum(n.symbol_count for n in file_nodes),
         total_edges=len(arch_edges),
-        languages=sorted(langs),
-        frameworks=sorted(fw_names),
+        languages=sorted({n.language for n in all_nodes if n.language}),
+        frameworks=sorted(e.name for e in externals if e.category == "framework"),
         external_systems=externals,
         entry_points=entry_points,
         entry_candidates=entry_candidates,

@@ -52,7 +52,7 @@ exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
   - proto/
-commit_limit: 500                    # Max commits per file for git analysis
+commit_limit: 5000                   # Max commits per file for git analysis
 follow_renames: false                # Track file renames in git history
 editor_files:
   claude_md: true

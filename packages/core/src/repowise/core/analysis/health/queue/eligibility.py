@@ -183,13 +183,17 @@ def _path_reason(
     if origin is None:
         if ctx == "test":
             return "test"
-        if reason := ORIGIN_EXCLUSION.get(path_origin(path)):
+        origin = path_origin(path)
+        if reason := ORIGIN_EXCLUSION.get(origin):
             return reason
     elif ctx == "test" and _in_test_tree(path):
         return "test"
-    # ``unknown`` under a directory is docs, examples or demos at any depth:
-    # code that may not ship. A root-level file stays eligible.
-    if ctx == "tooling" or (ctx == "unknown" and "/" in path):
+    # ``unknown`` under a directory is an example, demo or docs segment at any
+    # depth. A production origin outranks it: the classifier counts such a
+    # segment only at the root or under a docs root, so ``com/example/demo/``
+    # ships. A root-level file stays eligible.
+    nested_unknown = ctx == "unknown" and "/" in path
+    if ctx == "tooling" or (nested_unknown and origin != "production"):
         return "tooling"
     return None
 

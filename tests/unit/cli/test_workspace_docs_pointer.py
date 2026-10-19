@@ -15,6 +15,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from repowise.cli.commands.update_cmd.command import _current_renderer_fingerprint
 from repowise.cli.helpers import load_state, save_state
 from repowise.cli.main import cli
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
@@ -238,7 +239,15 @@ def test_docs_early_exit_advances_docs_pointer(tmp_path: Path) -> None:
     c0 = _git(repo, "rev-parse", "HEAD")
 
     # Legacy state: no docs pointer recorded yet.
-    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": True, **CURRENT_GIT_HISTORY})
+    save_state(
+        repo,
+        {
+            SYNC_POINTER_KEY: c0,
+            "docs_enabled": True,
+            "renderer_fingerprint": _current_renderer_fingerprint(repo),
+            **CURRENT_GIT_HISTORY,
+        },
+    )
 
     _git(repo, "commit", "--allow-empty", "-m", "empty")
     c1 = _git(repo, "rev-parse", "HEAD")

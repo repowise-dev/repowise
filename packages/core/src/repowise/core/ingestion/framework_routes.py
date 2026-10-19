@@ -267,10 +267,15 @@ def match_paren(
     text: str, open_idx: int, *, quotes: str = "\"'`", hash_comments: bool = False
 ) -> int:
     """Index of the bracket closing the ``(``, ``[`` or ``{`` at *open_idx*, or -1."""
-    opener = text[open_idx]
+    scan = scan_code(text, open_idx, quotes=quotes, hash_comments=hash_comments)
+    return _closing(text[open_idx], scan)
+
+
+def _closing(opener: str, scan: Iterable[tuple[int, str, int]]) -> int:
+    """Index of the bracket closing *opener*, the first character *scan* yields."""
     closer = _CLOSERS.get(opener, ")")
     nest = 0
-    for i, c, _depth in scan_code(text, open_idx, quotes=quotes, hash_comments=hash_comments):
+    for i, c, _depth in scan:
         if c == opener:
             nest += 1
         elif c == closer:
@@ -281,6 +286,21 @@ def match_paren(
 
 
 _CLOSERS = {"(": ")", "[": "]", "{": "}"}
+
+
+def _jvm_code(text: str, start: int = 0) -> Iterator[tuple[int, str, int]]:
+    """:func:`scan_code` for Java and Kotlin.
+
+    ``'`` opens a char literal there, and one holding a quote (``'"'``) read
+    as a string start masks the rest of the file. Text blocks and Kotlin raw
+    strings are both ``\"\"\"``.
+    """
+    return scan_code(text, start, quotes="\"'", text_blocks=True)
+
+
+def _jvm_match_paren(text: str, open_idx: int) -> int:
+    """:func:`match_paren` over :func:`_jvm_code`."""
+    return _closing(text[open_idx], _jvm_code(text, open_idx))
 
 
 # ---------------------------------------------------------------------------
@@ -926,7 +946,7 @@ def _jaxrs_decl_end(content: str, start: int) -> int:
     (``@Produces(MediaType.APPLICATION_JSON)``) and swagger nests them several
     deep, so anything that stops at the first paren stops inside the run.
     """
-    for i, c, depth in scan_code(content, start, quotes='"', text_blocks=True):
+    for i, c, depth in _jvm_code(content, start):
         if depth == 0 and c in ";{":
             return i
     return len(content)
@@ -1262,7 +1282,7 @@ _MICRONAUT_PATH_KEY_RE = re.compile(r"\b(?:uri|uris|value)\s*=")
 # line-anchored match reads as no declaration at all. Java's `record` and `enum`
 # count: both carry controller annotations, and a spelling left out here is a
 # controller the graph reads as an ordinary file.
-_MICRONAUT_TYPE_RE = re.compile(r"\b(?:class|interface|object|record|enum)\s+\w+")
+_JVM_TYPE_RE = re.compile(r"\b(?:class|interface|object|record|enum)\s+\w+")
 
 # An RFC 6570 query or fragment expansion. Micronaut route templates carry
 # their query parameters in the path string (`/list{?args*}`), where
@@ -1286,7 +1306,7 @@ def micronaut_annotations(content: str) -> set[int]:
     The scan reads the whole file, so a consumer wanting more than one of the
     three readers below computes this once and hands it to each of them.
     """
-    return {i for i, c, _ in scan_code(content, quotes='"', text_blocks=True) if c == "@"}
+    return {i for i, c, _ in _jvm_code(content) if c == "@"}
 
 
 def micronaut_path(raw: str) -> str:
@@ -1309,7 +1329,7 @@ def _micronaut_annotation_path(content: str, at: int) -> str | None:
     m = _MICRONAUT_ARG_RE.match(content, at)
     if m is not None:
         return m.group("path")
-    close = match_paren(content, opened.end() - 1, quotes='"')
+    close = _jvm_match_paren(content, opened.end() - 1)
     args = content[opened.end() - 1 : len(content) if close == -1 else close]
     if _MICRONAUT_PATH_KEY_RE.search(args) or not _MICRONAUT_NAMED_ARG_RE.match(args):
         return None
@@ -1330,7 +1350,7 @@ def _micronaut_annotated_types(
         if m.start() not in code:
             continue
         end = _jaxrs_decl_end(content, m.start())
-        if not _MICRONAUT_TYPE_RE.search(content, m.end(), end):
+        if not _JVM_TYPE_RE.search(content, m.end(), end):
             continue
         yield m.start(), _micronaut_annotation_path(content, m.end())
 
@@ -1398,6 +1418,189 @@ def micronaut_routes(content: str, annotations: set[int] | None = None) -> Itera
             offset=m.start(),
             paren_offset=m.start(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Spring MVC / WebFlux
+# ---------------------------------------------------------------------------
+
+# `@GetMapping("/{id}")` on a method names the verb and the sub-path. The
+# `@RequestMapping` spelling names neither: on a type it is the prefix, on a
+# method a route whose verbs sit in `method = ...`, every verb when absent.
+_SPRING_MAPPING_RE = re.compile(r"@(?P<verb>Get|Post|Put|Delete|Patch|Request)Mapping\b")
+_SPRING_CLASS_RE = re.compile(r"@RequestMapping\b")
+
+# A declarative HTTP client written with the controller's annotations: its
+# mappings are calls out, not endpoints served.
+_SPRING_CLIENT_RE = re.compile(r"@FeignClient\b")
+
+_SPRING_OPEN_RE = re.compile(r"\s*\(")
+_JVM_STRING_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+# Where an argument's value starts, matched with string bodies blanked so text
+# inside a literal is never a key. The path is positional, `value =` or `path =`.
+_SPRING_PATH_KEY_RE = re.compile(r"[(,]\s*(?:value|path)\s*=\s*")
+_SPRING_POSITIONAL_RE = re.compile(r"\(\s*(?![\w.]+\s*=)(?=[^\s)])")
+_SPRING_METHOD_KEY_RE = re.compile(r"[(,]\s*method\s*=\s*")
+
+# One literal, or an array of them: Java `{...}`, Kotlin `[...]` or `arrayOf(...)`.
+_SPRING_VALUE_RE = re.compile(r'"(?P<one>[^"]*)"|(?:arrayOf\s*)?(?P<open>[{\[(])')
+_SPRING_ARRAY_REST_RE = re.compile(r'"\s*"|[\s,]')
+_SPRING_VERB_WORD_RE = re.compile(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE)\b")
+
+
+def _blank_strings(text: str) -> str:
+    """*text* with every string literal's body blanked, offsets kept."""
+    return _JVM_STRING_RE.sub(lambda m: '"' + " " * (len(m.group()) - 2) + '"', text)
+
+
+def _spring_args(content: str, at: int) -> str:
+    """The parenthesised argument list of the annotation named up to *at*, or ``""``."""
+    opened = _SPRING_OPEN_RE.match(content, at)
+    if opened is None:
+        return ""
+    close = _jvm_match_paren(content, opened.end() - 1)
+    return content[opened.end() - 1 : len(content) if close == -1 else close + 1]
+
+
+def _spring_paths(args: str) -> tuple[str, ...] | None:
+    """The paths a mapping's *args* declare.
+
+    ``("",)`` when they name none, which Spring serves at the type prefix.
+    ``None`` when they name one this cannot read: a constant or a concatenation
+    is a path, just not this file's to know.
+    """
+    masked = _blank_strings(args)
+    key = _SPRING_PATH_KEY_RE.search(masked) or _SPRING_POSITIONAL_RE.match(masked)
+    if key is None:
+        return ("",)
+    read = _spring_literals(args, masked, key.end())
+    if read is None or not masked[read[1] :].lstrip().startswith((",", ")")):
+        return None
+    return read[0] or ("",)
+
+
+def _spring_literals(args: str, masked: str, at: int) -> tuple[tuple[str, ...], int] | None:
+    """``(literals, end)`` of the value at *at*, or ``None`` when it is not literals alone."""
+    m = _SPRING_VALUE_RE.match(args, at)
+    if m is None:
+        return None
+    if m.group("one") is not None:
+        return (m.group("one"),), m.end()
+    close = _jvm_match_paren(masked, m.start("open"))
+    if close == -1 or _SPRING_ARRAY_REST_RE.sub("", masked[m.end() : close]):
+        return None
+    return tuple(s.group()[1:-1] for s in _JVM_STRING_RE.finditer(args, m.end(), close)), close + 1
+
+
+def _spring_verbs(verb: str, args: str) -> tuple[str, ...]:
+    """The verbs a mapping serves; ``ALL`` for a ``@RequestMapping`` naming none."""
+    if verb != "Request":
+        return (verb.upper(),)
+    masked = _blank_strings(args)
+    key = _SPRING_METHOD_KEY_RE.search(masked)
+    if key is None:
+        return ("ALL",)
+    if masked.startswith(("{", "["), key.end()):
+        value = masked[key.end() : _jvm_match_paren(masked, key.end()) + 1]
+    else:
+        value = re.split(r"[,)]", masked[key.end() :], maxsplit=1)[0]
+    return tuple(dict.fromkeys(_SPRING_VERB_WORD_RE.findall(value))) or ("ALL",)
+
+
+def _spring_type_bodies(
+    content: str, annotations: set[int], pattern: re.Pattern[str]
+) -> Iterator[tuple[int, int, int]]:
+    """``(annotation name end, body start, body end)`` per type annotated *pattern*.
+
+    The declaration scan is JAX-RS's. The body span, not the nearest type
+    above, is what a member sits under: a class with no mapping of its own
+    must not inherit the prefix of the class declared before it.
+    """
+    for m in pattern.finditer(content):
+        if m.start() not in annotations:
+            continue
+        start = _jaxrs_decl_end(content, m.start())
+        if not _JVM_TYPE_RE.search(content, m.end(), start):
+            continue
+        close = (
+            _jvm_match_paren(content, start)
+            if content.startswith("{", start)
+            else -1
+        )
+        yield m.end(), start, len(content) if close == -1 else close
+
+
+def spring_class_paths(
+    content: str, annotations: set[int] | None = None
+) -> list[tuple[int, int, tuple[str, ...] | None]]:
+    """``(body start, body end, prefixes)`` per type-level ``@RequestMapping``, ascending.
+
+    ``prefixes`` is ``None`` when the mapping names a path this cannot read; the
+    routes under it are refused rather than served at their bare sub-path.
+    """
+    if "@RequestMapping" not in content:
+        return []
+    code = micronaut_annotations(content) if annotations is None else annotations
+    out: list[tuple[int, int, tuple[str, ...] | None]] = []
+    for name_end, start, end in _spring_type_bodies(content, code, _SPRING_CLASS_RE):
+        paths = _spring_paths(_spring_args(content, name_end))
+        out.append((start, end, None if paths is None else tuple(p.rstrip("/") for p in paths)))
+    return out
+
+
+def spring_route_prefixes(
+    class_paths: list[tuple[int, int, tuple[str, ...] | None]], offset: int
+) -> tuple[str, ...] | None:
+    """The prefixes of the innermost mapped type around *offset*; ``("",)`` under none."""
+    found: tuple[str, ...] | None = ("",)
+    for start, end, prefixes in class_paths:
+        if start < offset < end:
+            found = prefixes  # ascending, so a later container is a nested one
+    return found
+
+
+def _spring_method_mappings(content: str, annotations: set[int]) -> Iterator[re.Match[str]]:
+    """Mapping annotations written as code on a method outside any Feign client."""
+    clients = (
+        [(s, e) for _, s, e in _spring_type_bodies(content, annotations, _SPRING_CLIENT_RE)]
+        if "@FeignClient" in content
+        else []
+    )
+    for m in _SPRING_MAPPING_RE.finditer(content):
+        if m.start() not in annotations or any(s < m.start() < e for s, e in clients):
+            continue
+        # A type's own mapping is its prefix, read by spring_class_paths.
+        if not _JVM_TYPE_RE.search(content, m.end(), _jaxrs_decl_end(content, m.start())):
+            yield m
+
+
+def spring_routes(content: str, annotations: set[int] | None = None) -> Iterator[RouteMatch]:
+    """Method-level mappings in *content*, one per verb and path.
+
+    ``path`` is the method's own sub-path, ``""`` when it names none and
+    ``None`` when it names one this cannot read; the type prefix is the
+    consumer's to stitch, from :func:`spring_class_paths`. The handler is the
+    method the annotation sits on, which every Spring route has, so ``offset``
+    is all a consumer needs to find it. Mappings inside a ``@FeignClient`` type
+    are calls out and are skipped.
+    """
+    if "Mapping" not in content:
+        return
+    code = micronaut_annotations(content) if annotations is None else annotations
+    for m in _spring_method_mappings(content, code):
+        args = _spring_args(content, m.end())
+        paths: tuple[str | None, ...] = _spring_paths(args) or (None,)
+        for verb in _spring_verbs(m.group("verb"), args):
+            for path in paths:
+                yield RouteMatch(
+                    verb=verb,
+                    path=path,
+                    receiver=None,
+                    handler=None,
+                    offset=m.start(),
+                    paren_offset=m.start(),
+                )
 
 
 # ---------------------------------------------------------------------------

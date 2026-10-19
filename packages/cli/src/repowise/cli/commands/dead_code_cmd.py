@@ -12,6 +12,7 @@ from rich.table import Table
 from repowise.cli.helpers import (
     console,
     get_head_commit,
+    load_config,
     load_state,
     repo_index_session,
     resolve_command_target,
@@ -21,6 +22,8 @@ from repowise.cli.helpers import (
 from repowise.cli.output import notice_console
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeReport
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+from repowise.core.analysis.dead_code.serving import safe_only_note
+from repowise.core.analysis.finding_registry import preview_lines
 
 #: The floor ``init`` and ``update`` store findings at: they run the analyzer
 #: with its default config, which keeps nothing below this and runs all four
@@ -102,97 +105,45 @@ def _finding_order(f: DeadCodeFindingData) -> tuple:
 
 
 def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport:
-    """Parse the working tree and run the analyzer over it."""
+    """Parse the working tree and run the analyzer over it.
+
+    The graph is the one ``update`` builds (same file set, framework and
+    dynamic-hint edges), so a live answer differs from the stored one only by
+    the code that changed. ``read_only`` keeps this command from writing into
+    the index.
+    """
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+    from repowise.core.ingestion.git_indexer import GitIndexer
+    from repowise.core.pipeline.incremental import build_repo_graph
 
-    # Ingest — honor the persisted submodule flags so the analyzed file set
-    # matches what `init` indexed (a flagless traverser on a submodule-indexed
-    # repo would drop submodule files and skew reachability).
     state = load_state(repo_path)
-    include_submodules = bool(state.get("include_submodules", False))
-    include_nested_repos = bool(state.get("include_nested_repos", False))
-
-    traverser = FileTraverser(
+    _parsed, source_map, graph_builder, _structure, _count = build_repo_graph(
         repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
+        list(load_config(repo_path).get("exclude_patterns") or []),
+        collect_sources=True,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+        log=notices.print,
+        read_only=True,
     )
-    file_infos = list(traverser.traverse())
-    parser = ASTParser()
-    graph_builder = GraphBuilder(
-        repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-
-    # Kept alongside the parse so the analyzer's marker prepasses reuse these
-    # bytes instead of re-reading the repo four more times.
-    source_map: dict[str, bytes] = {}
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            graph_builder.add_file(parsed)
-            source_map[fi.path] = source
-        except Exception:
-            pass
-
-    from repowise.core.ingestion import wire_tsconfig_resolver
-
-    wire_tsconfig_resolver(
-        graph_builder,
-        repo_path,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-    graph_builder.set_source_map(source_map)
-    graph_builder.build()
-
-    # Framework-aware synthetic edges (Django, Laravel, TYPO3, ...). Without
-    # this, convention-loaded files appear as in_degree=0 unreachable — false
-    # positives in the dead-code report.
-    try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
-
-        tech_items = detect_tech_stack(repo_path)
-        graph_builder.add_framework_edges([item.name for item in tech_items])
-    except Exception as fw_exc:
-        # Silence here is the worst of the three sites: the comment above says
-        # these edges exist to stop false positives, so a swallowed failure
-        # hands the user a longer report and calls it the answer.
-        notices.print(
-            f"[yellow]Framework edge detection skipped: {fw_exc}; "
-            "convention-loaded files may report as unreachable.[/yellow]"
-        )
 
     # Git metadata (best effort)
     git_meta_map: dict = {}
     try:
-        from repowise.core.ingestion.git_indexer import GitIndexer
-
-        git_indexer = GitIndexer(repo_path)
-        _, metadata_list = run_async(git_indexer.index_repo(""))
+        _, metadata_list = run_async(GitIndexer(repo_path, read_only=True).index_repo(""))
         git_meta_map = {m["file_path"]: m for m in metadata_list}
     except Exception:
         pass
 
     # parsed_files powers the source-scan rescues (dynamic-import markers,
-    # bundler resolve.alias targets, export-alias maps) — without it those
-    # classes false-positive on the CLI path while init stays clean.
+    # bundler resolve.alias targets, export-alias maps).
     analyzer = DeadCodeAnalyzer(
         graph_builder.graph(),
         git_meta_map,
         parsed_files=graph_builder._parsed_files,
         source_map=source_map,
         repo_root=repo_path,
-        unindexed_source_files=[
-            (skipped.path, skipped.reason)
-            for skipped in (
-                *traverser.stats.skipped_source_files,
-                *traverser.stats.unknown_language_files,
-            )
-        ],
+        unindexed_source_files=graph_builder.traversal_stats.unindexed_source_files(),
         dotnet_index=getattr(graph_builder, "dotnet_index", None),
     )
     return analyzer.analyze(config)
@@ -259,6 +210,13 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the live analysis (table format only).",
+)
 def dead_code_command(
     path: str | None,
     min_confidence: float,
@@ -271,6 +229,7 @@ def dead_code_command(
     no_unused_exports: bool,
     repo_alias: str | None,
     no_workspace: bool,
+    verbose: bool,
 ) -> None:
     """Detect dead and unused code.
 
@@ -282,7 +241,9 @@ def dead_code_command(
     --repo <alias> to target a different repo. Cross-repo dead-code
     detection is not yet supported — run once per repo for now.
     """
-    if fmt != "table":
+    # The live path parses the whole tree, and its structlog lines go to
+    # stdout: they would corrupt JSON/Markdown and bury the table.
+    if fmt != "table" or not verbose:
         silence_logs_for_machine_output_until_close()
 
     target = resolve_command_target(
@@ -336,7 +297,10 @@ def dead_code_command(
     findings = sorted(report.findings, key=_finding_order)
 
     if safe_only:
-        findings = [f for f in findings if f.safe_to_delete]
+        safe = [f for f in findings if f.safe_to_delete]
+        if note := safe_only_note(len(findings), len(safe)):
+            notices.print(f"[dim]{note}[/dim]")
+        findings = safe
 
     if fmt == "json":
         output = []
@@ -352,6 +316,7 @@ def dead_code_command(
                     "risk_factors": f.risk_factors,
                     "lines": f.lines,
                     "primary_owner": f.primary_owner,
+                    "export_only": f.export_only,
                 }
             )
         click.echo(json.dumps(output, indent=2))
@@ -395,6 +360,13 @@ def dead_code_command(
         )
 
     console.print(table)
+    for line in preview_lines(
+        "dead_code",
+        findings,
+        kind="kind",
+        get=lambda f, k: f.kind.value if k == "kind" else getattr(f, k),
+    ):
+        console.print(f"[dim]{line}[/dim]")
     # confidence_summary is a {"high": N, ...} dict; interpolating it printed a
     # raw Python repr, braces and quotes included, at the end of an otherwise
     # formatted report.

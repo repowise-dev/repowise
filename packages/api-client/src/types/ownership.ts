@@ -1,3 +1,5 @@
+import type { IdentityKind, OwnerAliases } from "@repowise-dev/types/owners";
+
 // ---------------------------------------------------------------------------
 // Owner / contributor profile
 // ---------------------------------------------------------------------------
@@ -6,6 +8,7 @@ export interface OwnerListEntry {
   key: string;
   name: string;
   email: string | null;
+  kind: IdentityKind;
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;
@@ -44,6 +47,8 @@ export interface OwnerProfileResponse {
   key: string;
   name: string;
   email: string | null;
+  kind: IdentityKind;
+  aliases: OwnerAliases;
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;
@@ -63,15 +68,6 @@ export interface OwnerProfileResponse {
   /** Uncapped count behind the co_authors slice (for "+N more"). */
   co_authors_total?: number;
   commit_categories: Record<string, number>;
-  /** Agent activity on owned files; null when nothing attributed. */
-  agent_collab?: OwnerAgentCollab | null;
-}
-
-export interface OwnerAgentCollab {
-  files_with_agent_commits: number;
-  agent_commit_count: number;
-  agent_share_pct: number | null;
-  tier_counts: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------

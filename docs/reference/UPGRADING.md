@@ -19,7 +19,7 @@ When you run `repowise update` (or `repowise serve`) after upgrading, repowise:
 1. **Reads your store's format version** and compares it to the running build. The on-disk store records which version wrote it, so repowise knows exactly what, if anything, an upgrade needs.
 2. **Applies any automatic, no-cost adjustments in place.** New database columns are back-filled automatically. If your embedding model changed, vectors are re-embedded for you (no LLM calls). You don't run anything.
 3. **Keeps your parse cache warm.** Ordinary releases do not invalidate cached work, so updates stay fast.
-4. **Shows you what changed.** A short "what's new" summary appears for the versions you crossed, and `repowise whats-new` shows release notes any time. The web UI surfaces a dismissible "update available" banner and a what's-new view.
+4. **Shows you what changed.** A short "what's new" summary appears for the versions you crossed, and `repowise whats-new` shows release notes any time. The web UI surfaces a dismissible "update available" banner that names the newer release's highlights, and after an upgrade it opens What's new once for a minor release (a short note for a patch), with the release's highlights, its numbers and every change.
 
 ## When a reindex is recommended
 

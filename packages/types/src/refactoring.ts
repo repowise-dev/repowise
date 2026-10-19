@@ -2,6 +2,7 @@
 
 import type { ActionCommand } from "./actions.js";
 import type { FixExclusion } from "./fix-first.js";
+import type { GatedByLanguage } from "./health.js";
 import type { QueueCounts } from "./queue.js";
 
 export type RefactoringType =
@@ -43,6 +44,11 @@ export interface RecommendationValidation {
   /** Set when no test reaches the change: the step to take before the edit.
    *  Absent on a payload from an older server. */
   prerequisite?: string | null;
+  /** How each shown JS/TS, Go, Rust, JVM, Ruby or C# test runs: the command
+   *  that runs its package from the repository root and the argument narrowing
+   *  it to the test's target (null runs the whole package). Absent when the
+   *  plan names no test any of them can run. */
+  test_runs?: Record<string, [string, string | null]>;
 }
 
 /** How a step's tests were found: coverage runs its lines, the graph reaches
@@ -122,6 +128,9 @@ export interface RefactoringPlan {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: RecommendationValidation;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   /** Plan detail only: ids of the accepted decisions governing the file.
    *  Absent when the plan was never checked (not yet re-indexed). */
   governed_by?: string[];
@@ -132,6 +141,9 @@ export interface RefactoringPlan {
   recipe?: RefactoringRecipe;
   /** Plan detail only, on a plan the index resolved as no longer detected. */
   payoff?: RefactoringPlanPayoff;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 /** What happened to a resolved plan. Mirrors ``refactoring.payoff.PAYOFF_OUTCOMES``. */
@@ -211,6 +223,10 @@ export type RecipePreconditionKind =
   | "unchecked"
   | "kind_unaudited";
 
+/** Where an Extract Method anchor is unique: the whole file, or only inside
+ *  its function (a text match must then stay inside the host). */
+export type AnchorScope = "file" | "function";
+
 export interface RecipeStep {
   n: number;
   action: RecipeAction;
@@ -232,6 +248,9 @@ export interface RecipeStep {
     notes: string[];
   };
   call_site?: ExtractCallSite;
+  /** Extract Method: the exact text the span starts and ends with, so the
+   *  step is found by text, not line. */
+  anchors?: { first: string; last: string; unique_in: AnchorScope };
   symbols?: string[];
   to_file?: string | null;
   /** Extract Helper: the directory the shared helper belongs in. */
@@ -272,6 +291,21 @@ export interface RefactoringRecipe {
   >;
   /** `constraint` reads after "Do not"; `reason` says why, when it is not obvious. */
   does_not: Array<{ constraint: string; reason: string | null }>;
+  /** A staged plan over five stages only: its steps in ordered batches of at
+   *  most five, each with the tests to run before the next; a failing batch
+   *  stops the plan. */
+  batches?: RecipeBatch[];
+}
+
+/** One batch of a long staged plan. Mirrors `stage_batches`. */
+export interface RecipeBatch {
+  n: number;
+  /** Recipe step numbers, in order. */
+  steps: number[];
+  stages: { first: number; last: number };
+  tests: string[];
+  commands: string[];
+  text: string;
 }
 
 export interface RefactoringTypeCount {
@@ -298,6 +332,8 @@ export interface RefactoringSummary {
 export interface RefactoringTargets {
   summary: RefactoringSummary;
   plans: RefactoringPlan[];
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
 }
 
 export interface GeneratedSpan {
@@ -365,6 +401,9 @@ export interface OpportunityStep {
   /** Findings this step's cause produced, for a round trip to the diagnosis. */
   finding_ids?: string[];
   validation_profile_id?: string;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
 }
 
 /** A supporting observation. Never an instruction to change anything. */
@@ -442,6 +481,9 @@ export interface RefactoringOpportunity {
   /** Files importing the lead file. Absent when the store predates the figure. */
   dependents?: number;
   steps?: OpportunityStep[];
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   steps_total?: number;
   steps_emitted?: number;
   steps_reduced_reason?: string;
@@ -451,6 +493,9 @@ export interface RefactoringOpportunity {
   evidence_truncated?: boolean;
   evidence_reduced_reason?: string;
   evidence_next_cursor?: number;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 /**
@@ -559,8 +604,11 @@ export interface RefactoringRollupAvailable {
   by_confidence: Record<string, number>;
   by_status: Record<string, number>;
   addresses_primary_problem: { yes: number; no: number; unknown: number };
-  /** The same lead the directive reads; null when nothing is open. */
+  /** The same lead the directive reads; null when nothing is open, or when
+   *  it is on a gated language. */
   lead: RefactoringDirectiveLead | null;
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
   refactoring_model_version: number;
   analyzed_commit: string | null;
   /** Present on the MCP block only. */
@@ -595,7 +643,10 @@ export type RefactoringDirective =
   | RefactoringDirectiveAvailable
   | {
       status: "clear";
-      reason: "no_open_opportunities" | "only_test_file_opportunities";
+      reason:
+        | "no_open_opportunities"
+        | "only_test_file_opportunities"
+        | "lead_in_gated_language";
       detail: string;
       opportunities_total: number;
     }
@@ -636,6 +687,8 @@ export interface RefactoringOpportunityPage {
   hidden?: RefactoringHiddenCounts;
   /** The plans' count vocabulary over the open inventory in the queried files. */
   counts?: QueueCounts;
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
 }
 
 /** ``GET /api/repos/{repo_id}/refactoring/summary``. */

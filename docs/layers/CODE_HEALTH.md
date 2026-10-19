@@ -1,8 +1,8 @@
 # Code Health
 
 Repowise scores every source file from 1 to 10 and lists which files to fix
-first. It reads the parse tree, the dependency graph and git history, needs no LLM
-key or network, and runs inside `repowise init` and `repowise update`. The
+first. It reads the parse tree, the dependency graph and git history, needs no
+LLM key or network, and runs inside `repowise init` and `repowise update`. The
 analysis is budgeted at under 30 seconds for 3,000 files, and a test enforces it.
 
 It finds code shapes and change patterns that go with bugs, slow code and code
@@ -43,34 +43,37 @@ are never blended into one number.
 
 | Signal | What it answers | Weights |
 |---|---|---|
-| **Code health** (defect risk) | Which files are most likely to carry the next bug | Fitted against a defect corpus; the headline number, band and badge |
-| **Maintainability** | How hard the code is to read and change | Set by hand; never fitted to bugs |
-| **Performance risk** | Where the structure wastes work | Per-marker precision weights; see [PERFORMANCE.md](PERFORMANCE.md) |
+| Code health (defect risk) | Which files are most likely to carry the next bug | Fitted against a defect corpus; the headline number, band and badge |
+| Maintainability | How hard the code is to read and change | Set by hand; never fitted to bugs |
+| Performance risk | Where the structure wastes work | Per-marker precision weights; see [PERFORMANCE.md](PERFORMANCE.md) |
 
-Smells that fire often but predict bugs weakly (low cohesion, brain methods,
-duplicated code, broad error handling) are down-weighted in code health and counted
-in full in maintainability.
+Smells that fire often but predict bugs weakly (low cohesion, duplicated code,
+broad error handling) are down-weighted in code health and
+counted in full in maintainability.
 
 ## Reading the score
 
-Each file starts at 10. Every finding deducts its severity times its marker weight,
-deductions are capped per category, and the result is clamped to 1-10.
+Each file starts at 10. Every finding deducts its severity times its marker
+weight, deductions are bounded per category, and the result is clamped to 1-10.
+Code categories bend toward their bound rather than stopping at it, so shrinking a
+critical function raises the score even while it stays critical, and several findings on one
+function count mostly once.
 
 | Band | Score | Meaning |
 |---|---|---|
-| **Excellent** | 8.5 and above | Low risk, easy to change |
-| **Good** | 7.0 to 8.5 | Sound; nothing demands attention |
-| **Fair** | 5.5 to 7.0 | Rising complexity or process risk |
-| **Needs work** | 4.0 to 5.5 | Worth scheduling |
-| **At risk** | under 4.0 | Where defects concentrate |
+| Excellent | 8.5 and above | Low risk, easy to change |
+| Good | 7.0 to 8.5 | Sound; nothing demands attention |
+| Fair | 5.5 to 7.0 | Rising complexity or process risk |
+| Needs work | 4.0 to 5.5 | Worth scheduling |
+| At risk | under 4.0 | Where defects concentrate |
 
-Bands are absolute, so a 6.2 means the same in every repository. On the 2,770-file
-benchmark corpus, files under 4.0 carried 16.9 times the per-file defect rate of
-files at 8.0 and above.
+Bands are absolute, so a 6.2 means the same in every repository. On the
+2,770-file benchmark corpus, files under 4.0 carry 16.9 times the per-file defect
+rate of files at 8.0 and above.
 
-Repository KPIs are **average health**, **hotspot health** (hotspot files only; both
-weighted by code lines) and the **worst performer**. A file in an unsupported
-language is counted as not analysed, never scored as a 10.
+Repository KPIs are average health, hotspot health (hotspot files only; both
+weighted by code lines) and the worst performer. A file in an unsupported language
+is counted as not analysed, never scored as a 10.
 
 Two controls decide what a figure describes. Every response echoes them.
 
@@ -79,20 +82,26 @@ Two controls decide what a figure describes. Every response echoes them.
 | `scope` | `all` (default), `production` | `production` drops test files, which lowers the headline because tests usually score higher |
 | `counts` | `everything` (default), `code_shape` | `code_shape` removes the git-history half of each deduction, to see whether your code improved after a refactor raised churn |
 
-`everything` is the calibrated number every accuracy claim refers to, and the badge
-always reports it.
+`everything` is the calibrated number every accuracy claim refers to, and the
+badge always reports it.
 
 ## Fix first
 
-**Fix first** is one ranked list of what to fix. `repowise health` prints the top 3;
+Fix first is one ranked list of what to fix. `repowise health` prints the top 3;
 `get_health()` and the dashboard Overview tab show more. Each item is one unit of
-work: a refactoring plan, one performance intervention, or the strongest code-shape
-finding in a file with no plan. It gives what to change and where, why, the first
-edit, the expected gain, the effort and the tests to run.
+work: a refactoring plan, one performance intervention, or the strongest
+code-shape finding in a file with no plan. It gives what to change and where, why,
+the first edit, the expected gain, the effort and the tests to run.
+Among items of the same value, a function that many commits have changed comes
+before an equally complex one that rarely changes, and its reason says how many
+commits changed it. A "Break up X" item's reason names the function's shape and
+what splitting it buys: smaller parts that are easier to read and change, and less
+duplicated code when part of it is a copy.
 
 Left out, and counted with a reason:
 
-- test files, tooling, generated and vendored code, docs and examples
+- test files, tooling (including Dart's `tool/` scripts), generated and vendored
+  code, docs and examples
 - files whose only findings come from git history
 - changes that would recover under half a point, and items with no concrete first
   edit
@@ -104,26 +113,28 @@ Left out, and counted with a reason:
 - functions under CCN 80 and 200 lines whose file rarely changes and has no bug
   fixes; they stay in the refactoring list
 
-Test helpers named for a module's tests (`bot.test-harness.ts`, `card-test-helpers.ts`,
-`test-support.mjs`) count as test support, and bundler output (`*.bundle.js`) as
-generated code, so neither leads Fix first, the refactoring list or the dashboard's
-worst-file lists, which say how many files they left out and why.
+Test helpers named for a module's tests (`bot.test-harness.ts`,
+`card-test-helpers.ts`, `test-support.mjs`) count as test support, and bundler
+output (`*.bundle.js`) as generated code, so neither leads Fix first, the
+refactoring list or the dashboard's worst-file lists, which say how many files
+they left out and why.
 
-A function is dormant when its body opens with `if not FLAG: return ...` (or is one
-`if FLAG:` block) and `FLAG` is a module-level `False`, `0` or `None` (`const FLAG =
-false` in TypeScript or JavaScript) that nothing in the same file assigns again.
-Dormant functions are counted next to the excluded totals, not dropped silently.
-Only the file itself is read: a flag imported from another module, or flipped from
-outside with `setattr` or a test's monkeypatch, still reads as off.
+A function is dormant when its body opens with `if not FLAG: return ...` (or is
+one `if FLAG:` block) and `FLAG` is a module-level `False`, `0` or `None`
+(`const FLAG = false` in TypeScript or JavaScript) that nothing in the same file
+assigns again. Dormant functions are counted next to the excluded totals, not
+dropped silently. Only the file itself is read: a flag imported from another
+module, or flipped from outside with `setattr` or a test's monkeypatch, still
+reads as off.
 
 Items rank by value first (how far the code sits past size and complexity bars,
 one step more in a widely imported file), then by tier. Within a value, the
 complexity a fix removes times how widely the file is imported decides, so a
-4,000-line loop outranks a long print routine. A function under a twentieth of a
-very large file counts only its share of that file's importers. A performance fix ranks by what runs
-it: a request or message handler, then a scheduled job, then code with no role
-evidence. No kind takes more than 3 of the first 5 places while another has work
-worth doing.
+4,000-line loop outranks a long print routine. A performance fix ranks by what
+runs it: a request or message handler, then a scheduled job, then code with no
+role evidence. No kind takes more than 3 of the first 5 places while another has
+work worth doing. Exact ordering rules:
+[architecture/code-health.md](../architecture/code-health.md#63-fix-first-ranking-fix_first-worthpy).
 
 | Tier | Meaning |
 |---|---|
@@ -131,71 +142,85 @@ worth doing.
 | `next` | Worth doing, needs judgment |
 | `later` | Real but can wait; the reason is shown |
 
-A `now` or `next` item shows its first step and the command that checks it without opening it, on the card, and over MCP for the lead and for each item of an `only=["fix_first"]` page. When no test reaches the code, Verify says to add a characterization test first. An Extract Method step shows the helper's header and the call that replaces the lines, ready to copy.
+A refactoring item is `later` when the plan of any of its steps would still leave
+a function above the break-up bar: it needs more stages before it is worth
+starting. A finding whose first step comes from a stored Extract Method plan that
+makes its function smaller leads with that plan: its title names the first lift,
+and its next call opens the plan. A finding with no such plan reads "Break up".
 
-Findings, performance causes, refactoring plans and Fix first items are counted the
-same way everywhere: open in the inventory, in scope, eligible, due (tier `now` or
-`next`) and shown, with every exclusion named by its reason. The numbers on the
-dashboard, in `get_health` and in `repowise health --format json` (`queue_counts`) agree.
+A `now` or `next` item shows its first step and the command that checks it
+without opening it, on the card, and over MCP for the lead and for each item of an
+`only=["fix_first"]` page. When no test reaches the code, Verify says to add a
+characterization test first. An Extract Method step shows the helper's header and
+the call that replaces the lines, ready to copy. How a step borrows a plan and
+finds its lines: [Fix first steps](../architecture/code-health.md#fix-first-steps).
+
+Findings, performance causes, refactoring plans and Fix first items are counted
+the same way everywhere: open in the inventory, in scope, eligible, due (tier
+`now` or `next`) and shown, with every exclusion named by its reason. The numbers
+on the dashboard, in `get_health` and in `repowise health --format json`
+(`queue_counts`) agree.
 
 ### Do next
 
-`repowise next` prints the cross-layer list the dashboard calls **Do next** and
-`get_overview` returns as `next_actions`. It reads stored actions, so it is instant.
-Fix first items sit beside a live secret, fresh regressions, fragile files, files
-with knowledge loss, broken doc references, a dead-code batch, missing or stale
-coverage, and decisions waiting for review. Rows are grouped as **Now**, **Worth
-planning** and **Improve what Repowise can see**. Within a group, rows rank by value
-times confidence over effort, and the top due Fix first item leads its group, so Do
-next and Fix first lead with the same work. Dismissing or
-snoozing a row takes effect at once.
-
+`repowise next` prints the cross-layer list the dashboard calls Do next and
+`get_overview` returns as `next_actions`. It reads stored actions, so it is
+instant. Fix first items sit beside a live secret, fresh regressions, fragile
+files, files with fading ownership, broken doc references, a dead-code batch,
+missing or stale coverage, and decisions waiting for review. Rows are grouped as
+Now, Worth planning and Improve what Repowise can see. Within a group, rows rank
+by value times confidence over effort, and the top due Fix first item leads its
+group, so Do next and Fix first lead with the same work. Dismissing or snoozing a
+row takes effect at once.
 A fragile file asks for tests only when no measured coverage and no test in the
-code graph reaches it; otherwise the row asks you to simplify its lead function.
-A folder where bug fixes concentrate names its first step, the most fixed file's,
-or is left out.
-An index with fewer than five commits leaves out the rows ranked by history.
+code graph reaches it; otherwise the row asks you to simplify its lead function. A
+folder where bug fixes concentrate names its first step, the most fixed file's, or
+is left out. An index with fewer than five commits leaves out the rows ranked by
+history.
 
 ```bash
-repowise next                          # top 5 for this week (or the quarter when the week is empty)
+repowise next                          # top 5 this week (the quarter if the week is empty)
 repowise next --horizon quarter --all
 repowise next --json                   # the whole stored view
 ```
 
 ## Findings
 
-Findings are the observations behind the score. The dashboard **Findings** tab lists
+Findings are the observations behind the score. The dashboard Findings tab lists
 them by dimension and severity, and `get_health(targets=[...])` returns them per
 file. Each has a stable id that survives edits above it. Mark one `acknowledged`,
 `false_positive` or `resolved` in the dashboard, over REST, or with the opt-in
-`set_finding_status` MCP tool. Triage survives re-indexing, and a `resolved` finding
-that is detected again reopens.
+`set_finding_status` MCP tool. Triage survives re-indexing, and a `resolved`
+finding that is detected again reopens.
 
 The 53 detectors fall into families. Category caps keep any one family from
 dominating a file.
 
 | Family | Detectors | Cap | Catches |
 |---|---:|---|---|
-| Structural complexity | 6 | 2.5 | Deep nesting, brain methods, god classes, low cohesion, bumpy roads, complex conditions |
+| Structural complexity | 6 | 2.5 | Deep nesting, brain methods (listed, not scored), god classes, low cohesion, repeated nesting, complex conditions |
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
 | Duplication | 1 | 1.0 | Cloned blocks |
 | Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
-| Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, knowledge loss, prior bug fixes |
+| Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, fading ownership, prior bug fixes |
 | Test coverage | 3 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a coverage report) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins; maintainability or performance only |
 | Performance | 21 | none | See [PERFORMANCE.md](PERFORMANCE.md); performance only |
 
-Twenty-five detectors move code health. Three markers are **advisory**: they are
-listed, carry zero impact, and stay out of impact-ranked lists unless you ask for the
-advisory dimension. Three **governance** findings (an ungoverned hotspot, stale
-governance, a contradictory decision) come from the [decisions layer](DECISIONS.md)
-and never deduct. Every detector id: [architecture/code-health.md](../architecture/code-health.md#the-full-roster).
+Twenty-five detectors move code health. Three markers are advisory: they are
+listed, carry zero impact, and stay out of impact-ranked lists unless you ask for
+the advisory dimension. Three governance findings (an ungoverned hotspot, stale
+governance, a contradictory decision) come from the
+[decisions layer](DECISIONS.md) and never deduct. Every detector id:
+[architecture/code-health.md](../architecture/code-health.md#the-full-roster).
 
-**History amplifies code risk; it does not stand alone.** Git history costs a file at
-most 1.0 point, plus one point for each point its code-shape findings deduct, up to
-3.5. A simple file that changes often reads as busy, not broken, and never drops
-below 9.0 from history alone.
+History amplifies code risk and does not stand alone. Git history costs a file at
+most 1.0 point, plus one point for each point its code-shape findings deduct, up
+to 3.5. A simple file that changes often reads as busy, not broken, and never
+drops below 9.0 from history alone. Several history findings on one file count
+the largest in full and the rest at a quarter, because they usually describe the
+same burst of activity.
 
 | Detector | Fires when |
 |---|---|
@@ -207,21 +232,26 @@ below 9.0 from history alone.
 
 On a small team, `knowledge_loss` and `ownership_risk` are capped at low severity
 unless the file is a hotspot, and the `small-team` profile lowers them further.
+`ownership_risk` is also low on a file under 40 code lines.
 `large_assertion_block` and `duplicated_assertion_block` fire only in test files.
-House assertion helpers go in the [`assertions:` block](../reference/CONFIG.md#the-assertions-block).
+House assertion helpers go in the
+[`assertions:` block](../reference/CONFIG.md#the-assertions-block).
 Per-language coverage: [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
 
 ## Trends, coverage and badges
 
-Every `init`, `update` and `health --recompute` stores a snapshot (the last 50 per repository). Alerts: **declining** (fell
-0.5 or more against five snapshots back), **predicted decline** (three falls in a
-row) and **history drag** (either, where only the git-history half moved, so there
-is nothing in the code to act on). `repowise health --trend` prints the last 10.
+Every `init`, `update` and `health --recompute` stores a snapshot (the last 50
+per repository). Alerts: declining (fell 0.5 or more against five snapshots back),
+predicted decline (three falls in a row) and history drag (either, where only the
+git-history half moved, so there is nothing in the code to act on).
+`repowise health --trend` prints the last 10.
 
 Coverage reports (LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, Repowise JSON)
 feed the coverage detectors: `repowise coverage add coverage.lcov`. With no report,
-only `untested_hotspot` runs, and no file is treated as uncovered.
-`repowise health --badge` prints README badge Markdown. After adding a report, run `repowise health --recompute`, which analyzes the working tree instead of reading the stored analysis and, on a whole-repo table run, writes the result to the index.
+only `untested_hotspot` runs, and no file is treated as uncovered. After adding a
+report, run `repowise health --recompute`, which analyzes the working tree
+instead of reading the stored analysis and, on a whole-repo table run, writes the
+result to the index. `repowise health --badge` prints README badge Markdown.
 
 ## Configuration
 
@@ -241,7 +271,8 @@ Per-file rules live in `.repowise/health-rules.json`:
 `path` uses gitignore semantics, and every matching rule applies. `small-team`
 lowers the people signals a 1-3 person repository cannot support, and an explicit
 `severity_overrides` entry wins over it. Only severity labels are tunable; weights
-and caps are the calibrated constants the published accuracy rests on. Full schema:
+and caps are the calibrated constants the published accuracy rests on. Full
+schema:
 [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 
 ## Accuracy and limits
@@ -255,9 +286,9 @@ next six months of bug fixes.
   0.173 vs 0.074 (p = 0.003), 2.3 times the defects. AUC and precision are ties.
 - Lines of code alone scores AUC 0.742, a tie. The gain is in ordering a fixed
   review budget and saying why. Within size quartiles AUC is 0.525 to 0.718.
-- The score did not track GitHub merge time on open data.
-- `get_health(include=["accuracy"])` reports how many of your 20 lowest-scoring files
-  had a bug fix in the last 180 days against the base rate. It is an association,
+- On open data, the score does not track GitHub merge time.
+- `get_health(include=["accuracy"])` reports how many of your 20 lowest-scoring
+  files had a bug fix in the last 180 days against the base rate. It is an association,
   not a forward test, and stays silent below 25 scored files or 5 fixed ones.
 
 Every test: [BENCHMARKS.md](../BENCHMARKS.md#code-health-predicts-defects).

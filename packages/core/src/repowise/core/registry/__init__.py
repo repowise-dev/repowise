@@ -9,6 +9,8 @@ forking the source tree:
   them with a :class:`FastMCP` server at boot.
 - :mod:`pipeline_hooks` lets plugins observe (and eventually mutate)
   pipeline phase transitions.
+- :mod:`plugins` discovers installed plugins and holds named seams
+  (``SeamRegistry``) whose local default a plugin can replace.
 
 Each registry is a small module-level singleton plus a ``CLIRegistry`` /
 ``MCPToolRegistry`` / ``PipelineHookRegistry`` class so callers that

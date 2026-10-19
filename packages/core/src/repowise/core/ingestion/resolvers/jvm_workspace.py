@@ -35,14 +35,68 @@ _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
 # before their single-keyword prefixes in the alternation, otherwise the
 # bare ``enum`` / ``annotation`` branch matches first and captures the
 # literal word "class" as the type name. ``trait`` and the ``case`` /
-# ``implicit`` modifiers cover Scala's type declarations.
+# ``implicit`` modifiers cover Scala's type declarations, ``expect`` and
+# ``actual`` Kotlin Multiplatform's, whose ``actual`` is often a ``typealias``.
 _TOP_LEVEL_TYPE_RE = re.compile(
     r"^\s*(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|final\s+"
-    r"|sealed\s+|open\s+|data\s+|value\s+|inline\s+|case\s+|implicit\s+)*"
-    r"(?:annotation\s+class|enum\s+class|class|interface|trait|enum|object|record|annotation)\s+(\w+)",
+    r"|sealed\s+|open\s+|data\s+|value\s+|inline\s+|case\s+|implicit\s+|expect\s+|actual\s+)*"
+    r"(?:annotation\s+class|enum\s+class|class|interface|trait|enum|object|record|annotation"
+    r"|typealias)\s+(\w+)",
     re.MULTILINE,
 )
 _JVM_EXTENSIONS = frozenset({".java", ".kt", ".scala"})
+
+# Kotlin top-level callables (``fun`` / ``val`` / ``var`` / ``const val``),
+# including extension forms. A Kotlin import can name one directly
+# (``import com.acme.util.shout``), and the declaring file rarely shares the
+# name (``StringUtils.kt``), so the type scan above never sees it.
+#
+# "Top level" is approximated by column 0: the match is anchored at the start
+# of the line with no leading indentation, which excludes members of a class
+# body and local declarations. It is a line scan, not a parse, so a column-0
+# declaration inside a raw string or an unindented class body is a (rare)
+# false positive.
+_KT_TOP_LEVEL_CALLABLE_RE = re.compile(
+    r"^(?P<mods>(?:(?:@\w+(?:\([^)\n]*\))?|public|internal|private|protected"
+    r"|inline|infix|operator|tailrec|suspend|external|expect|actual|const"
+    r"|lateinit|override|open|final|abstract)[ \t]+)*)"
+    r"(?P<kw>fun|val|var)[ \t]+(?P<rest>[^\n]*)",
+    re.MULTILINE,
+)
+_KT_GENERIC_RE = re.compile(r"<[^<>]*>")
+_KT_TRAILING_IDENT_RE = re.compile(r"(\w+)\s*$")
+_KT_KEYWORD_ONLY_RE = re.compile(r"^(?:interface)\b")
+
+
+def _kotlin_top_level_callables(text: str) -> tuple[str, ...]:
+    """Names of non-private top-level ``fun`` / ``val`` / ``var`` in Kotlin text.
+
+    Extension declarations yield the member name, not the receiver:
+    ``fun <T : Any> Mono<T>.captureMetrics(`` -> ``captureMetrics`` and
+    ``val String.shout: String`` -> ``shout``. ``private`` declarations are
+    file-local and cannot be imported, so they are skipped.
+    """
+    names: list[str] = []
+    for m in _KT_TOP_LEVEL_CALLABLE_RE.finditer(text):
+        if re.search(r"\bprivate\b", m.group("mods")):
+            continue
+        rest = m.group("rest")
+        if m.group("kw") == "fun" and _KT_KEYWORD_ONLY_RE.match(rest):
+            continue  # ``fun interface Foo`` declares a type, not a function
+        # Drop generic argument lists (innermost first) so ``<T : Any>`` and
+        # ``Map<String, List<Int>>`` receivers cannot hide the name.
+        prev = None
+        while prev != rest:
+            prev = rest
+            rest = _KT_GENERIC_RE.sub("", rest)
+        if m.group("kw") == "fun":
+            head = rest.split("(", 1)[0]
+        else:
+            head = re.split(r":|=|\bby\b", rest, maxsplit=1)[0]
+        ident = _KT_TRAILING_IDENT_RE.search(head)
+        if ident:
+            names.append(ident.group(1))
+    return tuple(names)
 
 # Chained Scala package clauses (``package org.example`` then ``package
 # tools`` → org.example.tools) are scanned line-wise from the top of the
@@ -61,7 +115,7 @@ _KOTLIN_STDLIB_PREFIXES = ("kotlin.",)
 # ``Filter.java``. Unlike stdlib these only apply AFTER exact workspace
 # lookup fails — a repo can legitimately contain these namespaces (the
 # library's own source tree).
-_JAVA_EXTERNAL_PREFIXES = ("jakarta.",)
+_JAVA_EXTERNAL_PREFIXES = ("jakarta.", "android.", "androidx.")
 _KOTLIN_EXTERNAL_PREFIXES = ("kotlinx.",)
 
 
@@ -124,13 +178,16 @@ class JvmWorkspaceIndex:
     """Maps repo-relative file path → package FQN."""
 
     fqn_to_files: dict[str, list[str]] = field(default_factory=dict)
-    """Maps a fully-qualified class name → defining file(s)."""
+    """Maps a fully-qualified class (or Kotlin top-level function/property) name → defining file(s)."""
 
     services: dict[str, tuple[str, ...]] = field(default_factory=dict)
     """META-INF/services/<Iface> → impl FQNs (for Phase 3/4 reachability)."""
 
     autoconfig_imports: dict[str, tuple[str, ...]] = field(default_factory=dict)
     """Spring Boot autoconfig import files → listed FQNs (for Phase 3/4)."""
+
+    jpms_exports: dict[str, frozenset[str]] = field(default_factory=dict)
+    """Module dir → frozenset of exported package FQNs (from module-info.java)."""
 
     def files_for_package(self, fqn: str) -> tuple[str, ...]:
         """Return all files in the package."""
@@ -227,9 +284,11 @@ class JvmWorkspaceIndex:
 
 
 def _scan_jvm_text(abs_path: str, text: str) -> tuple[str, tuple[str, ...]]:
-    """Return (package_fqn, top_level_type_names) from already-read text.
+    """Return (package_fqn, top_level_names) from already-read text.
 
-    Cheap line scan — no AST.
+    ``top_level_names`` are the file's top-level type names and, for Kotlin
+    files, its non-private top-level ``fun`` / ``val`` / ``var`` names too —
+    both are importable by ``package.name``. Cheap line scan — no AST.
     """
     if abs_path.endswith(".scala"):
         package = _scala_package(text)
@@ -237,7 +296,18 @@ def _scan_jvm_text(abs_path: str, text: str) -> tuple[str, tuple[str, ...]]:
         pkg_match = _PACKAGE_RE.search(text)
         package = pkg_match.group(1) if pkg_match else ""
 
-    return package, tuple(m.group(1) for m in _TOP_LEVEL_TYPE_RE.finditer(text))
+    names = [m.group(1) for m in _TOP_LEVEL_TYPE_RE.finditer(text)]
+    if abs_path.endswith((".kt", ".kts")):
+        # Types stay first and keep their duplicates (the same-package pass
+        # reads a repeated name as ambiguous); callables are appended once and
+        # only when not already recorded, so ``fun Foo()`` beside
+        # ``class Foo`` adds no second entry for the file.
+        seen = set(names)
+        for name in _kotlin_top_level_callables(text):
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return package, tuple(names)
 
 
 @lru_cache(maxsize=16384)
@@ -275,6 +345,14 @@ _JPMS_PROVIDES_RE = re.compile(
     r"provides\s+([\w.]+)\s+with\s+([\w.,\s]+);",
     re.MULTILINE,
 )
+_JPMS_EXPORTS_RE = re.compile(
+    r"\bexports\s+([\w.]+)",
+    re.MULTILINE,
+)
+_JAVA_COMMENT_OR_STRING_RE = re.compile(
+    r'"(?:[^"\\]|\\.)*"|//[^\n]*|/\*.*?\*/',
+    re.DOTALL,
+)
 
 
 def _scan_jpms_provides(
@@ -304,6 +382,46 @@ def _scan_jpms_provides(
             if iface and impls:
                 out.setdefault(iface, []).extend(impls)
     return {k: tuple(v) for k, v in out.items()}
+
+
+def _scan_jpms_exports(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> dict[str, frozenset[str]]:
+    """Scan ``module-info.java`` files for ``exports <pkg>;`` directives.
+
+    Keyed by module directory (relative to repo_root). For paths containing
+    ``/src/``, the module directory is the path before ``/src/``; for root
+    or top-level module files, it is the enclosing directory (or ``""`` for root).
+    Ignores test ``module-info.java`` files and comments/strings.
+    """
+    out: dict[str, set[str]] = {}
+    for mi in glob_via(
+        snapshot, repo_path, "module-info.java", prune_nested_git=prune_nested_git
+    ):
+        if not mi.is_file():
+            continue
+        try:
+            rel = mi.relative_to(repo_path).as_posix()
+        except ValueError:
+            continue
+        if "/src/test/" in rel or rel.startswith("src/test/") or "/test/" in rel:
+            continue
+        if "/src/" in rel:
+            mod_dir = rel.split("/src/", 1)[0]
+        else:
+            mod_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        try:
+            text = mi.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        clean_text = _JAVA_COMMENT_OR_STRING_RE.sub(" ", text)
+        pkgs = set()
+        for m in _JPMS_EXPORTS_RE.finditer(clean_text):
+            pkg = m.group(1).strip()
+            if pkg:
+                pkgs.add(pkg)
+        out.setdefault(mod_dir, set()).update(pkgs)
+    return {k: frozenset(v) for k, v in out.items()}
 
 
 def _scan_meta_inf_services(
@@ -399,6 +517,64 @@ def _scan_spring_autoconfig(
     return {k: tuple(v) for k, v in result.items()}
 
 
+#: Runtime resource files that name a class for a framework to load: Hibernate
+#: ``metadata_builder_contributor`` in ``application.yml``, an H2 ``CREATE
+#: ALIAS ... FOR "pkg.Cls.method"`` in an init ``.sql``, a MyBatis
+#: ``typeHandler=`` in a mapper ``.xml``, a P6Spy ``logMessageFormat=`` in a
+#: ``.properties``. Main resources only: a class named by test resources alone
+#: is not live code.
+_RESOURCE_CLASS_FILES: tuple[str, ...] = tuple(
+    f"src/main/resources/*{suffix}" for suffix in (".xml", ".yml", ".yaml", ".properties", ".sql")
+)
+#: A dotted name ending in a capitalised segment: ``com.acme.db.JsonTypeHandler``,
+#: also out of ``com.acme.db.JsonTypeHandler.parse``. Only a name that resolves
+#: to a class in the repository counts, so a framework FQN matches nothing.
+_RESOURCE_FQN_RE = re.compile(r"(?<![\w.$])((?:[a-z_][a-z0-9_]*\.)+[A-Z][A-Za-z0-9_]*)")
+#: Comments per resource format: a class named only in one is not loaded.
+#: XML ``<!-- -->``; YAML ``#`` at a line start or after whitespace;
+#: ``.properties`` comment lines (``#`` or ``!``); SQL ``--`` and ``/* */``.
+_YAML_COMMENT_RE = re.compile(r"(?:^|(?<=\s))#[^\n]*")
+_RESOURCE_COMMENT_RE: dict[str, re.Pattern[str]] = {
+    ".xml": re.compile(r"<!--.*?-->", re.DOTALL),
+    ".yml": _YAML_COMMENT_RE,
+    ".yaml": _YAML_COMMENT_RE,
+    ".properties": re.compile(r"^[ \t]*[#!][^\n]*", re.MULTILINE),
+    ".sql": re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL),
+}
+#: Data dumps (a seed ``.sql`` of many megabytes) are skipped unread.
+#: Ceiling: a class named only inside such a file is missed.
+_RESOURCE_MAX_BYTES = 1_000_000
+
+
+def resource_class_names(ctx: ResolverContext) -> set[str]:
+    """Fully qualified class names written in a module's main resource files.
+
+    The resource-file counterpart of ``META-INF/services`` and of the Gradle
+    names in ``jvm_gradle.build_script_class_names``: a framework reads the
+    name and loads the class by reflection, so no source refers to it.
+    """
+    names: set[str] = set()
+    if ctx.repo_path is None:
+        return names
+    for resource in glob_via(
+        getattr(ctx, "walk_snapshot", None),
+        ctx.repo_path,
+        _RESOURCE_CLASS_FILES,
+        prune_nested_git=ctx.prune_nested_git,
+    ):
+        try:
+            if resource.stat().st_size > _RESOURCE_MAX_BYTES:
+                continue
+            text = resource.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        comments = _RESOURCE_COMMENT_RE.get(resource.suffix.lower())
+        if comments is not None:
+            text = comments.sub(" ", text)
+        names.update(_RESOURCE_FQN_RE.findall(text))
+    return names
+
+
 def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     """Build the JVM workspace index from all ``.java`` and ``.kt`` files in the path set.
 
@@ -480,6 +656,10 @@ def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
         pass
     with contextlib.suppress(Exception):
         index.autoconfig_imports = _scan_spring_autoconfig(
+            repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=snapshot
+        )
+    with contextlib.suppress(Exception):
+        index.jpms_exports = _scan_jpms_exports(
             repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=snapshot
         )
 

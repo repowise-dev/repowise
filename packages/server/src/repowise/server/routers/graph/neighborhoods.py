@@ -6,12 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.attribution import attribution_enabled
 from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
     GraphEdge,
     GraphNode,
+    Repository,
 )
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
@@ -42,7 +45,7 @@ async def ego_graph(
     node_id: str = Query(..., description="Center node ID"),
     hops: int = Query(2, ge=1, le=3),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> EgoGraphResponse:
     """Return the N-hop neighborhood of a given node."""
     try:
@@ -108,7 +111,13 @@ async def ego_graph(
         )
     )
     git_row = git_result.scalar_one_or_none()
-    git_meta = GitMetadataResponse.from_orm(git_row) if git_row else None
+    git_meta = (
+        GitMetadataResponse.from_orm(
+            git_row, attribution_on=attribution_enabled(repo.local_path)
+        )
+        if git_row
+        else None
+    )
 
     signals = await collect_node_signals(session, repo_id, list(ego_node_ids))
 
@@ -205,6 +214,7 @@ async def dead_code_graph(
         select(DeadCodeFinding).where(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             DeadCodeFinding.kind == "unreachable_file",
         )
     )

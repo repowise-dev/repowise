@@ -262,3 +262,68 @@ class TestSpringSymbolEdges:
         bound = _bound(_build_graph(tmp_path))
         assert ("UserResource.java::UserResource", "MailService.java::MailService") in bound
         assert ("UserResource.java::UserResource", "User.java::User") not in bound
+
+
+class TestSpringRouteHandlers:
+    def test_each_mapped_method_is_bound_from_its_module(self, tmp_path: Path) -> None:
+        (tmp_path / "OwnerController.java").write_text(
+            "import org.springframework.web.bind.annotation.*;\n"
+            "@RestController\n"
+            '@RequestMapping("/owners")\n'
+            "public class OwnerController {\n"
+            "  @GetMapping\n"
+            "  public String list() { return \"\"; }\n"
+            '  @PostMapping(value = {"/new", "/create"})\n'
+            '  @PreAuthorize("hasRole(\'ADMIN\')")\n'
+            "  public String create(@RequestBody String body) { return body; }\n"
+            '  @RequestMapping(path = "/{id}", method = RequestMethod.DELETE)\n'
+            "  public void delete() {}\n"
+            "  private void helper() {}\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        module = "OwnerController.java::__module__"
+        handlers = {t.rsplit("::", 1)[-1] for s, t in bound if s == module}
+        assert handlers == {"list", "create", "delete"}
+
+    def test_a_kotlin_handler_and_a_commented_mapping(self, tmp_path: Path) -> None:
+        (tmp_path / "PetController.kt").write_text(
+            "import org.springframework.web.bind.annotation.*\n"
+            "@RestController\n"
+            "class PetController {\n"
+            '    // @GetMapping("/old")\n'
+            "    fun old(): String = \"\"\n"
+            '    @GetMapping(value = ["/pets"])\n'
+            "    fun pets(): String = \"\"\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        assert bound == {("PetController.kt::__module__", "PetController.kt::PetController::pets")}
+
+    def test_a_one_line_kotlin_expression_body(self, tmp_path: Path) -> None:
+        (tmp_path / "Ping.kt").write_text(
+            "import org.springframework.web.bind.annotation.*\n"
+            "@RestController\n"
+            "class Ping {\n"
+            '    @GetMapping("/ping") fun ping() = "pong"\n'
+            '    @GetMapping("/pong")\n'
+            '    fun pong() = "ping"\n'
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        assert bound == {
+            ("Ping.kt::__module__", "Ping.kt::Ping::ping"),
+            ("Ping.kt::__module__", "Ping.kt::Ping::pong"),
+        }
+
+    def test_a_feign_client_serves_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "Owners.java").write_text(
+            "import org.springframework.web.bind.annotation.GetMapping;\n"
+            '@FeignClient("owners")\n'
+            'public interface Owners { @GetMapping("/owners") String all(); }\n'
+        )
+
+        assert not _bound(_build_graph(tmp_path))

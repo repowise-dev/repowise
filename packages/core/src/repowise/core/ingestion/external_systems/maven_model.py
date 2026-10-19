@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from repowise.core.fsutils import repo_relative
+
 _NS = re.compile(r"\{[^}]*\}")
 _PROP_RE = re.compile(r"\$\{([^}]+)\}")
 _MAX_PARENT_DEPTH = 16
@@ -245,10 +247,7 @@ def _parse_raw(
 
 
 def _relative(path: Path, repo_root: Path) -> str:
-    try:
-        return path.resolve().relative_to(repo_root.resolve()).as_posix()
-    except (OSError, ValueError):
-        return path.name
+    return repo_relative(path, repo_root, resolve=True) or path.name
 
 
 def _resolve(value: str, properties: dict[str, str]) -> str:

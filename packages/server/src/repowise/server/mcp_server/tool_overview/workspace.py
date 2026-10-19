@@ -11,7 +11,8 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
-from repowise.server.mcp_server._helpers import _get_repo, _resolve_all_contexts
+from repowise.server.mcp_server._federation import Federation, sum_fields
+from repowise.server.mcp_server._helpers import _get_repo
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_overview.pages import _load_overview_page
 from repowise.server.mcp_server.tool_overview.surface import _tool_surface_guide
@@ -19,17 +20,18 @@ from repowise.server.mcp_server.tool_overview.surface import _tool_surface_guide
 
 async def _workspace_overview() -> dict:
     """Build a concise workspace-level overview across all repos."""
-    contexts = await _resolve_all_contexts()
     registry = _state._registry
-    repos_info = [await _repo_entry(ctx, registry) for ctx in contexts]
+    fed = Federation()
+    repos_info = [entry for _, entry in await fed.run(lambda ctx: _repo_entry(ctx, registry))]
     cross_repo_topology = _cross_repo_topology(repos_info)
+    totals = sum_fields(repos_info, ("file_count", "symbol_count"))
 
     result: dict[str, Any] = {
         "workspace": True,
         "workspace_root": str(registry.workspace_root) if registry else "",
         "total_repos": len(repos_info),
-        "total_files": sum(r["file_count"] for r in repos_info),
-        "total_symbols": sum(r["symbol_count"] for r in repos_info),
+        "total_files": totals["file_count"],
+        "total_symbols": totals["symbol_count"],
         "repos": repos_info,
         "hint": ("Use repo='<alias>' to query a specific repo. Omit repo to use the default."),
         "tool_surface": _tool_surface_guide(is_workspace=True),
@@ -42,7 +44,7 @@ async def _workspace_overview() -> dict:
         "get_overview", repo_root=registry.workspace_root if registry else None
     )
     collector.attach(result)
-    return result
+    return fed.annotate(result, repos_info, repo_key="alias")
 
 
 async def _repo_entry(ctx: Any, registry: Any) -> dict[str, Any]:

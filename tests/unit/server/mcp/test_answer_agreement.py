@@ -127,7 +127,7 @@ def _patch_agreement_pipeline(monkeypatch, answer_mod, *, top_both: bool):
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Upload module summary."
+            h["summary"] = "Upload module: streams large uploads in chunks."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if i == 0:
@@ -154,7 +154,7 @@ async def test_agreement_lifts_compressed_retrieval_to_high(setup_mcp, monkeypat
     _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=True)
     _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
 
-    result = await get_answer("how does upload chunking work")
+    result = await get_answer("how does upload chunking work", include=["diagnostics"])
     assert result["confidence"] == "high"
     assert result["retrieval_quality"] == "high"
 
@@ -217,7 +217,7 @@ async def test_grounding_earns_high_only_when_opted_in(setup_mcp, monkeypatch):
     _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=False)
     _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
 
-    result = await get_answer("how are large uploads handled")
+    result = await get_answer("how are large uploads handled", include=["diagnostics"])
     assert result["retrieval_quality"] == "weak"
     assert result["confidence"] == "medium", "grounded prose does not out-vote weak retrieval"
 
@@ -371,7 +371,7 @@ def _patch_keyless_agreement_pipeline(monkeypatch, answer_mod, pipeline_mod, *, 
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Upload module summary."
+            h["summary"] = "Upload module: streams large uploads in chunks."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if i == 0:
@@ -440,4 +440,4 @@ async def test_symbol_agreement_flag_is_independently_reversible(setup_mcp, monk
     # ...and the vector pair still lifts with the symbol flag off.
     _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=True)
     _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
-    assert (await get_answer("how does upload chunking work again"))["confidence"] == "high"
+    assert (await get_answer("how does upload chunking work in alpha"))["confidence"] == "high"

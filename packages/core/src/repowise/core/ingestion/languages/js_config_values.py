@@ -61,6 +61,46 @@ def string_literals(span: bytes) -> list[str]:
     return out
 
 
+# A plugin factory call: the last name segment ends in ``Plugin``
+# (``createNextIntlPlugin(``, ``x.somePlugin(``). Ceiling: the one shape seen
+# taking a loaded file; a ``with*`` wrapper taking a path is not read until a
+# config shows one.
+_PLUGIN_CALL_RE = re.compile(rb"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*Plugin\s*\(")
+
+
+def plugin_path_arguments(text: bytes) -> list[str]:
+    """The string literal each plugin factory call in a config takes first.
+
+    ``createNextIntlPlugin("./src/i18n/request.ts")`` hands next-intl a file to
+    load. Any other call's literal (``resolve(...)``, ``glob.sync(...)``) is a
+    path the config computes with, not one a tool loads.
+    """
+    text = strip_comments(text)
+    out: list[str] = []
+    for call in _code_matches(text, _PLUGIN_CALL_RE):
+        arg = text[call.end() : _value_end(text, call.end())].strip()
+        if arg[:1] in _QUOTES and _string_end(arg, 0) == len(arg) - 1:
+            out.extend(string_literals(arg))
+    return out
+
+
+def _code_matches(text: bytes, pattern: re.Pattern[bytes]) -> list[re.Match[bytes]]:
+    """Where *pattern* matches *text* outside any string or template literal.
+
+    A plugin call written inside a literal (``"somePlugin('./x')"``) is text,
+    not a call. Ceiling: a call inside a template literal's ``${...}`` hole is
+    skipped too.
+    """
+    out: list[re.Match[bytes]] = []
+    i = 0
+    for match in pattern.finditer(text):
+        while i < match.start():
+            i = _string_end(text, i) + 1 if text[i] in _QUOTES else i + 1
+        if i == match.start():
+            out.append(match)
+    return out
+
+
 def _value_end(text: bytes, start: int) -> int:
     """Where the value expression starting at *start* ends.
 

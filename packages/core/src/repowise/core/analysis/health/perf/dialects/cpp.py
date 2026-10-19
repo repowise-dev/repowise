@@ -44,6 +44,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .base import BasePerfDialect
+from .iterables import IterableSources, text_of, upper_bound
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -439,7 +440,119 @@ def _declaration_has_initializer(node: Node) -> bool:
     return False
 
 
-class CppPerfDialect(BasePerfDialect):
+_CPP_FN_KINDS: frozenset[str] = frozenset({"function_definition", "lambda_expression"})
+# ``while ((row = mysql_fetch_row(res)))``: a row cursor over the result set it is passed.
+_ROW_CURSORS: frozenset[str] = frozenset({"mysql_fetch_row", "PQgetResult"})
+_DECLARATORS: frozenset[str] = frozenset(
+    {"array_declarator", "reference_declarator", "pointer_declarator", "init_declarator"}
+)
+
+
+def _declared_name(node: Node | None) -> bytes | None:
+    """``x`` of ``x`` / ``x[4]`` / ``&x`` / ``*x`` / ``x = v`` (a member's ``x`` too)."""
+    while node is not None and node.type in _DECLARATORS:
+        node = node.child_by_field_name("declarator") or next(
+            (c for c in node.named_children if c.type == "identifier"), None
+        )
+    named = node is not None and node.type in ("identifier", "field_identifier")
+    return node.text if named else None
+
+
+def _std_array(node: Node | None) -> bool:
+    """``std::array<T, 4>`` / ``array<T, 4>``: a size fixed in the type."""
+    if node is not None and node.type == "qualified_identifier":
+        if text_of(node.child_by_field_name("scope")) != "std":
+            return False
+        node = node.child_by_field_name("name")
+    if node is None or node.type != "template_type":
+        return False
+    args = node.child_by_field_name("arguments")
+    if args is None or text_of(node.child_by_field_name("name")) != "array":
+        return False
+    return any(arg.type == "number_literal" for arg in args.named_children)
+
+
+def _cpp_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``T x = v`` / ``T x{a, b}`` (the value), ``T x[16]``
+    (the declarator), ``std::array<T, 4> x`` (the type), ``x = v``, or
+    ``sqlite3_prepare_v2(db, sql, n, &x, ..)`` (the call). A null pointer binds
+    nothing: the statement that fills it does."""
+    if node.type == "declaration":
+        return _declared_values(node)
+    if node.type == "assignment_expression":
+        left, op = node.child_by_field_name("left"), node.child_by_field_name("operator")
+        right = node.child_by_field_name("right")
+        plain = left is not None and op is not None and op.type == "=" and right is not None
+        return [(left.text, right)] if plain and left.type == "identifier" and left.text else []
+    return _prepared_into(node) if node.type == "call_expression" else []
+
+
+def _prepared_into(call: Node) -> list[tuple[bytes, Node]]:
+    """``stmt`` of ``sqlite3_prepare_v2(db, sql, n, &stmt, ..)``, bound to the call."""
+    args = call.child_by_field_name("arguments")
+    if args is None or not _callee_name(call).startswith("sqlite3_prepare"):
+        return []
+    out = [a.child_by_field_name("argument") for a in args.named_children]
+    return [(a.text, call) for a in out if a is not None and a.type == "identifier" and a.text]
+
+
+def _declared_values(node: Node) -> list[tuple[bytes, Node]]:
+    found: list[tuple[bytes, Node]] = []
+    ty = node.child_by_field_name("type")
+    for decl in node.children_by_field_name("declarator"):
+        name = _declared_name(decl)
+        if name is None:
+            continue
+        if decl.type == "init_declarator":
+            value = decl.child_by_field_name("value")
+            if value is not None and value.type != "null" and value.text != b"NULL":
+                found.append((name, value))
+        elif decl.type == "array_declarator":
+            found.append((name, decl))
+        elif _std_array(ty):
+            found.append((name, ty))
+    return found
+
+
+def _fixed_decl(node: Node) -> bool:
+    """A file-level ``const`` / ``constexpr`` declaration, or an array of one."""
+    qualified = any(c.type == "type_qualifier" for c in node.children)
+    return qualified or any(_declared_array(d) for d in node.children_by_field_name("declarator"))
+
+
+def _declared_array(node: Node | None) -> bool:
+    while node is not None and node.type in ("init_declarator", "reference_declarator", "pointer_declarator"):
+        node = node.child_by_field_name("declarator")
+    return node is not None and node.type == "array_declarator"
+
+
+def _end_of(cond: Node | None) -> Node | None:
+    """``xs`` of an iterator loop's ``it != xs.end()``."""
+    if cond is None or cond.type != "binary_expression":
+        return None
+    op, right = cond.child_by_field_name("operator"), cond.child_by_field_name("right")
+    if op is None or op.type != "!=" or right is None or right.type != "call_expression":
+        return None
+    fn = right.child_by_field_name("function")
+    if fn is None or fn.type != "field_expression":
+        return None
+    field = text_of(fn.child_by_field_name("field"))
+    return fn.child_by_field_name("argument") if field in ("end", "cend") else None
+
+
+def _row_test(cond: Node | None) -> Node | None:
+    """The call a ``while`` tests: ``f(..)``, ``f(..) == ROW``, ``(row = f(..))``."""
+    while cond is not None and cond.type in ("condition_clause", "parenthesized_expression"):
+        inner = cond.child_by_field_name("value")
+        cond = inner if inner is not None else next(iter(cond.named_children), None)
+    if cond is not None and cond.type == "binary_expression":
+        cond = cond.child_by_field_name("left")
+    if cond is not None and cond.type == "assignment_expression":
+        cond = cond.child_by_field_name("right")
+    return cond if cond is not None and cond.type == "call_expression" else None
+
+
+class CppPerfDialect(IterableSources):
     language = "cpp"
     markers = frozenset(
         {
@@ -623,6 +736,137 @@ class CppPerfDialect(BasePerfDialect):
         if name in LOCK_GUARD_TYPES:
             return "lock_in_loop"
         return None
+
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = _CPP_FN_KINDS
+    file_container_kinds = frozenset({"namespace_definition"})
+    member_scope_kinds = frozenset({"class_specifier", "struct_specifier", "union_specifier"})
+
+    int_kinds = frozenset({"number_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression", "pointer_expression"})
+    size_names = frozenset({"size", "length", "ssize", "ABSL_ARRAYSIZE", "arraysize"})
+    # ``while (rs->next())`` (a SQL connector's result set).
+    cursor_advances = frozenset({"next"})
+    listings = frozenset({"directory_iterator", "recursive_directory_iterator"})
+    recursive_listings = frozenset({"recursive_directory_iterator"})
+    streams = frozenset({"getline"})
+    member_kinds = frozenset({"field_expression"})
+    change_kinds = frozenset({"assignment_expression", "update_expression"})
+    grow_methods = frozenset(
+        {
+            "push_back", "emplace_back", "emplace", "push_front", "emplace_front", "insert",
+            "resize", "assign", "append",
+        }
+    )
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "else_clause", "switch_statement", "case_statement", "for_statement",
+            "for_range_loop", "while_statement", "do_statement", "try_statement", "catch_clause",
+            "conditional_expression",
+        }
+    )
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type == "for_range_loop":
+            return "each", loop.child_by_field_name("right")
+        cond = loop.child_by_field_name("condition")
+        end = _end_of(cond)
+        if end is not None:
+            return "each", end
+        if loop.type == "for_statement":
+            return "counted", upper_bound(cond)
+        call = _row_test(cond)
+        parts = self.call_parts(call) if call is not None else None
+        if parts is None:
+            return "each", None
+        method, _receiver, args = parts
+        if method in _ROW_CURSORS:
+            return "each", args[0] if args else None
+        # ``sqlite3_step(stmt)`` is the read itself; ``getline(in, s)`` reads a stream.
+        if method in DB_FUNCTIONS or method in self.streams:
+            return "each", call
+        return "cursor", call
+
+    def is_literal(self, node: Node) -> bool:
+        """``{a, b}``, ``T x[16]`` and ``std::array<T, 4>``; not ``{args...}``."""
+        if node.type == "initializer_list":
+            entries = [c for c in node.named_children if c.type != "comment"]
+            return bool(entries) and not any(c.type == "parameter_pack_expansion" for c in entries)
+        if node.type == "array_declarator":
+            size = node.child_by_field_name("size")
+            return size is not None and size.type in self.int_kinds
+        return _std_array(node)
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type != "call_expression":
+            return None
+        fn = node.child_by_field_name("function")
+        args = node.child_by_field_name("arguments")
+        arg_nodes = [c for c in args.named_children if c.type != "comment"] if args else []
+        if fn is not None and fn.type == "field_expression":
+            field, obj = fn.child_by_field_name("field"), fn.child_by_field_name("argument")
+            return text_of(field), obj, arg_nodes
+        # ``std::size(xs)``: a namespace is not a receiver.
+        while fn is not None and fn.type in ("qualified_identifier", "template_function"):
+            fn = fn.child_by_field_name("name")
+        return text_of(fn), None, arg_nodes
+
+    def member_parts(self, node: Node) -> tuple[str, Node] | None:
+        obj = node.child_by_field_name("argument") if node.type == "field_expression" else None
+        return (text_of(node.child_by_field_name("field")), obj) if obj is not None else None
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _cpp_bindings(node)
+
+    def declared_names(self, node: Node) -> list[bytes]:
+        """Every name a declaration, parameter or range-for declares, initialised or not."""
+        if node.type in ("declaration", "parameter_declaration", "optional_parameter_declaration"):
+            names = (_declared_name(d) for d in node.children_by_field_name("declarator"))
+            return [name for name in names if name]
+        if node.type == "for_range_loop":
+            decl = node.child_by_field_name("declarator")
+            return [n.text for n in self._walk(decl) if n.type == "identifier" and n.text] if decl else []
+        return []
+
+    def escaped_names(self, node: Node) -> list[bytes]:
+        """``v`` of ``fill(v)`` / ``fill(&v)``: the callee may take it by reference."""
+        parts = self.call_parts(node)
+        names: list[bytes] = []
+        for arg in parts[2] if parts is not None else []:
+            if arg.type == "pointer_expression":
+                arg = arg.child_by_field_name("argument") or arg
+            if arg.type == "identifier" and arg.text:
+                names.append(arg.text)
+        return names
+
+    def file_bindings_of(self, item: Node) -> list[tuple[bytes, Node]]:
+        """A namespace-level ``const`` / ``constexpr`` or array."""
+        return _declared_values(item) if item.type == "declaration" and _fixed_decl(item) else []
+
+    def member_names(self, owner: Node) -> set[bytes]:
+        """Fields a method defined in the class body reads bare. Ceiling: a method
+        defined out of line (``void A::f()``) is not inside its class here."""
+        body = owner.child_by_field_name("body")
+        fields = [c for c in body.named_children if c.type == "field_declaration"] if body else []
+        return {
+            name
+            for member in fields
+            for decl in member.children_by_field_name("declarator")
+            if (name := _declared_name(decl))
+        }
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        decl = scope.child_by_field_name("declarator") if scope is not None else None
+        while decl is not None and decl.child_by_field_name("parameters") is None:
+            decl = decl.child_by_field_name("declarator")
+        params = decl.child_by_field_name("parameters") if decl is not None else None
+        return {
+            name
+            for param in (params.named_children if params is not None else ())
+            if (name := _declared_name(param.child_by_field_name("declarator")))
+        }
 
     @staticmethod
     def _has_literal_pattern(node: Node) -> bool:

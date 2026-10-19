@@ -26,7 +26,7 @@ from ....co_change import parse_partners
 from ....persistence.crud.analysis.dead_code import get_dead_code_findings
 from ....persistence.crud.authority import governing_decisions_by_file
 from ....persistence.crud.git import get_git_metadata_bulk
-from ....persistence.models import GitCommit, GitFunctionBlame, Repository
+from ....persistence.models import GitCommit, GitFunctionBlame, GraphNode
 from ..queue.eligibility import DeadSpan, dead_spans, dead_target
 from .extract_helper import ACTIVE_CO_CHANGE
 from .models import RefactoringSuggestion
@@ -42,6 +42,8 @@ ACTIVE_EDIT_MIN_COMMITS = 2
 _HISTORY_WINDOWS = 2
 MAX_CO_CHANGE_PARTNERS = 5
 _MAX_DECISION_RISKS = 3
+#: Exported symbols one risk names before counting the rest.
+_MAX_NAMED = 3
 #: Kinds that move a symbol out of its file, so its consumers see the change.
 _RELOCATING = frozenset({"split_file", "extract_class", "move_method"})
 #: The blast-radius key each file-level builder writes its dependents under.
@@ -119,7 +121,9 @@ class AnnotationFacts:
     recent from all, which is no signal rather than a quiet target. ``dead``
     is the sure dead-code spans by file (:func:`..queue.eligibility.dead_spans`).
     ``sources_read`` is, per test file the plans run, the ``getsource``
-    arguments it passes (:data:`_GETSOURCE`).
+    arguments it passes (:data:`_GETSOURCE`). ``exported`` is, per file, its
+    symbols a package exports and the file exporting each
+    (``graph_nodes.public_api``).
     """
 
     decisions: Mapping[str, list[tuple[str, str]]] = field(default_factory=dict)
@@ -128,6 +132,7 @@ class AnnotationFacts:
     recent: Mapping[str, tuple[datetime, str]] | None = None
     dead: Mapping[str, list[DeadSpan]] = field(default_factory=dict)
     sources_read: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    exported: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 def annotate(
@@ -146,7 +151,7 @@ def annotate(
     ]
     for risk in (
         _dead_code_risk(suggestion, facts.dead),
-        _public_api_risk(suggestion),
+        _public_api_risk(suggestion, facts.exported),
         _active_edit_risk(suggestion, facts),
         _source_text_risk(suggestion, tests, facts.sources_read),
     ):
@@ -171,7 +176,20 @@ def _dead_code_risk(
     return PlanRisk("dead_code", f"Nothing reaches {what}; delete it instead of refactoring it.")
 
 
-def _public_api_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
+def _public_api_risk(
+    suggestion: RefactoringSuggestion, exported: Mapping[str, Mapping[str, str]]
+) -> PlanRisk | None:
+    """One ``public_api`` risk: callers inside the repo of what the plan moves,
+    then the exported symbols it changes, which code outside the repo may call."""
+    texts = [
+        risk.text
+        for risk in (_relocation_risk(suggestion), _exported_risk(suggestion, exported))
+        if risk is not None
+    ]
+    return PlanRisk("public_api", " ".join(texts)) if texts else None
+
+
+def _relocation_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
     """Consumers of a symbol the plan moves out of its file, from its own blast radius."""
     kind = suggestion.refactoring_type
     if kind not in _RELOCATING:
@@ -199,6 +217,32 @@ def _public_api_risk(suggestion: RefactoringSuggestion) -> PlanRisk | None:
         verb = "depends" if dependents == 1 else "depend"
         text = f"{files} {verb} on this file; the class they use changes shape."
     return PlanRisk("public_api", text)
+
+
+def _exported_risk(
+    suggestion: RefactoringSuggestion, exported: Mapping[str, Mapping[str, str]]
+) -> PlanRisk | None:
+    """The symbols the plan changes that a package exports, at most three named."""
+    # Deferred: recommendations imports this module.
+    from .recommendations import target_symbol_ids
+
+    in_file = exported.get(suggestion.file_path) or {}
+    # Spans with no line bounds: only named symbols match, never by enclosing lines.
+    spans = [(symbol_id, 0, 0) for symbol_id in in_file]
+    hits = target_symbol_ids(suggestion, suggestion.file_path, None, spans)
+    if not hits:
+        return None
+    if len(hits) == 1:
+        text = f"{_dotted(hits[0])} is exported from `{in_file[hits[0]]}`; changing its signature"
+    else:
+        named = ", ".join(f"{_dotted(hit)} (from `{in_file[hit]}`)" for hit in hits[:_MAX_NAMED])
+        more = f" and {len(hits) - _MAX_NAMED} more" if len(hits) > _MAX_NAMED else ""
+        text = f"{named}{more} are exported; changing their signatures"
+    return PlanRisk("public_api", f"{text} breaks consumers outside the repo.")
+
+
+def _dotted(symbol_id: str) -> str:
+    return f"`{symbol_id.split('::', 1)[1].replace('::', '.')}`"
 
 
 def _active_edit_risk(suggestion: RefactoringSuggestion, facts: AnnotationFacts) -> PlanRisk | None:
@@ -329,13 +373,13 @@ async def load_annotation_facts(
     repository_id: str,
     suggestions: Sequence[RefactoringSuggestion],
     tests: Iterable[str] = (),
+    *,
+    root: str | None = None,
 ) -> AnnotationFacts:
     """Every fact :func:`annotate` reads, for the whole plan set at once;
-    *tests* are the ones the Extract Method plans run."""
+    *tests* are the ones the Extract Method plans run, and *root* is the
+    checkout the caller already looked up (None reads no test sources)."""
     files = sorted({item.file_path for item in suggestions if item.file_path})
-    root = await session.scalar(
-        select(Repository.local_path).where(Repository.id == repository_id)
-    )
     metadata = await get_git_metadata_bulk(session, repository_id, files)
     dead = await get_dead_code_findings(session, repository_id)
     recent = await _recent_commits(session, repository_id)
@@ -346,7 +390,28 @@ async def load_annotation_facts(
         recent=recent,
         dead=dead_spans(dead),
         sources_read=_sources_read(Path(root), _test_files(tests)) if root else {},
+        exported=await _exported_symbols(session, repository_id, files),
     )
+
+
+async def _exported_symbols(
+    session: AsyncSession, repository_id: str, files: Sequence[str]
+) -> dict[str, dict[str, str]]:
+    """Per plan file, its exported symbols and the file exporting each; one
+    query per chunk of files, not per file."""
+    out: dict[str, dict[str, str]] = {}
+    for index in range(0, len(files), _BATCH):
+        rows = await session.execute(
+            select(GraphNode.file_path, GraphNode.node_id, GraphNode.public_api).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.file_path.in_(list(files[index : index + _BATCH])),
+                GraphNode.public_api.is_not(None),
+                GraphNode.public_api != "",
+            )
+        )
+        for path, node_id, root in rows:
+            out.setdefault(path, {})[node_id] = root
+    return out
 
 
 def _partners(meta: Any) -> tuple[tuple[str, int], ...]:

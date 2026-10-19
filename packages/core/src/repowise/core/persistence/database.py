@@ -17,6 +17,7 @@ import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import structlog
 from sqlalchemy import String, event, inspect, literal
@@ -449,7 +450,11 @@ def _run_data_step(step: Callable[[object], object], connection: object) -> None
 #: additive reconciler below never does. Leaf tables only, since nothing may
 #: reference a table that is copied, dropped and renamed. Each holds derived
 #: rows, so an interrupted rebuild costs a recompute, never source data.
-_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset({"health_file_metrics"})
+#: ``health_snapshots`` is history rather than derived, but small, and an
+#: interrupted rebuild leaves its rows in the staging table.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset(
+    {"health_file_metrics", "health_snapshots"}
+)
 
 
 def _relax_not_null(connection: object, table: object) -> None:
@@ -496,8 +501,8 @@ def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: obje
 
     Only ever loosens: drops a NOT NULL the model no longer declares and widens
     a VARCHAR the model made longer or unbounded. Both are catalog-only changes
-    on PostgreSQL and match what migrations 0062, 0064, 0086 and 0094 do, so a
-    database that never ran Alembic (the Docker image's path) still accepts
+    on PostgreSQL and match what migrations 0062, 0064, 0086, 0094 and 0108 do,
+    so a database that never ran Alembic (the Docker image's path) still accepts
     what the current code writes. Tightening stays an explicit migration.
     """
     statements = []
@@ -513,6 +518,43 @@ def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: obje
         if column.nullable and not found["nullable"]:
             statements.append((what, text(f"{target} DROP NOT NULL")))
     return statements
+
+
+def _reconcile_columns(
+    connection: object,
+    inspector: Any,
+    table: Any,
+    run: Callable[[str, Callable[[], object]], None],
+    failures: list[tuple[str, Exception]],
+) -> None:
+    """Loosen and add one existing table's columns (see :func:`_reconcile_schema`)."""
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    # Render the column DDL fragment exactly as SQLAlchemy would emit
+    # it inside CREATE TABLE — preserves type, server_default, and
+    # nullability. We deliberately do NOT enforce FK constraints on
+    # back-filled columns: SQLite can't add an enforced FK after the
+    # fact, and write-time enforcement is sufficient for our purposes.
+    # The Alembic-only pgvector column triggers an unknown-type warning.
+    with warnings.catch_warnings():
+        if dialect.name == "postgresql":  # type: ignore[attr-defined]
+            warnings.filterwarnings("ignore", message="Did not recognize type 'vector'")
+        db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
+    if dialect.name == "postgresql":  # type: ignore[attr-defined]
+        for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
+            run(what, lambda statement=statement: statement)
+    for column in table.columns:
+        if column.name in db_cols:
+            continue
+        what = f"{table.name}.{column.name}"
+        run(
+            what,
+            lambda table=table, column=column: text(
+                f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
+            ),
+        )
+        data_step = _DATA_STEPS_ON_ADD.get(what)
+        if data_step is not None and not any(name == what for name, _ in failures):
+            run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
 
 
 def _reconcile_schema(connection: object) -> None:
@@ -602,33 +644,7 @@ def _reconcile_schema(connection: object) -> None:
             # reconcile a brand-new table column-by-column.
             continue
 
-        # --- Columns ---------------------------------------------------
-        # Render the column DDL fragment exactly as SQLAlchemy would emit
-        # it inside CREATE TABLE — preserves type, server_default, and
-        # nullability. We deliberately do NOT enforce FK constraints on
-        # back-filled columns: SQLite can't add an enforced FK after the
-        # fact, and write-time enforcement is sufficient for our purposes.
-        # The Alembic-only pgvector column triggers an unknown-type warning.
-        with warnings.catch_warnings():
-            if dialect.name == "postgresql":  # type: ignore[attr-defined]
-                warnings.filterwarnings("ignore", message="Did not recognize type 'vector'")
-            db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
-        if dialect.name == "postgresql":  # type: ignore[attr-defined]
-            for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
-                _run(what, lambda statement=statement: statement)
-        for column in table.columns:
-            if column.name in db_cols:
-                continue
-            what = f"{table.name}.{column.name}"
-            _run(
-                what,
-                lambda table=table, column=column: text(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
-                ),
-            )
-            data_step = _DATA_STEPS_ON_ADD.get(what)
-            if data_step is not None and not any(name == what for name, _ in failures):
-                _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+        _reconcile_columns(connection, inspector, table, _run, failures)
 
         # --- Nullability (SQLite only) -----------------------------------
         # After the columns, so the copy carries every one of them, and before

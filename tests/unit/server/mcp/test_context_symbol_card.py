@@ -120,10 +120,15 @@ async def test_symbol_id_dropped_only_when_derivable(session, repository, dense_
     assert len(plain) == 26
 
 
-async def test_unresolved_symbol_degrade_lists_every_symbol(
+async def test_unresolved_symbol_degrade_names_the_nearest_symbols(
     session, repository, dense_file
 ) -> None:
-    """The caller is hunting for a name, so the fallback card is uncapped."""
-    card = await _card(session, repository, f"{_FILE}::Missing")
+    """The card keeps its cap; ``did_you_mean`` searches every symbol of the file.
+
+    ``VAR_17`` ranks past the 15-row cut, so only a whole-file search finds it.
+    """
+    card = await _card(session, repository, f"{_FILE}::VAR_17x")
     assert card["resolved_to"] == _FILE
-    assert len(card["docs"]["symbols"]) == 28
+    assert len(card["docs"]["symbols"]) == _SYMBOL_CAP
+    assert card["did_you_mean"][0] == f"{_FILE}::VAR_17"
+    assert len(card["did_you_mean"]) == 5

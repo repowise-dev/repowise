@@ -234,6 +234,40 @@ class TestTsTypeUseEdges:
         assert edge and "AmbientSettings" in edge["type_uses"]
         assert "ModuleOnly" not in edge["type_uses"]
 
+    def test_package_import_never_resolves_to_a_repo_file_by_name(
+        self, tmp_path: Path
+    ) -> None:
+        graph = _build_graph(
+            tmp_path,
+            {
+                "dispatch.ts": "export interface Dispatch { run(): void }\n",
+                "hook.ts": (
+                    'import { type Dispatch } from "react"\n'
+                    "export function use(set: Dispatch): void {}\n"
+                ),
+            },
+        )
+        assert not graph.has_edge("hook.ts", "dispatch.ts")
+
+    def test_stem_match_never_crosses_languages(self, tmp_path: Path) -> None:
+        sources = {
+            "py/dispatch.py": "class Dispatch:\n    pass\n",
+            "hook.ts": (
+                'import * as React from "react"\n'
+                "export function use(set: React.Dispatch): void {}\n"
+            ),
+        }
+        for rel, body in sources.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(body, encoding="utf-8")
+        builder = GraphBuilder(repo_path=tmp_path)
+        for rel, lang in (("py/dispatch.py", "python"), ("hook.ts", "typescript")):
+            path = tmp_path / rel
+            builder.add_file(
+                _PARSER.parse_file(_file_info(rel, str(path.resolve()), lang), path.read_bytes())
+            )
+        assert not builder.build().has_edge("hook.ts", "py/dispatch.py")
+
     def test_type_only_import_produces_type_use_provenance(
         self, tmp_path: Path
     ) -> None:

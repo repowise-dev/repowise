@@ -60,6 +60,8 @@ async def test_get_dead_code_safe_only(setup_mcp):
     for tier_data in result["tiers"].values():
         for f in tier_data["findings"]:
             assert f["safe_to_delete"] is True
+    # A deletion-ready finding exists, so there is no empty view to explain.
+    assert "safe_only_note" not in result["summary"]
 
 
 @pytest.mark.asyncio

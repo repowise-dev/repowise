@@ -56,6 +56,12 @@ class TestStoriesAndBench:
         assert not _matches("packages/ui/src/manager.js")
         assert not _matches("preview.tsx")
 
+    def test_vscode_test_cli_config(self):
+        # @vscode/test-cli loads .vscode-test.{js,mjs,cjs} by name.
+        assert _matches(".vscode-test.mjs")
+        assert _matches("packages/vscode/.vscode-test.js")
+        assert not _matches("src/vscode-test.mjs")
+
     def test_bench_files(self):
         assert _matches("packages/zod/bench/arr.bench.ts")
         assert _matches("bench/parse.bench.js")

@@ -70,8 +70,9 @@ change touched.
 
 Two paths enqueue sync jobs on their own, and a sync job can spend:
 
-- `POST /api/webhooks/github` and `POST /api/webhooks/gitlab` create a sync job
-  for pushes to the registered default branch (`routers/webhooks.py`).
+- `POST /api/webhooks/github`, `POST /api/webhooks/gitlab` and
+  `POST /api/webhooks/gitea` create a sync job for pushes to the registered
+  default branch (`routers/webhooks.py`).
 - The scheduler's polling fallback runs every 15 minutes in the serving
   process, and enqueues a sync job for any repo whose git HEAD has moved past
   its stored `last_sync_commit` (`packages/server/src/repowise/server/scheduler.py`).
@@ -90,7 +91,8 @@ disable the model calls themselves.
   it and price with the right model) and calls the pricing table only. It is a
   read-only preflight, not a model call.
 - `GET /api/repos/{repo_id}/chat/suggestions` goes through the same grounding
-  reads as chat but makes no model call.
+  reads as chat but makes no model call. With no `target` it only quotes chart
+  datasets already cached for the current index and reads nothing cold.
 - `POST /api/repos/{repo_id}/claude-md/generate` renders `CLAUDE.md` from
   indexed data synchronously, with no LLM call (`routers/claude_md.py`).
 - `POST /api/repos/{repo_id}/blast-radius` is a deterministic graph analysis
@@ -141,13 +143,26 @@ Authorization: Bearer <your-key-value>
 ```
 
 The comparison is constant-time and the prefix must be exactly `Bearer ` with a
-single space (`deps.py`, `verify_api_key` / `bearer_is_valid`; verified: a bare
+single space (`auth.py`, `LocalAuthenticator`; verified: a bare
 key and a double space are both rejected).
 
 The key is read once, at import (`deps.py` line 26). Changing the environment of
 a running server has no effect; restart it. The webhook secrets are the
 exception and are read per request (`routers/webhooks.py`), deliberately, so a
 setting change is picked up without a restart.
+
+Scoped tokens are an optional second credential: list them in
+`~/.repowise/tokens.yaml` (or the file named by `REPOWISE_TOKENS_FILE`) as
+`{id, sha256, repos?, tools?, expires_at?}` entries, where `sha256` is the hex
+digest of the token, `repos`/`tools` narrow what it reaches by repository id or
+name and MCP tool name, and `expires_at` is an ISO 8601 time. A token with
+`tools` is refused on every REST route except chat, which runs only the tools
+in its scope. Every check returns a `Principal`, and the same check guards the
+MCP streamable HTTP and SSE transports, which answer a missing bearer with
+`401` and `WWW-Authenticate: Bearer resource_metadata="..."` pointing at an RFC
+9728 document under `/.well-known/oauth-protected-resource` (set
+`REPOWISE_PUBLIC_URL` when serving behind a proxy). With no key and no tokens
+file, every surface behaves exactly as described below.
 
 ### 2.2 What happens when the header is absent
 
@@ -163,13 +178,13 @@ setting change is picked up without a restart.
 (`deps.py`, `client_is_local`). The known consequence is that a same-host
 reverse proxy makes every peer loopback, so that deployment shape still needs
 the key. `repowise serve --host 0.0.0.0` without a key prints a warning at
-startup (`packages/cli/src/repowise/cli/commands/serve_cmd.py`) and the
+startup (`packages/cli/src/repowise/cli/commands/serve_cmd/command.py`) and the
 requests themselves are refused as above. All three rows were exercised against
 a running app with a fabricated remote peer.
 
 ### 2.3 Which endpoints enforce it
 
-Every router under `/api` is protected except the two webhook routes. The two
+Every router under `/api` is protected except the three webhook routes. The two
 probe endpoints are unprotected by design:
 
 | Route | Credential |
@@ -177,18 +192,21 @@ probe endpoints are unprotected by design:
 | `/health`, `/metrics` | none (`routers/health.py`: "these endpoints are NOT protected by API key auth") |
 | `/api/webhooks/github` | GitHub's `X-Hub-Signature-256` HMAC-SHA256 header over the raw body, `sha256=` prefix required |
 | `/api/webhooks/gitlab` | GitLab's `X-Gitlab-Token` shared secret |
+| `/api/webhooks/gitea` | Gitea's / Forgejo's `X-Gitea-Signature` or `X-Forgejo-Signature` HMAC-SHA256 header over the raw body, bare hex, no prefix |
 | `GET /api/jobs/{job_id}/stream` | bearer, or the per-job `?token=` described in section 4; this one route cannot carry a router-level bearer dependency because an `EventSource` cannot set headers |
 | everything else under `/api` | bearer |
 
-Counting the published document: 188 operations, 184 of which declare the
-`APIKeyHeader` security scheme and 4 of which do not, and those 4 are exactly
-the table's first three rows (the stream route declares the scheme even though
+Counting the published document: 196 operations, 191 of which declare the
+`APIKeyHeader` security scheme and 5 of which do not, and those 5 are exactly
+the table's first four rows (the stream route declares the scheme even though
 it also accepts the token, which is a third reason this page exists).
 
 Webhook behaviour when the secret is not configured mirrors the API key:
 loopback callers are accepted, a non-loopback caller gets `403`; a bad signature
-is `401 {"detail": "Invalid signature"}`, a missing `sha256=` prefix is `401`,
-and a bad GitLab token is `401 {"detail": "Invalid token"}` (`routers/webhooks.py`).
+is `401 {"detail": "Invalid signature"}`, a missing `sha256=` prefix on the
+GitHub route is `401`, a *present* `sha256=` prefix on the Gitea route is `401`
+(Gitea and Forgejo send bare hex), and a bad GitLab token is
+`401 {"detail": "Invalid token"}` (`routers/webhooks.py`).
 Verified by request: remote peer with no key gets the 403 and the exact detail
 string.
 
@@ -254,7 +272,7 @@ detail endpoint returns the object, and two conventions sit on top:
 | `{results, accepted, skipped, errors}` with `202` | `POST /api/workspace/sync` | One entry per workspace repo, with its own `job_id` when accepted |
 | `RepoResponse` with `201` and `initial_job_id` | `POST /api/repos` with `index: true` | Registration that also enqueued a first index |
 | `{ok: true}` (and `{ok: true, deleted_pages: N}` for repo deletion) | mutations with nothing else to report, e.g. conversation delete, repository delete | Acknowledgement only |
-| `{event_id, status: "accepted"}` with `200` | both webhooks | The stored event's id, not a job id |
+| `{event_id, status: "accepted"}` with `200` | all three webhooks | The stored event's id, not a job id |
 | `X-Repowise-Redirected-From: <requested id>` response header | `GET /api/pages/{page_id}` and `/api/pages/lookup` | A retired page id resolved to its successor; the header names the id that was asked for (`routers/pages.py`) |
 
 Enum vocabularies are shared deliberately and are the same four values wherever
@@ -431,6 +449,14 @@ Six job modes exist (`job_executor.py`, `VALID_JOB_MODES`): `sync`,
 are not addressable by name over HTTP; each is the engine behind the endpoints
 in section 1. The mode is visible in `GET /api/jobs/{id}` under `config.mode`.
 
+A job can complete while its provider failed: each page it could not write
+counts in `failed_pages`, and `config.provider_issue` (`{kind, message}` plus
+optional `provider`, `model`, `target`, or `null`) names a shared cause such as
+a rejected API key (`auth`), a rate limit, an unreachable base URL, a missing
+model or path, or docs skipped because a configured provider would not load
+(`docs_skipped`; a repo with no provider at all is not reported). A job that
+fails on a recognised provider error stores the same hint as its `error_message`.
+
 One job per repository may be `pending` or `running` at a time. A second launch
 is `409`. On startup, the server marks any job left `running` or `pending` by a
 previous process as `failed`, with the message `Server restarted — job
@@ -491,6 +517,8 @@ one per router area; this table maps an area to the tag to open there.
 | Refactoring plans, opportunities, settings, code generation | `refactoring` | `routers/refactoring.py` |
 | Dead-code findings | `dead-code` | `routers/dead_code.py` |
 | Change risk, hotspots, ownership, commits, co-changes | `git` | `routers/git.py` |
+| Merged changes (Change Records) reconstructed from git | `changes` | `routers/changes.py` |
+| Typed events from consecutive index runs (CloudEvents, pull) | `events` | `routers/events.py` |
 | Structural coupling report | `coupling` | `routers/coupling.py` |
 | Blast radius for a change | `blast-radius` | `routers/blast_radius.py` |
 | Architectural decisions, lanes, lineage, policy settings | `decisions` | `routers/decisions.py` |
@@ -513,7 +541,7 @@ one per router area; this table maps an area to the tag to open there.
 | Knowledge map | `knowledge-map` | `routers/knowledge_map.py` |
 | External systems (third-party packages) | `external-systems` | `routers/external_systems.py` |
 | `CLAUDE.md` / `AGENTS.md` generation | `claude-md` | `routers/claude_md.py` |
-| GitHub and GitLab webhooks | `webhooks` | `routers/webhooks.py` |
+| GitHub, GitLab and Gitea/Forgejo webhooks | `webhooks` | `routers/webhooks.py` |
 | Liveness, readiness, Prometheus metrics | `health` | `routers/health.py` |
 | In-app feedback relay | `feedback` | `routers/feedback.py` |
 

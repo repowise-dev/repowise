@@ -18,6 +18,7 @@ from typing import Any
 
 import structlog
 
+from repowise.cli.commands._index_outcome import refresh_read_snapshots  # noqa: F401 (re-export)
 from repowise.cli.helpers import (
     as_commit_id,
     console,
@@ -195,14 +196,17 @@ async def _persist_partial_health(
     await persist_partial_health(session, repo_id, report, repo_path)
 
 
-async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
+async def _persist_incremental_commits(
+    session: Any, repo_id: str, repo_path: Any, *, timings: PhaseTimings | None = None
+) -> None:
     """Capture + upsert ``git_commits`` rows for commits new since the last index.
 
-    Delegates to :mod:`repowise.core.pipeline.incremental`.
+    Delegates to :mod:`repowise.core.pipeline.incremental`. ``timings`` carries
+    its ``persist.commits.*`` sub-rows into the run's phase table.
     """
     from repowise.core.pipeline.incremental import persist_incremental_commits
 
-    await persist_incremental_commits(session, repo_id, repo_path)
+    await persist_incremental_commits(session, repo_id, repo_path, timings=timings)
 
 
 def stamp_head_commit(repo_path: Any, head: str | None) -> None:
@@ -276,28 +280,6 @@ def heal_commit_offsets(repo_path: Any) -> None:
                 await reconcile_commit_offsets(session, repo.id, GitIndexer(root))
         finally:
             await engine.dispose()
-
-    with contextlib.suppress(Exception):
-        run_async(_run())
-
-
-def refresh_read_snapshots(repo_path: Any) -> None:
-    """Store the Fix first queue and the next-actions view for the next reader.
-
-    A named step at every outcome of ``repowise update`` and at the end of
-    ``repowise init``, once every store is final, so ``repowise next``, the
-    overview and the dashboard read one row instead of rebuilding in each new
-    process. A view no write has invalidated since is left as it is, so the
-    "already up to date" path costs one primary-key read per view.
-    Best-effort: without a snapshot a reader builds live, as before.
-    """
-    from repowise.cli.helpers import repo_index_session
-    from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
-
-    async def _run() -> None:
-        async with repo_index_session(Path(repo_path)) as opened:
-            if opened is not None:
-                await write_read_snapshots(*opened)
 
     with contextlib.suppress(Exception):
         run_async(_run())
@@ -411,94 +393,22 @@ def resolve_repair_base(
     return from_commit, None
 
 
-def _persist_index_only_update(
+def _rescore_stale_findings(
     repo_path: Any,
     graph_builder: Any,
-    git_meta_map: dict,
-    dead_code_report: Any,
-    partial_health_report: Any,
     state: dict,
-    head: str | None,
-    start: float,
-    changed_paths: list[str],
-    doc_drift_report: Any | None = None,
-    file_diffs: list | None = None,
-    knowledge_graph_result: Any | None = None,
-    parsed_files: list | None = None,
-    degraded: list[str] | None = None,
-    pages_rendered: int = 0,
-    template_wiki: bool = False,
-    git_decay_map: dict | None = None,
-    exclude_patterns: list[str] | None = None,
-    head_ts: float | None = None,
-    force_full_rescore: bool = False,
-    full_git_summary: Any | None = None,
-    reconcile_full_scope: bool = False,
-    full_generation_page_ids: set[str] | None = None,
-    dependency_fingerprints: dict[str, str] | None = None,
-    vector_store: Any | None = None,
-    require_config_rebuild_success: bool = False,
-    history_window_changed: bool = False,
-    timings: PhaseTimings | None = None,
-) -> None:
-    """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
-    save state, and print the completion line. No LLM regeneration.
+    *,
+    head_ts: float | None,
+    parsed_files: list | None,
+    exclude_patterns: list[str] | None,
+    force_full_rescore: bool,
+    timings: PhaseTimings | None,
+) -> tuple[Any, Any, Any]:
+    """Re-score health and rescan security repo-wide when they are stale.
 
-    ``force_full_rescore`` runs the full health re-score regardless of the
-    periodic gate. Set by the config-changed caller, which relies on this path
-    rather than re-scoring separately and returning — doing that advanced
-    ``last_sync_commit`` past commits it never indexed.
-
-    ``timings`` is the run's phase table. Its ``run`` row is closed here, at
-    the state write, and the whole table lands in ``state.json`` as
-    ``phase_timings`` the way ``init`` records its own run.
-
-    DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
-    state-file updates and console reporting stay here. Best-effort steps
-    that fail land in ``degraded`` and surface in the completion panel.
+    Returns the ``last_full_rescore_at``, ``health_analyzer_version`` and
+    ``security_scanner_version`` stamps the new state should carry.
     """
-    from repowise.core.pipeline.incremental import persist_incremental_index
-
-    degraded = degraded if degraded is not None else []
-    # Failures whose input was this commit range, kept apart from ``degraded``
-    # (which also collects repo-wide and non-DB failures) because only these
-    # strand data the advancing sync pointer would otherwise skip forever.
-    failed_steps: list[str] = []
-    degraded_before_persist = len(degraded)
-    run_async(
-        persist_incremental_index(
-            repo_path,
-            graph_builder,
-            git_meta_map,
-            dead_code_report,
-            partial_health_report,
-            changed_paths,
-            doc_drift_report=doc_drift_report,
-            file_diffs=file_diffs,
-            knowledge_graph_result=knowledge_graph_result,
-            parsed_files=parsed_files,
-            git_decay_map=git_decay_map,
-            full_git_summary=full_git_summary,
-            history_window_changed=history_window_changed,
-            reconcile_full_scope=reconcile_full_scope,
-            full_generation_page_ids=full_generation_page_ids,
-            vector_store=vector_store,
-            log=console.print,
-            degraded=degraded,
-            failed_steps=failed_steps,
-            timings=timings,
-        )
-    )
-    if require_config_rebuild_success and len(degraded) > degraded_before_persist:
-        raise RuntimeError(
-            "Configuration rebuild did not update every dependent store; "
-            "the previous fingerprint was retained so the next update retries."
-        )
-    from repowise.cli.helpers import config_fingerprint
-    from repowise.core.repo_config import config_dependency_fingerprints
-
-    from .command import _current_renderer_fingerprint
-
     # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
     # DB, so re-score every file's findings against the decayed inputs. Gated to
     # ~weekly since only the findings (not their cheap git inputs) lag here.
@@ -534,6 +444,150 @@ def _persist_index_only_update(
         with timed(timings, "security_rescan"):
             if run_full_security_rescan(repo_path, exclude_patterns or []):
                 security_scanner_version = SECURITY_SCANNER_VERSION
+    return last_full_rescore_at, health_analyzer_version, security_scanner_version
+
+
+def _stamp_git_history(
+    new_state: dict, full_git_summary: Any | None, failed_steps: list[str]
+) -> None:
+    """Record git history coverage and version when this run walked full history."""
+    if full_git_summary is None:
+        return
+    coverage = getattr(full_git_summary, "history_coverage", None)
+    if coverage is not None:
+        new_state["git_history_coverage"] = coverage.to_dict()
+    else:
+        new_state.pop("git_history_coverage", None)
+    # Every row was rewritten under the current rules, unless they never
+    # reached the store; then the next update walks again.
+    if "Git persist" not in failed_steps:
+        new_state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+
+
+def _stamp_scope(repo_path: Any, new_state: dict, failed_steps: list[str]) -> None:
+    """Stamp the index scope, counting this run's failed steps as unavailable."""
+    from repowise.core.index_scope import resolve_index_scope, stamp_index_scope
+
+    scope = resolve_index_scope(new_state, load_config(repo_path))
+    unavailable = set(scope["analysis"]["unavailable"])
+    unavailable.update(str(step) for step in failed_steps)
+    stamp_index_scope(
+        new_state,
+        load_config(repo_path),
+        git_history_coverage=new_state.get("git_history_coverage"),
+        analysis={
+            "unavailable": sorted(unavailable),
+            "skipped": scope["analysis"]["skipped"],
+        },
+    )
+
+
+def _persist_index_only_update(
+    repo_path: Any,
+    graph_builder: Any,
+    git_meta_map: dict,
+    dead_code_report: Any,
+    partial_health_report: Any,
+    state: dict,
+    head: str | None,
+    start: float,
+    changed_paths: list[str],
+    doc_drift_report: Any | None = None,
+    file_diffs: list | None = None,
+    knowledge_graph_result: Any | None = None,
+    parsed_files: list | None = None,
+    source_map: dict | None = None,
+    degraded: list[str] | None = None,
+    pages_rendered: int = 0,
+    template_wiki: bool = False,
+    git_decay_map: dict | None = None,
+    exclude_patterns: list[str] | None = None,
+    head_ts: float | None = None,
+    force_full_rescore: bool = False,
+    full_git_summary: Any | None = None,
+    reconcile_full_scope: bool = False,
+    full_generation_page_ids: set[str] | None = None,
+    stamp_renderer: bool = True,
+    dependency_fingerprints: dict[str, str] | None = None,
+    vector_store: Any | None = None,
+    require_config_rebuild_success: bool = False,
+    history_window_changed: bool = False,
+    timings: PhaseTimings | None = None,
+) -> None:
+    """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
+    save state, and print the completion line. No LLM regeneration.
+
+    ``force_full_rescore`` runs the full health re-score regardless of the
+    periodic gate. Set by the config-changed caller, which relies on this path
+    rather than re-scoring separately and returning — doing that advanced
+    ``last_sync_commit`` past commits it never indexed.
+
+    ``stamp_renderer`` False keeps the stored renderer fingerprint: the full
+    re-render a renderer change asked for failed, so the next run retries it.
+
+    ``timings`` is the run's phase table. Its ``run`` row is closed here, at
+    the state write, and the whole table lands in ``state.json`` as
+    ``phase_timings`` the way ``init`` records its own run.
+
+    DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
+    state-file updates and console reporting stay here. Best-effort steps
+    that fail land in ``degraded`` and surface in the completion panel.
+    """
+    from repowise.core.pipeline.incremental import persist_incremental_index
+
+    degraded = degraded if degraded is not None else []
+    # Failures whose input was this commit range, kept apart from ``degraded``
+    # (which also collects repo-wide and non-DB failures) because only these
+    # strand data the advancing sync pointer would otherwise skip forever.
+    failed_steps: list[str] = []
+    degraded_before_persist = len(degraded)
+    run_async(
+        persist_incremental_index(
+            repo_path,
+            graph_builder,
+            git_meta_map,
+            dead_code_report,
+            partial_health_report,
+            changed_paths,
+            doc_drift_report=doc_drift_report,
+            file_diffs=file_diffs,
+            knowledge_graph_result=knowledge_graph_result,
+            parsed_files=parsed_files,
+            source_map=source_map,
+            git_decay_map=git_decay_map,
+            full_git_summary=full_git_summary,
+            history_window_changed=history_window_changed,
+            reconcile_full_scope=reconcile_full_scope,
+            full_generation_page_ids=full_generation_page_ids,
+            vector_store=vector_store,
+            log=console.print,
+            degraded=degraded,
+            failed_steps=failed_steps,
+            timings=timings,
+        )
+    )
+    if require_config_rebuild_success and len(degraded) > degraded_before_persist:
+        raise RuntimeError(
+            "Configuration rebuild did not update every dependent store; "
+            "the previous fingerprint was retained so the next update retries."
+        )
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    from .command import _current_renderer_fingerprint
+
+    last_full_rescore_at, health_analyzer_version, security_scanner_version = (
+        _rescore_stale_findings(
+            repo_path,
+            graph_builder,
+            state,
+            head_ts=head_ts,
+            parsed_files=parsed_files,
+            exclude_patterns=exclude_patterns,
+            force_full_rescore=force_full_rescore,
+            timings=timings,
+        )
+    )
     new_state = {
         **state,
         "last_sync_commit": head,
@@ -552,18 +606,13 @@ def _persist_index_only_update(
         # update pays a full reparse forever even though nothing is stale. This
         # is the keyless hot path (the post-commit hook), so a lingering reparse
         # here is exactly the cost the mode exists to avoid.
-        "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
+        "renderer_fingerprint": (
+            _current_renderer_fingerprint(repo_path)
+            if stamp_renderer
+            else state.get("renderer_fingerprint")
+        ),
     }
-    if full_git_summary is not None:
-        coverage = getattr(full_git_summary, "history_coverage", None)
-        if coverage is not None:
-            new_state["git_history_coverage"] = coverage.to_dict()
-        else:
-            new_state.pop("git_history_coverage", None)
-        # Every row was rewritten under the current rules, unless they never
-        # reached the store; then the next update walks again.
-        if "Git persist" not in failed_steps:
-            new_state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+    _stamp_git_history(new_state, full_git_summary, failed_steps)
     # Before save_state, and reading ``state`` (the pre-update dict) for the old
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
@@ -586,20 +635,7 @@ def _persist_index_only_update(
     if timings is not None:
         timings.stop("run")
         new_state["phase_timings"] = timings.totals
-    from repowise.core.index_scope import resolve_index_scope, stamp_index_scope
-
-    scope = resolve_index_scope(new_state, load_config(repo_path))
-    unavailable = set(scope["analysis"]["unavailable"])
-    unavailable.update(str(step) for step in failed_steps)
-    stamp_index_scope(
-        new_state,
-        load_config(repo_path),
-        git_history_coverage=new_state.get("git_history_coverage"),
-        analysis={
-            "unavailable": sorted(unavailable),
-            "skipped": scope["analysis"]["skipped"],
-        },
-    )
+    _stamp_scope(repo_path, new_state, failed_steps)
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     from .reporting import show_index_only_completion
@@ -716,6 +752,7 @@ def _persist_full_update(
     doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    source_map: dict | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
     reconcile_full_scope: bool = False,
@@ -723,6 +760,7 @@ def _persist_full_update(
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
+    failed_steps: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -739,6 +777,9 @@ def _persist_full_update(
     can stamp ``state["total_pages"]`` with the real DB total (regeneration
     upserts existing pages, so accumulating ``len(generated_pages)`` inflates
     the count forever).
+
+    ``failed_steps`` (when supplied) collects the range-scoped failed steps,
+    as :func:`~repowise.core.pipeline.incremental.persist_incremental_index` does.
     """
     return run_async(
         _persist_full_update_async(
@@ -758,6 +799,7 @@ def _persist_full_update(
             doc_drift_report=doc_drift_report,
             decay_paths=decay_paths,
             parsed_files=parsed_files,
+            source_map=source_map,
             git_decay_map=git_decay_map,
             full_git_summary=full_git_summary,
             reconcile_full_scope=reconcile_full_scope,
@@ -765,6 +807,7 @@ def _persist_full_update(
             require_config_rebuild_success=require_config_rebuild_success,
             require_decision_persist_success=require_decision_persist_success,
             history_window_changed=history_window_changed,
+            failed_steps=failed_steps,
             timings=timings,
         )
     )
@@ -788,6 +831,7 @@ async def _persist_full_update_async(
     doc_drift_report: Any | None = None,
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    source_map: dict | None = None,
     git_decay_map: dict | None = None,
     full_git_summary: Any | None = None,
     reconcile_full_scope: bool = False,
@@ -795,644 +839,50 @@ async def _persist_full_update_async(
     require_config_rebuild_success: bool = False,
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
+    failed_steps: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
-    from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.core.persistence import (
-        FullTextSearch,
-        create_engine,
-        create_session_factory,
-        get_session,
-        init_db,
-        upsert_pages_from_generated,
-        upsert_repository,
+    from .full_persist import FullUpdatePersist, write_full_update
+
+    ctx = FullUpdatePersist(
+        repo_path=repo_path,
+        repo_name=repo_name,
+        generated_pages=generated_pages,
+        file_diffs=file_diffs,
+        git_meta_map=git_meta_map,
+        new_decision_markers=new_decision_markers,
+        decision_vector_store=decision_vector_store,
+        provider=provider,
+        partial_health_report=partial_health_report,
+        dead_code_report=dead_code_report,
+        graph_builder=graph_builder,
+        knowledge_graph_result=knowledge_graph_result,
+        doc_drift_report=doc_drift_report,
+        decay_paths=decay_paths,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        git_decay_map=git_decay_map,
+        full_git_summary=full_git_summary,
+        reconcile_full_scope=reconcile_full_scope,
+        reconcile_full_generation=reconcile_full_generation,
+        full_generation_page_ids=(
+            {page.page_id for page in generated_pages} if reconcile_full_generation else None
+        ),
+        require_config_rebuild_success=require_config_rebuild_success,
+        require_decision_persist_success=require_decision_persist_success,
+        history_window_changed=history_window_changed,
+        # A config scope change re-covers every parsed file, not just the diff.
+        changed_paths=(
+            [parsed.file_info.path for parsed in parsed_files or []]
+            if reconcile_full_scope
+            else [fd.path for fd in file_diffs]
+        ),
+        log=console.print,
+        degraded=degraded,
+        failed_steps=failed_steps,
+        timings=timings,
     )
-
-    def _skip(step: str, exc: Exception) -> None:
-        log.warning("update_persist_step_degraded", step=step, error=str(exc))
-        degraded.append(f"{step}: {exc}")
-
-    url = get_db_url_for_repo(repo_path)
-    engine = create_engine(url)
-    degraded_before_persist = len(degraded)
-    # Filled by the tombstone step; read by the full-text block after the
-    # session closes, so it has to survive a step that was skipped.
-    tombstoned_page_ids: list[str] = []
-    # Same contract, for rows of a page that has been retired outright.
-    swept_page_ids: list[str] = []
-    try:
-        with timed(timings, "persist.open"):
-            await init_db(engine)
-            sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            with timed(timings, "persist.open"):
-                repo = await upsert_repository(session, name=repo_name, local_path=str(repo_path))
-            repo_id = repo.id
-
-            if reconcile_full_scope:
-                try:
-                    from repowise.core.pipeline.persist import (
-                        reconcile_full_index_scope,
-                    )
-
-                    current_graph_paths = set(
-                        getattr(
-                            graph_builder,
-                            "traversed_file_paths",
-                            {parsed.file_info.path for parsed in parsed_files or []},
-                        )
-                    )
-                    with timed(timings, "persist.scope_reconcile"):
-                        tombstoned_page_ids = await reconcile_full_index_scope(
-                            session,
-                            repo_id,
-                            current_graph_paths,
-                            set(git_meta_map),
-                        )
-                    if tombstoned_page_ids and decision_vector_store is not None:
-                        await decision_vector_store.delete_many(tombstoned_page_ids)
-                except Exception as exc:
-                    _skip("Config scope reconciliation", exc)
-                    if require_config_rebuild_success:
-                        raise
-
-            # Pages first and without a net: everything else is derived
-            # metadata, but a docs-mode update that can't write pages failed.
-            # Batched (one SELECT + one flush); the checkpointer sink already
-            # streamed each page per-commit for durability.
-            with timed(timings, "persist.pages"):
-                await upsert_pages_from_generated(session, generated_pages, repo_id)
-
-            if reconcile_full_generation:
-                try:
-                    from repowise.core.pipeline.persist import (
-                        tombstone_pages_outside_generation,
-                    )
-
-                    tombstoned_page_ids += await tombstone_pages_outside_generation(
-                        session,
-                        repo_id,
-                        {page.page_id for page in generated_pages},
-                    )
-                    if tombstoned_page_ids and decision_vector_store is not None:
-                        await decision_vector_store.delete_many(tombstoned_page_ids)
-                except Exception as exc:
-                    _skip("Generation scope reconciliation", exc)
-                    if require_config_rebuild_success:
-                        raise
-
-            # Delete rows of pages that have been retired since this index was
-            # built. Nothing else on the update path can reach them: an update
-            # runs with ``file_pages_only``, so the ladder returns before the
-            # repo-wide levels and never visits an onboarding row to notice it
-            # should not exist. Without this the retirement reaches only users
-            # who re-index, and everyone else keeps being served a page the
-            # product no longer has.
-            try:
-                from repowise.core.pipeline.persist import (
-                    sweep_absent_cycle_pages,
-                    sweep_retired_pages,
-                )
-
-                with timed(timings, "persist.sweeps"):
-                    swept_page_ids = await sweep_retired_pages(session, repo_id)
-                    # Cycle pages are never regenerated on this path (the
-                    # ladder stops at file pages), so a cycle that no longer
-                    # exists can only be retired by asking the rebuilt graph
-                    # directly.
-                    swept_page_ids += await sweep_absent_cycle_pages(
-                        session, repo_id, graph_builder
-                    )
-
-                # Drop the embeddings before the SQL session commits, the same
-                # ordering ``init`` uses: the vector store is a separate engine,
-                # so there is no write-lock conflict, the delete is idempotent,
-                # and an interrupted run self-heals forwards rather than leaving
-                # an embedding whose page is gone. ``decision_vector_store`` is
-                # the shared page/decision store despite the name.
-                if swept_page_ids and decision_vector_store is not None:
-                    await decision_vector_store.delete_many(swept_page_ids)
-            except Exception as exc:
-                _skip("Retired page sweep", exc)
-
-            # Tombstone pages for deleted/renamed files — regeneration only
-            # rewrites pages for files that still exist.
-            try:
-                from repowise.core.pipeline.persist import (
-                    mark_tombstone_pages,
-                    tombstone_candidates,
-                )
-
-                with timed(timings, "persist.tombstones"):
-                    tombstoned_page_ids += await mark_tombstone_pages(
-                        session, repo_id, tombstone_candidates(file_diffs)
-                    )
-            except Exception as exc:
-                _skip("Tombstone marking", exc)
-
-            # Refresh related-pages metadata repo-wide. The generation pass
-            # only touched this run's regenerated pages; this LLM-free
-            # backfill heals every other page (pre-feature pages, import
-            # drift) in the same transaction.
-            try:
-                from repowise.core.generation.related_pages import file_import_edges
-                from repowise.core.persistence.crud import backfill_related_pages
-
-                with timed(timings, "persist.related_pages"):
-                    await backfill_related_pages(
-                        session,
-                        repo_id,
-                        import_edges=file_import_edges(graph_builder),
-                        git_meta_map=git_meta_map,
-                        pagerank=graph_builder.pagerank(),
-                        # This run's pages carry fresher metadata (including
-                        # module siblings) than the recompute could produce.
-                        skip_page_ids={p.page_id for p in generated_pages},
-                    )
-            except Exception as exc:
-                _skip("Related-pages backfill", exc)
-
-            # Weakly-affected pages (cascade overflow beyond the budget,
-            # co-change partners, 2-hop rename fallout) decay to 'stale' so
-            # the coverage view and get_stale_pages reflect them — the
-            # detector computed decay_only all along but it was never
-            # persisted.
-            try:
-                from repowise.core.generation import GenerationConfig
-                from repowise.core.generation.cascade import expand_cascade
-                from repowise.core.generation.models import compute_page_id
-                from repowise.core.generation.scope import (
-                    build_dependencies,
-                    load_page_records,
-                )
-                from repowise.core.pipeline.persist import mark_page_ids_stale
-                from repowise.core.pipeline.scoped_generation import (
-                    _load_page_rows,
-                    load_kg_context,
-                )
-                from repowise.core.repo_config import load_repo_config
-
-                with timed(timings, "persist.stale_pages"):
-                    if decay_paths:
-                        repo_cfg = load_repo_config(repo_path)
-                        generation_config = GenerationConfig.from_repo_config(repo_cfg)
-                        records = load_page_records(await _load_page_rows(session, repo_id))
-                        deps = build_dependencies(
-                            parsed_files=parsed_files or [],
-                            graph_builder=graph_builder,
-                            config=generation_config,
-                            kg_ctx=load_kg_context(Path(repo_path)),
-                            records=records,
-                            repo_name=repo_name,
-                        )
-                        seed_ids = {compute_page_id("file_page", path) for path in decay_paths}
-                        # mode="none": mark dependents stale, do not regenerate
-                        # them. "dependents" would regenerate every module/SCC/
-                        # repo-wide container touched by this commit, spending
-                        # model budget on every `update`, the exact cost
-                        # AUTO_SYNC.md promises sync never incurs. Marking is
-                        # free; the operator opts into the spend explicitly via
-                        # `generate --stale`.
-                        cascade = expand_cascade(seed_ids, "none", deps)
-                        # A no-model structural recovery can have refreshed one
-                        # of these dependents in this same run. The page upsert
-                        # above made it fresh; never decay it again afterwards.
-                        generated_ids = {page.page_id for page in generated_pages}
-                        await mark_page_ids_stale(
-                            session,
-                            repo_id,
-                            (cascade.stale_ids | seed_ids) - generated_ids,
-                        )
-            except Exception as exc:
-                _skip("Stale-page decay", exc)
-
-            # Placement depends on the whole page set, which on an incremental
-            # run lives in the store rather than in the pages just generated.
-            try:
-                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
-
-                with timed(timings, "persist.page_tree"):
-                    await rebuild_page_tree(session, repo_id)
-            except Exception as exc:
-                _skip("Page tree rebuild", exc)
-
-            # Refreshed knowledge graph — same writers as the init pipeline
-            # (full-replace layers/tour/curated meta).
-            if knowledge_graph_result is not None:
-                try:
-                    from repowise.core.pipeline.persist import persist_kg
-
-                    with timed(timings, "persist.kg"):
-                        await persist_kg(knowledge_graph_result, session, repo_id)
-                except Exception as exc:
-                    _skip("Knowledge-graph persist", exc)
-
-            # Updated git metadata + recomputed percentiles + new commit rows.
-            if git_meta_map or git_decay_map or full_git_summary is not None:
-                try:
-                    with timed(timings, "persist.git"):
-                        from repowise.core.pipeline.persist import persist_git_refresh
-
-                        await persist_git_refresh(
-                            session,
-                            repo_id,
-                            git_meta_map,
-                            git_decay_map,
-                            full_git_summary,
-                            # Set only on a history-window (git config) change,
-                            # the one walk that invalidates per-commit health.
-                            keep_commit_health=not history_window_changed,
-                        )
-                except Exception as exc:
-                    _skip("Git persist", exc)
-                    # A full walk stamps the history version once persisted,
-                    # so losing its rows here must fail the run, not stamp it.
-                    if require_config_rebuild_success or full_git_summary is not None:
-                        raise
-                try:
-                    with timed(timings, "persist.commits"):
-                        if full_git_summary is None:
-                            await _persist_incremental_commits(session, repo_id, repo_path)
-                except Exception as exc:
-                    _skip("Commit capture", exc)
-
-            # Decision records: new markers + harvested decisions, supersession
-            # detection, staleness recompute.
-            if timings is not None:
-                timings.start("persist.decisions")
-            try:
-                # The same four store repairs the full-index path runs, in
-                # the same order (see ``pipeline/persist.py``). They live here
-                # too because a user whose workflow is ``repowise update``
-                # never takes that path, and every one of them is a repair the
-                # store cannot make for itself: ``superseded`` and the
-                # retired-source backlog both survive re-extraction,
-                # ``source_rank`` is a value copied into rows rather than
-                # derived on read, and a stored confidence carries no mark of
-                # which formula produced it.
-                from repowise.core.analysis.decision_provenance import RETIRED_SOURCES
-                from repowise.core.persistence.crud import (
-                    purge_proposed_decisions_by_source,
-                    reconcile_decision_confidence,
-                    reconcile_source_ranks,
-                    unretire_auto_superseded,
-                )
-
-                # Before the purge: restoring lands a row at ``proposed``,
-                # which is what the purge deletes.
-                await unretire_auto_superseded(session)
-                for _retired in RETIRED_SOURCES:
-                    await purge_proposed_decisions_by_source(session, repo_id, _retired)
-                await reconcile_source_ranks(session)
-                await reconcile_decision_confidence(session)
-
-                # Same repairs on the path a ``repowise update`` user takes.
-                # Derived ids come first, so everything after this reads a
-                # record by the id it will still have after a rebuild.
-                from repowise.core.persistence.decision_id_migration import (
-                    apply_id_migration,
-                )
-
-                await apply_id_migration(session, repo_id, vector_store=decision_vector_store)
-
-                # The entity split is only coherent once legacy rows are
-                # classified.
-                from repowise.core.persistence.decision_migration import (
-                    apply_migration,
-                    backfill_decision_node_links,
-                    backfill_scope_basis,
-                    backfill_session_scope_basis,
-                    prune_unindexed_scope_files,
-                )
-
-                await apply_migration(session, repo_id)
-
-                # Run every index, beside the classification repair and for
-                # the same reason: a record written before these rules existed
-                # is only reachable from code that runs on an existing store.
-                # The prune runs first so the basis repairs judge the file
-                # list they will leave behind.
-                await prune_unindexed_scope_files(session, repo_id)
-                await backfill_scope_basis(session, repo_id)
-                await backfill_session_scope_basis(session, repo_id)
-                await backfill_decision_node_links(session, repo_id)
-
-                if require_decision_persist_success:
-                    from repowise.core.persistence.crud import (
-                        purge_proposed_decisions_by_source,
-                    )
-
-                    await purge_proposed_decisions_by_source(session, repo_id, "git_archaeology")
-
-                decision_dicts: list[dict] = []
-                if new_decision_markers:
-                    import dataclasses as _dc
-
-                    decision_dicts.extend(_dc.asdict(d) for d in new_decision_markers)
-                # A second read folded in ``page.metadata["harvested_decisions"]``
-                # here. Nothing ever wrote that key, so it never contributed a
-                # record; it is gone along with the generation-time harvest.
-
-                if decision_dicts:
-                    from repowise.core.persistence.crud import bulk_upsert_decisions
-
-                    touched_ids = await bulk_upsert_decisions(
-                        session,
-                        repo_id,
-                        decision_dicts,
-                        vector_store=decision_vector_store,
-                    )
-                    if touched_ids and decision_vector_store is not None:
-                        from repowise.core.analysis.decision_evolution import (
-                            detect_supersessions_and_conflicts,
-                        )
-
-                        await detect_supersessions_and_conflicts(
-                            session,
-                            repo_id,
-                            touched_ids=touched_ids,
-                            vector_store=decision_vector_store,
-                            provider=provider,
-                        )
-
-                if git_meta_map:
-                    from repowise.core.persistence.crud import recompute_decision_staleness
-
-                    await recompute_decision_staleness(session, repo_id, git_meta_map)
-            except Exception as exc:
-                _skip("Decision persist", exc)
-                if require_decision_persist_success:
-                    raise
-            finally:
-                if timings is not None:
-                    timings.stop("persist.decisions")
-
-            # Every run, not only when this one added records: the revert
-            # usually lands after the decision it retires was stored.
-            try:
-                from repowise.core.analysis.decisions.reverts import (
-                    apply_revert_supersession,
-                )
-
-                await apply_revert_supersession(session, repo_id, repo_path)
-            except Exception as exc:
-                _skip("Revert supersession", exc)
-            try:
-                from repowise.core.analysis.decisions.head_artifacts import (
-                    apply_head_artifact_check,
-                )
-
-                await apply_head_artifact_check(session, repo_id, repo_path)
-            except Exception as exc:
-                _skip("Decision HEAD artifact check", exc)
-
-            # Governance findings pass: runs after decisions + staleness.
-            if timings is not None:
-                timings.start("persist.governance")
-            try:
-                from repowise.core.pipeline.persist import refresh_governance_findings
-
-                # The health step below finalizes the refactoring queue.
-                await refresh_governance_findings(session, repo_id, recompose_queue=False)
-            except Exception as exc:
-                _skip("Governance findings", exc)
-            finally:
-                if timings is not None:
-                    timings.stop("persist.governance")
-
-            # Scoped to the documents the pass actually read, so one this run
-            # could not open keeps its rows in both drift tables. Before health:
-            # the snapshot it takes records the stored drift count.
-            if doc_drift_report is not None:
-                try:
-                    from repowise.core.persistence.crud import (
-                        replace_doc_drift_guarded,
-                    )
-
-                    with timed(timings, "persist.doc_drift"):
-                        await replace_doc_drift_guarded(
-                            session, repo_id, doc_drift_report
-                        )
-                except Exception as exc:
-                    _skip("Doc-drift persist", exc)
-
-            # Code-health findings + metrics (partial — upsert only).
-            if partial_health_report is not None:
-                try:
-                    with timed(timings, "persist.health"):
-                        await _persist_partial_health(
-                            session, repo_id, partial_health_report, repo_path
-                        )
-                except Exception as exc:
-                    _skip("Health persist", exc)
-
-            # Repo-wide. The old file-scoped write kept unchanged files' rows
-            # (#295) at the price of never correcting them: the analysis is
-            # repo-wide and dead code is a cross-file property, so dropping an
-            # import could make a module dead and that module, being unchanged,
-            # kept its stale verdict until the next full re-index.
-            if dead_code_report is not None:
-                try:
-                    import dataclasses as _dc_dead
-
-                    from repowise.core.persistence.crud import replace_dead_code_findings
-
-                    with timed(timings, "persist.dead_code"):
-                        await replace_dead_code_findings(
-                            session,
-                            repo_id,
-                            [_dc_dead.asdict(f) for f in dead_code_report.findings],
-                            scope=dead_code_report.authoritative_paths,
-                        )
-                except Exception as exc:
-                    _skip("Dead-code persist", exc)
-
-            # Re-persist graph_nodes so symbol-level PageRank / betweenness /
-            # community ids reflect the current build.
-            try:
-                from repowise.core.pipeline.persist import persist_graph_nodes
-
-                with timed(timings, "persist.graph_nodes"):
-                    await persist_graph_nodes(session, repo_id, graph_builder)
-            except Exception as exc:
-                _skip("Graph nodes persist", exc)
-
-            # Refresh wiki_symbols for the changed files (upsert + within-file
-            # prune). Without this, symbol bounds fossilize at the last full
-            # index and the get_answer hydrator serves drifted signatures.
-            try:
-                from repowise.core.pipeline.persist import persist_incremental_symbols
-
-                with timed(timings, "persist.symbols"):
-                    await persist_incremental_symbols(
-                        session,
-                        repo_id,
-                        parsed_files,
-                        (
-                            [parsed.file_info.path for parsed in parsed_files or []]
-                            if reconcile_full_scope
-                            else [fd.path for fd in file_diffs]
-                        ),
-                    )
-            except Exception as exc:
-                _skip("Symbol persist", exc)
-
-            # Refresh graph_edges for the changed files (delete-then-insert of
-            # each file's outgoing edges). Without this, adjacency fossilizes at
-            # the last full index and Phase E flow-path answers decay on every
-            # incremental update.
-            try:
-                from repowise.core.pipeline.persist import persist_incremental_edges
-
-                with timed(timings, "persist.edges"):
-                    await persist_incremental_edges(
-                        session,
-                        repo_id,
-                        graph_builder,
-                        parsed_files,
-                        (
-                            [parsed.file_info.path for parsed in parsed_files or []]
-                            if reconcile_full_scope
-                            else [fd.path for fd in file_diffs]
-                        ),
-                    )
-            except Exception as exc:
-                _skip("Graph edges persist", exc)
-
-            # Refresh external systems (C4 L1) when a manifest changed — the
-            # docs-mode persister mirrors the incremental one, which does the
-            # same. Gated + no LLM inside the shared core helper.
-            try:
-                from repowise.core.pipeline.incremental import refresh_external_systems
-
-                with timed(timings, "persist.external_systems"):
-                    await refresh_external_systems(session, repo_id, repo_path, file_diffs)
-            except Exception as exc:
-                _skip("External systems refresh", exc)
-
-            # Last of the store writes, for the reason the index-only path
-            # gives: the steps above upsert rows for deleted paths too.
-            from repowise.core.pipeline.incremental import prune_deleted_files
-
-            await prune_deleted_files(
-                session,
-                repo_id,
-                repo_path,
-                graph_builder,
-                {parsed.file_info.path for parsed in parsed_files or []},
-                health_report=partial_health_report,
-                skip=_skip,
-                log=console.print,
-                degraded=degraded,
-                timings=timings,
-            )
-
-            # Record a GenerationJob so the web UI "last synced" timestamp updates.
-            try:
-                from datetime import UTC as _UTC
-                from datetime import datetime
-
-                from repowise.core.generation.models import count_stub_fallbacks
-                from repowise.core.persistence.crud import upsert_generation_job
-
-                now = datetime.now(_UTC)
-                page_count = len(generated_pages)
-                # See init_cmd/persistence.py: a stub the provider failure put
-                # up has a row but no prose, so it is not a completed page.
-                stub_fallbacks = count_stub_fallbacks(generated_pages)
-                job = await upsert_generation_job(
-                    session,
-                    repository_id=repo_id,
-                    status="completed",
-                    total_pages=page_count,
-                    config={"mode": "incremental", "source": "cli_update"},
-                )
-                job.completed_pages = page_count - stub_fallbacks
-                job.failed_pages = stub_fallbacks
-                job.started_at = now
-                job.finished_at = now
-            except Exception as exc:
-                _skip("Generation job record", exc)
-
-            # Real page total for state.json — see _persist_full_update's
-            # docstring. Falls back to the upsert count if the count query
-            # itself degrades.
-            total_pages = len(generated_pages)
-            try:
-                from sqlalchemy import func as sa_func
-                from sqlalchemy import select as sa_select
-
-                from repowise.core.persistence.models import Page
-
-                count_result = await session.execute(
-                    sa_select(sa_func.count())
-                    .select_from(Page)
-                    .where(Page.repository_id == repo_id)
-                )
-                total_pages = int(count_result.scalar_one())
-            except Exception as exc:
-                _skip("Page count", exc)
-
-            if require_config_rebuild_success and len(degraded) > degraded_before_persist:
-                raise RuntimeError(
-                    "Configuration rebuild did not update every dependent store; "
-                    "the previous fingerprint was retained so the next update retries."
-                )
-
-        # FTS outside the transaction — rebuildable, and its writer manages
-        # its own connection state.
-        if timings is not None:
-            timings.start("persist.fts")
-        from repowise.core.pipeline.cleanup_debt import (
-            clear_cleanup_debt,
-            load_cleanup_debt,
-            record_cleanup_debt,
-        )
-
-        cleanup_ids = set(tombstoned_page_ids) | set(swept_page_ids)
-        cleanup_ids.update(load_cleanup_debt(Path(repo_path))["fts"])
-        try:
-            fts = FullTextSearch(engine)
-            await fts.ensure_index()
-            await fts.index_pages(generated_pages)
-            # A tombstone can never be an answer — hydration drops it — but
-            # retrieval fetches a fixed number of rows before that check runs,
-            # so every tombstone left in the index costs a real candidate its
-            # slot.
-            if cleanup_ids:
-                await fts.delete_many(sorted(cleanup_ids))
-            # A swept page's FTS row outlives the page row unless it is deleted
-            # here, and search hydrates title and snippet from the FTS copy
-            # itself — so an orphan keeps answering queries in full, pointing
-            # at a page that now 404s. Worse than never having swept it.
-            clear_cleanup_debt(Path(repo_path), "fts", cleanup_ids)
-        except Exception as exc:
-            record_cleanup_debt(Path(repo_path), "fts", cleanup_ids)
-            _skip("Full-text search indexing", exc)
-            if require_config_rebuild_success:
-                raise
-        finally:
-            if timings is not None:
-                timings.stop("persist.fts")
-
-        # The union closes the mark_tombstone_pages path: the scope branches
-        # above already drop their ids, but a deleted file's embedding did not.
-        vector_cleanup_ids = (
-            set(tombstoned_page_ids) | load_cleanup_debt(Path(repo_path))["vectors"]
-        )
-        if vector_cleanup_ids and decision_vector_store is not None:
-            try:
-                await decision_vector_store.delete_many(sorted(vector_cleanup_ids))
-                clear_cleanup_debt(Path(repo_path), "vectors", vector_cleanup_ids)
-            except Exception as exc:
-                record_cleanup_debt(Path(repo_path), "vectors", vector_cleanup_ids)
-                _skip("Deferred vector cleanup", exc)
-                if require_config_rebuild_success:
-                    raise
-        return total_pages
-    finally:
-        await engine.dispose()
+    return await write_full_update(ctx)
 
 
 async def _rescore_health_from_db(
@@ -1578,6 +1028,10 @@ async def _rescore_health_from_db(
                 f"[yellow]{len(report.findings)} findings[/yellow]"
             )
 
+            # Graph nodes first: the plan annotations the writer below stores
+            # read each symbol's ``public_api`` from them.
+            await persist_graph_nodes(session, repo_id, graph_builder)
+
             # Same writer the index's analysis phase uses, so a re-score leaves
             # the derived queues agreeing with the findings it just replaced
             # rather than describing the set it deleted. Read HEAD off disk:
@@ -1615,7 +1069,6 @@ async def _rescore_health_from_db(
                     ingested_commit_sha=live_head,
                     provenance=coverage.provenance,
                 )
-            await persist_graph_nodes(session, repo_id, graph_builder)
 
     await _rescore()
 
@@ -1730,12 +1183,16 @@ def parser_changed(repo_path: Path) -> bool:
     """Whether the stored graph edges were written by a different parser.
 
     Compares the fingerprint ``persist_incremental_edges`` stamped on the repo
-    row with the running ``parser_fingerprint()``. An unstamped row, or a store
-    that cannot be read, is **not** a change, for the reason
-    :func:`health_analyzer_changed` gives: the next commit's widen stamps it.
+    row with the running ``parser_fingerprint()``. An unstamped row **is** a
+    change: ``init`` stamps a fresh store, so an unstamped one was written
+    before the stamp or re-indexed over older edges, and the re-parse this
+    triggers is the widen that reconciles and stamps it. Reading absence as
+    current let a parser-only release report "already up to date" on a quiet
+    checkout. A store that cannot be read, has no repository row, or has no
+    edges to reconcile, is not.
 
-    Also true when a test file was never checked for walking the source tree
-    (an index built before that check): selection would run everything until
+    Also true when a test file was never checked for reaching code outside its
+    imports (an index built before that check): selection would run everything until
     the re-parse stamps it, so a quiet repo must not take the shortcut.
     """
     from repowise.cli.helpers import get_db_url_for_repo
@@ -1747,26 +1204,33 @@ def parser_changed(repo_path: Path) -> bool:
         get_repository_by_path,
         get_session,
     )
+    from repowise.core.pipeline.persist import has_graph_edges
 
-    async def _stored() -> tuple[str | None, bool]:
+    async def _stored() -> bool:
         engine = create_engine(get_db_url_for_repo(repo_path))
         try:
             sf = create_session_factory(engine)
             async with get_session(sf) as session:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
-                    return None, False
-                unscanned = bool(await unscanned_test_files(session, repo.id))
-                return repo.graph_edges_parser_fingerprint, unscanned
+                    return False
+                stored = repo.graph_edges_parser_fingerprint
+                if stored is None:
+                    # Unstamped with no edges is a store nothing ever indexed
+                    # into: there is nothing a re-parse could reconcile.
+                    if await has_graph_edges(session, repo.id):
+                        return True
+                elif stored != parser_fingerprint():
+                    return True
+                return bool(await unscanned_test_files(session, repo.id))
         finally:
             await engine.dispose()
 
     try:
-        stored, unscanned = run_async(_stored())
+        return run_async(_stored())
     except Exception as exc:
         log.debug("parser_change_check_failed", error=str(exc))
         return False
-    return unscanned or (stored is not None and stored != parser_fingerprint())
 
 
 def health_analyzer_changed(state: dict) -> bool:
@@ -1785,12 +1249,27 @@ def health_analyzer_changed(state: dict) -> bool:
 def security_scanner_changed(state: dict) -> bool:
     """Whether the stored security findings were written by a different scanner.
 
-    Mirrors :func:`health_analyzer_changed`: a legacy state file with no stamp
-    is not a change, it picks the stamp up on its first full security rescan
-    (#3072).
+    Unlike :func:`health_analyzer_changed`, a state file with no stamp **is** a
+    change: the stamp arrived after 0.55.0 (#3086), so an unstamped store was
+    written by an older scanner. Reading absence as current would also keep it
+    unstamped forever, since only the rescan this gates writes the stamp.
+    ``init`` stamps every fresh index, so a new install never reads as stale.
     """
-    stored = state.get("security_scanner_version")
-    return stored is not None and stored != SECURITY_SCANNER_VERSION
+    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
+
+
+def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
+    """Full security rescan when the scanner changed, stamping ``state`` on success.
+
+    Returns True only when it rescanned and stamped, so the caller knows
+    ``state`` needs saving. A failed rescan leaves the stamp for a retry.
+    """
+    if not security_scanner_changed(state):
+        return False
+    if not run_full_security_rescan(repo_path, exclude_patterns):
+        return False
+    state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    return True
 
 
 def full_rescore_due(state: dict, head_ts: float | None) -> bool:

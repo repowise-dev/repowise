@@ -27,9 +27,9 @@ const REPORT: RiskRangeReport = {
       files: [{ path: "src/core.ts", churn: 40, fix_pressure: 5.5 }],
     },
     risk_authority: {
-      authoritative_for: "live_change_review",
-      primary_fields: ["risk_percentile", "classification"],
-      primary_basis: "benchmarked_population_relative",
+      authoritative_for: "diff_size_rank",
+      primary_fields: ["risk_percentile"],
+      primary_basis: "population_relative_diff_size",
       fallback_field: "fallback_band",
       fallback_basis: "absolute_model_score_band",
       score_role: "supporting_diff_shape_signal",
@@ -76,6 +76,7 @@ const PATCH_COVERAGE: NonNullable<RiskRangeReport["patchCoverage"]> = {
     not_in_report: 1,
     no_line_data: 0,
     no_coverable_changes: 0,
+    stale_file: 0,
     out_of_scope: 0,
   },
   files: [

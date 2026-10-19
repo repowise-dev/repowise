@@ -14,6 +14,7 @@ both ask the same question of a listed receiver.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from .languages import LanguageNodeMap
@@ -44,6 +45,10 @@ _MAX_CALLEE_PATH = 100
 _PLAIN_PATH = re.compile(r"[\w$#]+(?:\.[\w$#]+)*")
 
 
+def is_comment(node: Node) -> bool:
+    return "comment" in node.type
+
+
 def member_object(node: Node) -> Node | None:
     """The receiver child of a member-access (or index) node."""
     for field_name in _OBJECT_FIELD_NAMES:
@@ -59,6 +64,11 @@ def member_name(node: Node) -> Node | None:
         prop = node.child_by_field_name(field_name)
         if prop is not None:
             return prop
+    # Swift wraps the member in a ``navigation_suffix`` (``.name``), with the
+    # name as that node's own ``suffix``.
+    suffix = node.child_by_field_name("suffix")
+    if suffix is not None and (inner := suffix.child_by_field_name("suffix")) is not None:
+        return inner
     named = [c for c in node.children if c.is_named]
     return next((c for c in reversed(named) if c.type.endswith(_IDENTIFIER_SUFFIX)), None)
 
@@ -143,6 +153,13 @@ def _find_name(node: Node) -> str:
                 names = [c for c in grandchild.children if c.type == "identifier" and c.text]
                 if names:
                     return names[-1].text.decode("utf-8", errors="replace")
+    # Swift: a computed property and a ``willSet`` / ``didSet`` block are named
+    # for the property that holds them, a subscript's body ``subscript``, and
+    # ``deinit`` has no name node at all.
+    if node.type in _SWIFT_PROPERTY_UNITS:
+        return _swift_property_name(node)
+    if node.type == "deinit_declaration":
+        return "deinit"
     # C / C++: the function name is not a direct child but nested inside a
     # ``declarator`` chain (``function_definition → function_declarator →
     # field_identifier``). Languages with a ``name`` field never reach here.
@@ -160,6 +177,20 @@ def _find_name(node: Node) -> str:
         ):
             return child.text.decode("utf-8", errors="replace")
     return "<anonymous>"
+
+
+_SWIFT_PROPERTY_UNITS = frozenset({"computed_property", "willset_didset_block"})
+
+
+def _swift_property_name(unit: Node) -> str:
+    holder = unit.parent
+    if holder is None:
+        return "<anonymous>"
+    if holder.type == "subscript_declaration":
+        return "subscript"
+    name = holder.child_by_field_name("name")
+    text = "".join((name.text or b"").decode("utf-8", errors="replace").split()) if name else ""
+    return text or "<anonymous>"
 
 
 def _node_text(node: Node) -> str:
@@ -341,7 +372,9 @@ def _parameter_list(fn_node: Node) -> Node | None:
             (
                 c
                 for c in fn_node.children
-                if c.type in ("parameters", "parameter_list", "formal_parameters")
+                if c.type in (
+                    "parameters", "parameter_list", "formal_parameters", "function_value_parameters",
+                )
             ),
             None,
         )
@@ -349,7 +382,9 @@ def _parameter_list(fn_node: Node) -> Node | None:
 
 
 def _dialect_parameter_list(fn_node: Node) -> Node | None:
-    """Dart and Pascal keep the parameter list off the function node."""
+    """C, C++, Dart and Pascal keep the parameter list off the function node."""
+    if fn_node.type == "function_definition":
+        return _declarator_parameter_list(fn_node)
     if fn_node.type == "function_body":
         # Dart: the parameter list lives on the preceding signature sibling.
         sig = _dart_signature_sibling(fn_node)
@@ -368,6 +403,50 @@ def _dialect_parameter_list(fn_node: Node) -> Node | None:
     return None
 
 
+def _declarator_parameter_list(fn_node: Node) -> Node | None:
+    """Follow only the C/C++ declarator spine, never a callback parameter.
+
+    The innermost function declarator owns the function's parameters; an
+    outer one can instead describe the function pointer it returns.
+    """
+    node = fn_node.child_by_field_name("declarator")
+    params = None
+    while node is not None:
+        if node.type == "function_declarator":
+            params = node.child_by_field_name("parameters")
+        inner = node.child_by_field_name("declarator")
+        if inner is None and node.type in ("parenthesized_declarator", "reference_declarator"):
+            inner = next((c for c in node.named_children if not is_comment(c)), None)
+        node = inner
+    return params
+
+
+def _parameter_nodes(params: Node) -> Iterator[Node]:
+    """Declared parameters, excluding comments and grammar-only siblings."""
+    if params.type == "function_value_parameters":
+        # Kotlin defaults and modifiers (e.g. ``vararg``) are siblings of
+        # the parameters, not children of them.
+        yield from (c for c in params.named_children if c.type == "parameter")
+        return
+    for child in params.children:
+        if is_comment(child) or _is_void_parameter(child):
+            continue
+        # C++ represents a bare variadic parameter as an unnamed token.
+        if child.is_named or child.type == "...":
+            yield child
+
+
+def _is_void_parameter(node: Node) -> bool:
+    """C/C++ ``(void)`` denotes an empty list; a ``void *`` still has arity."""
+    return (
+        node.type == "parameter_declaration"
+        and node.child_by_field_name("declarator") is None
+        and (type_node := node.child_by_field_name("type")) is not None
+        and type_node.type == "primitive_type"
+        and type_node.text == b"void"
+    )
+
+
 # A method's explicit receiver: Python's conventional first ``self`` / ``cls``
 # and Rust's ``self`` / ``&self`` / ``&mut self``. No caller passes it, so it is
 # no part of the parameter list anyone reads at a call site.
@@ -376,7 +455,7 @@ _RECEIVER_NAMES = frozenset({"self", "cls"})
 
 def _receiver_parameter(params: Node) -> Node | None:
     """The receiver among *params*' children, when the first parameter is one."""
-    first = next((c for c in params.named_children if c.type != "comment"), None)
+    first = next(_parameter_nodes(params), None)
     if first is None:
         return None
     if first.type == "self_parameter":
@@ -389,35 +468,26 @@ def _receiver_parameter(params: Node) -> Node | None:
 def _count_parameters(fn_node: Node) -> int:
     """Best-effort parameter-list size for *fn_node*.
 
-    Looks at tree-sitter ``parameters`` / ``parameter_list`` / ``parameters_list`` fields and counts non-punctuation
-    children. Returns 0 when no parameter list is found.
+    Counts declared parameters, excluding receivers, comments and separators.
+    Returns 0 when no parameter list is found (apart from Swift's flat list).
     """
     params = _parameter_list(fn_node)
     if params is None:
-        return 0
+        # Swift has no list node: each ``parameter`` is a child of the function,
+        # and a subscript's are on the ``subscript_declaration`` around its body.
+        holder = fn_node
+        if fn_node.type == "computed_property" and fn_node.parent is not None:
+            holder = fn_node.parent
+        return sum(1 for child in holder.children if child.type == "parameter")
     count = 0
     receiver = _receiver_parameter(params)
-    for child in params.children:
+    for child in _parameter_nodes(params):
         if child == receiver:
             continue
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
-        # nodes but carry no arity, so they must be skipped alongside the
-        # ``*``/``**`` splat tokens and the punctuation. A ``comment`` node is
-        # also named but carries no arity — an explanatory comment block inside
-        # the parameter list (idiomatic for a validation pattern) must not
-        # count as a parameter (#1775).
-        if child.type in (
-            "(",
-            ")",
-            ",",
-            ":",
-            "*",
-            "**",
-            "keyword_separator",
-            "positional_separator",
-            "comment",
-        ):
+        # nodes but carry no arity.
+        if child.type in ("keyword_separator", "positional_separator"):
             continue
         if child.type == "declArg":
             # Pascal groups same-typed parameters under one ``declArg``
@@ -427,8 +497,7 @@ def _count_parameters(fn_node: Node) -> int:
             # is a different node type and never matches).
             count += sum(1 for gc in child.children if gc.type == "identifier")
             continue
-        if child.is_named:
-            count += 1
+        count += 1
     return count
 
 
@@ -437,14 +506,14 @@ def _identifier_chain(node: Node, *, lower: bool = True) -> list[str]:
     document order.
 
     Order is load-bearing: the last entry is the name being called, the rest
-    the receiver path. Argument lists and ``type_arguments`` (TypeScript,
-    Java) are never descended into; C#'s ``type_argument_list`` still is.
+    the receiver path. Value and type argument lists (including C#'s
+    ``type_argument_list``) are never descended into.
     """
     names: list[str] = []
     stack: list[Node] = [node]
     while stack:
         cur = stack.pop()
-        if cur.type in ("argument_list", "arguments", "type_arguments"):
+        if cur.type in ("argument_list", "arguments", "type_arguments", "type_argument_list"):
             continue
         if cur.type.endswith(_IDENTIFIER_SUFFIX) and cur.text is not None:
             text = cur.text.decode("utf-8", "replace")

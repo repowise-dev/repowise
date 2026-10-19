@@ -154,10 +154,17 @@ Design rules:
   (`service_emails`, `footer_patterns`, `coauthor_patterns`) — additive on top
   of the built-ins, malformed entries skipped with a warning.
 
-Persisted as five nullable columns on `git_commits`
-(`agent_name`/`agent_autonomy_tier`/`agent_channel`/`agent_confidence`/`agent_model_id`)
+Every commit also carries a three-state `attribution` label: `agent`,
+`human_attested` (only from an explicit human record such as git-ai `h_` keys
+or an Agent Trace `human` contributor) or `unknown`. Shares are always of the
+commits with a known source and travel with that coverage, withheld below 30%
+(`repowise.core.attribution`). With `attribution.enabled: false` the walk
+labels nothing and reads no notes or trace files.
+
+Persisted as six nullable columns on `git_commits`
+(`agent_name`/`agent_autonomy_tier`/`agent_channel`/`agent_confidence`/`agent_model_id`/`attribution`)
 and a per-file rollup on `git_metadata` (`agent_commit_count`,
-`agent_authored_pct`, `agent_tier_counts_json` at the commit level;
+`attribution_known_count`, `agent_authored_pct`, `agent_tier_counts_json` at the commit level;
 `agent_line_count`, `agent_line_model_json` at the line level), surfaced in the
 `/git-metadata` file view and the MCP `get_context` ownership block.
 
@@ -166,7 +173,7 @@ and a per-file rollup on `git_metadata` (`agent_commit_count`,
 | Module | Contents |
 |--------|----------|
 | `tiers.py` | `GitIndexTier` enum + `includes_blame` / `includes_co_change` |
-| `_constants.py` | commit-depth defaults, decay half-lives, the bug-fix keyword classifier (`is_fix_commit`, mirrors the benchmark) + `PRIOR_DEFECT_WINDOW_DAYS`, skip heuristics, GitPython noise patch |
+| `_constants.py` | commit-depth defaults, decay half-lives, the bug-fix keyword classifier (`is_fix_commit`, mirrors the benchmark) + `PRIOR_DEFECT_WINDOW_DAYS`, skip heuristics |
 | `records.py` | `_CommitRec`, `GitIndexSummary` (carries `commit_rows`), the `git log` record format + rename/skip path helpers |
 | `commit_rows.py` | `build_commit_rows` — per-commit Kamei features + change-risk from the walk's sunk commits (pure, in-memory author experience) |
 | `agent_provenance.py` | `AgentProvenanceClassifier` — deterministic per-commit agent attribution (local channels, config-extensible) |
@@ -175,7 +182,7 @@ and a per-file rollup on `git_metadata` (`agent_commit_count`,
 | `function_blame.py` | per-line blame index → per-function modification counts + line age (FULL tier; feeds `function_hotspot` / `code_age_volatility`) |
 | `co_change.py` | `compute_co_changes_and_entropy` — repo-wide decay-weighted pair walk + Hassan HCM |
 | `prior_defects.py` | `compute_prior_defects` — windowed bug-fix count per file (leakage-aware, benchmark-mirroring) |
-| `indexer.py` | `GitIndexer` class wiring the above; merges co-change/entropy/prior-defects into per-file metadata; back-compat instance shims |
+| `indexer.py` | `GitIndexer` class wiring the above; merges co-change/entropy/prior-defects into per-file metadata; back-compat instance shims; GitPython noise patch |
 | `backfill.py` | `backfill_full_tier` resumable ESSENTIAL→FULL promotion |
 
 (`git_commit_index.py` lives one level up in `ingestion/` — the repo-wide

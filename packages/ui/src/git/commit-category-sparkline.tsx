@@ -1,4 +1,5 @@
 import { ProportionBar } from "../shared/proportion-bar";
+import { commitCategoryColor } from "../shared/series";
 
 interface CommitCategorySparklineProps {
   categories: Record<string, number>;
@@ -11,7 +12,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   dependency: "Dependency",
 };
 
-/** A file's commits by type, on the shared share bar. */
+/** A file's commits by type, on the shared share bar, each type in its own colour. */
 export function CommitCategorySparkline({ categories }: CommitCategorySparklineProps) {
   return (
     <ProportionBar
@@ -21,6 +22,7 @@ export function CommitCategorySparkline({ categories }: CommitCategorySparklineP
         key,
         label,
         value: categories[key] || 0,
+        color: commitCategoryColor(key),
       }))}
     />
   );

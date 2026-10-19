@@ -799,6 +799,36 @@ def f(a, b):
     return x
 """,
     ),
+]
+
+
+@pytest.mark.parametrize(
+    ("language", "ext", "src"),
+    _LATER_WRITE_MAY_NOT_RUN,
+    ids=[
+        "py-else",
+        "ts-else",
+        "go-else",
+        "java-else",
+        "py-try",
+        "ts-try",
+        "java-try",
+        "py-try-finally",
+    ],
+)
+def test_write_reaching_past_a_later_conditional_write_is_returned(
+    language: str, ext: str, src: str
+):
+    leaking, returning = _leaks(language, ext, "x", src)
+    assert leaking == []
+    assert returning, "the span holding the write should still be offered, returning x"
+
+
+# The write sits deep in the ``try`` body, code that may raise follows it, and
+# the handler reads it: a helper that raises loses the write, so the handler
+# would see the value from before. No span holding the write and that code is
+# offered; the refusal is counted.
+_WRITE_SEEN_BY_HANDLER = [
     (
         # The write sits deep in the ``try`` body; the handler reads it.
         "python",
@@ -847,28 +877,21 @@ function f(a: number[], b: number): number {
 ]
 
 
-@pytest.mark.parametrize(
-    ("language", "ext", "src"),
-    _LATER_WRITE_MAY_NOT_RUN,
-    ids=[
-        "py-else",
-        "ts-else",
-        "go-else",
-        "java-else",
-        "py-try",
-        "ts-try",
-        "java-try",
-        "py-try-finally",
-        "py-try-inner",
-        "ts-try-inner",
-    ],
-)
-def test_write_reaching_past_a_later_conditional_write_is_returned(
-    language: str, ext: str, src: str
-):
-    leaking, returning = _leaks(language, ext, "x", src)
-    assert leaking == []
-    assert returning, "the span holding the write should still be offered, returning x"
+@pytest.mark.parametrize(("language", "ext", "src"), _WRITE_SEEN_BY_HANDLER, ids=["py", "ts"])
+def test_write_a_handler_reads_is_not_lifted_away_from_it(language: str, ext: str, src: str):
+    src = textwrap.dedent(src)
+    (write,) = _marked(src, "W")
+    res = analyze_file(f"m.{ext}", language, src.encode(), flagged_only=False)
+    refused: set[str] = set()
+    with mock.patch.object(slicer, "_MAX_BODY_SHARE", float("inf")):
+        spans = slicer.find_extractions(
+            res.functions[0], get_language_map(language), refused=refused
+        )
+    (region,) = res.functions[0].cfg.try_regions
+    lo, hi = region.body
+    inside = [x for x in spans if lo <= x.start_line <= write < x.end_line <= hi]
+    assert not inside
+    assert refused == {"exception_state"}
 
 
 def test_closure_read_sees_the_value_reaching_its_creation():

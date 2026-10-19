@@ -7,14 +7,15 @@ from datetime import datetime
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.finding_registry import split_gated
 from repowise.core.analysis.health.aggregation import (
     biomarker_breakdown,
     module_rollups,
     severity_breakdown,
 )
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
-from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.grading import headline_band
 from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS, hotspot_health
 from repowise.core.persistence import crud
@@ -22,11 +23,12 @@ from repowise.core.persistence.crud.analysis.queue_counts import all_unit_counts
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._meta import resolve_indexed_commit
 
+from .._unverified import UnverifiedQuery
 from ._router import router
 from .counts import CountsQuery, project
 from .loaders import _attach_symbol_ids
 from .scope import ScopeQuery, narrow
-from .serializers import _finding_to_dict, _leads_by_file, _metric_to_dict
+from .serializers import _finding_to_dict, _leads_by_file, _metric_to_dict, _round_opt
 
 
 def _resolve_last_indexed_at(
@@ -54,9 +56,15 @@ async def health_overview(
     limit: int = Query(20, ge=1, le=200),
     scope: str = ScopeQuery,
     counts: str = CountsQuery,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """KPIs + lowest-scoring files + per-module rollup + meta."""
+    """KPIs + lowest-scoring files + per-module rollup + meta.
+
+    Findings on a language the registry gates for health findings still rank
+    the files (the scores count them) and feed the defect-accuracy check, but
+    are not listed or counted; ``summary.gated`` says how many were held back.
+    """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -66,14 +74,28 @@ async def health_overview(
     # worst-first ranking, and the findings read is the most expensive of the
     # two — so the route was paying for each of them twice per request.
     metrics = await crud.get_health_metrics(session, repo_id)
-    findings = await crud.get_health_findings(session, repo_id)
+    # Live rows, before ``project`` wraps them: what the file holds read.
+    files = {m.file_path: m for m in metrics}
+    findings = await crud.get_health_findings(session, repo_id, include_unverified=True)
     metrics, findings = narrow(scope, metrics, findings)
     # Every figure below is computed from these two lists, so projecting here
     # is what keeps the headline, the distribution, the hotspot figure and the
     # work the page lists all describing the same thing.
-    metrics, findings, unscored = project(counts, metrics, findings)
+    metrics, scored_findings, unscored = project(counts, metrics, findings)
+    # The KPIs count what the scores counted: language gates only. The lists
+    # below also leave out what a file hold keeps back, and ``gated`` says so.
+    kpi_findings, _ = split_gated(
+        "health", scored_findings, kind="biomarker_type", include_unverified=include_unverified
+    )
+    findings, gated = split_gated(
+        "health",
+        scored_findings,
+        kind="biomarker_type",
+        include_unverified=include_unverified,
+        files=files,
+    )
     summary = await crud.get_health_summary(
-        session, repo_id, metrics=metrics, findings=findings
+        session, repo_id, metrics=metrics, findings=kpi_findings
     )
 
     # Recomputed from the metrics already loaded rather than read off the latest
@@ -88,8 +110,16 @@ async def health_overview(
 
     last_indexed_at = _resolve_last_indexed_at(snapshot.taken_at, repo.updated_at)
 
-    leads = _leads_by_file(findings)
-    metric_dicts = [_metric_to_dict(m, leads.get(m.file_path)) for m in metrics]
+    # The full row, and its lead, only for the files the response lists. The
+    # distribution and the defect-accuracy stat read path, score and NLOC off
+    # every file, at the same rounding the full row carries.
+    listed = metrics[:limit]
+    listed_paths = {m.file_path for m in listed}
+    leads = _leads_by_file([f for f in findings if f.file_path in listed_paths])
+    file_rows = [_metric_to_dict(m, leads.get(m.file_path)) for m in listed]
+    score_rows = [
+        {"file_path": m.file_path, "score": _round_opt(m.score), "nloc": m.nloc} for m in metrics
+    ]
 
     # Repo-level band (from the NLOC-weighted average) + the per-band file
     # distribution. Both derive purely from the existing score — no new data.
@@ -97,31 +127,34 @@ async def health_overview(
     summary = {
         **summary,
         "hotspot_health": hotspot_health_value,
-        "severity_breakdown": severity_breakdown(findings),
+        "severity_breakdown": severity_breakdown(kpi_findings),
         # Echoed so a surface labels what it was sent rather than what it
         # asked for; the two differ while a request is in flight.
         "counts": counts,
         "unscored_files": unscored,
-        "band": band_for(float(avg)) if avg is not None else None,
+        # Withheld when too few code files were analysed for the average to
+        # speak for the repo; ``analysed_share`` rides in from the summary.
+        "band": headline_band(avg, summary.get("analysed_share")),
+        "gated": gated,
     }
-    distribution = health_distribution(metric_dicts)
+    distribution = health_distribution(score_rows)
 
     # "Does the score find the bugs?" self-validation, derived from the same
     # metrics + findings (prior_defect biomarker) already loaded above. ``None``
     # when the repo lacks enough files / defect history to be honest.
     #
     # Fed the rows it actually reads. It reads ``file_path`` / ``score`` off the
-    # metrics — so ``metric_dicts`` above serves, no second conversion — and
+    # metrics — so ``score_rows`` above serves, no second conversion — and
     # only the ``prior_defect`` findings, so converting the other ~90% (which
     # means a ``json.loads`` of every ``details_json``) was pure waste.
     # Summed over every open finding, not the ``prior_defect`` slice below: a
     # ranking needs each file's whole depth, or the floor-tied band comes out in
     # a different order than the worst-files list beside it. Folded once and
     # shared with the module rollup.
-    deductions = deduction_by_path(findings)
+    deductions = deduction_by_path(scored_findings)
     defect_accuracy = compute_defect_accuracy(
-        metric_dicts,
-        [_finding_to_dict(f) for f in findings if f.biomarker_type == "prior_defect"],
+        score_rows,
+        [_finding_to_dict(f) for f in scored_findings if f.biomarker_type == "prior_defect"],
         deductions=deductions,
     )
 
@@ -141,7 +174,7 @@ async def health_overview(
         "summary": summary,
         "distribution": distribution,
         "defect_accuracy": defect_accuracy,
-        "files": metric_dicts[:limit],
+        "files": file_rows,
         "top_findings": top_findings,
         "modules": module_rollups(metrics, deductions),
         "biomarkers": biomarker_breakdown(findings),
@@ -149,14 +182,18 @@ async def health_overview(
         # same numbers the lists, MCP and the CLI report, whatever scope or
         # counts this page projects.
         "queue_counts": await all_unit_counts(
-            session, repo_id, shown={"findings": len(top_findings)}
+            session,
+            repo_id,
+            shown={"findings": len(top_findings)},
+            include_unverified=include_unverified,
         ),
         "meta": {
             "last_indexed_at": last_indexed_at,
-            # Prefer state.json's last_sync_commit over a possibly-stale DB row
-            # so the freshness signal self-heals on read (see the /api/repos
-            # overlay). This is the extension's primary indexed-commit source.
-            "head_commit": resolve_indexed_commit(repo.head_commit, repo.local_path),
+            # The /api/repos overlay's indexed commit (state.json and the row
+            # reconciled). This is the extension's primary indexed-commit source.
+            "head_commit": (
+                resolve_indexed_commit(repo.head_commit, repo.local_path) or repo.head_commit
+            ),
             "snapshot_count": snapshot.snapshot_count,
         },
     }

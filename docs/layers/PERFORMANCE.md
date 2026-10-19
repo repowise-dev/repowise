@@ -6,7 +6,7 @@ iteration. It reads the parse tree and the call graph. It does not run your code
 or measure time, so a finding means "this shape is slow when the data grows", not
 "this was slow in production".
 
-It is high precision and low recall. It misses cases rather than guessing.
+It is high precision and low recall: it skips a case instead of guessing.
 Performance risk is one of the three signals in [Code Health](CODE_HEALTH.md).
 
 ## What it finds
@@ -22,13 +22,34 @@ Performance risk is one of the three signals in [Code Health](CODE_HEALTH.md).
 That is 21 performance detectors plus `sql_cartesian_join`. They move only the
 performance signal, never the defect score.
 
+A few shapes are deliberately quiet:
+
+- A loop that appends to one string several times is one `string_concat_in_loop`
+  finding that lists every append line. TypeScript and JavaScript never get this
+  finding, because JavaScript engines make repeated `+=` linear.
+- A TypeScript or JavaScript `includes` check against a short `const` table of
+  literals that the file never changes is not flagged, because a table of fixed
+  size costs the same at any scale.
+- An awaited call on a line that an ESLint `no-await-in-loop` suppression covers
+  is not reported: the comment states that the sequential await is intended.
+
+### Across functions
+
 The loop and the I/O call do not have to be in the same function. Repowise
 follows the resolved call graph up to three hops and attaches the
 caller-to-sink path. Per-function linters cannot see that case.
+
 An I/O call is recognised by the library its receiver was imported from. In
 TypeScript and JavaScript only the module name counts, so a local variable named
 like a package (`ws`) or a module path that contains a library name
 (`plugin-sdk/provider-http`) is not read as that library.
+
+In Java, any call on a Spring Data repository or a MyBatis mapper inside a `for`
+loop counts as a database call, whatever the method is named. The receiver's
+declared type decides: an interface that extends a Spring Data repository, carries
+`@Mapper`, or sits in a `@MapperScan` package.
+
+### Languages
 
 Performance analysis covers Python, TypeScript/JavaScript (including Vue and
 Svelte scripts), Java, Go, C# (including Razor), Rust, Kotlin, Scala, Ruby, C++,
@@ -53,17 +74,37 @@ Each opportunity gets one state:
 A plan lists its edits, one step per call site and loop, each naming the call it
 repeats and the kind of I/O that call does (database, network, file system or
 subprocess). When every site reaches one sink, the step that adds a bulk form of
-that sink comes first. The plan also lists tests to run, found from coverage, the call
-graph and the import graph. An opportunity with a supported shared fix links to a
-`performance_fix` plan in [REFACTORING.md](REFACTORING.md).
+that sink comes first. The plan also lists tests to run, found from coverage, the
+call graph and the import graph. An opportunity with a supported shared fix links
+to a `performance_fix` plan in [REFACTORING.md](REFACTORING.md).
+
+Each loop also says what it walks: rows a query returns, a collection its caller
+passes in, the rows of one key, a registry or configuration table, a fixed set, a
+directory listing or a stream, and plan steps name it. Python,
+TypeScript/JavaScript, Go, Java, C#, Ruby, Rust, Kotlin, C++ and Pascal loops say whether
+they grow with the data or are bounded; a loop whose size the code does not show
+stays unknown and is never treated as bounded. A loop that stops at the first call
+that answers, or feeds each call's result into the next, gets no batch advice
+(reason `loop_not_batchable`).
 
 ## The default queue
 
 The default queue holds production opportunities in the `plan_ready` and
-`advisory` states. They are ranked by cost first; state only breaks ties.
-Only opportunities whose cost is measured are in it. A loop whose size nothing measured is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven` filter.
-Each opportunity also says what runs its loop (`execution_role`: request, event consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run per request rank above the rest. Roles are read for Python and TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any one role, or `all`.
-Work a request hands to `asyncio.create_task` and never waits for is a background job, not part of the request, even when the task is kept in a map on shared app state. An opportunity takes its role and loop size from the same live call sites, so a call site switched off by a constant flag or already chunked never leads it.
+`advisory` states. They are ranked by cost first; state only breaks ties. Only
+opportunities whose cost is measured are in it. A loop whose size nothing measured
+is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven`
+filter.
+
+Each opportunity also says what runs its loop (`execution_role`: request, event
+consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run
+per request rank above the rest. Roles are read for Python and
+TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any
+one role, or `all`.
+
+Work a request hands to `asyncio.create_task` and never waits for is a background
+job, not part of the request, even when the task is kept in a map on shared app
+state. An opportunity takes its role and loop size from the same live call sites,
+so a call site switched off by a constant flag or already chunked never leads it.
 
 Everything else is counted by reason, not hidden:
 
@@ -79,8 +120,13 @@ Everything else is counted by reason, not hidden:
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
 
-To see them, widen the filter (below). Performance work also appears in
-[Fix first](CODE_HEALTH.md#fix-first), where it competes with other kinds of work.
+To see them, widen the filter (below). Each performance finding also stores the
+reason its cause is in or out of the queue. Code in a package path that only looks
+like an example tree (`com/example/...`) is judged as production when the index
+read it as production.
+
+Performance work also appears in [Fix first](CODE_HEALTH.md#fix-first), where it
+competes with other kinds of work.
 
 ## Reading it
 
@@ -88,7 +134,7 @@ To see them, widen the filter (below). Performance work also appears in
 |---|---|
 | CLI | `repowise health` and `repowise next` list performance work inside Fix first |
 | MCP | `get_health(include=["performance"])`; open one cause with `opportunity_id` |
-| Dashboard | Code Health, **Performance** tab: each cause with its steps and the raw observations as evidence |
+| Dashboard | Code Health, Performance tab: one scope (Worth doing now, All production, Everything) with every count inside it, causes grouped by area, each with its steps and the raw observations as evidence |
 
 MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 (`production` by default; `tooling`, `test`, `unknown` or `all`),
@@ -107,8 +153,10 @@ get_health(opportunity_id="perf...")
   edge, so those cases are missed.
 - Chains longer than three hops are not followed.
 - ORM lazy loads are reported only where the loop's rows resolve to one model.
+- JPA lazy associations read in a loop are not reported.
 - A library Repowise does not model has no classified I/O calls.
 
-Internals (sinks, gates, dialects, weights): [architecture/code-health.md](../architecture/code-health.md#64-performance-opportunities-perf).
+Internals (sinks, gates, dialects, weights):
+[architecture/code-health.md](../architecture/code-health.md#64-performance-opportunities-perf).
 Linter comparison and ranking quality:
 [repowise-bench/perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).

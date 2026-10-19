@@ -677,6 +677,7 @@ def test_detector_emits_suggestion_for_flagged_function():
         "needs_async",
         "new_symbol",
         "call_site",
+        "anchors",
     }
     assert s.plan["needs_async"] is False
     # A module-level function: the helper is a plain function too.
@@ -702,105 +703,26 @@ def test_detector_emits_suggestion_for_flagged_function():
     assert s.confidence in ("medium", "high")
 
 
-def test_plan_carries_a_computed_name_not_a_hardcoded_none():
-    """``suggested_name`` was ``None`` on every extract_method plan ever stored
-    (854 of 854 on this repo's index) while Extract Helper computed one, so the
-    field's meaning depended on which detector wrote it and every surface fell
-    through to a generic "helper". It is now always a real identifier."""
+def test_plan_names_the_helper_with_a_placeholder():
+    """The plan does not assert a name: the agent applying it names the helper
+    for what it returns or does. The placeholder is valid code until then."""
     findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
     s = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))[0]
-    # The slice's single OUT value is ``average``, so the span is by
-    # construction the code that computes it.
     assert s.plan["returns"] == ["average"]
     # In Python's private form.
-    assert s.plan["suggested_name"] == "_compute_average"
-
-
-class _Extraction:
-    def __init__(self, returns):
-        self.returns = list(returns)
-
-
-class _Analysis:
-    def __init__(self, name):
-        self.name = name
-
-
-def test_suggested_name_unit():
-    name = ExtractMethodDetector._suggested_name
-    # Exactly one OUT -> name the helper for what it produces, in the language's
-    # own convention.
-    assert name(_Analysis("process"), _Extraction(["average"]), "python") == "compute_average"
-    # Non-identifier characters normalised through the shared slug.
-    assert name(_Analysis("p"), _Extraction(["total-count"]), "python") == "compute_total_count"
-    # A call with no language keeps the snake_case default (the pre-existing
-    # behaviour), so an unset ``ctx.language`` degrades rather than changes shape.
-    assert name(_Analysis("process"), _Extraction(["average"])) == "compute_average"
-
-
-def test_suggested_name_none_cases_are_unchanged_by_the_language():
-    """Control: the no-anchor rules this change must not touch. Each of these
-    was ``None`` before it and must stay ``None`` after, in every language."""
-    name = ExtractMethodDetector._suggested_name
-    # No single OUT -> no anchor, so no name. The enclosing function's name
-    # described the span's context, never the span, and collided with every
-    # sibling plan in the file.
-    assert name(_Analysis("run_pipeline"), _Extraction([])) is None
-    assert name(_Analysis("run_pipeline"), _Extraction(["a", "b"])) is None
-    # A return name that slugs to nothing must not yield "compute_".
-    assert name(_Analysis("process"), _Extraction(["___"])) is None
-    # An OUT named for its role, not the product: "compute_result" names
-    # nothing the reader did not already know.
-    assert name(_Analysis("process"), _Extraction(["result"])) is None
-    # Nothing usable at all -> no name at all.
-    assert name(_Analysis("___"), _Extraction([])) is None
-    # And none of the above becomes a name just because the language is camelCase.
-    for lang in ("java", "go", "typescript", "cpp", "python"):
-        assert name(_Analysis("process"), _Extraction([]), lang) is None
-        assert name(_Analysis("process"), _Extraction(["result"]), lang) is None
-        assert name(_Analysis("process"), _Extraction(["___"]), lang) is None
-
-
-def test_suggested_name_follows_the_language_convention():
-    name = ExtractMethodDetector._suggested_name
-    # camelCase languages.
-    for lang in ("java", "go", "typescript", "tsx", "javascript", "jsx", "svelte", "vue"):
-        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "computeAverage", lang
-    # snake_case languages, and C++ which has no single convention.
-    for lang in ("python", "rust", "cpp"):
-        assert name(_Analysis("process"), _Extraction(["average"]), lang) == "compute_average", lang
-    # An unknown language falls back rather than raising.
-    assert name(_Analysis("process"), _Extraction(["average"]), "cobol") == "compute_average"
-    # A language whose file has several words keeps all of them.
-    assert (
-        name(_Analysis("process"), _Extraction(["total_count"]), "java") == "computeTotalCount"
-    )
-
-
-def test_suggested_name_keeps_the_out_values_own_casing():
-    name = ExtractMethodDetector._suggested_name
-    # ``meanValue`` must survive as word boundaries. Lowercasing the whole label
-    # first (the old slug) gave ``compute_meanvalue``, neither camelCase nor
-    # snake_case.
-    assert name(_Analysis("process"), _Extraction(["meanValue"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["mean_value"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["MeanValue"]), "java") == "computeMeanValue"
-    assert name(_Analysis("process"), _Extraction(["meanValue"]), "python") == "compute_mean_value"
-    # A run of capitals stays one word: splitting it needs a dictionary.
-    assert name(_Analysis("process"), _Extraction(["HTTPStatus"]), "java") == "computeHttpstatus"
-    # The role-word guard still sees a multi-word out value's joined slug.
-    assert name(_Analysis("process"), _Extraction(["item_value"]), "java") == "computeItemValue"
+    assert s.plan["suggested_name"] == "_extracted_helper"
+    assert s.plan["new_symbol"]["signature_text"].startswith("def _extracted_helper(")
 
 
 @pytest.mark.parametrize(
     ("language", "expected"),
     [
-        ("python", "_compute_average"),
-        ("rust", "compute_average"),
-        ("cpp", "compute_average"),
-        ("java", "computeAverage"),
-        ("typescript", "computeAverage"),
-        ("go", "computeAverage"),
+        ("python", "_extracted_helper"),
+        ("rust", "extracted_helper"),
+        ("cpp", "extracted_helper"),
+        ("java", "extractedHelper"),
+        ("typescript", "extractedHelper"),
+        ("go", "extractedHelper"),
     ],
 )
 def test_detector_names_the_helper_in_the_files_language(language: str, expected: str):
@@ -1039,7 +961,9 @@ def test_a_best_span_below_the_floor_yields_to_the_next_one(monkeypatch):
 
     trivial = Extraction(10, 17, ("a",), (), slice_nloc=8, ccn_removed=1)
     worth = Extraction(20, 27, ("b",), (), slice_nloc=8, ccn_removed=3)
-    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [trivial, worth])
+    monkeypatch.setattr(extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None, _rf=None: [trivial, worth])
+    # No parsed source to anchor against: this pins span choice, not anchoring.
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     fn = _Shape(12, 40)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 50, "ccn": 12, "nloc": 40,
@@ -1252,8 +1176,9 @@ def test_a_refused_span_yields_only_to_a_disjoint_one(monkeypatch):
     shrunk = Extraction(2, 55, ("a",), (), slice_nloc=40, ccn_removed=8)  # overlaps it
     disjoint = Extraction(85, 95, ("b",), (), slice_nloc=10, ccn_removed=3)
     monkeypatch.setattr(
-        extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None: [whole, shrunk, disjoint]
+        extract_method, "find_extractions", lambda _a, _l, _r=None, _p=None, _rf=None: [whole, shrunk, disjoint]
     )
+    monkeypatch.setattr(extract_method, "anchor_plan", lambda _plan, _fn: True)
     analysis = type(
         "A", (), {"name": "f", "start_line": 1, "end_line": 100, "ccn": 30, "nloc": 90,
                   "fn_node": None}

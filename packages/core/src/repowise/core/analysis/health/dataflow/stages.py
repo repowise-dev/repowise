@@ -23,7 +23,9 @@ into K contiguous stages, each a helper the function then calls in sequence.
   at the call. A name a stage declares in a nested block (a loop's ``const``)
   is the stage's own, never an output. A guard (``if not x: raise``) whose
   names the code after the stage reads stays in the function: type checkers
-  narrow ``x`` from it.
+  narrow ``x`` from it. A stage may not change exception flow
+  (:func:`raises.exception_flow_refusal`): inside a ``try`` body it may not
+  write a value a handler or ``finally`` reads.
 - **Cuts.** A small dynamic program over the statement boundaries: lift as many
   decision points as possible, then prefer narrow interfaces (fewest names
   crossing a cut), cuts at a banner comment, a ``timed()`` label or a blank
@@ -49,12 +51,13 @@ from __future__ import annotations
 import re
 from bisect import bisect_right
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from ..complexity.nloc import is_string_stmt
 from .assigned import DefiniteAssignment
 from .loop_cut import carried, escapes
+from .raises import exception_flow_refusal
 from .reaching import observed_definitions
 from .slice import (
     _MIN_SLICE_NLOC,
@@ -65,16 +68,20 @@ from .slice import (
     _declaration_escapes,
     _declaration_lines,
     _declared_before_read,
+    _disposes_early,
     _function_lines,
     _hoisted_bindings,
     _identifiers,
     _infer_in_out,
+    _outer_write_escapes,
     _Prefix,
     _reads_observing,
     _receiver_facts,
     _scan_for,
+    _scoped_resource_indexes,
     _stmt_assigns,
     _unwrap_container,
+    _valueless_lines,
     _var_lines,
 )
 from .span import exiting_guard, is_comment, section_heads
@@ -94,6 +101,9 @@ STAGE_MAX_NLOC = 60
 _STAGE_MIN_DECISIONS = 2
 # More shared values than a signature carries well (the slicer's own cap).
 _CONTEXT_OVER = 5
+# Why a stage that cleared every other check was not offered (``StagePlan.refused``).
+OUTER_WRITE = "outer_write"
+SWITCH_ARM_WRITE = "switch_arm_write"
 # A wrapper holding this share of a block's decision points is unwrapped.
 _WRAPPER_SHARE = 0.6
 # Loop bodies and ``if`` arms looked into below the outermost cut.
@@ -119,13 +129,17 @@ class StagePlan:
     object (empty: plain parameters), and per stage the names it reads that
     the function imports outside it, which the helper must import itself;
     ``moved_imports`` are those nothing left in the function reads.
-    ``reason`` says why there are no stages; None when there are."""
+    ``reason`` says why there are no stages; None when there are.
+    ``refused`` names why a stage that cleared every other check was not
+    offered (:data:`OUTER_WRITE`, :data:`SWITCH_ARM_WRITE`, and the
+    exception-flow reasons of :mod:`raises`)."""
 
     stages: tuple[Extraction, ...] = ()
     context: tuple[str, ...] = ()
     imports: tuple[tuple[str, ...], ...] = ()
     moved_imports: frozenset[str] = frozenset()
     reason: str | None = None
+    refused: frozenset[str] = frozenset()
 
     @property
     def ccn_removed(self) -> int:
@@ -156,7 +170,7 @@ def find_stages(
     if body is None:
         return StagePlan(reason="no_tree")
     blocks = _Blocks(analysis, lmap, receiver, prefixes if prefixes is not None else {})
-    facts = _FunctionFacts(analysis)
+    facts = _FunctionFacts(analysis, lmap)
     first: StagePlan | None = None
     best: StagePlan | None = None
     for block, loops in _descent(_unwrap_container(body, lmap.block_kinds), blocks, lmap):
@@ -168,7 +182,7 @@ def find_stages(
         # A deeper level wins only by lifting more: ties keep the outer cut.
         if plan.stages and (best is None or plan.ccn_removed > best.ccn_removed):
             best = plan
-    return best or first or StagePlan(reason="no_tree")
+    return replace(best or first or StagePlan(reason="no_tree"), refused=frozenset(facts.refused))
 
 
 def _plan_block(
@@ -304,14 +318,18 @@ def _arms(st: Node, lmap: LanguageNodeMap) -> list[Node]:
 class _FunctionFacts:
     """The per-function facts every block's cut reads, built once."""
 
-    def __init__(self, analysis: FunctionAnalysis) -> None:
+    def __init__(self, analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> None:
         self.analysis = analysis
         def_use = analysis.def_use
         self.def_lines, self.use_lines = _var_lines(def_use)
         self.declared_first = _declared_before_read(def_use)
+        self.valueless = _valueless_lines(def_use)
         self.hoisted = _hoisted_bindings(self.def_lines, self.use_lines)
         self.decl_lines = _declaration_lines(def_use)
         self.shared = _closure_state(def_use, self.def_lines, self.use_lines)
+        self.outer = def_use.outer
+        self.arm_writes = _arm_writes(analysis, lmap)
+        self.refused: set[str] = set()
         self.reads = _reads_observing(analysis, self.def_lines)
         self.assigned = DefiniteAssignment(analysis)
         self.inner_bindings = _inner_bindings(def_use)
@@ -340,10 +358,15 @@ class _Cutter:
         self.max_returns = max_returns
         self.def_lines, self.use_lines = facts.def_lines, facts.use_lines
         self.declared_first = facts.declared_first
+        self.valueless = facts.valueless
         self.hoisted = facts.hoisted
         self.decl_lines = facts.decl_lines
         self.shared = facts.shared
+        self.outer = facts.outer
+        self.arm_writes = facts.arm_writes
+        self.refused = facts.refused
         self.reads = facts.reads
+        self.cfg = facts.analysis.cfg
         self.pre = pre
         self._assigns: dict[tuple[int, str], bool] = {}
         self.cut_cost = _cut_costs(code)
@@ -357,6 +380,7 @@ class _Cutter:
         # helper instead, and a value carried to the next iteration must come
         # back out of the stage that writes it.
         self.escapes = [escapes(st, lmap) for st in code] if loops else [False] * len(code)
+        self.resources = _scoped_resource_indexes(code, lmap)
         self.carried = carried(facts.analysis, loops, facts.def_lines) if loops else frozenset()
 
     def _sum(self, series: list[int], i: int, j: int) -> int:
@@ -414,7 +438,13 @@ class _Cutter:
         if any(s <= ln <= e for v in self.rereads for ln in self.def_lines.get(v, ())):
             return None
         params, returns = _infer_in_out(
-            self.def_lines, self.use_lines, s, e, self.declared_first, reads=self.reads
+            self.def_lines,
+            self.use_lines,
+            s,
+            e,
+            self.declared_first,
+            reads=self.reads,
+            valueless=self.valueless,
         )
         returns = self._own_bindings_dropped(span, s, e, returns)
         if self.carried:
@@ -426,7 +456,9 @@ class _Cutter:
         bound = self.assigned.before(s, e)
         if bound is None or not set(params) <= bound:
             return None
-        if not self._signature_holds(span, s, e, returns) or self._guard_needed_after(i, j, e):
+        if self._guard_needed_after(i, j, e) or not self._signature_holds(
+            span, s, e, params, returns
+        ):
             return None
         pre = self.pre
         uses, assigns = _receiver_facts(self.receiver, pre, i, j, 0)
@@ -454,6 +486,8 @@ class _Cutter:
         if self._sum(pre.exits, i, j) or self._sum(pre.nested, i, j):
             return False
         if any(self.escapes[i : j + 1]):
+            return False
+        if _disposes_early(self.resources, i, j, pre.code):
             return False
         return not any((i <= a <= j) != (i <= b <= j) for a, b in self.timer_pairs)
 
@@ -484,19 +518,75 @@ class _Cutter:
             if names
         )
 
-    def _signature_holds(self, span: list[Node], s: int, e: int, returns: tuple[str, ...]) -> bool:
+    def _signature_holds(
+        self,
+        span: list[Node],
+        s: int,
+        e: int,
+        params: tuple[str, ...],
+        returns: tuple[str, ...],
+    ) -> bool:
         """The single-span slicer's own refusals: a hoisted binding, a
         declaration the code after the stage still needs, a local a closure
-        shares across the stage's edge."""
+        shares across the stage's edge. Then those a stage names in
+        ``refused``: a ``global`` write that cannot take its declaration
+        along, a cut that changes exception flow (:mod:`raises`), a
+        ``switch`` / ``match`` arm write the interface depends on."""
         if any(s <= first_def <= e and first_use < s for first_def, first_use in self.hoisted):
             return False
         if _declaration_escapes(
             s, e, returns, self.decl_lines, self.def_lines, self.use_lines, self.declared_first
         ):
             return False
-        return self.shared is None or not _closure_state_crosses(
+        if self.shared is not None and _closure_state_crosses(
             self.shared, span, s, e, self.block, self.lmap
-        )
+        ):
+            return False
+        reason = self._interface_refusal(s, e, params, returns)
+        if reason is not None:
+            self.refused.add(reason)
+        return reason is None
+
+    def _interface_refusal(
+        self, s: int, e: int, params: tuple[str, ...], returns: tuple[str, ...]
+    ) -> str | None:
+        if _outer_write_escapes(s, e, self.outer, self.def_lines):
+            return OUTER_WRITE
+        reason = exception_flow_refusal(self.cfg, s, e, self.reads, self.def_lines)
+        if reason is not None:
+            return reason
+        if self._arm_write_crosses(s, e, params, returns):
+            return SWITCH_ARM_WRITE
+        return None
+
+    def _arm_write_crosses(
+        self, s: int, e: int, params: tuple[str, ...], returns: tuple[str, ...]
+    ) -> bool:
+        """Whether a ``switch`` / ``match`` arm's write of a name live across
+        the stage's edge can decide its interface. The CFG keeps the
+        statement whole, so liveness takes the write as certain and hides
+        the value from before it: a read after the arm in the stage misses an
+        input, a stage before the arm misses an output, an input bound only
+        by the arm looks bound. Temporary: remove once the CFG splits arms
+        (#3451)."""
+        taken = set(params)
+        for lo, hi, names in self.arm_writes:
+            for var in names:
+                defs = self.def_lines.get(var, ())
+                uses = self.use_lines.get(var, ())
+                if s <= lo and hi <= e:
+                    hazard = var not in taken and any(d < s for d in defs) and any(
+                        hi < u <= e for u in uses
+                    )
+                elif hi < s:
+                    hazard = var in taken and not any(d < lo for d in defs)
+                else:
+                    hazard = var not in returns and any(s <= d <= e for d in defs) and any(
+                        u > hi for u in uses
+                    )
+                if hazard:
+                    return True
+        return False
 
     def _with_inouts(
         self, i: int, j: int, s: int, params: tuple[str, ...], returns: tuple[str, ...]
@@ -560,6 +650,29 @@ def _rereads(analysis: FunctionAnalysis) -> frozenset[str]:
                 ):
                     out.add(d.var)
     return frozenset(out)
+
+
+def _arm_writes(
+    analysis: FunctionAnalysis, lmap: LanguageNodeMap
+) -> tuple[tuple[int, int, frozenset[str]], ...]:
+    """Per ``switch`` / ``match`` statement the flow graph keeps whole, its
+    lines and the names an arm writes without declaring them."""
+    if not lmap.switch_kinds:
+        return ()
+    found = [
+        (st.start_line, st.end_line)
+        for block in analysis.cfg.blocks
+        for st in block.statements
+        if st.kind in lmap.switch_kinds
+    ]
+    out = []
+    for lo, hi in found:
+        names = frozenset(
+            d.var for d in analysis.def_use.definitions if lo <= d.line <= hi and not d.declares
+        )
+        if names:
+            out.append((lo, hi, names))
+    return tuple(out)
 
 
 def _holds_line(node: Node, lines: list[int]) -> bool:
@@ -692,4 +805,11 @@ def _composes(
     return tuple(tuple(sorted(names)) for names in imported), moved
 
 
-__all__ = ["STAGE_MAX_CCN", "STAGE_MAX_NLOC", "StagePlan", "find_stages"]
+__all__ = [
+    "OUTER_WRITE",
+    "STAGE_MAX_CCN",
+    "STAGE_MAX_NLOC",
+    "SWITCH_ARM_WRITE",
+    "StagePlan",
+    "find_stages",
+]

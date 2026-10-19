@@ -19,7 +19,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, Receiver, StatementDefUse
+from .base import (
+    BaseDefUseDialect,
+    DeclaredTypes,
+    HandlerHead,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    node_text,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -43,6 +51,10 @@ _SHORTHAND_PAT = "shorthand_property_identifier_pattern"
 _PAIR_PATTERN = "pair_pattern"
 _REST_PATTERN = "rest_pattern"
 _ASSIGN_PATTERN = "assignment_pattern"  # default value ``a = 1`` in a pattern
+_CATCH = "catch_clause"
+_PARAM_PATTERNS = frozenset({_ARRAY_PATTERN, _OBJECT_PATTERN, _REST_PATTERN, _ASSIGN_PATTERN})
+# A ``switch`` is one CFG statement; writes inside its arms are may-defs.
+_CONDITIONAL_KINDS = frozenset({"switch_statement"})
 # Member / subscript targets bind no local.
 _MEMBER = "member_expression"
 _SUBSCRIPT = "subscript_expression"
@@ -83,11 +95,54 @@ def _is_static(method: Node) -> bool:
     return any(c.type == "static" for c in method.children)
 
 
+class _TsDeclaredTypes(DeclaredTypes):
+    def of(self, name: Node) -> str | None:
+        """The base rule, plus ``| undefined`` for an optional parameter
+        (``x?: T`` holds ``T | undefined`` until something narrows it)."""
+        typ = super().of(name)
+        if typ is None or name.parent is None or name.parent.type != "optional_parameter":
+            return typ
+        arms = union_arms(typ)
+        if "undefined" in arms:
+            return typ
+        return f"({typ}) | undefined" if len(arms) == 1 and "=>" in typ else f"{typ} | undefined"
+
+
+#: Types under which TypeScript lets a ``let`` be read before it is assigned.
+_ADMITS_UNDEFINED = frozenset({b"undefined", b"any", b"unknown", b"void"})
+_TYPE_WRAPPERS = frozenset({"type_annotation", "union_type", "parenthesized_type"})
+
+
+def _admits_undefined(type_node: Node) -> bool:
+    if type_node.type in _TYPE_WRAPPERS:
+        return any(_admits_undefined(child) for child in type_node.named_children)
+    return type_node.text in _ADMITS_UNDEFINED
+
+
+def _unreadable_until_assigned(declarator: Node) -> bool:
+    """Whether *declarator* leaves its name without a value to read:
+    ``let x: string;``, which TypeScript rejects a read of until an assignment.
+
+    Every other bare declaration holds ``undefined``, a value like any other:
+    one with no annotation (all of JavaScript, an implicit ``any``), one whose
+    type admits ``undefined`` (``let x: T | undefined;``), and one with a
+    definite-assignment ``!``. A type alias is taken at its word: whether
+    ``let x: Maybe;`` admits ``undefined`` is not visible here."""
+    if declarator.child_by_field_name("value") is not None:
+        return False
+    annotation = declarator.child_by_field_name("type")
+    if annotation is None or any(child.type == "!" for child in declarator.children):
+        return False
+    return not _admits_undefined(annotation)
+
+
 class TsJsDefUseDialect(BaseDefUseDialect):
     language = "typescript"
     member_access_kinds = frozenset({"member_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS | _UPDATE_KINDS
-    type_holder_kinds = frozenset({"required_parameter", "optional_parameter", "variable_declarator"})
+    declared_types = _TsDeclaredTypes(
+        frozenset({"required_parameter", "optional_parameter", "variable_declarator"})
+    )
     keyword_kinds = frozenset()  # object-property keys are not variable reads.
     # ``shorthand_property_identifier`` is an object-literal read (``{ days }``
     # reads the local ``days``). Its ``_pattern`` twin is the destructuring
@@ -119,16 +174,21 @@ class TsJsDefUseDialect(BaseDefUseDialect):
             self._process(node, defs, uses)
         return StatementDefUse(defs=tuple(defs), uses=tuple(uses))
 
-    def declared_type(self, name: Node) -> str | None:
-        """The base rule, plus ``| undefined`` for an optional parameter
-        (``x?: T`` holds ``T | undefined`` until something narrows it)."""
-        typ = super().declared_type(name)
-        if typ is None or name.parent is None or name.parent.type != "optional_parameter":
-            return typ
-        arms = union_arms(typ)
-        if "undefined" in arms:
-            return typ
-        return f"({typ}) | undefined" if len(arms) == 1 and "=>" in typ else f"{typ} | undefined"
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """``catch (e)`` / ``catch ({ message })`` binds its names for the
+        handler block only."""
+        defs: list[Occurrence] = []
+        param = handler.child_by_field_name("parameter")
+        self._targets(param, defs, [])
+        if param is not None:
+            self._declare(defs, 0, param)
+        return StatementDefUse(defs=tuple(defs), uses=())
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """A ``catch`` catches everything; it binds a plain parameter's name."""
+        param = handler.child_by_field_name("parameter")
+        named = param is not None and param.type == "identifier"
+        return None, node_text(param) if named else None
 
     def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]:
         params_node = fn_node.child_by_field_name("parameters")
@@ -137,9 +197,13 @@ class TsJsDefUseDialect(BaseDefUseDialect):
         out: list[Occurrence] = []
         sink: list[Occurrence] = []
         for child in params_node.named_children:
+            # TS wraps each parameter (``required_parameter``); JS lists the name
+            # or pattern itself (``b = 1``, ``{ a, b }``, ``[a]``, ``...rest``).
             pattern = child.child_by_field_name("pattern")
-            if pattern is None:
-                pattern = child if child.type in self.identifier_kinds else None
+            if pattern is None and (
+                child.type in self.identifier_kinds or child.type in _PARAM_PATTERNS
+            ):
+                pattern = child
             self._targets(pattern, out, sink)
         return tuple(out)
 
@@ -212,8 +276,22 @@ class TsJsDefUseDialect(BaseDefUseDialect):
                     continue
                 start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
-                self._declare(defs, start, declarator, binds=t != _VAR_DECL)
+                self._declare(
+                    defs,
+                    start,
+                    declarator,
+                    binds=t != _VAR_DECL,
+                    valueless=_unreadable_until_assigned(declarator),
+                )
                 self._process(declarator.child_by_field_name("value"), defs, uses)
+            return
+        if t == _CATCH:  # a nested scope's handler, walked whole
+            sdu = self.handler_def_use(node)
+            defs.extend(sdu.defs)
+            self._process(node.child_by_field_name("body"), defs, uses)
+            return
+        if t in _CONDITIONAL_KINDS:
+            self._process_may_def(node, defs, uses)
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; property is not

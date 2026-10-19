@@ -1,0 +1,225 @@
+"""Everything a single-repo init settles before indexing."""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import click
+
+from repowise.cli._setup import configure_cli_logging
+from repowise.cli.editor_integrations.defaults import (
+    get_default_disabled_project_files,
+    get_default_integration_overrides,
+    get_default_project_file_overrides,
+)
+from repowise.cli.editor_setup import (
+    resolve_editor_setup_options,
+    select_agents_interactively,
+)
+from repowise.cli.errors import reasoned_error
+from repowise.cli.helpers import (
+    console,
+    ensure_repowise_dir,
+    load_config,
+    load_state,
+    resolve_max_file_pages,
+    resolve_provider,
+    resolve_reasoning,
+)
+from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
+from repowise.cli.ui import WARN, load_dotenv
+from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.generation.styles import resolve_style
+
+from ._options import InitOptions, InitRun
+from ._provider import announce_index_only, decision_key_in_env, resolve_docs_provider
+from ._questions import _ask_questions
+from .persistence import effective_run_mode_for_resume
+
+
+def _interactive_gate(
+    *,
+    isatty: bool,
+    provider_name: str | None,
+    index_only: bool,
+    yes: bool,
+    resume: bool,
+) -> bool:
+    """Whether the interactive questionnaire runs.
+
+    Interactive requires a TTY, no explicit provider, docs on, and neither
+    --yes nor --resume. --resume skips the gate because the prior run
+    already answered every question and those answers are on disk
+    (config.yaml); re-asking would let a resumed run diverge from the pages
+    already written with them.
+    """
+    return isatty and provider_name is None and not index_only and not yes and not resume
+
+
+def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
+    """Prepare ``.repowise/``, logging and the resume mode, then open the run."""
+    ensure_repowise_dir(repo_path)
+    load_dotenv(repo_path)
+
+    # Quiet library/structlog output so the progress bars are the only output;
+    # `-v` lets repowise's debug lines through for troubleshooting.
+    configure_cli_logging(verbose=opts.verbose)
+
+    # On --resume, continue the prior run's git tier rather than fall back to
+    # FULL. Done before the interactive gate so a resume never re-prompts.
+    run_mode = effective_run_mode_for_resume(repo_path, opts.run_mode, opts.resume)
+    opts = replace(opts, run_mode=run_mode, index_only=opts.index_only or run_mode == "fast")
+
+    # --yes forces non-interactive even on a TTY (mirrors the workspace path),
+    # so a scripted `init -y` never blocks on the mode-selection menu.
+    is_interactive = _interactive_gate(
+        isatty=sys.stdin.isatty(),
+        provider_name=opts.provider_name,
+        index_only=opts.index_only,
+        yes=opts.yes,
+        resume=opts.resume,
+    )
+
+    if opts.resume:
+        console.print(
+            f"[bold]Resuming[/] the previous run in {repo_path}, "
+            "reusing the answers it already saved to config.yaml."
+        )
+    return InitRun(
+        opts=opts,
+        repo_path=repo_path,
+        start=start,
+        is_interactive=is_interactive,
+        generate_docs=not opts.index_only,
+    )
+
+
+def _editor_options(run: InitRun) -> Any:
+    """Which editor files and integrations this run writes."""
+    opts = run.opts
+    editor_options = resolve_editor_setup_options(
+        disabled_project_files=get_default_disabled_project_files(
+            no_claude_md=opts.no_claude_md,
+        ),
+        project_file_overrides=get_default_project_file_overrides(
+            agents_md=opts.agents_md,
+        ),
+        integration_overrides=get_default_integration_overrides(
+            codex_setup=opts.codex_setup,
+        ),
+    )
+    # Ask which agents to wire up whenever the user is engaging interactively:
+    # either generating docs or customizing an index-only run. Not asked when
+    # editor setup is off: every answer would be discarded by
+    # `write_editor_project_files`.
+    if opts.editor_setup and run.is_interactive and (run.generate_docs or run.customize):
+        editor_options = select_agents_interactively(console, run.repo_path, editor_options)
+    return editor_options
+
+
+def _resolve_settings(run: InitRun) -> None:
+    """Resolve each setting from its flag, the interactive answer and config.yaml."""
+    opts = run.opts
+    config = load_config(run.repo_path)
+    run.config = config
+    # Output language: CLI flag > advanced-mode choice > config.yaml > English.
+    run.language = opts.language_opt or run.language_choice or config.get("language", "en")
+    # File-page cap: flag > advanced-mode answer > config.yaml > unset (policy).
+    file_pages = opts.max_file_pages_opt
+    if file_pages is None:
+        file_pages = run.max_file_pages_choice
+    run.max_file_pages = resolve_max_file_pages(file_pages, config)
+    run.resolved_reasoning = resolve_reasoning(opts.reasoning, config)
+    # Merge exclude_patterns from config.yaml and --exclude/-x flags.
+    run.exclude_patterns = list(config.get("exclude_patterns") or []) + list(opts.exclude)
+
+    # Commit limit: CLI flag → config.yaml → default.
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+
+    commit_limit = opts.commit_limit or config.get("commit_limit") or _DEFAULT_COMMIT_LIMIT
+    run.resolved_commit_limit = max(1, min(commit_limit, 10000))
+    if opts.commit_limit is not None:
+        config["commit_limit"] = run.resolved_commit_limit
+
+    # follow_renames: CLI flag → config.yaml.
+    run.resolved_follow_renames = opts.follow_renames or config.get("follow_renames", False)
+    if opts.follow_renames:
+        config["follow_renames"] = True
+
+    run.embedder_name_resolved = resolve_embedder(opts.embedder_name)
+    run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
+
+
+def _confirm_wiki_overwrite(run: InitRun) -> bool:
+    """Read the prior state; False when the user keeps a model-written wiki.
+
+    A template wiki overwrites a model-written one page for page: the upsert
+    replaces content and stamps provider_name="template", keeping the old text
+    only as a version snapshot. Fine when the user meant it, a bad surprise
+    when they were reaching for a re-index, so ask. Non-interactive runs refuse
+    rather than guess. ``--yes`` and ``--force`` both mean "do not ask me".
+    """
+    prior_state = load_state(run.repo_path)
+    # Whether this repo has ever been indexed, captured before the run writes
+    # its own state. A first index tells the user to restart Claude Code to
+    # load the tools; a re-index does not.
+    run.first_index = not prior_state.get("last_sync_commit")
+    run.prior_docs_mode = resolve_docs_mode(prior_state)
+    opts = run.opts
+    if not opts.index_only or run.prior_docs_mode != "llm" or opts.force or opts.yes:
+        return True
+    console.print(
+        f"\n[{WARN}]This repo already has a model-written wiki.[/] "
+        "Indexing without a model\nrewrites every page from templates; the "
+        "written versions stay in page history."
+    )
+    if not sys.stdin.isatty():
+        raise reasoned_error(
+            "Refusing to replace a model-written wiki with template pages. "
+            "Re-run with --yes to confirm, or drop --index-only.",
+            reason="wiki_overwrite_unconfirmed",
+        )
+    if not click.confirm("  Replace the written wiki with template pages?", default=False):
+        console.print("[dim]Nothing changed.[/dim]")
+        return False
+    return True
+
+
+def _resolve_decision_provider(run: InitRun) -> None:
+    """Index-only: a decision-extraction provider when one is named or keyed."""
+    opts = run.opts
+    try:
+        if opts.provider_name or decision_key_in_env():
+            run.decision_provider = resolve_provider(opts.provider_name, opts.model, run.repo_path)
+    except Exception:
+        pass
+
+
+def _resolve_provider_stage(run: InitRun) -> None:
+    """Which model this run calls: none, a decision extractor, or the docs model."""
+    if run.opts.index_only:
+        _resolve_decision_provider(run)
+        announce_index_only(run)
+    else:
+        resolve_docs_provider(run)
+
+
+def _prepare_single_repo(opts: InitOptions, repo_path: Path, start: float) -> InitRun | None:
+    """Everything a single-repo run settles before indexing. None to stop."""
+    run = _start_run(opts, repo_path, start)
+    if run.is_interactive:
+        _ask_questions(run)
+
+    # Resolve the effective style (CLI flag > interactive prompt > default) and
+    # canonicalize it. Used by generation and persisted so update/restyle honor it.
+    run.opts = replace(run.opts, wiki_style=resolve_style(run.opts.wiki_style).name)
+    run.editor_options = _editor_options(run)
+    _resolve_settings(run)
+    if not _confirm_wiki_overwrite(run):
+        return None
+    _resolve_provider_stage(run)
+    return run

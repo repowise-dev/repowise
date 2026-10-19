@@ -15,6 +15,7 @@ from repowise.core.analysis.health.trends import (
     file_score_series,
     file_trend,
     recent_kpis,
+    snapshot_fields,
     snapshot_file_maps,
 )
 
@@ -22,7 +23,7 @@ from repowise.core.analysis.health.trends import (
 @dataclass
 class _S:
     taken_at: datetime
-    hotspot_health: float
+    hotspot_health: float | None
     average_health: float
     worst_performer_path: str | None = "x"
     worst_performer_score: float | None = 1.0
@@ -41,9 +42,9 @@ def _series(values: list[float]) -> list[_S]:
     return [_S(taken_at=_ts(i), hotspot_health=v, average_health=v) for i, v in enumerate(values)]
 
 
-def test_diff_empty_history_neutral():
+def test_diff_empty_history_has_no_hotspot_figure():
     summary = diff_snapshots([])
-    assert summary.current_hotspot_health == 10.0
+    assert summary.current_hotspot_health is None
     assert summary.hotspot_delta is None
     assert summary.alerts == []
 
@@ -53,6 +54,36 @@ def test_diff_single_snapshot_no_alerts():
     assert summary.current_hotspot_health == 7.5
     assert summary.previous_hotspot_health is None
     assert summary.alerts == []
+
+
+def test_a_repo_with_no_hotspots_trends_as_none_not_ten():
+    """A snapshot with no hotspot figure reads as null, never a perfect 10.0."""
+    snaps = [
+        _S(taken_at=_ts(i), hotspot_health=None, average_health=7.0 - 0.1 * i) for i in range(7)
+    ]
+    summary = diff_snapshots(snaps)
+    assert summary.current_hotspot_health is None
+    assert summary.previous_hotspot_health is None
+    assert summary.hotspot_delta is None
+    assert {a.metric for a in summary.alerts} == {"average_health"}
+    assert [r["hotspot_health"] for r in recent_kpis(snaps)] == [None] * 7
+
+
+def test_a_hotspot_figure_appearing_has_no_delta():
+    summary = diff_snapshots(
+        [
+            _S(taken_at=_ts(0), hotspot_health=None, average_health=7.0),
+            _S(taken_at=_ts(1), hotspot_health=6.0, average_health=7.0),
+        ]
+    )
+    assert summary.current_hotspot_health == 6.0
+    assert summary.previous_hotspot_health is None
+    assert summary.hotspot_delta is None
+
+
+def test_snapshot_fields_records_no_hotspots_as_none():
+    kpis = {"hotspot_health": None, "average_health": 7.0}
+    assert snapshot_fields(kpis, [], [])["hotspot_health"] is None
 
 
 def test_declining_health_alert_triggers_at_threshold():

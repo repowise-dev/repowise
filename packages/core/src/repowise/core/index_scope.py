@@ -245,7 +245,9 @@ INDEX_SCOPE_ENV = "REPOWISE_MCP_INDEX_SCOPE"
 
 #: Upgrade states that mean the index is still being built. Reported ahead of
 #: everything else: they explain the rest and they resolve on their own.
-_UPGRADE_IN_FLIGHT = frozenset({"pending", "running", "resumable"})
+#: ``pending`` joins them only when the run had a provider (see
+#: :func:`_upgrade_in_flight`).
+_UPGRADE_IN_FLIGHT = frozenset({"running", "resumable"})
 
 #: Search legs. A leg that is "pending" is not usable yet, which is a smaller
 #: problem than one that failed but is not nothing.
@@ -258,13 +260,48 @@ def _section(scope: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     return section if isinstance(section, Mapping) else {}
 
 
+def _upgrade_in_flight(upgrade: Mapping[str, Any], scope: Mapping[str, Any]) -> bool:
+    """Whether the model upgrade is under way or waiting on a provider it has.
+
+    Every run without a model stores ``pending`` (``update --full`` reads it),
+    but with no provider nothing will ever take it up, so a keyless index is
+    finished and reads by its evidence like any other.
+    """
+    status = upgrade.get("status")
+    if status in _UPGRADE_IN_FLIGHT:
+        return True
+    return status == "pending" and bool(_section(scope, "provider").get("name"))
+
+
+def _never_meant_to_exist(leg: str, scope: Mapping[str, Any]) -> bool:
+    """Whether an unavailable search leg is the run's design, not a failure.
+
+    A run that skipped generation has no pages to search. A keyless run (no
+    provider, keyless or no embedder) never writes semantic vectors. A real
+    embedder whose writes failed is neither, and stays degraded.
+    """
+    from repowise.core.providers.embedding.registry import KEYLESS_EMBEDDERS
+
+    if "generation" in (_section(scope, "analysis").get("skipped") or ()):
+        return True
+    provider = _section(scope, "provider")
+    return (
+        leg == "semantic"
+        and not provider.get("name")
+        and (not provider.get("embedder") or provider.get("embedder") in KEYLESS_EMBEDDERS)
+    )
+
+
 def _is_degraded(upgrade: Mapping[str, Any], scope: Mapping[str, Any]) -> bool:
     """Whether some part of the index was meant to exist and does not."""
     search = _section(scope, "search")
     return (
         upgrade.get("status") == "failed"
         or bool(_section(scope, "analysis").get("unavailable"))
-        or any(search.get(leg) == "unavailable" for leg in _SEARCH_LEGS)
+        or any(
+            search.get(leg) == "unavailable" and not _never_meant_to_exist(leg, scope)
+            for leg in _SEARCH_LEGS
+        )
     )
 
 
@@ -303,7 +340,7 @@ def _scope_status(scope: Mapping[str, Any]) -> str:
     ``unknown``, which is a different answer and says so.
     """
     upgrade = _section(scope, "upgrade")
-    if upgrade.get("status") in _UPGRADE_IN_FLIGHT:
+    if _upgrade_in_flight(upgrade, scope):
         return "upgrading"
     if _is_degraded(upgrade, scope):
         return "degraded"

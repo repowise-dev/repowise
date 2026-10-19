@@ -174,3 +174,29 @@ def test_report_deletable_lines_sum():
     # deletable, however stale.
     assert safe_findings == []
     assert report.deletable_lines == 0
+
+
+def test_machine_output_known_by_content_is_never_flagged():
+    """A webpack chunk or a minified bundle with an ordinary name is not dead code."""
+    node = {
+        "is_entry_point": False,
+        "is_test": False,
+        "is_api_contract": False,
+        "symbol_count": 5,
+        "symbols": [],
+    }
+    paths = ("static/js/main.4f1c2a.js", "public/app.js", "src/legacy.js")
+    g = _build_graph(nodes={path: dict(node) for path in paths})
+    source_map = {
+        "static/js/main.4f1c2a.js": b'(self.webpackChunkapp=self.webpackChunkapp||[]).push([[179],{});\n',
+        "public/app.js": b"!function(t,n){" + b"a=1;" * 1100 + b"}();",
+        "src/legacy.js": b"export function old() {\n  return 1;\n}\n",
+    }
+
+    report = DeadCodeAnalyzer(g, git_meta_map={}, source_map=source_map).analyze(
+        {"detect_unused_exports": False, "detect_zombie_packages": False}
+    )
+
+    flagged = {f.file_path for f in report.findings}
+    assert "src/legacy.js" in flagged
+    assert not flagged & {"static/js/main.4f1c2a.js", "public/app.js"}
