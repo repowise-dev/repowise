@@ -171,6 +171,7 @@ async def persist_result(
             session,
             name=result.repo_name,
             local_path=str(repo_path),
+            stamp_head=True,
         )
         # Persist the detected tech stack into the repository's settings
         # blob. Merge into any pre-existing settings so we don't clobber
@@ -535,6 +536,12 @@ def save_full_state_and_config(
     # Same reasoning for the security scanner (#3072): this run just scanned
     # every file, so start tracking its version here too.
     state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    # The pages were just rendered by this release's structural renderer.
+    # Unstamped, the first update would read the index as pre-stamp and
+    # re-render the whole wiki it had only just written.
+    from repowise.cli.commands.update_cmd.command import _current_renderer_fingerprint
+
+    state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
     # This run just scored every file, so the periodic re-score cadence starts
     # now. Without the stamp the gate reads "never re-scored" and the very next
     # update re-scores the whole repo that init had only just finished scoring.

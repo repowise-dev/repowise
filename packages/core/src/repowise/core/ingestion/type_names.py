@@ -94,6 +94,34 @@ def bare_type_name(raw: str) -> str:
     return text.strip()
 
 
+def written_type_key(name: str, raw: str, language: str) -> str:
+    """*name*, the bare type *raw* spells, as receiver lookups key it.
+
+    A C# head keeps its arity (``IFoo`1``), since a same-file ``IFoo`` may be
+    another type; a Java member type keeps its outer type (``Token.Tag``),
+    which picks among same-named member types.
+    """
+    if language == "csharp" and (arity := type_argument_count(raw)):
+        return f"{name}`{arity}"
+    if language == "java":
+        return java_type_path(raw) or name
+    return name
+
+
+def java_type_path(raw: str) -> str | None:
+    """``p.Token.Tag<X>[]`` -> ``p.Token.Tag``: a type spelled through its qualifiers.
+
+    Kept whole because the qualifier picks which same-named type is meant: an
+    outer type a member type, a package (lowercase) a top-level type. None for
+    an undotted spelling or one that names no type.
+    """
+    text = strip_type_arguments(raw.strip()).replace(" ", "")
+    parts = text.split(".")
+    if len(parts) < 2 or not any(part[:1].isupper() for part in parts):
+        return None
+    return text if all(part.isidentifier() for part in parts) else None
+
+
 def type_argument_count(raw: str) -> int:
     """How many type arguments the named type in *raw* is given.
 
@@ -217,6 +245,34 @@ _CSHARP_EXTENSION_RECEIVER = re.compile(
     r"\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
     r"(?P<type>[\w.]+(?:<[^>]*>)?(?:\s*\[[,\s]*\])*\??)"
 )
+
+
+def kotlin_extension_receiver(header: str, name: str) -> tuple[str, str | None] | None:
+    """``(written, extended)`` for Kotlin's ``fun Type.name(`` in *header*, or None.
+
+    *written* is the receiver as a symbol id spells it, nullable mark and type
+    parameter kept (``Int?``, ``T``), which tells ``Int.f()`` from
+    ``Int?.f()``. *extended* is the bare type the extension dispatches on,
+    None for a receiver that is the function's own type parameter
+    (``fun <T> T.name()``): any implicit receiver fits it.
+    """
+    # Read at the header's first `fun` only: a same-named function below it is
+    # another declaration.
+    first = re.search(r"\bfun\s", header)
+    match = first and re.compile(
+        rf"fun\s+(?:<(?P<params>(?:[^<>]|<[^<>]*>)*)>\s*)?"
+        rf"(?P<type>[^()=]+?)\.\s*`?{re.escape(name)}`?\s*[(<]"
+    ).match(header, first.start())
+    if not match:
+        return None
+    written = match.group("type").strip()
+    bare = bare_type_name(written.rstrip("?").strip())
+    if not bare:
+        return None
+    params = (match.group("params") or "").split(",")
+    declared = {p.split(":")[0].split()[-1] for p in params if p.strip()}
+    nullable = "?" if written.endswith("?") else ""
+    return bare + nullable, None if bare in declared else bare
 
 
 def csharp_extension_receiver(signature: str) -> str | None:

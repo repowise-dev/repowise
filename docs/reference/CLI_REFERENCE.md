@@ -36,8 +36,13 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`dead-code`](#repowise-dead-code-path) ·
 [`doc-drift`](#repowise-doc-drift-path) ·
 [`security`](#repowise-security) ·
+[`check`](#repowise-check-revspec) ·
 [`impacted-tests`](#repowise-impacted-tests-revspec) ·
-[`coverage`](#repowise-coverage)
+[`coverage`](#repowise-coverage) ·
+[`components`](#repowise-components) ·
+[`changes`](#repowise-changes) ·
+[`events`](#repowise-events) ·
+[`report assessment`](#repowise-report-assessment-path)
 
 **Decisions**
 [`decision`](#repowise-decision)
@@ -80,6 +85,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 [`doctor`](#repowise-doctor-path) ·
 [`whats-new`](#repowise-whats-new) ·
 [`telemetry`](#repowise-telemetry) ·
+[`plugins`](#repowise-plugins) ·
 [`login`](#repowise-login) ·
 [`logout`](#repowise-logout) ·
 [`whoami`](#repowise-whoami) ·
@@ -170,7 +176,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
 | `--resume` | Continue a previous run instead of redoing it: completed phases (indexing, analysis) are skipped, the earlier run's git tier is kept, and generation writes only the pages this repo does not have yet. Use it after an interrupted run, and after one that finished with failed pages (a provider outage, rate limiting) — pages already written are skipped with no model call, so nothing is paid for twice. Matching is per page, not per model, so switching provider still keeps what the old one wrote. |
 | `--force` | Regenerate all pages even if they exist. Re-indexes this checkout from scratch in the mode you invoked, so inside a linked worktree it also skips seeding (a re-index is what seeding exists to avoid) and runs as a normal full init. Never triggers a model: `--force --no-prose` re-renders the whole wiki from templates at no cost. Use `repowise update --full` to regenerate with a model. |
-| `--commit-limit` | Max commits to analyze per file (default: 500, capped at 10000) |
+| `--commit-limit` | Max commits to analyze per file (default: 5000, capped at 10000) |
 | `--follow-renames` | Track file renames in git history |
 | `--no-claude-md` | Don't generate `CLAUDE.md` |
 | `--agents` / `--no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
@@ -836,9 +842,9 @@ constants). With no `REVSPEC` it scores your uncommitted work, falling back to
 `base..head` range to score a whole branch / PR as one change (`base...head`
 diffs from the merge-base, so commits that landed on `base` meanwhile stay out).
 
-The headline is **repo-relative**: the change's percentile and review priority
-(`Below typical` / `Typical` / `Elevated`) within the repo's own recent commits,
-sampled live. The raw 0–10 model score is still shown, but as a secondary,
+The headline is **repo-relative**: the change's percentile by size and spread
+within the repo's own recent commits, sampled live. It ranks diff size, not
+danger; the bug-fix record of the touched files follows it. The raw 0–10 model score is still shown, but as a secondary,
 corpus-anchored number (it skews high on repos whose typical commit is large, so
 the percentile is the signal to act on). Each risk driver is reported relative
 to the model's baseline commit, not this repo.
@@ -853,7 +859,7 @@ to the model's baseline commit, not this repo.
 | `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute per-commit model-score band) |
 | `--target` / `-t` | Score what history says about these **files** instead of a change. Repeatable; switches the command to the `get_risk` tool |
 | `--changed-file` | With `--target`: PR mode. Leads with a directive naming what may break, which co-changes and tests are missing, and what to run |
-| `--fail-above-percentile` | CI gate (0-100): exit `1` when the change ranks above this percentile of recent commits (`risk_percentile`, never the 0-10 score), `2` when it has no percentile (`--baseline 0`, or fewer than 8 commits to rank against). Without `REVSPEC` it scores the CI change: the target branch `...HEAD` |
+| `--fail-above-percentile` | CI size gate (0-100): exit `1` when the change ranks above this percentile of recent commits (`risk_percentile`, never the 0-10 score), `2` when it has no percentile (`--baseline 0`, or fewer than 8 commits to rank against). Without `REVSPEC` it scores the CI change: the target branch `...HEAD` |
 | `--format` | Output format: `table` (default), `json`, `markdown` or `github`. `markdown` and `github` are not for `--target`; without `REVSPEC` they score the CI change. `github` writes an `::error::` when the gate fails (else a `::notice::`) and the markdown to `$GITHUB_STEP_SUMMARY` |
 | `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 
@@ -1112,6 +1118,8 @@ Report per-file code-health scores from 51 deterministic detectors (McCabe compl
 
 By default it reads the analysis the last `repowise init` or `repowise update` stored, the same rows MCP and the web UI serve, and writes nothing. `--recompute` analyzes the working tree in-process instead.
 
+When a listed finding or plan sits on a language its layer serves as a preview, the report prints one dim line per layer and language with the measurement behind it, for example `Refactoring on Java: preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15`. `repowise dead-code` does the same. Today that is health on C++, and refactoring, performance and dead code on Java, C#, C and C++ (dead code on Kotlin and Swift too); no language is held back.
+
 **Options:**
 
 | Flag | Description |
@@ -1122,6 +1130,8 @@ By default it reads the analysis the last `repowise init` or `repowise update` s
 | `--counts` | `everything` (default) or `code_shape`. `code_shape` drops the git-derived half of the deduction, which rises as a file is worked on — the reading that answers whether the code itself is improving. |
 | `--refactoring-targets` | Print the refactoring queue the index stored: one opportunity per file with its structured, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps and Break Cycle as advisory evidence, in the same order MCP and the web UI serve. Reads the index, so it needs `repowise init` first. See [REFACTORING.md](../layers/REFACTORING.md) |
 | `--recompute` | Analyze the working tree in-process instead of reading the stored analysis. A whole-repo `table` run writes the result back to the index (scores, findings, a trend snapshot); `json`, `md` and `--file`/`--module` runs never write. Slow on a large repo; the only option outside an indexed one. With `--refactoring-targets`, `--scope` and `--counts` apply only here. |
+| `--score <path>` | Score these files as they are on disk now (repeatable), before an update or a PR. Structure comes from the bytes; history, coverage, test pairing and dependents from the index, so a file reads as the next update would score it. With no index, the code-shape reading. `--format json` gives `files` and `score_change`. |
+| `--against <rev>` | With `--score`: also score the files at this revision and print before, after and the change, plus the average weighted by nloc at `<rev>`. |
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
 | `--plan <id>` | Print one stored refactoring plan as the prompt an agent applies; with `--format json`, its recipe (preconditions, steps, postconditions). Reads the index. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
@@ -1139,6 +1149,7 @@ repowise health --refactoring-targets                 # the stored queue, as MCP
 repowise health --generate-code packages/server/app.py::handler   # LLM patch for one target
 repowise health --trend                               # snapshot history + alerts
 repowise health --counts code_shape                   # ignore the git-derived half
+repowise health --score src/app.py --against origin/main   # live score, before and after
 repowise coverage add coverage.lcov   # ingest coverage, then:
 repowise health --recompute           # fold it into the scores now (or wait for the next update)
 repowise health --format json | jq .kpis              # machine-readable
@@ -1450,7 +1461,7 @@ carries `patch_coverage_pct`, `covered_line_count`, `coverable_line_count`,
 `threshold`, `min_coverable_lines`, `gate` (`pass`, `fail`, `no_data`,
 `not_set`, `too_small`; `fail` when any gate fails), `file_counts`
 (`measured`, `not_in_report`, `no_line_data`, `no_coverable_changes`,
-`out_of_scope`), `files[]` (`file_path`, `status`, `changed_line_count`,
+`stale_file` (stored coverage only, always 0 here), `out_of_scope`), `files[]` (`file_path`, `status`, `changed_line_count`,
 `coverable_line_count`, `covered_line_count`, `patch_coverage_pct`,
 `uncovered_ranges`, `branch_taken`, `branch_total`, `partial_ranges` (0 and
 empty without branch data), `risk`: `fix_pressure`, `dependents`, `hotspot`,
@@ -1575,6 +1586,112 @@ printed.
 repowise coverage suggest-gates
 repowise coverage suggest-gates --format json
 ```
+
+---
+
+### `repowise components`
+
+`check` validates `.repowise/components.yaml` and a repo-root `catalog-info.yaml` (Backstage entities, see [CONFIG.md](CONFIG.md#repowisecomponentsyaml)) against the files git tracks, and exits 1 on any error, so it fits a CI step. `list` shows declared and derived components with their file counts. `ownership` compares each component's declared owners (catalog `spec.owner`, CODEOWNERS, [`.repowise/teams.yaml`](CONFIG.md#repowiseteamsyaml)) with indexed commits in the last 90 days and lists findings: a high or critical component with no active declared owner or a bus factor of 1, a declared owner with no recent changes, and a catalog entry that claims no files. An owner none of whose identities appears in the indexed history is unknown, never inactive, so `critical_no_active_owner` does not fire when every declared owner is unknown. Individuals match only through an exact git email or a forge noreply login, and a bare `@name` outside `.github/CODEOWNERS` that names no declared team stays unresolved (on GitLab it may be a group). Findings name components and teams; individual owners are counted, never named.
+
+```bash
+repowise components check [--path PATH] [--format table|json]
+repowise components list [--path PATH] [--format table|json]
+repowise components ownership [--path PATH] [--format table|json]
+```
+
+---
+
+### `repowise packages`
+
+`where` lists the files that import a third-party package (a name or `ecosystem:name`) with the import line, component, declared owner teams and reachability, each with its basis. `export --format cyclonedx` writes the declared packages and their import sites as CycloneDX 1.6 JSON (`evidence.occurrences`); it is not an SBOM. `import` joins a Syft, SPDX, CycloneDX or OSV JSON file you supply to usage by package name; nothing is fetched and no vulnerability is matched. See [PACKAGE_USAGE.md](PACKAGE_USAGE.md).
+
+```bash
+repowise packages where NAME [--path PATH] [--format text|json]
+repowise packages export [--format cyclonedx] [-o FILE] [--path PATH]
+repowise packages import FILE [--path PATH] [--format text|json]
+```
+
+---
+
+### `repowise changes`
+
+Merged changes read back from git at each index and update: one per first-parent commit, identified by the PR or MR number its message names, then a Gerrit `Change-Id`, then the merge or commit sha. A merge lands the commits its branch brought in, and rebase merges read as one change per commit. `show` takes an id (`pr-123`) or any commit sha the change landed, and prints the versioned JSON record or, with `--format in-toto`, an in-toto Statement v1 whose subjects are the commits.
+
+`show` also prints the change's evidence checklist: components touched, declared owners, suggested reviewers, reaching tests, contracts, consumers in other repos, decisions crossed, health delta, AI provenance and the diff size rank, each with a status (`ok`, `attention`, `unknown`) and the basis it rests on. The checklist is built on first read and kept on the change; `--refresh` rebuilds it. `export` writes every change merged in a `--since`/`--until` window (UTC, `--until` exclusive) with its checklist, streamed as JSON Lines (one record per line) or CSV rows (one row per change and item); building a missing checklist costs a few seconds per change. `list --needs-attention` keeps only changes whose kept checklist flags an item for attention; it reads checklists already built and builds none, so a change nobody has opened or exported is not listed.
+
+The last item, `outcomes`, says what later history records about the change, and is read again whenever HEAD moves. It lists reverts that name the change and later commits that name it as the cause of what they fix in their own words (a `Fixes: <sha>` trailer, "regression from/in/since", "caused by", "broken by"), each quoting the message, and only from commits the change is an ancestor of. Beside those it reports how many of the change's files later received fix commits within 30 days (`changes.outcome_fix_days` in `.repowise/config.yaml`), a rate that says where fixes landed, never that the change caused them.
+
+```bash
+repowise changes list [--path PATH] [--category C] [--shape merge|squash|commit] [--grep TEXT] [--needs-attention] [--limit N] [--offset N] [--format table|json]
+repowise changes show REF [--path PATH] [--format table|json|in-toto] [--no-evidence] [--refresh]
+repowise changes export [--path PATH] [--since DATE] [--until DATE] [--format json|csv] [--refresh]
+```
+
+---
+
+### `repowise suspects`
+
+Ranks the indexed changes merged in a window (default the 14 days before `--until`, which defaults to now) against a symptom: free text, files, a stack trace file. Each row lists the signals that fired (text match, import distance, co-change, recency, trace hits) with their evidence; the order is where to start reading, never a cause, and `git bisect run` confirms one. Text match carries most of the ranking, and most regressions surface later than 14 days, so a change outside the list is not cleared; widen `--since`. `--symptom` is read up to 20,000 characters and `--files` up to 50. Measured results and the bisect recipe are in [CHANGES.md](../layers/CHANGES.md#suspects).
+
+```bash
+repowise suspects [--symptom TEXT] [--files PATH]... [--trace FILE] [--since DATE] [--until DATE] [--limit N] [--path PATH] [--format table|json]
+```
+
+---
+
+### `repowise check [REVSPEC]`
+
+Evaluates `.repowise/policies.yaml` (see [CONFIG.md](CONFIG.md#repowisepoliciesyaml)) against a change: components touched and their tags, provenance from public git markers, and, with an index, reaching tests, governing decisions crossed and bus factor. Rules that wrap a gate run `security check`, `coverage check` or `doc-drift --check` exactly as those commands run alone, and without a policy file every gate behaves as before while `check` reports nothing to evaluate. Exit 1 when a `fail` rule fires, 2 when the policy is invalid or a `fail` gate cannot be evaluated, else 0; `--sarif-file` writes SARIF 2.1.0 for code scanning or reviewdog and `--junit-file` a JUnit report from the same run.
+
+```bash
+repowise check [REVSPEC] [--path PATH] [--policies FILE] [--sarif-file FILE] [--junit-file FILE] [--format table|json|sarif|junit]
+```
+
+Teams that already run OPA can use the `evidence` object of `repowise check --format json` as OPA `input`: it is the change's evidence checklist, one item per kind (`components_touched`, `provenance`, `reaching_tests`, `decisions_crossed`, `contracts`) with its status, basis and per-file details. `opa eval --input check.json --data policy.rego 'data.repowise.deny'` then evaluates Rego rules over `input.evidence.items` next to, or instead of, `policies.yaml`.
+
+---
+
+### `repowise events`
+
+Typed events between consecutive index runs. Each `init` and `update` stores a snapshot of every component (ownership counts, bus factor, hotspots, dead code, governing decisions, provided contracts, test reach) under the analyzer and parser stamp it ran with. When an index run and the run right before it share a stamp, what moved is stored as an event. A stamp change starts a new baseline, and so does the first run after one that took no snapshot (events switched off, or the snapshot failed); a run on the commit already snapshotted, including `--working-tree` on it, is skipped. Events are written as CloudEvents JSON lines to `.repowise/events.jsonl` and read back here, oldest first.
+
+```bash
+repowise events [--path PATH] [--since 7d|12h|ISO-DATE] [--kind KIND]... [--limit N] [--format table|json|jsonl]
+```
+
+Kinds: `ownership_shift`, `owner_inactive`, `bus_factor_drop` (critical components), `new_hotspot` (off by default), `contract_added`, `contract_broken`, `decision_stale`, `dead_code_growth`, `test_reach_drop`. Contract kinds need a workspace: after the cross-repo pass extracts contracts at the run's commit, the run's contract facts are measured and its contract events stored; outside a workspace contracts stay unavailable and those kinds never fire. An index-only `update` (the post-commit hook) skips the cross-repo pass to stay fast, so its run keeps contracts unavailable; contract kinds compare each measured run with the last earlier run that measured them, passing over those runs. Known limit: consumer counts are read at the provider's own runs, so a change in a consumer repo alone moves no contract event. Known limit: past `compact_after_days` compaction keeps one run per week, so the measured run a later run would compare with can be dropped, and the comparison falls back to an older measured run or none. The `events:` block in `.repowise/config.yaml` sets `enabled`, `retention_days` (365), `compact_after_days` (30; older runs keep one per week), per-kind switches under `kinds`, and the `sinks` to deliver to (`jsonl` by default, `stdout` for CI).
+
+The web UI lists the same events in the Events view of the Commits page, newest first. An empty list says why: `GET /api/repos/{id}/events` returns `snapshot_runs` and `empty_reason` (`baseline_only` until two snapshots exist, `nothing_moved`, or `no_match` under filters), and the same sentence this command prints as `empty_note`.
+
+---
+
+### `repowise report assessment [PATH]`
+
+One document a team hands to someone else, for a repo or every repo of a workspace: component posture, hotspots, bus factor per component, dead code by tier, measured and inferred test reach, contracts, governing decisions, provenance coverage with the agents and models named, and what moved since a snapshot a quarter older. Every item keeps the OpenSSF Scorecard check keys (`name`, `score` 0 to 10 or -1 inconclusive, `reason`, `details`, `documentation`) plus `method` and `basis`. A descriptive item (a count or a list) has `score: null`, and missing or held-back evidence is always -1, never a low score. The report is evidence about code and components, not a score of people: owners are counted, never ranked or named. JSON is canonical (`schema_version: 1`); the HTML is one file with inline CSS, no scripts and a policy that blocks every fetch, so it opens offline and prints as is.
+
+```bash
+repowise report assessment [PATH] [--sections a,b] [--format json|markdown|html|csv] [--out FILE] [--workspace | --no-workspace] [--repo ALIAS]
+```
+
+| Section | Measures | Basis |
+|---|---|---|
+| `components` | Each component's NLOC-weighted health, catalog facts and `components ownership` findings | `measured`; `gated` on a language health is held back on |
+| `inventory` | Each component's declared owner teams, languages, entry points and the third-party packages its files import ([package usage](PACKAGE_USAGE.md)) | `measured`; owners `declared` |
+| `hotspots` | Files with high recent churn, per component | `measured` |
+| `bus-factor` | Fewest primary owners holding over half of each component's owned files; components at 1 or 2 are counted and named in the summary unless the catalog marks them | `measured`; `inferred` under five owned files |
+| `dead-code` | Open findings by confidence tier; `safe_to_delete` is not used | `inferred`; `gated` for held-back languages |
+| `test-reach` | Line coverage from ingested reports, and production files a test reaches, as separate items | `measured` and `inferred` |
+| `contracts` | Contracts each component provides and their consumers in other repos | `measured` when the workspace store matches the indexed commit |
+| `decisions` | Accepted decisions governing each component's files, and the stale ones | `declared` |
+| `outcomes` | Changes a later commit reverted or named as the cause of what it fixed, in its own words, per component; read from the checklists already kept on Change Records, and left out when none is kept | `declared` |
+| `provenance` | Commits in the last 90 indexed days with a known source (a count, not a score), and the agents and models named (listed, not counted) | `measured`, `declared`; `unresolved` with no markers |
+| `trend` | What moved since a same-stamp snapshot at least 90 days older, by the `events` diff rules and only for the event kinds the repository has on | `measured` |
+
+`repowise report inventory [PATH]` renders the `inventory` section alone, with the same `--format`, `--out`, `--workspace`, `--no-workspace` and `--repo` options: the component inventory a software inventory review (PCI DSS 6.3.2) asks for. Its JSON `data` keeps every component's owner teams, languages, entry points and packages; the text lists the components with no declared owner team.
+
+`repowise report changes [PATH] [--since DATE|all] [--until DATE] [--format json|markdown|html|csv] [--out FILE] [--refresh] [--no-build]` is the change-management evidence an audit asks for (SOC 2 CC8.1, ISO 27001 A.8.32, PCI DSS 6.5): for every change merged in the period, its components and owning teams, its review record (git holds none, so it reads "not recorded in git" unless `Approved-by` trailers or a `change-metadata` source supply one), measured and inferred reaching tests, the verdict of the condition rules in `.repowise/policies.yaml` ("no policy configured" without one; gate rules are not re-run), its provenance, and whether a later commit reverted it or named it as the cause of a fix. A period summary counts those answers and a method appendix states what git alone cannot attest; unknown is counted apart, never as a failure, and people are counted, never named. It shares one evidence pass with `changes export`, which builds and stores any missing checklist in the index, a few at a time, after printing to stderr how many it will build and roughly how long; `--no-build` reports kept checklists only and counts the rest as unknown. Without `--since` the period is the 90 days before the newest indexed commit (or before `--until`, when earlier), and `--since all` covers every indexed change; the period summary and the method appendix state which window the report used.
+
+Basis `unresolved` means the evidence is missing. Each per-component section opens with one summary row counting components by outcome; a component gets its own item only when there is something to note (an ownership finding, a bus factor of 2 or less on a component the catalog gives a criticality or tags, hotspots, a stale decision, provided contracts, or unresolved or gated evidence), the rest are named in the summary, and the JSON `data` keeps every component's figures. Local paths are removed from every item. A section is a `Section` on `SeamRegistry("report-section")`: each module in `repowise/core/report/sections/` registers one, a plugin registers its own the same way, and a section whose data is absent returns `None` and is left out, as `outcomes` is until a change's checklist has been opened. Renderers live on `SeamRegistry("report-renderer")` and are picked with `--format`. Modernization candidates are not reported, since no existing signal measures them.
 
 ---
 
@@ -2167,7 +2284,7 @@ version as seen. Works offline from the changelog bundled with the install.
 | `--all` | Show the full changelog history |
 | `--format` | `table` (default) or `json` |
 
-JSON carries every selected release; the panel caps at 5 releases and 8 bullets each.
+Each release leads with its highlights and a one-line "By the numbers" (pull requests, contributors, files and lines changed). JSON carries every selected release with its `summary`, `highlights` and `stats`; the panel caps at 5 releases and 8 bullets each.
 
 ```bash
 repowise whats-new                       # what changed since you last looked
@@ -2191,6 +2308,33 @@ repowise telemetry status                # show whether telemetry is enabled, an
 repowise telemetry enable
 repowise telemetry disable
 ```
+
+---
+
+### `repowise plugins`
+
+List the plugins repowise loaded (from `repowise.plugins` entry points and
+`REPOWISE_PLUGINS`), whether each loaded or why it failed, the seams each
+registered, and the implementation chosen for each seam. `--format json` gives
+the same as JSON. Commands a plugin adds load only when you run a name the CLI
+does not know or list the commands. See [pluggable storage and capability seams](../architecture/pluggable-storage.md).
+
+---
+
+### `repowise attribution`
+
+Inspect and clear AI attribution for a repository.
+
+```bash
+repowise attribution status [PATH] [--format json]   # what is on, capture per agent, coverage, last backfill
+repowise attribution backfill [PATH] --agent claude-code,codex [--format json]  # bind past commits from local transcripts
+repowise attribution purge [PATH] [--yes]            # delete derived attribution, captured edits and our notes
+```
+
+`backfill` reads the Claude Code and Codex transcripts on this machine, keeps only line hashes of edits to this repository (worktrees included), and binds them to commits made within 14 days after each edit. It runs only when you ask, for agents that `capture` and `agents` allow in both configs, and prints the commits scanned, bound, and their coverage before and after; when it binds new commits in an indexed repo, the next `repowise update` re-reads git history once to label these commits. The first run reads every transcript these agents keep (about 4 minutes for 7 GB on a laptop); a later run reads only what they wrote since.
+
+`purge` deletes the index labels, the `.repowise/attribution/` sidecar and the git-ai notes Repowise wrote locally. Git history, trailers and notes written by anything else stay as they are.
+Settings live in the `attribution:` block of [CONFIG.md](CONFIG.md#the-attribution-block).
 
 ---
 

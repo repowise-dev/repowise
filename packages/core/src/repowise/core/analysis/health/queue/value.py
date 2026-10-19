@@ -3,14 +3,15 @@
 The value band, 0 to :data:`VALUE_MAX`, is code shape plus reach: a file in the
 top fifth by importers adds one step, which never lifts a unit into a higher
 tier (:func:`tier` reads the value without it). Inside a band, :func:`worth`
-orders by complexity removed times reach; history (a file that changes often)
+orders by complexity removed times reach times history (how often the function
+changed, or, with no function history, whether its file changes often); history
 only re-orders units there.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from math import ceil, log2
+from math import ceil, log1p, log2
 from typing import Any
 
 from ...execution_roles import COLD_ROLES, LEADING_ROLES
@@ -33,7 +34,9 @@ GAIN_CCN = SIZE_CCN[0]
 #: A performance cause counts as a function at the worth bar (CCN 40), times
 #: the reach of the call sites one fix settles.
 PERF_CCN = SIZE_CCN[1]
-#: On a file in the top fifth by churn. History re-orders inside a band only.
+#: On a file in the top fifth by churn, where the repository keeps no
+#: function history, and for a performance cause. History re-orders inside a
+#: band only.
 CHURN_WEIGHT = 1.25
 #: One change in 90 days is not changing often. Where the top fifth starts
 #: below this (a shallow clone, a young repository), history tells nothing.
@@ -85,12 +88,27 @@ def function_reach(dependents: int | None, function_nloc: int, file_nloc: int | 
     return dependents if share >= HUB_SHARE else ceil(dependents * share)
 
 
-def worth(removed_ccn: float, dependents: int | None, churning: bool) -> float:
-    """The order inside a value band: complexity removed times :func:`reach`,
-    :data:`CHURN_WEIGHT` more on a file that changes often. Unbounded on
-    purpose: the band saturates, so a CCN 963 loop and a CCN 150 wizard share
-    it, and only this tells them apart."""
-    return removed_ccn * reach(dependents) * (CHURN_WEIGHT if churning else 1.0)
+def churn_weight(changes: int | None) -> float:
+    """A function's history: 1 plus the log of the commits that changed it
+    (distinct commits owning its lines in blame), so none weighs 1."""
+    return 1 + log1p(max(changes or 0, 0))
+
+
+def history_weight(changes: int | None, churning: bool) -> float:
+    """:func:`churn_weight` of a function's changes. ``None``, a repository
+    that keeps no function history, weighs :data:`CHURN_WEIGHT` on a file
+    that changes often instead."""
+    if changes is None:
+        return CHURN_WEIGHT if churning else 1.0
+    return churn_weight(changes)
+
+
+def worth(removed_ccn: float, dependents: int | None, history: float) -> float:
+    """The order inside a value band: complexity removed times :func:`reach`
+    times ``history`` (:func:`history_weight`). Unbounded on purpose: the band
+    saturates, so a CCN 963 loop and a CCN 150 wizard share it, and only this
+    tells them apart."""
+    return removed_ccn * reach(dependents) * history
 
 
 #: The band a production database or network call in a loop that grows with
@@ -126,7 +144,7 @@ def perf_value(row: Any, facets: Mapping[str, Any]) -> int:
 def perf_worth(call_sites: int, churning: bool) -> float:
     """A performance cause's :func:`worth`: :data:`PERF_CCN`, reaching as far
     as the call sites one fix settles."""
-    return worth(PERF_CCN, call_sites - 1, churning)
+    return worth(PERF_CCN, call_sites - 1, history_weight(None, churning))
 
 
 def perf_confidence(facets: Mapping[str, Any]) -> str:
@@ -167,8 +185,10 @@ __all__ = [
     "PERF_CCN",
     "SIZE_SEVERE",
     "VALUE_MAX",
+    "churn_weight",
     "function_reach",
     "gain_value",
+    "history_weight",
     "perf_confidence",
     "perf_ready",
     "perf_value",

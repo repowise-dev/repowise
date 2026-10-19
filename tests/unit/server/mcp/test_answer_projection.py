@@ -66,7 +66,7 @@ async def test_fresh_and_cached_answers_share_one_external_contract(setup_mcp, m
     provider = _Provider("Authentication is implemented in src/auth/service.py.")
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _path: provider)
 
-    def freshness(_repository, targets=None):
+    def freshness(_repository, targets=None, root=None):
         result = {"index_behind": True}
         if "src/auth/middleware.py" in (targets or []):
             result["stale_warning"] = "dropped evidence changed"
@@ -270,6 +270,43 @@ def test_expanded_degraded_answer_names_only_retained_blocks():
     assert "candidates" not in expanded["answer"]
 
 
+@pytest.mark.parametrize("confidence", ["high", "medium", "low"])
+def test_retrieval_quality_is_served_only_under_diagnostics(confidence):
+    """One trust signal by default; the retrieval rating is an opt-in diagnostic."""
+    default = project_answer_payload(_raw(confidence), question="how does auth work")
+    diagnostics = project_answer_payload(
+        _raw(confidence), question="how does auth work", include=["diagnostics"]
+    )
+
+    assert "retrieval_quality" not in default
+    assert diagnostics["retrieval_quality"] == _raw(confidence)["retrieval_quality"]
+    assert "ignored_arguments" not in diagnostics.get("_meta", {})
+
+
+def test_a_rationale_matching_one_question_word_does_not_lead():
+    raw = {
+        "answer": "generic fallback",
+        "citations": ["cobra.go"],
+        "confidence": "medium",
+        "degraded": "no-llm-provider",
+        "code_rationale": [
+            {
+                "path": "cobra.go",
+                "lines": [4, 5],
+                "comment": "FIXME Gt is unused by cobra and should be removed.",
+                "matched_terms": ["cobra"],
+            }
+        ],
+        "best_guesses": [{"file": "cobra.go", "why_relevant": "ranked first"}],
+        "_meta": {"contract_version": 1},
+    }
+
+    result = project_answer_payload(raw, question="how does cobra choose a subcommand")
+
+    assert "FIXME" not in result["answer"]
+    assert "points first to cobra.go" in result["answer"]
+
+
 def test_rationale_only_degraded_answer_leads_with_the_local_conclusion():
     raw = {
         "answer": "generic fallback",
@@ -281,6 +318,7 @@ def test_rationale_only_degraded_answer_leads_with_the_local_conclusion():
                 "path": "src/cache.py",
                 "lines": [4, 5],
                 "comment": "The TTL matches the upstream feed's five-minute refresh.",
+                "matched_terms": ["ttl", "five", "minutes"],
             }
         ],
         "_meta": {"contract_version": 1},
@@ -318,7 +356,8 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     )
 
     result = await tool_middleware(get_answer)(
-        f"how does auth work in {expected_degraded} {legs['vector']} mode"
+        "how does auth middleware work",
+        include=["diagnostics"],
     )
 
     assert result["degraded"] == expected_degraded

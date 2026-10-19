@@ -48,12 +48,19 @@ from repowise.server.job_incremental import (
     _incremental_page_regen,
     _plan_incremental_page_regen,  # noqa: F401
 )
-from repowise.server.job_records import _complete_job_row, _finalize_job_status
+from repowise.server.job_records import (
+    _complete_job_row,
+    _failure_fields,
+    _finalize_job_status,
+    _provider_issue,
+)
 from repowise.server.job_state import (
     _load_state,  # noqa: F401
     _persist_initial_index_state,
     _stamp_last_sync_commit,
 )
+from repowise.server.services.areas import warm_area_model
+from repowise.server.services.coupling import warm_coupling_model
 
 logger = structlog.get_logger(__name__)
 
@@ -430,12 +437,7 @@ async def execute_job(
     except Exception as exc:
         logger.exception("job_failed", job_id=job_id, error=str(exc))
         await _finalize_job_status(
-            app_state,
-            session_factory,
-            progress,
-            job_id,
-            status="failed",
-            error_message=str(exc)[:500],
+            app_state, session_factory, progress, job_id, status="failed", **_failure_fields(exc)
         )
     finally:
         get_cancel_tokens(app_state).pop(job_id, None)
@@ -571,6 +573,10 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
     pages_generated = await _record_index_completion(run, result, all_pages, elapsed)
     await _write_index_state(run, docs, total_pages=len(all_pages))
     await _reload_cross_repo_enricher(app_state, spec.job_id)
+    # The area rollup and the coupling fold are read on the first dashboard
+    # load after an index; fold them here, in the job's own task, instead.
+    await warm_area_model(run.session_factory, spec.repo_id)
+    await warm_coupling_model(run.session_factory, spec.repo_id)
 
     logger.info(
         "job_completed",
@@ -676,6 +682,27 @@ async def _refresh_fts(fts: Any, swept_page_ids: Any, pages: list) -> None:
     await fts.index_pages(pages)
 
 
+def _provider_failed_to_load(run: _JobRun) -> bool:
+    """Docs were skipped although a provider is configured for the repo.
+
+    A repo with no provider at all is keyless on purpose, and a keyless first
+    index writes templates by design; neither skip is a problem to report.
+    """
+    spec = run.spec
+    if run.docs_skip_reason is None or spec.is_initial_index:
+        return False
+    try:
+        from repowise.server.provider_config import get_active_provider
+
+        provider_id, _ = get_active_provider(repo_id=spec.repo_id, repo_path=spec.repo_path)
+    except Exception:
+        # Best-effort reporting: an unreadable provider config must not fail
+        # a job that already finished its work.
+        logger.debug("provider_config_unreadable", job_id=spec.job_id, exc_info=True)
+        return False
+    return provider_id is not None
+
+
 async def _record_index_completion(
     run: _JobRun, result: Any, all_pages: list, elapsed: float
 ) -> int:
@@ -698,6 +725,9 @@ async def _record_index_completion(
                 "file_count": result.file_count,
                 "symbol_count": result.symbol_count,
                 "pages_generated": pages_generated,
+                "provider_issue": _provider_issue(
+                    all_pages, docs_skipped=_provider_failed_to_load(run)
+                ),
             },
             completed_pages=(
                 pages_generated - stub_fallbacks if pages_generated else result.file_count

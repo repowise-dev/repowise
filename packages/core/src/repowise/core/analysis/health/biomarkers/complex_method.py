@@ -28,9 +28,15 @@ class ComplexMethodDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            severity = self.severity_for(judged_ccn(fn), fn.nloc)
+            judged = judged_ccn(fn)
+            severity = self.severity_for(judged, fn.nloc)
             if severity is None:
                 continue
+            details = {"ccn": fn.ccn, "cognitive": fn.cognitive, "nloc": fn.nloc}
+            reason = f"{fn.name} has cyclomatic complexity {judged}"
+            if judged != fn.ccn:
+                details["judged_ccn"] = judged
+                reason += f" ({fn.ccn} counting every arm of its dispatch)"
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -38,13 +44,8 @@ class ComplexMethodDetector:
                     function_name=fn.name,
                     line_start=fn.start_line,
                     line_end=fn.end_line,
-                    details={
-                        "ccn": fn.ccn,
-                        "cognitive": fn.cognitive,
-                        "nloc": fn.nloc,
-                        **shape_details(fn),
-                    },
-                    reason=f"{fn.name} has cyclomatic complexity {fn.ccn}",
+                    details={**details, **shape_details(fn)},
+                    reason=reason,
                 )
             )
         return out

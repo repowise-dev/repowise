@@ -7,7 +7,7 @@ names to the walker's abstract categories:
 - ``BRANCH``    — adds 1 to CCN, 1 to nesting, 1 + nesting to cognitive.
 - ``LOOP``      — same as BRANCH.
 - ``TRY``       — adds 1 to CCN per ``catch``/``except`` clause; the
-                  ``TRY`` block itself only opens a nesting level.
+                  ``TRY`` block itself adds no CCN and no nesting.
 - ``CATCH``     — adds 1 to CCN, 1 to nesting; the catch clause.
 - ``SWITCH``    — case dispatch root; counts each case as a branch.
 - ``CASE``      — adds 1 to CCN, 1 to nesting per case.
@@ -270,6 +270,15 @@ class LanguageNodeMap:
     await_scope_kinds: frozenset[str] = frozenset()
     exit_macro_kinds: frozenset[str] = frozenset()
     exit_macro_names: frozenset[str] = frozenset()
+    #   * ``scoped_resource_decl_kinds`` / ``scoped_resource_decl_tokens`` --
+    #     a declaration whose resource the enclosing block disposes at its end
+    #     (C# ``using var``: a ``local_declaration_statement`` carrying a
+    #     ``using`` token). A helper holding one disposes it when the helper
+    #     returns, so the slicer refuses a span that holds one unless the span
+    #     runs to the end of the block. Block-scoped forms (``using (...) { }``,
+    #     ``with``, try-with-resources) need no entry: a span holds them whole.
+    scoped_resource_decl_kinds: frozenset[str] = frozenset()
+    scoped_resource_decl_tokens: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
     #     node the CFG builder should classify, as their last named child.
     #     Expression-oriented grammars need this: tree-sitter-rust parses every
@@ -305,6 +314,10 @@ class LanguageNodeMap:
     #     decorator words saying the parameter list belongs to another
     #     declaration: an override, a native or generated binding, a
     #     data-driven test whose arguments the runner supplies.
+    #   * ``bound_param_markers`` -- annotation words on one parameter saying
+    #     a framework fills it from the request route or the data format
+    #     (``@PathVariable``), so the route, not a caller, chose it. Object
+    #     binders (``@RequestBody``) stay out: that parameter is the value object.
     #   * ``explicit_impl_kinds`` / ``trait_impl_kinds`` -- an explicit
     #     interface implementation on the member, an enclosing trait impl.
     #   * ``public_api_modifiers`` / ``public_api_type_kinds`` -- a member
@@ -317,6 +330,7 @@ class LanguageNodeMap:
     ctor_kinds: frozenset[str] = frozenset()
     ctor_names: frozenset[str] = frozenset()
     fixed_signature_markers: frozenset[str] = frozenset()
+    bound_param_markers: frozenset[str] = frozenset()
     explicit_impl_kinds: frozenset[str] = frozenset()
     trait_impl_kinds: frozenset[str] = frozenset()
     public_api_modifiers: frozenset[str] = frozenset()
@@ -507,9 +521,19 @@ _GO = LanguageNodeMap(
     continue_kinds=frozenset({"continue_statement"}),
 )
 
+# Spring MVC, JAX-RS, MaxMind and Jackson creator parameter bindings.
+_JVM_BOUND_PARAM_MARKERS = frozenset(
+    {
+        "PathVariable", "RequestParam", "RequestHeader", "CookieValue", "MatrixVariable", "RequestPart",
+        "PathParam", "QueryParam", "HeaderParam", "CookieParam", "FormParam", "MatrixParam",
+        "MaxMindDbParameter", "JsonProperty",
+    }
+)
+
 _JAVA = LanguageNodeMap(
     ctor_kinds=frozenset({"constructor_declaration"}),
     fixed_signature_markers=frozenset({"Override"}),
+    bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset({"boolean", "byte", "short", "int", "long", "float", "double", "char", "String", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character"}),
     function_kinds=frozenset({"method_declaration", "constructor_declaration"}),
     lambda_kinds=frozenset({"lambda_expression"}),
@@ -660,6 +684,7 @@ _RUST = LanguageNodeMap(
 _KOTLIN = LanguageNodeMap(
     ctor_kinds=frozenset({"secondary_constructor"}),
     fixed_signature_markers=frozenset({"override"}),
+    bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset(
         {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String", "UInt", "ULong"}
     ),
@@ -696,6 +721,59 @@ _KOTLIN = LanguageNodeMap(
     # a node type, so ``async_function_kinds`` stays empty and
     # ``KotlinPerfDialect.is_async_fn`` sniffs the modifier instead (the same
     # posture Rust takes for ``async fn``).
+    call_kinds=frozenset({"call_expression"}),
+)
+
+# tree-sitter-swift names a struct, an enum, an extension and an actor
+# ``class_declaration`` like a class, so one class kind covers them all; a
+# ``protocol_declaration`` holds requirements with no bodies and is left out.
+#
+# A computed property is a function unit: ``computed_property`` holds either
+# the bare getter's statements or its ``get`` / ``set`` accessors, and is also
+# the body of a ``subscript``, which is why ``subscript_declaration`` is not a
+# kind itself (the walk would stop at the nested one and count nothing).
+# ``willSet`` / ``didSet`` are one unit the same way.
+_SWIFT = LanguageNodeMap(
+    function_kinds=frozenset(
+        {
+            "function_declaration",
+            "init_declaration",
+            "deinit_declaration",
+            "computed_property",
+            "willset_didset_block",
+        }
+    ),
+    lambda_kinds=frozenset({"lambda_literal"}),
+    # ``guard`` is a decision like ``if``: it has a condition and a path that
+    # leaves. ``if let`` / ``guard let`` are the same nodes with a binding.
+    # ``for x in xs where c`` and ``catch E where c`` filter with a
+    # ``where_clause``: one more decision, no deeper nesting (a generic
+    # constraint is a ``type_constraints`` node and is not one). A ``case ...
+    # where c`` guard has no node of its own in this grammar and is not counted.
+    branch_kinds=frozenset(
+        {"if_statement", "guard_statement", "ternary_expression", "where_clause"}
+    ),
+    loop_kinds=frozenset({"for_statement", "while_statement", "repeat_while_statement"}),
+    # ``do`` opens the guarded region and each ``catch`` is a path out of it.
+    # ``try`` / ``try?`` / ``try!`` mark a call that can throw and ``defer``
+    # schedules cleanup: neither is a decision.
+    try_kinds=frozenset({"do_statement"}),
+    catch_kinds=frozenset({"catch_block"}),
+    switch_kinds=frozenset({"switch_statement"}),
+    case_kinds=frozenset({"switch_entry"}),
+    boolean_operator_kinds=frozenset({"conjunction_expression", "disjunction_expression"}),
+    class_kinds=frozenset({"class_declaration"}),
+    self_identifiers=frozenset({"self"}),
+    member_access_kinds=frozenset({"navigation_expression"}),
+    field_decl_kinds=frozenset({"property_declaration"}),
+    identifier_kinds=frozenset({"simple_identifier"}),
+    ctor_kinds=frozenset({"init_declaration"}),
+    fixed_signature_markers=frozenset({"override"}),
+    # No ``scalar_type_names``: a Swift ``parameter`` is a child of the function
+    # with no list node around it, which ``typed_param_counts`` does not read
+    # yet, so ``primitive_obsession`` has nothing to count here. No assertion
+    # kinds either: XCTest has no vocabulary row, so the test-quality markers
+    # do not read Swift.
     call_kinds=frozenset({"call_expression"}),
 )
 
@@ -921,6 +999,8 @@ _CSHARP = LanguageNodeMap(
     raise_kinds=frozenset({"throw_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    scoped_resource_decl_kinds=frozenset({"local_declaration_statement"}),
+    scoped_resource_decl_tokens=frozenset({"using"}),
 )
 
 
@@ -1235,7 +1315,7 @@ _OBJC = LanguageNodeMap(
     # ``for_in_statement`` node in this grammar.
     loop_kinds=frozenset({"for_statement", "while_statement", "do_statement"}),
     try_kinds=frozenset({"try_statement"}),
-    # TRY only opens a nesting level; CATCH is what adds to CCN.
+    # CATCH, not TRY, adds to CCN and nesting.
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement"}),
     case_kinds=frozenset({"case_statement"}),
@@ -1297,6 +1377,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     # ingestion/sfc_source.py), so the TS node map applies verbatim.
     "svelte": _TS,
     "vue": _TS,
+    "astro": _TS,
     # Razor reaches the walker as a C# buffer (its ``@code`` / ``@{ }``
     # regions projected by the same sfc_source seam), so the C# node map
     # applies verbatim.
@@ -1319,6 +1400,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "fsharp": _FSHARP,
     "objectivec": _OBJC,
     "php": _PHP,
+    "swift": _SWIFT,
 }
 
 

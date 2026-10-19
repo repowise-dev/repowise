@@ -127,9 +127,24 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
     assert alignment["candidate_count"] >= 1
 
 
+def _write(root, path: str) -> None:
+    """Put *path* in the checkout, so path mode treats it as a real file."""
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    (root / path).write_text("x = 1\n", encoding="utf-8")
+
+
 @pytest.mark.asyncio
-async def test_get_why_file_ungoverned(setup_mcp):
+async def test_get_why_file_ungoverned(session, setup_mcp, tmp_path):
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
     from repowise.server.mcp_server import get_why
+
+    # An accepted decision exists, just not one naming this file.
+    await accept_decision(
+        session, await session.get(DecisionRecord, "dec2"), accepter="test", evidence=["pr#1"]
+    )
+    await session.flush()
+    _write(tmp_path, "src/other/utils.py")
 
     # Use a path that has no decisions — triggers git archaeology fallback
     result = await get_why("src/other/utils.py")
@@ -148,8 +163,55 @@ async def test_get_why_file_ungoverned(setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_get_why_fallback_with_cross_references(setup_mcp):
+async def test_get_why_says_when_the_index_has_no_accepted_decisions(setup_mcp, tmp_path):
+    """With nothing accepted anywhere, "ungoverned" would blame the file."""
     from repowise.server.mcp_server import get_why
+
+    _write(tmp_path, "src/other/utils.py")
+    result = await get_why("src/other/utils.py")
+
+    explanation = result["alignment"]["explanation"]
+    assert "holds no accepted decisions" in explanation
+    assert "ungoverned" not in explanation
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_not_found_skips_archaeology(setup_mcp):
+    """A path in neither the checkout nor git history gets a short answer."""
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why("src/nowhere/typo.py")
+
+    assert result["mode"] == "path"
+    assert "Path not found" in result["error"]
+    assert "git_archaeology" not in result
+    assert "alignment" not in result
+
+
+def test_a_path_outside_the_checkout_is_not_on_disk(tmp_path):
+    """Absolute paths, ``..`` escapes and symlinks out are not in the checkout."""
+    from repowise.server.mcp_server.tool_why.path_mode import _maybe_on_disk
+
+    root = tmp_path / "repo"
+    _write(root, "src/a.py")
+    _write(tmp_path, "outside.py")
+
+    assert _maybe_on_disk(root, "src/a.py")
+    assert not _maybe_on_disk(root, str(tmp_path / "outside.py"))
+    assert not _maybe_on_disk(root, "../outside.py")
+    try:
+        (root / "link.py").symlink_to(tmp_path / "outside.py")
+    except OSError:
+        pytest.skip("symlinks need privileges on this platform")
+    assert not _maybe_on_disk(root, "link.py")
+
+
+@pytest.mark.asyncio
+async def test_get_why_fallback_with_cross_references(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_why
+
+    # A new file with no history yet: on disk, absent from git metadata.
+    _write(tmp_path, "src/auth/new_handler.py")
 
     # src/auth/service.py has git metadata with commits mentioning "auth"
     # Query a nonexistent auth file — cross-references should find commits
@@ -746,3 +808,56 @@ async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session
 
     governing = result["target_context"][path]["governing_decisions"]
     assert [d["id"] for d in governing] == ["goneFalse"]
+
+
+_OFF_TOPIC = "why does the connection pool retry on timeout"
+
+
+async def _accept_dec2(session) -> None:
+    from repowise.core.persistence.crud.authority import accept_decision
+    from repowise.core.persistence.models import DecisionRecord
+
+    await accept_decision(
+        session, await session.get(DecisionRecord, "dec2"), accepter="test", evidence=["pr#1"]
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_get_why_target_under_a_records_module_is_not_governed(session, setup_mcp):
+    """dec2 names src/db/models.py; its module is only that file's folder.
+
+    A sibling shares the folder, not the decision, and path mode agrees.
+    """
+    from repowise.server.mcp_server import get_why
+
+    await _accept_dec2(session)
+    sibling = "src/db/session.py"
+
+    result = await get_why(_OFF_TOPIC, targets=[sibling])
+
+    assert result["target_context"][sibling]["governing_decisions"] == []
+    assert result.get("answer_basis") != "decision"
+    path_result = await get_why(sibling)
+    assert not path_result.get("decisions")
+
+
+@pytest.mark.asyncio
+async def test_get_why_governed_target_reason_agrees_with_the_basis(session, setup_mcp):
+    """An off-topic question on a governed file still serves its rule.
+
+    The reason must then say so, not that no record covers the call.
+    """
+    from repowise.server.mcp_server import get_why
+
+    await _accept_dec2(session)
+    path = "src/db/models.py"
+
+    result = await get_why(_OFF_TOPIC, targets=[path])
+
+    governing = result["target_context"][path]["governing_decisions"]
+    assert [d["id"] for d in governing] == ["dec2"]
+    assert result["answer_basis"] == "decision"
+    assert "No decision record covers" not in result["reason"]
+    assert "binds it whatever the question" in result["reason"]
+    assert "try_instead" not in result

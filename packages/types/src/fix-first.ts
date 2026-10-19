@@ -145,8 +145,11 @@ export interface FixFirstTotals {
   eligible: number;
   shown: number;
   excluded: Record<FixExclusion, number>;
-  /** Distinct functions with work kept out as `gated_off`: dormant, not gone. */
-  dormant: number;
+  /**
+   * Distinct functions with work kept out as `gated_off`: dormant, not gone.
+   * Absent from a server that predates it.
+   */
+  dormant?: number;
 }
 
 /** The count vocabulary (`QueueCounts`) read on the whole Fix first queue. */

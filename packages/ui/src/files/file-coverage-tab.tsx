@@ -147,7 +147,7 @@ export function FileCoverageTab({
           >
             {/* Highlighted by the host through the shared shiki path; the
                 data-covered line attributes drive the gutter tint below. */}
-            <div dangerouslySetInnerHTML={{ __html: coverageCodeHtml }} />
+            <div dangerouslySetInnerHTML={{ __html: coverageCodeHtml /* shiki output; repowise-security-ignore: unsafe_inner_html */ }} />
             <style>{`
             .coverage-code pre { margin: 0; padding: 0.75rem 0; background: transparent !important; }
             .coverage-code code { display: block; }

@@ -39,6 +39,9 @@ export interface FileHealthFinding {
   /** `"unverified"` for a provisional finding type; null for a validated one. */
   verification?: string | null;
   lower_priority?: string | null;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 export interface FileHealthMetric {
@@ -107,10 +110,15 @@ export interface FileDetailHealth {
   signals: FileSignals | null;
 }
 
+/** Agent share (0-1) of the file's commits with a known source, null below
+ * the coverage floor with `agent_share_suppressed` set; coverage is known /
+ * all commits (0-1). Unknown commits are never counted as human. */
 export interface FileAgentProvenance {
   agent_commit_count: number;
   agent_authored_pct: number | null;
   tier_counts: Record<string, number>;
+  attribution_coverage: number | null;
+  agent_share_suppressed: string | null;
 }
 
 /** Hotspot row + history extras the detail endpoint joins in. */
@@ -118,7 +126,8 @@ export interface FileDetailGit extends Hotspot {
   significant_commits: SignificantCommit[];
   top_authors: FileAuthor[];
   co_change_partners: CoChangePartner[];
-  agent: FileAgentProvenance;
+  /** Null when attribution is off for the repository. */
+  agent: FileAgentProvenance | null;
   first_commit_at: string | null;
   /** The primary (blame) owner's share of current lines, 0-1. Null without
    *  blame; `primary_owner_commit_pct` is the same person's share of commits. */

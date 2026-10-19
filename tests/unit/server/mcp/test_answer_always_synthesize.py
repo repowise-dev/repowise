@@ -33,7 +33,7 @@ def _patch_pipeline(monkeypatch, answer_mod, scores=(2.0, 1.9), *, with_symbols=
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Module summary for the page. " * 4
+            h["summary"] = "The alpha module go function. " * 4
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:

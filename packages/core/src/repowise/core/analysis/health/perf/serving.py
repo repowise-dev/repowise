@@ -16,6 +16,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from repowise.core.analysis.areas import choose_depth, normalize_area
+from repowise.core.analysis.areas.paths import area_at
 from repowise.core.analysis.execution_roles import EXECUTION_ROLES
 from repowise.core.analysis.health import queue_rules
 from repowise.core.analysis.health.finding_identity import finding_public_id
@@ -68,6 +70,9 @@ ACTIONABILITIES = ("plan_ready", "advisory", "investigate", "expected")
 BOUNDARIES = ("db", "network", "filesystem", "subprocess", "lock", NULL_VALUE)
 ROLES = (*EXECUTION_ROLES, "all")
 """One execution role, or ``all``. Absent means the roles the default queue holds."""
+
+ANY = "all"
+"""Asks for every state or every proof, where absence means the default queue's."""
 
 DEFAULT_ACTIONABILITIES = DEFAULT_QUEUE_STATES
 """``expected`` rows offer nothing to change and ``investigate`` rows no strategy to apply,
@@ -122,6 +127,8 @@ FILTERS: tuple[FilterRule, ...] = (
     FilterRule("proofs", "cost_proof", "in", "set"),
     FilterRule("roles", "execution_role", "in", "set"),
     FilterRule("file_paths", "file_path", "in", "set"),
+    # One area at any depth, as ``<area>/``; the root area is no filter.
+    FilterRule("area_prefix", "file_path", "prefix", "set"),
     # The default queue is the stored judgement (``queue.counts.perf_judgement``).
     FilterRule("queue_eligible", "queue_eligible", "is", "set"),
 )
@@ -138,6 +145,12 @@ FACETS: tuple[Facet, ...] = (
     ("role", "execution_role", "roles"),
 )
 FACET_FIELDS = tuple(column for _, column, _ in FACETS)
+
+#: The stored default-queue verdict, grouped beside the facet fields so a
+#: scope's facets can be counted inside the scope (:func:`fold_scoped_facets`).
+#: Never emitted as a facet of its own.
+_QUEUE_FACET: Facet = ("queue", "queue_eligible", "queue_eligible")
+SCOPED_GROUP_FIELDS = (*FACET_FIELDS, "queue_eligible")
 
 
 def sort_keys(sort: str | None) -> SortKeys:
@@ -163,10 +176,132 @@ def _facet_selection(query: PerformanceQuery) -> dict[str, Any]:
         "boundary": query.boundary,
         "confidence": query.confidence,
         "actionabilities": (
-            None if query.actionability is None else frozenset({query.actionability})
+            None if query.actionability in (None, ANY) else frozenset({query.actionability})
         ),
-        "proofs": None if query.proof is None else frozenset({query.proof}),
+        "proofs": None if query.proof in (None, ANY) else frozenset({query.proof}),
         "roles": None if query.role in (None, "all") else frozenset({query.role}),
+    }
+
+
+def _as_counts(folded: dict[str, dict[str, int]]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        name: [
+            {"value": value, "total": total}
+            for value, total in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+        for name, counts in folded.items()
+    }
+
+
+def fold_scoped_facets(
+    groups: Iterable[Sequence[Any]], query: PerformanceQuery, *, judged: bool = True
+) -> dict[str, list[dict[str, Any]]]:
+    """Facets counted inside the query's scope: every filter the store applies
+    (the default queue's states, proof, role and stored verdict included)
+    narrows every facet but its own, so a facet's values sum to the rows the
+    query returns once that facet's own filter is lifted.
+
+    *groups* are ``(*SCOPED_GROUP_FIELDS, count)``. Used by the dashboard;
+    the agent surface keeps :func:`fold_facets`.
+    """
+    # The aggregate is already narrowed to the query's files and area.
+    selection = {
+        key: value
+        for key, value in query.store_filters(judged=judged).items()
+        if key not in ("file_paths", "area_prefix")
+    }
+    folded = queue_rules.fold_facets(
+        groups,
+        (*FACETS, _QUEUE_FACET),
+        rules=FILTERS,
+        selection=selection,
+        null=NULL_VALUE,
+    )
+    folded.pop(_QUEUE_FACET[0], None)
+    return _as_counts(folded)
+
+
+#: The dashboard's three scopes, as the queries that list them: the default
+#: queue, every production cause, and everything.
+SCOPES: dict[str, dict[str, Any]] = {
+    "now": {},
+    "production": {"actionability": ANY, "proof": ANY, "role": "all"},
+    "all": {"context": "all", "actionability": ANY, "proof": ANY, "role": "all"},
+}
+
+
+def scope_counts(groups: Iterable[Sequence[Any]], *, judged: bool = True) -> dict[str, int]:
+    """How many causes each scope holds before the narrowing filters, from the
+    same ``(*SCOPED_GROUP_FIELDS, count)`` groups the scoped facets fold, so
+    within whatever file scope and language gate those groups carry."""
+    rows = [dict(zip((*SCOPED_GROUP_FIELDS, "count"), group, strict=True)) for group in groups]
+    counts: dict[str, int] = {}
+    for name, args in SCOPES.items():
+        query, _ = parse_query(**args, lift_defaults=True)
+        params = {
+            k: v
+            for k, v in query.store_filters(judged=judged).items()
+            if k not in ("file_paths", "area_prefix")
+        }
+        counts[name] = sum(int(row["count"]) for row in rows if keep(row, params))
+    return counts
+
+
+AREA_LIMIT = 24
+"""Areas a response names; the rest are counted in ``more``."""
+
+
+def area_facet(
+    groups: Iterable[Sequence[Any]],
+    *,
+    base: str | None = None,
+    depth: int | None = None,
+    limit: int = AREA_LIMIT,
+) -> dict[str, Any]:
+    """The query's causes by area, with each area's actionability split.
+
+    *groups* are ``(file_path, actionability_state, count)`` over the rows the
+    query lists. Areas are directories at *depth* below *base* (chosen by
+    :func:`choose_depth` when not given), ranked by plan-ready causes, then
+    advisory, then size, so the area worth opening first leads.
+    """
+    by_file: dict[str, dict[str, int]] = {}
+    for file_path, state, count in groups:
+        states = by_file.setdefault(file_path, {})
+        states[state] = states.get(state, 0) + int(count)
+    weights = {path: sum(states.values()) for path, states in by_file.items()}
+    root = normalize_area(base)
+    chosen = depth if depth is not None and depth > 0 else choose_depth(weights, base=root)
+    areas: dict[str, dict[str, int]] = {}
+    for path, states in by_file.items():
+        split = areas.setdefault(area_at(path, chosen), {})
+        for state, count in states.items():
+            split[state] = split.get(state, 0) + count
+    # Files directly in the base sit in an area equal to it: its own files,
+    # which opening again would not narrow.
+    ranked = sorted(
+        (
+            {
+                "area": area,
+                "total": sum(split.values()),
+                "actionability": split,
+                **({"own": True} if area == root else {}),
+            }
+            for area, split in areas.items()
+        ),
+        key=lambda entry: (
+            -entry["actionability"].get("plan_ready", 0),
+            -entry["actionability"].get("advisory", 0),
+            -entry["total"],
+            entry["area"],
+        ),
+    )
+    shown = ranked[: max(limit, 0)]
+    return {
+        "depth": chosen,
+        "items": shown,
+        "more": sum(entry["total"] for entry in ranked[len(shown) :]),
+        "total": sum(weights.values()),
     }
 
 
@@ -178,13 +313,7 @@ def fold_facets(
     folded = queue_rules.fold_facets(
         groups, FACETS, rules=FILTERS, selection=_facet_selection(query), null=NULL_VALUE
     )
-    return {
-        name: [
-            {"value": value, "total": total}
-            for value, total in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-        ]
-        for name, counts in folded.items()
-    }
+    return _as_counts(folded)
 
 
 def facet_counts(rows: Iterable[Any], query: PerformanceQuery) -> dict[str, list[dict[str, Any]]]:
@@ -221,6 +350,15 @@ class PerformanceQuery:
     file_paths: tuple[str, ...] | None = None
     limit: int = 20
     offset: int = 0
+    #: Keep to the stored default-queue verdict whatever else is chosen, so a
+    #: state picked inside "worth doing now" stays inside it.
+    queue: bool = False
+    #: One area (a directory) at any depth; ``None`` is the whole repository.
+    area: str | None = None
+
+    @property
+    def area_prefix(self) -> str | None:
+        return f"{self.area}/" if self.area else None
 
     @property
     def status(self) -> str:
@@ -246,29 +384,32 @@ class PerformanceQuery:
 
     @property
     def queue_eligible(self) -> bool | None:
-        return True if self.default_queue else None
+        return True if self.default_queue or self.queue else None
 
     def store_filters(self, *, judged: bool = True) -> dict[str, Any]:
         """The store's filter arguments. On a store whose causes are not all
         judged (``judged=False``), the default queue reads its rule live:
         the default states and proof instead of the stored verdict."""
-        live = self.default_queue and not judged
+        live = (self.default_queue or self.queue) and not judged
         return {
             "contexts": self.contexts,
             "boundary": self.boundary,
             "confidence": self.confidence,
-            "actionabilities": DEFAULT_ACTIONABILITIES if live else self.actionabilities,
-            "proofs": DEFAULT_QUEUE_PROOFS if live else self.proofs,
-            "roles": QUEUE_ROLES if live else self.roles,
+            "actionabilities": (self.actionabilities or DEFAULT_ACTIONABILITIES)
+            if live
+            else self.actionabilities,
+            "proofs": (self.proofs or DEFAULT_QUEUE_PROOFS) if live else self.proofs,
+            "roles": (self.roles or QUEUE_ROLES) if live else self.roles,
             "queue_eligible": None if live else self.queue_eligible,
             "file_paths": self.file_paths,
+            "area_prefix": self.area_prefix,
         }
 
     @property
     def actionabilities(self) -> frozenset[str] | None:
         """One explicit state; else, under another context, the default
         queue states (plan_ready, advisory). ``None`` for the default queue."""
-        if self.default_queue:
+        if self.default_queue or self.actionability == ANY:
             return None
         if self.actionability is None:
             return DEFAULT_ACTIONABILITIES
@@ -280,7 +421,7 @@ class PerformanceQuery:
         the measured causes, so every surface lists what the default queue
         counts. ``None`` for the default queue. The ``proof`` facet says how
         many unproven ones sit one filter away."""
-        if self.default_queue:
+        if self.default_queue or self.proof == ANY:
             return None
         if self.proof is None:
             return DEFAULT_QUEUE_PROOFS
@@ -325,11 +466,17 @@ def parse_query(
     file_paths: tuple[str, ...] | None = None,
     limit: int = 20,
     offset: int = 0,
+    queue: bool = False,
+    lift_defaults: bool = False,
+    area: str | None = None,
 ) -> tuple[PerformanceQuery, dict[str, str]]:
     """Normalize caller input, reporting anything unrecognized by name.
 
     An unknown filter value must not read as an empty repository, so it is
     dropped from the query and named in the returned map instead.
+
+    ``lift_defaults`` accepts ``all`` for state and proof, the dashboard's
+    scopes; the agent surface leaves it off and keeps its vocabulary.
     """
     ignored: dict[str, str] = {}
 
@@ -348,14 +495,22 @@ def parse_query(
             context=resolved_context,
             boundary=pick("performance_boundary", boundary, BOUNDARIES),
             confidence=pick("performance_confidence", confidence, CONFIDENCES),
-            actionability=pick("performance_actionability", actionability, ACTIONABILITIES),
-            proof=pick("performance_proof", proof, QUEUE_PROOFS),
+            actionability=pick(
+                "performance_actionability",
+                actionability,
+                (*ACTIONABILITIES, ANY) if lift_defaults else ACTIONABILITIES,
+            ),
+            proof=pick(
+                "performance_proof", proof, (*QUEUE_PROOFS, ANY) if lift_defaults else QUEUE_PROOFS
+            ),
             role=pick("performance_role", role, ROLES),
             view=pick("performance_view", view, CANONICAL_VIEWS) or "detail",
             sort=pick("performance_sort", sort, CANONICAL_SORTS) or DEFAULT_SORT,
             file_paths=file_paths,
             limit=max(0, limit),
             offset=max(0, offset),
+            queue=queue,
+            area=normalize_area(area) or None,
         ),
         ignored,
     )
@@ -407,12 +562,18 @@ def intervention_file(opportunity: PerformanceOpportunity) -> str:
 # ---------------------------------------------------------------------------
 
 
-def serialize(row: Any, link: PlanLink, *, summary: bool = False) -> dict[str, Any]:
+def serialize(
+    row: Any, link: PlanLink, *, summary: bool = False, decisions: bool = False
+) -> dict[str, Any]:
     """Rebuild the canonical opportunity payload from row plus details.
 
     Columns carry what a query filters or orders on and ``details_json``
     carries the rest, so no fact is stored twice and nothing here computes
     a value the writer already decided.
+
+    ``decisions`` adds the fix, gain and effort to a ``summary`` row, for a
+    list a person acts on from (the dashboard queue). The agent surface keeps
+    its summary shape, so its responses do not grow.
     """
     details = detail_map(row)
     payload = {
@@ -446,26 +607,17 @@ def serialize(row: Any, link: PlanLink, *, summary: bool = False) -> dict[str, A
         "lower_priority": LOW_PRIORITY_LABEL.get(perf_low_priority(row) or ""),
     }
     if summary:
-        return payload
-    return {**payload, **_detail_fields(row, details)}
+        return {**payload, **_decision_fields(row, details)} if decisions else payload
+    return {**payload, **_decision_fields(row, details), **_detail_fields(row, details)}
 
 
-def _detail_fields(row: Any, details: dict[str, Any]) -> dict[str, Any]:
-    """What the ``detail`` view adds to the summary payload."""
+def _decision_fields(row: Any, details: dict[str, Any]) -> dict[str, Any]:
+    """What a row needs to be acted on from a list: the fix, its gain and its
+    effort. Always on the detail view; on a summary row only when asked."""
     fix_strategy = field(row, "fix_strategy")
+    plan = details.get("plan") or {}
     return {
-        "terminal_sinks": details.get("terminal_sinks", []),
-        "shared_path_suffix": details.get("shared_path_suffix", []),
-        "resource_fingerprints": details.get("resource_fingerprints", []),
-        "reliable_entry_reachability": details.get("reliable_entry_reachability"),
-        "provenance": details.get("provenance"),
-        "facets": details.get("facets", {}),
         "gain_text": gain_text(row, details.get("facets") or {}),
-        "actionability_reason": details.get("actionability_reason"),
-        "prerequisites": details.get("prerequisites", []),
-        "rank_factors": details.get("rank_factors", {}),
-        "siblings": details.get("siblings", []),
-        **plan_brief(details.get("plan")),
         "fix": None
         if fix_strategy is None
         else {
@@ -474,6 +626,32 @@ def _detail_fields(row: Any, details: dict[str, Any]) -> dict[str, Any]:
             "rationale": details.get("fix_rationale") or "",
             **({"api": details["fix_api"]} if details.get("fix_api") else {}),
         },
+        **(
+            {
+                "plan_economics": {
+                    key: plan.get(key) for key in ("effort_bucket", "benefit", "cost", "risk")
+                }
+            }
+            if plan
+            else {}
+        ),
+    }
+
+
+def _detail_fields(row: Any, details: dict[str, Any]) -> dict[str, Any]:
+    """What the ``detail`` view adds to the summary payload."""
+    return {
+        "terminal_sinks": details.get("terminal_sinks", []),
+        "shared_path_suffix": details.get("shared_path_suffix", []),
+        "resource_fingerprints": details.get("resource_fingerprints", []),
+        "reliable_entry_reachability": details.get("reliable_entry_reachability"),
+        "provenance": details.get("provenance"),
+        "facets": details.get("facets", {}),
+        "actionability_reason": details.get("actionability_reason"),
+        "prerequisites": details.get("prerequisites", []),
+        "rank_factors": details.get("rank_factors", {}),
+        "siblings": details.get("siblings", []),
+        **plan_brief(details.get("plan")),
     }
 
 
@@ -490,7 +668,8 @@ def gain_text(row: Any, facets: dict[str, Any]) -> str:
 
 
 def plan_brief(plan: dict[str, Any] | None) -> dict[str, Any]:
-    """The stored plan's validation, steps and economics, or nothing on an older store."""
+    """The stored plan's validation and steps, or nothing on an older store.
+    Its economics ride on every view (``_decision_fields``)."""
     if not plan:
         return {}
     validation = plan.get("validation") or {}
@@ -498,9 +677,6 @@ def plan_brief(plan: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "validation": {key: validation.get(key) for key in keys},
         "plan_steps": plan.get("steps", []),
-        "plan_economics": {
-            key: plan.get(key) for key in ("effort_bucket", "benefit", "cost", "risk")
-        },
     }
 
 
@@ -613,6 +789,7 @@ def evidence_payload(row: Any) -> dict[str, Any]:
 
 __all__ = [
     "ACTIONABILITIES",
+    "AREA_LIMIT",
     "BOUNDARIES",
     "CANONICAL_CONTEXTS",
     "CANONICAL_SORTS",
@@ -626,14 +803,17 @@ __all__ = [
     "FILTERS",
     "PLAN_REASONS",
     "ROLES",
+    "SCOPES",
     "SORTS",
     "SUMMARY_UNAVAILABLE",
     "PerformanceContext",
     "PerformanceQuery",
     "PlanLink",
+    "area_facet",
     "evidence_payload",
     "facet_counts",
     "fold_facets",
+    "fold_scoped_facets",
     "gain_text",
     "intervention_file",
     "keep",
@@ -642,6 +822,7 @@ __all__ = [
     "plan_link",
     "rescope_summary",
     "row_sort_key",
+    "scope_counts",
     "serialize",
     "sort_keys",
     "summary_payload",

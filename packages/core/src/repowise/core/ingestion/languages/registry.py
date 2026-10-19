@@ -209,6 +209,10 @@ class LanguageRegistry:
             if f not in s.build_config_manifests
         )
 
+    def package_manifest_globs(self) -> frozenset[str]:
+        """Glob patterns that mark their directory as a package root (``*.csproj``)."""
+        return frozenset(g for s in self._specs.values() for g in s.manifest_globs)
+
     def blocked_dirs(self) -> frozenset[str]:
         """Return the union of all per-language blocked directories."""
         return frozenset(d for s in self._specs.values() for d in s.blocked_dirs)

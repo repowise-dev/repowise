@@ -79,6 +79,8 @@ def _plan_row(step: dict[str, Any]) -> dict[str, Any]:
     row["classification"] = (step.get("applicability") or {}).get("classification")
     if step.get("relocated_by"):
         row["relocated_by"] = step["relocated_by"]
+    if step.get("leaves_above_bar"):
+        row["leaves_above_bar"] = step["leaves_above_bar"]
     if step.get("relocates"):
         # The plans after a split, which it stands for in the list.
         row["relocates"] = step["relocates"]

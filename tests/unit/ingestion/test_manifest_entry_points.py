@@ -293,3 +293,30 @@ def test_exports_subpath_is_a_root_not_an_entry(tmp_path: Path) -> None:
     assert idx.graph.nodes["packages/lib/src/index.ts"]["is_entry_point"]
     util = idx.graph.nodes["packages/lib/src/util.ts"]
     assert util.get("is_reachability_root") and not util.get("is_entry_point")
+
+
+def test_grafana_plugin_module_is_reachable_root(tmp_path: Path) -> None:
+    """Grafana plugin entry module beside plugin.json is stamped as reachability root."""
+    repo = _write(
+        tmp_path,
+        {
+            "package.json": json.dumps({"name": "demo", "main": "./public/app/index.ts"}),
+            "public/app/index.ts": "export const boot = () => {};\n",
+            "plugins/test-ds/plugin.json": json.dumps(
+                {"type": "datasource", "name": "Test DS", "id": "test-ds"}
+            ),
+            "plugins/test-ds/module.ts": "import './datasource';\nexport const plugin = {};\n",
+            "plugins/test-ds/datasource.ts": "export class DS {}\n",
+            "plugins/sandbox-panel/plugin.json": json.dumps(
+                {"type": "panel", "name": "Sandbox Panel"}
+            ),
+            "plugins/sandbox-panel/src/module.tsx": "export const plugin = {};\n",
+        },
+    )
+    idx = _index(repo)
+    assert is_file_reachable("plugins/test-ds/module.ts", idx.graph)
+    assert is_file_reachable("plugins/test-ds/datasource.ts", idx.graph)
+    assert is_file_reachable("plugins/sandbox-panel/src/module.tsx", idx.graph)
+    assert idx.graph.nodes["plugins/test-ds/module.ts"].get("is_reachability_root")
+    assert idx.graph.nodes["plugins/sandbox-panel/src/module.tsx"].get("is_reachability_root")
+

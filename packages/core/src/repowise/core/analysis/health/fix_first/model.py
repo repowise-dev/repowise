@@ -15,7 +15,7 @@ from repowise.core.analysis.health.queue.order import DUE_TIERS, Tier
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when ranking, eligibility or the item shape changes meaning.
-FIX_FIRST_MODEL_VERSION = 1
+FIX_FIRST_MODEL_VERSION = 2
 
 FixTier = Tier
 FIX_TIERS: tuple[str, ...] = get_args(FixTier)

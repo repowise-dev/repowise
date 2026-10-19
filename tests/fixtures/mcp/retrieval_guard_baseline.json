@@ -3,34 +3,34 @@
     "answer": {
       "cov@1": 0.7708,
       "cov@5": 0.9479,
-      "cov_all": 0.9688,
+      "cov_all": 0.9583,
       "files": 5.0,
-      "precision": 0.2698,
-      "tokens": 1364.5
+      "precision": 0.2669,
+      "tokens": 705.0
     },
     "answer_synth": {
       "cov@1": 0.7917,
       "cov@5": 0.9479,
       "cov_all": 0.9479,
       "files": 4.0,
-      "precision": 0.2955,
+      "precision": 0.2966,
       "tokens": 351.0
     },
     "search": {
-      "cov@1": 0.8125,
-      "cov@5": 0.9201,
-      "cov_all": 0.9201,
-      "files": 5.0,
-      "precision": 0.4333,
-      "tokens": 603.0
+      "cov@1": 0.8333,
+      "cov@5": 0.9306,
+      "cov_all": 0.9306,
+      "files": 4.0,
+      "precision": 0.5399,
+      "tokens": 531.5
     },
     "search_limit10": {
       "cov@1": 0.8333,
-      "cov@5": 0.8889,
-      "cov_all": 0.9306,
-      "files": 7.5,
-      "precision": 0.3385,
-      "tokens": 1139.0
+      "cov@5": 0.9097,
+      "cov_all": 0.9514,
+      "files": 4.5,
+      "precision": 0.4751,
+      "tokens": 910.5
     }
   }
 }

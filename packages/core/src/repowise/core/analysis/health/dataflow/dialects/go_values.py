@@ -158,20 +158,8 @@ def _declared_type(ident: Node, depth: int) -> Node | str | None:
     stack = [fn]
     while stack:
         node = stack.pop()
-        t = node.type
-        if t in ("parameter_declaration", "var_spec"):
-            if any(c.type == "identifier" and c.text == name for c in node.named_children):
-                typ = node.child_by_field_name("type")
-                found.append(typ if typ is not None else _bound_type(node, name, depth))
-        elif t == "variadic_parameter_declaration":
-            # ``p ...T`` is a ``[]T`` inside the function; its ``type`` is ``T``.
-            if any(c.type == "identifier" and c.text == name for c in node.named_children):
-                found.append(_REF)
-        elif t == _SHORT_VAR and _binds(node, name):
-            found.append(_bound_type(node, name, depth))
-        elif t == _RANGE_CLAUSE and _binds(node, name):
-            found.append(None)
-        if node is fn or t not in _FUNCTION_KINDS:
+        found.extend(_declaration_type(node, name, depth))
+        if node is fn or node.type not in _FUNCTION_KINDS:
             stack.extend(node.named_children)
     if not found:
         return _NOT_LOCAL
@@ -179,6 +167,29 @@ def _declared_type(ident: Node, depth: int) -> Node | str | None:
         return None
     kinds = {typ if isinstance(typ, str) else (typ.type, typ.text) for typ in found}
     return found[0] if len(kinds) == 1 else None
+
+
+def _declaration_type(node: Node, name: bytes | None, depth: int) -> list[Node | str | None]:
+    """The type *node* declares *name* with, as a one-item list; empty when
+    *node* does not declare *name*."""
+    t = node.type
+    if t in ("parameter_declaration", "var_spec"):
+        if _has_name(node, name):
+            typ = node.child_by_field_name("type")
+            return [typ if typ is not None else _bound_type(node, name, depth)]
+    elif t == "variadic_parameter_declaration":
+        # ``p ...T`` is a ``[]T`` inside the function; its ``type`` is ``T``.
+        if _has_name(node, name):
+            return [_REF]
+    elif t == _SHORT_VAR and _binds(node, name):
+        return [_bound_type(node, name, depth)]
+    elif t == _RANGE_CLAUSE and _binds(node, name):
+        return [None]
+    return []
+
+
+def _has_name(decl: Node, name: bytes | None) -> bool:
+    return any(c.type == "identifier" and c.text == name for c in decl.named_children)
 
 
 def _binds(decl: Node, name: bytes | None) -> bool:
@@ -220,49 +231,60 @@ def _expr_type(expr: Node, depth: int) -> Node | str | None:
     if t == "composite_literal":
         return expr.child_by_field_name("type")
     if t == "unary_expression":
-        op = expr.child_by_field_name("operator")
-        if op is not None and op.text == b"&":
-            return _REF
-        # ``p := *q`` copies what ``q`` points at. ``*`` is the only other
-        # operator a pointer operand takes, so the operator needs no test.
-        operand = expr.child_by_field_name("operand")
-        pointer = _resolve(_expr_type(operand, depth + 1), expr) if operand is not None else None
-        if pointer is not None and pointer != _REF and pointer.type == "pointer_type":
-            return pointer.named_children[0] if pointer.named_children else None
-        return None
+        return _unary_type(expr, depth)
     if t == "type_assertion_expression":
         return expr.child_by_field_name("type")
     if t == "identifier":
         typ = _declared_type(expr, depth + 1)
         return None if typ is _NOT_LOCAL else typ
     if t in (_SELECTOR, _INDEX):
-        operand = expr.child_by_field_name("operand")
-        inner = _expr_type(operand, depth + 1) if operand is not None else None
-        if inner is None:
-            return None
-        if inner == _REF:
-            return None  # through a pointer: the pointee's type is not at hand
-        resolved = _resolve(inner, expr)
-        if resolved is None or resolved == _REF:
-            return None
-        if t == _INDEX:
-            return resolved.child_by_field_name("element")
-        if resolved.type == "pointer_type":  # ``p.f`` reads through ``*T`` too
-            resolved = _resolve(
-                resolved.named_children[0] if resolved.named_children else None, expr
-            )
-        if resolved is None or resolved == _REF or resolved.type != "struct_type":
-            return None
-        field = expr.child_by_field_name("field")
-        return _field_type(resolved, field.text if field is not None else None)
+        return _member_type(expr, depth)
     if t == "call_expression":
-        fn = expr.child_by_field_name("function")
-        if fn is None or fn.type != "identifier":
-            return None
-        if fn.text in _ALLOCATORS:
-            return _REF
-        return _result_type(expr, fn.text)
+        return _call_type(expr)
     return None
+
+
+def _unary_type(expr: Node, depth: int) -> Node | str | None:
+    op = expr.child_by_field_name("operator")
+    if op is not None and op.text == b"&":
+        return _REF
+    # ``p := *q`` copies what ``q`` points at. ``*`` is the only other
+    # operator a pointer operand takes, so the operator needs no test.
+    operand = expr.child_by_field_name("operand")
+    pointer = _resolve(_expr_type(operand, depth + 1), expr) if operand is not None else None
+    if pointer is not None and pointer != _REF and pointer.type == "pointer_type":
+        return pointer.named_children[0] if pointer.named_children else None
+    return None
+
+
+def _member_type(expr: Node, depth: int) -> Node | str | None:
+    """The type of a field (``x.f``) or an element (``x[i]``) of a local."""
+    operand = expr.child_by_field_name("operand")
+    inner = _expr_type(operand, depth + 1) if operand is not None else None
+    if inner is None:
+        return None
+    if inner == _REF:
+        return None  # through a pointer: the pointee's type is not at hand
+    resolved = _resolve(inner, expr)
+    if resolved is None or resolved == _REF:
+        return None
+    if expr.type == _INDEX:
+        return resolved.child_by_field_name("element")
+    if resolved.type == "pointer_type":  # ``p.f`` reads through ``*T`` too
+        resolved = _resolve(resolved.named_children[0] if resolved.named_children else None, expr)
+    if resolved is None or resolved == _REF or resolved.type != "struct_type":
+        return None
+    field = expr.child_by_field_name("field")
+    return _field_type(resolved, field.text if field is not None else None)
+
+
+def _call_type(expr: Node) -> Node | str | None:
+    fn = expr.child_by_field_name("function")
+    if fn is None or fn.type != "identifier":
+        return None
+    if fn.text in _ALLOCATORS:
+        return _REF
+    return _result_type(expr, fn.text)
 
 
 def _result_type(at: Node, name: bytes | None) -> Node | None:

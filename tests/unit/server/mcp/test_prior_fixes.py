@@ -12,11 +12,13 @@ fix-event table existed sees no new block at all.
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from repowise.core.analysis.change_risk.service import history_ref
 from repowise.core.analysis.prior_fix_impact import (
     FixRecord,
     parse_old_ranges,
@@ -67,9 +69,16 @@ _REPO_ID = "repo1"
 
 
 async def _ctx_with_events(
-    tmp_path, events: list[tuple[str, list, int]], *, shape_kind: str = "code_fix"
+    tmp_path,
+    events: list[tuple[str, list, int]],
+    *,
+    shape_kind: str = "code_fix",
+    shas: list[str] | None = None,
 ) -> SimpleNamespace:
-    """A context over a real wiki.db seeded with ``(path, old_ranges, age_days)``."""
+    """A context over a real wiki.db seeded with ``(path, old_ranges, age_days)``.
+
+    *shas* names each event's fix commit; synthetic shas otherwise.
+    """
     tmp_path.mkdir(parents=True, exist_ok=True)
     db_path = tmp_path / "wiki.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
@@ -82,7 +91,7 @@ async def _ctx_with_events(
                 FixEvent(
                     id=_new_uuid(),
                     repository_id=_REPO_ID,
-                    fix_sha=f"{i:040x}",
+                    fix_sha=shas[i] if shas else f"{i:040x}",
                     file_path=path,
                     shape_kind=shape_kind,
                     old_ranges_json=json.dumps(old_ranges),
@@ -144,3 +153,71 @@ async def test_non_code_fixes_are_not_counted(tmp_path):
     """
     ctx = await _ctx_with_events(tmp_path, [("src/app.py", [[1, 5]], 10)], shape_kind="doc_only")
     assert await _prior_fixes_block(ctx, {"src/app.py": {1, 2, 3}}) is None
+
+
+def _git(repo, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=Dev", "-c", "user.email=d@e.com", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _fix(repo, content: str, message: str) -> str:
+    (repo / "app.py").write_text(content, encoding="utf-8")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+async def _reviewed_repo(tmp_path):
+    """seed, an earlier fix, a feature, then the fix under review at HEAD."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _fix(repo, "v = 0\n", "feat: seed")
+    earlier = _fix(repo, "v = 1\n", "fix: earlier crash")
+    feature = _fix(repo, "v = 2\n", "feat: more")
+    reviewed = _fix(repo, "v = 3\n", "fix: reviewed crash")
+    ctx = await _ctx_with_events(
+        repo, [("app.py", [[1, 1]], 30), ("app.py", [[1, 1]], 1)], shas=[earlier, reviewed]
+    )
+    return repo, ctx, earlier, feature, reviewed
+
+
+async def test_a_reviewed_commit_is_not_its_own_fix_history(tmp_path):
+    """The index holds the reviewed fix; reading it back as past ground is circular."""
+    repo, ctx, *_, reviewed = await _reviewed_repo(tmp_path)
+
+    block = await _prior_fixes_block(
+        ctx, {"app.py": {1}}, history_ref=history_ref(str(repo), reviewed)
+    )
+
+    assert block["total_fixes"] == 1
+    assert block["files"][0]["last_fix_days_ago"] == 30
+
+
+async def test_a_range_reads_fixes_before_its_merge_base(tmp_path):
+    repo, ctx, earlier, feature, _ = await _reviewed_repo(tmp_path)
+
+    in_range = await _prior_fixes_block(
+        ctx, {"app.py": {1}}, history_ref=history_ref(str(repo), f"{feature}..HEAD")
+    )
+    before_earlier = await _prior_fixes_block(
+        ctx, {"app.py": {1}}, history_ref=history_ref(str(repo), f"{earlier}^..HEAD")
+    )
+
+    assert in_range["total_fixes"] == 1
+    assert before_earlier is None
+
+
+async def test_uncommitted_work_keeps_heads_fix(tmp_path):
+    repo, ctx, *_ = await _reviewed_repo(tmp_path)
+
+    block = await _prior_fixes_block(
+        ctx, {"app.py": {1}}, history_ref=history_ref(str(repo), None, working_tree=True)
+    )
+
+    assert block["total_fixes"] == 2

@@ -67,10 +67,10 @@ const health: CommitHealth = {
 };
 
 describe("commit detail card", () => {
-  it("leads with the repo-relative percentile, not a raw score", () => {
+  it("keeps the repo-relative percentile as context, not a raw score", () => {
     render(<CommitDetailCard commit={commit} />);
 
-    expect(screen.getByText("36th")).toBeInTheDocument();
+    expect(screen.getAllByText(/36th percentile/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/7\.9 out of 10/)).toBeNull();
     expect(screen.queryByText(/Supporting diff-size score/)).toBeNull();
   });
@@ -105,23 +105,23 @@ describe("commit detail card", () => {
   it("renders without the file block on an index that predates it", () => {
     render(<CommitDetailCard commit={commit} />);
 
-    expect(screen.getByText("36th")).toBeInTheDocument();
     expect(screen.queryByText(/Where this change lands/)).toBeNull();
   });
 
   it("keeps the driver table available but collapsed", () => {
-    const { container } = render(<CommitDetailCard commit={commit} />);
+    render(<CommitDetailCard commit={commit} />);
 
-    const details = container.querySelector("details");
+    const details = screen.getByText(/How the diff-shape rank was computed/).closest("details");
     expect(details).not.toBeNull();
     expect(details?.hasAttribute("open")).toBe(false);
-    expect(screen.getByText(/How the diff-shape rank was computed/)).toBeInTheDocument();
   });
   it("counts what the commit broke and what it fixed", () => {
     render(<CommitDetailCard commit={{ ...commit, health }} />);
 
-    expect(screen.getByText(/Introduced or worsened 3 findings/)).toBeInTheDocument();
-    expect(screen.getByText(/2 new, 1 made worse/)).toBeInTheDocument();
+    // Figure first: what got worse, with what got resolved beside it.
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("findings introduced or worsened · 4 resolved")).toBeInTheDocument();
+    expect(screen.getByText(/2 new, 1 made more severe/)).toBeInTheDocument();
     expect(screen.getByText(/Resolved 4 existing findings/)).toBeInTheDocument();
   });
 
@@ -131,7 +131,7 @@ describe("commit detail card", () => {
     expect(
       screen.getAllByText(/sync_store has cyclomatic complexity 26/).length,
     ).toBeGreaterThan(0);
-    expect(screen.getAllByText(/sync_store — core\/workspace\/update\.py:42/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("sync_store · L42").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/was high/).length).toBeGreaterThan(0);
   });
 
@@ -139,7 +139,7 @@ describe("commit detail card", () => {
     render(<CommitDetailCard commit={{ ...commit, health }} />);
 
     expect(
-      screen.getAllByText(/in a file this commit touched, not on a line it wrote/).length,
+      screen.getAllByText(/file touched, not a line it wrote/).length,
     ).toBeGreaterThan(0);
   });
 
@@ -170,14 +170,11 @@ describe("commit detail card", () => {
     expect(screen.getByText(/3 of 7 changed files could not be analysed/)).toBeInTheDocument();
   });
 
-  it("puts health above the file list, which the host already shows", () => {
+  it("reads got better, then got worse, then risk context, then files", () => {
     const { container } = render(<CommitDetailCard commit={{ ...commit, files, health }} />);
 
     const headings = Array.from(container.querySelectorAll("h2")).map((h) => h.textContent);
-    expect(headings).toEqual([
-      "What this commit did to code health",
-      "Where this change lands",
-    ]);
+    expect(headings).toEqual(["Got better", "Got worse", "Risk context", "Where this change lands"]);
   });
 
   it("keeps a long file list collapsed so it cannot bury what is below it", () => {
@@ -187,33 +184,52 @@ describe("commit detail card", () => {
       lines_deleted: 0,
       prior_fixes: null,
     }));
-    const { container } = render(<CommitDetailCard commit={{ ...commit, files: many, health }} />);
+    render(<CommitDetailCard commit={{ ...commit, files: many, health }} />);
 
-    const [healthSection, filesSection] = Array.from(container.querySelectorAll("details"));
-    expect(healthSection?.open).toBe(true);
-    expect(filesSection?.open).toBe(false);
+    expect(section("Where this change lands")?.open).toBe(false);
     // Collapsed, it still says how much is behind it.
     expect(screen.getByText("12 files")).toBeInTheDocument();
   });
 
   it("leaves a short file list open", () => {
-    const { container } = render(<CommitDetailCard commit={{ ...commit, files, health }} />);
+    render(<CommitDetailCard commit={{ ...commit, files, health }} />);
 
-    // Only the two content sections; the driver breakdown below stays shut.
-    const [healthSection, filesSection] = Array.from(container.querySelectorAll("details"));
-    expect([healthSection?.open, filesSection?.open]).toEqual([true, true]);
+    expect(section("Where this change lands")?.open).toBe(true);
   });
 
-  it("names the headline count on the collapsed health toggle", () => {
+  it("folds risk context away when health has something to say", () => {
     render(<CommitDetailCard commit={{ ...commit, health }} />);
 
-    expect(screen.getByText("3 introduced or worsened")).toBeInTheDocument();
+    expect(section("Risk context")?.open).toBe(false);
+    // Collapsed, it still names the percentile.
+    expect(screen.getByText("36th percentile")).toBeInTheDocument();
   });
 
-  it("renders no health section for a commit that was never scanned", () => {
+  it("says a never-scanned commit is not yet analysed and opens risk context", () => {
     render(<CommitDetailCard commit={commit} />);
 
-    expect(screen.queryByText(/What this commit did to code health/)).toBeNull();
+    expect(screen.getByText(/Not analysed for code health yet/)).toBeInTheDocument();
+    expect(section("Risk context")?.open).toBe(true);
     expect(screen.queryByText(/Compared clean/)).toBeNull();
   });
+
+  it("gives a stale delta its direction only", () => {
+    render(
+      <CommitDetailCard
+        commit={{
+          ...commit,
+          health,
+          health_delta: { status: "available", kind: "worsened", introduced: 3, worsened: 0, resolved: 0, stale: true },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/An earlier analysis read the direction shown/)).toBeInTheDocument();
+    expect(screen.queryByText(/introduced or worsened/)).toBeNull();
+    expect(screen.queryByText("Got worse")).toBeNull();
+  });
 });
+
+function section(title: string): HTMLDetailsElement | null {
+  return screen.getByText(title).closest("details");
+}

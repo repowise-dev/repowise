@@ -77,6 +77,18 @@ class Occurrence:
     #: A name an import statement binds (Python ``import a.b`` binds ``a``).
     #: A lifted span re-imports it rather than pass or return it.
     imports: bool = False
+    #: A write to an existing name that may not happen, inside a statement the
+    #: CFG keeps whole (a ``switch`` / ``match`` arm). The value from before it
+    #: can still be the one a later read sees, so reaching definitions lets it
+    #: add to what reaches and hide nothing.
+    may: bool = False
+    #: A declaration with no initializer, in a language where that leaves the
+    #: name without a value to read (Java's ``List<T> xs;``, TypeScript's
+    #: ``let x: T;``): the compiler rejects a read it cannot prove assigned. It
+    #: still declares the name, but it is no value a later read can be handed.
+    #: Never set for Go, whose zero value is a value, nor for a JavaScript
+    #: ``let x;``, which holds ``undefined``.
+    valueless: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,6 +161,10 @@ def mentions_receiver(node: Node, names: frozenset[str]) -> bool:
     return re.search(rf"(?<![\w$])(?:{words})(?![\w$])", text) is not None
 
 
+#: ``(types, bound name)`` of an exception handler (:meth:`handler_head`).
+HandlerHead = tuple[tuple[str, ...] | None, str | None]
+
+
 @runtime_checkable
 class DefUseDialect(Protocol):
     """The contract a per-language def/use dialect satisfies."""
@@ -160,6 +176,50 @@ class DefUseDialect(Protocol):
     ) -> StatementDefUse: ...
 
     def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]: ...
+
+    def handler_head(self, handler: Node) -> HandlerHead: ...
+
+
+@dataclass(frozen=True)
+class DeclaredTypes:
+    """Reads the type written where a name is declared. A language sets its
+    holder / wrapper kinds and, where its declarators add to the type (C++),
+    overrides the two hooks below."""
+
+    #: Nodes whose ``type`` field types the names they declare: a typed
+    #: parameter, a typed local declaration.
+    holder_kinds: frozenset[str] = frozenset()
+    #: Declarators between a declared name and its holder (Java's
+    #: ``variable_declarator``, C++'s ``init_declarator`` / ``pointer_declarator``).
+    wrapper_kinds: frozenset[str] = frozenset()
+
+    def of(self, name: Node) -> str | None:
+        """The type written where identifier *name* is declared, or None when
+        the declaration writes none, or only asks for inference (``var``,
+        ``auto``). Reads the retained tree around one node: no walk."""
+        node, suffix = name.parent, ""
+        while node is not None and node.type in self.wrapper_kinds:
+            if node.child_by_field_name("dimensions") is not None:
+                return None  # Java ``int a[]``: the declarator changes the type
+            suffix = self._declarator_token(node) + suffix
+            node = node.parent
+        if node is None or node.type not in self.holder_kinds:
+            return None
+        typ = node.child_by_field_name("type")
+        if typ is None or typ.start_byte <= name.start_byte < typ.end_byte:
+            return None
+        text = " ".join(node_text(typ).lstrip(":").split())
+        if not text or text in _INFERRED_TYPES:
+            return None
+        return self._type_prefix(node, typ) + text + suffix
+
+    def _declarator_token(self, node: Node) -> str:
+        """What declarator *node* adds to the type (C++ ``*`` / ``&``)."""
+        return ""
+
+    def _type_prefix(self, holder: Node, typ: Node) -> str:
+        """Qualifiers written before the type (C++ ``const``)."""
+        return ""
 
 
 class BaseDefUseDialect:
@@ -206,21 +266,28 @@ class BaseDefUseDialect:
         )
 
     def _declare(
-        self, defs: list[Occurrence], start: int, declarator: Node, *, binds: bool = True
+        self,
+        defs: list[Occurrence],
+        start: int,
+        declarator: Node,
+        *,
+        binds: bool = True,
+        valueless: bool = False,
     ) -> None:
         """Mark ``defs[start:]`` as names *declarator* declares.
 
         ``declared_at`` is set where the declarator ends on the def's own line;
         ``declares`` is set on every one of them when *binds* (False for a
-        declaration that creates no block-scoped binding, a TS/JS ``var``).
-        Call it right after the declarator's targets are collected and before
-        its initializer is walked, so a write nested in the initializer is not
-        taken for a declaration.
+        declaration that creates no block-scoped binding, a TS/JS ``var``);
+        ``valueless`` when the declarator has no initializer and the language
+        gives such a name no value. Call it right after the declarator's
+        targets are collected and before its initializer is walked, so a write
+        nested in the initializer is not taken for a declaration.
         """
         end_row, end_col = declarator.end_point
         for i in range(start, len(defs)):
             at = end_col if defs[i].line == end_row + 1 else None
-            defs[i] = replace(defs[i], declared_at=at, declares=binds)
+            defs[i] = replace(defs[i], declared_at=at, declares=binds, valueless=valueless)
 
     @staticmethod
     def _loop_scoped(defs: list[Occurrence], start: int) -> None:
@@ -340,7 +407,11 @@ class BaseDefUseDialect:
         loops, decls, outer = self._closure_parts(node, lmap)
         head_writes = self._loop_binder_scopes(loops, lmap, scopes)
         for decl in decls:
-            _add_declaration_scope(decl, writes, lmap, scopes)
+            if decl.type in lmap.catch_kinds:  # a handler's name is its own
+                for d in self.handler_def_use(decl).defs:
+                    scopes.setdefault(d.name, []).append((decl.start_point, decl.end_point))
+            else:
+                _add_declaration_scope(decl, writes, lmap, scopes)
         if not self.closure_writes_outer:
             for w in (*writes, *head_writes):
                 if w.name not in outer:
@@ -353,8 +424,9 @@ class BaseDefUseDialect:
     def _closure_parts(
         self, node: Node, lmap: LanguageNodeMap
     ) -> tuple[list[Node], list[Node], set[str]]:
-        """The loops and declaration statements of nested scope *node* (deeper
-        scopes not entered), and the names it declares outer."""
+        """The loops and declaration statements (exception handlers too) of
+        nested scope *node* (deeper scopes not entered), and the names it
+        declares outer."""
         loops: list[Node] = []
         decls: list[Node] = []
         outer: set[str] = set()
@@ -367,7 +439,7 @@ class BaseDefUseDialect:
                 outer |= {occ.name for occ in _leaf_names(cur, self.identifier_kinds)}
             elif cur.type in lmap.loop_kinds:
                 loops.append(cur)
-            elif cur.type in lmap.local_decl_kinds:
+            elif cur.type in lmap.local_decl_kinds or cur.type in lmap.catch_kinds:
                 decls.append(cur)
             stack.extend(cur.named_children)
         return loops, decls, outer
@@ -453,6 +525,26 @@ class BaseDefUseDialect:
         Default: none (a language with no override seeds no parameters)."""
         return ()
 
+    def outer_declared(self, node: Node) -> list[Occurrence]:
+        """The names statement *node* declares as the module's or an
+        enclosing function's (Python ``global`` / ``nonlocal``); none in a
+        language without such statements."""
+        if node.type not in self.outer_decl_kinds:
+            return []
+        return _leaf_names(node, self.identifier_kinds)
+
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """What an exception handler's head reads and binds (the CFG records
+        it as the handler block's first statement). Default: nothing, the
+        reading every language had before handler heads were recorded."""
+        return StatementDefUse(defs=(), uses=())
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """The exception types a handler clause names, as written (None: it
+        catches everything), and the name it binds. Default: types no raise
+        can be matched against, so nothing is counted as caught."""
+        return (), None
+
     def receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """The instance *fn_node* runs on (:class:`Receiver`), ``NO_RECEIVER``
         for a plain function, None when this language cannot tell.
@@ -484,42 +576,8 @@ class BaseDefUseDialect:
         repeat it (a Go ``(s *S)``, a Rust ``&self``). Default: none."""
         return None
 
-    # -- declared types ---------------------------------------------------------
-
-    #: Nodes whose ``type`` field types the names they declare: a typed
-    #: parameter, a typed local declaration.
-    type_holder_kinds: frozenset[str] = frozenset()
-    #: Declarators between a declared name and its holder (Java's
-    #: ``variable_declarator``, C++'s ``init_declarator`` / ``pointer_declarator``).
-    type_wrapper_kinds: frozenset[str] = frozenset()
-
-    def declared_type(self, name: Node) -> str | None:
-        """The type written where identifier *name* is declared, or None when
-        the declaration writes none, or only asks for inference (``var``,
-        ``auto``). Reads the retained tree around one node: no walk."""
-        node, suffix = name.parent, ""
-        while node is not None and node.type in self.type_wrapper_kinds:
-            if node.child_by_field_name("dimensions") is not None:
-                return None  # Java ``int a[]``: the declarator changes the type
-            suffix = self._declarator_token(node) + suffix
-            node = node.parent
-        if node is None or node.type not in self.type_holder_kinds:
-            return None
-        typ = node.child_by_field_name("type")
-        if typ is None or typ.start_byte <= name.start_byte < typ.end_byte:
-            return None
-        text = " ".join(node_text(typ).lstrip(":").split())
-        if not text or text in _INFERRED_TYPES:
-            return None
-        return self._type_prefix(node, typ) + text + suffix
-
-    def _declarator_token(self, node: Node) -> str:
-        """What declarator *node* adds to the type (C++ ``*`` / ``&``)."""
-        return ""
-
-    def _type_prefix(self, holder: Node, typ: Node) -> str:
-        """Qualifiers written before the type (C++ ``const``)."""
-        return ""
+    #: How this language writes a declared name's type (see :class:`DeclaredTypes`).
+    declared_types: DeclaredTypes = DeclaredTypes()
 
     def _receiver(self, names: frozenset[str], **flags: bool) -> Receiver:
         return Receiver(names, self.member_access_kinds, self.receiver_write_kinds, **flags)
@@ -541,12 +599,13 @@ class BaseDefUseDialect:
         Each def found within is recorded as a def AND a use: the may-def keeps
         the variable in every "written in this region" set while its paired use
         stays upward-exposed, so a downstream must-def proof can only get more
-        conservative, never less. The paired use is marked :attr:`Occurrence.echo`.
+        conservative, never less. The paired use is marked :attr:`Occurrence.echo`
+        and the def :attr:`Occurrence.may` (:func:`may_defs`).
         """
         inner_defs: list[Occurrence] = []
         for child in node.named_children:  # not the node itself: no re-dispatch
             self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
+        defs.extend(may_defs(inner_defs))
         uses.extend(echoes(inner_defs))
 
 
@@ -617,6 +676,16 @@ def _leaf_names(node: Node, kinds: frozenset[str]) -> list[Occurrence]:
 def echoes(defs: list[Occurrence]) -> list[Occurrence]:
     """The may-def uses paired with *defs* (see :attr:`Occurrence.echo`)."""
     return [replace(occ, echo=True) for occ in defs]
+
+
+def may_defs(defs: list[Occurrence]) -> list[Occurrence]:
+    """*defs* as writes that may not happen (see :attr:`Occurrence.may`).
+
+    A name the arm declares itself (``declares``) is left as it is: it is a
+    new binding for the rest of the arm, not a write to the variable the code
+    before it set, and arms reuse such names freely.
+    """
+    return [occ if occ.declares else replace(occ, may=True) for occ in defs]
 
 
 def _written_before_read(writes: list[Occurrence], reads: list[Occurrence]) -> set[str]:

@@ -53,6 +53,18 @@ _API_STEPS: dict[str, tuple[str | None, str]] = {
     ),
 }
 
+# What a site's loop walks, as a step names it; an unknown source adds nothing.
+_ITERATES: dict[str, str] = {
+    "query": "rows a query returns",
+    "parameter": "a collection its caller passes in",
+    "caller_key": "the rows of one key",
+    "rare_subset": "the rows a filter keeps for a rare state",
+    "config_table": "a registry or configuration table",
+    "constant": "a fixed set",
+    "listing": "a directory listing",
+    "stream": "a stream as it arrives",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class PerformancePlanPolicy:
@@ -125,11 +137,13 @@ def _site_steps(
     if named and not api:
         return [
             {
-                "action": named.format(name=edit["subject"]) if edit.get("subject") else per_site,
+                "action": (named.format(name=edit["subject"]) if edit.get("subject") else per_site)
+                + _walks(edit.get("loop_iterates")),
                 "symbol": edit.get("function_name"),
                 "file_path": edit.get("file_path"),
                 "line": edit.get("loop_line") or edit.get("line_start"),
                 **({"loop_line": edit["loop_line"]} if edit.get("loop_line") else {}),
+                **({"loop_iterates": what} if (what := edit.get("loop_iterates")) else {}),
                 "applicability": applicability,
             }
             for edit in _loop_edits(locations)
@@ -138,11 +152,13 @@ def _site_steps(
         {
             "action": per_site.format(
                 api=api, call=_call_phrase(location.get("call"), boundary)
-            ),
+            )
+            + _walks(location.get("loop_iterates")),
             "symbol": location.get("function_name"),
             "file_path": location.get("file_path"),
             "line": location.get("line_start"),
             **({"loop_line": location["loop_line"]} if location.get("loop_line") else {}),
+            **({"loop_iterates": what} if (what := location.get("loop_iterates")) else {}),
             "applicability": applicability,
         }
         for location in locations
@@ -173,6 +189,11 @@ def _call_phrase(call: object, boundary: str | None) -> str:
     """``session.get database call``: the call and the kind of I/O it does."""
     noun = BOUNDARY_NOUN.get(boundary or "")
     return " ".join(str(part) for part in (call, noun, "call") if part)
+
+
+def _walks(iterates: object) -> str:
+    phrase = _ITERATES.get(iterates) if isinstance(iterates, str) else None
+    return f" (the loop walks {phrase})" if phrase else ""
 
 
 _EFFORT_BANDS = ((1, "S"), (3, "M"), (8, "L"))
@@ -239,6 +260,8 @@ def _site_locations(evidence: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             site["call"] = call
         if "subject" not in site and item.get("subject"):
             site["subject"] = item["subject"]
+        if "loop_iterates" not in site and item.get("loop_iterates"):
+            site["loop_iterates"] = item["loop_iterates"]
     return list(sites.values())
 
 

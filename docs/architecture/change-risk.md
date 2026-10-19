@@ -22,6 +22,9 @@ commit) the model reads as risk-raising. `nf`, `nd` and `ns` have small
 negative coefficients from collinearity with `la`; they stay in the logit as
 fit and are hidden as drivers because the explanation would contradict itself.
 
+Drivers are stated relative to the model's baseline commit (10.5 lines added,
+1.7 files), not to the repository being scored.
+
 Constants are hard-coded in `_CONSTANTS` in `model.py`. Only constants ship.
 
 ## Calibration
@@ -100,8 +103,8 @@ threshold, and all three bands are occupied.
 | Public value | Producer | Unit / range | Authority |
 | --- | --- | --- | --- |
 | `get_change_risk.score` / REST `score` / stored `change_risk_score` | Logistic model over diff size, spread, entropy, author experience | normalized points 0-10, single-commit scale | Supporting; not a probability |
-| `risk_percentile` | Mid-rank of the score among filtered recent commits | percentile 0-100 | Authoritative with `classification` |
-| `review_priority` / `classification` | Percentile terciles at 33.33 and 66.67 | category | Authoritative |
+| `risk_percentile` | Mid-rank of the score among filtered recent commits | percentile 0-100 | The diff-size rank; not a bug predictor |
+| `review_priority` / `classification` | Percentile terciles at 33.33 and 66.67 | category | Label for the same rank |
 | `fallback_band` | Score thresholds at 4 and 7, only without a baseline | category | Absolute fallback |
 | `fix_history.density` | Churn-weighted, recency-decayed prior fixes | decayed fixes, unbounded | Uncalibrated, separate evidence |
 | `get_risk` `hotspot_score` | Repo-relative churn percentile | ratio 0-1 | Uncalibrated component |
@@ -120,6 +123,29 @@ and `impact_score_semantics` carry the guard tier (unit, range, calibration,
 authority) on every payload. The reference tier (corpus, formula, components,
 the full `risk_scales` dictionary) never varies, so MCP returns it only for
 `include=["scales"]`; the CLI `--format json` output carries it always.
+
+## Baseline sample
+
+`repowise risk` samples recent commits live; the web UI reads the indexed
+commit history. One walk is reused for every change scored against the same
+anchor and filters in a process, so a long-running MCP server pays for it once.
+
+## Independent changes grouping
+
+A changed file is grouped only when it has a file node in the index, is not a
+test file, and is in a language whose resolver can emit an import edge. Docs,
+config, data and test files are never grouped and never bridge two groups.
+
+## Branch overlap scan
+
+`repowise overlap` scans local and remote branches, newest committer date
+first, up to `--limit`. It drops the base, the change's own ref, refs pointing
+at either tip, and branches stacked on or under this one. For each remaining
+branch it takes `git diff --name-only base...branch` (what that branch did
+since it forked) and intersects it with this change's files. Noise paths
+(workflows, lockfiles, generated, vendored and localization files) and
+dependency manifests (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`
+and similar) are removed from both sides first.
 
 ## Recalibrating
 

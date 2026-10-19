@@ -5,13 +5,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+_warned_plugin_keys = False
+
 
 def load_dotenv(repo_path: Path) -> None:
     """Load ``<repo>/.repowise/.env`` into ``os.environ`` (without overwriting).
 
     Supports ``export KEY=value``, quoted values (``KEY="value"``, ``KEY='value'``),
     and inline comments (``KEY=value  # comment``).
+
+    Keys that choose code to run (``REPOWISE_PLUGINS``, ``REPOWISE_SEAM_*``)
+    are skipped: a cloned repo's file must never pick what repowise imports.
     """
+    from repowise.core.registry.plugins import is_plugin_control_var
+
     env_file = repo_path / ".repowise" / ".env"
     if not env_file.exists():
         return
@@ -37,9 +44,26 @@ def load_dotenv(repo_path: Path) -> None:
                 raw_value = raw_value[:hash_idx].rstrip()
         # Strip matching surrounding quotes
         value = _strip_quotes(raw_value)
+        if is_plugin_control_var(key):
+            _warn_plugin_key(env_file, key)
+            continue
         # Don't overwrite existing env vars (explicit env takes priority)
         if key and value and key not in os.environ:
             os.environ[key] = value
+
+
+def _warn_plugin_key(env_file: Path, key: str) -> None:
+    global _warned_plugin_keys
+    if _warned_plugin_keys:
+        return
+    _warned_plugin_keys = True
+    import click
+
+    click.echo(
+        f"repowise: ignoring {key} in {env_file}; plugin and seam selection "
+        "is read from the process environment only.",
+        err=True,
+    )
 
 
 def _strip_quotes(value: str) -> str:

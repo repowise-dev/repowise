@@ -10,8 +10,10 @@ SQLite (default)
     or :class:`LanceDBVectorStore` when the ``search`` extra is installed.
 
 PostgreSQL
-    Uses ``asyncpg`` and the ``pgvector`` extension.  Install the
-    ``pgvector`` extra: ``pip install repowise-core[pgvector]``.
+    Uses ``asyncpg``.  Install the ``postgres`` extra:
+    ``pip install "repowise[postgres]"``.  Semantic search still uses
+    LanceDB on this backend; the ``wiki_pages.embedding`` pgvector column
+    added by the migration is not read or written yet (see #3090).
 """
 
 from repowise.core.providers.embedding.base import Embedder, MockEmbedder

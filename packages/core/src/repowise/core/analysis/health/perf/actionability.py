@@ -37,7 +37,9 @@ ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"
 EXPECTED_REASONS: tuple[str, ...] = ("gated_off", "cold_path")
 
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
-_EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
+_EXPECTED_REFUSALS = frozenset(
+    {"inherent_to_boundary", "loop_already_chunked", "loop_not_batchable"}
+)
 FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
@@ -244,6 +246,10 @@ def assess_fix(
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
             return FixAssessment(None, (), refusal="inherent_to_boundary")
+        if details and all(detail.get("loop_not_batchable") for detail in details):
+            # The loop stops at the first call that answers, or each call needs the
+            # one before it: there is no set of keys to send at once.
+            return FixAssessment(None, (), refusal="loop_not_batchable")
         form = _shared(details, "batch_form")
         if form:
             if _shared(details, "batch_equivalent") is True:

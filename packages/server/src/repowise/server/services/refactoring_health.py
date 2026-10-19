@@ -53,6 +53,7 @@ from repowise.core.persistence.crud.analysis.refactoring import (
     summarize_open_plans,
 )
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+    gated_opportunity_counts,
     get_refactoring_opportunity,
     get_refactoring_summary,
     list_refactoring_opportunities,
@@ -91,6 +92,8 @@ class RefactoringPage:
     hidden: dict[str, Any] | None = None
     #: The plans' count vocabulary (``queue.counts``) in the query's files.
     counts: dict[str, Any] = field(default_factory=dict)
+    #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +109,8 @@ class RefactoringPlanPage:
     scope: str = "all"
     hidden: dict[str, Any] | None = None
     counts: dict[str, Any] = field(default_factory=dict)
+    #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 def _filters(query: RefactoringQuery) -> dict[str, Any]:
@@ -161,12 +166,28 @@ class PlanListQuery:
 
 
 class RefactoringHealthService:
-    """Query, page, detail and headline over the materialized opportunities."""
+    """Query, page, detail and headline over the materialized opportunities.
 
-    def __init__(self, session: AsyncSession, repository_id: str, repository: str) -> None:
+    Lists, counts, facets and the lead leave out what a language gate holds
+    back unless ``include_unverified``; a lookup by id never does.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        repository_id: str,
+        repository: str,
+        *,
+        include_unverified: bool = False,
+    ) -> None:
         self._session = session
         self._repository_id = repository_id
         self._repository = repository
+        self._include_unverified = include_unverified
+
+    def _filters(self, query: RefactoringQuery) -> dict[str, Any]:
+        """The store's filter arguments for *query*, under this service's gate."""
+        return {**_filters(query), "include_unverified": self._include_unverified}
 
     # -- queue ------------------------------------------------------------
 
@@ -192,7 +213,7 @@ class RefactoringHealthService:
         write) says which opportunities it takes, and one id-only read of the
         filtered set counts what it leaves out, by reason.
         """
-        filters, hidden = await self._scope(query, _filters(query))
+        filters, hidden = await self._scope(query, self._filters(query))
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
@@ -222,6 +243,7 @@ class RefactoringHealthService:
             scope=query.scope,
             hidden=hidden,
             counts=await self._counts(query, len(items)),
+            gated=await self.gated(),
         )
 
     async def plan_page(self, query: RefactoringQuery) -> RefactoringPlanPage:
@@ -234,7 +256,7 @@ class RefactoringHealthService:
         so a page that folds some reads on until it holds ``limit`` rows;
         offsets and the total still count every plan.
         """
-        filters, hidden = await self._scope(query, _filters(query))
+        filters, hidden = await self._scope(query, self._filters(query))
         counts = await refactoring_step_counts(
             self._session,
             self._repository_id,
@@ -271,6 +293,7 @@ class RefactoringHealthService:
             scope=query.scope,
             hidden=hidden,
             counts=await self._counts(query, len(touched)),
+            gated=await self.gated(),
         )
 
     async def _scope(
@@ -312,14 +335,27 @@ class RefactoringHealthService:
             "plans",
             shown=shown,
             file_paths=query.file_paths,
+            include_unverified=self._include_unverified,
         )
         return counts.as_dict()
 
     # -- headline ---------------------------------------------------------
 
     async def summary(self) -> dict[str, Any]:
-        """The Level-1 rollup, read by primary key."""
-        return summary_payload(await get_refactoring_summary(self._session, self._repository_id))
+        """The Level-1 rollup, read by primary key, plus what the gates hold back."""
+        payload = summary_payload(
+            await get_refactoring_summary(self._session, self._repository_id),
+            include_unverified=self._include_unverified,
+        )
+        if payload.get("status") == "available":
+            payload["gated"] = await self.gated()
+        return payload
+
+    async def gated(self) -> dict[str, dict]:
+        """Open opportunities a language gate holds back; empty when opted in."""
+        return await gated_opportunity_counts(
+            self._session, self._repository_id, include_unverified=self._include_unverified
+        )
 
     async def directive(self) -> dict[str, Any]:
         """The Level-0 lead: one opportunity, and the exact call that opens it.
@@ -328,7 +364,8 @@ class RefactoringHealthService:
         statement for it and never touches the queue.
         """
         return directive_from_summary(
-            await get_refactoring_summary(self._session, self._repository_id)
+            await get_refactoring_summary(self._session, self._repository_id),
+            include_unverified=self._include_unverified,
         )
 
     # -- detail -----------------------------------------------------------
@@ -394,9 +431,9 @@ class RefactoringHealthService:
         # say the symbol has to be located again before the step is applied.
         if any(step.get("relocated_by") for step in page):
             payload["ordering_note"] = (
-                "A step carrying `relocated_by` names a symbol an earlier step moves. "
-                "Locate it again before applying the step; its file and span describe "
-                "where the symbol was."
+                "A step marked 'Moved by an earlier step' names a symbol an earlier step "
+                "relocates. Locate it again before applying the step; its file and span "
+                "describe where the symbol was."
             )
         return payload
 
@@ -448,15 +485,22 @@ class RefactoringHealthService:
             min_confidence=query.min_confidence,
             filters=query.filters(),
             view=query.view,
+            include_unverified=self._include_unverified,
         )
         if stored is not None:
             chips = await summarize_open_plans(
-                self._session, self._repository_id, min_confidence=query.min_confidence
+                self._session,
+                self._repository_id,
+                min_confidence=query.min_confidence,
+                include_unverified=self._include_unverified,
             )
             plans = [stored_recommendation(row).as_dict() for row in stored]
         else:
             rows = await get_refactoring_suggestions(
-                self._session, self._repository_id, min_confidence=query.min_confidence
+                self._session,
+                self._repository_id,
+                min_confidence=query.min_confidence,
+                include_unverified=self._include_unverified,
             )
             chips = summarize_plans(rows)
             kept = [row for row in rows if keep(PLAN_FILTERS, row, query.filters())]

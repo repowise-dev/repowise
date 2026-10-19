@@ -686,7 +686,7 @@ class DecisionExtractor:
     ) -> tuple[list[ExtractedDecision], int]:
         """Run the shared anti-hallucination gate over extracted decisions.
 
-        Thin wrapper around :func:`decision_gate.apply_substring_gate`, which
+        Thin wrapper around :func:`gate.apply_substring_gate`, which
         the docs harvest path shares so both enforce the same grounding rules.
         """
         return apply_substring_gate(decisions)

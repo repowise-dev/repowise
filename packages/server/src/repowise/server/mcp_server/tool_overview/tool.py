@@ -16,11 +16,15 @@ from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._changes import overview_changes
+from repowise.server.mcp_server._components import component_list
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
+    attach_ignored_arguments,
     filter_rows_by_attr,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import (
     build_meta_with_full_scope as _build_meta_with_full_scope,
@@ -57,6 +61,11 @@ from repowise.server.mcp_server.tool_overview.workspace import (
     _workspace_overview,
 )
 
+#: The ``include`` values get_overview serves; anything else is named, not applied.
+_INCLUDE_BLOCKS = frozenset(
+    {"content", "outline", "tour", "decisions", "graph", "ownership", "components", "changes"}
+)
+
 
 @mcp.tool(surface_order=80, artifact_type="overview", presentation="overview")
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
@@ -65,12 +74,10 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     Returns the overview summary, key modules, entry points, architecture
     layers and package dependencies, code health, repo-wide git health, and
     ``next_actions`` (top work for the week and quarter).
-    Skip this on subsequent calls — once you have the map, jump straight to
-    ``get_context`` / ``get_answer``.
+    Skip it on later calls; go straight to ``get_context`` / ``get_answer``.
 
-    Compact by default: ``content_md`` carries only the overview essay's summary
-    section, and the outline, onboarding, ownership and graph blocks ship only
-    on request. The response's ``more`` field names them.
+    Compact by default: ``content_md`` carries only the essay's summary
+    section; other blocks ship on request, named in ``more``.
 
     Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
     carry counts and recovery status in ``_meta``.
@@ -83,7 +90,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     - ``repo="<alias>"`` targets one specific repo.
 
     Args:
-        repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
+        repo: Repository alias, path, or ID, or ``"all"``.
         include: Opt-in extras, any combination of:
             ``"content"`` — the full overview essay instead of its summary.
             ``"outline"`` — the stored wiki page tree, two rungs deep.
@@ -91,6 +98,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             ``"decisions"`` — ``key_decisions``; ``get_why`` is richer.
             ``"graph"`` — ``community_summary``, code-community clusters.
             ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
+            ``"components"`` — component list with file counts.
+            ``"changes"`` — changes by category, week and source, with coverage.
     """
     if repo == "all":
         return await _workspace_overview()
@@ -102,14 +111,32 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
+        ignored: list[dict[str, Any]] = []
+        want = {
+            k
+            for k in include or []
+            if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+        }
         result = await _repo_overview(
-            session, ctx.session_factory, repository, exclude_spec, set(include or []), collector
+            session, ctx.session_factory, repository, exclude_spec, want, collector
         )
+        if "components" in want:
+            result["components"] = await component_list(
+                session,
+                repository,
+                repo_root=ctx.path,
+                alias=ctx.alias,
+                exclude_spec=exclude_spec,
+                collector=collector,
+            )
+        if "changes" in want:
+            result["changes"] = await overview_changes(session, repository)
 
         # Made once per session, so this is where the full scope that every
         # other response's compact projection points at is worth its bytes.
         result["_meta"] = _build_meta_with_full_scope(repository=repository)
         collector.attach(result)
+        attach_ignored_arguments(result, ignored)
         return result
 
 

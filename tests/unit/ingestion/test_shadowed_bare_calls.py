@@ -4,7 +4,8 @@
 caller passes in, not the module's ``Class``: the parameter shadows every
 same-named import and top-level declaration. The same holds for a local and
 for a parameter of a function enclosing the caller, in TypeScript,
-JavaScript and Python alike.
+JavaScript and Python alike, and in Swift and Dart. Kotlin resolves a call
+past a binding it cannot invoke, so only a function-typed one shadows there.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.ingestion.call_resolver import CallResolver
-from repowise.core.ingestion.languages.receiver_types import scan_bindings
+from repowise.core.ingestion.languages.receiver_types import scan_bindings, scan_call_shadows
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
@@ -239,6 +240,95 @@ class TestPython:
         assert "util.py::helper" not in parsed_callees
 
 
+KT_UTIL = """package app
+
+class TopicsViewModel {
+    fun onTopicClick(id: String) {}
+}
+"""
+
+KT_API = """package app
+
+@Composable
+fun TopicCard(
+    name: String,
+    onTopicClick: (String) -> Unit,
+) {
+    onTopicClick(name)
+}
+
+fun plain(onTopicClick: Int) {
+    onTopicClick("x")
+}
+
+fun member(onTopicClick: (String) -> Unit, vm: TopicsViewModel) {
+    vm.onTopicClick("x")
+}
+"""
+
+SWIFT_UTIL = """func helper(_ x: Int) -> Int {
+    return x + 1
+}
+"""
+
+SWIFT_API = """func shadowed(with helper: (Int) -> Int) -> Int {
+    return helper(1)
+}
+
+func plain(_ n: Int) -> Int {
+    return helper(n)
+}
+"""
+
+DART_UTIL = """int helper(int x) => x + 1;
+"""
+
+DART_API = """import 'util.dart';
+
+int shadowed(int Function(int) helper) {
+  return helper(1);
+}
+
+int plain(int n, {int Function(int)? other}) {
+  return helper(n);
+}
+"""
+
+
+class TestKotlin:
+    @pytest.fixture
+    def files(self) -> dict[str, str]:
+        return {"util.kt": KT_UTIL, "api.kt": KT_API}
+
+    def test_a_function_typed_parameter_shadows(self, tmp_path: Path, files) -> None:
+        assert _callees(tmp_path, files, "kotlin", "TopicCard") == set()
+
+    def test_a_parameter_it_cannot_invoke_does_not(self, tmp_path: Path, files) -> None:
+        # kotlinc resolves `onTopicClick("x")` past `onTopicClick: Int`.
+        assert _callees(tmp_path, files, "kotlin", "plain") == {
+            "util.kt::TopicsViewModel::onTopicClick"
+        }
+
+    def test_a_member_call_is_never_the_parameter(self, tmp_path: Path, files) -> None:
+        assert "util.kt::TopicsViewModel::onTopicClick" in _callees(
+            tmp_path, files, "kotlin", "member"
+        )
+
+
+class TestSwiftAndDart:
+    @pytest.mark.parametrize(
+        ("language", "files"),
+        [
+            ("swift", {"util.swift": SWIFT_UTIL, "api.swift": SWIFT_API}),
+            ("dart", {"util.dart": DART_UTIL, "api.dart": DART_API}),
+        ],
+    )
+    def test_a_parameter_shadows(self, tmp_path: Path, language: str, files) -> None:
+        util = next(rel for rel in files if rel.startswith("util"))
+        assert _callees(tmp_path, files, language, "shadowed") == set()
+        assert _callees(tmp_path, files, language, "plain") == {f"{util}::helper"}
+
+
 class TestBindingScan:
     def test_typescript_parameter_types_and_defaults_are_not_bindings(self) -> None:
         names = {n for _, n in scan_bindings("function f(a: Foo<K, V>, b = make) {}", "typescript")}
@@ -273,3 +363,30 @@ class TestBindingScan:
     def test_javascript_reads_with_the_typescript_shapes(self) -> None:
         names = {n for _, n in scan_bindings("const f = (x, y) => x;", "javascript")}
         assert {"f", "x", "y"} <= names
+
+    def test_kotlin_shadows_only_with_invokable_bindings(self) -> None:
+        text = (
+            "fun f(a: (Int) -> Unit, b: Int, c: @Composable () -> Unit,\n"
+            "      d: suspend Call.() -> T, e: ((Int) -> Unit)? = null) {\n"
+            "    val g = { 1 }\n    val h = 2\n}\n"
+        )
+        names = {n for _, n in scan_call_shadows(text, "kotlin")}
+        assert names == {"a", "c", "d", "e", "g"}
+
+    def test_swift_parameters_bind_their_inner_names(self) -> None:
+        text = "func f(_ a: Int, with b: @escaping () -> Void) {}\ninit(c: Int) {}\nfoo(d: 1)\n"
+        assert {n for _, n in scan_call_shadows(text, "swift")} == {"a", "b", "c"}
+
+    def test_dart_parameters_bind_unless_they_initialize_a_field(self) -> None:
+        text = (
+            "void f(int a, {required void Function() b, this.c, int d = 3}) {}\n"
+            "W({super.key, this.e});\ng(h);\n"
+        )
+        assert {n for _, n in scan_call_shadows(text, "dart")} == {"a", "b", "d"}
+
+    def test_dart_names_closing_an_optional_group_bind(self) -> None:
+        text = (
+            "void f({required void Function() a}) {}\n"
+            "void g({Function()? b}) {}\nvoid h([VoidCallback c]) {}\n"
+        )
+        assert {n for _, n in scan_call_shadows(text, "dart")} == {"a", "b", "c"}

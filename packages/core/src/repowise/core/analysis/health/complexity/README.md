@@ -36,7 +36,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
 - **bumps** — count of branches at the same nesting depth as their
-  sibling branches. Feeds `bumpy_road`.
+  sibling branches. Feeds `repeated_nesting`.
 - **param_count** — formal parameter count. Feeds `primitive_obsession`.
 - **nloc** — non-comment lines of code per function.
 - **assertion_blocks** — runs of ≥ 2 consecutive assertion statements,
@@ -98,6 +98,9 @@ edge between two methods when they (a) reference a common instance field
 or (b) one calls the other (a call surfaces as a reference to the callee's
 name). `lcom4` is the number of connected components: `1` is fully
 cohesive; `≥ 2` means the class splinters into unrelated method groups.
+Only components that touch instance state count: a component that reads no
+field (a static helper, a stateless hook override) is listed but not
+counted, since it is a method to move, not a class to extract.
 Consumed by `low_cohesion` and `god_class`.
 
 ### Heuristic limits (read before trusting a number)

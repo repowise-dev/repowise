@@ -7,8 +7,10 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.finding_registry import split_held
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
 from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
+from repowise.core.persistence.crud.analysis.shown import gated_counts, ungated
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server.tool_health.population import Population
 from repowise.server.mcp_server.tool_health.request import HealthRequest
@@ -79,10 +81,51 @@ def _tiered(rows: list[Any], measured_over: list[Any]) -> tuple[list[Any], dict[
 
 
 def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
+    """Open findings no language gate holds back. File holds are applied after
+    the read (:func:`_listed`): the leads, worst-file order and KPIs count the
+    file-held rows, as the scores did."""
+    return (
+        *_open_typed(repository, req),
+        ungated(
+            "health",
+            HealthFinding.file_path,
+            HealthFinding.biomarker_type,
+            include_unverified=req.include_unverified,
+            file_holds=False,
+        ),
+    )
+
+
+def _listed(rows: list[Any], pop: Population, req: HealthRequest) -> list[Any]:
+    """*rows* a finding list may show: those no file hold keeps back."""
+    if req.include_unverified:
+        return rows
+    return split_held("health", rows, pop.files, kind="biomarker_type")[0]
+
+
+def _open_typed(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
+    """Open findings of a type the registry shows, before any language gate."""
     return (
         HealthFinding.repository_id == repository.id,
         HealthFinding.status == "open",
         HealthFinding.biomarker_type.not_in(req.withheld_types),
+    )
+
+
+async def gated_findings(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> dict[str, dict]:
+    """The open findings a language gate held back from this call, by language."""
+    where = list(_open_typed(repository, req))
+    if pop.scoped:
+        where.append(HealthFinding.file_path.in_(pop.effective_targets))
+    return await gated_counts(
+        session,
+        "health",
+        HealthFinding,
+        *where,
+        kind_col=HealthFinding.biomarker_type,
+        include_unverified=req.include_unverified,
     )
 
 
@@ -106,7 +149,8 @@ async def load_targeted_findings(
         "file_path",
     ))
     emitted, labels = _tiered(
-        [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)], finding_rows
+        [f for f in _listed(finding_rows, pop, req) if _in_dimensions(f, req.ranked_dimensions)],
+        finding_rows,
     )
     return FindingSets(
         finding_rows=emitted,
@@ -131,7 +175,9 @@ async def load_dashboard_findings(
     )
     # ``lead_rows`` stays unfiltered: the leads and performance KPI must not
     # change because the caller asked to see one dimension.
-    dimensioned = [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)]
+    dimensioned = [
+        r for r in _listed(lead_rows, pop, req) if _in_dimensions(r, req.ranked_dimensions)
+    ]
     ranked = req.ranks_findings
     # Tiering measures every open finding; a call that only counts them skips it.
     emitted, labels = _tiered(dimensioned, lead_rows) if ranked else (dimensioned, {})
@@ -211,6 +257,31 @@ async def _read_findings_by_id(session: Any, ids: list[str]) -> dict[str, Any]:
         .scalars()
         .all()
     }
+
+
+async def read_withheld_rows(
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> list[Any]:
+    """Open findings of a type the registry withholds from this surface.
+
+    No list or total shows them, but the stored score counted them, so the
+    per-file leads report their deduction and ``_meta.withheld`` names them:
+    a score never drops for a reason the response hides.
+    """
+    if not req.withheld_types:
+        return []
+    query = select(
+        HealthFinding.file_path, HealthFinding.biomarker_type, HealthFinding.health_impact
+    ).where(
+        HealthFinding.repository_id == repository.id,
+        HealthFinding.status == "open",
+        # No language gate: a withheld type is withheld on every language, and
+        # ``gated_findings`` counts only shown types, so no row is named twice.
+        HealthFinding.biomarker_type.in_(req.withheld_types),
+    )
+    if pop.scoped:
+        query = query.where(HealthFinding.file_path.in_(pop.effective_targets))
+    return pop.in_counts_findings(pop.in_scope_rows(plain_rows(await session.execute(query))))
 
 
 async def read_accuracy_rows(

@@ -11,6 +11,7 @@ import { ArrowUpRight, ChevronRight } from "lucide-react";
 import { cn } from "../lib/cn";
 import { HighlightedCodeBlock } from "../shared/code-block";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
+import { CHART_TOOL, SHOW_VIEW_TOOL } from "@repowise-dev/types/views";
 
 const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
@@ -23,6 +24,8 @@ const TOOL_LABELS: Record<string, string> = {
   search_codebase: "Searching codebase",
   get_dead_code: "Checking dead code",
   get_answer: "Asking the index",
+  [SHOW_VIEW_TOOL]: "Building a view",
+  [CHART_TOOL]: "Drawing a chart",
 };
 
 /** A step the server took for the page, before the model's first turn. */

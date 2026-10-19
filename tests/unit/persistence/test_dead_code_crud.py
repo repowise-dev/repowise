@@ -442,6 +442,8 @@ async def test_unknown_line_count_is_stored_as_null_and_summed_as_nothing(async_
     summary = await dead_code_crud.get_dead_code_summary(async_session, repo.id)
     assert summary["total_lines"] == 19
     assert summary["deletable_lines"] == 19
+    # Both are deletion-ready; the count includes the one of unknown size.
+    assert summary["safe_to_delete_count"] == 2
 
 
 async def test_unknown_line_count_is_stored_as_null(async_session):

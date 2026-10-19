@@ -11,8 +11,7 @@ from __future__ import annotations
 import subprocess
 from typing import NamedTuple
 
-import pathspec
-
+from ..git_cli import path_filter
 from .features import GIT_TIMEOUT_SECONDS, _git, features_from_file_changes
 from .fix_history import change_fix_density
 from .model import score_change
@@ -115,6 +114,7 @@ def baseline_samples(
     limit: int,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> list[BaselineSample]:
     """Score the repo's recent commits to build a local risk distribution.
 
@@ -127,8 +127,8 @@ def baseline_samples(
     cheap enough for a pre-merge gate. Experience is left unknown for the
     baseline; the target is ranked with experience likewise unknown, so the
     comparison is like-with-like: a diff-shape percentile within this repo.
-    *exclude_patterns* use gitignore syntax and are applied to every sampled
-    commit, matching the target change's filtering.
+    *exclude_patterns* and *include_paths* use gitignore syntax and are applied
+    to every sampled commit, matching the target change's filtering.
     """
     # stdin=DEVNULL + timeout: a stuck git must not hang the caller (on MCP
     # stdio transport an inherited pipe handle can wedge the whole session).
@@ -146,7 +146,7 @@ def baseline_samples(
     ).stdout
 
     samples: list[BaselineSample] = []
-    exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
+    counts = path_filter(extensions, exclude_patterns, include_paths)
     for block in out.split("\x1e"):
         lines = block.strip().split("\n")
         if not lines or not lines[0]:
@@ -158,9 +158,7 @@ def baseline_samples(
             if len(parts) != 3:
                 continue
             a_raw, d_raw, path = parts
-            if extensions and not path.endswith(extensions):
-                continue
-            if exclude_spec.match_file(path):
+            if not counts(path):
                 continue
             a = int(a_raw) if a_raw.isdigit() else 0
             d = int(d_raw) if d_raw.isdigit() else 0
@@ -178,6 +176,7 @@ def baseline_samples_cached(
     limit: int,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...] = (),
+    include_paths: tuple[str, ...] = (),
 ) -> list[BaselineSample]:
     """Memoized :func:`baseline_samples`, keyed on the resolved anchor sha.
 
@@ -189,11 +188,13 @@ def baseline_samples_cached(
     """
     sha = _resolve_anchor_sha(repo_path, anchor)
     if sha is None:
-        return baseline_samples(repo_path, anchor, limit, extensions, exclude_patterns)
-    key = (repo_path, sha, limit, extensions, exclude_patterns)
+        return baseline_samples(
+            repo_path, anchor, limit, extensions, exclude_patterns, include_paths
+        )
+    key = (repo_path, sha, limit, extensions, exclude_patterns, include_paths)
     if key in _BASELINE_CACHE:
         return _BASELINE_CACHE[key]
-    samples = baseline_samples(repo_path, anchor, limit, extensions, exclude_patterns)
+    samples = baseline_samples(repo_path, anchor, limit, extensions, exclude_patterns, include_paths)
     if len(_BASELINE_CACHE) >= _BASELINE_CACHE_MAX:
         _BASELINE_CACHE.clear()
     _BASELINE_CACHE[key] = samples

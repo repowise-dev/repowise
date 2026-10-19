@@ -1,0 +1,45 @@
+{
+  "results": [
+    {
+      "type": "symbol",
+      "symbol_id": "src/auth/service.py::AuthService",
+      "name": "AuthService",
+      "kind": "class",
+      "start_line": 10,
+      "end_line": 100,
+      "signature": "class AuthService",
+      "qualified_name": "auth.service.AuthService",
+      "language": "python",
+      "score": 160.0,
+      "next": "get_symbol",
+      "symbols": [
+        "login:20"
+      ],
+      "path": "src/auth/service.py"
+    },
+    {
+      "title": "DB Models",
+      "page_type": "file_page",
+      "snippet": "",
+      "relevance_score": 2.9508,
+      "sources": [
+        "vector"
+      ],
+      "type": "page",
+      "path": "src/db/models.py"
+    }
+  ],
+  "mode": "hybrid",
+  "_meta": {
+    "index_age_days": 7
+  },
+  "candidates": [
+    {
+      "path": "src/auth/service.py"
+    },
+    {
+      "path": "src/db/models.py"
+    }
+  ],
+  "exact_match": true
+}

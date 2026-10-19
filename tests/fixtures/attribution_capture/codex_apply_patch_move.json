@@ -1,0 +1,15 @@
+{
+  "session_id": "019a0000-0000-7000-8000-00000000c0de",
+  "transcript_path": "/home/dev/.codex/sessions/2026/10/14/rollout-2026-10-14T10-00-00-019a0000.jsonl",
+  "cwd": "/work/demo",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5.5-codex",
+  "permission_mode": "default",
+  "turn_id": "turn-7",
+  "tool_use_id": "call_apply_1",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\r\n*** Update File: src/old_name.py\r\n*** Move to: src/new_name.py\r\n@@\r\n-VALUE = 1\r\n+VALUE = compute_default_value()\r\n+LIMIT = compute_default_limit()\r\n*** End Patch\r\n"
+  },
+  "tool_response": "Exit code: 0\nOutput:\nSuccess. Updated the following files:\nM src/new_name.py\n"
+}

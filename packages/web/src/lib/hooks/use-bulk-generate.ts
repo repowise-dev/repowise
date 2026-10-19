@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { RegenerateCascade } from "@repowise-dev/ui/wiki/regenerate-button";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { generateEstimate, generatePages } from "@/lib/api/repos";
+import { useWatchedJob } from "./use-watched-job";
 import type { GenerateEstimate, GenerateSelection } from "@/lib/api/types";
 
 // One bulk action: write every subsystem page a model has not written yet.
@@ -26,7 +27,8 @@ export function useBulkGenerate(repoId: string) {
   const [estimateLoading, setEstimateLoading] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const { watched, watch, settle, dismiss: clearJob } = useWatchedJob<"bulk">();
+  const jobId = watched?.id ?? null;
 
   // Estimate cache keyed by cascade so toggling the choice back to a value
   // already priced doesn't refetch the heavy endpoint. The cascade the UI wants
@@ -83,16 +85,14 @@ export function useBulkGenerate(repoId: string) {
     setLaunching(true);
     try {
       const res = await generatePages(repoId, { selection: SELECTION, cascade });
-      setJobId(res.job_id);
+      watch(res.job_id, "bulk");
       setConfirmOpen(false);
     } catch (e) {
       toast.error("Couldn't start generation", { description: toFriendlyMessage(e) });
     } finally {
       setLaunching(false);
     }
-  }, [repoId, cascade]);
-
-  const clearJob = useCallback(() => setJobId(null), []);
+  }, [repoId, cascade, watch]);
 
   const noProvider = !!estimate && estimate.provider.name == null;
 
@@ -109,6 +109,7 @@ export function useBulkGenerate(repoId: string) {
     jobId,
     open,
     confirm,
+    settle,
     clearJob,
   };
 }

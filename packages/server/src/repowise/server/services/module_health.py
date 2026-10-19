@@ -26,6 +26,7 @@ from repowise.core.analysis.module_health import (
     summarize,
 )
 from repowise.core.persistence.crud import code_file_rows
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -37,12 +38,6 @@ from repowise.core.persistence.models import (
 #: The one definition behind every ownership rollup; not a package boundary
 #: (see :mod:`repowise.core.analysis.module_health`).
 top_level_module = module_label
-
-
-def _under_module(file_path: str, module_path: str) -> bool:
-    if module_path in ("", "root"):
-        return "/" not in file_path
-    return file_path == module_path or file_path.startswith(module_path + "/")
 
 
 async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, ModuleAccumulator]:
@@ -65,6 +60,7 @@ async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, Mo
             select(DeadCodeFinding.file_path, DeadCodeFinding.lines).where(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.kind.not_in(excluded_types()),
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
     ).all()
@@ -150,6 +146,7 @@ async def build_single_file_health(
                 DeadCodeFinding.repository_id == repo_id,
                 DeadCodeFinding.file_path == file_path,
                 DeadCodeFinding.kind.not_in(excluded_types()),
+                ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
             )
         )
     ).one()

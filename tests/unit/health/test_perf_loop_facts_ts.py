@@ -156,6 +156,19 @@ async function f() {
     assert hit.loop.magnitude == "grows_with_data"
 
 
+def test_a_prisma_read_filtered_to_a_set_of_keys_does_not_grow():
+    src = """
+async function f(ids) {
+  const users = await prisma.user.findMany({ where: { id: { in: ids } } });
+  for (const u of users) {
+    await prisma.post.deleteMany({ where: { userId: u.id } });
+  }
+}
+"""
+    hit = next(h for h in _io_hits(src) if h.detail == "db")
+    assert hit.loop is None or hit.loop.magnitude != "grows_with_data"
+
+
 def test_magnitude_grows_with_fetch_json_one_hop():
     src = """
 async function f() {

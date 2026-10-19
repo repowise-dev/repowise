@@ -45,33 +45,12 @@ from typing import Any
 from repowise.core.entry_candidacy import is_reachability_root
 from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
+from ...ingestion.barrels import BARREL_FILENAMES
+from ...ingestion.cohesion import records_no_use
 from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
-
-#: Re-export barrel filenames. A barrel aggregates other modules' symbols and
-#: is reached by importing those names (or, for a package's public entry, via
-#: package.json ``exports``/``main``), so a barrel with no inbound graph edge
-#: is not unreachable.
-#:
-#: Scope note for the analyzer: this rescues a file in the *unreachable-file*
-#: pass only. It is NOT applied in the unused-export pass — a genuine symbol
-#: defined in a barrel that nobody imports should still be flagged.
-BARREL_FILENAMES: frozenset[str] = frozenset(
-    {
-        "__init__.py",
-        "index.ts",
-        "index.tsx",
-        "index.js",
-        "index.jsx",
-        "index.mts",
-        "index.cts",
-        "index.mjs",
-        "index.cjs",
-        "mod.rs",
-    }
-)
 
 #: Edge types that record association rather than dependency. A co-change edge
 #: says two files were committed together, which is not a path any code can
@@ -81,6 +60,8 @@ _NON_DEPENDENCY_EDGES: frozenset[str] = frozenset({"co_changes"})
 _JVM_SUFFIXES: tuple[str, ...] = (".java", ".kt")
 
 CSHARP_SUFFIX = ".cs"
+
+_SWIFT_SUFFIX = ".swift"
 
 #: Objective-C implementation files, which no source ever imports.
 _OBJC_SOURCE_SUFFIXES: tuple[str, ...] = (".m", ".mm")
@@ -158,6 +139,10 @@ class ReachabilityRescues:
     #: so ``None`` is "not checked" and, like ``package_files``, resolves a
     #: ``.cs`` file to reachable.
     csharp_named_files: AbstractSet[str] | None = None
+    #: Swift files with no importer that a use edge, a type name or an extended
+    #: type reaches (see :mod:`swift_reachability`). ``None`` is "not checked"
+    #: and resolves a ``.swift`` file to reachable, as for C#.
+    swift_named_files: AbstractSet[str] | None = None
 
 
 #: Prefix of an :class:`repowise.core.ids.ExternalId`, matched textually rather
@@ -216,14 +201,18 @@ def _is_structural_edge(neighbor: str, path: str, edge_data: Mapping[str, Any], 
     return not (SYMBOL_SEP in neighbor and file_path_of(neighbor) == path)
 
 
-def file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[str]:
+def file_dependency_neighbors(
+    graph: Any, path: str, *, incoming: bool, uses_only: bool = False
+) -> list[str]:
     """Structural file neighbours of *path* in the requested direction.
 
     Every file-to-file edge except co-change counts, which keeps import,
     type-use, framework and future structural edge types while excluding
     symbol containment and historical association. Code we do not own is
     excluded outright: this list names files, and a reader following it wants
-    somewhere in the repository to go.
+    somewhere in the repository to go. ``uses_only`` also drops edges that
+    record no use (a Go package sibling, the reverse of a header pair):
+    reachability needs them, a count of the files that use *path* does not.
     """
     if path not in graph:
         return []
@@ -233,6 +222,8 @@ def file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[
     for source, target, edge_data in edges:
         neighbor = source if incoming else target
         if is_external(neighbor) or graph.nodes.get(neighbor, {}).get("language") == "external":
+            continue
+        if uses_only and records_no_use(edge_data, source, target):
             continue
         if _is_structural_edge(neighbor, path, edge_data, graph):
             neighbors.append(neighbor)
@@ -330,6 +321,10 @@ def is_file_reachable(
         return True if packages is None else is_cpp_file_reachable(path, graph, packages.cpp)
     if path.endswith(CSHARP_SUFFIX) and (
         rescues.csharp_named_files is None or path in rescues.csharp_named_files
+    ):
+        return True
+    if path.endswith(_SWIFT_SUFFIX) and (
+        rescues.swift_named_files is None or path in rescues.swift_named_files
     ):
         return True
 

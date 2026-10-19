@@ -18,14 +18,17 @@ unwraps that, so this dialect only ever sees individual statements.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
+    DeclaredTypes,
     Occurrence,
     Receiver,
     StatementDefUse,
+    echoes,
     node_text,
 )
 from .go_values import written_value
@@ -40,10 +43,21 @@ if TYPE_CHECKING:
 _ASSIGN_KINDS = frozenset({"assignment_statement"})
 _SHORT_VAR = "short_var_declaration"
 _VAR_DECL_KINDS = frozenset({"var_declaration", "const_declaration"})
+# A grouped ``var ( ... )`` holds its specs in a list; a grouped ``const`` does not.
+_VAR_SPEC_LIST = "var_spec_list"
 _INC_DEC_KINDS = frozenset({"inc_statement", "dec_statement"})
 _EXPRESSION_LIST = "expression_list"
 _RANGE_CLAUSE = "range_clause"
 _FOR_CLAUSE = "for_clause"
+# A ``switch`` / ``select`` is one CFG statement; writes inside its arms are
+# may-defs.
+_CONDITIONAL_KINDS = frozenset(
+    {"expression_switch_statement", "type_switch_statement", "select_statement"}
+)
+# ``case v := <-ch:`` / ``case x = <-ch:`` in a ``select``.
+_RECEIVE = "receive_statement"
+# ``&x``: the one unary operator that hands out the variable itself.
+_UNARY = "unary_expression"
 # Selector (``obj.field``) and index (``arr[i]``) targets bind no local.
 _SELECTOR = "selector_expression"
 _INDEX = "index_expression"
@@ -55,7 +69,7 @@ class GoDefUseDialect(BaseDefUseDialect):
     language = "go"
     member_access_kinds = frozenset({"selector_expression"})
     receiver_write_kinds = _ASSIGN_KINDS | _INC_DEC_KINDS
-    type_holder_kinds = frozenset({"parameter_declaration", "var_spec"})
+    declared_types = DeclaredTypes(frozenset({"parameter_declaration", "var_spec"}))
     keyword_kinds = frozenset()  # Go has no keyword arguments.
 
     def _is_scope_boundary(self, node: Node) -> bool:
@@ -161,12 +175,32 @@ class GoDefUseDialect(BaseDefUseDialect):
             return
         if t in _VAR_DECL_KINDS:  # ``var x int = ...`` / ``const c = ...``
             for spec in node.named_children:
-                self._var_spec(spec, defs, uses)
+                grouped = spec.named_children if spec.type == _VAR_SPEC_LIST else (spec,)
+                for one in grouped:
+                    self._var_spec(one, defs, uses)
             return
         if t in _INC_DEC_KINDS:  # ``x++`` / ``x--`` -- read-modify-write
             for child in node.named_children:
                 self._targets(child, defs, uses)
                 self.collect_reads(child, uses)
+            return
+        if t in _CONDITIONAL_KINDS:
+            self._process_may_def(node, defs, uses)
+            return
+        if t == _RECEIVE:
+            start = len(defs)
+            self._targets(node.child_by_field_name("left"), defs, uses)
+            if any(tok.type == ":=" for tok in node.children):
+                self._declare(defs, start, node)
+            # Bound only if this case is the one taken, and a ``:=`` name lives
+            # only in its case: neither hides the value from before the
+            # ``select``. ``may_defs`` leaves a declared name certain, so the
+            # flag is set here for both.
+            defs[start:] = [replace(occ, may=True) for occ in defs[start:]]
+            self._process(node.child_by_field_name("right"), defs, uses)
+            return
+        if t == _UNARY and _is_address_of(node):
+            self._address_of(node.child_by_field_name("operand"), defs, uses)
             return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; field name is not
@@ -179,6 +213,22 @@ class GoDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._process(child, defs, uses)
+
+    def _address_of(
+        self, operand: Node | None, defs: list[Occurrence], uses: list[Occurrence]
+    ) -> None:
+        """``&x`` reads ``x`` and lets whoever holds the address write it:
+        ``fill(&buf)`` can assign ``*dst``, so the variable may change here.
+        A may-def (a def with its paired use), since nothing says the write
+        happens. ``&x.f`` / ``&x[i]`` reach the variable only where the path
+        stays inside the value (:func:`written_value`); through a pointer, a
+        slice or a map the storage is shared and the variable is untouched."""
+        self._process(operand, defs, uses)
+        base = written_value(operand) if operand is not None else None
+        if base is not None:
+            written = [self._occ(base)]
+            defs.extend(written)
+            uses.extend(echoes(written))
 
     def _var_spec(self, spec: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
         """A ``var_spec`` / ``const_spec``: its direct ``identifier`` children are
@@ -212,6 +262,11 @@ class GoDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._targets(child, defs, uses)
+
+
+def _is_address_of(unary: Node) -> bool:
+    op = unary.child_by_field_name("operator")
+    return op is not None and op.text == b"&"
 
 
 DIALECT = GoDefUseDialect()

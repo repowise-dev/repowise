@@ -84,8 +84,8 @@
 ; ---------------------------------------------------------------------------
 ; Calls — Dart calls are selector chains: ``foo(x)`` is an identifier followed
 ; by a sibling (selector (argument_part)); ``obj.method(x)`` inserts a
-; ``.method`` selector between them. Only the first link of a chain is
-; captured (chained calls are best-effort, like Kotlin/Swift).
+; ``.method`` selector between them. A chain is captured to its second link,
+; which carries the first as its receiver call.
 ; ---------------------------------------------------------------------------
 
 ; Bare call / constructor call: foo(args) / HttpClient()
@@ -132,3 +132,86 @@
     )
   ) @call.site
 )
+
+; Chained on a call: a.b(args).c(args) / this.b(args).c(args) / a.b(args)?.c(args).
+; The inner call's name is the receiver call; the parser reads its receiver
+; and arguments off the neighbouring nodes.
+(_
+  [(identifier) (this)]
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.receiver_call
+    )
+  )
+  .
+  (selector
+    (argument_part)
+  )
+  .
+  (selector
+    [
+      (unconditional_assignable_selector (identifier) @call.target)
+      (conditional_assignable_selector (identifier) @call.target)
+    ]
+  )
+  .
+  (selector
+    (argument_part
+      (arguments) @call.arguments
+    )
+  ) @call.site
+)
+
+; Chained on a constructor or function call: B(args).c(args).
+(_
+  (identifier) @call.receiver_call
+  .
+  (selector
+    (argument_part)
+  )
+  .
+  (selector
+    [
+      (unconditional_assignable_selector (identifier) @call.target)
+      (conditional_assignable_selector (identifier) @call.target)
+    ]
+  )
+  .
+  (selector
+    (argument_part
+      (arguments) @call.arguments
+    )
+  ) @call.site
+)
+
+; Chained on a call anywhere in the run: ...a(args).b(args).c(args).
+(_
+  (selector
+    (argument_part)
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.receiver_call
+    )
+  )
+  .
+  (selector
+    (argument_part)
+  )
+  .
+  (selector
+    [
+      (unconditional_assignable_selector (identifier) @call.target)
+      (conditional_assignable_selector (identifier) @call.target)
+    ]
+  )
+  .
+  (selector
+    (argument_part
+      (arguments) @call.arguments
+    )
+  ) @call.site
+)
+

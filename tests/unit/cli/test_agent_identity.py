@@ -72,6 +72,7 @@ def test_a_descriptor_does_not_restate_what_its_identity_says(target_id: str) ->
     assert target.display_name == agent.display_name
     assert target.hook_adapter == agent.hook_adapter
     assert target.session_adapter == agent.session_adapter
+    assert target.capture_adapter == agent.capture_adapter
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -120,6 +121,7 @@ class _WindsurfTarget:
     docs_url = None
     hook_adapter = SEVENTH.hook_adapter
     session_adapter = SEVENTH.session_adapter
+    capture_adapter = SEVENTH.capture_adapter
     methods = ()
     project_file_id = "windsurf_rules"
 

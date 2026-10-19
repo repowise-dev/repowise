@@ -9,6 +9,21 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _ceiling_workspace_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Keep the workspace walk inside each test's tmp_path.
+
+    ``find_workspace_root`` walks up to the filesystem root, so a tmp_path
+    that sits below a directory holding ``.repowise-workspace.yaml`` (say
+    ``~/work/.tmp``) makes unit tests find the developer's real workspace
+    instead of none. Ceiling the walk at tmp_path: the directory itself is
+    still checked, so workspaces a test creates inside it keep working.
+    """
+    from repowise.core.workspace.config import WORKSPACE_CEILING_ENV_VAR
+
+    monkeypatch.setenv(WORKSPACE_CEILING_ENV_VAR, str(tmp_path))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_telemetry_network(tmp_path_factory: pytest.TempPathFactory):
     """Guarantee no test emits telemetry over the network or into real state.
@@ -111,6 +126,39 @@ def _isolate_db_url_env():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
+    """Keep a developer's ``~/.repowise/tokens.yaml`` from turning server auth on."""
+    missing = tmp_path_factory.getbasetemp() / "no-tokens.yaml"
+    monkeypatch.setenv("REPOWISE_TOKENS_FILE", str(missing))
+
+
+_REAL_HOME = Path.home()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+):
+    """Keep a developer's ``~/.repowise`` provider and embedder settings out.
+
+    Every LLM resolver reads ``provider_config.json`` (global default, stored
+    keys) and the embedder resolver reads ``~/.repowise/config.yaml``, so real
+    ones on the machine would decide what a test resolves. A test that moves
+    ``Path.home`` on purpose still gets its own home.
+    """
+    scratch = tmp_path_factory.mktemp("provider-config")
+    monkeypatch.setenv("REPOWISE_CONFIG_DIR", str(scratch))
+    from repowise.core.providers.embedding import resolve as embedding_resolve
+
+    def _global_embedder_config() -> Path:
+        home = Path.home()
+        return (scratch if home == _REAL_HOME else home / ".repowise") / "config.yaml"
+
+    monkeypatch.setattr(embedding_resolve, "global_config_path", _global_embedder_config)
+    sys.modules["repowise.core.providers.llm.resolve"].clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_per_index_caches():
     """Drop the MCP server's per-index caches before every test.
 
@@ -118,7 +166,7 @@ def _fresh_per_index_caches():
     so every test's index looks the same to the cache key. Looked up in
     ``sys.modules`` so a test that never loads the server pays nothing.
     """
-    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph"):
+    for name in ("_basis", "_scope", "_graph_files", "tool_overview.graph", "_components"):
         module = sys.modules.get(f"repowise.server.mcp_server.{name}")
         if module is not None:
             module.reset_cache()

@@ -27,6 +27,11 @@ from sqlalchemy import case, func, or_, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
+from repowise.core.stack_trace import (
+    frame_basenames,
+    map_to_repo_paths,
+    parse_trace,
+)
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._graph_files import per_index
 from repowise.server.mcp_server._helpers import (
@@ -48,11 +53,6 @@ from repowise.server.mcp_server._retrieval_rank import (
     _identifier_words,
     path_word_counts,
     path_words,
-)
-from repowise.server.mcp_server._stack_trace import (
-    frame_basenames,
-    map_to_repo_paths,
-    parse_trace,
 )
 from repowise.server.mcp_server._symbol_lookup import symbol_rank_key
 
@@ -84,6 +84,29 @@ def _tokens(text: str | None) -> set[str]:
     return out
 
 
+def _stem(word: str) -> str:
+    """``files`` -> ``file``: enough inflection folding to match prose to names."""
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
+def _singulars(word: str) -> set[str]:
+    """*word* and each singular a regular plural of it could come from.
+
+    ``classes`` -> ``{classes, classe, class}``, ``factories`` adds ``factory``.
+    Two words match when their sets overlap, so ``caches`` still meets
+    ``cache`` and ``responses`` meets ``response``, which no single rule for
+    ``-es`` gets right for both. Ceiling: regular English plurals.
+    """
+    out = {word}
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        out.add(word[:-1])
+        if len(word) > 4 and word.endswith("es"):
+            out.add(word[:-2])
+        if len(word) > 4 and word.endswith("ies"):
+            out.add(word[:-3] + "y")
+    return out
+
+
 def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], qnorm: str) -> float:
     """Rank a candidate symbol against the query (higher = better).
 
@@ -94,7 +117,9 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
     """
     name = (row.name or "").lower()
     qn = _qual_norm(row.qualified_name)
-    stoks = _tokens(row.name) | _tokens(row.qualified_name)
+    # Plurals folded on both sides, so ``type`` covers ``declared_types_in``.
+    forms = set().union(*map(_singulars, _tokens(row.name) | _tokens(row.qualified_name)))
+    covered = sum(1 for t in qtokens if _singulars(t) & forms)
 
     score = 0.0
     # Exact match on the bare name or the (separator-normalised) qualified name.
@@ -106,9 +131,8 @@ def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], q
         score += 40.0
     # Token coverage: how much of the query the symbol's tokens account for.
     if qtokens:
-        matched = qtokens & stoks
-        score += 30.0 * (len(matched) / len(qtokens))
-        if qtokens <= stoks:  # every query token is present
+        score += 30.0 * (covered / len(qtokens))
+        if covered == len(qtokens):  # every query token is present
             score += 20.0
     # Substring fallback for partial identifiers ("index_re").
     if qnorm and (qnorm in name or qnorm in qn):
@@ -167,8 +191,17 @@ def _candidate_filter(qtokens: set[str], qnorm: str):
         clauses.append(
             WikiSymbol.qualified_name.ilike(f"%{escape_like(qnorm)}%", escape=LIKE_ESCAPE)
         )
-    for tok in qtokens:
-        esc = escape_like(tok)
+    # Every singular form, so ``classes`` still finds ``MyClass``, and a ``-y``
+    # word cut to its stem, so ``factory`` still finds ``createFactories``. A
+    # form that contains another adds nothing to a substring match.
+    forms = {
+        f[:-1] if len(f) > 3 and f.endswith("y") else f
+        for f in set().union(*map(_singulars, qtokens))
+    }
+    for form in forms:
+        if any(other != form and other in form for other in forms):
+            continue
+        esc = escape_like(form)
         clauses.append(WikiSymbol.name.ilike(f"%{esc}%", escape=LIKE_ESCAPE))
         clauses.append(WikiSymbol.qualified_name.ilike(f"%{esc}%", escape=LIKE_ESCAPE))
     return or_(*clauses) if clauses else None
