@@ -44,23 +44,29 @@ async def _named_file(query: str, repo: str | None) -> str | None:
         return None
     ctx = await _resolve_repo_context(repo)
     spec = _get_exclude_spec(ctx.path)
+    node = func.lower(GraphNode.node_id)
+    lows = [t.lower() for t in tokens]
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        for token in tokens:
-            node = func.lower(GraphNode.node_id)
-            low = token.lower()
-            res = await session.execute(
-                select(GraphNode.node_id).where(
-                    GraphNode.repository_id == repository.id,
-                    GraphNode.node_type == "file",
-                    or_(node == low, node.like(f"%/{escape_like(low)}", escape=LIKE_ESCAPE)),
-                )
+        res = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repository.id,
+                GraphNode.node_type == "file",
+                or_(
+                    *(
+                        or_(node == low, node.like(f"%/{escape_like(low)}", escape=LIKE_ESCAPE))
+                        for low in lows
+                    )
+                ),
             )
-            found = [p for (p,) in res.all() if not is_excluded(p, spec)]
-            if token in found:
-                return token
-            if len(found) == 1:
-                return found[0]
+        )
+        paths = {p for (p,) in res.all() if not is_excluded(p, spec)}
+    for token, low in zip(tokens, lows, strict=True):
+        if token in paths:
+            return token
+        found = [p for p in paths if (q := p.lower()) == low or q.endswith(f"/{low}")]
+        if len(found) == 1:
+            return found[0]
     return None
 
 
