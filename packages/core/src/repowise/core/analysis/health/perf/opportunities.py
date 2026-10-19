@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ...execution_roles import hottest_role
+from ...execution_roles import ENTRY_ROLES, hottest_role
 from ..worth import dormant
 from .actionability import (
     ActionabilityState,
@@ -197,7 +197,11 @@ def _read_live(members: list[Any]) -> _Reading:
         sites=sites,
         files={site[0] for site in sites},
         provenance=weakest_provenance({facts.provenance for facts in live}),
-        reachable=_reachability({facts.reliable_entry_reachability for facts in live}),
+        # A hot role is an entry reaching the group, a handler a framework
+        # registers included, which the entry-file walk does not see.
+        reachable=True
+        if role in ENTRY_ROLES
+        else _reachability({facts.reliable_entry_reachability for facts in live}),
         role=role,
         sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
         magnitude=loop_magnitude(

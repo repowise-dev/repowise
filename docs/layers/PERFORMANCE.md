@@ -99,7 +99,8 @@ Each opportunity also says what runs its loop (`execution_role`: request, event
 consumer, scheduled job, startup, CLI, UI, tooling, test or unknown), and loops run
 per request rank above the rest. Roles are read for Python and
 TypeScript/JavaScript; other languages show `unknown`. The `role` filter lists any
-one role, or `all`.
+one role, or `all`. A request, event consumer or scheduled job role is walked from
+its handler, consumer or job, so its `exposure` is `entry_reachable` too.
 
 Work a request hands to `asyncio.create_task` and never waits for is a background
 job, not part of the request, even when the task is kept in a map on shared app
