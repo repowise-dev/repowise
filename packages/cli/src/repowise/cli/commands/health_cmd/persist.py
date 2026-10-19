@@ -78,6 +78,25 @@ def _load_fix_first(repo_path: object, *, limit: int) -> tuple[Any, Any] | None:
         return None
 
 
+def _load_perf_causes(repo_path: object, covered_nloc: int) -> Any | None:
+    """The stored performance headline (``crud.performance_headline``), or
+    ``None`` when the store cannot answer."""
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import performance_headline
+
+    async def _do() -> Any:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            return await performance_headline(session, repo_id, covered_nloc=covered_nloc)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return None
+
+
 def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
     """Every queue unit's stored counts, by noun; ``None`` when the store cannot answer."""
     from repowise.cli.helpers import repo_index_session

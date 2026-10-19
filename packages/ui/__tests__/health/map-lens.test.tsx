@@ -167,7 +167,7 @@ describe("scope disclosure", () => {
 
   it("names the files with causes the cap pushed out", () => {
     const { getByTestId } = render(<CodeHealthMap files={[f("a.py", 10, "core")]} scope={scope} />);
-    expect(getByTestId("map-scope").textContent).toContain("3 files with open causes not drawn");
+    expect(getByTestId("map-scope").textContent).toContain("3 files with causes worth fixing now not drawn");
   });
 
   it("says so when the cap left no cause behind", () => {
@@ -178,7 +178,7 @@ describe("scope disclosure", () => {
       />,
     );
     expect(getByTestId("map-scope").textContent).toContain(
-      "every file with an open cause is drawn",
+      "every file with a cause worth fixing now is drawn",
     );
   });
 
@@ -382,7 +382,7 @@ describe("the navigable list beside the field", () => {
       <MapFieldList files={files} overlay="performance" onSelectFile={vi.fn()} scope={scope} />,
     );
     expect(getAllByRole("button")).toHaveLength(2);
-    expect(getByText(/3 more carry causes outside the drawn field/)).toBeInTheDocument();
+    expect(getByText(/3 more carry causes worth fixing now outside the drawn field/)).toBeInTheDocument();
   });
 
   it("says plainly when the drawn field carries none", () => {

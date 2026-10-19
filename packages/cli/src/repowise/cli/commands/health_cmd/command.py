@@ -46,6 +46,7 @@ from repowise.core.persistence.crud.analysis.health import open_finding_count
 from .codegen import _generate_refactoring_code
 from .persist import (
     _load_fix_first,
+    _load_perf_causes,
     _load_persisted_coverage_map,
     _load_queue_counts,
     _load_recommendations,
@@ -547,6 +548,7 @@ def _render_table(
 ) -> None:
     """The terminal report. *metrics* is ``(as scoped, sorted by score)``."""
     from repowise.core.analysis.health.grading import distribution as health_distribution
+    from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 
     scoped, metrics_sorted = metrics
     # Lead with what to fix; a narrowed run is an inspection, not the worklist.
@@ -556,9 +558,13 @@ def _render_table(
     _render_split_line(report.kpis)
     _render_distribution_line(health_distribution(scoped))
     _render_defect_accuracy_line(report)
-    # Lead with the finding count, density and coverage, not the bounded /10
-    # average. Metrics carry no language, so it comes with the report.
-    _render_performance_section(report, findings, languages)
+    # Lead with the causes worth fixing now and coverage, not the bounded /10
+    # average. Metrics carry no language, so it comes with the report. The
+    # counts are the repository's, so a narrowed run leaves them out.
+    coverage = coverage_for_metrics(report.metrics, languages)
+    narrowed = bool(opts.file_filter or opts.module_filter)
+    causes = None if narrowed else _load_perf_causes(repo_path, coverage.covered_nloc)
+    _render_performance_section(report, coverage, causes)
     _render_files_table(metrics_sorted, _load_short_history(repo_path))
     _render_findings_table(findings)
 

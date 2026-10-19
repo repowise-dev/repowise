@@ -94,7 +94,8 @@ export default function OpportunityDrawer({
           <RelatedSection adapter={adapter} filePath={current.file_path} />
           <TestsSection current={current} adapter={adapter} />
           <EvidenceSection current={current} />
-          <WhyRankedSection current={current} />
+          {/* The row's place in the queue: a lookup by id has no list. */}
+          <WhyRankedSection current={current} position={opportunity.rank_position} />
           <CallerPathsSection current={current} adapter={adapter} />
           <RawObservations
             opportunityId={current.opportunity_id}

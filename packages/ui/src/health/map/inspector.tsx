@@ -28,8 +28,8 @@ function causesOutside(scope: MapScope | undefined): string {
   if (scope === undefined || omitted === null || omitted === undefined) {
     return ". Whether more carry causes outside the drawn field is not reported here.";
   }
-  if (omitted === 0) return ". Every file with an open cause is drawn.";
-  return `. ${omitted.toLocaleString()} more carry causes outside the drawn field.`;
+  if (omitted === 0) return ". Every file with a cause worth fixing now is drawn.";
+  return `. ${omitted.toLocaleString()} more carry causes worth fixing now outside the drawn field.`;
 }
 
 /** Worst-first for the active lens, so the list ranks what the field marks. */
@@ -153,7 +153,7 @@ export function MapFieldList({
       <p className="text-xs text-[var(--color-text-tertiary)]">
         <span className="tabular-nums">{rows.length}</span> of{" "}
         <span className="tabular-nums">{ranked.length.toLocaleString()}</span>{" "}
-        {overlay === "performance" ? "files with an open cause" : "drawn files"} listed
+        {overlay === "performance" ? "files with a cause worth fixing now" : "drawn files"} listed
         {overlay === "performance" ? causesOutside(scope) : "."}
       </p>
     </div>

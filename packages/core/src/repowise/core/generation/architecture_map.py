@@ -262,9 +262,11 @@ def _forward_entries(
         kind = classify_entry_point(path)
         if kind is None:
             continue
-        targets = {t for s, t, etype in edges if s == path and etype == "imports"}
-        if path in barrels and len(targets) == 1:
-            path = targets.pop()
+        if path in barrels:
+            # Scanned only for a launcher: the edge list is repository-sized.
+            targets = {t for s, t, etype in edges if s == path and etype == "imports"}
+            if len(targets) == 1:
+                path = targets.pop()
         if (path, kind) not in out:
             out.append((path, kind))
     return out

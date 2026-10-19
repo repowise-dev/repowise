@@ -135,6 +135,7 @@ async def _seed(session) -> str:
                 affected_files_total=2, queue_eligible=True,
                 details_json=json.dumps(
                     {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                                "growth_source": "loop",
                                 "actionability_confidence": "medium"},
                      "plan": {"effort_bucket": "S"}}
                 ),

@@ -17,7 +17,6 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.grading import (
     BAND_LABEL,
     analysed_note,
@@ -37,13 +36,11 @@ from repowise.core.generation.entry_points import (
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
-from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
     GraphNode,
     HealthFileMetric,
-    HealthFinding,
     Page,
 )
 
@@ -480,25 +477,10 @@ class EditorFileDataFetcher:
         lang_by_path = await crud.get_file_language_map(self._session, self._repo_id)
         perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
 
-        # Open performance-finding count + density over covered LOC (the honest
-        # headline the diluted /10 hides).
-        performance_findings = (
-            await self._session.execute(
-                select(func.count()).where(
-                    HealthFinding.repository_id == self._repo_id,
-                    HealthFinding.status == "open",
-                    HealthFinding.dimension == "performance",
-                    HealthFinding.biomarker_type.not_in(excluded_types()),
-                    ungated("health", HealthFinding.file_path, HealthFinding.biomarker_type),
-                )
-            )
-        ).scalar_one()
-        performance_findings_density: float | None = None
-        if perf_coverage.covered_nloc > 0:
-            performance_findings_density = round(
-                10000.0 * performance_findings / perf_coverage.covered_nloc, 2
-            )
-
+        # The causes worth fixing now lead; production and every cause are context.
+        performance_causes = await crud.performance_headline(
+            self._session, self._repo_id, covered_nloc=perf_coverage.covered_nloc
+        )
 
         # The trend the snapshots record, or nothing: a repository indexed once
         # has no trend, and the section used to print "stable" for it anyway.
@@ -515,8 +497,7 @@ class EditorFileDataFetcher:
             performance_average=(
                 round(performance_average, 2) if performance_average is not None else None
             ),
-            performance_findings=performance_findings,
-            performance_findings_density=performance_findings_density,
+            performance_causes=performance_causes,
             performance_coverage_pct=(
                 perf_coverage.pct_loc if perf_coverage.analyzed_files else None
             ),

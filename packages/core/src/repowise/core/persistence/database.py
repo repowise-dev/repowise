@@ -21,6 +21,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import String, event, inspect, literal
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -167,6 +168,7 @@ __all__ = [
     "get_repo_db_path",
     "get_session",
     "init_db",
+    "refresh_planner_stats",
     "resolve_db_url",
     "schema_behind",
 ]
@@ -704,6 +706,67 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+
+
+# A table whose row count moved past this factor of the count ANALYZE recorded
+# has statistics too old to plan by.
+_STATS_DRIFT = 2
+
+
+def _planner_stats_stale(conn: Any) -> bool:
+    """Whether a table with rows has no statistics, or its count left the band."""
+    # ANALYZE skips virtual tables (the full-text index), so they never count.
+    names = [
+        r[0]
+        for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'"
+        )
+    ]
+    if "sqlite_stat1" not in names:
+        return True
+    recorded = dict(
+        conn.exec_driver_sql(
+            "SELECT tbl, MAX(CAST(stat AS INTEGER)) FROM sqlite_stat1 GROUP BY tbl"
+        ).all()
+    )
+    for name in names:
+        if name.startswith("sqlite_"):
+            continue
+        # One statement per table on purpose: SQLite answers a bare COUNT(*)
+        # from the b-tree, but scans the rows when the count sits inside a
+        # subquery, which made one UNION ALL about 25x slower.
+        rows = conn.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar() or 0
+        before = recorded.get(name)
+        if before is None:
+            if rows:
+                return True
+        elif not before / _STATS_DRIFT <= rows <= before * _STATS_DRIFT:
+            return True
+    return False
+
+
+async def refresh_planner_stats(engine: AsyncEngine) -> None:
+    """Refresh SQLite's planner statistics at the end of a write to the index.
+
+    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
+    a wide covering index over the selective one (a full edge-table scan in
+    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
+    index leads with ``repository_id``, which a sample (``analysis_limit``, and
+    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
+    keeps the wrong index. It runs only when the statistics are missing or a
+    table's size has drifted, since a full pass reads the whole store. Other
+    backends keep their own statistics. A failure costs only a slower plan, so
+    it never fails the write.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    try:
+        async with engine.begin() as conn:
+            if await conn.run_sync(_planner_stats_stale):
+                await conn.execute(text("ANALYZE"))
+    except DBAPIError as exc:  # a locked or read-only store
+        log.warning("sqlite.analyze_failed", error=str(exc))
 
 
 async def schema_behind(engine: AsyncEngine) -> bool:

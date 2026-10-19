@@ -33,7 +33,8 @@ Row shapes (the field names are the SQL columns):
     One mapping of the Fix-first builder's own inputs (``metrics``,
     ``findings``, ``refactoring``, ``performance``, ``plans``); shapes in
     ``repowise.core.analysis.health.fix_first.build``. The recent findings
-    also read ``performance`` rows' ``queue_eligible`` and ``cost_proof``.
+    also read ``performance`` rows' ``queue_eligible`` and the fields
+    ``perf_confident_verdict`` reads.
 ``security``
     ``file_path``, ``kind``, ``line_number``, ``snippet``, ``severity``,
     ``commit_sha`` (empty for the working tree).
@@ -68,6 +69,7 @@ from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types, is_served
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
+from repowise.core.analysis.health.queue.eligibility import perf_confident_verdict
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.author_identity import author_identity_key
@@ -335,14 +337,13 @@ def _recent_candidates(
 
 
 def proven_performance(rows: Rows) -> frozenset[tuple[str, str]]:
-    """``(file, marker)`` of each open performance cause in the default queue
-    whose cost is proven to grow: the bar a performance regression clears."""
+    """``(file, marker)`` of each open performance cause stored in the default
+    queue that is sure enough to be told to do (``perf_confident_verdict``):
+    the bar a performance regression clears."""
     return frozenset(
         (field(r, "file_path"), field(r, "biomarker_type"))
         for r in rows
-        if _open(r)
-        and field(r, "queue_eligible") is True
-        and (field(r, "cost_proof") or "proven") == "proven"
+        if _open(r) and field(r, "queue_eligible") is True and perf_confident_verdict(r).eligible
     )
 
 

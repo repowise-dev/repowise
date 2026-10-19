@@ -301,13 +301,14 @@ def _query_health_line(repo_path: Path) -> str | None:
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
     maint_part = f" · {format_score(maint)} (maintainability)" if maint is not None else ""
-    # Performance leads with the finding COUNT (the honest signal); the bounded
-    # /10 average trails in parens as a summary, never as a verification claim.
+    # Performance leads with the causes worth fixing now (the honest signal);
+    # the bounded /10 average trails in parens, never as a verification claim.
     perf = data.get("performance_average")
-    perf_findings = data.get("performance_findings", 0)
+    causes = data.get("performance_causes")
     perf_part = (
-        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({format_score(perf)})"
-        if perf is not None
+        f" · {causes['now']} of {causes['production']} production perf causes "
+        f"worth fixing now ({format_score(perf)})"
+        if perf is not None and causes
         else ""
     )
     # ``None`` when the repo has no hotspot files, so the segment is dropped

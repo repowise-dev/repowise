@@ -141,7 +141,12 @@ async def persist_result(
     """
     from datetime import UTC, datetime
 
-    from repowise.core.persistence import FullTextSearch, get_session, upsert_repository
+    from repowise.core.persistence import (
+        FullTextSearch,
+        get_session,
+        refresh_planner_stats,
+        upsert_repository,
+    )
     from repowise.core.persistence.crud import upsert_generation_job
     from repowise.core.pipeline import (
         persist_analysis,
@@ -297,6 +302,8 @@ async def persist_result(
         if result.generated_pages:
             await ledger.mark_completed(ResumePhase.GENERATION)
 
+    with timed(timings, "persist.planner_stats"):
+        await refresh_planner_stats(engine)
     await engine.dispose()
     # Closed here rather than after the indexing loop: the preserved-page
     # backfill and the ledger stamp are persistence too, and a phase that

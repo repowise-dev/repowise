@@ -365,7 +365,7 @@ def _fix_items():
     from repowise.core.analysis.health.fix_first import build_fix_first
     from tests.unit.health import fix_first_rows as rows
 
-    return build_fix_first(
+    items = build_fix_first(
         metrics=rows.METRICS,
         findings=rows.FINDINGS,
         refactoring=rows.REFACTORING,
@@ -373,6 +373,8 @@ def _fix_items():
         plans=rows.PLANS,
         limit=3,
     ).items
+    # The rules read the tier as given: the perf item stands in for a next one.
+    return (replace(items[0], tier="next"), *items[1:])
 
 
 def test_fix_first_emits_now_and_next_and_leaves_later() -> None:

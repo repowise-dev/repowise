@@ -162,11 +162,18 @@ export function EvidenceSection({ current }: { current: PerformanceOpportunity }
   );
 }
 
-export function WhyRankedSection({ current }: { current: PerformanceOpportunity }) {
+export function WhyRankedSection({
+  current,
+  position = current.rank_position,
+}: {
+  current: PerformanceOpportunity;
+  /** 0-based place in the queue the row was opened from. */
+  position?: number;
+}) {
   return (
     <CollapsibleSection title="Why it ranks here">
       <p className="text-sm text-[var(--color-text-secondary)]">
-        Position <span className="tabular-nums">{(current.rank_position + 1).toLocaleString()}</span>{" "}
+        Position <span className="tabular-nums">{(position + 1).toLocaleString()}</span>{" "}
         in the queue.
       </p>
       {current.why_ranked.length > 0 ? (

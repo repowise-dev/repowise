@@ -80,6 +80,7 @@ PERFORMANCE = [
      "file_path": "src/repo.py", "intervention_symbol": "src/repo.py::Repo.load",
      "affected_call_sites_total": 4, "affected_files_total": 2, "queue_eligible": True,
      "details": {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                            "growth_source": "loop",
                             "actionability_confidence": "medium"},
                  "plan": {"effort_bucket": "S"}}},
     {"opportunity_id": "perf2", "execution_context": "production",

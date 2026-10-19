@@ -376,7 +376,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 
 | Field | Meaning |
 |-------|---------|
-| `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (production code alone; only while tests are in `average_health`), `worst_performer_path`, `worst_test_path` |
+| `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (production code alone; only while tests are in `average_health`), `worst_performer_path`, `worst_test_path`, `performance_causes` (`now` in the default queue, `production`, `all`, and `per_10k_loc` over covered lines; see [PERFORMANCE.md](../layers/PERFORMANCE.md#the-default-queue)) |
 | `unanalysed_file_count` | Files in a language health has no dialect for, stored with no score and left out of every figure; absent when there are none |
 | `kpis.band`, `kpis.analysed_share` | The headline band is `null` when fewer than half the code files were analysed, since the average then speaks for a sample; `analysed_share` (scored over all code files) appears when some were left out. `get_overview` reports `code_health` the same way |
 | `gap_analysis` | Weighted points the average must recover to reach 8.0, files below it, `files_to_reach_target`, `files_for_half_gap`, `weighted_gap_points`, `weighted_gross_gap_points` |
@@ -427,7 +427,7 @@ Performance findings carry `health_impact: 0`; the pillar never blends into the 
 
 A bare `get_health()` ranks performance work inside `fix_first` as `perf_fix` items. `get_health(opportunity_id="perf...")` adds `plan_steps`, `validation` and `siblings`; `only=["performance_evidence"]` with `cursor` pages the evidence. Ids are stable within a performance model version; an id from an older model resolves to `model_state.state: "stale_model"` with `refresh_required`. `lifecycle_status` is `open` or `resolved`. Evidence rows carry a public `finding_id`.
 
-The `performance_opportunities` list holds causes whose cost is measured (`cost_proof` `proven`). A cause whose loop size nothing measured is `unproven`: it never sets `may_lead`, and every list leaves it out. `performance_summary.default_queue.excluded.unmeasured_cost` counts the ones the default queue drops, `performance_summary.proof` counts both values, and the `proof` facet counts them under the current filters. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
+The `performance_opportunities` list holds causes whose cost is measured (`cost_proof` `proven`). A cause whose loop size nothing measured is `unproven`: it never sets `may_lead`, and every list leaves it out. `performance_summary.default_queue.excluded.unmeasured_cost` counts the ones the default queue drops, `performance_summary.proof` counts both values, and the `proof` facet counts them under the current filters. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`. The `growth_source` facet names the member loop that shows the cost grows (`loop`, `registry`, `cold_path`, `none`, `n/a`); `fix_first`, Do next and `performance_summary.lead` take only `plan_ready` causes with `loop` (or a per-call cause an entry point reaches), and `fix_first.totals.excluded.unconfirmed_cost` counts the rest.
 
 ### Coverage
 

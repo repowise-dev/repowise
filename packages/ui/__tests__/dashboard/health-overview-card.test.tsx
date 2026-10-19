@@ -29,3 +29,39 @@ describe("HealthOverviewCard band", () => {
     expect(container.textContent).toContain("Excellent");
   });
 });
+
+describe("HealthOverviewCard performance", () => {
+  const perf = {
+    maintainability_average: 8.1,
+    performance_average: 9.76,
+  };
+
+  it("leads with the causes worth fixing now and keeps production as context", () => {
+    const { container } = render(
+      <HealthOverviewCard
+        data={data({
+          ...perf,
+          performance_causes: { now: 4, production: 415, all: 926, per_10k_loc: 9.03 },
+        })}
+        repoId="r"
+      />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("4worth fixing now");
+    expect(text).toContain("415 in production");
+    expect(text).not.toContain("926");
+  });
+
+  it("is all clear only when no production cause is open", () => {
+    const waiting = render(
+      <HealthOverviewCard
+        data={data({
+          ...perf,
+          performance_causes: { now: 0, production: 12, all: 20, per_10k_loc: 1 },
+        })}
+        repoId="r"
+      />,
+    );
+    expect(waiting.container.textContent).toContain("0worth fixing now");
+  });
+});

@@ -10,6 +10,7 @@ from repowise.core.generation.editor_files.data import (
     EditorFileData,
     HotspotFile,
 )
+from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass for testing
@@ -199,7 +200,7 @@ def test_stale_warning_guidance_points_at_served_files(any_gen):
 def _health_block(
     maintainability_average: float | None,
     performance_average: float | None = None,
-    performance_findings: int = 0,
+    performance_causes: PerformanceHeadline | None = None,
     performance_coverage_pct: float | None = None,
     band: str = "Good",
 ) -> CodeHealthBlock:
@@ -211,7 +212,7 @@ def _health_block(
         worst_path="src/bad.py",
         maintainability_average=maintainability_average,
         performance_average=performance_average,
-        performance_findings=performance_findings,
+        performance_causes=performance_causes,
         performance_coverage_pct=performance_coverage_pct,
     )
 
@@ -229,12 +230,16 @@ def test_the_default_health_line_is_the_headline_and_worst_file(gen):
     import dataclasses
 
     block = dataclasses.replace(
-        _health_block(6.4, performance_average=9.2, performance_findings=7),
+        _health_block(
+            6.4,
+            performance_average=9.2,
+            performance_causes=PerformanceHeadline(1, 7, 12, 2.5),
+        ),
         fix_first=[{"title": "Split f", "where": "src/bad.py:3", "why": "long"}],
     )
     result = gen.render(dataclasses.replace(_minimal_data(), code_health=block))
     assert "### Code health\n7.5/10 avg (Good), worst `src/bad.py` at 2.0/10." in result
-    for detail in ("hotspot health", "maintainability", "performance risk", "Fix first"):
+    for detail in ("hotspot health", "maintainability", "worth fixing now", "Fix first"):
         assert detail not in result.split("### Tools")[0]
 
 
@@ -309,14 +314,19 @@ def test_render_surfaces_performance_when_present(gen):
     data = dataclasses.replace(
         _minimal_data(),
         code_health=_health_block(
-            6.4, performance_average=9.2, performance_findings=7, performance_coverage_pct=88.0
+            6.4,
+            performance_average=9.2,
+            performance_causes=PerformanceHeadline(1, 7, 12, 2.5),
+            performance_coverage_pct=88.0,
         ),
         sections=_FULL_HEALTH,
     )
     result = gen.render(data)
-    # Leads with the finding COUNT; the bounded [9,10] average and coverage %
-    # are deliberately not rendered (nothing an agent can act on there).
-    assert "performance risk 7 open static performance findings" in result
+    # Leads with the causes worth fixing now, production and overall as context;
+    # the bounded [9,10] average and coverage % are deliberately not rendered.
+    assert (
+        "performance 1 cause worth fixing now (7 open in production code, 12 overall)" in result
+    )
     assert "N+1" not in result
 
 
@@ -326,7 +336,7 @@ def test_render_omits_performance_when_unmeasured(gen):
     result = gen.render(data)
     # Maintainability still renders; the performance clause is suppressed.
     assert "maintainability 6.4/10" in result
-    assert "performance risk" not in result
+    assert "worth fixing now" not in result
 
 
 def test_write_creates_new_file(gen, tmp_path):
