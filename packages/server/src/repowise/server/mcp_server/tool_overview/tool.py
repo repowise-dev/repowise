@@ -36,9 +36,11 @@ from repowise.server.mcp_server.tool_overview.actions import _build_next_actions
 from repowise.server.mcp_server.tool_overview.decisions import _build_key_decisions
 from repowise.server.mcp_server.tool_overview.graph import (
     _build_architecture,
+    _build_commands,
     _build_community_summary,
     _build_package_dependencies,
     _load_community_nodes,
+    _package_roots,
 )
 from repowise.server.mcp_server.tool_overview.health import _build_code_health
 from repowise.server.mcp_server.tool_overview.history import (
@@ -48,6 +50,7 @@ from repowise.server.mcp_server.tool_overview.history import (
 from repowise.server.mcp_server.tool_overview.outline import _build_outline, _load_tree_rows
 from repowise.server.mcp_server.tool_overview.pages import (
     _capped_entry_points,
+    _grouped_by_package,
     _load_module_pages,
     _load_overview_page,
     _overview_content,
@@ -179,10 +182,11 @@ async def _repo_overview(
     slow = _slow_reads(session, session_factory, repository, full_actions="actions" in want)
     try:
         overview_page = await _load_overview_page(session, repository)
-        module_pages = await _load_module_pages(session, repository, collector)
+        package_roots = await _package_roots(session, repository, exclude_spec)
+        module_rows = await _load_module_pages(session, repository, collector, package_roots)
         entry_point_ids = await _resolve_entry_point_ids(session, repository, exclude_spec)
         all_git = await _load_git_rows(session, repository, exclude_spec)
-        architecture = await _build_architecture(session, repository)
+        architecture = await _build_architecture(session, repository, package_roots)
         dependencies = await _build_package_dependencies(session, repository, exclude_spec)
         if dependencies:
             architecture = {**architecture, "dependencies": dependencies}
@@ -204,11 +208,10 @@ async def _repo_overview(
         **({"next_actions_reason": next_actions_reason} if next_actions_reason else {}),
         # Names and paths only. get_context(path) carries the prose, and
         # section indexes into include=["outline"].
-        "key_modules": [
-            {"name": p.title, "path": p.target_path, "section": p.section_number}
-            for p in module_pages
-        ],
-        "entry_points": _capped_entry_points(entry_point_ids, collector),
+        "key_modules": module_rows,
+        "entry_points": _capped_entry_points(
+            _grouped_by_package(entry_point_ids, package_roots), collector
+        ),
         "git_health": _build_git_health(all_git, repo_root),
         "more": (
             'get_overview(include=[...]) also serves: "outline" (the wiki '
@@ -225,6 +228,7 @@ async def _repo_overview(
         "outline": outline,
         "outline_hint": _OUTLINE_HINT if outline else None,
         "architecture": architecture,
+        "commands": _build_commands(repo_root, package_roots),
         "key_decisions": requested["key_decisions"],
         "reading_order": requested["reading_order"],
         "reading_order_hint": _READING_ORDER_HINT if requested["reading_order"] else None,

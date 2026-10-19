@@ -325,9 +325,10 @@ The `candidates` and `history` lanes shed first under budget pressure, so an abs
 | Field | Meaning |
 |-------|---------|
 | `content_md` | The overview essay's summary section; the full essay with `include=["content"]` |
-| `key_modules` | Name, path, and outline section |
-| `entry_points` | Detected entry points |
-| `architecture` | Layer names and file counts in stack order, test layer left out |
+| `key_modules` | One row per topmost module page (a package or top-level directory), in outline order, up to 12: name, path, outline section, `package` when the page sits inside one, and `pages` beneath it |
+| `entry_points` | Detected entry points with build and CI tooling set aside, each package's together |
+| `architecture` | Layer names, file counts and `root` (the directory holding most of the layer, when one does) in stack order, test layer left out |
+| `commands` | Build, test and lint commands read from manifests: `"."` for the root, plus each package that names a task the root does not |
 | `code_health` | Headline score and band, `production_average` (non-test files, when the reading holds tests), hotspot health, worst file, open findings, `code_files` (every code file health read; `files_scored` when some carry no score) and `files_by_band` |
 | `git_health` | Hotspot count, churn trend and `riskiest_files`: five paths, bug magnets first, then fix mass, then churn |
 | `next_actions` | The first three stored actions (`id`, `tier`, `title`, a one-line `impact`, `target`) for the week, or the quarter when the week is empty, with each horizon's `total`. `include=["actions"]` serves both horizons with `done_when` and `by_tier`. `get_health(fix_id="act_...")` opens one in full |

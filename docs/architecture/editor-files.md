@@ -188,6 +188,10 @@ WHERE repository_id = :repo_id AND is_entry_point = TRUE
 # then centrality as a tiebreak; sliced to 10 after ranking.
 ```
 
+Both lists pass through `orientation_entry_points_view`, the rule
+`get_overview` shares. It sets build and CI tooling (`scripts/`, `docker/`,
+`plugins/`) aside unless that is all there is.
+
 PageRank deliberately does **not** lead here. Centrality rewards fan-in, so it
 floats a widely-imported barrel above the real front door — see
 `generation/entry_points.py`.

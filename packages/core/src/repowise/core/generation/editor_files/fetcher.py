@@ -28,7 +28,10 @@ from repowise.core.analysis.health.rows import split_unscored
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
-from repowise.core.generation.entry_points import rank_entry_points
+from repowise.core.generation.entry_points import (
+    orientation_entry_points_view,
+    rank_entry_points,
+)
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
@@ -219,7 +222,7 @@ class EditorFileDataFetcher:
             except (json.JSONDecodeError, TypeError):
                 curated = []
             if curated:
-                return curated[:_MAX_ENTRY_POINTS]
+                return orientation_entry_points_view(curated)[:_MAX_ENTRY_POINTS]
 
         result = await self._session.execute(
             select(GraphNode.node_id, GraphNode.pagerank, GraphNode.betweenness).where(
@@ -229,7 +232,7 @@ class EditorFileDataFetcher:
         )
         candidates = [(node_id, pr or 0.0, bt or 0.0) for node_id, pr, bt in result.all()]
         ranked = rank_entry_points(candidates, conventional_entry_stems())
-        return ranked[:_MAX_ENTRY_POINTS]
+        return orientation_entry_points_view(ranked)[:_MAX_ENTRY_POINTS]
 
     async def _get_hotspots(self) -> list[HotspotFile]:
         """Top attention-worthy files: bug-fix history first, churn as fallback.

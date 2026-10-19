@@ -650,7 +650,7 @@ async def test_get_overview_module_cap_is_expandable(setup_mcp, session, repo_ro
     omitted = result["_meta"]["omitted"]
     stored = "\n".join(_store_get(repo_root, r) or "" for r in omitted["refs"])
     # 27 module pages total, ordered by title — the tail is in the store.
-    assert f"module pages beyond cap={_MODULE_CAP}" in stored
+    assert f"module pages beneath the key modules, cap={_MODULE_CAP}" in stored
     assert stored.count("Extra Module") + stored.count("Module") >= 7
 
 

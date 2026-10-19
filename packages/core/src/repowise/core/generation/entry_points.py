@@ -16,6 +16,9 @@ conventional entry filename and a shallow path — and uses centrality only to
 break ties. It is deliberately free of any DB/graph/LLM dependency so the
 ordering can be unit-tested directly.
 
+Every orientation surface also passes its list through
+:func:`orientation_entry_points_view`, which sets build and CI tooling aside.
+
 Three callable shapes, one rule: :func:`orientation_entry_points` for a
 ``RepoStructure``, :func:`rank_entry_point_paths` for bare paths, and
 :func:`rank_entry_points` for callers holding centrality.
@@ -45,6 +48,7 @@ from repowise.core.entry_candidacy import (
     conventional_entry_stems,
     entry_point_depth,
 )
+from repowise.core.generation.layers import DOCS_TOOLING_LAYER, infer_layer
 
 
 def _name_bucket(path: str, conventional_stems: frozenset[str]) -> int:
@@ -185,3 +189,15 @@ def rank_entry_points(
             ),
         )
     ]
+
+
+def orientation_entry_points_view(paths: Iterable[str]) -> list[str]:
+    """*paths* without tooling (``scripts/``, ``docker/``, ``plugins/``), order kept.
+
+    A lint or gate script is a real entry point, so candidacy and dead code keep
+    it, but it is not where a reader enters the system. When tooling is all
+    there is, the list is returned whole rather than emptied.
+    """
+    paths = list(paths)
+    runtime = [p for p in paths if infer_layer(p) != DOCS_TOOLING_LAYER]
+    return runtime or paths
