@@ -265,10 +265,41 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     if not metadata_list:
         return
 
-    total = len(metadata_list)
-    if total < 2:
-        for meta in metadata_list:
+    # Non-code history-tier files do not participate in code churn rankings.
+    code_metas = [m for m in metadata_list if not m.get("history_only")]
+    for meta in metadata_list:
+        if meta.get("history_only"):
             meta["churn_percentile"] = 0.0
+            meta["is_hotspot"] = False
+            meta.setdefault("change_entropy_pct", 0.0)
+            meta.setdefault("co_change_scatter_pct", 0.0)
+            meta.setdefault("prior_defect_pct", 0.0)
+
+    if not code_metas:
+        return
+
+    total = len(code_metas)
+    if total < 2:
+        for meta in code_metas:
+            meta["churn_percentile"] = 0.0
+    elif total == 2:
+        keys = [
+            (
+                float(m.get("temporal_hotspot_score") or 0.0),
+                int(m.get("commit_count_90d") or 0),
+            )
+            for m in code_metas
+        ]
+        if keys[0] == keys[1]:
+            for meta in code_metas:
+                meta["churn_percentile"] = 0.0
+        else:
+            min_k = min(keys)
+            for meta, key in zip(code_metas, keys, strict=True):
+                churn_pct = 0.0 if key == min_k else 0.5
+                meta["churn_percentile"] = churn_pct
+                if churn_pct >= 0.75 and meets_hotspot_floors(meta):
+                    meta["is_hotspot"] = True
     else:
         # Group keys to mirror SQL PERCENT_RANK() with tie-awareness:
         # (RANK() - 1) / (total - 1)
@@ -277,7 +308,7 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
                 float(m.get("temporal_hotspot_score") or 0.0),
                 int(m.get("commit_count_90d") or 0),
             )
-            for m in metadata_list
+            for m in code_metas
         ]
         unique_keys = sorted(set(keys))
         rank_lookup: dict[tuple[float, int], float] = {}
@@ -286,7 +317,7 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
             rank_lookup[key] = running / (total - 1)
             running += sum(1 for k in keys if k == key)
 
-        for meta, key in zip(metadata_list, keys, strict=True):
+        for meta, key in zip(code_metas, keys, strict=True):
             churn_pct = min(rank_lookup[key], 1.0)
             meta["churn_percentile"] = churn_pct
             # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
@@ -300,17 +331,17 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     # FULL-tier files that only ever changed alone — stay at 0.0 so the
     # change_entropy biomarker is silent for them.
     _rank_within_eligible(
-        metadata_list, source_key="change_entropy", target_key="change_entropy_pct"
+        code_metas, source_key="change_entropy", target_key="change_entropy_pct"
     )
 
     # Ranked on the decayed partner mass, not the count: a count saturates at
     # the storage cap and never retires, so it can only ever ratchet up.
     _rank_within_eligible(
-        metadata_list, source_key="co_change_mass", target_key="co_change_scatter_pct"
+        code_metas, source_key="co_change_mass", target_key="co_change_scatter_pct"
     )
 
     # Bug-fix history, ranked over every file: a file with no fixes in the
     # window is a measured zero, not a missing signal.
     _rank_over_population(
-        metadata_list, source_key="prior_defect_count", target_key="prior_defect_pct"
+        code_metas, source_key="prior_defect_count", target_key="prior_defect_pct"
     )

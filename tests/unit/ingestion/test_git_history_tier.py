@@ -206,3 +206,23 @@ def test_history_tier_keeps_files_in_reincluded_dir(tmp_path: Path) -> None:
     assert kept_custom == {"src/build/README.md"}
 
 
+def test_two_code_files_plus_history_only_percentile_calculation():
+    from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+    metas = [
+        {"file_path": "a.py", "temporal_hotspot_score": 10.0, "commit_count_90d": 5},
+        {"file_path": "b.py", "temporal_hotspot_score": 2.0, "commit_count_90d": 1},
+        {"file_path": "README.md", "temporal_hotspot_score": 0.0, "commit_count_90d": 20, "history_only": True},
+        {"file_path": "config.json", "temporal_hotspot_score": 0.0, "commit_count_90d": 5, "history_only": True},
+    ]
+    compute_percentiles(metas)
+
+    # History-only files get 0.0 churn percentile and do not participate in code ranking
+    assert metas[2]["churn_percentile"] == 0.0
+    assert metas[3]["churn_percentile"] == 0.0
+
+    # Two code files: lower is 0.0, higher is 0.5 (not 1.0)
+    assert metas[0]["churn_percentile"] == 0.5
+    assert metas[1]["churn_percentile"] == 0.0
+
+
