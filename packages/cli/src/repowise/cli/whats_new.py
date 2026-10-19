@@ -94,11 +94,8 @@ def read_last_seen_version() -> str | None:
 
 
 def write_last_seen_version(version: str) -> None:
-    """Record *version* as seen; never lowers the marker.
-
-    Running an older install (a second venv, a downgrade) must not make the
-    next upgrade re-show releases already read.
-    """
+    """Record *version* as seen; never lowers the marker, so an older install
+    cannot make the next upgrade re-show releases already read."""
     previous = read_last_seen_version()
     if previous and is_newer_version(previous, version):
         return

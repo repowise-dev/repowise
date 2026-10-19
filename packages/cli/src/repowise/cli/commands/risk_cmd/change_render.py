@@ -122,8 +122,7 @@ def _print_change_facts(result: ChangeRiskResult) -> None:
     features, request_excludes = result.features, result.request_excludes
     if result.working_tree:
         console.print("  [dim]Scoring your uncommitted changes, not the last commit.[/dim]")
-    # A range names its head commit's subject, while its fix flag reads every
-    # commit in it, so both say which they describe.
+    # A range's subject is its head commit's; its fix flag covers every commit.
     is_range = ".." in features.ref
     if features.subject:
         head = "Head commit: " if is_range else ""
