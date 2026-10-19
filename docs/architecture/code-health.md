@@ -17,7 +17,8 @@ markers, languages, coverage formats, or alerts.
 
 Code Health is the **fifth intelligence layer** in Repowise, alongside Graph,
 Git, Docs, and Decisions. It reads from Graph and Git but never modifies
-them. Its only writes are to its own four tables.
+them. Its only writes are to its own four tables. It measures technical debt:
+the code shape and change history that make a file likely to need the next fix.
 
 ```
 ┌─────────────┐  parsed_files     ┌──────────────────┐

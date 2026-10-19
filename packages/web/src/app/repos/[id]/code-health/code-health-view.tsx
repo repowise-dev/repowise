@@ -338,9 +338,8 @@ export function CodeHealthView() {
     <PageShell
       title={t("title")}
       icon={<HeartPulse />}
-      // No description: the lede below opens with what the score is built from,
-      // and a header that says it first only says it twice.
-      //
+      // What the page is for; the lede below says what the score is built from.
+      description={t("description")}
       // "wide" rather than the style's usual 1280 — a deliberate divergence. At
       // 1280 the map keeps ~900px beside its 320px inspector; the extra width
       // goes entirely to the field, which is this page's whole subject.

@@ -514,6 +514,8 @@
     },
     "codeHealth": {
       "title": "Code health",
+      "description": "Technical debt across your codebase, ranked by what it costs you to keep changing it.",
+      "fixFirstTitle": "Highest-interest technical debt",
       "scopeFiles": "Files",
       "scopeCounts": "Counts",
       "scopeAll": "All code",
@@ -1331,7 +1333,7 @@
   "codeHealth": {
     "hotspots": {
       "title": "Hotspots",
-      "description": "Ranked by hotspot score: every commit counts, recent ones most (180-day half-life). Same scope as the map above. The danger is not churn on its own. It is a file that changes constantly and only one person understands.",
+      "description": "Files that change often. Debt here costs you on every change. Ranked by hotspot score: every commit counts, recent ones most (180-day half-life). Same scope as the map above. The danger is not churn on its own. It is a file that changes constantly and only one person understands.",
       "commitHistory": "Commit history",
       "loadFailed": "Couldn't load hotspots. Run a sync to mine git history for this repo.",
       "promptTitle": "AI stabilization prompt",

@@ -394,6 +394,9 @@ git alone cannot attest.
 
 ## ★ Know exactly what to fix
 
+Code health measures technical debt: the code shape and change history that make a
+file likely to need the next fix.
+
 A score that says *"this file is risky"* is where most tools stop. Repowise scores
 every file, finds where the risk concentrates, and names the specific fix.
 
