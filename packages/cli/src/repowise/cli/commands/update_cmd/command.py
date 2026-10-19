@@ -1436,14 +1436,12 @@ def _run_partial_analyses(run: UpdateRun) -> None:
     )
 
 
-_PROSE_SUFFIXES = frozenset({".rst"})
-
-
 def _is_prose(path: str) -> bool:
     from repowise.core.ingestion.languages.registry import REGISTRY
 
     suffix = Path(path).suffix.lower()
-    return suffix in _PROSE_SUFFIXES or REGISTRY.from_extension(suffix) in ("markdown", "asciidoc")
+    # .mdx imports mark components reachable; .rst is read for symbol names.
+    return suffix != ".mdx" and REGISTRY.from_extension(suffix) in ("markdown", "asciidoc")
 
 
 def _dead_code_unchanged(run: UpdateRun) -> bool:
