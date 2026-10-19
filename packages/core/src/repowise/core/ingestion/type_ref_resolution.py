@@ -160,6 +160,17 @@ def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
     return bool(names) and own.issuperset(names)
 
 
+# Language families a type name can resolve into by file name. A stem match
+# outside the family is a coincidence of names, never a definition.
+_TS_TYPE_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "vue", "svelte"})
+_C_TYPE_LANGUAGES: frozenset[str] = frozenset({"c", "cpp"})
+
+
+def _node_language_in(graph: nx.DiGraph, node: str, languages: frozenset[str]) -> bool:
+    """Whether *node* is a graph file written in one of *languages*."""
+    return graph.has_node(node) and graph.nodes[node].get("language") in languages
+
+
 # ---------------------------------------------------------------------------
 # Strategy: C# / .NET
 # ---------------------------------------------------------------------------
@@ -595,8 +606,13 @@ def _find_c_type_file(
         if type_name in defined_names.get(sib, _EMPTY_NAMES):
             return sib
 
+    # Same language family only: the stem map spans every language.
     candidates = ctx.stem_map.get(type_name.lower(), [])
-    if len(candidates) == 1 and candidates[0] != from_path and graph.has_node(candidates[0]):
+    if (
+        len(candidates) == 1
+        and candidates[0] != from_path
+        and _node_language_in(graph, candidates[0], _C_TYPE_LANGUAGES)
+    ):
         return candidates[0]
 
     return None
@@ -623,8 +639,9 @@ def _resolve_ts_type_refs(
            ``resolved_file`` is the answer.
         2. ``import * as ns from './x'``    — ``ns.Foo`` strips to ``Foo``;
            the namespace alias points at the module.
-        3. Stem-map fallback                — unique global file whose
-           basename matches the type name; matches Rust's strategy.
+        3. Stem-map fallback                — unique global TS/JS file whose
+           basename matches the type name; matches Rust's strategy. A name
+           bound by a package import never reaches this step.
         4. Same-file definitions are skipped silently (no edge needed).
 
     This emits ``type_use`` edges at file granularity — the dead-code
@@ -641,8 +658,15 @@ def _resolve_ts_type_refs(
     name_to_source: dict[str, str] = {}
     # alias -> resolved_file for namespace / module imports.
     namespace_to_source: dict[str, str] = {}
+    # Names bound by a package import (``import { type Dispatch } from
+    # "react"``). Their definition is outside the repo, so a repo file with a
+    # matching name is never the answer.
+    external_names: set[str] = set()
     for imp in parsed.imports:
-        if not imp.resolved_file or imp.resolved_file.startswith("external:"):
+        if not imp.resolved_file:
+            continue
+        if imp.resolved_file.startswith("external:"):
+            external_names.update(b.local_name for b in imp.bindings)
             continue
         for binding in imp.bindings:
             if binding.local_name == "*":
@@ -674,6 +698,8 @@ def _resolve_ts_type_refs(
             same_file_refs.add(name)
             continue
         target = name_to_source.get(name) or namespace_to_source.get(name)
+        if target is None and name in external_names:
+            continue
         if target is None:
             target = _find_unique_ambient_declaration(
                 name, from_path, graph, defined_names, ctx
@@ -753,19 +779,24 @@ def _ambient_declaration_names(
         if node.type == "ambient_declaration":
             prefix = encoded[node.start_byte : min(node.end_byte, node.start_byte + 40)]
             if re.match(rb"declare\s+global\b", prefix):
-                nested = [node]
-                while nested:
-                    declaration = nested.pop()
-                    name = declaration.child_by_field_name("name")
-                    if name is not None:
-                        type_name = encoded[name.start_byte : name.end_byte].decode(
-                            "utf-8", errors="replace"
-                        )
-                        if type_name in defined_names:
-                            global_names.add(type_name)
-                    nested.extend(declaration.children)
+                global_names |= _declared_names_under(node, encoded, defined_names)
         stack.extend(node.children)
     return global_names
+
+
+def _declared_names_under(node: Any, encoded: bytes, defined_names: set[str]) -> set[str]:
+    """Names in ``defined_names`` declared anywhere under ``node``."""
+    found: set[str] = set()
+    nested = [node]
+    while nested:
+        declaration = nested.pop()
+        name = declaration.child_by_field_name("name")
+        if name is not None:
+            type_name = encoded[name.start_byte : name.end_byte].decode("utf-8", errors="replace")
+            if type_name in defined_names:
+                found.add(type_name)
+        nested.extend(declaration.children)
+    return found
 
 
 def _find_ts_type_in_stem_map(
@@ -788,6 +819,10 @@ def _find_ts_type_in_stem_map(
         return None
     candidate = candidates[0]
     if candidate == from_path:
+        return None
+    # The stem map spans every language: ``React.Dispatch`` matched a Python
+    # ``dispatch.py`` that defines a ``Dispatch`` class.
+    if not _node_language_in(graph, candidate, _TS_TYPE_LANGUAGES):
         return None
     # Verify the candidate file actually exports a symbol matching name —
     # avoids accidentally matching ``utils.ts`` to a type called ``Utils``.

@@ -41,7 +41,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ._shared import HookResult, _extract_output_text, _find_repo_root, _relativize
+from repowise.core.fsutils import repo_relative
+
+from ._shared import HookResult, _extract_output_text, _find_repo_root
 
 #: Replacement gates. Named for the retired nudge they were first tuned for,
 #: and left that way on purpose: :mod:`search_digest` documents its own ratio
@@ -78,7 +80,7 @@ def _session_state_path(repo_path: Path, session_id: str = "") -> Path:
     """This session's state file. One per session id — see :data:`_STATE_DIR`."""
     import hashlib
 
-    digest = hashlib.sha1(session_id.encode("utf-8", "replace")).hexdigest()[:16]
+    digest = hashlib.sha1(session_id.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
     return Path(repo_path) / ".repowise" / _STATE_DIR / f"{digest}.json"
 
 
@@ -224,7 +226,7 @@ def _handle_edit_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return None
-    rel = _relativize(file_path, repo_path)
+    rel = repo_relative(file_path, repo_path, resolve=True)
     if rel is None:
         return None
     state = _load_session_state(repo_path, session_id)
@@ -307,7 +309,7 @@ def _handle_read_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return HookResult()
-    rel = _relativize(file_path, repo_path)
+    rel = repo_relative(file_path, repo_path, resolve=True)
     if rel is None:
         return HookResult()
     if adapter is None:

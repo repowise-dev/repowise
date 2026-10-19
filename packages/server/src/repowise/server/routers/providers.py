@@ -6,14 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
+from repowise.core.providers.llm.resolve import validate_base_url
 from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.server.provider_config import (
+    PROVIDER_CATALOG,
     _redact_key,
     list_provider_status,
     set_active_provider,
     set_api_key,
 )
+from repowise.server.provider_models import list_provider_models
 from repowise.server.schemas import (
+    ProviderModelsResponse,
     ProviderStatusResponse,
     ProviderValidationResponse,
     SetActiveProviderRequest,
@@ -65,12 +69,23 @@ async def get_providers(request: Request, repo_id: str | None = None):
 
 @router.patch("/active", response_model=ProviderStatusResponse)
 async def set_active(body: SetActiveProviderRequest, request: Request):
-    """Set the active provider and model (per-repo when ``repo_id`` is given)."""
+    """Set the active provider, model and base URL.
+
+    With ``repo_id`` the choice is written to that repo's
+    ``.repowise/config.yaml``, which the CLI reads too; without it, the
+    server-wide default is set. ``base_url`` left out of the body keeps the
+    current endpoint; ``""`` or ``null`` clears it.
+    """
+    repo_path = await _repo_path_for(request, body.repo_id)
+    if body.repo_id and repo_path is None:
+        raise HTTPException(404, f"Repository {body.repo_id} has no local checkout.")
+    extra = {"base_url": body.base_url} if "base_url" in body.model_fields_set else {}
     try:
-        set_active_provider(body.provider, body.model, repo_id=body.repo_id)
+        set_active_provider(
+            body.provider, body.model, repo_id=body.repo_id, repo_path=repo_path, **extra
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    repo_path = await _repo_path_for(request, body.repo_id)
     return list_provider_status(repo_id=body.repo_id, repo_path=repo_path)
 
 
@@ -148,3 +163,30 @@ async def validate_provider(
         }
 
     return {"ok": True, "provider": provider_name, "model": model_name, "error": None}
+
+
+@router.get("/{provider_id}/models", response_model=ProviderModelsResponse)
+async def get_provider_models(
+    provider_id: str,
+    request: Request,
+    repo_id: str | None = None,
+    base_url: str | None = None,
+    refresh: bool = False,
+):
+    """Models the provider offers, listed live where it can.
+
+    Uses the key and endpoint resolved for ``repo_id``. ``base_url`` tests an
+    endpoint before it is saved (the "Test connection" button); the stored key
+    is never sent to a URL it was not saved for. On any failure the built-in
+    list comes back with ``source: "catalog"`` and ``error`` saying why.
+    """
+    if provider_id not in {p["id"] for p in PROVIDER_CATALOG}:
+        raise HTTPException(404, f"Unknown provider: {provider_id}")
+    try:
+        probe_url = validate_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    repo_path = await _repo_path_for(request, repo_id)
+    return await list_provider_models(
+        provider_id, repo_path, base_url=probe_url, refresh=refresh
+    )

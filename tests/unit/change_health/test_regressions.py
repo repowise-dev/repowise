@@ -80,6 +80,24 @@ def test_an_unrelated_new_finding_does_not_absorb_a_moved_one():
     assert by_line[50].base is None
 
 
+def test_lines_inserted_above_a_symbol_do_not_cross_pair_its_findings():
+    """Raw proximity paired the moved high finding with its medium neighbour."""
+    base = [
+        finding(line=388, severity=Severity.HIGH, symbol="walk"),
+        finding(line=407, severity=Severity.MEDIUM, symbol="walk"),
+    ]
+    head = [
+        finding(line=422, severity=Severity.HIGH, symbol="walk"),
+        finding(line=441, severity=Severity.MEDIUM, symbol="walk"),
+    ]
+    inserted_34_lines_at_100 = [(100, 0, 101, 34)]
+
+    result = FindingMatcher(hunks={"app.py": inserted_34_lines_at_100}).match(base, head)
+
+    assert [m.kind for m in result.matched] == ["unchanged", "unchanged"]
+    assert [m.base.line_start for m in result.matched] == [388, 407]
+
+
 def test_a_base_finding_left_over_inside_a_matched_group_is_resolved():
     base = [finding(line=10), finding(line=200)]
     head = [finding(line=12)]
@@ -193,6 +211,8 @@ def _scored(specs: list[tuple[str, str, int]]) -> list[HealthFindingData]:
             self.biomarker_type = marker
             self.severity = Severity.MEDIUM
             self.deduction = None
+            self.function_name = None
+            self.details: dict = {}
 
     _score, impacts = score_file([_R(m) for m, _sym, _line in specs])
     return [
@@ -254,7 +274,7 @@ def test_a_continuous_marker_still_worsens_when_its_own_deduction_grows():
     assert [m.kind for m in worse] == ["worsened"]
 
     better = FindingMatcher().match([gradient(0.6)], [gradient(0.2)]).matched
-    assert [m.kind for m in better] == ["unchanged"]
+    assert [m.kind for m in better] == ["improved"]
 
 
 def test_an_expected_cause_says_there_is_nothing_to_change():

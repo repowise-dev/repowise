@@ -2,11 +2,13 @@
  * Single source of truth for app navigation. Both the desktop sidebar and
  * the mobile nav consume these — the two surfaces must never diverge again.
  *
- * Repo IA (3 groups + Settings pinned last):
- *   Overview · Chat · Docs · Architecture · Knowledge Graph · Code Health ·
- *   Refactoring · Files, then People & History, then Settings.
- * Chat sits second because it is the fastest route to an answer about
- * anything below it, not because it is the second most visited page.
+ * Repo IA: Overview and Chat unlabelled at the top, then four collapsible
+ * groups by the question a reader brings: Understand (Docs, Architecture,
+ * Knowledge Graph, Files), Code quality (Code Health, Refactoring, Tests,
+ * Security), People & History (Contributors, Commits, Decisions), and
+ * Settings pinned last. Chat sits second because it is the fastest route to
+ * an answer about anything below it, not because it is the second most
+ * visited page.
  */
 
 import {
@@ -15,6 +17,7 @@ import {
   BookOpen,
   Boxes,
   DollarSign,
+  FlaskConical,
   FolderTree,
   GitCommitHorizontal,
   GitMerge,
@@ -26,6 +29,7 @@ import {
   MessageSquare,
   ScanSearch,
   Settings,
+  Shield,
   ShieldCheck,
   Users,
   Waypoints,
@@ -47,7 +51,9 @@ export interface NavItem {
 }
 
 export interface NavGroup {
-  /** Optional section label rendered above the items. */
+  /** Stable id; keys the group's collapsed state in the sidebar. */
+  id: string;
+  /** Optional section label rendered above the items. Labelled groups collapse. */
   label?: string;
   /** Message key under `nav` for the group label. */
   labelKey?: string;
@@ -71,27 +77,46 @@ export function repoNavGroups(repoId: string): NavGroup[] {
   const base = `/repos/${repoId}`;
   return [
     {
+      id: "start",
       items: [
         { label: "Overview", labelKey: "overview", href: `${base}/overview`, icon: Activity },
         { label: "Chat", labelKey: "chat", href: `${base}/chat`, icon: MessageSquare },
+      ],
+    },
+    {
+      id: "understand",
+      label: "Understand",
+      labelKey: "groupUnderstand",
+      items: [
         { label: "Docs", labelKey: "docs", href: `${base}/docs`, icon: BookOpen },
         { label: "Architecture", labelKey: "architecture", href: `${base}/architecture`, icon: Boxes },
         { label: "Knowledge Graph", labelKey: "knowledgeGraph", href: `${base}/knowledge-graph`, icon: ScanSearch },
-        { label: "Code Health", labelKey: "codeHealth", href: `${base}/code-health`, icon: HeartPulse },
-        { label: "Refactoring", labelKey: "refactoring", href: `${base}/refactoring`, icon: Wrench },
         { label: "Files", labelKey: "files", href: `${base}/files`, icon: FolderTree },
       ],
     },
     {
+      id: "quality",
+      label: "Code quality",
+      labelKey: "groupCodeQuality",
+      items: [
+        { label: "Code Health", labelKey: "codeHealth", href: `${base}/code-health`, icon: HeartPulse },
+        { label: "Refactoring", labelKey: "refactoring", href: `${base}/refactoring`, icon: Wrench },
+        { label: "Tests", labelKey: "tests", href: `${base}/tests`, icon: FlaskConical },
+        { label: "Security", labelKey: "security", href: `${base}/security`, icon: Shield },
+      ],
+    },
+    {
+      id: "people",
       label: "People & History",
       labelKey: "groupPeopleAndHistory",
       items: [
+        { label: "Ownership", labelKey: "contributors", href: `${base}/owners`, icon: Users },
         { label: "Commits", labelKey: "commits", href: `${base}/commits`, icon: GitCommitHorizontal },
-        { label: "Contributors", labelKey: "contributors", href: `${base}/owners`, icon: Users },
         { label: "Decisions", labelKey: "decisions", href: `${base}/decisions`, icon: Lightbulb },
       ],
     },
     {
+      id: "settings",
       label: "Settings",
       labelKey: "groupSettings",
       items: [

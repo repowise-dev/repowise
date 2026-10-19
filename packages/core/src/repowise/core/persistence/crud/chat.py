@@ -27,8 +27,21 @@ async def create_conversation(
     *,
     repository_id: str,
     title: str = "New conversation",
+    namespace: str | None = None,
+    external_ref: str | None = None,
+    scope_json: str | None = None,
+    principal_id: str | None = None,
+    policy_json: str | None = None,
 ) -> Conversation:
-    conv = Conversation(repository_id=repository_id, title=title)
+    conv = Conversation(
+        repository_id=repository_id,
+        title=title,
+        namespace=namespace,
+        external_ref=external_ref,
+        scope_json=scope_json,
+        principal_id=principal_id,
+        policy_json=policy_json,
+    )
     session.add(conv)
     await session.flush()
     return conv
@@ -36,6 +49,31 @@ async def create_conversation(
 
 async def get_conversation(session: AsyncSession, conversation_id: str) -> Conversation | None:
     return await session.get(Conversation, conversation_id)
+
+
+async def get_conversation_by_external_ref(
+    session: AsyncSession, namespace: str, external_ref: str
+) -> Conversation | None:
+    """The conversation a caller's thread key names, deleted or not."""
+    result = await session.execute(
+        select(Conversation).where(
+            Conversation.namespace == namespace, Conversation.external_ref == external_ref
+        )
+    )
+    return result.scalars().first()
+
+
+async def record_conversation_turn(
+    session: AsyncSession, conversation_id: str, *, input_tokens: int, output_tokens: int
+) -> None:
+    """Count one finished turn and the tokens it used."""
+    conv = await session.get(Conversation, conversation_id)
+    if conv:
+        conv.turns = (conv.turns or 0) + 1
+        conv.input_tokens = (conv.input_tokens or 0) + input_tokens
+        conv.output_tokens = (conv.output_tokens or 0) + output_tokens
+        conv.updated_at = _now_utc()
+        await session.flush()
 
 
 async def list_conversations(
@@ -140,11 +178,13 @@ async def create_chat_message(
     conversation_id: str,
     role: str,
     content: dict,
+    idempotency_key: str | None = None,
 ) -> ChatMessage:
     msg = ChatMessage(
         conversation_id=conversation_id,
         role=role,
         content_json=json.dumps(content),
+        idempotency_key=idempotency_key,
     )
     session.add(msg)
     await session.flush()
@@ -158,6 +198,29 @@ async def list_chat_messages(session: AsyncSession, conversation_id: str) -> lis
         .order_by(ChatMessage.created_at.asc())
     )
     return list(result.scalars().all())
+
+
+async def find_idempotent_turn(
+    session: AsyncSession, conversation_id: str, idempotency_key: str
+) -> tuple[ChatMessage, ChatMessage | None] | None:
+    """The user message sent under *idempotency_key* and the reply after it.
+
+    The reply is None when that send never finished (it failed or was
+    cancelled before anything was saved).
+    """
+    result = await session.execute(
+        select(ChatMessage).where(
+            ChatMessage.conversation_id == conversation_id,
+            ChatMessage.idempotency_key == idempotency_key,
+        )
+    )
+    sent = result.scalars().first()
+    if sent is None:
+        return None
+    messages = await list_chat_messages(session, conversation_id)
+    after = messages[[m.id for m in messages].index(sent.id) + 1 :]
+    reply = next((m for m in after[:1] if m.role == "assistant"), None)
+    return sent, reply
 
 
 async def update_chat_message_content(

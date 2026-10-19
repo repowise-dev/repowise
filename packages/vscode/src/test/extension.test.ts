@@ -2,6 +2,11 @@ import * as assert from "node:assert";
 import * as vscode from "vscode";
 import { Commands, EXTENSION_ID } from "../constants";
 import { locateReference } from "../features/locateReference";
+import {
+  clearDocDriftLocations,
+  pruneDocDriftLocations,
+  lastKnownLines,
+} from "../features/docDriftDiagnostics";
 
 /**
  * Fast, offline smoke suite. It runs inside a real VS Code process against an
@@ -201,4 +206,49 @@ describe("locateReference", () => {
     assert.strictEqual(secondShift?.line, 35);
   });
 });
+
+describe("docDriftDiagnostics locations", () => {
+  const uri1 = vscode.Uri.file("/workspace/doc1.md");
+  const uri2 = vscode.Uri.file("/workspace/doc2.md");
+
+  beforeEach(() => {
+    lastKnownLines.clear();
+  });
+
+  it("clears document location entries on document drop or closure", () => {
+    lastKnownLines.set(`${uri1.toString()}::f1`, 10);
+    lastKnownLines.set(`${uri1.toString()}::f2`, 25);
+    lastKnownLines.set(`${uri2.toString()}::f3`, 40);
+
+    clearDocDriftLocations(uri1);
+
+    assert.strictEqual(lastKnownLines.has(`${uri1.toString()}::f1`), false);
+    assert.strictEqual(lastKnownLines.has(`${uri1.toString()}::f2`), false);
+    assert.strictEqual(lastKnownLines.get(`${uri2.toString()}::f3`), 40);
+  });
+
+  it("clears all document locations when uri is omitted", () => {
+    lastKnownLines.set(`${uri1.toString()}::f1`, 10);
+    lastKnownLines.set(`${uri2.toString()}::f3`, 40);
+
+    clearDocDriftLocations();
+    assert.strictEqual(lastKnownLines.size, 0);
+  });
+
+  it("prunes location entries for findings that are removed", () => {
+    lastKnownLines.set(`${uri1.toString()}::f1`, 10);
+    lastKnownLines.set(`${uri1.toString()}::f2`, 25);
+    lastKnownLines.set(`${uri2.toString()}::f3`, 40);
+
+    // uri1 now only has finding f2
+    pruneDocDriftLocations(uri1, [
+      { id: "f2", line_number: 26, confidence: 0.9, kind: "drift", reason: "r", raw: "x", target: "y" } as any,
+    ]);
+
+    assert.strictEqual(lastKnownLines.has(`${uri1.toString()}::f1`), false);
+    assert.strictEqual(lastKnownLines.get(`${uri1.toString()}::f2`), 25);
+    assert.strictEqual(lastKnownLines.get(`${uri2.toString()}::f3`), 40);
+  });
+});
+
 

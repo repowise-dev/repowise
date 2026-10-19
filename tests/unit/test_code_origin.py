@@ -71,6 +71,15 @@ _OWN_HEADER = (
         ("scripts/release.py", "tooling"),
         (".github/scripts/label.js", "tooling"),
         ("tools/gen.go", "tooling"),
+        # Dart's ``tool/`` (flutter samples' CI scripts), but not a shipped one.
+        ("tool/ci_script.dart", "tooling"),
+        ("desktop_photo_search/material/tool/grind.dart", "tooling"),
+        ("lib/src/tool/picker.dart", "production"),
+        ("lib/tool/picker.dart", "production"),
+        ("bin/tool/run.dart", "production"),
+        ("packages/app/lib/tool/picker.dart", "production"),
+        ("src/cmd/go/internal/tool/tool.go", "production"),
+        ("tool/release.py", "production"),
         ("benchmarks/bench_app.py", "tooling"),
         ("app/migrations/0001_initial.py", "tooling"),
         ("db/alembic/versions/abc_add.py", "tooling"),
@@ -95,6 +104,11 @@ _OWN_HEADER = (
         ("x-pack/inference/src/main/java/org/x/external/http/Sender.java", "production"),
         ("src/pkg/external/client.py", "production"),
         ("sdk/llms/src/providers/vendors/openai.ts", "production"),
+        # the Dart SDK headers a Flutter FFI plugin vendors under dart-sdk/
+        ("pedometer/src/dart-sdk/include/dart_tools_api.h", "vendored"),
+        ("src/dart-sdk/include/internal/dart_api_dl_impl.h", "vendored"),
+        ("lib/dart_sdk_utils.dart", "production"),
+        ("src/dartsdk/x.c", "production"),
         # min/ needs a third-party banner (test below); the path alone is not enough
         ("src/min/app.js", "production"),
         ("lib/min/util.js", "production"),
@@ -116,6 +130,12 @@ _OWN_HEADER = (
         ("buildSrc/src/main/kotlin/Versions.kt", "tooling"),
         ("build-logic/src/main/kotlin/Plugin.kt", "tooling"),
         ("packages/build-tools/src/index.ts", "production"),  # a shipped package
+        # a bundler's output, by name; a module about bundles is hand-written
+        ("apps/kit/Resources/CanvasA2UI/a2ui.bundle.js", "generated"),
+        ("dist/main.bundle.mjs", "generated"),
+        ("dist/Main.Bundle.JS", "generated"),
+        ("src/Forms/Main.designer.cs", "generated"),
+        ("src/logging/diagnostic-support-bundle.ts", "production"),
     ],
 )
 def test_path_rules(path: str, expected: str) -> None:
@@ -160,6 +180,42 @@ def test_generated_banner_negatives() -> None:
     assert code_origin("pkg/x.py", 'MSG = "auto-generated client"\n') == "production"
     # A banner below the second line is not a header.
     assert not is_generated_header("a = 1\nb = 2\n# DO NOT EDIT\n")
+
+
+@pytest.mark.parametrize("period", [".", ""])
+@pytest.mark.parametrize("path", ["src/modules/ZoomIt/ZoomIt/resource.h", "src/app/resource.h"])
+def test_visual_cpp_resource_header_is_generated_without_skipping_ingestion(
+    path: str, period: str
+) -> None:
+    text = (
+        "//{{NO_DEPENDENCIES}}\n"
+        f"// Microsoft Visual C++ generated include file{period}\n"
+        "// Used by ZoomIt.rc\n"
+        "//\n"
+        "//////////////////////////////\n"
+        "// Non-localizable\n"
+        "\n"
+        '#define FILE_DESCRIPTION "Sysinternals Screen Magnifier"\n'
+        '#define INTERNAL_NAME "ZoomIt"\n'
+        '#define ORIGINAL_FILENAME "PowerToys.ZoomIt.exe"\n'
+    )
+    assert code_origin(path, text) == "generated"
+    # The resource IDs must remain in the graph for their includers.
+    assert not is_generated_header(text)
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "Workaround for a Microsoft Visual C++ generated warning",
+        "Workaround for Microsoft Visual C++ generated include file.",
+        "Microsoft Visual C++ generated include file. See the workaround below.",
+    ],
+)
+def test_visual_cpp_banner_like_prose_stays_production(comment: str) -> None:
+    text = f"//{{{{NO_DEPENDENCIES}}}}\n// {comment}\n#define RESOURCE_ID 101\n"
+    assert code_origin("src/app/resource.h", text) == "production"
+    assert not is_generated_header(text)
 
 
 _ES_EVALUATOR = (
@@ -222,6 +278,8 @@ def test_reference_stub_needs_the_stub_body_and_the_ref_dir() -> None:
 def test_path_only_vendored_or_generated() -> None:
     assert is_vendored_or_generated_path("src/native/external/zlib/trees.c")
     assert is_vendored_or_generated_path("esql/src/main/generated/X.java")
+    assert is_vendored_or_generated_path("pedometer/src/dart-sdk/include/dart_api_dl.c")
+    assert not is_vendored_or_generated_path("pedometer/src/health_connect/foo.c")
     assert not is_vendored_or_generated_path("src/Monaco/monacoSRC/min/vs/loader.js")
     assert not is_vendored_or_generated_path("src/pkg/external/client.py")
     assert not is_vendored_or_generated_path("tests/test_app.py")
@@ -382,6 +440,11 @@ def test_reference_stub_markers_are_anchored() -> None:
         "noxfile.py",
         "magefile.go",
         "Package.swift",
+        "Package@swift-6.0.swift",
+        "Package@swift-5.10.swift",
+        "Package@swift-6.swift",
+        "Package@swift-6.0.1.swift",
+        "sub/Package@swift-6.0.swift",
         "webpack.config.js",
         "packages/app/vite.config.mts",
         "rollup.config.prod.mjs",
@@ -419,6 +482,9 @@ def test_build_files_by_type(path: str) -> None:
         ("src/vite.ts", "production"),
         ("cmd/build/main.go", "tooling"),
         ("src/BUILD.md", "production"),
+        ("PackageManager.swift", "production"),
+        ("Package+Extensions.swift", "production"),
+        ("Sources/Alamofire/PackageManager.swift", "production"),
     ],
 )
 def test_build_near_misses_are_not_build_files(path: str, expected: str) -> None:
@@ -534,3 +600,133 @@ def test_sphinx_and_jekyll_count_under_a_plain_doc_folder(tmp_path) -> None:
     (tmp_path / "documentation" / "_layouts").mkdir()
     assert code_origin("doc/source/ext/roles.py", repo_root=tmp_path) == "docs_example"
     assert code_origin("documentation/plugins/x.rb", repo_root=tmp_path) == "docs_example"
+
+
+_DART_PART = (
+    "// Copyright 2020 The Flutter Authors.\n"
+    "// Use of this source code is governed by a BSD-style license.\n"
+    "\n"
+    "// GENERATED CODE - DO NOT MODIFY BY HAND\n"
+    "\n"
+    "part of 'photo.dart';\n"
+)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "lib/src/photo.g.dart",
+        "lib/models/user.freezed.dart",
+        "lib/router/app_router.gr.dart",
+        "test/api_test.mocks.dart",
+        "lib/gen/assets.gen.dart",
+    ],
+)
+def test_dart_codegen_outputs_are_generated_by_name(path: str) -> None:
+    assert code_origin(path) == "generated"
+    assert code_origin(path, _DART_PART) == "generated"
+    assert is_vendored_or_generated_path(path)
+
+
+def test_dart_injectable_config_stays_production() -> None:
+    assert code_origin("lib/di/injection.config.dart") == "production"
+
+
+def test_generated_banner_after_a_license() -> None:
+    assert code_origin("lib/src/photo.dart", _DART_PART) == "generated"
+    # Ingestion's skip rule still reads the first two lines only.
+    assert not is_generated_header(_DART_PART)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "// DO NOT MODIFY BY HAND: run tool/gen.dart",
+        "/// Do not modify by hand; edit schema.yaml",
+        "# Do not modify by hand without reading the runbook",
+        "// Generated code: see docs",
+        "// Generated code. See README",
+    ],
+)
+def test_banner_like_prose_after_a_license_stays_production(line: str) -> None:
+    text = f"// Copyright Acme.\n// Licensed MIT.\n{line}\nlibrary x;\n"
+    assert code_origin("lib/src/x.dart", text) == "production"
+
+
+def test_late_generated_comment_in_hand_written_dart_stays_production() -> None:
+    text = (
+        "// Copyright Acme.\n"
+        "import 'package:flutter/widgets.dart';\n"
+        "\n"
+        "class Photo {\n"
+        "  // GENERATED CODE - DO NOT MODIFY BY HAND lives in photo.g.dart\n"
+        "}\n"
+    )
+    assert code_origin("lib/src/photo.dart", text) == "production"
+    # "Generated code" as prose, not as the banner, past the first two lines.
+    prose = (
+        "// Copyright Acme.\n// Licensed MIT.\n"
+        "// Generated code goes to lib/gen; edit the templates.\nlibrary x;\n"
+    )
+    assert code_origin("lib/src/x.dart", prose) == "production"
+
+
+def test_minified_head_is_generated() -> None:
+    blob = "!function(t,n){" + "a=1;" * 1100
+    assert code_origin("chat/src/backendMain/resources/js/chat.js", blob) == "generated"
+    assert code_origin("web/app.js", blob.encode()) == "generated"
+    # A license line first does not hide the bundle.
+    assert code_origin("web/app.js", "/*! lib v1.2 | MIT */\n" + blob) == "generated"
+    # Without content the path alone decides.
+    assert code_origin("chat/src/backendMain/resources/js/chat.js") == "production"
+
+
+def test_long_hand_written_js_stays_production() -> None:
+    body = "export function f(a, b) {\n  return a + b;\n}\n" * 200
+    assert code_origin("src/math.js", body) == "production"
+    # A long line or two among ordinary code is not a bundle.
+    long_line = "const TABLE = [" + "1, " * 600 + "];\n"
+    assert code_origin("src/table.js", long_line + body) == "production"
+    # A short one-line file is too little to judge.
+    assert code_origin("src/one.js", "export const x = 1;" * 50) == "production"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '(self["webpackChunkapp"] = self["webpackChunkapp"] || []).push([[179], {\n',
+        "(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[888],{\n",
+        '(window["webpackJsonp"] = window["webpackJsonp"] || []).push([[0], {\n',
+        "/******/ (() => { // webpackBootstrap\n/******/ \tvar __webpack_modules__ = ({});\n"
+        "/******/ \tfunction __webpack_require__(moduleId) {\n",
+    ],
+)
+def test_webpack_chunks_and_runtime_are_generated(text: str) -> None:
+    assert code_origin("static/js/main.4f1c2a.js", text) == "generated"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "declare const __webpack_require__: (id: string) => unknown;\n",
+        "if (typeof __webpack_require__ === 'function') {\n  load();\n}\n",
+        "// Webpack names chunks webpackChunk<name> on self.\nconst key = 'webpackChunk' + name;\n",
+    ],
+)
+def test_code_about_webpack_is_not_a_chunk(text: str) -> None:
+    assert code_origin("src/loader.ts", text) == "production"
+
+
+def test_cocoapods_target_support_files_are_generated() -> None:
+    path = "ios/Pods/Target Support Files/Pods-Runner/Pods-Runner-dummy.m"
+    assert code_origin(path) == "generated"
+    assert is_vendored_or_generated_path(path)
+    # Generated wins over the "Tests" target name the test classifier reads.
+    assert code_origin("Pods/Target Support Files/Pods-AppTests/Pods-AppTests-dummy.m") == (
+        "generated"
+    )
+
+
+def test_a_first_party_pods_package_stays_production() -> None:
+    assert code_origin("internal/k8s/pods/watcher.go") == "production"
+    assert code_origin("pods/support/files.go") == "production"

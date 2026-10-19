@@ -146,10 +146,11 @@ def test_advise_stamp_skips_when_claude_md_disabled(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Read-time freshness self-heal: prefer state.json's last_sync_commit over a
-# DB repositories.head_commit that an older build left un-stamped, so the
+# Read-time freshness: state.json's last_sync_commit stands in for a DB
+# repositories.head_commit that an older build left un-stamped, so the
 # extension badge / MCP staleness signal is correct on the first read without
-# requiring a `repowise update` first.
+# requiring a `repowise update` first. Disagreeing stamps are covered in
+# tests/unit/workspace/test_indexed_commit.py.
 # ---------------------------------------------------------------------------
 
 
@@ -162,13 +163,12 @@ def _write_state(repo_path: Path, last_sync_commit: str | None) -> None:
     (dot / "state.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_resolve_indexed_commit_prefers_state_json(tmp_path):
+def test_resolve_indexed_commit_uses_state_json_without_a_row_stamp(tmp_path):
     from repowise.server.mcp_server._meta import resolve_indexed_commit
 
     fresh = "8092ebf" + "0" * 33
     _write_state(tmp_path, fresh)
-    # DB row lags (a pre-fix "no changed files" run bumped only state.json).
-    assert resolve_indexed_commit("deadbeef" + "0" * 32, str(tmp_path)) == fresh
+    assert resolve_indexed_commit(None, str(tmp_path)) == fresh
 
 
 def test_resolve_indexed_commit_falls_back_to_db_without_state(tmp_path):
@@ -195,14 +195,14 @@ def test_freshness_self_heals_and_silences_false_stale(tmp_path):
 
     head = "8092ebf" + "0" * 33
     # Live checkout is at ``head``; state.json says the index synced to ``head``;
-    # but the DB row still holds the last full-index commit.
+    # but the DB row was never stamped.
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
     (git_dir / "HEAD").write_text(head + "\n", encoding="utf-8")
     _write_state(tmp_path, head)
 
     repo = types.SimpleNamespace(
-        head_commit="deadbeef" + "0" * 32,
+        head_commit=None,
         local_path=str(tmp_path),
         updated_at=None,
     )

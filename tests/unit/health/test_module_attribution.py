@@ -228,7 +228,7 @@ def test_every_analyzer_call_site_supplies_a_repo_root():
 
     import repowise.cli.commands.health_cmd.command as health_cmd
     import repowise.cli.commands.update_cmd.persistence as rescore
-    import repowise.core.pipeline.incremental as incremental
+    import repowise.core.pipeline.incremental.analysis as incremental
     import repowise.core.pipeline.phases.analysis as full_index
 
     for module in (full_index, incremental, rescore, health_cmd):

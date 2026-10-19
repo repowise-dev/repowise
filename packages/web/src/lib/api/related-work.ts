@@ -14,17 +14,20 @@ export { getRelatedWork } from "./code-health";
 export function relatedWorkHref(repoId: string): RelatedWorkHref {
   const prefix = `/repos/${repoId}`;
   return (item, filePath) => {
+    // Code Health links carry the file, so the page they land on still has it
+    // open (the map's selection is `?file=`) and Back returns to it.
+    const file = encodeURIComponent(filePath);
     switch (item.lens) {
       case "refactoring":
         return refactoringOpportunityHref(repoId, item.id);
       case "performance":
-        return `${prefix}/code-health?tab=performance&opportunity=${encodeURIComponent(item.id)}`;
+        return `${prefix}/code-health?tab=performance&opportunity=${encodeURIComponent(item.id)}&file=${file}`;
       case "findings":
         return `${fileEntityPath(prefix, filePath)}?tab=health`;
       case "fix_first":
-        return `${prefix}/code-health`;
+        return `${prefix}/code-health?file=${file}`;
       case "dead_code":
-        return `${prefix}/code-health?tab=dead-code`;
+        return `${prefix}/code-health?tab=dead-code&file=${file}`;
     }
   };
 }

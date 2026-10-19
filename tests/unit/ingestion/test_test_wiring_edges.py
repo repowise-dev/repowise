@@ -180,3 +180,223 @@ def test_path_string_edges_leave_from_test_files_only() -> None:
     )
     assert _add_path_string_edges(graph, parsed, ctx, ctx.path_set) == 1
     assert graph["tests/test_client.py"]["tests/_mock_server.py"]["hint_source"] == PATH_STRING_HINT
+
+
+def test_path_string_edges_link_repo_root_target() -> None:
+    graph, parsed, ctx = _ctx(
+        {
+            "tests/unit/dead_code/test_confidence_parity.py": """
+repo_root = Path(__file__).parents[3]
+ts_file = repo_root / "packages" / "types" / "src" / "dead-code.ts"
+""",
+            "packages/types/src/dead-code.ts": "export const MEDIUM = 0.4;",
+        }
+    )
+    assert _add_path_string_edges(graph, parsed, ctx, ctx.path_set) == 1
+    assert (
+        graph["tests/unit/dead_code/test_confidence_parity.py"][
+            "packages/types/src/dead-code.ts"
+        ]["hint_source"]
+        == PATH_STRING_HINT
+    )
+
+
+
+def test_ancestor_and_repo_root_paths_are_linked() -> None:
+    path_set = {
+        "tests/unit/dead_code/test_confidence_parity.py",
+        "packages/types/src/dead-code.ts",
+        "packages/types/src/doc-drift.ts",
+        "packages/ui/src/docs/reader-persona.ts",
+        "plugins/claude-code/hooks/lens/lens.js",
+        "packages/data/sample.json",
+    }
+    # 1. Direct parents[n] chain inside a function
+    src_local = b"""
+def test_something():
+    repo_root = Path(__file__).parents[3]
+    ts_file = repo_root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_local, path_set
+    ) == ["packages/types/src/dead-code.ts"]
+
+    # 2. Direct .resolve().parents[n] chained assignment at module level
+    src_contract = b"""
+_CONTRACT = (
+    Path(__file__).resolve().parents[3] / "packages" / "types" / "src" / "doc-drift.ts"
+)
+"""
+    assert path_string_targets(
+        "tests/unit/doc_drift/test_ts_contract_parity.py", src_contract, path_set
+    ) == ["packages/types/src/doc-drift.ts"]
+
+    # 3. REPO_ROOT constant at module level used by another constant
+    src_persona = b"""
+REPO_ROOT = Path(__file__).resolve().parents[3]
+READER_PERSONA_TS = REPO_ROOT / "packages" / "ui" / "src" / "docs" / "reader-persona.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/generation/test_structural_pages_read_like_a_wiki.py", src_persona, path_set
+    ) == ["packages/ui/src/docs/reader-persona.ts"]
+
+    # 4. Constant built from another constant (ROOT -> PLUGIN_ROOT -> bundle)
+    src_plugin = b"""
+ROOT = Path(__file__).resolve().parents[3]
+PLUGIN_ROOT = ROOT / "plugins" / "claude-code"
+def test_plugin():
+    bundle = PLUGIN_ROOT / "hooks" / "lens" / "lens.js"
+"""
+    assert path_string_targets(
+        "tests/unit/cli/test_claude_plugin.py", src_plugin, path_set
+    ) == ["plugins/claude-code/hooks/lens/lens.js"]
+
+    # 5. .parent.parent.parent.parent chain
+    src_parent_chain = b"""
+root = Path(__file__).parent.parent.parent.parent
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_parent_chain, path_set
+    ) == ["packages/types/src/dead-code.ts"]
+
+    # 6. Single string literal with slashes
+    src_single = b"""
+root = Path(__file__).parents[3]
+target = root / "packages/types/src/dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_single, path_set
+    ) == ["packages/types/src/dead-code.ts"]
+
+    # 7. Negative: variable in chain yields nothing
+    src_var = b"""
+root = Path(__file__).parents[3]
+target = root / "packages" / var / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_var, path_set
+    ) == []
+
+    # 8. Negative: n climbing past repo root yields nothing
+    src_past_root = b"""
+root = Path(__file__).parents[4]
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_past_root, path_set
+    ) == []
+
+    # 9. Negative: missing file yields nothing
+    src_missing = b"""
+root = Path(__file__).parents[3]
+target = root / "packages" / "types" / "src" / "missing-file.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_missing, path_set
+    ) == []
+
+    # 10. Negative: data file (.json) yields nothing
+    src_data = b"""
+root = Path(__file__).parents[3]
+target = root / "packages" / "data" / "sample.json"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_data, path_set
+    ) == []
+
+    # 11. Negative: reassignment to dynamic expression invalidates tracked binding
+    src_reassigned = b"""
+root = Path(__file__).parents[3]
+root = get_root()
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_reassigned, path_set
+    ) == []
+
+    # 12. Negative: annotated reassignment to dynamic expression invalidates tracked binding
+    src_ann_reassigned = b"""
+root = Path(__file__).parents[3]
+root: Path = get_root()
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_ann_reassigned, path_set
+    ) == []
+
+    # 13. Negative: bare type annotation without assignment invalidates tracked binding
+    src_ann_bare = b"""
+root = Path(__file__).parents[3]
+root: Path
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_ann_bare, path_set
+    ) == []
+
+    # 14. Negative: loop variable rebounds and invalidates tracked binding
+    src_loop_rebound = b"""
+root = Path(__file__).parents[3]
+for root in get_roots():
+    pass
+target = root / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_loop_rebound, path_set
+    ) == []
+
+    # 15. Negative: function parameter shadows module-level ancestor binding
+    src_param_shadowed = b"""
+ROOT = Path(__file__).parents[3]
+def f(ROOT):
+    target = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_param_shadowed, path_set
+    ) == []
+
+    # 16. Local function reassignment invalidates inside function but preserves outer binding
+    src_local_preserve = b"""
+ROOT = Path(__file__).parents[3]
+def helper():
+    ROOT = get_root()
+    target1 = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+
+def test_fn():
+    target2 = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_local_preserve, path_set
+    ) == ["packages/types/src/dead-code.ts"]
+
+    # 17. Negative: comprehension loop variable shadows module-level ancestor binding
+    src_comp_shadowed = b"""
+ROOT = Path(__file__).parents[3]
+targets = [ROOT / "packages" / "types" / "src" / "dead-code.ts" for ROOT in get_roots()]
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_comp_shadowed, path_set
+    ) == []
+
+    # 18. Negative: lambda parameter shadows module-level ancestor binding
+    src_lambda_shadowed = b"""
+ROOT = Path(__file__).parents[3]
+fn = lambda ROOT: ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_lambda_shadowed, path_set
+    ) == []
+
+    # 19. Negative: context manager target invalidates tracked binding
+    src_with_invalidated = b"""
+ROOT = Path(__file__).parents[3]
+with open("some_file") as ROOT:
+    target = ROOT / "packages" / "types" / "src" / "dead-code.ts"
+"""
+    assert path_string_targets(
+        "tests/unit/dead_code/test_confidence_parity.py", src_with_invalidated, path_set
+    ) == []
+
+
+

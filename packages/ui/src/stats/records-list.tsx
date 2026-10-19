@@ -1,6 +1,8 @@
 import * as React from "react";
 import type { StatsRecords } from "@repowise-dev/types/stats";
 import { formatNumber } from "../lib/format";
+import { splitPath } from "../lib/path-parts";
+import { FilePath } from "../shared/file-path";
 
 export interface RecordLinks {
   fileHref?: ((path: string) => string) | undefined;
@@ -14,33 +16,16 @@ interface RecordRow {
   /** The subject: a path, a symbol, a commit subject or a sentence. Never truncated. */
   primary: string;
   mono?: boolean;
+  /** `primary` is a repository path. */
+  isPath?: boolean;
   detail: string;
   href?: string | undefined;
 }
 
 type Href = (value: string) => string | undefined;
 
-/** A path that wraps after a slash instead of mid-name. */
-function breakable(text: string): React.ReactNode {
-  const parts = text.split("/");
-  return parts.map((part, i) => (
-    <React.Fragment key={i}>
-      {part}
-      {i < parts.length - 1 && (
-        <>
-          /<wbr />
-        </>
-      )}
-    </React.Fragment>
-  ));
-}
-
-function fileName(path: string): string {
-  return path.split("/").pop() || path;
-}
-
 function fileRow(key: string, title: string, path: string, detail: string, file: Href): RecordRow {
-  return { key, title, primary: path, mono: true, detail, href: file(path) };
+  return { key, title, primary: path, mono: true, isPath: true, detail, href: file(path) };
 }
 
 function fileRows(r: StatsRecords, file: Href): RecordRow[] {
@@ -94,7 +79,7 @@ function functionRow(
     title,
     primary: f.name,
     mono: true,
-    detail: `${detail}, in ${fileName(f.file_path)}`,
+    detail: `${detail}, in ${splitPath(f.file_path).name}`,
     href: file(f.file_path),
   };
 }
@@ -214,7 +199,11 @@ export function RecordsList({
           </h3>
           <dl className="mt-2 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
             {g.rows.map((row) => {
-              const text = row.mono ? breakable(row.primary) : row.primary;
+              const text = row.isPath ? (
+                <FilePath path={row.primary} mode="full" className="text-[15px]" />
+              ) : (
+                row.primary
+              );
               return (
                 <div key={row.key} className="min-w-0 py-3">
                   <dt className="text-xs text-[var(--color-text-tertiary)]">{row.title}</dt>

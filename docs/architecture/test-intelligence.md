@@ -12,9 +12,9 @@ walks), `analysis/test_selection.py` (runner arguments for `impacted-tests`),
 ## Why a graph signal
 
 The measured map (`test_coverage`) is filled only by a coverage report. Most
-repositories never ingest one, so without a second signal `tests_to_run` was
-empty, `impacted_tests` said "run the full suite", and `untested_hotspot` fell
-back to matching filenames.
+repositories never ingest one, so without a second signal `tests_to_run` would
+be empty, `impacted_tests` would say "run the full suite", and `untested_hotspot`
+would fall back to matching filenames.
 
 Filename matching fails both ways. On this repository, five of the six worst
 bug-magnet files have no test named for them, while the graph names the tests
@@ -140,5 +140,97 @@ per run, and caches it. The per-change walk reads the same edge table
   misses, the commit measured) are kept as history,
   `COVERAGE_HISTORY_RETENTION = 50`. A local index created before the history
   table changed keeps one record per repository until rebuilt.
-- Path matching needs more than the basename when the report names a
-  directory: `other/pkg/utils.py` never maps to `src/utils.py`.
+
+## Report formats and discovery
+
+The parser is chosen by sniffing the file unless `--format` or `coverage.format`
+names one:
+
+| Format | Detected by |
+|--------|-------------|
+| LCOV | `TN:` / `SF:` / `DA:` style lines |
+| Cobertura XML | `<coverage` plus `<packages` or `line-rate` |
+| Clover XML | `<coverage` plus `<project` |
+| JaCoCo XML | The JaCoCo doctype, or a `<report` root |
+| Go coverprofile | Leading `mode:` line |
+| coverage.py `.coverage` | SQLite file |
+| Normalized JSON (`repowise-coverage-v1`) | Leading `{` plus `repowise-coverage` or `line_coverage_pct` |
+
+With no path, `coverage add` looks for `coverage/lcov.info`, `lcov.info`,
+`coverage.lcov`, `coverage.xml`, `**/cobertura.xml`, `**/clover.xml`,
+`target/llvm-cov/**/*.lcov`, `coverage.out`, `cover.out`,
+`**/target/site/jacoco*/jacoco.xml`, `build/reports/jacoco/**/*.xml`, a
+repo-root `.coverage`, and a few more. `coverage.artifacts` overrides the
+globs. Multiple reports merge: covered and coverable lines are each unioned.
+
+## Report path matching
+
+Report paths are matched to indexed files by exact path, then by the longest
+matching tail. A tie is reported as ambiguous, never guessed. A relative path
+is tried under the report's own directory first, so
+`packages/web/coverage/lcov.info` naming `src/index.ts` maps to
+`packages/web/src/index.ts`. Cobertura paths are joined to each `<source>`
+root. Matching needs more than the basename when the report names a directory:
+`other/pkg/utils.py` never maps to `src/utils.py`. When a whole report comes
+back unmatched, `coverage.strip_prefix` trims the absolute prefix the runner
+wrote.
+
+## Test wiring edges
+
+The graph carries test wiring no import states, which test selection reads:
+
+- Runner setup files (`setupFiles`, `globalSetup` and the like) link to the
+  tests their config runs.
+- A helper a test starts by a path relative to itself links to that test.
+- A `conftest.py` links to the files pytest collects.
+- Each fixture request links the test to the fixture, so a change a conftest
+  reaches only through its imports selects the tests whose fixtures use it,
+  plus one import check.
+
+## Nearest tests per function
+
+Each index keeps, for every function, the few test functions nearest it in the
+call graph. Refactoring plans quote them as runnable selectors in place of
+whole test files; they are inferred like the rest of the graph map. A function
+with no resolved caller, or in a language whose tests cannot be told apart by
+name (such as Java's `@Test` or Rust's `#[test]`), is left unknown instead of
+called untested.
+
+## The `impacted_tests` payload
+
+`get_change_risk(revspec=...)` returns:
+
+```json
+{
+  "status": "selected",
+  "run_all": false,
+  "reasons": [],
+  "basis": "measured",
+  "map_present": true,
+  "tests_to_run": ["tests/test_auth.py::test_login", "..."],
+  "why": {"tests/test_auth.py": "src/auth.py changed (coverage)"},
+  "total": 23,
+  "truncated": true,
+  "line_coverage": {
+    "untested_changes": [{"source_file": "...", "uncovered_lines": [...]}],
+    "stale_test_candidates": [...],
+    "covered": [...],
+    "no_coverage_data": [...]
+  },
+  "summary": "23 test(s) to run for this change (9 of 412 test files); showing first 10; the rest can be skipped."
+}
+```
+
+## Coverage re-ingest hook
+
+With `hooks.coverage_reingest: true`, the hook fires after the agent runs a
+whole test suite: `pytest`, `go test ./...`, `npm test`, `cargo test`,
+`mvn test`, `./gradlew test` and similar. It re-ingests any watched report
+newer than the last ingest, in the background, and says so in one transcript
+line. It does not act:
+
+- in a repository that has never ingested coverage;
+- on a run that targets some tests (a path, `::`, `-k`, `-run`, `--filter`,
+  `-p` and the like);
+- on a `.coverage` database alone;
+- on a report only a `**` glob finds.

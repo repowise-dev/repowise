@@ -29,12 +29,17 @@ query calls in loops.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from .base import BasePerfDialect
+from .iterables import IterableSources, upper_bound
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from ..loop_facts import SinkProbe
+    from .iterables import Source
 
 # The EF ``*Async`` LINQ family — EF-only, so UNAMBIGUOUS db (no gate).
 EF_ASYNC_METHODS: frozenset[str] = frozenset(
@@ -172,7 +177,21 @@ CSHARP_RESOURCE_CTORS: frozenset[str] = frozenset(
 )
 
 
-class CSharpPerfDialect(BasePerfDialect):
+# Function-like scopes: an ``await`` outside the one holding the read says
+# nothing about it, and an ``await`` inside a nested lambda may never run.
+_CS_FN_KINDS: frozenset[str] = frozenset(
+    {
+        "method_declaration",
+        "local_function_statement",
+        "lambda_expression",
+        "anonymous_method_expression",
+        "constructor_declaration",
+        "accessor_declaration",
+        "operator_declaration",
+    }
+)
+
+class CSharpPerfDialect(IterableSources):
     language = "csharp"
     markers = frozenset(
         {
@@ -358,6 +377,133 @@ class CSharpPerfDialect(BasePerfDialect):
                     return True
         return False
 
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = _CS_FN_KINDS
+    change_kinds = frozenset(
+        {"assignment_expression", "postfix_unary_expression", "prefix_unary_expression"}
+    )
+    grow_methods = frozenset({"Add", "AddRange", "Insert", "Push", "Enqueue", "TryAdd"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement", "switch_statement", "switch_section", "switch_expression",
+            "for_statement", "foreach_statement", "while_statement", "do_statement",
+            "try_statement", "catch_clause", "conditional_expression",
+        }
+    )
+
+    literal_kinds = frozenset(
+        {
+            "implicit_array_creation_expression",
+            "array_creation_expression",
+            "object_creation_expression",
+            "collection_expression",
+        }
+    )
+    int_kinds = frozenset({"integer_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression", "await_expression"})
+    pass_through = frozenset(
+        {
+            "Where", "Select", "SelectMany", "OrderBy", "OrderByDescending", "ThenBy",
+            "ThenByDescending", "Distinct", "Cast", "OfType", "Reverse", "AsEnumerable",
+            "AsQueryable", "AsNoTracking", "AsSplitQuery", "Include", "ThenInclude",
+            "ConfigureAwait", "GetEnumerator", "Keys", "Values",
+        }
+    )
+    caps = frozenset({"Take"})
+    size_names = frozenset({"Count", "Length", "LongCount"})
+    # ``while (reader.Read())`` (ADO.NET), ``while (e.MoveNext())``.
+    cursor_advances = frozenset({"Read", "ReadAsync", "MoveNext", "MoveNextAsync"})
+    listings = frozenset(
+        {
+            "GetFiles", "EnumerateFiles", "GetDirectories", "EnumerateDirectories",
+            "GetFileSystemEntries", "EnumerateFileSystemEntries",
+        }
+    )
+    recursive_marks = (b"AllDirectories",)
+    streams = frozenset({"ReadLines"})
+    query_caps = frozenset({"Take"})
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type == "foreach_statement":
+            return "each", loop.child_by_field_name("right")
+        cond = loop.child_by_field_name("condition")
+        if loop.type == "for_statement":
+            return "counted", upper_bound(cond)
+        if loop.type in ("while_statement", "do_statement") and cond is not None:
+            return "cursor", cond
+        return "each", None
+
+    def is_literal(self, node: Node) -> bool:
+        """``new[] { a, b }`` / ``new List<T> { a }`` / ``[a, b]``; not ``[..xs]``
+        and not ``new List<T>(xs)``."""
+        if node.type not in self.literal_kinds:
+            return False
+        if node.type == "collection_expression":
+            return bool(node.named_children) and not any(
+                child.type == "spread_element"
+                for element in node.named_children
+                for child in element.named_children
+            )
+        if node.type == "implicit_array_creation_expression":
+            return True
+        return any(child.type == "initializer_expression" for child in node.named_children)
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type != "invocation_expression":
+            return None
+        fn = node.child_by_field_name("function")
+        args = node.child_by_field_name("arguments")
+        arg_nodes = [
+            arg.named_children[-1]
+            for arg in (args.named_children if args is not None else ())
+            if arg.type == "argument" and arg.named_children
+        ]
+        if fn is not None and fn.type == "member_access_expression":
+            return _plain_name(fn.child_by_field_name("name")), _member_object(fn), arg_nodes
+        return _plain_name(fn), None, arg_nodes
+
+    def member_parts(self, node: Node) -> tuple[str, Node] | None:
+        if node.type != "member_access_expression":
+            return None
+        obj = _member_object(node)
+        return (_member_name(node), obj) if obj is not None else None
+
+    def special_call(
+        self,
+        call: Node,
+        parts: tuple[str, Node | None, list[Node]],
+        loop: Node,
+        probe: SinkProbe,
+    ) -> Source | None:
+        method, receiver, _args = parts
+        if method == "GetValues" and _text(receiver) == "Enum":
+            return "constant", "bounded"
+        # Sync LINQ reads the database only on an EF query; on a list it walks the list.
+        if method in SYNC_LINQ_METHODS and receiver is not None and not self.query_chain(call):
+            return self._iterable(receiver, loop, probe, hop=True)
+        return None
+
+    def query_chain(self, node: Node) -> bool:
+        """``_context.Orders.Where(...)``: a LINQ chain on a DbContext's set."""
+        cur, hops = node, 0
+        while True:
+            if cur.type == "invocation_expression":
+                cur = cur.child_by_field_name("function")
+            elif cur.type == "member_access_expression":
+                cur, hops = _member_object(cur), hops + 1
+            else:
+                break
+            if cur is None:
+                return False
+        return hops >= 1 and cur.type == "identifier" and bool(_CS_DB_ROOT.match(_text(cur)))
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _cs_bindings(node)
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        return self.enclosing_params(loop, frozenset({"parameter"}))
+
     def loop_call_marker(
         self, root: str, method: str, node: Node, list_names: frozenset[str]
     ) -> str | None:
@@ -383,19 +529,6 @@ class CSharpPerfDialect(BasePerfDialect):
         return None
 
 
-# Function-like scopes: an ``await`` outside the one holding the read says
-# nothing about it, and an ``await`` inside a nested lambda may never run.
-_CS_FN_KINDS: frozenset[str] = frozenset(
-    {
-        "method_declaration",
-        "local_function_statement",
-        "lambda_expression",
-        "anonymous_method_expression",
-        "constructor_declaration",
-        "accessor_declaration",
-        "operator_declaration",
-    }
-)
 # Statements that run unconditionally once reached (no nested branch).
 _CS_PLAIN_STMTS: frozenset[str] = frozenset({"expression_statement", "local_declaration_statement"})
 
@@ -412,6 +545,32 @@ def _member_name(node: Node | None) -> str:
 
 def _member_object(node: Node | None) -> Node | None:
     return node.child_by_field_name("expression") if node is not None else None
+
+
+def _plain_name(node: Node | None) -> str:
+    """``Select`` of ``Select`` and of ``Select<T>``."""
+    if node is not None and node.type == "generic_name":
+        node = next((c for c in node.named_children if c.type == "identifier"), None)
+    return _text(node) if node is not None and node.type == "identifier" else ""
+
+
+# A DbContext held in a field or local (``_context``, ``_db``, ``dbContext``).
+_CS_DB_ROOT = re.compile(r"^_?(?:\w*db|\w*dbcontext|context|ctx)$", re.IGNORECASE)
+
+
+def _cs_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``var x = v`` or ``x = v``."""
+    if node.type == "variable_declarator":
+        target = node.child_by_field_name("name")
+        value = node.named_children[-1] if node.named_children else None
+        if value is not None and value == target:
+            value = None
+    elif node.type == "assignment_expression":
+        target, value = node.child_by_field_name("left"), node.child_by_field_name("right")
+    else:
+        return []
+    ok = target is not None and target.type == "identifier" and target.text and value is not None
+    return [(target.text, value)] if ok else []
 
 
 def _strip_configure_await(node: Node | None) -> Node | None:

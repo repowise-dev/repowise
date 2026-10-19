@@ -14,6 +14,7 @@ import {
   DialogFooter,
 } from "@repowise-dev/ui/ui/dialog";
 import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
+import { useWatchedJob } from "@/lib/hooks/use-watched-job";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useTranslations } from "next-intl";
 
@@ -25,15 +26,15 @@ interface Props {
 export function OperationsPanel({ repoId, repoName }: Props) {
   const t = useTranslations("repos");
   const tc = useTranslations("common");
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const { watched, watch, settle, dismiss } = useWatchedJob<"sync" | "resync">();
   const [confirmResync, setConfirmResync] = useState(false);
   const [loading, setLoading] = useState<"sync" | "resync" | null>(null);
 
   async function handleSync() {
     setLoading("sync");
     try {
-      const job = await syncRepo(repoId);
-      setActiveJobId(job.id);
+      const { job_id } = await syncRepo(repoId);
+      watch(job_id, "sync");
       toast.info(t("ops.syncStarted", { name: repoName }));
     } catch (e) {
       toast.error(t("ops.syncFailed"), {
@@ -48,8 +49,8 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     setConfirmResync(false);
     setLoading("resync");
     try {
-      const job = await fullResyncRepo(repoId);
-      setActiveJobId(job.id);
+      const { job_id } = await fullResyncRepo(repoId);
+      watch(job_id, "resync");
       toast.info(t("ops.resyncStarted", { name: repoName }));
     } catch (e) {
       toast.error(t("ops.resyncFailed"), {
@@ -58,10 +59,6 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     } finally {
       setLoading(null);
     }
-  }
-
-  function handleJobDone() {
-    setActiveJobId(null);
   }
 
   return (
@@ -73,16 +70,20 @@ export function OperationsPanel({ repoId, repoName }: Props) {
 
         <CardContent id="operations-panel-content" className="space-y-4">
           {/* Active job progress */}
-          {activeJobId && (
+          {watched && (
             <GenerationProgress
-              jobId={activeJobId}
+              key={watched.id}
+              jobId={watched.id}
               repoName={repoName}
-              onDone={handleJobDone}
+              onDone={settle}
+              // A full re-index retry goes back through its confirmation.
+              onRetry={watched.action === "resync" ? () => setConfirmResync(true) : handleSync}
+              onDismiss={dismiss}
             />
           )}
 
           {/* Action buttons */}
-          {!activeJobId && (
+          {!watched && (
             <div className="flex gap-2">
               <Button
                 variant="default"

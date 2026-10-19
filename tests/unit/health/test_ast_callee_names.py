@@ -46,12 +46,10 @@ def test_a_java_explicit_type_argument_never_joins_the_receivers() -> None:
     assert calls["Mockito.<Foo>mock(Foo.class)"] == ("mock", {"mockito"})
 
 
-def test_csharp_generic_calls_are_unchanged() -> None:
-    """C#'s grammar names the list ``type_argument_list``, which is not
-    skipped, so the type argument still reads as the called name. Recorded as
-    the current behaviour, not endorsed."""
+def test_csharp_generic_reads_its_callee_not_its_type_argument() -> None:
+    """C#'s ``type_argument_list`` contains types, not callee names."""
     calls = _calls(
         "csharp", "class T { void M() { var s = Substitute.For<IFoo>(); Arg.Any<MockFoo>(); } }"
     )
-    assert calls["Substitute.For<IFoo>()"] == ("ifoo", {"substitute", "for"})
-    assert calls["Arg.Any<MockFoo>()"] == ("mockfoo", {"arg", "any"})
+    assert calls["Substitute.For<IFoo>()"] == ("for", {"substitute"})
+    assert calls["Arg.Any<MockFoo>()"] == ("any", {"arg"})

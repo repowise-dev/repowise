@@ -1,16 +1,15 @@
-"""Where an Extract Method span sits in its function's tree: its statements, the
-comments that head them, and the ``with`` block it may be the body of.
+"""Where an Extract Method span sits in its function's tree: its statements,
+the comments that head them, and whether a statement is an exiting guard.
 
-Read by the helper-naming step only, after a span has been chosen, so the cost
-is one walk of one function per emitted plan. The tree is the one the slicer
-already holds (``FunctionAnalysis.fn_node``); nothing is re-parsed. Whether the
-span acts outside itself is :mod:`effects`.
+The tree is the one the slicer already holds (``FunctionAnalysis.fn_node``);
+nothing is re-parsed.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..complexity.ast_utils import is_comment
 from .slice import all_blocks
 
 if TYPE_CHECKING:
@@ -38,27 +37,6 @@ def span_statements(
     return []
 
 
-def enclosing_with(stmts: list[Node], lmap: LanguageNodeMap) -> Node | None:
-    """The ``with`` statement whose whole body *stmts* is, else ``None``: a span
-    lifted out of ``with timed(...):`` is the block that header labels."""
-    holder = body_holder(stmts)
-    return holder if holder is not None and holder.type in lmap.with_kinds else None
-
-
-def body_holder(stmts: list[Node]) -> Node | None:
-    """The statement whose whole body *stmts* is (a ``with``, an ``if`` arm, a
-    loop), else ``None``."""
-    if not stmts:
-        return None
-    block = stmts[0].parent
-    holder = block.parent if block is not None else None
-    if holder is None:
-        return None
-    code = [c for c in block.named_children if not is_comment(c)]
-    inside = [s for s in stmts if not is_comment(s)]
-    return holder if code and inside and code[0] == inside[0] and code[-1] == inside[-1] else None
-
-
 def section_heads(stmts: list[Node]) -> list[tuple[Node, list[str]]]:
     """Each code statement of the span with the comment lines directly above it.
 
@@ -84,5 +62,17 @@ def _comment_above(anchor: Node) -> list[str]:
     return lines
 
 
-def is_comment(node: Node) -> bool:
-    return "comment" in node.type
+def exiting_guard(st: Node, lmap: LanguageNodeMap, exits: frozenset[str]) -> Node | None:
+    """The condition of *st* when it is a guard: an ``if`` with no ``else`` /
+    ``elif`` arm whose last statement is one of *exits* (the consequence
+    itself when it is one, TS / JS ``if (!x) throw e;``); None otherwise."""
+    if st.type not in lmap.if_kinds or st.child_by_field_name("alternative") is not None:
+        return None
+    if any(c.type in ("else_clause", "elif_clause") for c in st.children):
+        return None
+    body = st.child_by_field_name("consequence")
+    if body is None:
+        return None
+    stmts = [c for c in body.named_children if not is_comment(c)]
+    last = body if body.type in exits or not stmts else stmts[-1]
+    return st.child_by_field_name("condition") if last.type in exits else None

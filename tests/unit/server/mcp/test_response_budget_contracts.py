@@ -288,7 +288,7 @@ def test_oversized_protected_answer_is_reduced_and_recoverable(
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
     payload = _payload("get_answer", 0)
-    payload["answer"] = "PROTECTED_ANSWER_" + "z" * 50_000
+    answer = payload["answer"] = "PROTECTED_ANSWER_" + "z" * 50_000
     result = _enforce("get_answer", payload)
 
     accounting = result["_meta"]["response_budget"]
@@ -299,9 +299,44 @@ def test_oversized_protected_answer_is_reduced_and_recoverable(
     refs = result["_meta"]["omitted"]["refs"]
     store = OmissionStore(default_store_path(tmp_path))
     try:
-        assert any("PROTECTED_ANSWER_" in (store.get(ref) or "") for ref in refs)
+        stored = [store.get(ref) or "" for ref in refs]
     finally:
         store.close()
+    # A ref holds the cut tail, never the head the response already serves.
+    assert any(tail and answer.endswith(tail) for tail in stored)
+    assert not any(tail.startswith("PROTECTED_ANSWER_") for tail in stored)
+
+
+def test_an_oversized_omission_restore_serves_its_head_and_stores_only_the_tail(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring a ref bigger than the budget must make progress, not loop."""
+    import repowise.server.mcp_server as mcp_mod
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+    lines = [f"line {i:05d} " + "x" * 40 for i in range(1500)]
+    payload = {
+        "symbol_id": "repowise#0123456789ab",
+        "ref": "repowise#0123456789ab",
+        "kind": "omission",
+        "source": "mcp:get_symbol",
+        "content": "\n".join(lines),
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_symbol", payload)
+
+    head, marker = result["content"].rsplit("\n", 1)
+    shown = head.count("\n") + 1
+    assert head.startswith("line 00000") and shown > 200
+    assert f"{len(lines) - shown} lines omitted" in marker
+    store = OmissionStore(default_store_path(tmp_path))
+    try:
+        tails = [store.get(ref) or "" for ref in result["_meta"]["omitted"]["refs"]]
+    finally:
+        store.close()
+    assert "\n".join(lines[shown:]) in tails
 
 
 @pytest.mark.asyncio

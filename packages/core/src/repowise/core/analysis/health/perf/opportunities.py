@@ -16,6 +16,7 @@ The orchestration below holds no policy of its own.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,6 +47,7 @@ from .causal import (
     model_state,
     opportunity_id_for_finding,
     opportunity_id_model_version,
+    settled_context,
     shared_path_suffix,
     stable_id,
 )
@@ -216,16 +218,20 @@ def _facets(r: _Reading, confidence: str) -> dict[str, str]:
     }
 
 
-def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
+def _assemble(
+    key: Any, members: list[Any], cap: int, origins: Mapping[str, str | None]
+) -> PerformanceOpportunity:
     """Read one group's answers off its owners. Decides nothing itself.
 
     Context, boundary, and intervention are kernel inputs, so the group
     already agrees on them by construction. Taking them off the key keeps one
-    owner for each instead of reclassifying a representative row. Sinks are
-    members' facts, so they are listed rather than assumed shared. Everything
-    else comes from :func:`_read_live`; inert members are listed last.
+    owner for each instead of reclassifying a representative row. A stored
+    origin may settle an ``unknown`` context; the id keeps the key's. Sinks
+    are members' facts, so they are listed rather than assumed shared.
+    Everything else comes from :func:`_read_live`; inert members are listed
+    last.
     """
-    context = key_context(key)
+    context = settled_context(key_context(key), {facts.file_path for facts in members}, origins)
     boundary = key_boundary(key)
     r = _read_live(members)
     evidence_confidence = provenance_confidence(r.provenance)
@@ -296,14 +302,21 @@ def _assemble(key: Any, members: list[Any], cap: int) -> PerformanceOpportunity:
 
 
 def build_performance_opportunities(
-    findings: list[Any], *, evidence_limit: int = 8
+    findings: list[Any],
+    *,
+    evidence_limit: int = 8,
+    origins: Mapping[str, str | None] | None = None,
 ) -> list[PerformanceOpportunity]:
-    """Group, link, and rank performance rows in one deterministic pass."""
+    """Group, link, and rank performance rows in one deterministic pass.
+
+    *origins* is each file's stored ``code_origin``, which settles an
+    ``unknown`` context (:func:`.causal.settled_context`).
+    """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     for key, members in group_observations(findings).items():
-        opportunity = _assemble(key, members, cap)
+        opportunity = _assemble(key, members, cap, origins or {})
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = {facts.site for facts in members}
     return link_siblings(opportunities, sites, rank_sort_key)

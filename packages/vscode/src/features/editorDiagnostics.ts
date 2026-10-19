@@ -20,6 +20,10 @@ export interface EditorDiagnosticsSpec<T> {
   toDiagnostic(doc: vscode.TextDocument, item: T): vscode.Diagnostic | null | undefined;
   /** When true, recomputes diagnostic ranges on document edits without refetching. */
   recomputeOnEdit?: boolean;
+  /** Invoked when items are published for a document (e.g. to synchronize finding positions). */
+  onPublish?(doc: vscode.TextDocument, items: T[]): void;
+  /** Invoked when a document's diagnostics are dropped or cleared. */
+  onDropDocument?(uri: vscode.Uri): void;
 }
 
 /**
@@ -49,6 +53,15 @@ export function registerEditorDiagnostics<T>(
     spec.enabled() && ctx.getExtensionState() === "ready" && !!ctx.repoId;
 
   function clearAll(): void {
+    if (spec.onDropDocument) {
+      for (const uriKey of cachedItems.keys()) {
+        try {
+          spec.onDropDocument(vscode.Uri.parse(uriKey));
+        } catch {
+          // ignore
+        }
+      }
+    }
     collection.clear();
     signatures.clear();
     cachedItems.clear();
@@ -60,6 +73,13 @@ export function registerEditorDiagnostics<T>(
 
   function publish(doc: vscode.TextDocument, items: T[], force = false): void {
     const uriKey = doc.uri.toString();
+    if (!force) {
+      const pendingTimer = editTimers.get(uriKey);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        editTimers.delete(uriKey);
+      }
+    }
     cachedItems.set(uriKey, items);
 
     if (!force) {
@@ -74,6 +94,7 @@ export function registerEditorDiagnostics<T>(
       if (d) diagnostics.push(d);
     }
     collection.set(doc.uri, diagnostics);
+    spec.onPublish?.(doc, items);
   }
 
   async function refreshAll(): Promise<void> {
@@ -101,7 +122,8 @@ export function registerEditorDiagnostics<T>(
     const trackedKeys = new Set([...signatures.keys(), ...cachedItems.keys()]);
     for (const uriKey of trackedKeys) {
       if (!visible.has(uriKey)) {
-        collection.delete(vscode.Uri.parse(uriKey));
+        const uri = vscode.Uri.parse(uriKey);
+        collection.delete(uri);
         signatures.delete(uriKey);
         cachedItems.delete(uriKey);
         const timer = editTimers.get(uriKey);
@@ -109,6 +131,7 @@ export function registerEditorDiagnostics<T>(
           clearTimeout(timer);
           editTimers.delete(uriKey);
         }
+        spec.onDropDocument?.(uri);
       }
     }
   }
@@ -138,16 +161,18 @@ export function registerEditorDiagnostics<T>(
         );
         if (!isVisible) return;
         const uriKey = doc.uri.toString();
-        const items = cachedItems.get(uriKey);
-        if (!items) return;
+        if (!cachedItems.has(uriKey)) return;
 
         const existing = editTimers.get(uriKey);
         if (existing) clearTimeout(existing);
 
+        const currentGen = generation;
         const timer = setTimeout(() => {
           editTimers.delete(uriKey);
-          if (!active()) return;
-          publish(doc, items, true);
+          if (!active() || generation !== currentGen) return;
+          const currentItems = cachedItems.get(uriKey);
+          if (!currentItems) return;
+          publish(doc, currentItems, true);
         }, EDIT_DEBOUNCE_MS);
         editTimers.set(uriKey, timer);
       }),

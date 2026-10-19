@@ -387,3 +387,49 @@ def test_co_change_weight_applied_live_on_splice(tmp_path: Path):
     assert report.diagnostics.get("incremental") is True
     ab = [p for p in report.pairs if {p.file_a, p.file_b} == {"a.py", "b.py"}]
     assert ab and all(p.co_change_count == 7 for p in ab)
+
+
+def _issue_3271_body() -> str:
+    return "".join(
+        f"result{i} = compute(alpha{i}, beta{i})\nname{i} = lookup(result{i}, gamma)\n"
+        f"if name{i} == other:\n    done = finish(name{i}, result{i})\n"
+        for i in range(6)
+    )
+
+
+def _pf_lang(tmp_path: Path, rel: str, language: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        file_info=SimpleNamespace(path=rel, abs_path=str(tmp_path / rel), language=language),
+        symbols=[],
+    )
+
+
+def test_incremental_does_not_pair_across_languages(tmp_path: Path):
+    """Issue #3271: incremental splice must use grammar-scoped hash buckets too."""
+    body = _issue_3271_body()
+    (tmp_path / "a.py").write_text(body)
+    (tmp_path / "b.ts").write_text(body)
+    cache_dir = tmp_path / ".repowise"
+    seed_parsed = [
+        _pf_lang(tmp_path, "a.py", "python"),
+        _pf_lang(tmp_path, "b.ts", "typescript"),
+    ]
+    detect_clones(
+        seed_parsed,
+        window_tokens=WINDOW,
+        min_lines=3,
+        limits=LIMITS,
+        cache_dir=cache_dir,
+    )
+    assert (cache_dir / _INDEX_FILENAME).exists()
+    # Touch one file so the splice path runs; oracle is a fresh full recompute.
+    (tmp_path / "a.py").write_text(body + "\n# touch\n")
+    parsed = [
+        _pf_lang(tmp_path, "a.py", "python"),
+        _pf_lang(tmp_path, "b.ts", "typescript"),
+    ]
+    report = _incremental(parsed, cache_dir, {"a.py"})
+    assert report.diagnostics.get("incremental") is True
+    cross = {(p.file_a, p.file_b) for p in report.pairs if p.file_a != p.file_b}
+    assert cross == set()
+    assert _key(report) == _key(_full(parsed))

@@ -99,13 +99,13 @@ def test_python_plan_carries_an_awaited_method_header_and_call():
     plan = _py_plan()
     sym = plan["new_symbol"]
     # No label or banner: named for the host and the value it returns.
-    assert plan["suggested_name"] == "_run_total"
+    assert plan["suggested_name"] == "_extracted_helper"
     assert sym["signature_text"] == (
-        "async def _run_total(self, items: list[int], limit: int) -> int:"
+        "async def _extracted_helper(self, items: list[int], limit: int) -> int:"
     )
     assert plan["call_site"] == {
         "replace_span": plan["span"],
-        "new_text": "total = await self._run_total(items, limit)",
+        "new_text": "total = await self._extracted_helper(items, limit)",
     }
     # The receiver is not a parameter of a method.
     assert sym["params"] == [
@@ -117,7 +117,7 @@ def test_python_plan_carries_an_awaited_method_header_and_call():
 
 def test_a_span_that_does_not_await_is_not_awaited():
     plan = _py_plan("print(-i)")
-    assert plan["new_symbol"]["signature_text"].startswith("def _run_total(items: list[int]")
+    assert plan["new_symbol"]["signature_text"].startswith("def _extracted_helper(items: list[int]")
     assert "await" not in plan["call_site"]["new_text"]
 
 
@@ -286,7 +286,8 @@ _TYPED_SOURCES = {
 }
 _EXPECTED_TYPES = {
     "python": {"a": "int", "b": None, "c": "list[str]", "x": "dict[str, int]"},
-    "typescript": {"a": "number", "b": "string", "c": None, "x": "Map<string, number>"},
+    # An optional parameter holds `undefined` until something narrows it.
+    "typescript": {"a": "number", "b": "string | undefined", "c": None, "x": "Map<string, number>"},
     "go": {"a": "int", "b": "int", "c": "string", "x": "[]string", "y": None},
     "java": {"a": "int", "b": "String[]", "c": "int", "x": "int", "y": None},
     "rust": {"a": "i32", "b": "&mut Vec<u8>", "c": None, "d": None, "x": "u64"},
@@ -303,7 +304,7 @@ def test_declared_types_are_read_off_the_parse(language: str):
     for d in fn.def_use.definitions:
         row = d.line - 1
         node = fn.fn_node.descendant_for_point_range((row, d.column), (row, d.column + len(d.var)))
-        found[d.var] = dialect.declared_type(node)
+        found[d.var] = dialect.declared_types.of(node)
     assert {k: found.get(k) for k in _EXPECTED_TYPES[language]} == _EXPECTED_TYPES[language]
 
 

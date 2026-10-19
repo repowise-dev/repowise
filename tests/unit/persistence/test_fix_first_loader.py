@@ -8,6 +8,7 @@ from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import (
+    GitFunctionBlame,
     GitMetadata,
     GraphMetric,
     HealthFileMetric,
@@ -92,6 +93,57 @@ async def test_loader_matches_the_builder_over_rows(async_session) -> None:
     # The seed exercises every kind, so equality is not over an empty queue.
     assert {i.kind for i in loaded.items} == {"refactor", "perf_fix", "finding"}
     assert loaded.basis["analyzed_commit"] == "abc"
+
+
+async def test_loader_orders_by_the_stored_function_history(async_session) -> None:
+    rid = await seed_fix_first(async_session)
+    changes = {"src/core.py::run": 9, "src/plain.py::walk": 3}
+    async_session.add_all(
+        GitFunctionBlame(repository_id=rid, symbol_id=s, file_path=s.split("::")[0], mod_count=n)
+        for s, n in {**changes, "lib/elsewhere.py::other": 40}.items()
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    built = build_fix_first(
+        metrics=METRICS,
+        findings=FINDINGS,
+        refactoring=REFACTORING,
+        performance=PERFORMANCE,
+        plans=PLANS,
+        validate=no_tests,
+        function_changes=changes,
+    )
+    assert loaded == built
+    facts = [{f.factor: f.value for f in i.why_ranked} for i in loaded.items]
+    assert {"9 commits", "3 commits"} <= {f.get("function changed in") for f in facts}
+
+
+async def test_loader_without_function_history_keeps_the_file_weight(async_session) -> None:
+    rid = await seed_fix_first(async_session)
+    loaded = await load_fix_first(async_session, rid)
+    facts = [{f.factor for f in i.why_ranked} for i in loaded.items if i.kind != "perf_fix"]
+    assert facts and all("changes often" in f and "function changed in" not in f for f in facts)
+
+
+async def test_loader_reads_a_file_blame_skipped_for_size(async_session) -> None:
+    from sqlalchemy import update
+
+    rid = await seed_fix_first(async_session)
+    # History for one file only; src/core.py passes the commit floor with no
+    # rows (too large to blame), src/plain.py does not reach the floor.
+    async_session.add(GitFunctionBlame(repository_id=rid, symbol_id="src/repo.py::load",
+                                       file_path="src/repo.py", mod_count=4))
+    await async_session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/core.py")
+        .values(commit_count_total=40)
+    )
+    await async_session.flush()
+    loaded = await load_fix_first(async_session, rid)
+    facts = {i.target.file_path: {f.factor: f.value for f in i.why_ranked}
+             for i in loaded.items if i.kind != "perf_fix"}
+    assert facts["src/core.py"]["changes often"] == "yes"
+    assert facts["src/plain.py"]["function changed in"] == "0 commits"
 
 
 async def test_loader_on_an_empty_repository(async_session) -> None:

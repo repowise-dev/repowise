@@ -62,9 +62,21 @@ def normalize_path(path: str, rename_map: dict[str, str]) -> str:
     return rename_map.get(path, path)
 
 
-def line_distance(left: HealthFindingData, right: HealthFindingData) -> int:
-    """Proximity tie-breaker for two findings that share an identity."""
-    a, b = left.line_start, right.line_start
-    if a is None or b is None:
-        return 0
-    return abs(a - b)
+def measured_shape(finding: HealthFindingData, *, path: str | None = None) -> tuple[Any, ...]:
+    """What *finding* measured, with its owning symbol's name left out.
+
+    Two findings with one shape on a renamed symbol are the same finding: the
+    reason carries the measured value (a CCN, a length, a depth) and the span
+    its extent, so a rename that also changes the body has a different shape.
+    """
+    reason = finding.reason or ""
+    if finding.function_name:
+        reason = reason.replace(finding.function_name, "{symbol}")
+    span = (finding.line_end or 0) - (finding.line_start or 0)
+    return (
+        str(finding.dimension),
+        str(finding.biomarker_type),
+        path or finding.file_path,
+        reason,
+        span,
+    )

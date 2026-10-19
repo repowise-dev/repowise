@@ -130,6 +130,12 @@ def _collect_class_body(
                 body.methods.append(node)
         elif node.type in lmap.field_decl_kinds:
             body.field_decls.append(node)
+            # A Swift property holds its own function units: a computed
+            # property's body, a ``willSet`` / ``didSet`` block. They are
+            # members like any method. The unit carries the property's name, so
+            # a reference to it is a reference to a method, not to a field.
+            units = [child for child in node.children if is_function_node(child, lmap)]
+            body.methods.extend(u for u in units if _is_own_method(u, lmap, language, source))
         elif node.type not in lmap.nested_type_kinds:
             stack.extend(node.children)
     return body
@@ -293,6 +299,10 @@ def _foreign_member_id(node: Node, lmap: LanguageNodeMap) -> int | None:
     obj, prop = member_object(node), member_name(node)
     if obj is None or prop is None or obj.id == prop.id:
         return None  # a bare call (``id()``) has no receiver
+    # The child of *node* that holds the name: the name itself, or the
+    # wrapper around it (Swift's ``navigation_suffix``).
+    while prop.parent is not None and prop.parent.id != node.id:
+        prop = prop.parent
     return prop.id
 
 
@@ -607,7 +617,11 @@ def _compute_lcom4(
     names field declarations (implicit receivers), overloads are one node and
     only ``_stateful_groups`` count toward LCOM4; a map that sets
     ``cohesion_counts_state_only`` gets the same count without the implicit
-    references.
+    references. Otherwise every access is a visible ``self.x``, so a
+    component touching one field is a real cluster, but one touching none is
+    a static helper or a hook override (a Move Method or a function, never a
+    class to extract): it stays in ``components``, where ``move_method``
+    reads the inherited members it calls, and does not count.
     """
     if not method_nodes:
         return 1, 0, [], 1.0
@@ -633,7 +647,8 @@ def _compute_lcom4(
     if implicit or lmap.cohesion_counts_state_only:
         groups = _stateful_groups(indexed, refs.contracts)
         return max(len(groups), 1), field_count, groups, tcc
-    return len(indexed), field_count, [g for _, g in indexed], tcc
+    components = [g for _, g in indexed]
+    return max(sum(1 for g in components if g.fields), 1), field_count, components, tcc
 
 
 def _collect_classes(
@@ -665,10 +680,10 @@ def _collect_classes(
         # A partial class's other parts live in files this pass does not see;
         # a trait impl's methods are the trait's, so none can move out.
         contract_impl = is_trait_impl(class_node, lmap)
+        refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
         if "partial" in _decl_words(class_node) or contract_impl:
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
-            refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
             lcom4, field_count, components, tcc = _compute_lcom4(
                 body.methods, method_fcs, lmap, refs
             )
@@ -686,6 +701,18 @@ def _collect_classes(
                 components=components,
                 tcc=tcc,
                 contract_impl=contract_impl,
+                # A partial fragment's own fields still bind the methods that use them.
+                field_readers=_field_readers(method_fcs, refs),
             )
         )
     return classes
+
+
+def _field_readers(method_fcs: list[FunctionComplexity], refs: _MemberRefs) -> frozenset[str]:
+    """Names of the methods whose references include a field, not a method."""
+    methods = {fc.name for fc in method_fcs} | refs.call_targets
+    return frozenset(
+        fc.name
+        for fc, members in zip(method_fcs, refs.per_method, strict=True)
+        if members - methods
+    )

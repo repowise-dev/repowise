@@ -16,7 +16,7 @@ import {
   noFileScored,
   type CodeHealthMapFile,
 } from "../../src/health/code-health-map.js";
-import { MapFieldList, MapInspector } from "../../src/health/map/inspector.js";
+import { MapFieldList } from "../../src/health/map/inspector.js";
 import { CodeHealthLede } from "../../src/health/code-health-lede.js";
 
 function f(path: string, score: number | null, nloc = 100): CodeHealthMapFile {
@@ -76,19 +76,6 @@ describe("an unscored file on the health lens", () => {
     expect(names[2]).toContain("Big.php");
     expect(names[2]).toContain("—");
   });
-
-  it("is described, not scored, in the inspector", () => {
-    render(
-      <MapInspector
-        file={f("src/Big.php", null)}
-        overlay="health"
-        onOpen={() => {}}
-        onClose={() => {}}
-      />,
-    );
-    expect(screen.getByText(HEALTH_UNSUPPORTED_LABEL)).toBeTruthy();
-    expect(screen.queryByText("10.0")).toBeNull();
-  });
 });
 
 describe("a field with no scored file", () => {
@@ -137,5 +124,24 @@ describe("the code health lede", () => {
       />,
     );
     expect(container.textContent).toContain("1,650 more files are in a");
+  });
+
+  it("states the analysed share and withholds a band the server withheld", () => {
+    const { container } = render(
+      <CodeHealthLede
+        summary={
+          {
+            ...base,
+            file_count: 4,
+            average_health: 10,
+            unanalysed_file_count: 431,
+            analysed_share: 4 / 435,
+            band: null,
+          } as HealthOverviewSummary
+        }
+      />,
+    );
+    expect(container.textContent).toContain("4 of 435 code files");
+    expect(container.textContent).not.toContain("Excellent");
   });
 });

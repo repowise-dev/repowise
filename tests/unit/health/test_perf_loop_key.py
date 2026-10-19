@@ -83,3 +83,36 @@ def test_a_keyed_loop_keeps_the_advisory_batch_plan():
     (opportunity,) = build_performance_opportunities([_finding(3)])
     assert opportunity.fix is not None
     assert opportunity.fix.strategy == "batch_or_prefetch_io"
+
+
+@pytest.mark.parametrize(
+    ("body", "key_unused"),
+    [
+        ("load(i); ping()", False),
+        ("ping(); load(i)", False),
+        ("ping(); pong()", True),
+    ],
+)
+def test_a_line_is_key_free_only_when_every_helper_call_on_it_is(body, key_unused):
+    """Two helpers on one loop line share one ``LoopFacts``. A keyed call clears
+    ``key_unused`` in either order; a line of only key-free calls keeps it."""
+    src = (
+        "import requests\n"
+        "def load(i):\n"
+        "    return requests.get(i)\n"
+        "def ping():\n"
+        "    return 1\n"
+        "def pong():\n"
+        "    return 2\n"
+        "def run(ids):\n"
+        "    for i in ids:\n"
+        f"        {body}\n"
+    )
+    run = {f.function: f for f in walk_file("t.py", "python", src.encode()).perf_fn_facts}["run"]
+    (call_line,) = {line for _name, line in run.loop_call_targets}
+    stored = dict(run.loop_call_facts).get(call_line)
+    assert stored is not None
+    assert stored.key_unused is key_unused
+    assert stored.chunked is False
+    assert stored.magnitude == "unknown"
+    assert stored.iterates == "parameter"

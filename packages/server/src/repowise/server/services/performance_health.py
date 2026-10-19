@@ -26,22 +26,27 @@ from repowise.core.analysis.health.perf.opportunities import model_state
 from repowise.core.analysis.health.perf.serving import (
     PerformanceQuery,
     PlanLink,
+    area_facet,
     evidence_payload,
     fold_facets,
+    fold_scoped_facets,
     plan_link,
     rescope_summary,
+    scope_counts,
     serialize,
     summary_payload,
     unresolved_detail,
 )
 from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.persistence.crud import (
+    gated_performance_counts,
     get_performance_opportunity,
     get_performance_plan_rows,
     get_performance_summary,
     list_evidence_for_opportunities,
     list_opportunity_evidence,
     list_performance_opportunities,
+    performance_area_counts,
     performance_facet_counts,
 )
 from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, unit_counts
@@ -60,15 +65,34 @@ class PerformancePage:
     ignored_arguments: dict[str, str] = field(default_factory=dict)
     #: The causes' count vocabulary (``queue.counts``) in the query's files.
     counts: dict[str, Any] = field(default_factory=dict)
+    #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
+    #: Causes per dashboard scope (``now``, ``production``, ``all``) before the
+    #: narrowing filters. Only with scoped facets.
+    scopes: dict[str, int] = field(default_factory=dict)
+    #: The query's causes by area (``serving.area_facet``). Only with scoped facets.
+    areas: dict[str, Any] = field(default_factory=dict)
 
 
 class PerformanceHealthService:
-    """Query, page, detail, facets, plan linkage, and recovery, in one place."""
+    """Query, page, detail, facets, plan linkage, and recovery, in one place.
 
-    def __init__(self, session: AsyncSession, repository_id: str, repository: str) -> None:
+    Lists, counts, facets and the headline leave out what a language gate holds
+    back unless ``include_unverified``; a lookup by id never does.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        repository_id: str,
+        repository: str,
+        *,
+        include_unverified: bool = False,
+    ) -> None:
         self._session = session
         self._repository_id = repository_id
         self._repository = repository
+        self._include_unverified = include_unverified
 
     # -- collection --------------------------------------------------------
 
@@ -79,6 +103,9 @@ class PerformanceHealthService:
         evidence_per_item: int = 0,
         with_facets: bool = False,
         with_summary: bool = False,
+        row_decisions: bool = False,
+        scoped_facets: bool = False,
+        area_depth: int | None = None,
     ) -> PerformancePage:
         """One page and its plan links, plus whatever else the caller renders.
 
@@ -91,9 +118,13 @@ class PerformanceHealthService:
         every open opportunity, which is the only way to report the counts a
         filter control needs. It stays a single indexed aggregate over a table
         that already holds one row per cause rather than one per observation.
+
+        ``scoped_facets`` counts every facet inside the query's own scope
+        (its default-queue verdict and default states included), so the counts
+        sum to the rows; the agent surface keeps the unscoped counts.
         """
         judged = not (
-            query.default_queue
+            (query.default_queue or query.queue)
             and await any_unjudged(self._session, self._repository_id, "causes")
         )
         rows, total = await list_performance_opportunities(
@@ -103,12 +134,18 @@ class PerformanceHealthService:
             sort=query.sort,
             limit=query.limit,
             offset=query.offset,
+            include_unverified=self._include_unverified,
         )
         links = await self._plan_links(rows)
         evidence = await self._evidence_for(rows, evidence_per_item)
         items = [
             {
-                **serialize(row, links[row.opportunity_id], summary=query.view == "summary"),
+                **serialize(
+                    row,
+                    links[row.opportunity_id],
+                    summary=query.view == "summary",
+                    decisions=row_decisions,
+                ),
                 **(
                     evidence_block(
                         evidence.get(row.opportunity_id, []), row.observations_total, 0
@@ -120,12 +157,23 @@ class PerformanceHealthService:
             for row in rows
         ]
         emitted = query.offset + len(items)
+        facets: dict[str, list[dict[str, Any]]] = {}
+        scopes: dict[str, int] = {}
+        areas: dict[str, Any] = {}
+        if with_facets and scoped_facets:
+            facets, scopes, areas = await self._scoped_facets(
+                query, judged=judged, area_depth=area_depth
+            )
+        elif with_facets:
+            facets = await self._facets(query)
         return PerformancePage(
             items=items,
             total=total,
             offset=query.offset,
             next_offset=emitted if emitted < total else None,
-            facets=await self._facets(query) if with_facets else {},
+            facets=facets,
+            scopes=scopes,
+            areas=areas,
             summary=await self.summary(query.contexts) if with_summary else {},
             counts=(
                 await unit_counts(
@@ -134,8 +182,10 @@ class PerformanceHealthService:
                     "causes",
                     shown=len(items),
                     file_paths=query.file_paths,
+                    include_unverified=self._include_unverified,
                 )
             ).as_dict(),
+            gated=await self.gated(),
         )
 
     async def _evidence_for(
@@ -168,10 +218,53 @@ class PerformanceHealthService:
             links[row.opportunity_id] = plan_link(row, plan, public_id)
         return links
 
+    async def _scoped_facets(
+        self, query: PerformanceQuery, *, judged: bool, area_depth: int | None = None
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], dict[str, Any]]:
+        """Facets counted inside the query's scope and area, each scope's size,
+        and the causes by area: one grouped aggregate and one per-file count."""
+        filters = query.store_filters(judged=judged)
+        grouped = await performance_facet_counts(
+            self._session,
+            self._repository_id,
+            file_paths=query.file_paths,
+            area_prefix=filters["area_prefix"],
+            include_unverified=self._include_unverified,
+            scoped=True,
+        )
+        by_file = await performance_area_counts(
+            self._session,
+            self._repository_id,
+            include_unverified=self._include_unverified,
+            **filters,
+        )
+        # The scope sizes describe the whole repository, so an opened area
+        # does not shrink the scope control; that needs the unnarrowed groups.
+        whole = (
+            grouped
+            if query.area is None
+            else await performance_facet_counts(
+                self._session,
+                self._repository_id,
+                file_paths=query.file_paths,
+                include_unverified=self._include_unverified,
+                scoped=True,
+            )
+        )
+        queue_judged = not await any_unjudged(self._session, self._repository_id, "causes")
+        return (
+            fold_scoped_facets(grouped, query, judged=judged),
+            scope_counts(whole, judged=queue_judged),
+            area_facet(by_file, base=query.area, depth=area_depth),
+        )
+
     async def _facets(self, query: PerformanceQuery) -> dict[str, list[dict[str, Any]]]:
         """Counts per filter value, each cross-filtered by the *other* filters."""
         grouped = await performance_facet_counts(
-            self._session, self._repository_id, file_paths=query.file_paths
+            self._session,
+            self._repository_id,
+            file_paths=query.file_paths,
+            include_unverified=self._include_unverified,
         )
         return fold_facets(grouped, query)
 
@@ -194,10 +287,23 @@ class PerformanceHealthService:
         if base["status"] == "unavailable":
             return base
         base["repository_total"] = base["total"]
-        if contexts is None:
+        gated = await self.gated()
+        if contexts is None and not gated:
             return base
-        grouped = await performance_facet_counts(self._session, self._repository_id)
-        return rescope_summary(base, grouped, contexts)
+        # The stored rollup counts gated rows too, so with any held back the
+        # headline is recounted from the same gated facet aggregate.
+        grouped = await performance_facet_counts(
+            self._session, self._repository_id, include_unverified=self._include_unverified
+        )
+        if contexts is None:
+            contexts = frozenset(group[0] for group in grouped)
+        return {**rescope_summary(base, grouped, contexts), "gated": gated}
+
+    async def gated(self) -> dict[str, dict]:
+        """Open opportunities a language gate holds back; empty when opted in."""
+        return await gated_performance_counts(
+            self._session, self._repository_id, include_unverified=self._include_unverified
+        )
 
     # -- detail ------------------------------------------------------------
 

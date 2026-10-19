@@ -11,7 +11,7 @@ fixture mirrors ``update_cmd/persistence.py::_persist_full_update_async``: an
 from __future__ import annotations
 
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -133,12 +133,15 @@ def test_persistence_shape_yields_a_staged_plan():
     )
 
 
-def test_stage_names_come_from_timed_labels_and_banners():
-    stages = _plans(_persist(sections=8, extend=()))["persist"].plan["stages"]
-    # A stage covering one section takes its label; one spanning two is named
-    # for the host and its subject.
-    for stage in stages:
-        assert stage["suggested_name"].startswith("_persist_")
+def test_stage_names_are_numbered_placeholders():
+    plan = _plans(_persist(sections=8, extend=()))["persist"].plan
+    names = [stage["suggested_name"] for stage in plan["stages"]]
+    # Labels and banners name nothing: the agent applying the plan names each.
+    assert names == ["_extracted_helper"] + [f"_extracted_helper_{n}" for n in range(2, len(names) + 1)]
+    for stage in plan["stages"]:
+        name = stage["suggested_name"]
+        assert stage["new_symbol"]["signature_text"].startswith(f"async def {name}(")
+        assert f"await {name}(" in stage["call_site"]["new_text"]
 
 
 def test_shared_values_travel_on_a_parameter_object():
@@ -622,3 +625,269 @@ def test_code_no_path_reaches_has_no_bound_inputs():
     assigned = DefiniteAssignment(fn)
     assert {"x", "y"} <= assigned.before(4, 4)
     assert assigned.before(5, 5) is None
+
+
+_WORDS = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta")
+
+
+def _item_section(n: int, *, extra: str = "") -> str:
+    """One section of a loop body: a banner and a branch on the item. Each
+    reads its own option, so no single span carries more than one section."""
+    return f"""
+        # Handle {_WORDS[n]}
+        if item.kind == "k{n}" and item.ready:
+            handle_{n}(item, a, seen, opt_{n}){extra}
+        elif item.other_{n} or b:
+            skip_{n}(item, last)
+"""
+
+
+def _loop_fn(*, extras: dict[int, str] | None = None, tail: str = "last = item") -> str:
+    extras = extras or {}
+    body = "".join(_item_section(n, extra=extras.get(n, "")) for n in range(8))
+    return f"""
+def run(items, a, b, {", ".join(f"opt_{n}" for n in range(8))}):
+    seen = []
+    last = None
+    for item in items:
+{textwrap.indent(textwrap.dedent(body), " " * 8)}
+        {tail}
+    return seen, last
+"""
+
+
+def _spans(plan) -> list[tuple[int, int]]:
+    return [(s["span"]["start"], s["span"]["end"]) for s in plan.plan["stages"]]
+
+
+def test_a_loop_body_is_cut_and_the_loop_stays_in_the_function():
+    # hermes ``cron/scheduler.py::_deliver_result``: the work sits in one ``for``.
+    src = _loop_fn()
+    lines = textwrap.dedent(src).splitlines()
+    loop = next(i for i, ln in enumerate(lines, 1) if ln.strip().startswith("for item"))
+    plan = _plans(src)["run"]
+    spans = _spans(plan)
+    assert len(spans) >= 2
+    assert all(s > loop for s, _ in spans)
+    assert all("item" in s["params"] for s in plan.plan["stages"])
+    residual = plan.plan["orchestrator"]
+    # The loop's own decision point stays with the function.
+    assert residual["ccn_after"] >= 2
+
+
+def test_a_value_the_next_iteration_reads_comes_back_out_of_its_stage():
+    # ``last`` is written in the last section and read by the first on the next
+    # iteration: the stage writing it hands it back, the reading one takes it in.
+    src = _loop_fn(extras={7: "\n            last = item"})
+    stages = _plans(src)["run"].plan["stages"]
+    lines = textwrap.dedent(src).splitlines()
+    write = next(
+        i for i, ln in enumerate(lines, 1) if ln.strip() == "last = item" and ln.startswith(" " * 12)
+    )
+    writer = next(s for s in stages if s["span"]["start"] <= write <= s["span"]["end"])
+    assert "last" in writer["returns"] and "last" in writer["params"]
+    assert all("last" in s["params"] for s in stages)
+
+
+def test_a_continue_leaving_a_section_keeps_that_section_in_the_function():
+    src = _loop_fn(extras={3: "\n            if item.done:\n                continue"})
+    lines = textwrap.dedent(src).splitlines()
+    jump = next(i for i, ln in enumerate(lines, 1) if ln.strip() == "continue")
+    spans = _spans(_plans(src)["run"])
+    assert len(spans) >= 2
+    assert not any(s <= jump <= e for s, e in spans)
+
+
+def test_one_if_arm_holding_the_work_is_cut():
+    body = "".join(_item_section(n) for n in range(8)).replace("item", "cfg")
+    src = f"""
+def apply(cfg, a, b, seen, last, {", ".join(f"opt_{n}" for n in range(8))}):
+    if cfg.enabled:
+{textwrap.indent(textwrap.dedent(body), " " * 8)}
+    return seen
+"""
+    lines = textwrap.dedent(src).splitlines()
+    head = next(i for i, ln in enumerate(lines, 1) if ln.strip() == "if cfg.enabled:")
+    spans = _spans(_plans(src)["apply"])
+    assert len(spans) >= 2 and all(s > head for s, _ in spans)
+
+
+@pytest.mark.parametrize(
+    ("language", "ext", "src", "expected"),
+    [
+        ("python", "py", "for r in rows:\n    if r:\n        break", False),
+        ("python", "py", "if r:\n    continue", True),
+        # A ``for ... else`` arm is not the loop's body: its break leaves the outer loop.
+        ("python", "py", "for r in rows:\n    pass\nelse:\n    break", True),
+        ("typescript", "ts", "switch (k) { case 1: break; }", False),
+        ("typescript", "ts", "switch (k) { case 1: continue; }", True),
+        ("typescript", "ts", "inner: for (const r of rows) { break inner; }", True),
+        ("typescript", "ts", "items.forEach(() => { return; });", False),
+    ],
+)
+def test_a_jump_leaves_a_statement_only_when_nothing_in_it_holds_it(language, ext, src, expected):
+    from repowise.core.analysis.health.dataflow.loop_cut import escapes as _escapes
+
+    wrapped = (
+        f"def f(rows, r, k, items):\n    while True:\n{textwrap.indent(src, ' ' * 8)}\n"
+        if language == "python"
+        else f"function f(rows, r, k, items) {{ while (true) {{ {src} }} }}"
+    )
+    fn = _functions(wrapped, language, ext)[0]
+    lmap = get_language_map(language)
+    loop = next(c for c in fn.fn_node.child_by_field_name("body").named_children if c.type in lmap.loop_kinds)
+    body = loop.child_by_field_name("body")
+    first = next(c for c in body.named_children if "comment" not in c.type)
+    assert _escapes(first, lmap) is expected
+
+
+def test_a_statement_reading_its_own_target_on_a_later_line_is_never_staged():
+    # hermes ``run_conversation``: ``messages = [\n msg for msg in messages ...]``
+    # orders its write before its reads by line, so the stage lost ``messages``.
+    src = _loop_fn(extras={2: "\n            seen = [\n                s for s in seen if s\n            ]"})
+    lines = textwrap.dedent(src).splitlines()
+    rebind = next(i for i, ln in enumerate(lines, 1) if ln.strip() == "seen = [")
+    spans = _spans(_plans(src)["run"])
+    assert not any(s <= rebind <= e for s, e in spans)
+
+
+def test_an_import_with_a_fallback_binds_on_every_path():
+    # hermes ``load_gateway_config``: ``try: from m import r as _pr`` /
+    # ``except: _pr = None`` binds ``_pr``; the stage needs no older value.
+    fallback = """
+        try:
+            from reg import registry as hooks
+        except ImportError:
+            hooks = None
+"""
+    body = "".join(_item_section(n) + (fallback if n == 7 else "") for n in range(8))
+    src = f"""
+def run(items, a, b, last, {", ".join(f"opt_{n}" for n in range(8))}):
+    seen = []
+    hooks = None
+    for item in items:
+{textwrap.indent(textwrap.dedent(body), " " * 8)}
+    return seen, hooks
+"""
+    stages = _plans(src)["run"].plan["stages"]
+    writer = next(s for s in stages if "hooks" in s["returns"])
+    assert "hooks" not in writer["params"]
+
+
+def test_an_input_only_another_stage_writes_refuses_the_plan():
+    from repowise.core.analysis.health.dataflow.stages import _inputs_held
+
+    one = Extraction(10, 20, ("a",), (), 5, 3)
+    two = Extraction(30, 40, ("x",), (), 5, 3)
+    assert not _inputs_held((one, two), {"a": [1], "x": [15]})
+    assert _inputs_held((one, two), {"a": [1], "x": [15, 25]})
+    assert _inputs_held((replace(one, returns=("x",)), two), {"a": [1], "x": [15]})
+    # Only a later stage hands ``p`` back: unbound at the first stage's call.
+    three = Extraction(50, 60, (), ("p",), 5, 3)
+    first = Extraction(10, 20, ("p",), (), 5, 3)
+    assert not _inputs_held((first, two, three), {"p": [55], "x": [1]})
+    # Written before the stages too (a loop-carried value): held.
+    assert _inputs_held((first, two, three), {"p": [2, 55], "x": [1]})
+
+
+def _stage_writing(stages, lines, text):
+    line = next(i for i, ln in enumerate(lines, 1) if ln.strip() == text)
+    return next(s for s in stages if s["span"]["start"] <= line <= s["span"]["end"])
+
+
+def test_a_counter_only_its_own_stage_reads_comes_back_out():
+    # ``count`` is read and bumped by one stage and never after the loop: the
+    # next iteration's call must still see the bumped value.
+    src = _loop_fn(extras={3: "\n            count += 1"}, tail="seen.sort()")
+    src = src.replace("    last = None\n", "    last = None\n    count = 0\n")
+    stages = _plans(src)["run"].plan["stages"]
+    writer = _stage_writing(stages, textwrap.dedent(src).splitlines(), "count += 1")
+    assert "count" in writer["returns"] and "count" in writer["params"]
+
+
+def test_a_value_the_while_header_reads_comes_back_out():
+    body = "".join(_item_section(n) for n in range(8))
+    src = f"""
+def run(items, a, b, last, {", ".join(f"opt_{n}" for n in range(8))}):
+    seen = []
+    pos = 0
+    while pos < len(items):
+        item = items[pos]
+{textwrap.indent(textwrap.dedent(body), " " * 8)}
+        if item.skip and item.far:
+            pos += 2
+        elif item.step or a:
+            pos += 1
+        else:
+            pos = len(items)
+    return seen
+"""
+    stages = _plans(src)["run"].plan["stages"]
+    writer = _stage_writing(stages, textwrap.dedent(src).splitlines(), "pos += 2")
+    assert "pos" in writer["returns"]
+
+
+def test_an_async_loop_body_gets_awaited_stages():
+    src = _loop_fn().replace("def run(", "async def run(").replace("for item in items:", "async for item in items:")
+    src = src.replace("handle_", "await handle_")
+    stages = _plans(src)["run"].plan["stages"]
+    assert len(stages) >= 2
+    assert all(s["new_symbol"]["async"] and "await " in s["call_site"]["new_text"] for s in stages)
+
+
+def test_an_import_whose_handler_only_passes_is_not_bound_by_it():
+    fallback = """
+        try:
+            from reg import registry as hooks
+            hooks = wrap(hooks)
+        except ImportError:
+            pass
+"""
+    body = "".join(_item_section(n) + (fallback if n == 7 else "") for n in range(8))
+    src = f"""
+def run(items, a, b, last, {", ".join(f"opt_{n}" for n in range(8))}):
+    seen = []
+    hooks = None
+    for item in items:
+{textwrap.indent(textwrap.dedent(body), " " * 8)}
+    return seen, hooks
+"""
+    stages = _plans(src)["run"].plan["stages"]
+    writer = next(s for s in stages if "hooks" in s["returns"])
+    assert "hooks" in writer["params"]
+
+
+def _ts_section(n: int) -> str:
+    return f"""
+    // Handle {_WORDS[n]}
+    if (item.kind === "k{n}" && item.ready) {{
+      handle{n}(item, a, seen, opt{n});
+    }} else if (item.other{n} || b) {{
+      skip{n}(item);
+    }}
+"""
+
+
+@pytest.mark.parametrize("shape", ["labelled", "do_while"])
+def test_typescript_loop_bodies_are_cut(shape):
+    body = textwrap.indent(textwrap.dedent("".join(_ts_section(n) for n in range(8))), "    ")
+    opts = ", ".join(f"opt{n}" for n in range(8))
+    if shape == "labelled":
+        loop = f"  outer: for (const item of items) {{\n{body}\n  }}\n"
+    else:
+        loop = (
+            f"  let item = items[0];\n  do {{\n{body}\n"
+            "    if (item.next && item.ok) { item = item.next; } else if (item.done || a) { item = null; }\n"
+            "  } while (item);\n"
+        )
+    src = f"function run(items, a, b, seen, {opts}) {{\n{loop}  return seen;\n}}\n"
+    plan = _plans(src, "typescript", "ts")["run"]
+    if shape == "labelled":
+        # The flow graph keeps a labelled statement whole, so nothing in it
+        # is known to be bound: no stage is cut there.
+        assert "stages" not in plan.plan
+        return
+    assert len(plan.plan["stages"]) >= 2
+    if shape == "do_while":
+        writer = _stage_writing(plan.plan["stages"], src.splitlines(), "if (item.next && item.ok) { item = item.next; } else if (item.done || a) { item = null; }")
+        assert writer["returns"] == ["item"]

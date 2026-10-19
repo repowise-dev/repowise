@@ -107,6 +107,37 @@ class Runner:
 
 async def step(x):
     return x
+
+
+def launch(state, job_id):
+    task = asyncio.create_task(step(job_id))
+    jobs = getattr(state, "jobs", None)
+    if jobs is None:
+        jobs = {}
+        state.jobs = jobs
+    jobs[job_id] = task
+
+
+def launch_checked(job_id):
+    task = asyncio.create_task(step(job_id))
+    if _tasks is None:
+        return
+    _tasks.add(task)
+
+
+def launch_aliased(job_id):
+    task = asyncio.create_task(step(job_id))
+    jobs = set()
+    jobs.add(task)
+    pending = jobs
+    return pending
+
+
+def launch_and_hand_back(state, job_id):
+    task = asyncio.create_task(step(job_id))
+    jobs = {}
+    jobs[job_id] = task
+    state.drain(jobs)
 """
 
 
@@ -153,6 +184,13 @@ def test_only_a_task_nobody_waits_for_is_spawned(tmp_path: Path) -> None:
     assert calls[("iterated", "step")] is False
     assert calls[("returned", "step")] is False
     assert calls[("joined", "step")] is False
+    # Published onto shared state and tested against None: no task is read.
+    assert calls[("launch", "step")] is True
+    assert calls[("launch_checked", "step")] is True
+    # Aliased to a plain name, the container may be read through the alias.
+    assert calls[("launch_aliased", "step")] is False
+    # Handed to a call that may wait for it: the caller's work.
+    assert calls[("launch_and_hand_back", "step")] is False
 
 
 def test_a_spawned_call_site_never_resolves_as_a_call_its_caller_makes(tmp_path: Path) -> None:

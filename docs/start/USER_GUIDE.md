@@ -138,7 +138,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | `repowise symbol "<file>::<Name>"` | One symbol's body with live-verified line bounds. |
 | `repowise why "<q>"` | Decisions and rationale behind the shape of the code. A path gets its origin story; no argument gets the decision health dashboard. |
 | `repowise health` | Lowest-scoring files and why. `--trend` for direction, `--refactoring-targets` for concrete plans. |
-| `repowise risk main..HEAD` | Repo-relative review percentile/classification plus a supporting 0-10 diff-shape score. |
+| `repowise risk main..HEAD` | Repo-relative size-and-spread percentile, the touched files' bug-fix record, and a supporting 0-10 diff-shape score. |
 | `repowise dead-code` | What nothing references any more, by confidence tier. |
 | `repowise doc-drift` | Documentation whose claims about the tree no longer hold, by confidence. |
 | `repowise decision list` | Architectural decisions, their evidence and status. |
@@ -315,7 +315,7 @@ repowise watch                # or sync continuously while you code
 ### Before you open a pull request
 
 ```bash
-repowise risk main..HEAD       # repo-relative review priority and supporting evidence
+repowise risk main..HEAD       # size-and-spread percentile and bug-fix record
 repowise impacted-tests main..HEAD   # the tests your changes exercise
 repowise health --trend        # did anything you touched get worse
 ```
@@ -352,7 +352,7 @@ instead of them interrupting someone.
 ```bash
 export REPOWISE_SKIP_EDITOR_SETUP=1     # no hooks or editor files on the runner
 repowise init --yes --no-prose          # free, no keys in CI, no questions
-repowise risk "$BASE_SHA..$HEAD_SHA"    # gate or annotate on review priority
+repowise risk "$BASE_SHA..$HEAD_SHA"    # gate or annotate on change size
 repowise export --format markdown --output ./docs/wiki/   # static hosting
 ```
 

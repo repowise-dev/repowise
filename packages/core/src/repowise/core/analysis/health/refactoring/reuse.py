@@ -40,11 +40,12 @@ from typing import Any, Literal, NamedTuple, get_args
 
 from ....callable_spans import body_span
 from ...graph_view import ImportEdgeView
-from ...signature_effect import parameter_names
+from ...signature_effect import bound_names, parameter_names
 from . import render
 from .graph_signals import defined_symbols
 from .reuse_names import (
     binding_count,
+    code_only,
     exported_later,
     is_builtin,
     module_bindings,
@@ -245,6 +246,8 @@ class _Source:
     params: tuple[str | None, list[str]] | None
     own: frozenset[str]
     reads: frozenset[str]
+    #: Python's statement indentation per body line (:func:`_indents`).
+    indents: tuple[int | None, ...]
 
 
 def _sites(repo: _Repo, fn: _Fn, others: list[Occurrence]) -> tuple[list[Site] | None, str | None]:
@@ -280,7 +283,8 @@ def _source(repo: _Repo, fn: _Fn, lines: Lines) -> _Source | None:
     own = given | _assigned(texts, lang) | {"self", "cls", "this", fn.name}
     # The header's names too: an annotation's type must mean the same at the site.
     reads = read_names([*texts, *header], lang)
-    return _Source(fn, body, header, params, frozenset(own), frozenset(reads))
+    indents = _indents(lines, body, lang)
+    return _Source(fn, body, header, params, frozenset(own), frozenset(reads), indents)
 
 
 def _source_refusal(repo: _Repo, src: _Source, lines: Lines) -> str | None:
@@ -301,7 +305,7 @@ def _site(repo: _Repo, src: _Source, occ: Occurrence) -> tuple[Site | None, str 
     if not lines:
         return None, "site_unread"
     fn = src.fn
-    span = _match(lines, src.body, occ, repo.language, 3 + (fn.end - fn.start) // 10)
+    span = _match(lines, src, occ, repo.language, 3 + (fn.end - fn.start) // 10)
     if span is None:
         return None, "text_differs"
     refused = _unreachable(repo, fn, path) or _foreign_names(repo, src, path)
@@ -493,11 +497,11 @@ def _enclosing_names(repo: _Repo, path: str, lines: Lines, span: tuple[int, int]
     for host in repo.functions(path):
         if not (host.start < span[0] and host.end >= span[1]):
             continue
-        params = parameter_names(host.signature, lang, host.kind)
-        if params is not None:
-            out |= set(params[1])
-        else:
-            out |= set(_IDENTS.findall(" ".join(_header(lines, host, lang))))
+        bound = bound_names(host.signature, lang, host.kind)
+        if bound is None:
+            # Destructured: every name the header holds may be one it binds.
+            bound = set(_IDENTS.findall(" ".join(_header(lines, host, lang))))
+        out |= bound
         outside = _code(lines, host.start, span[0] - 1, lang) + _code(lines, span[1] + 1, host.end, lang)
         out |= _assigned([t for _n, t in outside], lang)
     return out
@@ -614,15 +618,46 @@ def _renamed(text: str, old: str, new: str) -> str:
     return re.sub(rf"(?<![\w$]){re.escape(old)}(?![\w$])", new, text, count=1)
 
 
-def _match(lines: Lines, body: Code, occ: Occurrence, language: str, slack: int) -> tuple[int, int] | None:
-    """Where *body* appears line for line near the occurrence, else None."""
+def _match(lines: Lines, src: _Source, occ: Occurrence, language: str, slack: int) -> tuple[int, int] | None:
+    """Where ``F``'s body appears line for line near the occurrence, Python's
+    statement indentation included, else None."""
     window = _code(lines, occ[1] - slack, occ[2] + slack, language)
-    want = [t for _n, t in body]
+    want = [t for _n, t in src.body]
     texts = [t for _n, t in window]
     for i in range(len(texts) - len(want) + 1):
-        if texts[i : i + len(want)] == want:
-            return window[i][0], window[i + len(want) - 1][0]
+        part = window[i : i + len(want)]
+        if texts[i : i + len(want)] == want and _indents(lines, part, language) == src.indents:
+            return part[0][0], part[-1][0]
     return None
+
+
+def _indents(lines: Lines, code: Code, language: str) -> tuple[int | None, ...]:
+    """Each Python line's indentation relative to the first, None on a line
+    continuing a bracket (its alignment is free); empty for other languages,
+    whose braces carry the structure the text comparison already checks.
+
+    Brackets are counted outside strings and comments; a line at or left of
+    the first line's indentation starts a statement whatever the count says
+    (a bracket in a multi-line string cannot hide the rest). Indentation is
+    counted in characters, so tabs against spaces never match; a backslash
+    continuation is compared like a statement."""
+    if language != "python" or not code:
+        return ()
+    base = _indent(lines[code[0][0] - 1])
+    out: list[int | None] = []
+    depth = 0
+    for n, text in code:
+        indent = _indent(lines[n - 1])
+        if indent <= base:
+            depth = 0
+        out.append(indent - base if depth == 0 else None)
+        bare = code_only(text, language)
+        depth = max(0, depth + sum(bare.count(o) - bare.count(c) for o, c in ("()", "[]", "{}")))
+    return tuple(out)
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
 
 
 def _assigned(texts: list[str], language: str) -> set[str]:

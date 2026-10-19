@@ -46,12 +46,11 @@ no suggestion.
 Plan shape (open dict, no migration):
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str | None}`` -- the lines to lift,
-  the inferred signature, and a deterministic starting name (see
-  ``helper_naming``): a ``timed()`` stage label, a banner comment, or
-  ``compute_<out>`` for an effect-free span with one informative OUT value.
-  ``None`` when nothing anchors a name, or when the name is already taken in
-  the scope the helper lands in.
+  "returns": [str, ...], "suggested_name": str}`` -- the lines to lift, the
+  inferred signature, and a placeholder name for the helper
+  (``extracted_helper``, ``extracted_helper_2`` for the next one in the same
+  scope; ``helper_naming.placeholder_names``) that the agent applying the
+  plan replaces with a name for what the helper returns or does.
 - ``plan.needs_async`` -- the span awaits, so the helper is async and its call
   is awaited. An awaiting plan also carries ``async_host``: False when the
   enclosing function is not declared async, which makes the step a judgment
@@ -74,8 +73,14 @@ Plan shape (open dict, no migration):
   "new_text": str}`` is the statement replacing the span (``render``), and
   ``new_symbol.notes`` what they cannot say. Both texts are None when
   ``kind`` is; ``call_site`` also when an awaiting span sits in a host that
-  is not async. A missing name reads ``<name>`` in them,
-  and ``suggested_name`` is in the language's private form (Python ``_x``).
+  is not async. ``suggested_name`` is in the language's private form
+  (Python ``_x``).
+- ``plan.anchors`` = ``{"first": str, "last": str}`` -- the exact text the
+  span starts and ends with, each unique in the function (``anchors``), so an
+  agent finds it by text once earlier edits have moved its lines; every stage
+  carries its own. A staged split that cannot be anchored falls back to the
+  function's best single span; when that cannot be either, the function is
+  refused (``span_unanchored``).
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity (code lines, decision points) the residual method sheds.
 - ``plan.stages`` -- only on a staged plan (``dataflow.stages``): a function
@@ -115,9 +120,11 @@ from ..effort import effort_bucket
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from . import render
+from .anchors import Scope, anchor_plan, file_source, function_scope
 from .declarative import declarative_flat
-from .helper_naming import ScopeNames, helper_names, out_value_name
+from .helper_naming import ScopeNames, placeholder_names
 from .models import RefactoringContext, RefactoringSuggestion
+from .narrowing import narrowed, narrowings
 from .registry import RefactoringDetector, register
 
 if TYPE_CHECKING:
@@ -158,6 +165,8 @@ _HIGH_MIN_SHARE = 0.1
 
 # Above this no single helper of a stage's size brings the function under it.
 _STAGE_MIN_CCN = 2 * STAGE_MAX_CCN + 1
+# Languages whose types a guard narrows (``narrowing``).
+_NARROWING_LANGUAGES = frozenset({"typescript", "tsx"})
 # Keys a stage carries that the plan's own (stage 1) keys do not.
 _STAGE_ONLY_KEYS = ("ccn", "nloc", "context_params")
 
@@ -177,82 +186,119 @@ class ExtractMethodDetector(RefactoringDetector):
         out: list[RefactoringSuggestion] = []
         names = ScopeNames(lmap)
         dialect = get_defuse_dialect(ctx.language or "")
+        # The file's text, read off the tree once, when the first plan needs it.
+        files: dict[str, Any] = {}
         # Source order, so the first of two colliding plans keeps the name.
         for analysis in sorted(analyses, key=lambda a: (a.start_line, a.end_line)):
-            matched = self._findings_for(analysis, ctx.findings)
-            if not matched:
-                # Only suggest where a method biomarker actually fired.
-                continue
-            if jsx_plumbing_dominates(analysis.fn_node, lmap):
-                continue
-            if analysis.fn_node is not None and declarative_flat(
-                analysis.fn_node, lmap, {p.name for p in analysis.def_use.params}
-            ):
-                _mark_refused(matched, "declarative_flat")
-                continue
-            markers = {getattr(f, "biomarker_type", "") for f in matched}
-            fn_node = analysis.fn_node
-            receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
-            # The slicer's per-block walk, read again by a staged plan.
-            prefixes: dict[int, Any] = {}
-            candidates = find_extractions(analysis, lmap, receiver, prefixes)
-            best = _choose(analysis, candidates, markers)
-            staged = _staged(analysis, best, lmap, receiver, ctx.language, markers, prefixes)
-            if staged is not None:
-                out.append(
-                    self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
-                )
-                continue
-            if best is None:
-                continue
-            impact, share, source = self._impact_for(analysis, best, matched)
-            name = render.private_name(
-                ctx.language,
-                names.claim_first(
-                    analysis,
-                    helper_names(analysis, best, lmap, ctx.language, names.imports(fn_node)),
-                ),
-            )
-            async_fields = _async_fields(analysis, best, lmap, ctx.language)
-            symbol = _render_fields(
-                analysis,
-                best,
-                dialect,
-                ctx.language,
-                name,
-                _symbol_fields(best, receiver),
-                async_host=async_fields.get("async_host", True),
-            )
-            out.append(
-                RefactoringSuggestion(
-                    refactoring_type=self.name,
-                    file_path=ctx.file_path,
-                    target_symbol=analysis.name,
-                    line_start=analysis.start_line,
-                    line_end=analysis.end_line,
-                    plan={
-                        "span": {"start": best.start_line, "end": best.end_line},
-                        "params": list(best.params),
-                        "returns": list(best.returns),
-                        "suggested_name": name,
-                        **async_fields,
-                        **symbol,
-                    },
-                    evidence={
-                        "slice_nloc": best.slice_nloc,
-                        "ccn_removed": best.ccn_removed,
-                    },
-                    impact_delta=round(float(impact), 3),
-                    effort_bucket=effort_bucket(best.slice_nloc),
-                    blast_radius={"scope": "local"},
-                    confidence=self._confidence(best, share),
-                    source_biomarker=source,
-                )
-            )
+            matched = self._eligible_findings(ctx, analysis, lmap)
+            if matched:
+                self._suggest(ctx, analysis, matched, lmap, dialect, names, files, out)
 
         # Stable order: biggest recovery first, then symbol, then span start.
         out.sort(key=lambda s: (-s.impact_delta, s.target_symbol, s.line_start or 0))
         return out
+
+    def _eligible_findings(
+        self, ctx: RefactoringContext, analysis: FunctionAnalysis, lmap: LanguageNodeMap
+    ) -> list[Any]:
+        """The findings flagging *analysis* when it may be offered a plan, else
+        empty: a JSX plumbing component gets none, nor (refused) a flat record
+        builder."""
+        # Only suggest where a method biomarker actually fired.
+        matched = self._findings_for(analysis, ctx.findings)
+        if not matched or jsx_plumbing_dominates(analysis.fn_node, lmap):
+            return []
+        if analysis.fn_node is not None and declarative_flat(
+            analysis.fn_node, lmap, {p.name for p in analysis.def_use.params}, ctx.language
+        ):
+            _mark_refused(matched, "declarative_flat")
+            return []
+        return matched
+
+    def _suggest(
+        self,
+        ctx: RefactoringContext,
+        analysis: FunctionAnalysis,
+        matched: list[Any],
+        lmap: LanguageNodeMap,
+        dialect: BaseDefUseDialect | None,
+        names: ScopeNames,
+        files: dict[str, Any],
+        out: list[RefactoringSuggestion],
+    ) -> None:
+        """Add *analysis*'s plan to *out*: the staged split when one is anchored,
+        else the best single span; why none was offered goes on *matched*."""
+        markers = {getattr(f, "biomarker_type", "") for f in matched}
+        fn_node = analysis.fn_node
+        receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
+        # The slicer's per-block walk, read again by a staged plan.
+        prefixes: dict[int, Any] = {}
+        refused: set[str] = set()
+        candidates = find_extractions(analysis, lmap, receiver, prefixes, refused)
+        _mark_stage_refused(matched, frozenset(refused))
+        best = _choose(analysis, candidates, markers)
+        staged = _staged(analysis, best, lmap, receiver, ctx.language, matched, prefixes)
+        scope = _scope(fn_node, files) if staged is not None or best is not None else None
+        if staged is not None:
+            split = self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
+            if anchor_plan(split.plan, scope):
+                out.append(split)
+                return
+            # The fallback span takes the first placeholder, not the next one.
+            names.release(analysis, _claimed(split.plan))
+        if best is None:
+            # Nothing to fall back to from a split no text anchors.
+            if staged is not None:
+                _mark_refused(matched, "span_unanchored")
+            return
+        name = render.private_name(
+            ctx.language, names.claim_first(analysis, placeholder_names(ctx.language))
+        )
+        async_fields = _async_fields(analysis, best, lmap, ctx.language)
+        symbol = _render_fields(
+            analysis,
+            best,
+            dialect,
+            ctx.language,
+            name,
+            _symbol_fields(best, receiver),
+            async_host=async_fields.get("async_host", True),
+        )
+        fields = {"suggested_name": name, **async_fields, **symbol}
+        _serve_anchored(out, self._single_suggestion(ctx, analysis, best, matched, fields), matched, scope)
+
+    def _single_suggestion(
+        self,
+        ctx: RefactoringContext,
+        analysis: FunctionAnalysis,
+        best: Extraction,
+        matched: list[Any],
+        fields: dict[str, Any],
+    ) -> RefactoringSuggestion:
+        """The plan lifting *best*, its rendered *fields* after the span."""
+        impact, share, source = self._impact_for(analysis, best, matched)
+        return RefactoringSuggestion(
+            refactoring_type=self.name,
+            file_path=ctx.file_path,
+            target_symbol=analysis.name,
+            line_start=analysis.start_line,
+            line_end=analysis.end_line,
+            plan={
+                "span": {"start": best.start_line, "end": best.end_line},
+                "params": list(best.params),
+                "returns": list(best.returns),
+                **fields,
+            },
+            evidence={
+                "slice_nloc": best.slice_nloc,
+                "ccn_removed": best.ccn_removed,
+            },
+            impact_delta=round(float(impact), 3),
+            effort_bucket=effort_bucket(best.slice_nloc),
+            blast_radius={"scope": "local"},
+            confidence=self._confidence(best, share),
+            source_biomarker=source,
+        )
 
     def _staged_suggestion(
         self,
@@ -322,13 +368,6 @@ class ExtractMethodDetector(RefactoringDetector):
         return best[0], best[1], best[3]
 
     @staticmethod
-    def _suggested_name(
-        analysis: FunctionAnalysis, extraction: Extraction, language: str | None = None
-    ) -> str | None:
-        """The OUT-value name alone (:func:`helper_naming.out_value_name`)."""
-        return out_value_name(analysis, extraction, language)
-
-    @staticmethod
     def _confidence(extraction: Extraction, share: float) -> str:
         """High when the extraction is unambiguous and worth handing off: a
         clean signature and a real share of the function. Medium otherwise.
@@ -344,11 +383,48 @@ class ExtractMethodDetector(RefactoringDetector):
 REFUSED_DETAIL = "extract_method_refused"
 
 
+#: The finding detail naming why a stage or span that cleared every other
+#: check was not offered (``StagePlan.refused``, the slicer's ``refused``),
+#: sorted.
+STAGE_REFUSED_DETAIL = "extract_method_stage_refused"
+
+
+def _mark_stage_refused(findings: list[Any], reasons: frozenset[str]) -> None:
+    if not reasons:
+        return
+    for f in findings:
+        details = getattr(f, "details", None)
+        if isinstance(details, dict):
+            held = set(details.get(STAGE_REFUSED_DETAIL, ()))
+            details[STAGE_REFUSED_DETAIL] = sorted(held | reasons)
+
+
 def _mark_refused(findings: list[Any], reason: str) -> None:
     for f in findings:
         details = getattr(f, "details", None)
         if isinstance(details, dict):
             details[REFUSED_DETAIL] = reason
+
+
+def _scope(fn_node: Any, files: dict[str, Any]) -> Scope | None:
+    """*fn_node*'s lines in its file, the file read once per detect call."""
+    if "source" not in files and fn_node is not None:
+        files["source"] = file_source(fn_node)
+    return function_scope(fn_node, files.get("source"))
+
+
+def _serve_anchored(
+    out: list[RefactoringSuggestion],
+    suggestion: RefactoringSuggestion,
+    findings: list[Any],
+    scope: Scope | None,
+) -> None:
+    """Serve *suggestion* only when every span in it is anchored by its text
+    (``anchors``); one that is not is refused, never served by line alone."""
+    if anchor_plan(suggestion.plan, scope):
+        out.append(suggestion)
+    else:
+        _mark_refused(findings, "span_unanchored")
 
 
 def recovered_share(
@@ -377,23 +453,33 @@ def _staged(
     lmap: LanguageNodeMap,
     receiver: Receiver | None,
     language: str | None,
-    markers: set[str],
+    findings: list[Any],
     prefixes: dict[int, Any] | None = None,
 ) -> StagePlan | None:
     """The staged split, when the function is too complex for one helper and
     the split lifts at least twice what the best single span does (several
     edits for a point or two more is not the better plan); each stage must
-    clear the floor a single span does."""
+    clear the floor a single span does. Why a stage was not offered is kept
+    on *findings* (:data:`STAGE_REFUSED_DETAIL`), so refusals are counted
+    from the index."""
+    markers = {getattr(f, "biomarker_type", "") for f in findings}
     # Only languages with a staged renderer, each with the outputs one call binds.
     max_returns = render.staged_outputs(language)
     if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
         return None
     plan = find_stages(analysis, lmap, receiver, max_returns=max_returns, prefixes=prefixes)
+    _mark_stage_refused(findings, plan.refused)
     if not plan.stages or (best is not None and plan.ccn_removed < 2 * best.ccn_removed):
         return None
     if not all(_worth_extracting(analysis, x, markers) for x in plan.stages):
         return None
     return plan
+
+
+def _claimed(plan: dict[str, Any]) -> list[str]:
+    """The names a staged plan claimed: each stage's and the parameter object's."""
+    obj = plan.get("parameter_object") or {}
+    return [s["suggested_name"] for s in plan["stages"]] + ([obj["name"]] if obj else [])
 
 
 def _staged_fields(
@@ -410,12 +496,15 @@ def _staged_fields(
     obj = _parameter_object(analysis, staged, dialect, language, names)
     # Without an object (no free variable name for it) the values stay plain.
     context = staged.context if obj else ()
-    imports = names.imports(analysis.fn_node)
+    # The function's import goes with the last stage reading it, so the code
+    # still runs when the stages before it are applied and tested alone.
+    last = {
+        imported: i for i, stage_imports in enumerate(staged.imports) for imported in stage_imports
+    }
     stages = []
-    for x, reimports in zip(staged.stages, staged.imports, strict=True):
+    for i, (x, reimports) in enumerate(zip(staged.stages, staged.imports, strict=True)):
         name = render.private_name(
-            language,
-            names.claim_first(analysis, helper_names(analysis, x, lmap, language, imports)),
+            language, names.claim_first(analysis, placeholder_names(language))
         )
         carried = [p for p in x.params if p in context]
         own = replace(x, params=tuple(p for p in x.params if p not in context))
@@ -431,7 +520,8 @@ def _staged_fields(
             async_host=async_fields.get("async_host", True),
             leading=lead,
         )
-        _add_stage_notes(symbol["new_symbol"], lead, carried, reimports, staged.moved_imports)
+        moved = frozenset(m for m in staged.moved_imports if last.get(m) == i)
+        _add_stage_notes(symbol["new_symbol"], lead, carried, reimports, moved)
         stages.append(
             {
                 "span": {"start": x.start_line, "end": x.end_line},
@@ -492,9 +582,10 @@ def _parameter_object(
     if not staged.context:
         return None
     first = staged.stages[0].start_line
-    probe = Extraction(first, first, staged.context, (), 0, 0)
+    probe = Extraction(first, staged.stages[0].end_line, staged.context, (), 0, 0)
     types = _declared_types(analysis, probe, dialect)
-    fields = tuple(render.Slot(n, types.get(n)) for n in staged.context)
+    narrowed_at = _narrow(analysis, probe, language, types)
+    fields = tuple(render.Slot(n, types.get(n), narrowed_at=narrowed_at.get(n)) for n in staged.context)
     # Every name the function writes or reads (a module global ``ctx`` too).
     def_use = analysis.def_use
     taken = {d.var for d in def_use.definitions}
@@ -580,12 +671,15 @@ def _render_fields(
     *leading* slots come first (a staged plan's parameter object)."""
     new_symbol = symbol["new_symbol"]
     types = _declared_types(analysis, extraction, dialect)
+    narrowed_at = _narrow(analysis, extraction, language, types)
     # Only a Rust value moves when passed, so only Rust asks what is read later.
     after = _read_after(analysis, extraction) if language == "rust" else set()
     # A method reaches its instance through the receiver, not an argument.
     own = new_symbol["receiver"] if new_symbol["kind"] == "method" else None
     params = leading + tuple(
-        render.Slot(p, types.get(p), p in after) for p in extraction.params if p != own
+        render.Slot(p, types.get(p), p in after, narrowed_at.get(p))
+        for p in extraction.params
+        if p != own
     )
     returns = tuple(render.Slot(r, types.get(r)) for r in extraction.returns)
     declared, before, rebound = _out_binding(analysis, extraction, get_language_map(language or ""))
@@ -650,10 +744,42 @@ def _declared_types(
         # Tree points are byte columns.
         node = fn_node.descendant_for_point_range((row, d.column), (row, d.column + len(raw)))
         if node is not None and node.text == raw:
-            typ = dialect.declared_type(node)
+            typ = dialect.declared_types.of(node)
             if typ:
                 found[d.var] = typ
     return found
+
+
+def _narrow(
+    analysis: FunctionAnalysis, extraction: Extraction, language: str | None, types: dict[str, str]
+) -> dict[str, int]:
+    """Apply the guards above a TypeScript span to its inputs' *types*
+    (``narrowing``): a narrower type the declaration proves replaces it, and
+    a name narrowed to one it does not loses its type and comes back with the
+    guard's line, for the plan's note."""
+    if language not in _NARROWING_LANGUAGES or not extraction.params:
+        return {}
+    def_lines: dict[str, list[int]] = {}
+    for d in analysis.def_use.definitions:
+        def_lines.setdefault(d.var, []).append(d.line)
+    found = narrowings(
+        analysis.fn_node,
+        get_language_map(language),
+        extraction.start_line,
+        extraction.end_line,
+        set(extraction.params),
+        def_lines,
+    )
+    unknown: dict[str, int] = {}
+    for name, guard in found.items():
+        declared = types.get(name)
+        exact = narrowed(declared, guard.drops) if declared and guard.drops is not None else None
+        if exact:
+            types[name] = exact
+        else:
+            types.pop(name, None)
+            unknown[name] = guard.line
+    return unknown
 
 
 def _read_after(analysis: FunctionAnalysis, extraction: Extraction) -> set[str]:

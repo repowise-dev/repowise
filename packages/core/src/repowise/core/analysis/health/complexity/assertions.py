@@ -392,12 +392,12 @@ def _collect_assertion_facts(
     *called* is every name called directly in this body, lowercased,
     **including nested function bodies**, which is where it parts company with
     the counts beside it. Those stop at a nested function because its
-    assertions are its own. A name does not work that way here, because a
-    function nested inside an already-collected one is never collected as an
-    entry of its own -- ``ast_utils._collect_function_nodes`` does not descend
-    past a function -- so stopping would attribute its calls to nobody at all,
-    and an ``expect`` inside an inline ``function`` helper would be recorded
-    nowhere. It rides along on this traversal because the traversal already
+    assertions are its own. A name does not work that way here. The nested
+    function has an entry of its own, with its own names, but the test around
+    it is the one asked whether it checked anything, and a test that hands an
+    inline ``function`` helper to something else (``rows.forEach(verifyRow)``)
+    never calls it by name, so stopping would put the helper's ``expect`` out
+    of that test's reach. It rides along on this traversal because the traversal already
     reaches every call node; collecting it separately would mean walking every
     function body twice. It counts nothing and so cannot move a calibrated
     marker. Empty under the early return above, which is fine only because the

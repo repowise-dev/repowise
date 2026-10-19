@@ -60,6 +60,7 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "REVERT_SUPERSEDED_PREFIX",
+    "HistoryUnreadableError",
     "RevertLink",
     "apply_revert_supersession",
     "find_revert_links",
@@ -93,6 +94,10 @@ _WORD_ENDING_RE = re.compile(r"(?<=\w{3})(?:ed|es|s|d)$")
 _CHANGES_BATCH = 500
 _FIELD = "\x1f"
 _RECORD = "\x1e"
+
+
+class HistoryUnreadableError(RuntimeError):
+    """A git read :func:`find_revert_links` needs failed (``strict`` only)."""
 
 
 @dataclass(frozen=True)
@@ -144,7 +149,9 @@ def _issue_keys(subject: str) -> set[str]:
     return {k.lower() for k in _ISSUE_KEY_RE.findall(_strip_pr_suffix(subject))}
 
 
-def _changes(repo_path: Path | str, shas: set[str]) -> dict[str, dict[str, str]]:
+def _changes(
+    repo_path: Path | str, shas: set[str], *, strict: bool = False
+) -> dict[str, dict[str, str]]:
     """Path -> status letter (A, M, D, ...) per commit, against its first parent."""
     out: dict[str, dict[str, str]] = {}
     ordered = sorted(shas)
@@ -161,6 +168,8 @@ def _changes(repo_path: Path | str, shas: set[str]) -> dict[str, dict[str, str]]
             f"--format={_RECORD}%H",
             *ordered[i : i + _CHANGES_BATCH],
         )
+        if text is None and strict:
+            raise HistoryUnreadableError("git could not list the files reverts touched")
         for block in (text or "").split(_RECORD):
             sha, _, rest = block.partition("\n")
             rows = (line.split("\t", 1) for line in rest.splitlines())
@@ -169,8 +178,9 @@ def _changes(repo_path: Path | str, shas: set[str]) -> dict[str, dict[str, str]]
     return out
 
 
-def _read_candidates(repo_path: Path | str, head: str) -> list[tuple[str, str, str]]:
-    """(sha, subject, body) of every commit whose message could fit a rule."""
+def _read_candidates(repo_path: Path | str, head: str) -> list[tuple[str, str, str]] | None:
+    """(sha, subject, body) of every commit whose message could fit a rule;
+    ``None`` when git could not answer."""
     out = _git_out(
         repo_path,
         "log",
@@ -181,8 +191,10 @@ def _read_candidates(repo_path: Path | str, head: str) -> list[tuple[str, str, s
         "--grep=This reverts commit [0-9a-f]{40}",
         f"--format=%H{_FIELD}%s{_FIELD}%b{_RECORD}",
     )
+    if out is None:
+        return None
     candidates = []
-    for raw in (out or "").split(_RECORD):
+    for raw in out.split(_RECORD):
         parts = raw.strip("\n").split(_FIELD)
         if len(parts) == 3 and parts[0]:
             candidates.append((parts[0].strip(), parts[1], parts[2]))
@@ -334,13 +346,29 @@ class _Relands:
         return any(self.files(s) & target_files for s in self.same_issue_later(link))
 
 
-def find_revert_links(repo_path: Path | str, head: str = "HEAD") -> list[RevertLink]:
-    """Every revert in *head*'s history matched to its target, ancestors only."""
+def find_revert_links(
+    repo_path: Path | str,
+    head: str = "HEAD",
+    *,
+    forge: ForgeKind | None = None,
+    strict: bool = False,
+) -> list[RevertLink]:
+    """Every revert in *head*'s history matched to its target, ancestors only.
+
+    A git read that fails gives no links, or with *strict* raises
+    :class:`HistoryUnreadableError`, so a caller can tell "none" from "unknown".
+    """
     # Only messages that can fit a rule; the full history is read only if one
     # of them does.
     candidates = _read_candidates(repo_path, head)
-    hist = _History.read(repo_path, head, detect_forge(repo_path)) if candidates else None
+    if candidates is None and strict:
+        raise HistoryUnreadableError("git could not read the history for reverts")
+    if not candidates:
+        return []
+    hist = _History.read(repo_path, head, forge or detect_forge(repo_path))
     if hist is None:
+        if strict:
+            raise HistoryUnreadableError("git could not read the history for reverts")
         return []
     proposed = [link for c in candidates for link in hist.match(*c)]
     relands = _Relands(hist, {link.revert for link in proposed})
@@ -353,10 +381,12 @@ def find_revert_links(repo_path: Path | str, head: str = "HEAD") -> list[RevertL
             for link in proposed
             for sha in (link.target, link.revert, *relands.same_issue_later(link))
         },
+        strict=strict,
     )
-    relands.head_paths = set(
-        (_git_out(repo_path, "ls-tree", "-r", "--name-only", head) or "").split("\n")
-    )
+    tree = _git_out(repo_path, "ls-tree", "-r", "--name-only", head)
+    if tree is None and strict:
+        raise HistoryUnreadableError("git could not list the files at HEAD")
+    relands.head_paths = set((tree or "").split("\n"))
     return [
         replace(link, relanded=relands.relanded(link))
         for link in proposed

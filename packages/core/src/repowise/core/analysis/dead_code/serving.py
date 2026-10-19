@@ -13,13 +13,17 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Protocol
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
-    effective_safe_to_delete,
     path_risk_factors,
 )
-from repowise.core.analysis.finding_registry import verification_label, withheld_summary
+from repowise.core.analysis.finding_registry import (
+    split_gated,
+    verification_label,
+    withheld_summary,
+)
 from repowise.core.analysis.health.rows import field
 from repowise.core.references import path_identity, stable_entity_id
 
@@ -101,6 +105,18 @@ class FindingFilters:
     # Kinds the finding-type registry keeps off this surface. Applied before
     # anything is counted, so no total describes a finding the caller cannot see.
     withheld_kinds: frozenset[str] = frozenset()
+    # Shows the findings a language gate holds back (``LANGUAGE_GATES``).
+    include_unverified: bool = False
+
+    def split_gated(self, findings: list) -> tuple[list, dict[str, dict]]:
+        """``(shown rows, {gated language: count/reason})``."""
+        return split_gated(
+            "dead_code",
+            findings,
+            kind="kind",
+            get=field,
+            include_unverified=self.include_unverified,
+        )
 
     def split_withheld(self, findings: list) -> tuple[list, dict[str, dict]]:
         """``(shown rows, {withheld kind: count/status/reason})``."""
@@ -189,14 +205,27 @@ def merge_summary_counts(parts: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def safe_only_note(total: int, safe: int) -> str | None:
+    """Why a safe-only view is empty when findings exist but none is
+    deletion-ready; None otherwise. The MCP summary and the CLI share it."""
+    if safe or not total:
+        return None
+    return (
+        f"{total} finding(s), none deletion-ready: a finding is deletion-ready only "
+        "when missing imports are evidence for its language. Review the ranked list "
+        "without the safe-only filter."
+    )
+
+
 def build_summary(
     counts: dict[str, Any],
     filtered_count: int,
     filters: FindingFilters,
     withheld: dict[str, dict],
+    gated: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """The summary block: *counts* from :func:`summary_counts`, plus what the
-    filters kept."""
+    filters kept and what the registry held back."""
     summary: dict[str, Any] = {
         "total_findings": counts["total_findings"],
         "filtered_findings": filtered_count,
@@ -205,8 +234,14 @@ def build_summary(
         "by_kind": counts["by_kind"],
     }
     filters.summarize(summary)
+    if filters.safe_only and (
+        note := safe_only_note(counts["total_findings"], counts["safe_to_delete_count"])
+    ):
+        summary["safe_only_note"] = note
     if withheld:
         summary["withheld_types"] = withheld
+    if gated:
+        summary["gated"] = {**gated, "opt_in": {"include_unverified": True}}
     return summary
 
 

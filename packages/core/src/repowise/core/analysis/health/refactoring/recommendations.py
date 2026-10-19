@@ -16,10 +16,19 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from repowise.core.analysis.function_test_map import MappedTest
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.perf.ranking import _percentile_threshold
 from repowise.core.analysis.health.queue_rules import FilterRule
 from repowise.core.analysis.health.refactoring_summary import STRUCTURAL_TYPES
+from repowise.core.analysis.health.rows import field as row_field
+from repowise.core.analysis.health.worth import (
+    SIZE_MARKERS,
+    above_bar_after,
+    by_function,
+    measure,
+    worst_after,
+)
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
@@ -32,6 +41,7 @@ from repowise.core.code_origin import ship_rank
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
+from .commands import TestRuns, commands_for_tests, keeps_runs, plan_runs
 from .models import RefactoringSuggestion
 from .render import list_plan
 
@@ -299,6 +309,9 @@ class ValidationPlan:
     # differs from the plan's, else ``None``; empty when none differs. Kept out
     # of :meth:`as_dict`, which every list serves; plan detail reads it.
     step_verify: list[dict[str, Any] | None] = field(default_factory=list)
+    # How each shown JS/TS, Go, Rust, JVM, Ruby or C# test runs (``commands.TestRuns``),
+    # so a later read builds the same commands without a checkout.
+    test_runs: dict[str, list[str | None]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -313,6 +326,7 @@ class ValidationPlan:
             "targets": [target.as_dict() for target in self.targets],
             "reasons": self.reasons,
             "prerequisite": self.prerequisite,
+            **({"test_runs": self.test_runs} if keeps_runs(self.tests, self.test_runs) else {}),
         }
 
 
@@ -326,15 +340,21 @@ class ValidationEvidence:
     ``symbols`` is each file's symbol ids with their line spans, ``symbol_reach``
     how close each test gets to a symbol, and ``imports`` the names each test
     imports from a file. Empty, the order falls back to name and directory.
+    ``function_tests`` is each mapped function's nearest test functions
+    (``function_facts.tests_json``); an absent id was never mapped.
     ``hubs`` are the files no reach walk passes through (:func:`hub_files`), and
     ``siblings`` each directory's files, which decide whose test a name is.
+    ``test_runs`` is how each JS/TS, Go, Rust, JVM, Ruby or C# test runs; absent,
+    it gets no command.
     """
 
     symbols: Mapping[str, Sequence[SymbolSpan]] = field(default_factory=dict)
     symbol_reach: Mapping[str, Mapping[str, ReachDistance]] = field(default_factory=dict)
     imports: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
+    function_tests: Mapping[str, tuple[MappedTest, ...]] = field(default_factory=dict)
     hubs: frozenset[str] = frozenset()
     siblings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    test_runs: TestRuns | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -620,32 +640,42 @@ def _rank_target_tests(
     return out
 
 
-def _commands(tests: list[str], *, total: int | None = None) -> list[str]:
-    """A command that runs at least everything the plan says validates it.
+# Quoted only at one hop: per-test coverage confirmed 99% there, 82% at two, 59% at three.
+QUOTED_HOPS = 1
 
-    When the displayed list is capped, enumerating only the shown tests would
-    read as a complete validation run while silently skipping the rest, so the
-    selection widens to the files those tests live in: bounded by file count
-    rather than test count, and never narrower than the evidence.
 
-    An empty list means the plan has no command to suggest. Every command names
-    its tests: with none found, a bare ``pytest`` or ``npm test`` would run a
-    whole suite as if it guarded the change. Nothing here looks at the
-    repository's tooling, so a language other than Python or JS/TS gets none in
-    place of a guess that would fail when run.
-    """
-    if total is not None and total > len(tests):
-        tests = sorted({test.split("::", 1)[0] for test in tests})
-    python_tests = sorted(test for test in tests if ".py" in test)
-    js_tests = sorted(
-        test for test in tests if any(ext in test for ext in (".ts", ".tsx", ".js", ".jsx"))
-    )
-    commands: list[str] = []
-    if python_tests:
-        commands.append("pytest " + " ".join(python_tests))
-    if js_tests:
-        commands.append("npm test -- " + " ".join(js_tests))
-    return commands
+def _nearest_function_tests(
+    ranges: Sequence[tuple[str, set[int] | None]],
+    symbols: Mapping[str, Sequence[str]],
+    evidence: ValidationEvidence,
+) -> list[tuple[MappedTest, str]] | None:
+    """The nearest test functions of the functions the plan changes, nearest first,
+    each with the function it runs. ``None`` unless every file the plan changes
+    names its functions and every one is mapped; ``[]`` when no test reaches any."""
+    picked: dict[str, tuple[MappedTest, str]] = {}
+    for path, _lines in ranges:
+        ids = symbols[path]
+        if not ids or any(symbol not in evidence.function_tests for symbol in ids):
+            return None
+        for symbol in ids:
+            _merge_nearest(picked, evidence.function_tests[symbol], symbol)
+    # Stable, so each function's own order holds among tests the same hops away.
+    return sorted(picked.values(), key=lambda pair: pair[0].hops)
+
+
+def _merge_nearest(
+    picked: dict[str, tuple[MappedTest, str]], tests: Sequence[MappedTest], symbol: str
+) -> None:
+    """Add *symbol*'s tests to *picked*, a test shared by two functions keeping its nearer."""
+    for test in tests:
+        held = picked.get(test.selector)
+        if held is None or test.hops < held[0].hops:
+            picked[test.selector] = (test, symbol)
+
+
+def _runs_reason(test: MappedTest, symbol: str) -> str:
+    label = _symbol_label(symbol)
+    return f"calls {label}" if test.hops == 1 else f"reaches {label} in {test.hops} calls"
 
 
 def _characterization_step(suggestion: RefactoringSuggestion) -> str:
@@ -728,6 +758,26 @@ def _drop_hub_only(file_path: str, labels: set[str], keep: set[str]) -> set[str]
     }
 
 
+def _inferred_target(
+    file_path: str, reached: ReachedBy | None, keep: set[str] | None
+) -> tuple[set[str], ValidationBasis, ValidationVia | None, int, bool]:
+    """Labels, basis, via, total and identity completeness from the inferred map."""
+    if reached is None:
+        return set(), "unknown", None, 0, True
+    labels = set(reached.all_tests or reached.tests)
+    basis: ValidationBasis = "inferred" if reached.total else "unknown"
+    via = reached.via if reached.total else None
+    total = reached.total
+    identities_complete = reached.all_tests is not None or total == len(labels)
+    if keep is not None:
+        labels = _drop_hub_only(file_path, labels, keep)
+        if identities_complete:
+            # The whole list was filtered, so what is left is the answer.
+            basis, via = ("inferred", via) if labels else ("unknown", None)
+            total = len(labels)
+    return labels, basis, via, total, identities_complete
+
+
 def _validation_target(
     file_path: str,
     lines: set[int] | None,
@@ -747,19 +797,9 @@ def _validation_target(
         identities_complete = True
     else:
         reached = inferred.get(file_path)
-        labels = set(reached.all_tests or reached.tests) if reached is not None else set()
-        basis = "inferred" if reached is not None and reached.total else "unknown"
-        via = reached.via if reached is not None and reached.total else None
-        total = reached.total if reached is not None else 0
-        identities_complete = (
-            reached is None or reached.all_tests is not None or total == len(labels)
+        labels, basis, via, total, identities_complete = _inferred_target(
+            file_path, reached, keep
         )
-        if keep is not None and reached is not None:
-            labels = _drop_hub_only(file_path, labels, keep)
-            if identities_complete:
-                # The whole list was filtered, so what is left is the answer.
-                basis, via = ("inferred", via) if labels else ("unknown", None)
-                total = len(labels)
     ranked = rank(labels, covered, reached)
     ordered = sorted(labels, key=lambda label: (ranked[label][0], label))
     return (
@@ -861,20 +901,46 @@ def build_validation_plan(
         if len(target_rows) == 1
         else sum(target.total for target in target_rows)
     )
+    # Measured coverage outranks the graph; otherwise the plan quotes the test
+    # functions that call the functions it changes, as runnable selectors.
+    nearest = (
+        _nearest_function_tests(ranges, symbols, facts) if aggregate_basis != "measured" else None
+    )
+    direct = [pair for pair in nearest or () if pair[0].hops <= QUOTED_HOPS]
+    if direct:
+        aggregate_basis, aggregate_via, aggregate_total = "inferred", "call-graph", len(direct)
+        shown = [test.selector for test, _ in direct[:cap]]
+        reasons = {test.selector: _runs_reason(test, symbol) for test, symbol in direct[:cap]}
+        # Each quoted test's file, whole: shorter than naming every function,
+        # and it runs at least the tests the plan quotes.
+        commands = commands_for_tests(
+            sorted({test.split("::", 1)[0] for test in shown}),
+            runs=facts.test_runs,
+        )
+    else:
+        shown = ordered_tests[:cap]
+        reasons = {test: best[test][1] for test in shown}
+        commands = commands_for_tests(
+            shown, total=aggregate_total, runs=facts.test_runs
+        )
     files = affected_files(suggestion)
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
         total=aggregate_total,
-        tests=ordered_tests[:cap],
-        truncated=aggregate_total > len(ordered_tests[:cap]),
+        tests=shown,
+        truncated=aggregate_total > len(shown),
         affected_files=files,
         affected_symbols=affected_symbols(suggestion),
-        commands=_commands(ordered_tests[:cap], total=aggregate_total),
+        commands=commands,
         targets=target_rows,
-        reasons={test: best[test][1] for test in ordered_tests[:cap]} if order_tests else {},
+        reasons=reasons if order_tests else {},
+        test_runs=plan_runs(shown, facts.test_runs),
+        # Also when tests reach the file but none reaches a function it changes.
         prerequisite=(
-            _characterization_step(suggestion) if aggregate_basis == "unknown" else None
+            _characterization_step(suggestion)
+            if aggregate_basis == "unknown" or nearest == []
+            else None
         ),
     )
 
@@ -1010,6 +1076,9 @@ class Recommendation:
     # What other layers say about the target (:mod:`.annotations`), stored at
     # finalize and served on plan detail only; ``None`` when never checked.
     annotations: PlanAnnotations | None = field(default=None, repr=False, compare=False)
+    # Set when the plan leaves a function at the break-up bar
+    # (:func:`leaves_above_bar`): it ranks after the plans that do not.
+    leaves_above_bar: str | None = None
 
     @property
     def id(self) -> str:
@@ -1041,6 +1110,7 @@ class Recommendation:
             "file_nloc": self.file_nloc,
             "file_weighted_deficit": self.file_weighted_deficit,
             "validation": self.validation.as_dict(),
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
         }
 
     def detail_dict(self) -> dict[str, Any]:
@@ -1089,6 +1159,7 @@ class Recommendation:
                 if self.annotations is not None
                 else {}
             ),
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
         }
 
 
@@ -1131,6 +1202,7 @@ def stored_recommendation(row: Any) -> Recommendation | None:
         suggestion=suggestion,
         validation=validation,
         annotations=PlanAnnotations.from_dict(facts.get("annotations")),
+        leaves_above_bar=facts.get("leaves_above_bar"),
         **{name: facts[name] for name in _RANK_FACTS},
     )
 
@@ -1197,11 +1269,17 @@ def build_recommendations(
     metric_by_path: Mapping[str, Any] | None = None,
     centrality: Mapping[str, float] | None = None,
     validations: Mapping[int, ValidationPlan] | None = None,
+    findings: Sequence[Any] | None = None,
 ) -> list[Recommendation]:
-    """Pure recommendation construction used by every surface and tests."""
+    """Pure recommendation construction used by every surface and tests.
+
+    *findings* (the repository's health findings) give each Extract Method
+    target its measured size, which :func:`leaves_above_bar` reads; without
+    them no plan is marked."""
     metrics = metric_by_path or {}
     centrality = centrality or {}
     validations = validations or {}
+    findings_by_function = by_function(findings or ())
     out: list[Recommendation] = []
     for index, row in enumerate(rows):
         suggestion = rehydrate_suggestion(row)
@@ -1232,18 +1310,64 @@ def build_recommendations(
                 file_nloc=nloc,
                 file_weighted_deficit=deficit,
                 validation=validation,
+                leaves_above_bar=leaves_above_bar(
+                    suggestion,
+                    findings_by_function.get((suggestion.file_path, suggestion.target_symbol), ()),
+                ),
             )
         )
     return canonical_order(out)
 
 
+def leaves_above_bar(suggestion: RefactoringSuggestion, findings: Sequence[Any]) -> str | None:
+    """Why an Extract Method plan, applied as written, still leaves a function
+    at the break-up bar (:func:`..worth.above_bar_after`), or ``None``.
+
+    *findings* are the file's or the target's; the size findings on the
+    target give its measured CCN and lines before the plan."""
+    if suggestion.refactoring_type != "extract_method":
+        return None
+    named = [
+        f
+        for f in findings
+        if row_field(f, "biomarker_type") in SIZE_MARKERS
+        and row_field(f, "function_name") == suggestion.target_symbol
+    ]
+    own = _on_target(suggestion, named)
+    after = worst_after(
+        suggestion.evidence or {}, suggestion.plan or {}, suggestion.target_symbol, measure(own)
+    )
+    return above_bar_after(after)
+
+
+def _on_target(suggestion: RefactoringSuggestion, named: Sequence[Any]) -> list[Any]:
+    """The same-named findings on the target: those whose lines overlap it,
+    and those without lines unless a finding elsewhere in the file shows a
+    second function of that name. A plan without lines keeps them all."""
+    first, last = suggestion.line_start, suggestion.line_end
+    if not (first and last):
+        return list(named)
+    inside, unlined, elsewhere = [], [], False
+    for f in named:
+        start = row_field(f, "line_start")
+        if not start:
+            unlined.append(f)
+        elif start <= last and (row_field(f, "line_end") or start) >= first:
+            inside.append(f)
+        else:
+            elsewhere = True
+    return inside if elsewhere else inside + unlined
+
+
 def canonical_order(recommendations: Sequence[Recommendation]) -> list[Recommendation]:
     """Rank order, production files first: a plan on a build script, a tool or
-    copied code comes after them, and a test plan last."""
+    copied code comes after them, and a test plan last. Within each, a plan
+    that leaves a function at the break-up bar ranks after those that do not."""
     return sorted(
         recommendations,
         key=lambda recommendation: (
             ship_rank(recommendation.suggestion.file_path),
+            bool(recommendation.leaves_above_bar),
             -recommendation.rank_score,
             recommendation.suggestion.refactoring_type,
             recommendation.suggestion.file_path,
@@ -1355,6 +1479,7 @@ __all__ = [
     "detector_native_benefit",
     "enrich_blast_radius",
     "hub_files",
+    "leaves_above_bar",
     "listed_steps",
     "plan_types",
     "priority_score",

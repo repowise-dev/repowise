@@ -74,7 +74,7 @@ from .opportunity_rank import (
     why_ranked,
 )
 from .preconditions import StepApplicability, classify_step
-from .recommendations import affected_files, rehydrate_suggestion
+from .recommendations import affected_files, leaves_above_bar, rehydrate_suggestion
 
 # Opportunity ids share the plan id's version and digest, and differ in the
 # prefix alone, so a reader can tell the two units apart without a lookup and
@@ -141,6 +141,10 @@ class OpportunityStep:
     # findings were supplied or none in this file is addressable by id, which
     # is "unknown", not "this cause produced no finding".
     finding_ids: tuple[str, ...] | None = None
+    # Why the plan still leaves a function at the break-up bar
+    # (:func:`.recommendations.leaves_above_bar`); ``None`` when it does not
+    # or no findings were supplied.
+    leaves_above_bar: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +161,7 @@ class OpportunityStep:
             "relocated_by": self.relocated_by,
             "applicability": self.applicability.as_dict(),
             **({"finding_ids": list(self.finding_ids)} if self.finding_ids is not None else {}),
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
         }
 
 
@@ -208,6 +213,12 @@ class RefactoringOpportunity:
     def step_count(self) -> int:
         return len(self.steps)
 
+    @property
+    def leaves_above_bar(self) -> str | None:
+        """The first step's reason it leaves a function at the break-up bar:
+        the file's work is not done after it, so it ranks after work that is."""
+        return next((s.leaves_above_bar for s in self.steps if s.leaves_above_bar), None)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "opportunity_id": self.opportunity_id,
@@ -228,6 +239,7 @@ class RefactoringOpportunity:
             "rank_score": self.rank_score,
             "rank_factors": dict(self.rank_factors),
             "why_ranked": [dict(entry) for entry in self.why_ranked],
+            **({"leaves_above_bar": self.leaves_above_bar} if self.leaves_above_bar else {}),
         }
 
 
@@ -397,6 +409,7 @@ def _step_of(
             suggestion, governed=None if governed is None else plan_id in governed
         ),
         finding_ids=finding_ids,
+        leaves_above_bar=None if findings is None else leaves_above_bar(suggestion, findings),
     )
 
 

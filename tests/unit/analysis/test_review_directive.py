@@ -137,6 +137,16 @@ def test_an_unsupported_code_file_still_leaves_the_verdict_unknown():
     assert [a.targets for a in directive.actions] == [("lib.ex",)]
 
 
+def test_a_query_only_change_is_clear_with_its_own_headline():
+    delta = _delta(status="unavailable", explanation="Only query files changed")
+    delta.skipped = {"queries/java.scm": "not_analyzable_data", "README.md": "not_code"}
+    directive = review_directive(delta)
+    assert directive.status == "clear_in_analyzed_scope"
+    assert "query" in directive.headline
+    assert "documentation or configuration" not in directive.headline
+    assert not directive.actions
+
+
 # ---------------------------------------------------------------------------
 # Actions carry targets, not rendered strings
 # ---------------------------------------------------------------------------

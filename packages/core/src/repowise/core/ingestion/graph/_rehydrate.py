@@ -38,6 +38,7 @@ _NODE_ATTR_KEYS = (
     "is_entry_point",
     "is_reachability_root",
     "always_run_reason",
+    "public_api",
     "kind",
     "name",
     "qualified_name",

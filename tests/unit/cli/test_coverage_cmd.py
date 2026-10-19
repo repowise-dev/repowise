@@ -340,7 +340,7 @@ def test_init_and_update_keep_the_repo_hook_in_step(
     import inspect
 
     from repowise.cli.commands.augment_cmd import coverage_reingest
-    from repowise.cli.commands.init_cmd import command as init_command
+    from repowise.cli.commands.init_cmd import _finish as init_finish
     from repowise.cli.commands.update_cmd import command as update_command
 
     calls: list = []
@@ -350,4 +350,4 @@ def test_init_and_update_keep_the_repo_hook_in_step(
     )
     update_command._refresh_editor_stamp(tmp_path, None)
     assert calls == [tmp_path]
-    assert "sync_repo_hook(repo_path, console)" in inspect.getsource(getattr(init_command.init_command, "callback", init_command.init_command))
+    assert "sync_repo_hook(repo_path, console)" in inspect.getsource(init_finish._write_editor_files)

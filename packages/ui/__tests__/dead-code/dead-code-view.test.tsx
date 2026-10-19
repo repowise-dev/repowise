@@ -447,6 +447,21 @@ describe("DeadCodeView", () => {
     await waitFor(() => expect(adapter.analyze).toHaveBeenCalledTimes(1));
   });
 
+  it("calls a zero clean when the host does not report when analysis ran", async () => {
+    const unreported: DeadCodeSummary = { ...CLEAN };
+    delete unreported.analyzed_at;
+    const adapter = makeAdapter({
+      getSummary: vi.fn(async () => unreported),
+      listFindings: vi.fn(async () => []),
+    });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    expect(await screen.findByText("No dead code found")).toBeInTheDocument();
+    expect(screen.queryByText("Not analysed yet")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Analysed /)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-analyze" })).toBeInTheDocument();
+  });
+
   it("renders Re-analyze disabled with the host's reason beside it", async () => {
     const adapter = makeAdapter({ analyzeDisabledReason: "This snapshot is read-only." });
     renderView(<DeadCodeView adapter={adapter} />);

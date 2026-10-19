@@ -383,17 +383,12 @@ def _prompt_git(console: Console, scan: RepoScanInfo | None, result: dict[str, A
     print_section(console, "Git analysis", f"Controls how deeply git history is analyzed{commit_hint}")
     console.print()
 
-    # Smart default based on repo size
-    default_limit = 500
-    if scan:
-        if scan.total_files < 500:
-            default_limit = 1000
-        elif scan.total_files > 5000:
-            default_limit = 200
+    # Imported here: this module must not load core.ingestion at import time.
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
     val = click.prompt(
         "  Max commits per file",
-        default=default_limit,
+        default=_DEFAULT_COMMIT_LIMIT,
         type=int,
     )
     val = max(1, min(val, 10000))

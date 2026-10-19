@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, get_args
 
 from repowise.core.code_origin import path_origin
+from repowise.core.test_paths import in_test_tree
 
 from ...execution_roles import COLD_ROLES, EXECUTION_ROLES
 from ..perf.actionability import EXPECTED_REASONS
@@ -139,6 +140,7 @@ SCOPE_EXCLUSIONS = frozenset(ORIGIN_EXCLUSION.values())
 
 # Pure on the path, and the test check dominates a cold Fix first build.
 _code_context = functools.lru_cache(maxsize=65536)(code_context)
+_in_test_tree = functools.lru_cache(maxsize=65536)(in_test_tree)
 
 
 def path_verdict(
@@ -152,13 +154,15 @@ def path_verdict(
     """Whether a file's code is in scope.
 
     The stored ``code_origin`` decides first: it read the file's head, so it
-    knows a vendored library or a docs tutorial the path alone does not.
-    Then the same classifier on the path (an index stored before the origin
-    column, or a build file classed before build files were), then the path
-    context. Code-shape work reads :func:`code_context`, where a CLI ships. A
-    performance fix passes ``production``: its stored execution context is
-    judged by the performance ladder. The stored ``is_test`` flag also marks a
-    test. ``keep_tests`` keeps test code in scope (Fix first's ``scope="all"``).
+    knows a vendored library or a docs tutorial the path alone does not. A
+    stored ``production`` overrides a test verdict that rests on the name
+    alone (it saw pytest's config), never a test directory. With no stored
+    origin (an index from before the column) the same classifier runs on the
+    path; then the path context. Code-shape work reads :func:`code_context`,
+    where a CLI ships. A performance fix passes ``production``: its stored
+    execution context is judged by the performance ladder. The stored
+    ``is_test`` flag also marks a test. ``keep_tests`` keeps test code in
+    scope (Fix first's ``scope="all"``).
     """
     reason = _path_reason(path, is_test, context, origin)
     if reason == "test" and keep_tests:
@@ -171,14 +175,25 @@ def _path_reason(
 ) -> Reason | None:
     if origin in ORIGIN_EXCLUSION:
         return ORIGIN_EXCLUSION[origin]
-    ctx = context or _code_context(path)
-    if is_test or ctx == "test":
+    if is_test:
         return "test"
-    if reason := ORIGIN_EXCLUSION.get(path_origin(path)):
-        return reason
-    # ``unknown`` under a directory is docs, examples or demos at any depth:
-    # code that may not ship. A root-level file stays eligible.
-    if ctx == "tooling" or (ctx == "unknown" and "/" in path):
+    ctx = context or _code_context(path)
+    # A stored origin already saw pytest's config, which the path alone cannot:
+    # ``core/test_selection.py`` is production there and a test by name here.
+    if origin is None:
+        if ctx == "test":
+            return "test"
+        origin = path_origin(path)
+        if reason := ORIGIN_EXCLUSION.get(origin):
+            return reason
+    elif ctx == "test" and _in_test_tree(path):
+        return "test"
+    # ``unknown`` under a directory is an example, demo or docs segment at any
+    # depth. A production origin outranks it: the classifier counts such a
+    # segment only at the root or under a docs root, so ``com/example/demo/``
+    # ships. A root-level file stays eligible.
+    nested_unknown = ctx == "unknown" and "/" in path
+    if ctx == "tooling" or (nested_unknown and origin != "production"):
         return "tooling"
     return None
 

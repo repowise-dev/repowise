@@ -11,6 +11,7 @@ from repowise.core.persistence.crud.analysis import (
     health_finding_priorities,
     save_health_findings,
 )
+from repowise.core.persistence.models import GraphNode
 from tests.unit.persistence.helpers import insert_repo
 
 
@@ -54,3 +55,36 @@ async def test_worth_first_then_impact_and_filters_keep_the_whole_shape(async_se
     nested = await get_health_findings(async_session, repo.id, biomarker_type="nested_complexity")
     reasons = await health_finding_priorities(async_session, repo.id, nested)
     assert [reasons[f.id] for f in nested] == [None]
+
+
+@pytest.mark.asyncio
+async def test_test_file_findings_rank_below_production(async_session):
+    repo = await insert_repo(async_session)
+    async_session.add(
+        GraphNode(repository_id=repo.id, node_id="tests/test_a.py", node_type="file", is_test=True)
+    )
+    await save_health_findings(
+        async_session,
+        repo.id,
+        [
+            HealthFindingData(
+                biomarker_type="change_entropy",
+                severity=Severity.CRITICAL,
+                file_path="tests/test_a.py",
+                function_name=None,
+                line_start=None,
+                line_end=None,
+                details={},
+                health_impact=5.0,
+            ),
+            _finding("complex_method", "tidy", 3.0, ccn=14, nloc=40),
+            _finding("complex_method", "knot", 0.4, ccn=27, nloc=80),
+        ],
+    )
+    await async_session.commit()
+
+    rows = await get_health_findings(async_session, repo.id)
+    # Production first, even its lower-priority row; the test file last.
+    assert [f.file_path for f in rows] == ["a.py", "a.py", "tests/test_a.py"]
+    one = await get_health_findings(async_session, repo.id, file_path="tests/test_a.py")
+    assert [f.biomarker_type for f in one] == ["change_entropy"]

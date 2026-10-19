@@ -80,12 +80,15 @@ _RUST_COPY = frozenset(
 
 @dataclass(frozen=True)
 class Slot:
-    """One parameter or output: its name, declared type (None: unknown), and
-    whether the host reads it after the span (a Rust move would end that)."""
+    """One parameter or output: its name, declared type (None: unknown),
+    whether the host reads it after the span (a Rust move would end that),
+    and the line of a guard above the span narrowing it to a type the code
+    does not write (``narrowing``)."""
 
     name: str
     type: str | None = None
     read_after: bool = False
+    narrowed_at: int | None = None
 
 
 @dataclass(frozen=True)
@@ -203,11 +206,12 @@ def _notes(s: HelperShape, family: str) -> list[str]:
     if family in ("ts", "js"):
         out.extend(_undefined_arm_notes(s))
     if family == "ts":
-        untyped = [p.name for p in s.params if not p.type]
+        untyped = [p.name for p in s.params if not p.type and p.narrowed_at is None]
         if untyped:
             out.append(
                 f"Write the types of {', '.join(untyped)}: the code declares none for them."
             )
+        out.extend(_narrowed_note(p) for p in s.params if not p.type and p.narrowed_at)
     if family == "rust":
         unknown = [p.name for p in _rust_unsure(s)]
         if unknown:
@@ -218,6 +222,13 @@ def _notes(s: HelperShape, family: str) -> list[str]:
     if family == "cpp" and s.is_async:
         out.append("Give the helper the coroutine return type the caller co_awaits.")
     return out
+
+
+def _narrowed_note(slot: Slot) -> str:
+    return (
+        f"Type {slot.name} as the guard on line {slot.narrowed_at} narrows it: a wider "
+        "type undoes that narrowing."
+    )
 
 
 # -- shared pieces -----------------------------------------------------------
@@ -468,14 +479,15 @@ def render_context(
         return ContextText(None, f"const {var} = {{ {names} }};", ())
     lines = [f"  {f.name}: {f.type or TYPE_PLACEHOLDER};" for f in fields]
     declaration = "\n".join([f"interface {name} {{", *lines, "}"])
-    return ContextText(declaration, f"const {var}: {name} = {{ {names} }};", ())
+    notes = tuple(_narrowed_note(f) for f in fields if not f.type and f.narrowed_at)
+    return ContextText(declaration, f"const {var}: {name} = {{ {names} }};", notes)
 
 
 #: What the renderer adds to a stored plan, served on plan detail only.
 _DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "return_text", "notes")
-#: Plan keys on detail only: Extract Method's call and staged plan (stages,
-#: parameter object, residual), Extract Helper's calls to an existing function.
-_DETAIL_PLAN_KEYS = ("call_site", "stages", "parameter_object", "orchestrator", "reuse")
+#: Plan keys on detail only: Extract Method's call, span anchors and staged plan
+#: (stages, parameter object, residual), Extract Helper's calls to an existing function.
+_DETAIL_PLAN_KEYS = ("call_site", "anchors", "stages", "parameter_object", "orchestrator", "reuse")
 
 
 def list_plan(plan: dict) -> dict:

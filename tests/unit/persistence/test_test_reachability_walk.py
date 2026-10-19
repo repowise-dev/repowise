@@ -19,6 +19,8 @@ from repowise.core.analysis.test_reachability import (
     ReachDistance,
     call_graph_from_db,
     call_graph_from_graph,
+    direct_dependents,
+    direct_importers,
     imported_names_by_test,
     reach_into_symbols,
 )
@@ -678,3 +680,131 @@ async def test_the_import_walk_from_memory_matches_the_walk_from_the_database(as
         "tests/helper.py": 3,
         "tests/test_h.py": 4,
     }
+
+
+_KY_LIKE = {
+    "src/core/Ky.ts": "export class Ky {\n  static create(input: string) { return new Ky(); }\n}\n",
+    # Three calls deep before the test's own call: past the call walk's depth.
+    "src/index.ts": (
+        "import {Ky} from './core/Ky';\n"
+        "const createRequest = (input: string) => Ky.create(input);\n"
+        "const createInstance = () => (input: string) => createRequest(input);\n"
+        "const ky = createInstance();\n"
+        "export default ky;\n"
+        "export type {Hooks} from './types/hooks';\n"
+    ),
+    # A type import back into the package entry: index.ts is not test-only.
+    "src/types/hooks.ts": "import type ky from '../index';\nexport type Hooks = typeof ky;\n",
+    "test/x.test.ts": (
+        "import ky from '../src/index';\nimport {pool} from '../src/pool';\n"
+        "ky('https://example.com');\n"
+    ),
+    # Source imports pool.ts too and it is no barrel, so it passes nothing on.
+    "src/pool.ts": "import {retry} from './retry';\nexport const pool = [retry];\n",
+    "src/retry.ts": "export const retry = 1;\n",
+    "src/agent.ts": "import {pool} from './pool';\nexport const agent = pool;\n",
+}
+
+
+async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path, async_session):
+    """A test importing a package's ``index.ts`` reaches the files it imports."""
+    from repowise.core.analysis.test_reachability import any_tests_reaching, clear_test_map_cache
+    from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
+    from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
+    from tests.unit.analysis.test_public_api_flag import build_fixture
+
+    builder = build_fixture(tmp_path, _KY_LIKE)
+    repo = await insert_repo(async_session)
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    edges = [_edge_row(u, v, d) for u, v, d in builder.graph().edges(data=True)]
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+
+    found = await any_tests_reaching(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
+    assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
+    assert found["src/core/Ky.ts"].via == "import-graph"
+    assert "src/retry.ts" not in found
+
+
+async def test_reached_files_are_walked_once_per_index_state(async_session, monkeypatch):
+    import repowise.core.analysis.test_reachability as tr
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False, "src/b.py": False},
+        edges=[*_calls("tests/test_a.py", "src/a.py")],
+    )
+    loads = 0
+    real = tr.call_graph_from_db
+
+    async def counting(session, repo_id):
+        nonlocal loads
+        loads += 1
+        return await real(session, repo_id)
+
+    monkeypatch.setattr(tr, "call_graph_from_db", counting)
+
+    first = await tr.cached_files_reached_by_tests(async_session, repo.id)
+    second = await tr.cached_files_reached_by_tests(async_session, repo.id)
+
+    assert first == second == frozenset({"src/a.py"})
+    assert loads == 1
+
+
+async def test_reads_over_more_files_than_one_statement_can_bind(async_session):
+    """A repository-wide read binds a variable per file or symbol, past what one
+    SQLite statement accepts (SQLITE_MAX_VARIABLE_NUMBER, 32766)."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False, "src/b.py": False},
+        edges=[
+            ("tests/test_a.py", "src/a.py", "imports"),
+            ("src/b.py", "src/a.py", "imports"),
+            *_calls("tests/test_a.py", "src/b.py"),
+        ],
+    )
+    files = [f"src/gone_{i}.py" for i in range(40_000)] + ["src/a.py", "src/b.py"]
+    assert await direct_importers(async_session, repo.id, files) == {
+        "tests/test_a.py",
+        "src/b.py",
+    }
+    assert await direct_dependents(async_session, repo.id, files) == {
+        "src/a.py": {"tests/test_a.py", "src/b.py"},
+        "src/b.py": {"tests/test_a.py"},
+    }
+    names = await imported_names_by_test(async_session, repo.id, files, {"tests/test_a.py"})
+    assert names == {"src/a.py": {"tests/test_a.py": frozenset()}}
+
+
+async def test_a_node_listed_twice_across_batches_reads_its_edges_once(async_session):
+    """A repeated input landing in two batches must not repeat its pairs: one
+    ``IN`` list matches a node once however often it is listed."""
+    from repowise.core.analysis.test_reachability import (
+        _IN_BATCH,
+        _edges_from,
+        _edges_into,
+        _imported_names,
+    )
+
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={"tests/test_a.py": True, "src/a.py": False},
+        edges=[("tests/test_a.py", "src/a.py", "imports")],
+    )
+    padding = [f"src/gone_{i}.py" for i in range(_IN_BATCH)]
+    into = await _edges_into(
+        async_session, repo.id, ["src/a.py", *padding, "src/a.py"], ["imports"], frozenset()
+    )
+    assert into == [("tests/test_a.py", "src/a.py")]
+    out = await _edges_from(
+        async_session, repo.id, ["tests/test_a.py", *padding, "tests/test_a.py"], ["imports"]
+    )
+    assert out == [("tests/test_a.py", "src/a.py")]
+    names = await _imported_names(async_session, repo.id, ["src/a.py", *padding, "src/a.py"])
+    assert names == [("tests/test_a.py", "src/a.py", frozenset())]

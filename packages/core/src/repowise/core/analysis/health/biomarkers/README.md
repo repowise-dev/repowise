@@ -20,7 +20,7 @@ Structural complexity (cap −2.5):
 - `god_class` — a large class (≥ 200 NLOC, ≥ 15 methods) that also hides a
   brain method.
 - `nested_complexity` — functions with deep nesting (≥ 4 levels).
-- `bumpy_road` — multiple branches at the same nesting depth.
+- `repeated_nesting` — multiple branches at the same nesting depth.
 - `complex_conditional` — compound boolean expressions with ≥ 3 ops.
 
 Size & complexity (cap −1.5):

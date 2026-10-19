@@ -41,7 +41,9 @@ def _render_fix_first(loaded: tuple[Any, Any] | None) -> None:
             console.print(f"    [dim]verify:[/dim] {escape(item.verify.command)}")
 
 
-def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
+def _render_performance_section(
+    report: Any, findings: list[Any], lang_by_path: dict[str, str]
+) -> None:
     """Honest performance headline: risk count + density + coverage + scope.
 
     Leads with the open-risk count and how much of the analyzed code a perf
@@ -55,7 +57,7 @@ def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> No
     if not coverage.analyzed_files:
         return
     perf_findings = sum(
-        1 for f in report.findings if getattr(f, "dimension", "defect") == "performance"
+        1 for f in findings if getattr(f, "dimension", "defect") == "performance"
     )
     perf_avg = report.kpis.get("performance_average")
 
@@ -121,18 +123,25 @@ def _render_distribution_line(dist: dict) -> None:
     console.print("[dim]Distribution (by code volume):[/dim] " + " · ".join(parts) + "\n")
 
 
-def _render_badge(average_health: object) -> None:
+def _render_badge(average_health: object, share: float | None = None) -> None:
     """Print ready-to-paste health-badge Markdown for a README.
 
     Emits a static shields badge for the current score (immediately usable) and
     documents the live endpoint form for a running Repowise server / hosted repo.
     """
-    from repowise.core.analysis.health.grading import BAND_BADGE_COLOR, band_for, format_score
+    from repowise.core.analysis.health.grading import (
+        BADGE_UNKNOWN_COLOR,
+        BAND_BADGE_COLOR,
+        format_score,
+        headline_band,
+    )
 
     if not isinstance(average_health, (int, float)):
         console.print("[yellow]No health score yet — run `repowise init` first.[/yellow]")
         return
-    color = BAND_BADGE_COLOR[band_for(float(average_health))]
+    band = headline_band(float(average_health), share)
+    # Neutral, not green, when too little of the repo was analysed for a band.
+    color = BAND_BADGE_COLOR[band] if band is not None else BADGE_UNKNOWN_COLOR
     msg = f"{format_score(float(average_health))}/10"
     static = f"https://img.shields.io/badge/health-{msg.replace('/', '%2F')}-{color}"
     console.print("[bold]Static badge (current score):[/bold]")

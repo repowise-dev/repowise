@@ -16,7 +16,32 @@ function isMarkdown(doc: vscode.TextDocument): boolean {
 }
 
 /** Tracks the last resolved 0-based line for findings across live document edits. */
-const lastKnownLines = new Map<string, number>();
+export const lastKnownLines = new Map<string, number>();
+
+/** Clears cached line locations for a document URI, or all documents if omitted. */
+export function clearDocDriftLocations(uri?: vscode.Uri): void {
+  if (!uri) {
+    lastKnownLines.clear();
+    return;
+  }
+  const prefix = `${uri.toString()}::`;
+  for (const key of lastKnownLines.keys()) {
+    if (key.startsWith(prefix)) {
+      lastKnownLines.delete(key);
+    }
+  }
+}
+
+/** Removes tracked line locations for findings that are no longer in the given set. */
+export function pruneDocDriftLocations(uri: vscode.Uri, items: DocDriftFinding[]): void {
+  const prefix = `${uri.toString()}::`;
+  const validKeys = new Set(items.map((f) => `${prefix}${f.id}`));
+  for (const key of lastKnownLines.keys()) {
+    if (key.startsWith(prefix) && !validKeys.has(key)) {
+      lastKnownLines.delete(key);
+    }
+  }
+}
 
 /** The finding's line, narrowed to the reference as written (else the target), relocated in live buffer. */
 export function rangeFor(doc: vscode.TextDocument, f: DocDriftFinding): vscode.Range | null {
@@ -78,6 +103,8 @@ export function registerDocDriftDiagnostics(ctx: RepowiseContext): vscode.Dispos
     // Keyed on what the diagnostic renders from.
     signature: (f) => `${f.id}:${f.line_number}:${f.confidence}:${f.suggestion ?? ""}`,
     toDiagnostic,
+    onPublish: (doc, items) => pruneDocDriftLocations(doc.uri, items),
+    onDropDocument: (uri) => clearDocDriftLocations(uri),
   });
 }
 
