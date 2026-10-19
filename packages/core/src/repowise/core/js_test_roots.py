@@ -7,7 +7,7 @@ Vitest specifies ``test.include``, and Jest specifies ``testMatch`` and ``testRe
 
 Pure: callers hand in config text (or the already-parsed ``package.json`` dictionary),
 so ingestion reads each config once during the walk it already makes and passes the
-resulting roots into classification and test selection.
+resulting roots into classification.
 
 Each config governs its own directory and any files beneath it, nearest first.
 A file that any config above it collects counts as collected.
@@ -35,11 +35,9 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
+from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
-
-import pathspec
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -138,23 +136,136 @@ def _js_collected(path: PurePosixPath, rel: PurePosixPath, rules: _JsCollection)
         except re.error:
             continue
 
-    # 2. Glob patterns (Vitest include, Jest testMatch)
-    if not rules.patterns:
+    # 2. Glob patterns (Vitest include, Jest testMatch), relative to the config directory
+    globs = _compiled_globs(rules.patterns)
+    if globs is None:
         return False
+    positives, negations = globs
+    return any(p.fullmatch(posix_rel) for p in positives) and not any(
+        n.fullmatch(posix_rel) for n in negations
+    )
 
-    expanded_patterns: list[str] = []
-    for pat in rules.patterns:
-        expanded_patterns.extend(_expand_braces(pat))
 
-    try:
-        spec = pathspec.PathSpec.from_lines("gitwildmatch", expanded_patterns)
-        if spec.match_file(posix_rel) or spec.match_file(posix_path):
-            return True
-    except Exception:
-        pass
+@lru_cache(maxsize=256)
+def _compiled_globs(
+    patterns: tuple[str, ...],
+) -> tuple[tuple[re.Pattern[str], ...], tuple[re.Pattern[str], ...]] | None:
+    """``(positive, negation)`` regexes for *patterns*, or ``None`` if a negation is unreadable.
 
-    candidates = {str(c) for p in (rel, path) for c in (p, *p.parents) if str(c) != "."}
-    return any(fnmatchcase(c, root) for root in expanded_patterns for c in candidates)
+    A positive pattern the translator cannot read never matches, and a negation it
+    cannot read makes the whole set collect nothing: either way no file is promoted.
+    """
+    positives: list[re.Pattern[str]] = []
+    negations: list[re.Pattern[str]] = []
+    for pat in patterns:
+        for glob in _expand_braces(pat):
+            negated = glob.startswith("!") and not glob.startswith("!(")
+            regex = _glob_regex(glob[1:] if negated else glob)
+            if regex is None:
+                if negated:
+                    return None
+                continue
+            (negations if negated else positives).append(re.compile(regex))
+    return tuple(positives), tuple(negations)
+
+
+def _glob_regex(glob: str) -> str | None:
+    """Regex for one brace-expanded glob with picomatch semantics, or ``None``.
+
+    ``**`` as a whole segment spans zero or more segments; ``*``, ``?``, ``[...]``
+    and the extglobs ``?() *() +() @()`` stay inside one segment. ``!(...)`` is
+    not supported.
+    """
+    while glob.startswith("./"):
+        glob = glob[2:]
+    parts = glob.split("/")
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        if part == "**":
+            out.append(".*" if last else "(?:[^/]+/)*")
+            continue
+        seg = _segment_regex(part)
+        if seg is None:
+            return None
+        out.append(seg if last else seg + "/")
+    return "".join(out)
+
+
+_EXTGLOB_QUANTIFIERS = {"?": "?", "*": "*", "+": "+", "@": ""}
+
+
+def _segment_regex(seg: str) -> str | None:
+    """Regex for glob text that cannot cross ``/``, or ``None`` if unsupported."""
+    out: list[str] = []
+    i = 0
+    while i < len(seg):
+        c = seg[i]
+        nxt = seg[i + 1] if i + 1 < len(seg) else ""
+        if nxt == "(" and c in "?*+@!":
+            if c == "!":
+                return None
+            end = _closing_paren(seg, i + 1)
+            if end is None:
+                return None
+            alts = [_segment_regex(alt) for alt in _split_alternatives(seg[i + 2 : end])]
+            if any(a is None for a in alts):
+                return None
+            out.append(f"(?:{'|'.join(alts)}){_EXTGLOB_QUANTIFIERS[c]}")  # type: ignore[arg-type]
+            i = end + 1
+        elif c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c == "[":
+            close = seg.find("]", i + 2)
+            if close == -1:
+                out.append(re.escape(c))
+                i += 1
+                continue
+            body = seg[i + 1 : close]
+            negate = body[:1] in ("!", "^")
+            body = body[1:] if negate else body
+            body = body.replace("\\", "\\\\")
+            out.append(f"[^/{body}]" if negate else f"[{body}]")
+            i = close + 1
+        elif c == "\\" and nxt:
+            out.append(re.escape(nxt))
+            i += 2
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "".join(out)
+
+
+def _closing_paren(text: str, start: int) -> int | None:
+    depth = 0
+    for j in range(start, len(text)):
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+    return None
+
+
+def _split_alternatives(text: str) -> list[str]:
+    alts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in text:
+        if ch == "|" and depth == 0:
+            alts.append("".join(current))
+            current = []
+            continue
+        depth += ch == "("
+        depth -= ch == ")"
+        current.append(ch)
+    alts.append("".join(current))
+    return alts
 
 
 def _normalize_jest_glob(glob: str) -> str:
@@ -252,10 +363,14 @@ def _parse_vitest_ast(root: Node, *, is_workspace: bool = False) -> dict[str, An
 
 def _parse_vitest_object(node: Node) -> dict[str, Any] | None:
     def find_pairs(n: Node, target_key: str) -> list[Node]:
+        # Stop at every pair: a ``test`` key inside another option (a plugin's
+        # options, say) is not this config's test block.
         found: list[Node] = []
-        if n.type == "pair" and _node_key(n) == target_key:
-            found.append(n)
         for c in n.children:
+            if c.type == "pair":
+                if _node_key(c) == target_key:
+                    found.append(c)
+                continue
             found.extend(find_pairs(c, target_key))
         return found
 

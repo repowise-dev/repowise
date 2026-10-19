@@ -75,3 +75,64 @@ def test_options_extracted_from_parsed_package_json() -> None:
         "regexes": (),
     }
     assert js_test_options("README.md", "hello") is None
+
+
+def test_a_test_key_inside_a_plugin_option_is_not_the_test_block() -> None:
+    config = (
+        "export default defineConfig({\n"
+        '  plugins: [foo({ test: { include: ["src/**/*.ts"] } })],\n'
+        '  test: { include: ["**/*.vitest.ts"] },\n'
+        "});\n"
+    )
+    roots = read_js_test_roots([("vitest.config.ts", config)])
+    assert roots.collects("src/a.vitest.ts") is True
+    assert roots.collects("src/a.ts") is False
+
+
+def _vitest(*include: str):
+    quoted = ", ".join(f'"{p}"' for p in include)
+    return read_js_test_roots(
+        [("vitest.config.ts", f"export default defineConfig({{ test: {{ include: [{quoted}] }} }});\n")]
+    )
+
+
+def test_a_single_star_stays_inside_one_path_segment() -> None:
+    roots = _vitest("src/*.ts")
+    assert roots.collects("src/a.ts") is True
+    assert roots.collects("src/a/b.ts") is False
+    assert _vitest("src/*").collects("src/a/b.ts") is False
+
+
+def test_a_globstar_spans_zero_or_more_segments() -> None:
+    roots = _vitest("**/*.vitest.ts")
+    assert roots.collects("a.vitest.ts") is True
+    assert roots.collects("core/stream/charStream.vitest.ts") is True
+    assert roots.collects("core/stream/charStream.ts") is False
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("src/a.spec.tsx", True),
+        ("src/a.test.js", True),
+        ("src/test.js", True),
+        ("src/a.test.jsx", True),
+        ("src/atest.js", False),
+        ("src/a.test.css", False),
+    ],
+)
+def test_jest_default_extglob_pattern(path, expected) -> None:
+    roots = read_js_test_roots(
+        [("jest.config.js", 'module.exports = { testMatch: ["**/?(*.)+(spec|test).[jt]s?(x)"] };\n')]
+    )
+    assert roots.collects(path) is expected
+
+
+def test_a_negation_pattern_excludes() -> None:
+    roots = _vitest("**/*.vitest.ts", "!legacy/**")
+    assert roots.collects("src/a.vitest.ts") is True
+    assert roots.collects("legacy/a.vitest.ts") is False
+
+
+def test_an_unsupported_negated_extglob_promotes_nothing() -> None:
+    assert _vitest("src/!(x).ts").collects("src/a.ts") is False

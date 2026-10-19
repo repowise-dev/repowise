@@ -431,10 +431,6 @@ def _classify(
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.
     """
-    if type(roots).__name__ == "JsTestRoots" and js_roots is None:
-        js_roots = roots  # type: ignore[assignment]
-        roots = None
-
     original, lowered = _parts(path)
     if not original:
         return ""
