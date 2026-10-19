@@ -325,6 +325,53 @@ async def test_planner_stats_count_every_row_of_a_single_repository(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_planner_stats_rerun_only_when_a_table_drifts(tmp_path: Path) -> None:
+    """A full pass reads the whole store, so a write that leaves every table
+    near the size ANALYZE recorded keeps the statistics it has."""
+    from repowise.core.persistence import create_session_factory, refresh_planner_stats
+    from repowise.core.persistence.models import GraphEdge, Repository
+
+    db = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db}")
+
+    async def add_edges(start: int, count: int) -> None:
+        async with create_session_factory(engine)() as session:
+            session.add_all(
+                GraphEdge(repository_id="r1", source_node_id="s", target_node_id=f"t{i}")
+                for i in range(start, start + count)
+            )
+            await session.commit()
+
+    def recorded() -> str:
+        conn = sqlite3.connect(db)
+        try:
+            return conn.execute(
+                "SELECT stat FROM sqlite_stat1 WHERE idx = 'ix_graph_edges_repo_target'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    try:
+        await init_db(engine)
+        async with create_session_factory(engine)() as session:
+            session.add(Repository(id="r1", name="r", local_path="/r"))
+            await session.commit()
+        await add_edges(0, 100)
+        await refresh_planner_stats(engine)
+        await add_edges(100, 50)
+        await refresh_planner_stats(engine)
+        within_band = recorded()
+        await add_edges(150, 100)
+        await refresh_planner_stats(engine)
+        drifted = recorded()
+    finally:
+        await engine.dispose()
+
+    assert within_band.split()[0] == "100"
+    assert drifted.split()[0] == "250"
+
+
+@pytest.mark.asyncio
 async def test_planner_stats_skip_other_backends() -> None:
     from repowise.core.persistence import refresh_planner_stats
 

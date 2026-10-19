@@ -707,6 +707,41 @@ async def init_db(engine: AsyncEngine) -> None:
             await conn.execute(text(PAGE_FTS_DDL))
 
 
+# A table whose row count moved past this factor of the count ANALYZE recorded
+# has statistics too old to plan by.
+_STATS_DRIFT = 2
+
+
+def _planner_stats_stale(conn: Any) -> bool:
+    """Whether a table with rows has no statistics, or its count left the band."""
+    # ANALYZE skips virtual tables (the full-text index), so they never count.
+    names = [
+        r[0]
+        for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'"
+        )
+    ]
+    if "sqlite_stat1" not in names:
+        return True
+    recorded = dict(
+        conn.exec_driver_sql(
+            "SELECT tbl, MAX(CAST(stat AS INTEGER)) FROM sqlite_stat1 GROUP BY tbl"
+        ).all()
+    )
+    for name in names:
+        if name.startswith("sqlite_"):
+            continue
+        rows = conn.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar() or 0
+        before = recorded.get(name)
+        if before is None:
+            if rows:
+                return True
+        elif not before / _STATS_DRIFT <= rows <= before * _STATS_DRIFT:
+            return True
+    return False
+
+
 async def refresh_planner_stats(engine: AsyncEngine) -> None:
     """Refresh SQLite's planner statistics at the end of a write to the index.
 
@@ -715,14 +750,17 @@ async def refresh_planner_stats(engine: AsyncEngine) -> None:
     place of an index lookup). A full ``ANALYZE``, not a sampled one: every
     index leads with ``repository_id``, which a sample (``analysis_limit``, and
     ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
-    keeps the wrong index. Other backends keep their own statistics. A failure
-    costs only a slower plan, so it never fails the write.
+    keeps the wrong index. It runs only when the statistics are missing or a
+    table's size has drifted, since a full pass reads the whole store. Other
+    backends keep their own statistics. A failure costs only a slower plan, so
+    it never fails the write.
     """
     if engine.dialect.name != "sqlite":
         return
     try:
         async with engine.begin() as conn:
-            await conn.execute(text("ANALYZE"))
+            if await conn.run_sync(_planner_stats_stale):
+                await conn.execute(text("ANALYZE"))
     except Exception as exc:
         log.warning("sqlite.analyze_failed", error=str(exc))
 
