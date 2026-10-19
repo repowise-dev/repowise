@@ -121,6 +121,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     }
     if repo == "all":
         result = await _workspace_overview(tools="tools" in want)
+        for k in sorted(want - {"tools"}):  # single-repo blocks
+            resolve_enum_argument(k, {"tools"}, argument="include", ignored=ignored)
         attach_ignored_arguments(result, ignored)
         return result
 

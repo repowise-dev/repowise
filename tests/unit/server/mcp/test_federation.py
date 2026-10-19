@@ -302,3 +302,13 @@ async def test_stale_repo_is_named_and_its_rows_marked(workspace_mcp):  # noqa: 
     assert stale["live_head"] == git("rev-parse", "HEAD")[:12]
     rows = [f for t in result["tiers"].values() for f in t["findings"]]
     assert {f["repo"]: f.get("stale", False) for f in rows} == {"backend": True, "frontend": False}
+
+
+async def test_all_names_the_single_repo_includes_it_does_not_serve(workspace_mcp):  # noqa: F811
+    from repowise.server.mcp_server import get_overview
+
+    overview = await get_overview(repo="all", include=["tools", "content"])
+    assert "tool_surface" in overview
+    assert overview["ignored_arguments"] == [
+        {"argument": "include", "values": ["content"], "valid": ["tools"]}
+    ]

@@ -18,7 +18,7 @@ The field dictionary for every repowise MCP tool response. [MCP_TOOLS.md](../age
 
 Every response carries `_meta`. Fields are present only when they carry a signal, so read absence as "nothing to report", never as an error.
 
-Routine responses carry a lean envelope. `get_overview`, called once per session, keeps the full one: `contract_version`, `timing_ms`, `response_budget` and `completeness` on every call, and the whole `index_scope` with `include=["scope"]`. Setting `REPOWISE_MCP_DEBUG_META=1` in the server's environment restores the diagnostic fields on every tool (`contract_version`, `timing_ms`, `response_budget`, `completeness`, `tokens_saved`, `replaced_tokens`) for diagnosis; it is read per call, so no restart is needed.
+Routine responses carry a lean envelope. `get_overview`, called once per session, keeps the full one: `contract_version`, `timing_ms`, `response_budget` and `completeness` on every call. Its `index_scope` is the same digest as elsewhere (left out when `complete`); `include=["scope"]` adds the whole object. Setting `REPOWISE_MCP_DEBUG_META=1` in the server's environment restores the diagnostic fields on every tool (`contract_version`, `timing_ms`, `response_budget`, `completeness`, `tokens_saved`, `replaced_tokens`) for diagnosis; it is read per call, so no restart is needed.
 
 | Field | When present | Meaning |
 |-------|--------------|---------|
