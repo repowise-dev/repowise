@@ -209,7 +209,7 @@ def test_a_history_tier_card_prints_its_history_not_hotspot_zeros() -> None:
 
     from rich.console import Console
 
-    from repowise.cli.commands import risk_cmd
+    from repowise.cli.commands.risk_cmd import card as risk_card
 
     card = {
         "signal_tier": "history",
@@ -222,8 +222,8 @@ def test_a_history_tier_card_prints_its_history_not_hotspot_zeros() -> None:
     projected = project_risk({"targets": {"queries/java.scm": card}})["targets"]["queries/java.scm"]
     assert projected["signal_tier"] == "history" and projected["commit_count_total"] == 11
     rec = Console(record=True, width=300)
-    with patch.object(risk_cmd, "console", rec):
-        risk_cmd._render_card("queries/java.scm", projected)
+    with patch.object(risk_card, "console", rec):
+        risk_card._render_card("queries/java.scm", projected)
     out = rec.export_text()
     assert "history only · 11 commits (stable) · last 2026-03-01" in out
     assert "Carol" in out

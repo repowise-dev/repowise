@@ -26,7 +26,14 @@ from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
 
 
 def _upgrade_source() -> str:
-    return inspect.getsource(upgrade_flow._run_upgrade)
+    return "".join(
+        inspect.getsource(fn)
+        for fn in (
+            upgrade_flow._run_upgrade,
+            upgrade_flow._generate_upgrade_pages,
+            upgrade_flow._persist_upgrade_pages,
+        )
+    )
 
 
 def test_full_upgrade_uses_the_persistence_wrapper() -> None:

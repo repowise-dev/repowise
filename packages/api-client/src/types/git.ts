@@ -1,3 +1,5 @@
+import type { HealthDeltaSummaryResponse } from "@repowise-dev/types/history";
+
 // ---------------------------------------------------------------------------
 // Git Intelligence
 // ---------------------------------------------------------------------------
@@ -82,6 +84,10 @@ export interface HotspotResponse {
   bug_magnet?: boolean;
   last_fix_at?: string | null;
   original_path?: string | null;
+  /** Faster over the last 30 days than over the last 90, on a file older than that window. */
+  accelerating?: boolean;
+  /** Place by hotspot score within the listed scope; set by the hotspot list only. */
+  rank?: number | null;
 }
 
 export interface OwnershipEntry {
@@ -137,6 +143,10 @@ export interface CommitResponse {
   agent_confidence?: string | null;
   /** agent / human_attested / unknown; null when attribution is off. */
   attribution?: "agent" | "human_attested" | "unknown" | null;
+  /** What the commit did to health, the row's lead; null when never scanned. */
+  health_delta?: HealthDeltaSummaryResponse | null;
+  /** Hotspot files (as flagged now) the commit touched. */
+  touches_hotspot?: number;
 }
 
 export interface RiskDriverResponse {
@@ -171,6 +181,8 @@ export interface CommitHealthFindingResponse {
    *  `unknown`. Separates what a change wrote from what it merely touched. */
   attribution_basis: string;
   reason: string;
+  /** Set when the commit moved this finding's code here from another file. */
+  moved_from?: { path: string; symbol?: string | null } | null;
 }
 
 /** What a commit did to code health, computed at index time.
@@ -182,9 +194,16 @@ export interface CommitHealthResponse {
   /** `available` when every changed file was compared, `partial` when some
    *  were skipped (unsupported language, binary, unreadable). */
   status: string;
+  /** An older analyzer wrote it: the direction holds, the counts do not
+   *  compare with current rows. */
+  stale?: boolean;
   introduced_count: number;
   worsened_count: number;
   resolved_count: number;
+  /** Findings whose metric dropped, at the same place or after a move. */
+  improved_count?: number;
+  /** Findings carried to another file with their code; a worsened or improved one is in that count too. */
+  moved_count?: number;
   files_analyzed: number;
   files_skipped: number;
   /** Worst first, capped. `introduced_count + worsened_count` is the true

@@ -98,7 +98,7 @@ def test_a_server_job_leaves_both_stamps_on_one_commit(repo) -> None:
 
 def test_a_write_that_keeps_the_sync_commit_leaves_the_row_alone(repo, monkeypatch) -> None:
     from repowise.cli.helpers import save_state
-    from repowise.core.workspace import update
+    from repowise.core.workspace.update import state as update
 
     path, old, _new = repo
     stamped: list[str] = []

@@ -138,7 +138,7 @@ the page that answers it.
 | *Can I get docs for this codebase?* | A wiki for every module and file, rendered from the code's structure with no key, or written by a model when you choose. It updates incrementally after each commit. [Docs](docs/layers/WIKI.md) |
 | *Which of our docs are wrong?* | Markdown checked against the tree: every reference to a file or symbol the code no longer has, with the line to edit. [Doc drift](docs/layers/DOC_DRIFT.md) |
 | *Why is it built this way?* | Decisions mined from ADRs, `# WHY:` comments, commit and PR history and your agent sessions, each tied to the code it governs and flagged when it goes stale. [Decisions](docs/layers/DECISIONS.md) |
-| *Who knows this code?* | Owners, bus factor, knowledge-loss risk when the main author goes quiet, and suggested reviewers. [Ownership](docs/layers/OWNERSHIP.md) |
+| *Who knows this code?* | Owners, bus factor, fading ownership when the main author goes quiet, and suggested reviewers. [Ownership](docs/layers/OWNERSHIP.md) |
 | *Can I see the architecture?* | An explorable dependency map, C4 views, and a Structurizr export, no model involved. [Dashboard](docs/start/DASHBOARD.md) |
 
 ### Change it safely
@@ -393,6 +393,9 @@ git alone cannot attest.
 <a id="code-health"></a>
 
 ## ★ Know exactly what to fix
+
+Code health measures technical debt: the code shape and change history that make a
+file likely to need the next fix.
 
 A score that says *"this file is risky"* is where most tools stop. Repowise scores
 every file, finds where the risk concentrates, and names the specific fix.

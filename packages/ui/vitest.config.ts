@@ -33,6 +33,7 @@ export default defineConfig({
       "@repowise-dev/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
       "@repowise-dev/types/cards": path.resolve(__dirname, "../types/src/cards.ts"),
       "@repowise-dev/types/changes": path.resolve(__dirname, "../types/src/changes.ts"),
+      "@repowise-dev/types/history": path.resolve(__dirname, "../types/src/history.ts"),
       "@repowise-dev/types/events": path.resolve(__dirname, "../types/src/events.ts"),
       "@repowise-dev/types/views": path.resolve(__dirname, "../types/src/views.ts"),
       "@repowise-dev/types/workspace": path.resolve(__dirname, "../types/src/workspace.ts"),
@@ -56,6 +57,7 @@ export default defineConfig({
         "../types/src/external-systems.ts",
       ),
       "@repowise-dev/types/health": path.resolve(__dirname, "../types/src/health.ts"),
+      "@repowise-dev/types/areas": path.resolve(__dirname, "../types/src/areas.ts"),
       "@repowise-dev/types/refactoring": path.resolve(
         __dirname,
         "../types/src/refactoring.ts",

@@ -1,3 +1,5 @@
+import type { IdentityKind, OwnerAliases } from "@repowise-dev/types/owners";
+
 // ---------------------------------------------------------------------------
 // Owner / contributor profile
 // ---------------------------------------------------------------------------
@@ -6,6 +8,7 @@ export interface OwnerListEntry {
   key: string;
   name: string;
   email: string | null;
+  kind: IdentityKind;
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;
@@ -44,6 +47,8 @@ export interface OwnerProfileResponse {
   key: string;
   name: string;
   email: string | null;
+  kind: IdentityKind;
+  aliases: OwnerAliases;
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;

@@ -9,7 +9,7 @@ from repowise.core.analysis.health.aggregation import module_rollups as _module_
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.grading import distribution as health_distribution
-from repowise.server.mcp_server.tool_health.loading import HealthData
+from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import FIX_FIRST_CAP, HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
@@ -170,7 +170,12 @@ def _finding_rows(data: HealthData, rows: list[Any]) -> list[dict[str, Any]]:
 
 
 def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:
-    return _serialize_metric(m, data.leads.get(m.file_path), is_test=m.file_path in data.test_paths)
+    return _serialize_metric(
+        m,
+        data.leads.get(m.file_path),
+        is_test=m.file_path in data.test_paths,
+        history=history_of(data, m.file_path),
+    )
 
 
 def _high_leverage_rows(data: HealthData, gap: dict[str, Any]) -> list[dict[str, Any]]:

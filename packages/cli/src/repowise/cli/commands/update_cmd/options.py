@@ -69,3 +69,45 @@ class UpdateRun:
     stale_db_paths: list[str] = field(default_factory=list)
     stale_deterministic_ids: set[str] = field(default_factory=set)
     file_diffs: list = field(default_factory=list)
+
+    # Index: the rebuilt graph, the page plan and the partial analyses.
+    # Each best-effort step that fails appends here; shown in the completion panel.
+    degraded: list[str] = field(default_factory=list)
+    exclude_patterns: list[str] = field(default_factory=list)
+    git_decay_map: dict[str, dict] = field(default_factory=dict)
+    full_git_summaries: list[Any] = field(default_factory=list)
+    working_tree_only: bool = False
+    head_ts: float | None = None
+    parsed_files: Any = None
+    source_map: Any = None
+    graph_builder: Any = None
+    repo_structure: Any = None
+    file_count: int = 0
+    git_meta_map: Any = None
+    cascade_budget: int | None = None
+    affected: Any = None
+    partial_health_report: Any = None
+    dead_code_report: Any = None
+    doc_drift_report: Any = None
+    persisted_git_meta: Any = None
+    knowledge_graph_result: Any = None
+
+
+@dataclass
+class DocsPass:
+    """State of the model-backed half of a docs update."""
+
+    config: Any
+    provider: Any
+    cost_tracker: Any
+    new_decision_markers: list = field(default_factory=list)
+    session_decisions: list = field(default_factory=list)
+    # Decision records touched by evolution, surfaced in the completion panel.
+    decisions_evolved: int = 0
+    decision_vector_store: Any = None
+    prior_pages: dict = field(default_factory=dict)
+    generated_pages: list = field(default_factory=list)
+    full_stats: dict = field(default_factory=dict)
+    db_total_pages: int = 0
+    # Range-scoped persist steps that failed; they become the repair marker.
+    failed_steps: list[str] = field(default_factory=list)

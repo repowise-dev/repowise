@@ -9,6 +9,7 @@ table, writes it back to the index.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output_until_close,
 )
-from repowise.core.analysis.finding_registry import preview_lines
+from repowise.core.analysis.finding_registry import excluded_types, is_served, preview_lines
 from repowise.core.analysis.health.counts import (
     COUNTS,
     DEFAULT_COUNTS,
@@ -39,6 +40,7 @@ from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
 from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
@@ -47,6 +49,7 @@ from .persist import (
     _load_persisted_coverage_map,
     _load_queue_counts,
     _load_recommendations,
+    _load_short_history,
     _load_stored_report,
     _persist_health,
 )
@@ -176,6 +179,19 @@ FIX_FIRST_ROWS = 3
     help="Print a ready-to-paste health badge (Markdown) for this repo's README.",
 )
 @click.option(
+    "--score",
+    "score_paths",
+    multiple=True,
+    type=click.Path(),
+    help="Score these files as they are on disk now (repeatable), with history "
+    "and coverage from the index. No update needed.",
+)
+@click.option(
+    "--against",
+    default=None,
+    help="With --score: also score the files at this revision and show the change.",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -197,6 +213,8 @@ def health_command(
     counts: str,
     trend_view: bool,
     badge_view: bool,
+    score_paths: tuple[str, ...],
+    against: str | None,
     verbose: bool,
 ) -> None:
     """Code-health scores from markers (CCN, nesting, brain-method).
@@ -205,97 +223,212 @@ def health_command(
     ``--recompute`` re-runs it in-process over the working tree.
     """
     configure_cli_logging(verbose=verbose)
+    opts = _Options(
+        fmt=fmt,
+        file_filter=file_filter,
+        module_filter=module_filter,
+        refactoring_targets=refactoring_targets,
+        plan_id=plan_id,
+        recompute=recompute,
+        generate_code=generate_code,
+        scope=scope,
+        counts=counts,
+        trend_view=trend_view,
+    )
 
-    # Silence structlog/stdlib info+debug lines when the user asked for a
-    # machine-readable format so stdout is pure JSON/Markdown and safe to
-    # pipe into jq or other tools (e.g. `repowise health --format json | jq .kpis`).
+    # A machine-readable format keeps stdout pure for `--format json | jq`:
+    # logs are silenced and status lines go to stderr.
     if fmt != "table":
         silence_logs_for_machine_output_until_close()
-
-    # Status output goes to stderr when the user asked for a machine-readable
-    # format — otherwise rich's banner pollutes stdout and breaks
-    # `repowise health --format json | jq …` (and the CI smoke test).
     status = err_console if fmt != "table" else console
 
+    repo_path = _resolve_repo_path(path, no_workspace, repo_alias, status)
+    status.print(f"[bold]repowise health[/bold] — {repo_path}")
+    if score_paths:
+        _render_score_view(repo_path, score_paths, against, opts, badge_view)
+        return
+    if against is not None:
+        raise click.UsageError("--against needs --score <paths>.")
+    if _render_stored_view(repo_path, status, opts):
+        return
+
+    report, hotspots, languages = _load_report(repo_path, opts)
+    metrics, scored, unanalysed = _scope_report(report, hotspots, opts)
+    metrics_sorted = sorted(metrics, key=lambda m: m.score)
+    # JSON explains the score with every finding it counted; the rest list
+    # what MCP and the web UI list.
+    excluded = excluded_types()
+    findings = [f for f in scored if not _withheld(f, excluded)]
+
+    if generate_code is not None:
+        suggestions = _scoped_suggestions(report, opts)
+        # Attaches the same batched validation block the read surfaces emit;
+        # code generation remains explicitly requested and never auto-applies.
+        _load_recommendations(repo_path, suggestions, metrics_sorted, findings)
+        _generate_refactoring_code(repo_path, suggestions, generate_code, fmt=fmt)
+    elif refactoring_targets:
+        suggestions = _scoped_suggestions(report, opts)
+        recommendations = _load_recommendations(repo_path, suggestions, metrics_sorted, findings)
+        _render_refactoring_targets(metrics_sorted, findings, recommendations, fmt=fmt)
+    elif badge_view:
+        _render_badge(report.kpis.get("average_health"), report.kpis.get("analysed_share"))
+    elif fmt == "json":
+        _render_json(repo_path, report, metrics_sorted, scored, opts)
+    elif fmt == "md":
+        _render_md(report, findings)
+    else:
+        _render_table(
+            repo_path, report, (metrics, metrics_sorted), findings, unanalysed, languages, opts
+        )
+
+
+def _withheld(finding: Any, excluded: frozenset[str]) -> bool:
+    """A finding the registry or a language gate keeps off default surfaces."""
+    return not is_served("health", finding.biomarker_type, finding.file_path, excluded)
+
+
+def _render_score_view(
+    repo_path: Path, paths: tuple[str, ...], against: str | None, opts: _Options, badge: bool
+) -> None:
+    """``--score``: the files as they are on disk, beside *against* when given."""
+    from .live_score import render_live, repo_paths, score_live
+
+    clashing = opts.view_flags() + (["--badge"] if badge else [])
+    if clashing:
+        raise click.UsageError(f"--score does not combine with {', '.join(clashing)}.")
+    render_live(score_live(repo_path, repo_paths(repo_path, paths), against), opts.fmt)
+
+
+@dataclass(frozen=True)
+class _Options:
+    """The options that pick a view and narrow the report."""
+
+    fmt: str
+    file_filter: str | None
+    module_filter: str | None
+    refactoring_targets: bool
+    plan_id: str | None
+    recompute: bool
+    generate_code: str | None
+    scope: str
+    counts: str
+    trend_view: bool
+
+    @property
+    def controls_set(self) -> bool:
+        """``--scope`` or ``--counts`` asks for other than the stored reading."""
+        return (
+            parse_scope(self.scope) != DEFAULT_SCOPE or parse_counts(self.counts) != DEFAULT_COUNTS
+        )
+
+    def view_flags(self) -> list[str]:
+        """The view and narrowing flags that were passed, by their CLI names."""
+        flags = {
+            "--file": self.file_filter,
+            "--module": self.module_filter,
+            "--refactoring-targets": self.refactoring_targets,
+            "--plan": self.plan_id,
+            "--recompute": self.recompute,
+            "--generate-code": self.generate_code,
+            "--trend": self.trend_view,
+            "--scope/--counts": self.controls_set,
+        }
+        return [name for name, value in flags.items() if value]
+
+    def keeps(self, file_path: str) -> bool:
+        """Whether ``--file`` and ``--module`` keep a row on *file_path*."""
+        if self.file_filter and file_path != self.file_filter:
+            return False
+        return not (self.module_filter and not file_path.startswith(self.module_filter))
+
+
+def _resolve_repo_path(
+    path: str | None, no_workspace: bool, repo_alias: str | None, status: Any
+) -> Path:
+    """The repository to report on: the named or primary workspace repo, else *path*'s."""
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
     target.notice(status, command="health")
-
-    if target.is_workspace:
-        if target.repo_filter is not None:
-            picked = target.resolve_repo_alias(target.repo_filter)
-            if picked is None:
-                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-            repo_path = picked
-        else:
-            primary = target.primary_path()
-            if primary is None:
-                raise click.ClickException("Workspace has no primary repo configured.")
-            repo_path = primary
-    else:
+    if not target.is_workspace:
         assert target.repo_path is not None
-        repo_path = target.repo_path
+        return target.repo_path
+    if target.repo_filter is not None:
+        picked = target.resolve_repo_alias(target.repo_filter)
+        if picked is None:
+            raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
+        return picked
+    primary = target.primary_path()
+    if primary is None:
+        raise click.ClickException("Workspace has no primary repo configured.")
+    return primary
 
-    status.print(f"[bold]repowise health[/bold] — {repo_path}")
 
-    if trend_view:
-        # The trend reads stored snapshots, which carry the calibrated score
-        # only. Saying so beats printing a projected headline's flag over an
-        # unprojected line.
-        if parse_scope(scope) != DEFAULT_SCOPE or parse_counts(counts) != DEFAULT_COUNTS:
+def _render_stored_view(repo_path: Path, status: Any, opts: _Options) -> bool:
+    """The trend, one plan or the stored refactoring queue; ``False`` when none was asked for."""
+    if opts.trend_view:
+        # Stored snapshots carry the calibrated score only: say so rather than
+        # print a projected headline's flag over an unprojected line.
+        if opts.controls_set:
             status.print(
                 "[dim]The trend reads stored snapshots, so --scope and --counts "
                 "do not apply to it.[/dim]"
             )
-        _render_trend(repo_path, fmt=fmt)
-        return
-
-    if plan_id is not None:
-        if not _render_plan_recipe(repo_path, plan_id, fmt=fmt):
+        _render_trend(repo_path, fmt=opts.fmt)
+        return True
+    if opts.plan_id is not None:
+        if not _render_plan_recipe(repo_path, opts.plan_id, fmt=opts.fmt):
             raise click.ClickException(
-                f"No stored refactoring plan {plan_id}. `repowise health --refactoring-targets` "
-                "lists the current plans."
+                f"No stored refactoring plan {opts.plan_id}. "
+                "`repowise health --refactoring-targets` lists the current plans."
             )
-        return
-
-    if refactoring_targets and not recompute and generate_code is None:
+        return True
+    if opts.refactoring_targets and not opts.recompute and opts.generate_code is None:
         # The stored queue is the calibrated reading, as on MCP and the web UI.
-        if parse_scope(scope) != DEFAULT_SCOPE or parse_counts(counts) != DEFAULT_COUNTS:
+        if opts.controls_set:
             status.print(
                 "[dim]The stored queue does not take --scope or --counts; pass "
                 "--recompute to apply them.[/dim]"
             )
         if not _render_stored_refactoring_targets(
-            repo_path, fmt=fmt, file_filter=file_filter, module_filter=module_filter
+            repo_path, fmt=opts.fmt, file_filter=opts.file_filter, module_filter=opts.module_filter
         ):
             raise click.ClickException(
                 "No stored refactoring analysis for this repository. Run `repowise init` "
                 "or `repowise update`, or pass --recompute to analyze in-process."
             )
-        return
+        return True
+    return False
 
-    if recompute or generate_code is not None:
+
+def _load_report(repo_path: Path, opts: _Options) -> tuple[Any, set[str], dict[str, str]]:
+    """``(report, hotspot paths, language by path)``, recomputed or as stored."""
+    if opts.recompute or opts.generate_code is not None:
         # Written back only for a whole-repo table: json/md are read by scripts
         # and CI, and a file or module run is an inspection, not repo state.
-        report, hotspots, languages = _recompute_report(
-            repo_path, persist=fmt == "table" and not file_filter and not module_filter
+        return _recompute_report(
+            repo_path,
+            persist=opts.fmt == "table" and not opts.file_filter and not opts.module_filter,
         )
-    else:
-        stored = _load_stored_report(repo_path)
-        if stored is None:
-            raise click.ClickException(
-                "No stored health analysis for this repository. Run `repowise init` "
-                "or `repowise update`, or pass --recompute to analyze in-process."
-            )
-        report, hotspots, languages = stored
+    stored = _load_stored_report(repo_path)
+    if stored is None:
+        raise click.ClickException(
+            "No stored health analysis for this repository. Run `repowise init` "
+            "or `repowise update`, or pass --recompute to analyze in-process."
+        )
+    return stored
 
-    metrics = report.metrics
-    if file_filter:
-        metrics = [m for m in metrics if m.file_path == file_filter]
-    if module_filter:
-        metrics = [m for m in metrics if m.file_path.startswith(module_filter)]
-    narrowed = parse_scope(scope) == "production"
+
+def _scope_report(
+    report: Any, hotspots: set[str], opts: _Options
+) -> tuple[list[Any], list[Any], int]:
+    """``(metrics, findings, unanalysed)`` narrowed by the filters, ``--scope`` and ``--counts``.
+
+    When ``--scope`` or ``--counts`` changes the reading, ``report.kpis`` is
+    recomputed over the narrowed metrics.
+    """
+    metrics = [m for m in report.metrics if opts.keeps(m.file_path)]
+    narrowed = parse_scope(opts.scope) == "production"
     if narrowed:
         metrics = [m for m in metrics if not m.is_test]
     # Taken before the projection, so a row the projection cannot read still
@@ -304,132 +437,140 @@ def health_command(
     # Files in a language health has no dialect for carry no score: they are
     # counted, never ranked or averaged.
     metrics, unanalysed = split_unscored(metrics)
-    code_shape = parse_counts(counts) == "code_shape"
+    code_shape = parse_counts(opts.counts) == "code_shape"
     if code_shape:
         # No `unscored` counterpart to the API's: this command scores live, so
         # every row carries the split the projection reads.
-        metrics, _ = project_counts(counts, metrics)
+        metrics, _ = project_counts(opts.counts, metrics)
     if narrowed or code_shape:
-        # Every figure the controls select for. Defect accuracy below is not
-        # one of them: it scores the ranking against `prior_defect`, and
-        # narrowing leaves it no labels to be accurate about.
+        # Defect accuracy is not recomputed: it scores the ranking against
+        # `prior_defect`, and narrowing leaves it no labels.
         report.kpis = compute_kpis(
             metrics,
             hotspots,
             unanalysed=unanalysed,
             deductions=deduction_by_path(report.findings),
         )
-    metrics_sorted = sorted(metrics, key=lambda m: m.score)
 
-    findings = report.findings
-    if file_filter:
-        findings = [f for f in findings if f.file_path == file_filter]
-    if module_filter:
-        findings = [f for f in findings if f.file_path.startswith(module_filter)]
-    if narrowed:
+    findings = _scope_findings(report.findings, opts, scoped_paths if narrowed else None)
+    return metrics, findings, unanalysed
+
+
+def _scope_findings(
+    findings: list[Any], opts: _Options, scoped_paths: set[str] | None
+) -> list[Any]:
+    """*findings* the filters keep, on *scoped_paths* when ``--scope`` narrowed the files."""
+    findings = [f for f in findings if opts.keeps(f.file_path)]
+    if scoped_paths is not None:
         findings = [f for f in findings if f.file_path in scoped_paths]
-    if code_shape:
+    if parse_counts(opts.counts) == "code_shape":
         # A history finding cannot explain a score the history half was taken
         # out of, so it is not part of this reading.
         findings = split_by_origin(findings)[0]
+    return findings
 
-    if generate_code is not None:
-        suggestions = getattr(report, "refactoring_suggestions", None) or []
-        if file_filter:
-            suggestions = [s for s in suggestions if s.file_path == file_filter]
-        if module_filter:
-            suggestions = [s for s in suggestions if s.file_path.startswith(module_filter)]
-        # Attaches the same batched validation block the read surfaces emit;
-        # code generation remains explicitly requested and never auto-applies.
-        _load_recommendations(repo_path, suggestions, metrics_sorted, findings)
-        _generate_refactoring_code(repo_path, suggestions, generate_code, fmt=fmt)
-        return
 
-    if refactoring_targets:
-        suggestions = getattr(report, "refactoring_suggestions", None) or []
-        if file_filter:
-            suggestions = [s for s in suggestions if s.file_path == file_filter]
-        if module_filter:
-            suggestions = [s for s in suggestions if s.file_path.startswith(module_filter)]
-        recommendations = _load_recommendations(repo_path, suggestions, metrics_sorted, findings)
-        _render_refactoring_targets(metrics_sorted, findings, recommendations, fmt=fmt)
-        return
+def _scoped_suggestions(report: Any, opts: _Options) -> list[Any]:
+    suggestions = getattr(report, "refactoring_suggestions", None) or []
+    return [s for s in suggestions if opts.keeps(s.file_path)]
 
-    if badge_view:
-        _render_badge(report.kpis.get("average_health"), report.kpis.get("analysed_share"))
-        return
 
-    if fmt == "json":
-        click.echo(
-            json.dumps(
-                {
-                    "kpis": report.kpis,
-                    "scope": parse_scope(scope),
-                    "counts": parse_counts(counts),
-                    # Findings, causes, plans and Fix first items, as every
-                    # surface counts them; ``shown`` is 0, nothing is listed.
-                    "queue_counts": _load_queue_counts(repo_path),
-                    "metrics": [
-                        {
-                            "file_path": m.file_path,
-                            "score": m.score,
-                            "max_ccn": m.max_ccn,
-                            "max_nesting": m.max_nesting,
-                            "nloc": m.nloc,
-                            "has_test_file": m.has_test_file,
-                            "line_coverage_pct": m.line_coverage_pct,
-                            "branch_coverage_pct": m.branch_coverage_pct,
-                            "duplication_pct": m.duplication_pct,
-                        }
-                        for m in metrics_sorted
-                    ],
-                    "findings": [
-                        {
-                            "biomarker_type": f.biomarker_type,
-                            "severity": str(f.severity),
-                            "file_path": f.file_path,
-                            "function_name": f.function_name,
-                            "health_impact": f.health_impact,
-                            "details": detail_map(f),
-                            "reason": f.reason,
-                        }
-                        for f in findings
-                    ],
-                },
-                indent=2,
-            )
+def _render_json(
+    repo_path: Path, report: Any, metrics_sorted: list[Any], findings: list[Any], opts: _Options
+) -> None:
+    excluded = excluded_types()
+    short_history = _load_short_history(repo_path)
+    click.echo(
+        json.dumps(
+            {
+                "kpis": report.kpis,
+                "scope": parse_scope(opts.scope),
+                "counts": parse_counts(opts.counts),
+                # Findings, causes, plans and Fix first items, as every
+                # surface counts them; ``shown`` is 0, nothing is listed.
+                "queue_counts": _load_queue_counts(repo_path),
+                "metrics": [_json_metric(m, short_history) for m in metrics_sorted],
+                "findings": [
+                    {
+                        "biomarker_type": f.biomarker_type,
+                        "severity": str(f.severity),
+                        "file_path": f.file_path,
+                        "function_name": f.function_name,
+                        "health_impact": f.health_impact,
+                        "details": detail_map(f),
+                        "reason": f.reason,
+                        **({"withheld": True} if _withheld(f, excluded) else {}),
+                    }
+                    for f in findings
+                ],
+            },
+            indent=2,
         )
-        return
+    )
 
-    if fmt == "md":
-        click.echo("# Code Health Report\n")
-        for k, v in report.kpis.items():
-            click.echo(f"- **{k}**: {v}")
-        click.echo("\n## Findings\n")
-        for f in findings:
-            click.echo(
-                f"- [{f.severity}] `{f.file_path}` {f.function_name or ''} "
-                f"- {f.reason} (impact -{f.health_impact:.2f})"
-            )
-        return
 
-    # Table format
+def _json_metric(m: Any, short_history: set[str]) -> dict[str, Any]:
+    return {
+        "file_path": m.file_path,
+        "score": m.score,
+        "max_ccn": m.max_ccn,
+        "max_nesting": m.max_nesting,
+        "nloc": m.nloc,
+        "has_test_file": m.has_test_file,
+        "line_coverage_pct": m.line_coverage_pct,
+        "branch_coverage_pct": m.branch_coverage_pct,
+        "duplication_pct": m.duplication_pct,
+        **({"history": "short"} if m.file_path in short_history else {}),
+    }
+
+
+def _render_md(report: Any, findings: list[Any]) -> None:
+    click.echo("# Code Health Report\n")
+    for k, v in report.kpis.items():
+        click.echo(f"- **{k}**: {v}")
+    click.echo("\n## Findings\n")
+    for f in findings:
+        click.echo(
+            f"- [{f.severity}] `{f.file_path}` {f.function_name or ''} "
+            f"- {f.reason} (impact -{f.health_impact:.2f})"
+        )
+
+
+def _render_table(
+    repo_path: Path,
+    report: Any,
+    metrics: tuple[list[Any], list[Any]],
+    findings: list[Any],
+    unanalysed: int,
+    languages: dict[str, str],
+    opts: _Options,
+) -> None:
+    """The terminal report. *metrics* is ``(as scoped, sorted by score)``."""
+    from repowise.core.analysis.health.grading import distribution as health_distribution
+
+    scoped, metrics_sorted = metrics
+    # Lead with what to fix; a narrowed run is an inspection, not the worklist.
+    if not opts.file_filter and not opts.module_filter:
+        _render_fix_first(_load_fix_first(repo_path, limit=FIX_FIRST_ROWS))
+    _render_headline(report.kpis, parse_counts(opts.counts) == "code_shape", unanalysed)
+    _render_split_line(report.kpis)
+    _render_distribution_line(health_distribution(scoped))
+    _render_defect_accuracy_line(report)
+    # Lead with the finding count, density and coverage, not the bounded /10
+    # average. Metrics carry no language, so it comes with the report.
+    _render_performance_section(report, findings, languages)
+    _render_files_table(metrics_sorted, _load_short_history(repo_path))
+    _render_findings_table(findings)
+
+
+def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) -> None:
     from repowise.core.analysis.health.grading import (
         BAND_LABEL,
         BAND_TERMINAL_COLOR,
         analysed_note,
-        band_for,
         headline_band,
     )
-    from repowise.core.analysis.health.grading import (
-        distribution as health_distribution,
-    )
 
-    # Lead with what to fix; a narrowed run is an inspection, not the worklist.
-    if not file_filter and not module_filter:
-        _render_fix_first(_load_fix_first(repo_path, limit=FIX_FIRST_ROWS))
-
-    kpis = report.kpis
     avg = kpis.get("average_health")
     band_str = ""
     band = headline_band(avg, kpis.get("analysed_share"))
@@ -453,15 +594,10 @@ def health_command(
     note = analysed_note(kpis.get("file_count") or 0, kpis.get("unanalysed_file_count") or 0)
     if note:
         console.print(f"[dim]Code health {note}.[/dim]")
-    _render_split_line(kpis)
-    _render_distribution_line(health_distribution(metrics))
 
-    _render_defect_accuracy_line(report)
 
-    # Performance pillar section: lead with the finding COUNT + density +
-    # coverage (the honest signal), not the bounded /10 average. Metrics carry
-    # no language, so it comes with the report from either source.
-    _render_performance_section(report, languages)
+def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> None:
+    from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
 
     table = Table(title=f"Lowest-scoring files ({min(len(metrics_sorted), 20)})")
     table.add_column("File", style="cyan")
@@ -474,34 +610,43 @@ def health_command(
         score_color = BAND_TERMINAL_COLOR[band_for(m.score)]
         table.add_row(
             m.file_path,
-            f"[{score_color}]{m.score:.1f}[/{score_color}]",
+            f"[{score_color}]{m.score:.1f}[/{score_color}]"
+            + ("*" if m.file_path in short_history else ""),
             str(m.max_ccn),
             str(m.max_nesting),
             str(m.nloc),
             "✓" if m.has_test_file else "—",
         )
     console.print(table)
+    if any(m.file_path in short_history for m in metrics_sorted[:20]):
+        console.print(
+            f"[dim]* Short history (under {HISTORY_MIN_COMMITS} commits): most history "
+            "markers need more, so the score is mostly code shape.[/dim]"
+        )
 
-    if findings:
-        # The total get_overview prints; advisory rows are listed, not counted.
-        console.print(f"\n[bold]{open_finding_count(findings)}[/bold] open findings:")
-        f_table = Table()
-        f_table.add_column("Severity", style="magenta")
-        f_table.add_column("Marker", style="cyan")
-        f_table.add_column("File")
-        f_table.add_column("Function")
-        f_table.add_column("Impact", justify="right")
-        for f in findings[:30]:
-            f_table.add_row(
-                str(f.severity),
-                f.biomarker_type,
-                f.file_path,
-                f.function_name or "-",
-                f"-{f.health_impact:.2f}",
-            )
-        console.print(f_table)
-        for line in preview_lines("health", findings[:30], kind="biomarker_type"):
-            console.print(f"[dim]{line}[/dim]")
+
+def _render_findings_table(findings: list[Any]) -> None:
+    if not findings:
+        return
+    # The total get_overview prints; advisory rows are listed, not counted.
+    console.print(f"\n[bold]{open_finding_count(findings)}[/bold] open findings:")
+    f_table = Table()
+    f_table.add_column("Severity", style="magenta")
+    f_table.add_column("Marker", style="cyan")
+    f_table.add_column("File")
+    f_table.add_column("Function")
+    f_table.add_column("Impact", justify="right")
+    for f in findings[:30]:
+        f_table.add_row(
+            str(f.severity),
+            f.biomarker_type,
+            f.file_path,
+            f.function_name or "-",
+            f"-{f.health_impact:.2f}",
+        )
+    console.print(f_table)
+    for line in preview_lines("health", findings[:30], kind="biomarker_type"):
+        console.print(f"[dim]{line}[/dim]")
 
 
 def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str], dict[str, str]]:
@@ -512,8 +657,6 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
     """
     from repowise.core.analysis.communities import file_community_labels
     from repowise.core.analysis.health import HealthAnalyzer
-    from repowise.core.analysis.health.config import HealthConfig
-
     graph_builder, parsed_files = _parse_tree(repo_path)
     git_meta_map: dict = {}
     try:
@@ -535,14 +678,11 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
         duplication_cache_dir=Path(repo_path) / ".repowise",
         repo_root=repo_path,
     )
-    # Any .repowise/health-rules.json the user keeps in the repo.
-    health_cfg = HealthConfig.load(repo_path)
-    analyzer_cfg = (
-        health_cfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-        if (health_cfg.disabled_biomarkers or health_cfg.rules)
-        else None
+    from .live_score import analyzer_config
+
+    report = analyzer.analyze(
+        analyzer_config(repo_path, [pf.file_info.path for pf in parsed_files])
     )
-    report = analyzer.analyze(analyzer_cfg)
     if persist:
         _persist_health(repo_path, report=report)
     hotspots = {p for p, m in git_meta_map.items() if m.get("is_hotspot")}
