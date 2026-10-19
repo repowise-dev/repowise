@@ -55,6 +55,11 @@ def test_last_seen_roundtrip(monkeypatch, tmp_path):
     assert wn.read_last_seen_version() is None
     wn.write_last_seen_version("0.21.0")
     assert wn.read_last_seen_version() == "0.21.0"
+    # An older install never lowers the marker; a newer one raises it.
+    wn.write_last_seen_version("0.20.0")
+    assert wn.read_last_seen_version() == "0.21.0"
+    wn.write_last_seen_version("0.22.0")
+    assert wn.read_last_seen_version() == "0.22.0"
 
 
 def test_render_whats_new_returns_false_when_nothing_new():
