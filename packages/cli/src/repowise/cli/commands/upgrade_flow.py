@@ -194,7 +194,9 @@ async def _scan_commit_health(sf: Any, repo_id: str, repo_path: Path) -> None:
         refresh_commit_health_after_update,
     )
 
-    await refresh_commit_health_after_update(sf, repo_id, str(repo_path), budget=budget_seconds())
+    budget = budget_seconds()
+    console.print(f"Scanning commit health (up to {budget:.0f} s)…")
+    await refresh_commit_health_after_update(sf, repo_id, str(repo_path), budget=budget)
 
 
 async def _persist_authoritative_pages(

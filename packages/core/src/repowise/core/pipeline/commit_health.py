@@ -40,10 +40,8 @@ DEFAULT_COMMIT_LIMIT = 150
 #: order of magnitude with diff size, so a count alone bounds nothing.
 DEFAULT_BUDGET_SECONDS = 300.0
 
-#: Wall clock one update may spend on new commits (~2-5 s each). An update runs
-#: on every commit through the post-commit hook, so a long gap drains a few
-#: commits per later update; a backlog of rows an older analyzer wrote gets
-#: :data:`DEFAULT_BUDGET_SECONDS` instead (see :func:`_rescan_backlog`).
+#: Wall clock one update may spend on new commits (~2-5 s each). A re-scan
+#: backlog gets :data:`DEFAULT_BUDGET_SECONDS` instead (see :func:`_rescan_backlog`).
 UPDATE_BUDGET_SECONDS = 10.0
 
 
