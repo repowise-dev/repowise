@@ -20,6 +20,7 @@ from repowise.core.analysis.dead_code.serving import (
     build_summary,
     build_tiers,
     compute_impact,
+    cross_repo_withdraws,
     dead_code_finding_id,
     excluded_kinds,
     last_meaningful_change,
@@ -284,3 +285,20 @@ def test_merged_per_repo_counts_equal_counting_everything_at_once() -> None:
     whole = summary_counts(_ROWS)
     assert merged == whole
     assert list(merged["by_kind"]) == list(whole["by_kind"])
+
+
+def test_summary_safe_counts_drop_what_the_cross_repo_cut_withdraws() -> None:
+    lookup = _Lookup()
+
+    def withdrawn(f) -> bool:
+        return cross_repo_withdraws(lookup, "api", f["file_path"], f["kind"])
+
+    plain = summary_counts(_ROWS)
+    cut = summary_counts(_ROWS, withdrawn)
+    adjusted = [serialize_finding(r) for r in _ROWS]
+    adjust_cross_repo(adjusted, lookup, "api")
+    assert cut["safe_to_delete_count"] == sum(f["safe_to_delete"] for f in adjusted)
+    assert cut["safe_to_delete_count"] <= plain["safe_to_delete_count"]
+    assert cut["total_findings"] == plain["total_findings"]
+    assert not cross_repo_withdraws(None, "api", "src/a/one.py", "unused_export")
+    assert not cross_repo_withdraws(lookup, None, "src/a/one.py", "unused_export")

@@ -49,7 +49,9 @@ def meets_structural_floor(fc) -> bool:
     return fc.ccn >= _CCN_FLOOR or fc.max_nesting >= _NESTING_FLOOR
 
 
-def refresh_replayed(replayed: BiomarkerResult, functions) -> bool:
+def refresh_replayed(
+    replayed: BiomarkerResult, functions, claimed: set[int] | None = None
+) -> bool:
     """Bring a replayed hotspot's complexity up to date; False if it no longer qualifies.
 
     A re-score with no blame index replays the stored row, whose complexity
@@ -57,14 +59,23 @@ def refresh_replayed(replayed: BiomarkerResult, functions) -> bool:
     complexity can, so a function that no longer clears the floor is dropped.
     Two same-named functions in one file are told apart by the stored
     ``line_start``; the nearest start covers a function that has since moved.
+    *claimed* holds the start lines already matched in this file, so two rows
+    never land on one function after its twin is deleted.
     """
-    named = [fc for fc in functions if fc.name == replayed.function_name]
+    claimed = set() if claimed is None else claimed
+    named = [
+        fc
+        for fc in functions
+        if fc.name == replayed.function_name and fc.start_line not in claimed
+    ]
     if not named:
         return False
     anchor = replayed.line_start or 0
     fc = min(named, key=lambda f: abs(f.start_line - anchor))
+    claimed.add(fc.start_line)
     if not meets_structural_floor(fc):
         return False
+    replayed.line_start, replayed.line_end = fc.start_line, fc.end_line
     replayed.details = {**replayed.details, "ccn": fc.ccn, "max_nesting": fc.max_nesting}
     mods, p80 = replayed.details.get("modification_count"), replayed.details.get("repo_p80")
     if isinstance(mods, int) and isinstance(p80, int):

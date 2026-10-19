@@ -172,3 +172,22 @@ def test_refresh_replayed_picks_same_named_function_by_line_start():
     functions = [_fc("run", 5, 8, ccn=1), _fc("run", 44, 62, ccn=13, nesting=4)]
     assert refresh_replayed(replayed, functions)
     assert replayed.details["ccn"] == 13
+    assert (replayed.line_start, replayed.line_end) == (44, 62)
+
+
+def test_refresh_replayed_never_lands_two_rows_on_one_function():
+    def replayed(line: int) -> BiomarkerResult:
+        return BiomarkerResult(
+            biomarker_type="function_hotspot",
+            severity=Severity.MEDIUM,
+            function_name="run",
+            line_start=line,
+            line_end=line + 10,
+            details={"ccn": 12, "max_nesting": 3, "modification_count": 6, "repo_p80": 5},
+        )
+
+    # One of the two ``run`` twins was deleted; only the surviving one matches.
+    functions = [_fc("run", 44, 62, ccn=13, nesting=4)]
+    claimed: set[int] = set()
+    assert refresh_replayed(replayed(42), functions, claimed)
+    assert not refresh_replayed(replayed(5), functions, claimed)

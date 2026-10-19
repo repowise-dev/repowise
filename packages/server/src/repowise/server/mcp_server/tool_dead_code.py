@@ -19,6 +19,7 @@ from repowise.core.analysis.dead_code.serving import (
     build_summary,
     build_tiers,
     compute_impact,
+    cross_repo_withdraws,
     dead_code_finding_id,
     excluded_kinds,
     merge_summary_counts,
@@ -28,6 +29,7 @@ from repowise.core.analysis.dead_code.serving import (
     summary_counts,
 )
 from repowise.core.analysis.finding_registry import excluded_types, served_previews
+from repowise.core.analysis.health.rows import field
 from repowise.core.persistence.crud import get_dead_code_findings
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata
@@ -68,6 +70,14 @@ def _adjust_cross_repo(
     return findings
 
 
+def _withdrawn_by(repo_alias: str | None) -> Callable[[Any], bool] | None:
+    """The cross-repo cut as a predicate over stored rows, for the summary."""
+    lookup = _cross_repo_lookup()
+    if lookup is None or not repo_alias:
+        return None
+    return lambda f: cross_repo_withdraws(lookup, repo_alias, field(f, "file_path"), field(f, "kind"))
+
+
 async def _get_dead_code_all_repos(
     filters: FindingFilters,
     limit: int,
@@ -91,7 +101,7 @@ async def _get_dead_code_all_repos(
             serialize_finding(f, git_meta_map, repository=ctx.alias)
             for f in apply_filters(repo_findings, filters)
         ]
-        return serialized, summary_counts(repo_findings), withheld, gated
+        return serialized, summary_counts(repo_findings, _withdrawn_by(ctx.alias)), withheld, gated
 
     fed = Federation()
     answered = await fed.run(_one_repo)
@@ -349,13 +359,14 @@ async def get_dead_code(
 
     serialized = _adjust_cross_repo(serialized, filters, ctx.alias)
     tiers = build_tiers(serialized, limit, tier, on_overflow=_keep_overflow)
-    summary = build_summary(summary_counts(all_findings), len(serialized), filters, withheld, gated)
+    counts = summary_counts(all_findings, _withdrawn_by(ctx.alias))
+    summary = build_summary(counts, len(serialized), filters, withheld, gated)
 
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}
     if group_by == "directory":
-        result["by_directory"] = rollup_by_directory(filtered)
+        result["by_directory"] = rollup_by_directory(serialized)
     elif group_by == "owner":
-        result["by_owner"] = rollup_by_owner(filtered)
+        result["by_owner"] = rollup_by_owner(serialized)
     result["impact"] = compute_impact(tiers)
 
     _maybe_limit_note(result)

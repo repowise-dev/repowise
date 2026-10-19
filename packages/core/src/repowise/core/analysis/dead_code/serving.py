@@ -178,14 +178,20 @@ def apply_filters(findings: list, filters: FindingFilters) -> list:
     return [f for f in findings if all(check(f) for check in checks)]
 
 
-def summary_counts(shown: list) -> dict[str, Any]:
+def summary_counts(
+    shown: list, withdrawn: Callable[[Any], bool] | None = None
+) -> dict[str, Any]:
     """Counts over every shown open finding; merge per-repo parts with
-    :func:`merge_summary_counts` so no caller holds every repo's rows at once."""
+    :func:`merge_summary_counts` so no caller holds every repo's rows at once.
+
+    *withdrawn* names findings the cross-repo cut un-safes (see
+    :func:`cross_repo_withdraws`), so the safe counts agree with the tiers.
+    """
     by_kind: dict[str, int] = {}
     for f in shown:
         kind = field(f, "kind")
         by_kind[kind] = by_kind.get(kind, 0) + 1
-    safe = [f for f in shown if is_safe(f)]
+    safe = [f for f in shown if is_safe(f) and not (withdrawn and withdrawn(f))]
     return {
         "total_findings": len(shown),
         "deletable_lines": sum(field(f, "lines") or 0 for f in safe),
@@ -449,6 +455,17 @@ class CrossRepoLookup(Protocol):
     def has_cross_repo_consumers(self, repo_alias: str, file_path: str) -> list[dict]: ...
 
     def get_repos_depending_on(self, repo_alias: str) -> list[str]: ...
+
+
+def cross_repo_withdraws(
+    lookup: CrossRepoLookup | None, alias: str | None, file_path: str, kind: Any
+) -> bool:
+    """Whether :func:`adjust_cross_repo` would withdraw ``safe_to_delete``."""
+    if lookup is None or not alias:
+        return False
+    if lookup.has_cross_repo_consumers(alias, file_path):
+        return True
+    return kind == "unused_export" and bool(lookup.get_repos_depending_on(alias))
 
 
 def adjust_cross_repo(

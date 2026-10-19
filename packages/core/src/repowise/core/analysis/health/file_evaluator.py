@@ -326,12 +326,13 @@ class FileEvaluator:
     def _replayed(self, ctx: FileContext, disabled: list[str]) -> list[BiomarkerResult]:
         """Stored blame-marker findings this pass cannot recompute without a blame index."""
         out = []
+        claimed: set[int] = set()  # function start lines a replayed hotspot took
         for stored in self.analyzer.stored_blame_findings.get(ctx.file_path, ()):
             replayed = as_biomarker_result(stored)
             if replayed.biomarker_type not in BLAME_MARKERS or replayed.biomarker_type in disabled:
                 continue
             if replayed.biomarker_type == "function_hotspot" and not refresh_replayed(
-                replayed, ctx.all_functions
+                replayed, ctx.all_functions, claimed
             ):
                 continue
             out.append(replayed)
