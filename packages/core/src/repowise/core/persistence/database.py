@@ -21,6 +21,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import String, event, inspect, literal
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -732,6 +733,9 @@ def _planner_stats_stale(conn: Any) -> bool:
     for name in names:
         if name.startswith("sqlite_"):
             continue
+        # One statement per table on purpose: SQLite answers a bare COUNT(*)
+        # from the b-tree, but scans the rows when the count sits inside a
+        # subquery, which made one UNION ALL about 25x slower.
         rows = conn.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar() or 0
         before = recorded.get(name)
         if before is None:
@@ -761,7 +765,7 @@ async def refresh_planner_stats(engine: AsyncEngine) -> None:
         async with engine.begin() as conn:
             if await conn.run_sync(_planner_stats_stale):
                 await conn.execute(text("ANALYZE"))
-    except Exception as exc:
+    except DBAPIError as exc:  # a locked or read-only store
         log.warning("sqlite.analyze_failed", error=str(exc))
 
 
