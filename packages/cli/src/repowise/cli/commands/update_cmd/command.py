@@ -1461,8 +1461,13 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     ):
         return False
     changed = [path for fd in run.file_diffs for path in (fd.path, fd.old_path) if path]
+    if not all(map(_is_prose, changed)):
+        return False
+    # Index-only renders template wikis only.
+    if run.index_only and resolve_docs_mode(run.state) != "deterministic":
+        return True
     rendered = run.affected.regenerate if run.affected is not None else []
-    return all(map(_is_prose, [*changed, *rendered])) and not run.stale_deterministic_ids
+    return all(map(_is_prose, rendered)) and not run.stale_deterministic_ids
 
 
 def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:

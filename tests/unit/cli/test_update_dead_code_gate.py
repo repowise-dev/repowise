@@ -19,6 +19,8 @@ def _run(tmp_path, *paths: str, **overrides) -> SimpleNamespace:
         "file_diffs": [SimpleNamespace(path=p, old_path=None) for p in paths],
         "affected": SimpleNamespace(regenerate=[]),
         "stale_deterministic_ids": set(),
+        "index_only": False,
+        "state": {"docs_mode": "deterministic"},
     }
     return SimpleNamespace(**{**fields, **overrides})
 
@@ -59,4 +61,17 @@ def test_prose_that_names_code_reruns(tmp_path, path) -> None:
 def test_rename_from_code_reruns(tmp_path) -> None:
     run = _run(tmp_path)
     run.file_diffs = [SimpleNamespace(path="notes.md", old_path="src/notes.py")]
+    assert not command._dead_code_unchanged(run)
+
+
+def test_index_only_model_wiki_renders_nothing(tmp_path) -> None:
+    run = _run(
+        tmp_path,
+        "README.md",
+        index_only=True,
+        state={"docs_mode": "llm"},
+        affected=SimpleNamespace(regenerate=["src/a.py"]),
+    )
+    assert command._dead_code_unchanged(run)
+    run.file_diffs = [SimpleNamespace(path="src/a.py", old_path=None)]
     assert not command._dead_code_unchanged(run)
