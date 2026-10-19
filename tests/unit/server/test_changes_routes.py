@@ -129,7 +129,13 @@ def _fake_build(monkeypatch, seen: list[str], gate=None):
             generated_at="2026-10-14T00:00:00+00:00",
             items=[
                 EvidenceItem(
-                    "health_delta", "Health delta", "ok", "measured", {"introduced": 0}, [], "change health"
+                    "health_delta",
+                    "Health delta",
+                    "ok",
+                    "measured",
+                    {"introduced": 0, "complete": True},
+                    [],
+                    "change health",
                 )
             ],
         )
@@ -163,12 +169,12 @@ async def test_detail_carries_evidence_only_when_asked_and_keeps_it(
         "label": "Health delta",
         "status": "ok",
         "basis": "measured",
-        "value": {"introduced": 0},
+        "value": {"introduced": 0, "complete": True},
         "details": [],
         "source": "change health",
         # Worded by the client from a key and its numbers.
         "line": {
-            "key": "health_delta_partial",
+            "key": "health_delta",
             "params": {"introduced": 0, "worsened": 0, "resolved": 0},
         },
     }
