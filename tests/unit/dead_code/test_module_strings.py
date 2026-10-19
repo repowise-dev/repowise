@@ -196,7 +196,12 @@ def __getattr__(name):
 """
 
 
-@pytest.mark.parametrize("marker", [b"def __getattr__(name): ...\n", b"import_module(name)\n"])
+@pytest.mark.parametrize("marker", [
+    b"def __getattr__(name): ...\n",
+    b"async def __getattr__(name): ...\n",
+    b"if enabled:\n    def __getattr__(name): ...\n",
+    b"import_module(name)\n",
+])
 @pytest.mark.parametrize("pair", [
     b'("_graph_utils", "build_ctx")',
     b'(\n "_graph_utils", # module\n "build_ctx",\n)',
@@ -235,11 +240,17 @@ def test_nonloader_or_test_pairs_do_not_name_an_export(path):
     }
 
 
-def test_renamed_lazy_reexport_with_the_real_graph_builder(tmp_path):
+@pytest.mark.parametrize("table", [
+    b'{"_build_ctx": ("_graph_utils", "build_ctx")}',
+    b'dict([("_build_ctx", ("_graph_utils", "build_ctx"))])',
+])
+def test_renamed_lazy_reexport_with_the_real_graph_builder(tmp_path, table):
     from repowise.core.pipeline.incremental import build_repo_graph
 
     source = {
-        "pkg/__init__.py": _PAIR_LOADER,
+        "pkg/__init__.py": _PAIR_LOADER.replace(
+            b'{"_build_ctx": ("_graph_utils", "build_ctx")}', table
+        ),
         _PAIR_MODULE: _PAIR_SOURCE,
         "app/main.py": b"from pkg import _build_ctx\n\ndef run():\n    return _build_ctx(1)\n\n"
                        b"if __name__ == '__main__':\n    run()\n",
@@ -273,6 +284,9 @@ def test_pair_cannot_reach_a_bare_module_outside_the_loader_directory():
     b'LABEL = "__getattr__"\n',
     b'def import_module(name): ...\n',
     b'class import_module(object): ...\n',
+    b'class Proxy:\n    def __getattr__(self, name): ...\n',
+    b'def factory():\n    def __getattr__(name): ...\n',
+    b'class Proxy:\n    async def __getattr__(self, name): ...\n',
 ])
 def test_a_loader_marker_that_is_not_a_dynamic_load_does_not_enable_pairing(marker):
     finding = _finding(DeadCodeKind.UNUSED_EXPORT, _PAIR_MODULE, "build_ctx")

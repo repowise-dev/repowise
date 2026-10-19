@@ -52,6 +52,30 @@ _MODULE_STRING_RE = re.compile(
 )
 
 
+def _has_module_getattr(tokens: list[tokenize.TokenInfo]) -> bool:
+    """A module hook may be conditional, but never inside a class/function."""
+    scopes: list[bool] = []
+    start: list[str] = []
+    header_scope = False
+    for i, token in enumerate(tokens):
+        if token.type == tokenize.ENCODING:
+            continue
+        if token.type == tokenize.INDENT:
+            scopes.append(header_scope)
+        elif token.type == tokenize.DEDENT:
+            scopes.pop()
+        elif token.type == tokenize.NEWLINE:
+            header_scope = start[:1] in (["def"], ["class"]) or start == ["async", "def"]
+            start = []
+        else:
+            if len(start) < 2:
+                start.append(token.string)
+            if (token.type == tokenize.NAME and token.string == "__getattr__"
+                    and tokens[i - 1].string == "def" and not any(scopes)):
+                return True
+    return False
+
+
 def _loader_tokens(blob: bytes) -> list[tokenize.TokenInfo]:
     """Tokens of a Python loader, without comments or continuation newlines."""
     try:
@@ -59,11 +83,11 @@ def _loader_tokens(blob: bytes) -> list[tokenize.TokenInfo]:
                   if t.type not in (tokenize.NL, tokenize.COMMENT)]
     except (tokenize.TokenError, SyntaxError, ValueError):
         return []
+    if _has_module_getattr(tokens):
+        return tokens
     for i, token in enumerate(tokens[:-1]):
         if token.type != tokenize.NAME:
             continue
-        if token.string == "__getattr__" and tokens[i - 1].string == "def":
-            return tokens
         if (token.string == "import_module" and tokens[i + 1].string == "("
                 and tokens[i - 1].string not in ("def", "class")):
             return tokens
