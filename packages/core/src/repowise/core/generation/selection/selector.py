@@ -305,6 +305,29 @@ def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
     )
 
 
+def eligible_file_page_paths(
+    parsed_files: list[Any],
+    pagerank: dict[str, float],
+    *,
+    hotspots: set[str],
+    dedupe_near_clones: bool = True,
+) -> set[str]:
+    """The files selection would consider for a page: every gate but the cap."""
+    from ..page_generator.helpers import _select_clone_representatives
+
+    drop = (
+        _select_clone_representatives([p for p in parsed_files if _is_code_file(p)], pagerank)
+        if dedupe_near_clones
+        else set()
+    )
+    return {
+        p.file_info.path
+        for p in parsed_files
+        if p.file_info.path not in drop
+        and file_page_eligible(p, is_hotspot=p.file_info.path in hotspots)
+    }
+
+
 def _passes_importance_floor(parsed: Any) -> bool:
     """Whether *parsed* is worth a file page at all.
 

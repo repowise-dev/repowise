@@ -430,9 +430,16 @@ def file_page_scope(
     *, configured_cap: int | None, eligible: int, generated_pages: list[Any] | None
 ) -> dict[str, int | None]:
     """Build configured/effective/achieved file-page figures for one run."""
+    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
+    return file_page_counts(configured_cap=configured_cap, eligible=eligible, generated=generated)
+
+
+def file_page_counts(
+    *, configured_cap: int | None, eligible: int, generated: int
+) -> dict[str, int | None]:
+    """The file-page figures from counts, for a run that holds no page list."""
     from repowise.core.generation.selection import auto_file_page_cap
 
-    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
     effective = configured_cap
     if configured_cap is None:
         effective = auto_file_page_cap(eligible)

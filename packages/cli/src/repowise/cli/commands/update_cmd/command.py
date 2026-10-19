@@ -78,6 +78,7 @@ from .persistence import (
     parser_changed,
     rescan_security_if_changed,
     security_scanner_changed,
+    stamp_file_page_scope,
     stamp_head_commit,
 )
 from .reporting import (
@@ -1726,6 +1727,11 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         with timed(run.timings, "security_rescan"):
             rescan_security_if_changed(repo_path, run.state, run.exclude_patterns)
 
+    # Saved before the editor files quote it.
+    stamp_file_page_scope(
+        repo_path, run.state, run.parsed_files, run.graph_builder, run.persisted_git_meta
+    )
+    save_state(repo_path, run.state)
     _finish_outcome(repo_path, opts.agents_md, run.degraded, timings=run.timings)
     _save_docs_state(run, docs)
 
