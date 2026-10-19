@@ -285,3 +285,56 @@ def test_a_non_operational_pragma_failure_still_raises() -> None:
 
     with pytest.raises(sqlite3.ProgrammingError):
         listener(_Conn(), None)
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_count_every_row_of_a_single_repository(tmp_path: Path) -> None:
+    """Every index leads with ``repository_id``. A sampled ANALYZE reads that
+    column as selective and the planner then scans the wide covering index for
+    a target lookup, so the stats must come from the whole table."""
+    from repowise.core.persistence import create_session_factory, refresh_planner_stats
+    from repowise.core.persistence.models import GraphEdge, Repository
+
+    db = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db}")
+    try:
+        await init_db(engine)
+        async with create_session_factory(engine)() as session:
+            session.add(Repository(id="r1", name="r", local_path="/r"))
+            await session.flush()
+            session.add_all(
+                GraphEdge(repository_id="r1", source_node_id=f"s{i % 3}", target_node_id=f"t{i}")
+                for i in range(3000)
+            )
+            await session.commit()
+        await refresh_planner_stats(engine)
+    finally:
+        await engine.dispose()
+
+    conn = sqlite3.connect(db)
+    stat = conn.execute(
+        "SELECT stat FROM sqlite_stat1 WHERE idx = 'ix_graph_edges_repo_target'"
+    ).fetchone()
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+        "WHERE repository_id = 'r1' AND target_node_id IN ('t1', 't2') AND edge_type IN ('imports')"
+    ).fetchall()
+    conn.close()
+    assert stat is not None and stat[0].split()[:2] == ["3000", "3000"]
+    assert "ix_graph_edges_repo_target" in str(plan)
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_skip_other_backends() -> None:
+    from repowise.core.persistence import refresh_planner_stats
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Engine:
+        dialect = _Dialect()
+
+        def begin(self):  # pragma: no cover - reaching it is the failure
+            raise AssertionError("ANALYZE must not run off SQLite")
+
+    await refresh_planner_stats(_Engine())  # type: ignore[arg-type]

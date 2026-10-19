@@ -167,6 +167,7 @@ __all__ = [
     "get_repo_db_path",
     "get_session",
     "init_db",
+    "refresh_planner_stats",
     "resolve_db_url",
     "schema_behind",
 ]
@@ -704,6 +705,26 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+
+
+async def refresh_planner_stats(engine: AsyncEngine) -> None:
+    """Refresh SQLite's planner statistics at the end of a write to the index.
+
+    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
+    a wide covering index over the selective one (a full edge-table scan in
+    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
+    index leads with ``repository_id``, which a sample (``analysis_limit``, and
+    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
+    keeps the wrong index. Other backends keep their own statistics. A failure
+    costs only a slower plan, so it never fails the write.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ANALYZE"))
+    except Exception as exc:
+        log.warning("sqlite.analyze_failed", error=str(exc))
 
 
 async def schema_behind(engine: AsyncEngine) -> bool:

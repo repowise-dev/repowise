@@ -603,6 +603,7 @@ async def _write(ctx: IncrementalPersist) -> None:
         create_session_factory,
         get_session,
         init_db,
+        refresh_planner_stats,
         upsert_repository,
     )
     from repowise.core.persistence.database import resolve_db_url
@@ -649,6 +650,8 @@ async def _write(ctx: IncrementalPersist) -> None:
             set(ctx.tombstoned_page_ids) | set(ctx.deselected_page_ids) | cleanup_debt["vectors"]
         )
         await run_steps(ctx, CLEANUP_STEPS)
+        with timed(timings, "persist.planner_stats"):
+            await refresh_planner_stats(ctx.engine)
 
         # Ceiling: retired non-file pages' *vector* embeddings survive this path.
         # There is no store here to delete them from, and building one would
