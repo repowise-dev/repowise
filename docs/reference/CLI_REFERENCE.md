@@ -599,6 +599,7 @@ call.
 |------|-------------|
 | `--include` | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `health`, `skeleton`, `doc_drift`, `symbols` |
 | `--no-compact` | Add structure, imports and docstrings to each card |
+| `--symptom` | Issue text, an error or a stack trace for `--include suspects` to rank against |
 
 ```bash
 repowise context src/api/routes.py src/api/auth.py

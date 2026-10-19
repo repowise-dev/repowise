@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from repowise.core.co_change import CoChangePartner
+from repowise.core.fts_query import meaningful_terms
 from repowise.core.suspects import (
     Candidate,
     Hit,
@@ -16,7 +17,7 @@ from repowise.core.suspects import (
     suspect_signals,
 )
 from repowise.core.suspects.git_text import hunk_symbols
-from repowise.core.suspects.signals import path_mentions
+from repowise.core.suspects.signals import path_mentions, path_terms
 
 NOW = datetime(2026, 1, 10, tzinfo=UTC)
 QUERY = "django/db/models/query.py"
@@ -291,3 +292,15 @@ async def test_candidates_use_the_default_commit_limit(suspects_index, config):
     out = await find_suspects(session, repo_id, path, Symptom(at=NOW))
     assert out["candidates"] == 3
     assert out["candidates_capped"] is False
+
+
+def test_path_target_text_drops_extension_and_layout_segments():
+    text = path_terms(
+        "packages/core/src/repowise/core/ingestion/call_resolver.py", frozenset({"repowise"})
+    )
+    assert set(meaningful_terms(text)) == {"call_resolver", "ingestion"}
+
+
+def test_path_target_text_keeps_the_symbol_and_a_filler_stem_left_alone():
+    assert path_terms("src/billing/invoice.ts::totalDue") == "billing invoice totalDue"
+    assert path_terms("src/index.ts") == "index"
