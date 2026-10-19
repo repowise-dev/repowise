@@ -65,10 +65,13 @@ from .slice import (
     _block_prefix,
     _closure_state,
     _closure_state_crosses,
+    _count_in,
     _declaration_escapes,
     _declaration_lines,
     _declared_before_read,
     _disposes_early,
+    _free_names,
+    _free_write_lines,
     _function_lines,
     _hoisted_bindings,
     _identifiers,
@@ -376,6 +379,12 @@ class _Cutter:
         self.assigned = facts.assigned
         self.inner_bindings = facts.inner_bindings
         self.rereads, self.import_lines = facts.rereads, facts.import_lines
+        self.free_writes = (
+            _free_write_lines(facts.analysis.def_use) if receiver and receiver.implicit else []
+        )
+        self.free_names = (
+            _free_names(facts.analysis.def_use) if receiver and receiver.implicit else frozenset()
+        )
         # In a loop body: a break / continue leaving a stage would leave the
         # helper instead, and a value carried to the next iteration must come
         # back out of the stage that writes it.
@@ -445,6 +454,7 @@ class _Cutter:
             self.declared_first,
             reads=self.reads,
             valueless=self.valueless,
+            exclude=self.free_names,
         )
         returns = self._own_bindings_dropped(span, s, e, returns)
         if self.carried:
@@ -461,7 +471,8 @@ class _Cutter:
         ):
             return None
         pre = self.pre
-        uses, assigns = _receiver_facts(self.receiver, pre, i, j, 0)
+        free_writes = _count_in(self.free_writes, s, e)
+        uses, assigns = _receiver_facts(self.receiver, pre, i, j, free_writes)
         return Extraction(
             start_line=s,
             end_line=e,

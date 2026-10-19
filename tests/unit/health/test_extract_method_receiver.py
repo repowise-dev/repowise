@@ -556,3 +556,13 @@ def test_java_bare_field_writes_are_not_passed_as_params() -> None:
         assert "total" not in x.params
         assert "seen" not in x.params
         assert x.uses_receiver is True
+
+    from repowise.core.analysis.health.dataflow.stages import find_stages
+
+    plan = find_stages(fn, lmap, receiver=receiver)
+    if plan.stages:
+        for s in plan.stages:
+            assert "total" not in s.params
+            assert "seen" not in s.params
+            assert s.uses_receiver is True
+
