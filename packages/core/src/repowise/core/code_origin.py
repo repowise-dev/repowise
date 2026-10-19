@@ -523,12 +523,8 @@ def is_build_file(path: str) -> bool:
 # Docs, examples, tooling
 # --------------------------------------------------------------------------
 
-# Docs roots are the plural and FastAPI's ``docs_src`` only: a singular ``doc/``
-# is as often a shipped package (cobra's ``doc`` generates man pages) as a
-# documentation tree. Like the example tokens they count as the first segment,
-# or deeper beside a docs-site generator's config (``website/docs/`` next to
-# ``docusaurus.config.js``): ``app/docs/`` and ``src/pages/docs/`` are the
-# product's own docs routes, and they ship.
+# Plural only: a singular ``doc/`` is as often a shipped package. Where they
+# count is :func:`_is_docs_example`'s rule.
 _DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # Examples as ``support_paths`` reads them, less the benchmark harnesses, which
 # run the system (tooling below). Unlike ``support_paths`` these count only as
@@ -618,7 +614,9 @@ def _is_docs_site(folder: str, paired: bool) -> bool:
 def _is_docs_example(
     normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
 ) -> bool:
-    # Anything under a docs root counts, examples beneath it included.
+    """A docs root or example folder as the first segment, a build tool's example
+    target, or a docs folder deeper beside a docs-site generator's config. A
+    nested ``app/docs/`` with no such config is the product's own docs route."""
     if (
         bool(dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0])))
         or _is_tool_example(normalized, dirs)
