@@ -11,7 +11,6 @@ of rerunning the comparison. Uncommitted work is never cached: its revspec is
 from __future__ import annotations
 
 import asyncio
-import copy
 import hashlib
 import subprocess
 from collections import OrderedDict
@@ -27,11 +26,14 @@ _TRANSIENT = frozenset({"unavailable", "timeout"})
 
 @dataclass
 class Scored:
-    """One scored range: its ref and delta, and each payload served for it."""
+    """One scored range: its ref and delta, and each payload served for it.
+
+    Callers only read ``delta``; it is shared, not copied.
+    """
 
     ref: str
     delta: Any
-    payloads: dict[str, dict] = field(default_factory=dict)
+    payloads: dict[str, tuple[dict, list[str] | None]] = field(default_factory=dict)
 
 
 _SCORED: OrderedDict[str, Scored] = OrderedDict()
@@ -62,15 +64,6 @@ def remember(key: str | None, ref: str, delta: Any) -> Scored | None:
 
 def payload_key(include: list[str] | None) -> str:
     return repr(sorted(include or ()))
-
-
-def served(payload: dict, timing_ms: float) -> dict:
-    """A copy of a cached *payload* stamped as served from the cache."""
-    out = copy.deepcopy(payload)
-    meta = out.setdefault("_meta", {})
-    meta["timing_ms"] = round(timing_ms, 1)
-    meta["cached"] = True
-    return out
 
 
 async def cache_key(
@@ -116,6 +109,7 @@ def _live_inputs(root: str, revspec: str) -> tuple[str, ...] | None:
     parts = split_revspec(revspec)
     sides = (parts[0], parts[2]) if parts else (revspec, f"{revspec}^1")
     shas = [git_refs.resolve(root, side) for side in sides]
+    head = git_refs.resolve(root, "HEAD") or ""
     # A root commit has no parent; any other unresolvable side is git's error to report.
     if not shas[0] or (parts and not shas[1]):
         return None
@@ -132,6 +126,7 @@ def _live_inputs(root: str, revspec: str) -> tuple[str, ...] | None:
         return None
     return (
         *shas,
+        head,
         hashlib.sha256(tips).hexdigest(),
         repr(riskignore_patterns(root)),
         health_rules_fingerprint(root),
@@ -155,11 +150,13 @@ async def _index_inputs(ctx: Any) -> str:
         async with get_session(session_factory) as session:
             repository = await _pkg._get_repo(session)
             # An ingest writes no index stamp, so its own row is the signal.
-            newest = await session.scalar(
-                select(func.max(CoverageIngest.ingested_at)).where(
-                    CoverageIngest.repository_id == repository.id
+            newest, count = (
+                await session.execute(
+                    select(func.max(CoverageIngest.ingested_at), func.count()).where(
+                        CoverageIngest.repository_id == repository.id
+                    )
                 )
-            )
+            ).one()
     except (LookupError, SQLAlchemyError):
         return ""
-    return f"{index_state_key(repository)}|{newest or ''}"
+    return f"{index_state_key(repository)}|{newest or ''}|{count}"

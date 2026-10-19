@@ -863,6 +863,7 @@ async def test_a_scored_range_is_reused_until_its_inputs_move(tmp_path, monkeypa
     first = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
     again = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
     assert len(scores) == 1 and again["_meta"]["cached"] is True
+    assert set(again["_meta"]) - {"cached"} == set(first["_meta"])
     assert {k: v for k, v in again.items() if k != "_meta"} == {
         k: v for k, v in first.items() if k != "_meta"
     }

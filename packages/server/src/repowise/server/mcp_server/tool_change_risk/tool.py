@@ -154,6 +154,10 @@ async def _attach_branch_blocks(
     return await _independent_changes_block(ctx, changed, collector, revspec)
 
 
+#: ``_meta`` keys a cached payload keeps; the rest is rebuilt on every serve.
+_CARRIED_META = frozenset({"omitted", "recovery_unavailable"})
+
+
 @mcp.tool(
     surface_order=60,
     artifact_type="change_risk",
@@ -210,9 +214,9 @@ async def get_change_risk(
     hit = _cache.lookup(key)
     if hit is not None and finding_id is not None:
         return _drill_down({"ref": hit.ref}, hit.delta, finding_id, revspec)
-    if hit is not None and _cache.payload_key(include) in hit.payloads:
-        elapsed = (time.perf_counter() - started) * 1000
-        return _cache.served(hit.payloads[_cache.payload_key(include)], elapsed)
+    stored = hit.payloads.get(_cache.payload_key(include)) if hit is not None else None
+    if stored is not None:
+        return await _served(ctx, stored, started)
     result, error = await _score_change(
         ctx.path, revspec, extensions, exclude_patterns, includes, baseline
     )
@@ -312,8 +316,29 @@ async def get_change_risk(
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     if scored_entry is not None:
-        scored_entry.payloads[_cache.payload_key(include)] = copy.deepcopy(payload)
+        scored_entry.payloads[_cache.payload_key(include)] = (
+            copy.deepcopy(payload),
+            sorted(changed) or None,
+        )
     return payload
+
+
+async def _served(ctx: Any, stored: tuple[dict, list[str] | None], started: float) -> dict:
+    """A cached payload with its ``_meta`` rebuilt, since freshness reads the live checkout."""
+    payload, targets = stored
+    out = copy.deepcopy(payload)
+    # Omission refs belong to the stored blocks, so they carry over.
+    kept = {k: v for k, v in out.get("_meta", {}).items() if k in _CARRIED_META}
+    out["_meta"] = {
+        **_pkg._build_meta(
+            timing_ms=(time.perf_counter() - started) * 1000,
+            repository=await _repository(ctx),
+            targets=targets,
+            extra={"source": "live_git", "cached": True},
+        ),
+        **kept,
+    }
+    return out
 
 
 async def _nothing_to_score(ctx: Any, ref: str, scored: dict[str, Any], started: float) -> dict:
