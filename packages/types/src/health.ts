@@ -539,6 +539,8 @@ export interface PerformanceOpportunity {
   actionability_reason: string;
   prerequisites: string[];
   rank_score: number;
+  /** 0-based place in the ranked list that served the row; another sort or a
+   *  lookup by id gives its rank among every cause in the repository. */
   rank_position: number;
   rank_factors: Record<string, number>;
   why_ranked: PerformanceWhyRanked[];

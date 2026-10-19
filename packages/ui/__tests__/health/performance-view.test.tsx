@@ -424,6 +424,16 @@ describe("PerformanceView drawer", () => {
     expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
   });
 
+  it("keeps the row's queue position when the detail by id carries the repository rank", async () => {
+    const getDetail = vi.fn(async () => resolvedDetail({ rank_position: 7 }));
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: getDetail })} />);
+    await openFirstRow();
+    await waitFor(() => expect(getDetail).toHaveBeenCalled());
+    const panel = await screen.findByRole("dialog");
+    expand(panel, "Why it ranks here");
+    expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
+  });
+
   it("separates evidence confidence, actionability, and fix safety", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();

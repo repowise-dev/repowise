@@ -145,6 +145,7 @@ class PerformanceHealthService:
                     links[row.opportunity_id],
                     summary=query.view == "summary",
                     decisions=row_decisions,
+                    position=query.position(index),
                 ),
                 **(
                     evidence_block(
@@ -154,7 +155,7 @@ class PerformanceHealthService:
                     else {}
                 ),
             }
-            for row in rows
+            for index, row in enumerate(rows)
         ]
         emitted = query.offset + len(items)
         facets: dict[str, list[dict[str, Any]]] = {}

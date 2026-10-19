@@ -360,6 +360,11 @@ class PerformanceQuery:
     def area_prefix(self) -> str | None:
         return f"{self.area}/" if self.area else None
 
+    def position(self, index: int) -> int | None:
+        """The served row's place in the queue, or ``None`` (the stored rank)
+        when another order lists it: a place by leverage is not a rank."""
+        return self.offset + index if self.sort == DEFAULT_SORT else None
+
     @property
     def status(self) -> str:
         return "open"
@@ -563,7 +568,12 @@ def intervention_file(opportunity: PerformanceOpportunity) -> str:
 
 
 def serialize(
-    row: Any, link: PlanLink, *, summary: bool = False, decisions: bool = False
+    row: Any,
+    link: PlanLink,
+    *,
+    summary: bool = False,
+    decisions: bool = False,
+    position: int | None = None,
 ) -> dict[str, Any]:
     """Rebuild the canonical opportunity payload from row plus details.
 
@@ -574,6 +584,11 @@ def serialize(
     ``decisions`` adds the fix, gain and effort to a ``summary`` row, for a
     list a person acts on from (the dashboard queue). The agent surface keeps
     its summary shape, so its responses do not grow.
+
+    ``position`` is the row's 0-based place in the ranked list that serves it
+    (:meth:`PerformanceQuery.position`); the stored rank counts every cause in
+    the repository, so a filtered list numbered by it skips. ``None`` keeps the
+    stored rank, as a lookup by id does.
     """
     details = detail_map(row)
     payload = {
@@ -593,7 +608,7 @@ def serialize(
         "confidence": field(row, "evidence_confidence"),
         "actionability_state": field(row, "actionability_state"),
         "rank_score": field(row, "rank_score"),
-        "rank_position": field(row, "rank_position"),
+        "rank_position": field(row, "rank_position") if position is None else position,
         "why_ranked": details.get("why_ranked", []),
         # An older store has no per-group answer; its marker gives the old one.
         "may_lead": details.get(
