@@ -372,7 +372,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 
 | Field | Meaning |
 |-------|---------|
-| `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `worst_performer_path`, `worst_test_path`, `non_code_files`, `average_health_code_only` |
+| `kpis` | Hotspot health, `average_health` (NLOC-weighted), `average_health_unweighted`, `average_health_weighting`, pillar averages, `production_average` (production code alone; only while tests are in `average_health`), `worst_performer_path`, `worst_test_path` |
 | `unanalysed_file_count` | Files in a language health has no dialect for, stored with no score and left out of every figure; absent when there are none |
 | `kpis.band`, `kpis.analysed_share` | The headline band is `null` when fewer than half the code files were analysed, since the average then speaks for a sample; `analysed_share` (scored over all code files) appears when some were left out. `get_overview` reports `code_health` the same way |
 | `gap_analysis` | Weighted points the average must recover to reach 8.0, files below it, `files_to_reach_target`, `files_for_half_gap`, `weighted_gap_points`, `weighted_gross_gap_points` |
@@ -381,7 +381,7 @@ Items are ordered by value first, then tier. History markers (churn, ownership, 
 | `top_findings` / `findings`, `test_findings` | Production and test findings; their totals sum to the whole open set |
 | metric row | `score` (defect dimension and headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, `structure_deduction` and `history_deduction` (the score is 10 minus both, before the 1.0 floor; history reads 0.0 under `counts="code_shape"`), `history: "short"` only when the file has fewer than 5 recorded commits (new, split out, or renamed without follow), where most history markers cannot fire yet, and `withheld_deduction` when part of it comes from a withheld finding type |
 
-`weighted_deficit` and the gap fields share one unit, score points x NLOC; they compare only with each other. Non-code files score a mechanical 10.0 because no marker reads them; `average_health_code_only` shows the headline without them. `primary_biomarker` prefers a discrete finding over the continuous `coverage_gradient`. Each finding carries a `dimension`; `advisory` findings (`assertion_free_test`, `mock_saturated_test`) never deduct and appear only with `include=["advisory"]`.
+`weighted_deficit` and the gap fields share one unit, score points x NLOC; they compare only with each other. `primary_biomarker` prefers a discrete finding over the continuous `coverage_gradient`. Each finding carries a `dimension`; `advisory` findings (`assertion_free_test`, `mock_saturated_test`) never deduct and appear only with `include=["advisory"]`.
 
 Provisional finding types appear only with `include=["unverified"]`, each marked `verification: "unverified"`. A withheld type never lists but still lowers the score it was counted in, so a file row reports it as `withheld_deduction` and `_meta.withheld` names the type, its count and why it is held back. Targeted mode is never split into production and test.
 

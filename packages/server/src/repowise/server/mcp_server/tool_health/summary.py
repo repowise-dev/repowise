@@ -9,9 +9,11 @@ from repowise.core.analysis.health.grading import TARGET_SCORE, analysed_share, 
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
 from repowise.core.analysis.health.ranking import worst_kpis
+from repowise.core.analysis.health.rows import split_tests
 from repowise.core.analysis.health.scoring import (
     hotspot_health,
     nloc_weighted_attr,
+    nloc_weighted_score,
 )
 from repowise.core.persistence.models import HealthFileMetric
 
@@ -187,9 +189,17 @@ def _compute_kpis(
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     share = analysed_share(len(metrics), unanalysed)
+    production, tests = split_tests(metrics)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        # Production code alone, weighted the same way; only said while tests
+        # are in ``average_health``, so ``scope="production"`` omits it.
+        **(
+            {"production_average": round(nloc_weighted_score(production), 2)}
+            if production and tests
+            else {}
+        ),
         # ``None`` with no hotspot files, not an empty set averaged to 10.0.
         "hotspot_health": hotspot_health(metrics, hotspot_paths or set()),
         # Weighted vs plain mean: a gap means a few large files hold it down.

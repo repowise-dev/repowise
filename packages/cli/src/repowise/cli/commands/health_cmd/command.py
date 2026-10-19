@@ -577,9 +577,18 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
     if band is not None:
         band_color = BAND_TERMINAL_COLOR[band]
         band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
+    # Production code beside the all-files figure, while tests are in it.
+    production = kpis.get("production_average")
+    has_tests = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
+    production_str = (
+        f"Production code: [bold]{production}[/bold]/10 · "
+        if production is not None and has_tests
+        else ""
+    )
     console.print(
         f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
-        f"Hotspot: [bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
+        f"{production_str}"
+        f"Hotspot:[bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
         f"Worst: [bold]{kpis.get('worst_performer_score') or '?'}[/bold]/10 "
         f"({kpis.get('worst_performer_path') or 'n/a'})"
     )
