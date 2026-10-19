@@ -699,7 +699,7 @@ reason. These reasons and the performance default queue's are decided in one pla
 
 | Reason | What it leaves out |
 |---|---|
-| `test`, `tooling`, `generated`, `vendored`, `docs_example` | Path-role classification. Tooling includes build files by type wherever they sit (Gradle, CMake, Makefiles, Bazel, MSBuild props/targets, root `setup.py`, `noxfile.py`, crate-root `build.rs`, bundler configs) |
+| `test`, `tooling`, `generated`, `vendored`, `docs_example` | Path-role classification. Tooling includes build files by type wherever they sit (Gradle, CMake, Makefiles, Bazel, MSBuild props/targets, root `setup.py`, `noxfile.py`, crate-root `build.rs`, bundler configs). Docs means a root `docs/` or `docs_src/` tree, or one beside a docs-site config; a product's own `app/docs/` route is production |
 | `unknown`, `expected`, `no_strategy`, `no_plan` | Performance causes with no classified context, expected repetition, no supported strategy, or no stored safe plan |
 | `below_min_worth` | A refactoring recovering under `MIN_WORTH` (0.5) or with no steps; a loop-built string that is bounded or not in production |
 | `history_only` | Only git-history findings |

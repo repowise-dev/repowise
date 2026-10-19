@@ -98,6 +98,9 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
+# v41 (also): ``docs`` / ``docs_src`` count as a docs root only at the
+# repository root or beside a docs-site generator's config, so a product's
+# ``app/docs/`` route is production and stored ``code_origin`` is re-read.
 # v41: ``brain_method`` is advisory, so every stored score that carried one
 # moves. Parameter counts exclude every comment kind and discover C/C++
 # declarators and Kotlin lists; cached walks refresh the total, typed and scalar

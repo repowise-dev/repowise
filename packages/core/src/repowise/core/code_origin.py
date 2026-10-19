@@ -523,14 +523,17 @@ def is_build_file(path: str) -> bool:
 # Docs, examples, tooling
 # --------------------------------------------------------------------------
 
-# Docs roots count at any depth. Docs are the plural and FastAPI's ``docs_src``
-# only: a singular ``doc/`` is as often a shipped package (cobra's ``doc``
-# generates man pages) as a documentation tree.
+# Docs roots are the plural and FastAPI's ``docs_src`` only: a singular ``doc/``
+# is as often a shipped package (cobra's ``doc`` generates man pages) as a
+# documentation tree. Like the example tokens they count as the first segment,
+# or deeper beside a docs-site generator's config (``website/docs/`` next to
+# ``docusaurus.config.js``): ``app/docs/`` and ``src/pages/docs/`` are the
+# product's own docs routes, and they ship.
 _DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # Examples as ``support_paths`` reads them, less the benchmark harnesses, which
 # run the system (tooling below). Unlike ``support_paths`` these count only as
-# the first segment or directly under a docs root: ``src/pkg/examples/`` is
-# as often shipped code (an example registry, a runner) as a sample.
+# the first segment or under a docs root: ``src/pkg/examples/`` is as often
+# shipped code (an example registry, a runner) as a sample.
 _EXAMPLE_TOKENS = EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}
 _TUTORIAL_PREFIX = "tutorial"
 
@@ -615,20 +618,26 @@ def _is_docs_site(folder: str, paired: bool) -> bool:
 def _is_docs_example(
     normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
 ) -> bool:
-    # Anything under a docs root already counts, examples beneath it included.
+    # Anything under a docs root counts, examples beneath it included.
     if (
-        any(d in _DOCS_ROOT_TOKENS for d in dirs)
-        or bool(dirs and _is_example_dir(dirs[0]))
+        bool(dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0])))
         or _is_tool_example(normalized, dirs)
     ):
         return True
     if repo_root is None:
         return False
     parts = normalized.split("/")
+    root = os.fspath(repo_root)
+
+    def site(i: int, paired: bool) -> bool:
+        return _is_docs_site(os.path.join(root, *parts[:i]), paired)
+
     return any(
-        (d in _DOCS_SITE_NAMES or _DOCS_SITE_SUFFIXED_RE.match(d))
-        and _is_docs_site(
-            os.path.join(os.fspath(repo_root), *parts[: i + 1]), d in _DOCS_SITE_NAMES
+        # A nested docs root beside its site's config, read from its parent.
+        (d in _DOCS_ROOT_TOKENS and site(i, False))
+        or (
+            (d in _DOCS_SITE_NAMES or _DOCS_SITE_SUFFIXED_RE.match(d))
+            and site(i + 1, d in _DOCS_SITE_NAMES)
         )
         for i, d in enumerate(dirs)
     )

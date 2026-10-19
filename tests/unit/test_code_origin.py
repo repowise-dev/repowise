@@ -63,6 +63,10 @@ _OWN_HEADER = (
         ("src/tutorials/steps.py", "production"),
         ("examples/a.py", "docs_example"),
         ("docs/examples/a.py", "docs_example"),
+        # A product's own docs routes ship; only a root docs tree is docs.
+        ("app/docs/page.tsx", "production"),
+        ("src/pages/docs/[slug].tsx", "production"),
+        ("pkg/docs_src/handler.py", "production"),
         ("examples/tutorial/app.py", "docs_example"),
         ("example/main.go", "docs_example"),
         ("samples/hello/Program.cs", "docs_example"),
@@ -730,3 +734,12 @@ def test_cocoapods_target_support_files_are_generated() -> None:
 def test_a_first_party_pods_package_stays_production() -> None:
     assert code_origin("internal/k8s/pods/watcher.go") == "production"
     assert code_origin("pods/support/files.go") == "production"
+
+
+def test_a_nested_docs_root_counts_only_beside_its_site_config(tmp_path) -> None:
+    _docs_site(tmp_path, "website", "docusaurus.config.js")
+    (tmp_path / "website" / "docs").mkdir()
+    (tmp_path / "app" / "docs").mkdir(parents=True)
+    assert code_origin("website/docs/examples/a.ts", repo_root=tmp_path) == "docs_example"
+    assert code_origin("app/docs/page.tsx", repo_root=tmp_path) == "production"
+    assert code_origin("docs/guide/a.py", repo_root=tmp_path) == "docs_example"
