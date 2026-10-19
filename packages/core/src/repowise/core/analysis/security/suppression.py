@@ -11,13 +11,16 @@ from .paths import _PROSE_EXTENSIONS
 # finding's line: detect-secrets, gitleaks, TruffleHog, Bandit and gosec
 # ``nosec``, and Ruff's hard-coded-password codes. detect-secrets also has a
 # marker for the line below.
-_ALLOWLIST_SAME_RE = re.compile(
-    r"(?:#|//|/\*)[ \t]*(?:pragma:[ \t]*allowlist[ \t]+secret|gitleaks:allow|trufflehog:ignore"
+_ALLOWLIST_SAME_MARKER = (
+    r"(?:pragma:[ \t]*allowlist[ \t]+secret|gitleaks:allow|trufflehog:ignore"
     r"|nosec|noqa:[ \t\w,]*\bS10[5-7])\b"
 )
-_ALLOWLIST_NEXT_RE = re.compile(
-    r"(?:#|//|/\*)[ \t]*pragma:[ \t]*allowlist[ \t]+nextline[ \t]+secret\b"
-)
+_ALLOWLIST_NEXT_MARKER = r"pragma:[ \t]*allowlist[ \t]+nextline[ \t]+secret\b"
+_ALLOWLIST_COMMENT_PREFIX = r"(?:#|//|/\*)[ \t]*"
+_ALLOWLIST_SAME_RE = re.compile(_ALLOWLIST_COMMENT_PREFIX + _ALLOWLIST_SAME_MARKER)
+_ALLOWLIST_NEXT_RE = re.compile(_ALLOWLIST_COMMENT_PREFIX + _ALLOWLIST_NEXT_MARKER)
+_ALLOWLIST_PROSE_SAME_RE = re.compile(r"\b" + _ALLOWLIST_SAME_MARKER)
+_ALLOWLIST_PROSE_NEXT_RE = re.compile(r"\b" + _ALLOWLIST_NEXT_MARKER)
 _ALLOWLIST_TOKENS = ("allowlist", "gitleaks:allow", "trufflehog:ignore", "nosec", "noqa:")
 
 
@@ -33,8 +36,13 @@ def _allowlisted_lines(file_path: str, source: str) -> set[int]:
         if file_path.lower().endswith(_PROSE_EXTENSIONS)
         else mask_comments_and_strings(source, strings=False, **mask_dialect(file_path))
     )
+    patterns = (
+        ((_ALLOWLIST_PROSE_SAME_RE, 0), (_ALLOWLIST_PROSE_NEXT_RE, 1))
+        if uncommented is None
+        else ((_ALLOWLIST_SAME_RE, 0), (_ALLOWLIST_NEXT_RE, 1))
+    )
     allowed: set[int] = set()
-    for pattern, below in ((_ALLOWLIST_SAME_RE, 0), (_ALLOWLIST_NEXT_RE, 1)):
+    for pattern, below in patterns:
         for m in pattern.finditer(source):
             if uncommented is None or uncommented[m.start() : m.end()] != m.group():
                 allowed.add(source.count("\n", 0, m.start()) + 1 + below)

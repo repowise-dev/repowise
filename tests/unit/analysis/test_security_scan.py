@@ -1609,6 +1609,9 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         [
             ("cfg.go", "// gitleaks:allow"),
             ("README.md", "#gitleaks:allow"),
+            ("README.md", "pragma: allowlist secret"),
+            ("README.md", "<!-- nosec -->"),
+            ("docs/guide.rst", "nosec"),
             ("cfg.go", "// #nosec G101"),
             ("cfg.py", "# nosec"),
             ("cfg.py", "# trufflehog:ignore"),
@@ -1619,11 +1622,18 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         source = f'key = "{self.KEY}"  {marker}\n'
         assert self._found(path, source) == []
 
+    def test_prose_nextline_allow_marker_and_word_boundaries(self) -> None:
+        nextline = f"pragma: allowlist nextline secret\nkey = {self.KEY}\n"
+        assert self._found("README.md", nextline) == []
+        substring_word = f"key = {self.KEY} nosecurity\n"
+        assert self._found("README.md", substring_word) == [("aws_access_key", "high")]
+
     @pytest.mark.parametrize(
         "source",
         [
             'key = "{key}"  # noqa: E501\n',
             'key = "{key} // gitleaks:allow"\n',
+            'key = "{key}"  pragma: allowlist secret\n',
             'key = "{key}"\n',
         ],
     )
