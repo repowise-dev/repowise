@@ -12,8 +12,8 @@ import {
   formatNumber,
   formatRelativeTime,
   ordinal,
-  truncatePath,
 } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import type { FileDetailGit } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
 import { FileMark } from "./file-marks";
@@ -234,12 +234,7 @@ export function FileHistoryTab({
                   href={partnerHref(p.file_path)}
                   className="-mx-2 flex items-baseline justify-between gap-3 rounded px-2 py-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
                 >
-                  <span
-                    className="min-w-0 truncate font-mono text-xs text-[var(--color-text-primary)]"
-                    title={p.file_path}
-                  >
-                    {truncatePath(p.file_path, 44)}
-                  </span>
+                  <FilePath path={p.file_path} fold className="text-[var(--color-text-primary)]" />
                   <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
                     {p.co_change_count}&times;
                   </span>

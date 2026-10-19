@@ -95,6 +95,13 @@ STORE_FORMAT_VERSION: int = 2
 #: argument.
 #: A Kotlin call whose only argument is a trailing lambda (``AppTheme { }``,
 #: ``s.forEachSegment { }``) is a call site, with one argument.
+#: A Kotlin ``typealias`` signature carries its target (``typealias Repo =
+#: DefaultRepository``), so a call through the alias reaches the repo class.
+#: A top-level Kotlin declaration keeps the annotations the grammar splits off
+#: it when the last one takes one argument (``@Suppress("unused")``).
+#: A top-level Kotlin declaration with two annotations (``@Preview @Composable
+#: private fun f()``) that the grammar read as an expression is re-parsed with its
+#: leading annotations blanked, so it becomes a symbol again.
 PARSER_SCHEMA_VERSION: int = 8
 
 #: state.json key holding the store format version that wrote the store.

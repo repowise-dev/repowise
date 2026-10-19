@@ -17,7 +17,8 @@ markers, languages, coverage formats, or alerts.
 
 Code Health is the **fifth intelligence layer** in Repowise, alongside Graph,
 Git, Docs, and Decisions. It reads from Graph and Git but never modifies
-them. Its only writes are to its own four tables.
+them. Its only writes are to its own four tables. It measures technical debt:
+the code shape and change history that make a file likely to need the next fix.
 
 ```
 ┌─────────────┐  parsed_files     ┌──────────────────┐
@@ -104,7 +105,7 @@ analysis/health/
     ├── low_cohesion.py
     ├── god_class.py
     ├── nested_complexity.py
-    ├── bumpy_road.py
+    ├── repeated_nesting.py
     ├── complex_method.py
     ├── large_method.py
     ├── primitive_obsession.py
@@ -143,7 +144,7 @@ core/alembic/versions/
 ```
 core/pipeline/
 ├── orchestrator.py                 # _run_health_analysis(): builds community_label_map, runs analyzer
-└── persist.py                      # persist_pipeline_result(): writes findings/metrics/snapshot
+└── persist/                        # persist_pipeline_result(): writes findings/metrics/snapshot
 ```
 
 ### CLI
@@ -202,7 +203,7 @@ packages/web/src/components/health/
 tests/unit/health/                  # 99+ tests
 ├── test_complexity_walker.py       # per-language CCN/nesting assertions
 ├── test_biomarkers.py
-├── test_structural_biomarkers.py   # bumpy_road, large_method, primitive_obsession
+├── test_structural_biomarkers.py   # repeated_nesting, large_method, primitive_obsession
 ├── test_coverage_biomarkers.py     # untested_hotspot, coverage_gap
 ├── test_organizational_biomarkers.py
 ├── test_dry_violation.py
@@ -245,7 +246,7 @@ things:
    smaller repos run `analyze()` on a single thread.
 
 The returned report rides on `PipelineResult.health_report`. Then
-`core/pipeline/persist.py` writes it in one session: `save_health_metrics`,
+`core/pipeline/persist/` writes it in one session: `save_health_metrics`,
 `save_health_findings` (only when there are findings), and a
 `save_health_snapshot` carrying the three KPIs plus a `{path: score}` map for
 trend tracking (rolling 50-row window per repo), and a second
@@ -273,7 +274,7 @@ A single pass over the parsed file list. For each file the analyzer:
    `max(ccn)` into `Symbol.complexity_estimate` as a side effect, so the
    `ContextAssembler` symbol ranker benefits even when a caller never touches
    the health tables.
-3. **Evaluates the file** (`_evaluate_file`): builds a `FileContext` (nloc,
+3. **Evaluates the file** (`FileEvaluator.evaluate` in `file_evaluator.py`): builds a `FileContext` (nloc,
    `has_test_file`, module, per-function and per-class metrics, the per-file
    `git_meta`, graph in-degree as `dependents_count`, the repo-wide p80 of
    in-degree used as the `brain_method` floor, coverage fields when ingested,
@@ -323,7 +324,7 @@ golden guarantee (§6).
 | Category               | Cap  | Markers |
 |------------------------|------|------------|
 | Organizational         | −3.5‡ | developer_congestion, knowledge_loss, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
-| Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
+| Structural complexity  | −2.5 | low_cohesion, god_class, nested_complexity, repeated_nesting, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Test coverage gradient | −2.0 | coverage_gradient |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
@@ -339,12 +340,30 @@ number.
 
 ‡ A ceiling. The live cap is `history_cap(structure)`, `min(3.5, 1.0 + structure)`,
 where `structure` is the file's capped deduction from every other defect
-category, so git history alone costs a file at most 1.0.
+category, so git history alone costs a file at most 1.0. Before that cap, the
+history findings de-stack: the largest counts whole and each other one at 0.25
+(`destacked`), since a busy file trips several history markers for one cause.
+
+Every other defect category follows a saturating curve rather than stopping at
+its cap (`shape_curve.py`). A category's raw total `R` deducts
+`A * (1 - exp(-R / A))` with `A = 3.09 x cap`, so a second critical function
+still costs something and no category ever deducts more than 3.09 times its cap.
+Two rules feed the curve. Findings on one function count the largest in full and
+the rest at 0.25. A critical `complex_method`, `large_method` or
+`nested_complexity` finding deducts `2.0 x value / threshold` (CCN 25, 200 lines,
+nesting 7), so halving a CCN-50 function pays even while it stays critical. The
+3.09 is fitted so the corpus mean score matches the hard-capped one; the curve is
+AUC-neutral on the 66-repo corpus.
 
 `hidden_coupling` is advisory: still detected, stored and listed, it deducts
 nothing. On its own it ranks defect-prone files near chance (AUC about 0.55), and
 a pre-registered test on 12 repositories no earlier health study used found the
 score without it non-inferior at predicting defects.
+
+`brain_method` is advisory too. It fires only on a function that `complex_method`
+and `large_method` already charge, so scoring it charged one function twice, and
+dropping it left defect AUC unchanged on the 66-repo corpus. It is still listed
+under structural complexity.
 
 The maintainability dimension has its own independent tables
 (`_MAINTAINABILITY_CATEGORY`, caps: structural_complexity 4.0,
@@ -354,9 +373,13 @@ performance dimension a single `performance` category capped at 2.0. See §6.
 `large_assertion_block` and `duplicated_assertion_block` are the two
 **test-quality** smells (see §5.3). They fire only on test files and sit in
 a deliberately small category so a noisy test can't dominate its own score.
-`large_method` is now gated on a minimal CCN floor (≥ 2) so a long-but-flat
-body (a big data literal) reads as layout, not a complexity smell: a small
-step toward decoupling the score from raw file size.
+`large_method` is gated on a minimal judged CCN (≥ 3) so a long-but-flat
+body (a big data literal, a dispatch of one-line arms) reads as layout, not a
+complexity smell. In `.tsx` / `.jsx` it counts code lines only: a line holding
+nothing but JSX tags, attributes or text is markup, while a line with a `{...}`
+expression is code. Its reason gives both measures, "N lines of code (M with
+blanks and comments)", and `details.span` carries M. `complex_method` reports
+the judged CCN that sets its severity and adds the raw CCN when they differ.
 
 `ownership_risk` (long-run minor-contributor dispersion, Bird et al.) and
 `churn_risk` (size-normalized relative churn, Nagappan-Ball) are git-only
@@ -399,6 +422,8 @@ is **silent when no coverage report was ingested** (`line_coverage_pct is None`)
 absent coverage is never imputed as uncovered. It lives in its own capped
 category (`test_coverage_gradient`, −2.0) so the additive continuous signal
 neither squeezes nor is squeezed by the binary gates, and it skips test files.
+It and `coverage_gap` also skip a file that holds only a docstring, imports and
+export lists (`__all__`): a package `__init__.py` or an `index.ts` barrel.
 Calibrated offline against the defect corpus, it recovers **+0.043 corpus AUC
 [95% CI +0.023, +0.061]** on the covered subset (≈65% of the continuous-feature
 ceiling), Popt-neutral, and is exactly zero on repos without ingested coverage:
@@ -511,7 +536,7 @@ corpus. Precision is measured per language because it does not transfer:
 that is mostly one dispatch on one value (a `switch`, `match` or same-subject `if`
 chain holding at least 60% of its decision points) is judged by the code around the
 dispatch and its heaviest arm: `nested_complexity` skips the two levels the
-`switch` and its `case` open, and `complex_method`, `brain_method` and `bumpy_road`
+`switch` and its `case` open, and `complex_method`, `brain_method` and `repeated_nesting`
 read the CCN outside the dispatch plus the CCN of its most complex arm.
 
 In TypeScript and JavaScript (TSX / JSX included) a ternary opens no nesting level
@@ -570,7 +595,7 @@ full calibration, with confidence intervals, is published in the
 | 1.1–1.33 | remaining structural complexity / size markers | Moderate calibrated lift. |
 | 1.3 / 1.2 / 1.1 | `untested_hotspot` / `churn_risk` / `code_age_volatility` | Coverage-dependent and rarely-firing; keep prior weights the corpus could not fairly measure. |
 | 1.0 | `prior_defect` | Neutral by design: largely redundant with the other process signals, kept for its explanatory value. |
-| 0.5 (floored) | `developer_congestion`, `dry_violation`, `low_cohesion`, `brain_method`, `primitive_obsession`, `bumpy_road` | Fire widely but proved weak under leakage-free scoring; kept as maintainability and parity signals, not disabled. |
+| 0.5 (floored) | `developer_congestion`, `dry_violation`, `low_cohesion`, `primitive_obsession`, `repeated_nesting` | Fire widely but proved weak under leakage-free scoring; kept as maintainability and parity signals, not disabled. |
 | 0.4 (de-rated) | `knowledge_loss` | Weakest of the floored set. |
 | 0.5 (not fitted) | `error_handling` | Excluded from calibration (AUC-neutral); floored and capped at 0.5 per file. |
 
@@ -1138,7 +1163,7 @@ per-path `disabled_biomarkers` and `severity_overrides`, keyed by a
 gitignore-semantics glob over the repo-relative POSIX path (every matching rule
 applies; disabled sets union) (`path`, with `path_glob` and `glob` as
 accepted aliases). `to_analyzer_config(file_paths)` resolves the globs to
-per-file disabled sets, which the engine honors in `_evaluate_file()`. The
+per-file disabled sets, which the engine honors in `FileEvaluator.evaluate()`. The
 schema and examples are in the
 [user guide](../layers/CODE_HEALTH.md#configuration).
 
@@ -1222,7 +1247,7 @@ from `coverage/detector.parse`. Stdlib-only (no extra XML libraries).
 Users (not contributors) author `.repowise/health-rules.json`. To add
 a new override key (beyond `disabled_biomarkers`), extend
 `HealthConfig` and thread it through `to_analyzer_config()` ->
-`engine._evaluate_file()`.
+`FileEvaluator.evaluate()` in `file_evaluator.py`.
 
 ---
 

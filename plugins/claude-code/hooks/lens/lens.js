@@ -3275,6 +3275,12 @@ async function analyzeBlastRadius(repoId, body) {
   );
 }
 
+// ../api-client/src/areas.ts
+function holdParams(opts = {}) {
+  if (opts.hold !== "map") return {};
+  return { hold: "map", include: opts.include?.length ? [...opts.include].sort().join(",") : void 0 };
+}
+
 // ../api-client/src/code-health.ts
 async function getHealthMap(repoId, opts = {}) {
   return apiGet(`/api/repos/${repoId}/health/map`, {
@@ -3283,7 +3289,9 @@ async function getHealthMap(repoId, opts = {}) {
     scope: opts.scope,
     counts: opts.counts,
     include_held: opts.include_held || void 0,
-    q: opts.q?.trim() || void 0
+    q: opts.q?.trim() || void 0,
+    area: opts.area || void 0,
+    ...holdParams(opts)
   });
 }
 

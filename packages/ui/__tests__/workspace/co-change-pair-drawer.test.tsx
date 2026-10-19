@@ -55,9 +55,8 @@ describe("CoChangePairDrawer", () => {
     expect(screen.getAllByText("Open file page")).toHaveLength(1);
     expect(screen.getByText(/frontend is not indexed/)).toBeInTheDocument();
     expect(screen.getByText("commit aaaaaaaa11")).toBeInTheDocument();
-    // Paths break only after a slash: the directory segments are separate nodes.
-    expect(screen.getByText("app/")).toBeInTheDocument();
-    expect(screen.getByText("schemas/")).toBeInTheDocument();
+    // Paths break only after a slash.
+    expect(document.querySelectorAll("wbr").length).toBeGreaterThan(1);
     expect(screen.getAllByText("Hotspot")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: /AI investigation prompt/ }));
     expect(onPrompt).toHaveBeenCalled();

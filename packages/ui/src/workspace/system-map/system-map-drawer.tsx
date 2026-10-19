@@ -23,6 +23,7 @@ import type {
   WorkspaceContractLinkEntry,
 } from "@repowise-dev/types/workspace";
 import { AdaptivePanel } from "../../shared/adaptive-panel";
+import { FilePath } from "../../shared/file-path";
 import { AiPromptButton } from "../../health/ai-prompt-button";
 import { AiPromptModal } from "../../health/ai-prompt-modal";
 import type { AiPromptFlavor } from "../../health/ai-prompt-builder";
@@ -465,10 +466,12 @@ function NodeBody({
                       {c.role} · {plural(c.link_count, "link", "links")}
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-                    {c.file_path}
-                    {c.line ? `:${c.line}` : ""}
-                  </span>
+                  <FilePath
+                    path={c.file_path}
+                    line={c.line || null}
+                    mode="full"
+                    className="text-[10px] text-[var(--color-text-tertiary)]"
+                  />
                 </li>
               ))}
             </ul>
@@ -719,11 +722,13 @@ function EdgeBody({
                     ) : (
                       <span className="font-mono text-xs [overflow-wrap:anywhere]">{l.contract_id}</span>
                     )}
-                    <span className="font-mono text-[10px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-                      provides {l.provider_repo}/{l.provider_file}
+                    <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
+                      provides{" "}
+                      <FilePath path={`${l.provider_repo}/${l.provider_file}`} mode="full" className="text-[10px]" />
                     </span>
-                    <span className="font-mono text-[10px] text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-                      calls from {l.consumer_repo}/{l.consumer_file}
+                    <span className="font-mono text-[10px] text-[var(--color-text-tertiary)]">
+                      calls from{" "}
+                      <FilePath path={`${l.consumer_repo}/${l.consumer_file}`} mode="full" className="text-[10px]" />
                     </span>
                   </li>
                 ))}
@@ -777,12 +782,14 @@ function EdgeBody({
               <ul className="m-0 flex list-none flex-col divide-y divide-[var(--color-border-default)] p-0">
                 {pairs.slice(0, DRAWER_EVIDENCE_ROWS).map(([a, b]) => (
                   <li key={`${a}~${b}`} className="flex flex-col gap-0.5 py-1.5 font-mono text-[10px] leading-snug">
-                    <span className="text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
-                      {sourceName}/{a}
-                    </span>
+                    <FilePath
+                      path={`${sourceName}/${a}`}
+                      mode="full"
+                      className="text-[10px] text-[var(--color-text-secondary)]"
+                    />
                     {b && (
-                      <span className="text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
-                        with {targetName}/{b}
+                      <span className="text-[var(--color-text-tertiary)]">
+                        with <FilePath path={`${targetName}/${b}`} mode="full" className="text-[10px]" />
                       </span>
                     )}
                   </li>

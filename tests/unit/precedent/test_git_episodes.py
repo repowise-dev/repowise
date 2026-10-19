@@ -327,7 +327,7 @@ def test_only_the_indexing_paths_opt_in() -> None:
     }
     assert found == {
         "repowise/core/pipeline/phases/git.py",
-        "repowise/core/pipeline/incremental.py",
+        "repowise/core/pipeline/incremental/commits.py",
     }
 
 

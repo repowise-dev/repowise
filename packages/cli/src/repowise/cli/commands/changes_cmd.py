@@ -119,8 +119,14 @@ async def _export(
         session, repo_id = opened
         on = attribution_enabled(root)
         done = 0
+        # An export is the whole window it names; without --since, every indexed change.
         request = PeriodRequest(
-            since=since, until=until, refresh=refresh, progress=build_progress, plan=build_plan
+            since=since,
+            until=until,
+            window_days=None,
+            refresh=refresh,
+            progress=build_progress,
+            plan=build_plan,
         )
         async for row, evidence in period_evidence(session, repo_id, root, request):
             record = change_record(row, attribution=on)

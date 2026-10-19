@@ -134,6 +134,20 @@ async def test_a_surfaced_finding_can_be_expanded_by_its_id(tool, make_repo):
     assert "evidence" in detail["finding"]
 
 
+async def test_a_drill_down_skips_the_blocks_it_never_returns(tool, make_repo, monkeypatch):
+    module = tool(seeded(make_repo))
+    listing = await module.get_change_risk("HEAD", baseline=0)
+    row = listing["health_delta"]["top_findings"][0]
+
+    async def _unexpected(*_a, **_k):
+        raise AssertionError("a drill-down needs no tests, coverage or fix blocks")
+
+    monkeypatch.setattr(module, "_attach_change_blocks", _unexpected)
+    detail = await module.get_change_risk("HEAD", baseline=0, finding_id=row["id"])
+
+    assert detail["finding"]["id"] == row["id"]
+
+
 async def test_an_unknown_finding_id_says_so_and_lists_the_real_ones(tool, make_repo):
     module = tool(seeded(make_repo))
 
@@ -274,7 +288,7 @@ def test_every_request_filter_is_part_of_the_cache_key(make_repo):
     plain = DeltaRequest(str(repo.path), "HEAD")
     # repo_path and revspec reach the key through the service and the resolved pair.
     for field in dataclasses.fields(DeltaRequest):
-        if field.name in ("repo_path", "revspec"):
+        if field.name in ("repo_path", "revspec", "dependents"):
             continue
         narrowed = dataclasses.replace(plain, **{field.name: ("vendor/",)})
         assert service._cache_key(narrowed, pair) != service._cache_key(plain, pair), field.name
@@ -282,6 +296,9 @@ def test_every_request_filter_is_part_of_the_cache_key(make_repo):
         joined = dataclasses.replace(plain, **{field.name: ("a,b",)})
         split = dataclasses.replace(plain, **{field.name: ("a", "b")})
         assert service._cache_key(joined, pair) != service._cache_key(split, pair), field.name
+    counted = dataclasses.replace(plain, dependents={"app.py": 3})
+    recounted = dataclasses.replace(plain, dependents={"app.py": 4})
+    assert len({service._cache_key(r, pair) for r in (plain, counted, recounted)}) == 3
 
 
 async def test_include_paths_as_a_string_filters_like_the_list(tool, make_repo):

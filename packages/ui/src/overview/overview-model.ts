@@ -15,27 +15,23 @@
  * SWR and cannot be a server component) can both call it.
  *
  * Host-specific rows need no flags. Every one of them is already gated on a
- * field the payload either carries or does not: local index size is absent on
- * hosted because hosted has no `.repowise/` directory, agent savings are
- * absent because they come from a CLI-written sidecar, and score validation is
- * absent on OSS because nothing backtests it there. Asking "is the data here"
+ * field the payload either carries or does not: score validation, for example,
+ * is absent on OSS because nothing backtests it there. Asking "is the data here"
  * gets the right answer on both hosts without either one declaring which host
  * it is. The one thing that genuinely cannot be inferred is routing, which is
  * why {@link OverviewRoutes} exists and is the whole capability surface.
  */
 
-import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
+import type {
+  OverviewAttentionAreaRow,
+  OverviewSummaryResponse,
+} from "@repowise-dev/types/overview";
 import type { ChangeStat } from "./change-line";
+import type { ExploreCard } from "./explore-cards";
 import type { ExploreEntry } from "./explore-list";
 import type { ReadItem } from "./reads-column";
 import type { RibbonStat } from "../stats/stat-ribbon";
-import {
-  formatBytes,
-  formatCost,
-  formatLOC,
-  formatNumber,
-  formatTokens,
-} from "../lib/format";
+import { formatLOC, formatNumber } from "../lib/format";
 
 /**
  * Where this host's links go.
@@ -61,10 +57,9 @@ export interface OverviewRoutes {
   languageGraph?: string;
   /** Scoped chat. Hosted only; OSS puts an ask box on the page instead. */
   chat?: string;
-  /** Local settings, where the on-disk index lives. OSS only. */
+  /** @deprecated Nothing on Overview links to settings. */
   settings?: string;
-  /** Indexing cost breakdown. Linked from the savings read on both hosts, and
-   *  listed under Explore only where the page exists. */
+  /** Indexing cost breakdown, listed under Explore only where the page exists. */
   costs?: string;
 }
 
@@ -75,7 +70,6 @@ export type ResolvedOverviewRoutes = ReturnType<typeof resolveOverviewRoutes>;
  * Resolved routes, with the defaults both hosts share filled in.
  *
  * Exported so a renderer that needs one of these hrefs outside a built list
- * (the Composition section links to the same language graph the ribbon does)
  * reads it from here rather than rebuilding a list to find one entry in it.
  */
 export function resolveOverviewRoutes(routes: OverviewRoutes) {
@@ -135,12 +129,12 @@ export function docPageCount(summary: OverviewSummaryResponse): number {
 }
 
 /**
- * The column beside the health hero: the other reasons someone opens this
- * page, at the same altitude as the score.
+ * The column beside the health hero: documentation, and on hosts that
+ * backtest it, how well the health ranking predicted bug fixes.
  */
 export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRoutes): ReadItem[] {
   const r = resolveOverviewRoutes(routes);
-  const { stats, health, sync, savings } = summary;
+  const { stats, health } = summary;
   const docPages = docPageCount(summary);
   const prosePages = stats.doc_prose_page_count;
   const reads: ReadItem[] = [];
@@ -195,52 +189,8 @@ export function buildReads(summary: OverviewSummaryResponse, routes: OverviewRou
       label: "Score validation",
       value: `${formatNumber(accuracy.hits)}/${formatNumber(accuracy.k)}`,
       ...(accuracy.lift ? { unit: `${accuracy.lift.toFixed(1)}× baseline` } : {}),
-      href: `${r.base}/code-health?tab=triage`,
+      href: `${r.base}/code-health`,
       why: "Top-ranked files that did go on to need a bug fix",
-    });
-  }
-
-  // From a CLI-written `.repowise/omissions` sidecar, so this row is simply
-  // absent wherever that sidecar cannot exist. No flag, no empty state
-  // pitching a CLI the viewer is not running.
-  const savedTokens = savings.saved_input_tokens ?? 0;
-  if (savings.available && savedTokens > 0 && r.costs) {
-    // "Estimated" while any of the total rests on a counterfactual rather than
-    // a measured before and after. The two are different claims, and the row
-    // is too small to show the split, so it qualifies the label instead.
-    const inferred = savings.inferred_saved_input_tokens ?? 0;
-    reads.push({
-      key: "savings",
-      label: inferred > 0 ? "Estimated agent savings" : "Agent savings",
-      value: formatTokens(savedTokens),
-      ...(savings.estimated_usd_saved ? { unit: formatCost(savings.estimated_usd_saved) } : {}),
-      href: r.costs,
-      why:
-        inferred > 0
-          ? "Input tokens your agent did not have to read, part of it estimated"
-          : "Input tokens your agent did not have to read",
-    });
-  }
-
-  if (stats.dead_export_count > 0) {
-    reads.push({
-      key: "dead-code",
-      label: "Dead code",
-      value: formatNumber(stats.dead_export_count),
-      unit: "exports",
-      href: `${r.base}/code-health?tab=dead-code`,
-      why: "Unused exports that nothing in the graph reaches",
-    });
-  }
-
-  // A local-disk figure. Hosted stores indexes elsewhere and never has it.
-  if (sync.index_storage_bytes && r.settings) {
-    reads.push({
-      key: "index",
-      label: "Index",
-      value: formatBytes(sync.index_storage_bytes),
-      href: r.settings,
-      why: `Wiki, symbols and vectors on disk · ${Math.round(stats.doc_coverage_pct)}% average doc confidence`,
     });
   }
 
@@ -286,6 +236,97 @@ export function buildRibbon(
     },
   );
   return ribbon;
+}
+
+/** Ingests a coverage report; with no path it finds the report itself. */
+export const COVERAGE_ADD_COMMAND = "repowise coverage add";
+
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
+/** Coverage when a report exists; the ingest command when the server says none does. */
+function testsCard(explore: OverviewSummaryResponse["explore"], base: string): ExploreCard {
+  const card = { key: "tests", label: "Tests", href: `${base}/tests` };
+  const coverage = explore?.coverage;
+  if (coverage) {
+    return {
+      ...card,
+      value: `${coverage.line_coverage_pct.toFixed(1)}%`,
+      caption: "line coverage from the latest report",
+    };
+  }
+  // A server without the counts cannot say whether a report exists.
+  if (!explore) return { ...card, caption: "Coverage and the tests that reach each file" };
+  return {
+    ...card,
+    caption: "No coverage report yet. Run your tests with coverage on, then add the report:",
+    command: COVERAGE_ADD_COMMAND,
+  };
+}
+
+/**
+ * The six main doors off Overview, each with one live figure read through the
+ * function its page leads with (`summary.explore`), so the card and the page
+ * agree. Keys match {@link buildExplore}'s, so the line of further doors can
+ * drop the entries a card already covers.
+ */
+export function buildExploreCards(
+  summary: OverviewSummaryResponse,
+  routes: OverviewRoutes,
+): ExploreCard[] {
+  const { base } = resolveOverviewRoutes(routes);
+  const { stats, explore } = summary;
+  return [
+    { key: "code-health", label: "Code health map", href: `${base}/code-health`, ...healthFigure(stats) },
+    { key: "contributors", label: "Ownership", href: `${base}/owners`, ...ownershipFigure(explore) },
+    {
+      key: "architecture",
+      label: "Architecture",
+      href: `${base}/architecture`,
+      value: formatNumber(stats.module_count),
+      caption: `${plural(stats.module_count, "module", "modules")}, ${formatNumber(stats.entry_point_count)} entry points`,
+    },
+    { key: "decisions", label: "Decisions", href: `${base}/decisions`, ...decisionsFigure(explore) },
+    { key: "refactoring", label: "Refactoring", href: `${base}/refactoring`, ...refactoringFigure(explore) },
+    testsCard(explore, base),
+  ];
+}
+
+type CardFigure = Pick<ExploreCard, "value" | "caption">;
+type Explore = OverviewSummaryResponse["explore"];
+
+function healthFigure(stats: OverviewSummaryResponse["stats"]): CardFigure {
+  if (stats.hotspot_count === 0) return { value: formatNumber(stats.file_count), caption: "files scored" };
+  return {
+    value: formatNumber(stats.hotspot_count),
+    caption: `${plural(stats.hotspot_count, "hotspot", "hotspots")} across ${formatNumber(stats.file_count)} files`,
+  };
+}
+
+function ownershipFigure(explore: Explore): CardFigure {
+  const sole = explore?.ownership?.sole_owned_files;
+  if (sole == null) return { caption: "Who knows each file, and what depends on them" };
+  return {
+    value: formatNumber(sole),
+    caption: `sole-owned ${plural(sole, "file", "files")}: one author, no second reader`,
+  };
+}
+
+function decisionsFigure(explore: Explore): CardFigure {
+  const d = explore?.decisions;
+  if (!d || d.total === 0) return { caption: "No decisions recorded yet" };
+  return {
+    value: formatNumber(d.total),
+    caption: `recorded, of which ${formatNumber(d.accepted)} accepted and ${formatNumber(d.candidates)} awaiting review`,
+  };
+}
+
+function refactoringFigure(explore: Explore): CardFigure {
+  const r = explore?.refactoring;
+  if (!r) return { caption: "No refactoring analysis yet" };
+  return {
+    value: formatNumber(r.opportunities_total),
+    caption: `open ${plural(r.opportunities_total, "opportunity", "opportunities")}, one per file`,
+  };
 }
 
 /**
@@ -358,6 +399,12 @@ export function buildExplore(
       description: "Change-risk ranked history with agent provenance",
     },
     {
+      key: "decisions",
+      label: "Decisions",
+      href: `${r.base}/decisions`,
+      description: "Why the code is shaped this way, from decision records and git history",
+    },
+    {
       key: "contributors",
       label: "Contributors",
       href: `${r.base}/owners`,
@@ -390,4 +437,63 @@ export function buildLanguageDistribution(
   const distribution: Record<string, number> = {};
   for (const l of summary.languages) distribution[l.language] = l.file_count;
   return distribution;
+}
+
+/** An inventory row, with the unit its count is in. */
+export type InventoryRow = OverviewAttentionAreaRow & { unit?: string };
+
+/**
+ * The inventory's area rows, with each count read from the same basis as the
+ * explore card and the page it links to: open findings for code health,
+ * matches in shipped source for security, open opportunities for
+ * refactoring, decisions to review, and sole-owned files for ownership. Rows
+ * whose basis the payload does not carry keep the server's count.
+ */
+export function inventoryRows(summary: OverviewSummaryResponse): InventoryRow[] {
+  const areas = summary.attention_summary?.areas ?? [];
+  const explore = summary.explore;
+  const findings = summary.health.finding_counts?.inventory;
+  return areas.map((area): InventoryRow => {
+    switch (area.key) {
+      case "health":
+        return findings != null ? { ...area, total: findings, unit: "open findings" } : area;
+      case "security": {
+        const s = explore?.security;
+        if (!s) return area;
+        return {
+          ...area,
+          total: s.source,
+          unit: "in shipped source",
+          detail: s.elsewhere > 0 ? `${formatNumber(s.elsewhere)} more in tests and docs` : "",
+        };
+      }
+      case "refactoring": {
+        const r = explore?.refactoring;
+        return r ? { ...area, total: r.opportunities_total, unit: "open opportunities" } : area;
+      }
+      case "decisions": {
+        const d = explore?.decisions;
+        if (!d) return area;
+        return {
+          ...area,
+          total: d.candidates + d.needs_review,
+          unit: "to review",
+          detail: `${formatNumber(d.candidates)} awaiting review, ${formatNumber(d.needs_review)} drifting from the code`,
+        };
+      }
+      case "ownership": {
+        const o = explore?.ownership;
+        return o
+          ? {
+              ...area,
+              total: o.sole_owned_files,
+              unit: "sole-owned files",
+              detail: "One author, no second reader",
+            }
+          : area;
+      }
+      default:
+        return area;
+    }
+  });
 }

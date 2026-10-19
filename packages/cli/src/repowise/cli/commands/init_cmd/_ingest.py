@@ -1,0 +1,169 @@
+"""Ingestion and analysis stage of ``repowise init`` (phases 1 and 2)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+from repowise.cli.helpers import console, load_state, run_async
+from repowise.cli.ui import (
+    BRAND_STYLE,
+    OK,
+    OWL_SPINNER,
+    WARN,
+    MaybeCountColumn,
+    RichProgressCallback,
+)
+
+from ._options import InitRun
+from .persistence import build_resume_controller
+
+
+def _index_vector_store(run: InitRun) -> Any:
+    """Generation's vector store, built early so analysis can dedup decisions against it.
+
+    None for runs that build no store (a dry run, index-only fast mode) and
+    for a keyless store, which the matcher refuses.
+    """
+    opts = run.opts
+    if opts.dry_run or (opts.index_only and opts.run_mode == "fast"):
+        return None
+    from repowise.cli.providers import build_embedder, build_vector_store, template_run_embedder
+    from repowise.core.providers.embedding import store_has_semantic_vectors
+
+    store_embedder = (
+        template_run_embedder(run.embedder_name_resolved, run.embedder_was_requested)
+        if opts.index_only or run.no_provider
+        else run.embedder_name_resolved
+    )
+    candidate = build_vector_store(run.repo_path, build_embedder(store_embedder, run.repo_path))
+    return candidate if store_has_semantic_vectors(candidate) else None
+
+
+def _index_columns(with_cost: bool) -> list[Any]:
+    columns: list[Any] = [
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+    ]
+    # Cost column only when a model can be called.
+    if with_cost:
+        columns.append(TextColumn("[" + OK + "]${task.fields[cost]:.3f}[/]"))
+    return columns
+
+
+async def _index_with_resume(
+    run: InitRun,
+    *,
+    run_pipeline: Any,
+    llm_client: Any,
+    vector_store: Any,
+    mode: Any,
+    callback: Any,
+    existing_kg_fingerprint: str | None,
+) -> Any:
+    """Run the pipeline with a resume controller.
+
+    The controller's engine and repository row are created first, in this
+    event loop, so an interrupt leaves a resumable index. A dry run touches no
+    database.
+    """
+    opts = run.opts
+    controller = None
+    engine = None
+    if not opts.dry_run:
+        controller, engine = await build_resume_controller(run.repo_path, resume=opts.resume)
+    try:
+        return await run_pipeline(
+            run.repo_path,
+            commit_depth=run.resolved_commit_limit,
+            follow_renames=run.resolved_follow_renames,
+            skip_tests=opts.skip_tests,
+            skip_infra=opts.skip_infra,
+            exclude_patterns=run.exclude_patterns if run.exclude_patterns else None,
+            include_submodules=opts.include_submodules,
+            generate_docs=False,
+            llm_client=llm_client,
+            vector_store=vector_store,
+            concurrency=opts.concurrency,
+            test_run=opts.test_run,
+            mode=mode,
+            progress=callback,
+            existing_kg_fingerprint=existing_kg_fingerprint,
+            resume_controller=controller,
+            coverage_report_paths=(
+                [Path(p) for p in opts.coverage_report] if opts.coverage_report else None
+            ),
+            # Only local init describes the user's own environment.
+            derive_environment_facts=True,
+        )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+
+
+def index_repository(run: InitRun) -> bool:
+    """Phases 1 and 2, without docs (generation follows the cost gate). False if interrupted."""
+    opts = run.opts
+    # Fast mode skips generation, so it has three phases.
+    run.total_phases = 3 if opts.run_mode == "fast" else 4
+    # None on a dry run: analysis would call it before generation's dry-run exit.
+    llm_client = None
+    if not opts.dry_run:
+        llm_client = run.provider if not opts.index_only else run.decision_provider
+
+    from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
+    from repowise.core.pipeline.modes import OrchestratorMode
+
+    orchestrator_mode = (
+        OrchestratorMode.FAST if opts.run_mode == "fast" else OrchestratorMode.STANDARD
+    )
+    index_vector_store = _index_vector_store(run)
+
+    with Progress(*_index_columns(llm_client is not None), console=console) as progress_bar:
+        rich_callback = RichProgressCallback(progress_bar, console, total_phases=run.total_phases)
+        callback = PhaseTimingRecorder(rich_callback)
+        # Whole-run total: phases nest and overlap, so their sum can exceed it.
+        callback.table.start("run")
+
+        prev_state = load_state(run.repo_path)
+        prev_kg_fp = (
+            prev_state.get("knowledge_graph", {}).get("fingerprint") if not opts.force else None
+        )
+
+        # First Ctrl-C unwinds cleanly for a later --resume; a second hard-quits.
+        from repowise.core.cancellation import PipelineCancelled, cancellation_scope
+
+        try:
+            with cancellation_scope():
+                result = run_async(
+                    _index_with_resume(
+                        run,
+                        run_pipeline=run_pipeline,
+                        llm_client=llm_client,
+                        vector_store=index_vector_store,
+                        mode=orchestrator_mode,
+                        callback=callback,
+                        existing_kg_fingerprint=prev_kg_fp,
+                    )
+                )
+        except (PipelineCancelled, KeyboardInterrupt):
+            from repowise.cli.ui.mascot import EYES_SLEEPY, mini
+
+            console.print(
+                f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
+                "saved — run [bold]repowise init --resume[/] to continue where it stopped."
+            )
+            from repowise.cli.hints import maybe_hint
+
+            maybe_hint("interrupt")
+            return False
+
+    run.result = result
+    run.recorder = callback
+    run.run_warnings = list(rich_callback.warnings)
+    return True

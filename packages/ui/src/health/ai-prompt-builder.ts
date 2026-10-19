@@ -10,6 +10,8 @@ export type { AiPromptFlavor } from "./ai-prompts/shared";
 export { buildAiPrompt, type BuildPromptOptions } from "./ai-prompts/refactor-prompt";
 export {
   buildCoverageAiPrompt,
+  buildCoverageBatchAiPrompt,
+  type BuildCoverageBatchPromptOptions,
   type BuildCoveragePromptOptions,
   type CoverageFilePromptInput,
 } from "./ai-prompts/coverage-prompt";
@@ -29,7 +31,10 @@ export {
   type DocDriftPromptFinding,
 } from "./ai-prompts/doc-drift-prompt";
 export {
+  buildAreaCouplingAiPrompt,
   buildCouplingAiPrompt,
+  type AreaCouplingPromptPair,
+  type BuildAreaCouplingPromptOptions,
   type BuildCouplingPromptOptions,
   type CouplingPromptEdge,
   type CouplingPromptNode,
@@ -41,11 +46,15 @@ export {
 } from "./ai-prompts/conformance-prompt";
 export {
   buildSecurityAiPrompt,
+  buildSecurityBatchAiPrompt,
+  type BuildSecurityBatchPromptOptions,
   type BuildSecurityPromptOptions,
   type SecurityPromptFinding,
 } from "./ai-prompts/security-prompt";
 export {
   buildHotspotAiPrompt,
+  buildHotspotBatchAiPrompt,
+  type BuildHotspotBatchPromptOptions,
   type BuildHotspotPromptOptions,
   type HotspotPromptInput,
 } from "./ai-prompts/hotspot-prompt";
@@ -60,6 +69,13 @@ export {
   type BuildCommitPromptOptions,
   type CommitPromptInput,
 } from "./ai-prompts/commit-prompt";
+export {
+  buildChangeAiPrompt,
+  changePromptFixes,
+  type BuildChangePromptOptions,
+  type ChangePromptFinding,
+  type ChangePromptInput,
+} from "./ai-prompts/change-prompt";
 export {
   buildPerformanceOpportunityPrompt,
   buildRefactoringOpportunityPrompt,
@@ -76,3 +92,13 @@ export {
   type FileHealthPromptInput,
   type FileHealthPromptSignals,
 } from "./ai-prompts/file-health-prompt";
+export {
+  buildAreaAiPrompt,
+  type AreaPromptFile,
+  type AreaPromptFinding,
+  type BuildAreaPromptOptions,
+} from "./ai-prompts/area-prompt";
+export {
+  buildPerformanceAreaPrompt,
+  type BuildPerformanceAreaPromptOptions,
+} from "./ai-prompts/performance-area-prompt";

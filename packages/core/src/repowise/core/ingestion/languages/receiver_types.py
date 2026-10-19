@@ -254,7 +254,7 @@ _SWIFT_CONSTRUCTED = re.compile(
 # out `{Dao d = const Dao()}` too. An initialising formal (`Repo(this.api)`)
 # spells no type: the field it assigns already carries one.
 _DART_TYPED = re.compile(
-    rf"(?<![\w.])(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,)}}]))"
+    rf"(?<![\w.])(?P<type>{_TYPE})\??\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,)}}]|in\b))"
 )
 
 # `final x = Foo()`, `var`/`const`, with `new`/`const` before the type. The
@@ -1387,7 +1387,7 @@ def types_by_class(
 # is whatever ranging over ``expr``'s container yields in its position. Two
 # scans feed it, the clauses and the containers they may range over, and the
 # resolver joins them, since only it can type ``expr`` itself.
-RANGE_LANGUAGES = frozenset({"go"})
+RANGE_LANGUAGES = frozenset({"go", "dart"})
 
 # What ranging over each container shape yields, the group name giving the
 # position: ``[]T``, ``[N]T`` and a variadic ``...T`` an int index, then a
@@ -1432,10 +1432,50 @@ _GO_RANGE = re.compile(
 )
 
 
+# Dart's ``for (final p in head[.member[()]])``, and ``await for`` over a
+# stream, declare one variable with no type spelled: it is the element of the
+# container walked. A written type (``for (Repo p in xs)``) is read by
+# ``_DART_TYPED`` and never reaches here, since ``Repo`` is no ``[a-z_]`` name.
+# The variable is the clause's *value*; Dart has no key position.
+_DART_NAME = r"[a-z_]\w*"
+_DART_TYPE_NAME = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
+
+# ``List<T>``, ``Iterable<T>``, ``Set<T>``, ``Queue<T>`` and ``Stream<T>`` yield a
+# ``T``, nullable element included. A ``Map`` is not iterable, and a nested
+# generic (``List<List<T>>``) or an un-awaited ``Future<List<T>>`` is no shape
+# here, so each yields nothing.
+_DART_ITERABLE = r"(?:List|Iterable|Set|Queue|Stream)"
+_DART_ELEMENT_SHAPES = (
+    re.compile(rf"{_DART_ITERABLE}\s*<\s*(?P<value>{_DART_TYPE_NAME})\??\s*>"),
+)
+
+# The whole spelling, nested arguments too, so the element shape refuses it
+# instead of the declaration going unseen.
+_DART_CONTAINER = rf"{_DART_ITERABLE}\s*<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>"
+
+# A parameter, a local or a field, ``List<T> name`` with an optional ``final``
+# before it and ``?`` after the type. The closer is kept, as ``_DART_TYPED``
+# keeps it: ``;`` or ``=`` makes a field at class scope, unless the match sits
+# inside parentheses (``Repo({List<T> xs = const []})``), which owns none.
+_DART_CONTAINER_DECLARATIONS = (
+    re.compile(
+        rf"(?<![\w.])(?P<type>{_DART_CONTAINER})\??\s+(?P<name>{_DART_NAME})\s*"
+        rf"(?=(?P<closer>[=;,)}}]))"
+    ),
+)
+
+_DART_FOR_IN = re.compile(
+    rf"\bfor\s*\(\s*(?:final|var)\s+(?P<value>{_DART_NAME})\s+in\s+"
+    rf"(?P<head>{_DART_NAME})(?:\.(?P<member>[A-Za-z_]\w*)(?P<call>\(\))?)?\s*\)"
+)
+
+
 class RangeClause(NamedTuple):
     """One ``for key, value := range head[.member[()]]`` at one line.
 
     ``value`` is empty when only one variable is declared; ``_`` names none.
+    Dart's ``for (final value in head[.member[()]])`` fills ``value`` alone:
+    it has no key position.
     """
 
     line: int
@@ -1459,25 +1499,34 @@ def scan_ranges(text: str, language: str) -> RangeScan:
         return RangeScan((), ())
     cleaned = _without_comments(text, language)
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    if language == "dart":
+        clause_pattern, declaration_patterns = _DART_FOR_IN, _DART_CONTAINER_DECLARATIONS
+        inside = _inside_parentheses(cleaned)
+    else:
+        clause_pattern, declaration_patterns = _GO_RANGE, _GO_CONTAINER_DECLARATIONS
+        inside = None
     clauses = tuple(
         RangeClause(
             bisect_right(starts, match.start()),
-            match.group("key"),
-            match.group("value") or "",
+            match.groupdict().get("key") or "",
+            match.groupdict().get("value") or "",
             match.group("head"),
             match.group("member") or "",
             bool(match.group("call")),
         )
-        for match in _GO_RANGE.finditer(cleaned)
+        for match in clause_pattern.finditer(cleaned)
     )
     containers = sorted(
         Declaration(
             bisect_right(starts, match.start()),
             match.group("name"),
             match.group("type"),
+            ""
+            if inside is not None and inside(match.start())
+            else (match.groupdict().get("closer") or ""),
             member=bool(match.groupdict().get("member")),
         )
-        for pattern in _GO_CONTAINER_DECLARATIONS
+        for pattern in declaration_patterns
         for match in pattern.finditer(cleaned)
     )
     return RangeScan(clauses, tuple(containers))
@@ -1500,7 +1549,8 @@ def range_element_types(
             return None
         return _usable_type_name(raw, language)[0]
 
-    for shape in _GO_ELEMENT_SHAPES:
+    shapes = _DART_ELEMENT_SHAPES if language == "dart" else _GO_ELEMENT_SHAPES
+    for shape in shapes:
         match = shape.fullmatch(spelling)
         if match is not None:
             groups = match.groupdict()

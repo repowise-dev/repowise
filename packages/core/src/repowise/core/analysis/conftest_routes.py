@@ -64,6 +64,7 @@ import symtable
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -481,6 +482,9 @@ def _not_local(deps: Mapping[str, set[str] | None]) -> set[str]:
     return bad
 
 
+# Keyed on the text alone, so an edited file is a new key and a long-lived MCP
+# server stops re-walking the same unchanged entries on every selection.
+@lru_cache(maxsize=1024)
 def local_names(source: str) -> frozenset[str]:
     """Names a Python module binds once, at its top level, whose use is its own text alone.
 

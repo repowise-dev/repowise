@@ -1,8 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
-import { ScopeLine } from "../../src/health/performance/filters";
 import { PerformanceView } from "../../src/health/performance-view";
 import {
   adapter,
@@ -13,7 +12,20 @@ import {
   sibling,
 } from "./fixtures/performance";
 
-const rows = () => screen.findAllByRole("listitem");
+// The drawer and the prompt modal load on first open, which takes longer than
+// the default second when the suite runs beside others.
+configure({ asyncUtilTimeout: 5000 });
+// Load the lazy chunks once up front, so no single test pays the first import.
+beforeAll(async () => {
+  await import("../../src/health/performance/drawer");
+  await import("../../src/health/ai-prompt-modal");
+});
+
+/** The cause rows, not the chips or other list items on the page. */
+const rows = async () =>
+  (await screen.findAllByRole("listitem")).filter((li) =>
+    li.hasAttribute("data-performance-opportunity"),
+  );
 const openFirstRow = async () => {
   const [first] = await rows();
   fireEvent.click(first!);
@@ -26,120 +38,234 @@ function expand(panel: HTMLElement, name: string | RegExp) {
 }
 
 describe("PerformanceView queue", () => {
-  it("leads with the canonical rollup rather than flat context counters", async () => {
+  it("leads with the scope's own count and accounts for what the scope leaves out", async () => {
     render(<PerformanceView adapter={adapter()} />);
-    expect(await screen.findByText("Causal opportunities")).toBeTruthy();
-    expect(screen.getByText("a named safe intervention")).toBeTruthy();
-    expect(screen.getByText("read the evidence first")).toBeTruthy();
-    expect(screen.getByText("of 7 causes")).toBeTruthy();
+    expect(await screen.findByText("changes worth making now")).toBeTruthy();
+    expect(screen.getByText(/All in src\./)).toBeTruthy();
+    // Every hidden cause is named, with a link to the scope that lists it.
+    expect(screen.getByRole("button", { name: "3 more production causes are not ready to act on" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "3 are outside production code" })).toBeTruthy();
   });
 
-  it("keeps the four canonical contexts separate and counts them from the facets", async () => {
+  it("offers one scope control, counted by the server", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();
-    expect(screen.getByRole("tab", { name: /Production 4/ })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: /Tooling 1/ })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: /Test suite 2/ })).toBeTruthy();
-    // Absent from the facets, so it counts zero and still gets its own tab.
-    expect(screen.getByRole("tab", { name: /Unclassified 0/ })).toBeTruthy();
+    const scope = screen.getByRole("radiogroup", { name: "Scope" });
+    expect(within(scope).getByRole("radio", { name: /Worth doing now 7/ })).toBeTruthy();
+    expect(within(scope).getByRole("radio", { name: /All production 10/ })).toBeTruthy();
+    expect(within(scope).getByRole("radio", { name: /Everything 13/ })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: /Tooling/ })).toBeNull();
   });
 
-  it("asks the server for a canonical context and never the retired pairing", async () => {
+  it("asks for each scope's causes, and moves to a scope from its sentence", async () => {
     const load = vi.fn(async () => page());
     render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
-    fireEvent.click(await screen.findByRole("tab", { name: /Tooling 1/ }));
+    await rows();
+    expect(load).toHaveBeenLastCalledWith({
+      context: "production",
+      view: "summary",
+      sort: "rank",
+      limit: 100,
+      offset: 0,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "3 are outside production code" }));
     await waitFor(() =>
-      expect(load).toHaveBeenLastCalledWith({
-        context: "tooling",
-        view: "detail",
-        sort: "rank",
-        limit: 20,
-        offset: 0,
-      }),
+      expect(load).toHaveBeenLastCalledWith(
+        expect.objectContaining({ context: "all", actionability: "all", proof: "all", role: "all" }),
+      ),
     );
   });
 
-  it("builds the narrowing filters from the server facets and refetches on change", async () => {
+  it("offers the rest of production at the end of the queue worth doing now", async () => {
     const load = vi.fn(async () => page());
     render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
     await rows();
+    fireEvent.click(screen.getByRole("button", { name: "Show the 3 other production causes" }));
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(
+        expect.objectContaining({ context: "production", actionability: "all" }),
+      ),
+    );
+  });
+
+  it("keeps the narrowing filters behind More filters and shows each active one as a chip", async () => {
+    const load = vi.fn(async () => page());
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    await rows();
+    expect(screen.queryByLabelText("Boundary")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /More filters/ }));
     const boundary = screen.getByLabelText("Boundary");
     expect(within(boundary).getByRole("option", { name: "Database (4)" })).toBeTruthy();
-    expect(within(boundary).getByRole("option", { name: "In-process (1)" })).toBeTruthy();
+    // Actionability has one control, the bar, not a second select here.
+    expect(screen.queryByRole("combobox", { name: "Actionability" })).toBeNull();
 
     fireEvent.change(boundary, { target: { value: "db" } });
     await waitFor(() =>
       expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ boundary: "db" })),
     );
-  });
-
-  it("labels the actionability select's empty option as excluding expected", async () => {
-    render(<PerformanceView adapter={adapter()} />);
-    await rows();
-    const actionability = screen.getByLabelText("Actionability");
-    expect(within(actionability).getByRole("option", { name: "All but expected" })).toBeTruthy();
+    const chip = await screen.findByRole("button", { name: "Remove filter Boundary: Database" });
+    fireEvent.click(chip);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /Remove filter Boundary/ })).toBeNull(),
+    );
   });
 
   it("states a facet with one value instead of offering a control that cannot narrow", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();
+    fireEvent.click(screen.getByRole("button", { name: /More filters/ }));
     expect(screen.queryByLabelText("Evidence confidence")).toBeNull();
-    expect(screen.getByText("on 7 matching")).toBeTruthy();
+    // Label and value only; counts belong to a select's options.
+    expect(screen.getByText(/Evidence confidence:/)).toBeTruthy();
+    expect(screen.queryByText(/matching/)).toBeNull();
   });
 
-  it("states the rendered scope, the filtered total, and the repository total", async () => {
+  it("draws the actionability bar from the server's counts and narrows on the server", async () => {
+    const load = vi.fn(async () => page());
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    await rows();
+    const bar = screen.getByRole("radiogroup", { name: "Actionability" });
+    // The facet counts, which sum to the lede, not the three loaded rows.
+    expect(within(bar).getByRole("radio", { name: /All 7/ })).toBeTruthy();
+    expect(within(bar).getByRole("radio", { name: /Needs investigation 4/ })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole("radio", { name: /Plan ready 1/ }));
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(
+        expect.objectContaining({ actionability: "plan_ready", queue: true }),
+      ),
+    );
+  });
+
+  it("draws every area the server counts, with true totals and its top causes", async () => {
+    const items = [
+      opportunity({ opportunity_id: "a", file_path: "pkg/a/x.py", actionability_state: "advisory", rank_position: 0 }),
+      opportunity({ opportunity_id: "b", file_path: "pkg/b/y.py", actionability_state: "plan_ready", rank_position: 1 }),
+    ];
+    const smallTop = opportunity({ opportunity_id: "c", file_path: "pkg/c/z.py", rank_position: 9 });
+    const load = vi.fn(async (query?: { area?: string; limit?: number }) =>
+      query?.area === "pkg/c"
+        ? page({ items: [smallTop], total: 4, next_offset: null })
+        : page({
+            items,
+            total: 10,
+            next_offset: null,
+            areas: {
+              depth: 2,
+              total: 10,
+              more: 0,
+              items: [
+                { area: "pkg/b", total: 1, actionability: { plan_ready: 1 } },
+                { area: "pkg/a", total: 5, actionability: { advisory: 5 } },
+                { area: "pkg/c", total: 4, actionability: { investigate: 4 } },
+              ],
+            },
+          }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    await rows();
+    const areas = screen.getAllByRole("region").map((node) => node.getAttribute("aria-label"));
+    expect(areas.filter((a) => a?.startsWith("pkg/"))).toEqual([
+      "pkg/b, 1 causes",
+      "pkg/a, 5 causes",
+      "pkg/c, 4 causes",
+    ]);
+    expect(screen.getByText(/Across 3 areas, led by pkg\/b\./)).toBeTruthy();
+    // pkg/c has no loaded cause, so its card asks for its own top three.
+    await waitFor(() =>
+      expect(load).toHaveBeenCalledWith(expect.objectContaining({ area: "pkg/c", limit: 3 })),
+    );
+    expect(await screen.findByText(/Show all 5 in pkg\/a/)).toBeTruthy();
+    // No page caveat: the counts are the scope's own.
+    expect(screen.queryByText(/causes on this page/)).toBeNull();
+  });
+
+  it("opens an area on the server when a card asks to show all", async () => {
+    const load = vi.fn(async () =>
+      page({
+        areas: {
+          depth: 1,
+          total: 7,
+          more: 0,
+          items: [
+            { area: "src", total: 6, actionability: { advisory: 6 } },
+            { area: "lib", total: 1, actionability: { advisory: 1 } },
+          ],
+        },
+      }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    await rows();
+    fireEvent.click(screen.getByRole("button", { name: /Show all 6 in src/ }));
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ area: "src" })),
+    );
+    expect(await screen.findByRole("button", { name: "Remove filter Area: src" })).toBeTruthy();
+  });
+
+  it("says the accounting sentence once, never a hidden second copy", async () => {
     render(<PerformanceView adapter={adapter()} />);
-    // The per-page range belongs to the pagination control; this states what
-    // the selection covers and when it was computed, and says each once.
-    expect(await screen.findByText(/Showing/)).toBeTruthy();
-    const scope = screen
-      .getAllByRole("status")
-      .map((node) => node.textContent ?? "")
-      .find((text) => text.includes("opportunities"));
-    expect(scope).toContain("7 production opportunities");
-    expect(scope).toContain("848a8f1");
+    await rows();
+    const text = document.body.textContent ?? "";
+    expect(text.split("are outside production code").length - 1).toBe(1);
+    expect(document.querySelectorAll(".sr-only p, p.sr-only").length).toBe(0);
   });
 
-  it("groups the page into actionability sections without reordering it", async () => {
-    render(<PerformanceView adapter={adapter()} />);
-    const items = await rows();
-    expect(items).toHaveLength(3);
-    expect(screen.getAllByText("1 matching").length).toBeGreaterThan(0);
-    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "");
-    expect(headings[0]).toContain("Plan ready");
-    expect(headings[1]).toContain("Advisory");
-    expect(headings[2]).toContain("Needs investigation");
-  });
-
-  it("keeps the green mark for a plan proven safe", async () => {
-    render(<PerformanceView adapter={adapter()} />);
-    const items = await rows();
-    const dot = (li: HTMLElement) =>
-      (li.querySelector("[aria-hidden='true'].rounded-full") as HTMLElement | null)?.style
-        .backgroundColor;
-    expect(dot(items[0]!)).toBe("var(--color-success)");
-    // Advisory with a stored plan: not proven safe, so not green.
-    expect(dot(items[1]!)).toBe("var(--color-text-tertiary)");
-  });
-
-  it("shows the cause in words, where in mono, and the sink as separate evidence", async () => {
+  it("leads each row with the fix, its gain, effort and safety, and the agent prompt", async () => {
     render(<PerformanceView adapter={adapter()} />);
     const [first] = await rows();
     expect(within(first!).getByText(/Database call inside a loop in/)).toBeTruthy();
     expect(within(first!).getByText("load").tagName).toBe("CODE");
-    expect(within(first!).getByText("src/db.py::fetch")).toBeTruthy();
+    expect(within(first!).getByText("Run the independent awaits together")).toBeTruthy();
+    expect(within(first!).getByText("Proven safe")).toBeTruthy();
     expect(within(first!).getByText(/2 call sites across 2 files/)).toBeTruthy();
-    expect(within(first!).getByText(/High evidence confidence/)).toBeTruthy();
+    expect(within(first!).getByRole("button", { name: "Copy prompt for your agent" })).toBeTruthy();
+    expect(within(first!).getByRole("link", { name: "Open plan" })).toBeTruthy();
+    // The file is one verb among the row's others, behind its menu.
+    expect(within(first!).queryByRole("button", { name: "Open file" })).toBeNull();
+    fireEvent.click(within(first!).getByRole("button", { name: /More actions for/ }));
+    expect(await screen.findByRole("button", { name: "Open the file" })).toBeTruthy();
   });
 
-  it("pages with the server cursor and never filters the page on the client", async () => {
-    const load = vi.fn(async () => page());
+  it("offers no plan link where there is no plan, and says there is no fix yet", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const items = await rows();
+    const last = items[items.length - 1]!;
+    expect(within(last).queryByRole("link", { name: "Open plan" })).toBeNull();
+    expect(within(last).getByText(/No supported fix yet/)).toBeTruthy();
+  });
+
+  it("leaves the actionability bar out when the scope holds one state", async () => {
+    const one = page({
+      items: [page().items[1]!],
+      total: 1,
+      next_offset: null,
+      facets: { ...page().facets, actionability: [{ value: "advisory", total: 1 }] },
+    });
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => one })} />);
+    await rows();
+    expect(screen.queryByRole("radiogroup", { name: "Actionability" })).toBeNull();
+  });
+
+  it("pages with the server cursor only when the result outgrows one page", async () => {
+    const load = vi.fn(async () => page({ total: 250, next_offset: 100 }));
     render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
     await rows();
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     await waitFor(() =>
-      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 3 })),
+      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 100 })),
     );
+  });
+
+  it("warms a cause's detail on hover through the key the drawer reads", async () => {
+    const detail = vi.fn(async () => resolvedDetail());
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: detail })} />);
+    const [first] = await rows();
+    fireEvent.mouseEnter(first!);
+    fireEvent.mouseEnter(first!);
+    await waitFor(() => expect(detail).toHaveBeenCalledTimes(1));
+    fireEvent.click(first!);
+    await screen.findByRole("dialog");
+    expect(detail).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -166,20 +292,62 @@ describe("PerformanceView states", () => {
   });
 
   it("distinguishes an analyzed empty repository from an unanalyzed one", async () => {
-    // Empty in every context, not merely outside the one on screen, so the
-    // answer is that nothing was found rather than that a filter hid it.
     const empty = page({
       items: [],
       total: 0,
       has_more: false,
       next_offset: null,
+      scopes: { now: 0, production: 0, all: 0 },
       summary: { ...page().summary, total: 0, repository_total: 0 },
     });
     render(
       <PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => empty })} />,
     );
-    expect(await screen.findByText("No supported pattern surfaced")).toBeTruthy();
-    expect(screen.getByText(/does not claim the code is fast/)).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "No performance changes worth making now in production code at 848a8f1",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText(/read code shape, not latency/)).toBeTruthy();
+  });
+
+  it("names the scope of a good state and folds the left-out reasons into its sentence", async () => {
+    const load = vi.fn(async () =>
+      page({
+        items: [],
+        total: 0,
+        has_more: false,
+        next_offset: null,
+        scopes: { now: 0, production: 5, all: 7 },
+        summary: {
+          ...page().summary,
+          default_queue: { total: 0, excluded: { unmeasured_cost: 5, test: 2, cold_path: 0 } },
+        },
+      }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    expect(await screen.findByRole("button", { name: "5 more production causes are not ready to act on" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Why left out?" }));
+    expect(screen.queryByRole("button", { name: /run rarely/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "loop size unknown" }));
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(
+        expect.objectContaining({ context: "production", proof: "unproven" }),
+      ),
+    );
+  });
+
+  it("reads an empty scope as clean, not as a filter that failed", async () => {
+    const load = vi.fn(async () =>
+      page({ items: [], total: 0, has_more: false, next_offset: null, scopes: { now: 0, production: 0, all: 3 } }),
+    );
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
+    expect(
+      await screen.findByText(
+        "No performance changes worth making now in production code at 848a8f1",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("No opportunities match these filters")).toBeNull();
   });
 
   it("offers a way back when a filter combination matches nothing", async () => {
@@ -188,12 +356,11 @@ describe("PerformanceView states", () => {
     );
     render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
     await rows();
+    fireEvent.click(screen.getByRole("button", { name: /More filters/ }));
     fireEvent.change(screen.getByLabelText("Boundary"), { target: { value: "db" } });
     expect(await screen.findByText("No opportunities match these filters")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
-    await waitFor(() =>
-      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ context: "all" })),
-    );
+    expect(await rows()).toHaveLength(3);
   });
 
   it("warns that a stale model can move ids", async () => {
@@ -421,8 +588,11 @@ describe("PerformanceView drawer", () => {
     };
     render(<PerformanceView adapter={adapter({ getRefactoringPlan: async () => exact })} />);
     await openFirstRow();
-    fireEvent.click(await screen.findByRole("button", { name: "Copy the plan for an agent" }));
-    expect(await screen.findByText("Structured plan handoff")).toBeTruthy();
+    const panel = await screen.findByRole("dialog");
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    expect(await screen.findByText("Prompt for your agent")).toBeTruthy();
+    expect(await screen.findByText(/chars, approx/)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Causal performance opportunity");
   });
 
   it("shows the plan prompt the server renders when the host serves one", async () => {
@@ -449,7 +619,8 @@ describe("PerformanceView drawer", () => {
       />,
     );
     await openFirstRow();
-    fireEvent.click(await screen.findByRole("button", { name: "Copy the plan for an agent" }));
+    const panel = await screen.findByRole("dialog");
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
     expect(await screen.findByText(/served plan-1 generic/)).toBeTruthy();
     expect(served).toHaveBeenCalledWith("plan-1", "generic");
   });
@@ -457,8 +628,28 @@ describe("PerformanceView drawer", () => {
   it("falls back to the evidence handoff when no plan was verified", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await openFirstRow();
-    fireEvent.click(await screen.findByRole("button", { name: "Copy an agent handoff" }));
-    expect(await screen.findByText("Agent handoff")).toBeTruthy();
+    const panel = await screen.findByRole("dialog");
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy prompt for your agent" }));
+    expect(await screen.findByText(/Causal performance opportunity/)).toBeTruthy();
+  });
+
+  it("opens the agent prompt straight from a row, without opening the drawer", async () => {
+    const served = vi.fn(async (planId: string, flavor: string) => `served ${planId} ${flavor}`);
+    render(<PerformanceView adapter={adapter({ getRefactoringPlanPrompt: served })} />);
+    const [first] = await rows();
+    fireEvent.click(within(first!).getByRole("button", { name: "Copy prompt for your agent" }));
+    // No plan fetch on this host, so the evidence handoff, and no drawer.
+    expect(await screen.findByText(/Causal performance opportunity/)).toBeTruthy();
+    expect(screen.queryByText("Show this cause on the map")).toBeNull();
+    expect(served).not.toHaveBeenCalled();
+  });
+
+  it("hands a whole area to an agent as one prompt", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await rows();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for these 3" }));
+    expect(await screen.findByText(/Performance causes in `src`/)).toBeTruthy();
+    expect(document.body.textContent).toContain("perf2_investigate");
   });
 
   it("rejects a stored plan whose opportunity identity does not match", async () => {
@@ -819,22 +1010,6 @@ describe("PerformanceView sort control", () => {
 });
 
 describe("PerformanceView compatibility", () => {
-  it("collapses production and tooling only when the server predates the vocabulary", async () => {
-    const load = vi.fn(async () => legacyPage());
-    render(<PerformanceView adapter={adapter({ getPerformanceOpportunities: load })} />);
-    await rows();
-    expect(screen.getByRole("tab", { name: /Production & tooling/ })).toBeTruthy();
-    expect(screen.queryByRole("tab", { name: /Unclassified/ })).toBeNull();
-    expect(screen.queryByLabelText("Boundary")).toBeNull();
-
-    fireEvent.click(screen.getByRole("tab", { name: /Production & tooling/ }));
-    await waitFor(() =>
-      expect(load).toHaveBeenLastCalledWith(
-        expect.objectContaining({ context: "production_tooling" }),
-      ),
-    );
-  });
-
   it("re-asks with the spelling an older server accepts when a link restored a context", async () => {
     const load = vi.fn(async () => legacyPage());
     render(
@@ -891,7 +1066,7 @@ describe("PerformanceView compatibility", () => {
     render(
       <PerformanceView
         adapter={adapter({ getPerformanceOpportunities: load })}
-        initialFilters="context=test&boundary=db"
+        initialFilters="scope=all&context=test&boundary=db"
         onFiltersChange={onFiltersChange}
       />,
     );
@@ -900,11 +1075,59 @@ describe("PerformanceView compatibility", () => {
         expect.objectContaining({ context: "test", boundary: "db" }),
       ),
     );
-    fireEvent.click(screen.getByRole("tab", { name: /Production 4/ }));
+    const scope = screen.getByRole("radiogroup", { name: "Scope" });
+    fireEvent.click(within(scope).getByRole("radio", { name: /All production/ }));
     await waitFor(() =>
-      expect(onFiltersChange).toHaveBeenLastCalledWith("context=production&boundary=db"),
+      expect(onFiltersChange).toHaveBeenLastCalledWith(
+        "scope=production&boundary=db",
+        expect.objectContaining({ scope: "production", context: null, boundary: "db" }),
+      ),
     );
   });
+
+  it("reads a link minted before scopes onto the scope that lists the same causes", async () => {
+    const load = vi.fn(async () => page());
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunities: load })}
+        initialFilters="tab=performance&ctx=all&proof=unproven&state=advisory"
+      />,
+    );
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(
+        expect.objectContaining({ context: "all", proof: "unproven", actionability: "advisory" }),
+      ),
+    );
+    expect(await screen.findByRole("button", { name: "Remove filter Showing: Advisory" })).toBeTruthy();
+  });
+
+  it("follows a URL it did not write while it stays mounted", async () => {
+    const load = vi.fn(async () => page());
+    const a = adapter({ getPerformanceOpportunities: load });
+    const view = (search: string) => (
+      <PerformanceView adapter={a} initialFilters={search} onFiltersChange={() => undefined} />
+    );
+    const { rerender } = render(view("scope=all&context=test&boundary=db"));
+    await rows();
+    const scope = screen.getByRole("radiogroup", { name: "Scope" });
+    fireEvent.click(within(scope).getByRole("radio", { name: /All production/ }));
+    // The host echoes the view's own write beside its own parameters.
+    rerender(view("tab=performance&scope=production&boundary=db"));
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(
+        expect.objectContaining({ context: "production", boundary: "db" }),
+      ),
+    );
+    // A link followed (or back) replaces the state.
+    rerender(view("tab=performance&scope=all&proof=unproven"));
+    await waitFor(() =>
+      expect(load).toHaveBeenLastCalledWith(
+        expect.objectContaining({ context: "all", proof: "unproven" }),
+      ),
+    );
+    expect(load).not.toHaveBeenLastCalledWith(expect.objectContaining({ boundary: "db" }));
+  });
+
 });
 
 describe("PerformanceView accessibility", () => {
@@ -920,17 +1143,12 @@ describe("PerformanceView accessibility", () => {
   it("names every filter control and the row overflow", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();
+    fireEvent.click(screen.getByRole("button", { name: /More filters/ }));
     expect(screen.getByLabelText("Boundary")).toBeTruthy();
-    expect(screen.getByLabelText("Actionability")).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "Actionability" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /More actions for/ }).length).toBeGreaterThan(0);
   });
 
-  it("announces the rendered scope through a status region", async () => {
-    render(<PerformanceView adapter={adapter()} />);
-    await rows();
-    const statuses = screen.getAllByRole("status").map((node) => node.textContent ?? "");
-    expect(statuses.some((text) => text.includes("opportunities"))).toBe(true);
-  });
 });
 
 describe("PerformanceView opened by a link", () => {
@@ -1045,20 +1263,6 @@ describe("PerformanceView drawer, the fix itself", () => {
     await openFirstRow();
     const panel = await screen.findByRole("dialog");
     expect(await within(panel).findByText(/No for or while line within 15 lines/)).toBeTruthy();
-  });
-});
-
-describe("ScopeLine", () => {
-  it.each([
-    ["all", 1, "1 opportunity"],
-    ["all", 2, "2 opportunities"],
-    ["production", 1, "1 production opportunity"],
-    ["production", 0, "0 production opportunities"],
-  ] as const)("names %s with %s as %s", (context, total, expected) => {
-    render(
-      <ScopeLine filteredTotal={total} repositoryTotal={total} context={context} narrowed={0} />,
-    );
-    expect(screen.getByRole("status").textContent).toContain(expected);
   });
 });
 

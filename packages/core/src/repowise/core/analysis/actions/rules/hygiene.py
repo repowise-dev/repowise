@@ -93,6 +93,8 @@ def live_secret(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             title = f"Rotate the {kind} in {code(path)}"
             impact = "A credential sits in the working tree; anyone who can read the repository can use it."
             done = "Rotate the credential with its provider, then remove it from the file."
+            # The only critical action: a usable credential is exposed until it
+            # is rotated, whatever else the week holds.
             tier, severity = "act_now", "critical"
         actions.append(
             Action(

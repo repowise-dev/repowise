@@ -28,6 +28,7 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.analysis.test_selection import expand_test_scopes, scope_kind
+from repowise.core.fsutils import comparable_path as _norm
 from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 from repowise.core.workspace.config import WorkspaceConfig
 from repowise.core.workspace.contracts import ContractLink, load_contract_store, same_service
@@ -118,14 +119,6 @@ class WorkspaceTestImpactResult:
     unresolved: list[UnresolvedLink] = field(default_factory=list)
     files_analyzed: list[dict[str, Any]] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
-
-
-def _norm(path: str) -> str:
-    """One comparable spelling of a repo-relative path."""
-    cleaned = (path or "").replace("\\", "/")
-    while cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    return cleaned
 
 
 def _internal_call(link: ContractLink) -> bool:

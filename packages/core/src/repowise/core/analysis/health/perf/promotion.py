@@ -78,7 +78,7 @@ def apply_perf_promotions(
 ) -> None:
     """Mark provably-independent advisory perf hits ``promoted``, in place.
 
-    Mirrors ``engine._apply_crossfn_perf``: it mutates each file's ``perf_hits``
+    Mirrors ``CrossFunctionPerfStage.apply_crossfn``: it mutates each file's ``perf_hits``
     in place and is fully failure-isolated, so a promotion hiccup never blocks
     the health report. Must run AFTER the graph-dependent perf passes so the
     centrality-gated ``nested_loop_quadratic`` hits are present.

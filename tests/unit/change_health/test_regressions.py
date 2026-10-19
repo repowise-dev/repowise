@@ -211,6 +211,8 @@ def _scored(specs: list[tuple[str, str, int]]) -> list[HealthFindingData]:
             self.biomarker_type = marker
             self.severity = Severity.MEDIUM
             self.deduction = None
+            self.function_name = None
+            self.details: dict = {}
 
     _score, impacts = score_file([_R(m) for m, _sym, _line in specs])
     return [
@@ -272,7 +274,7 @@ def test_a_continuous_marker_still_worsens_when_its_own_deduction_grows():
     assert [m.kind for m in worse] == ["worsened"]
 
     better = FindingMatcher().match([gradient(0.6)], [gradient(0.2)]).matched
-    assert [m.kind for m in better] == ["unchanged"]
+    assert [m.kind for m in better] == ["improved"]
 
 
 def test_an_expected_cause_says_there_is_nothing_to_change():

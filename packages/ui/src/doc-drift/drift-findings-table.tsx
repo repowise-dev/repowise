@@ -30,6 +30,7 @@ import {
   type ResponsiveColumn,
 } from "../shared/responsive-table";
 import { EmptyState } from "../shared/empty-state";
+import { FilePath } from "../shared/file-path";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { groupByDocument } from "./group-by-document";
 
@@ -183,11 +184,8 @@ export function DriftFindingsTable({
       {groups.map((group) => (
         <section key={group.document} aria-label={group.document}>
           <header className="flex min-w-0 items-baseline justify-between gap-3 bg-[var(--color-bg-elevated)] px-3 py-2">
-            <h3
-              className="min-w-0 truncate font-mono text-xs font-medium text-[var(--color-text-primary)]"
-              title={group.document}
-            >
-              {group.document}
+            <h3 className="flex min-w-0 text-xs font-medium text-[var(--color-text-primary)]">
+              <FilePath path={group.document} />
             </h3>
             <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">
               {group.items.length}{" "}

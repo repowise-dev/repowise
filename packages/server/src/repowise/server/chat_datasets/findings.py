@@ -8,12 +8,14 @@ confidence floors.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.rows import field
 from repowise.server.chat_datasets import SUMS, DatasetField, LoadContext, register_dataset
-from repowise.server.chat_datasets.files import files_index, place, unique_suffixes
+from repowise.server.chat_datasets.files import by_path, place, unique_suffixes
 
 _PLACE_FIELDS = {
     "path": DatasetField("text", "the file's full repository path"),
@@ -52,22 +54,34 @@ async def load_findings(ctx: LoadContext) -> list[dict[str, Any]]:
         HealthFinding.status == "open",
         shown("health", HealthFinding.biomarker_type, HealthFinding.file_path),
     )
-    files = await files_index(ctx)
+    return findings_rows(plain_rows(await ctx.session.execute(q)), await ctx.rows("files"))
+
+
+def findings_rows(found: Iterable[Any], files: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The ``findings`` dataset's rows over open, shown health findings.
+
+    *found* holds ``file_path``, ``biomarker_type``, ``severity`` and
+    ``dimension``; *files* is the ``files`` dataset's rows.
+    """
+    index = by_path(files)
     # Files the health exclude rule drops carry no listed finding either.
-    found = [f for f in plain_rows(await ctx.session.execute(q)) if f.file_path in files]
-    placed = place([f.file_path for f in found], files)
-    return [
-        {
-            "kind": f.biomarker_type,
-            "severity": f.severity,
-            "dimension": f.dimension or "defect",
-            "path": f.file_path,
-            "file": files[f.file_path]["file"],
-            "package": placed[f.file_path][0],
-            "directory": placed[f.file_path][1],
-        }
-        for f in found
-    ]
+    kept = [f for f in found if field(f, "file_path") in index]
+    placed = place([field(f, "file_path") for f in kept], index)
+    rows = []
+    for f in kept:
+        path = field(f, "file_path")
+        rows.append(
+            {
+                "kind": field(f, "biomarker_type"),
+                "severity": field(f, "severity"),
+                "dimension": field(f, "dimension") or "defect",
+                "path": path,
+                "file": index[path]["file"],
+                "package": placed[path][0],
+                "directory": placed[path][1],
+            }
+        )
+    return rows
 
 
 def _tier(confidence: float) -> str:
@@ -99,21 +113,35 @@ async def load_dead_code(ctx: LoadContext) -> list[dict[str, Any]]:
     from repowise.core.persistence.crud.analysis.dead_code import get_dead_code_findings
 
     found = await get_dead_code_findings(ctx.session, ctx.repository.id)
-    files = await files_index(ctx)
-    placed = place([f.file_path for f in found], files)
+    return dead_code_rows(found, await ctx.rows("files"))
+
+
+def dead_code_rows(found: Iterable[Any], files: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The ``dead_code`` dataset's rows over open dead-code findings.
+
+    *found* holds ``file_path``, ``kind``, ``confidence``, ``symbol_name``,
+    ``lines`` and ``safe_to_delete``; *files* is the ``files`` dataset's rows.
+    """
+    found = list(found)
+    index = by_path(files)
+    placed = place([field(f, "file_path") for f in found], index)
     labels = unique_suffixes(placed)
-    return [
-        {
-            "kind": f.kind,
-            "tier": _tier(f.confidence or 0.0),
-            "confidence": f.confidence,
-            "symbol": f.symbol_name,
-            "lines": f.lines,
-            "safe_to_delete": bool(f.safe_to_delete),
-            "path": f.file_path,
-            "file": files[f.file_path]["file"] if f.file_path in files else labels[f.file_path],
-            "package": placed[f.file_path][0],
-            "directory": placed[f.file_path][1],
-        }
-        for f in found
-    ]
+    rows = []
+    for f in found:
+        path = field(f, "file_path")
+        confidence = field(f, "confidence")
+        rows.append(
+            {
+                "kind": field(f, "kind"),
+                "tier": _tier(confidence or 0.0),
+                "confidence": confidence,
+                "symbol": field(f, "symbol_name"),
+                "lines": field(f, "lines"),
+                "safe_to_delete": bool(field(f, "safe_to_delete")),
+                "path": path,
+                "file": index[path]["file"] if path in index else labels[path],
+                "package": placed[path][0],
+                "directory": placed[path][1],
+            }
+        )
+    return rows

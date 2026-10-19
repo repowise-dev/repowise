@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from repowise.core.persistence.database import (
@@ -38,6 +39,7 @@ from repowise.core.providers.embedding.registry import DEFAULT_EMBEDDER
 from repowise.server import __version__
 from repowise.server.routers import (
     actions,
+    areas,
     blast_radius,
     c4,
     changes,
@@ -74,6 +76,7 @@ from repowise.server.routers import (
     stats,
     symbols,
     webhooks,
+    wins,
     workspace,
 )
 from repowise.server.scheduler import setup_scheduler
@@ -328,6 +331,7 @@ _ROUTERS = (
     webhooks,
     git,
     changes,
+    wins,
     events,
     dead_code,
     doc_drift,
@@ -348,6 +352,7 @@ _ROUTERS = (
     workspace,
     owners,
     modules,
+    areas,
     overview,
     stats,
     files,
@@ -378,6 +383,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Whole-repo JSON (the map, area trees, file lists) compresses 10:1 or better.
+    # Starlette leaves ``text/event-stream`` alone, so chat and job streams still
+    # flush per event; below 1 KB the header costs more than it saves. Level 5
+    # keeps most of level 9's ratio at a fraction of its CPU on 600 KB bodies.
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
     # Exception handlers
     @app.exception_handler(LookupError)

@@ -88,7 +88,12 @@ class TextSignal:
         finally:
             db.close()
         wanted = list(dict.fromkeys(terms))
-        matched = {cid: [t for t in wanted if _fts_matches(t, _fts_words(body))] for cid, _, body in rows}
+        # Each body is folded and split once, not once per term.
+        matched = {
+            cid: [t for t in wanted if _fts_matches(t, words)]
+            for cid, _, body in rows
+            for words in (_fts_words(body),)
+        }
         # Evidence only (the score is BM25's): the rarest matched terms first,
         # without the repo's own name or filler words that match every row.
         df = Counter(t for ts in matched.values() for t in ts)

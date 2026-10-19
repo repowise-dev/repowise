@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
+from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -31,6 +33,13 @@ _PERSON_TRAILER_RE = re.compile(
     r"|^[ \t]*[A-Za-z][\w-]*[ \t]*:.*<[^<>\s]+@[^<>\s]+>.*$",
     re.IGNORECASE | re.MULTILINE,
 )
+#: ``(repo, head sha, symbols read) -> (body, symbols)``. A commit's text never
+#: changes, so a long-lived MCP server reads each change once instead of
+#: re-running ``git log -U0`` over the whole window on every suspects call.
+#: Ceiling: LRU-bounded; one entry is a message body and a few names.
+_TEXTS: OrderedDict[tuple[str, str, bool], tuple[str, tuple[str, ...]]] = OrderedDict()
+_TEXTS_MAX = 8192
+_TEXTS_LOCK = threading.Lock()
 
 
 def strip_person_trailers(body: str) -> str:
@@ -76,6 +85,27 @@ def read_change_texts(
     """
     repo = Path(repo_path)
     heads = [(s.strip(), n) for s, n in heads if s and s.strip()]
+    keys = {s: (str(repo), s, n <= MAX_DIFF_FILES) for s, n in heads}
+    out: dict[str, tuple[str, tuple[str, ...]]] = {}
+    with _TEXTS_LOCK:
+        for sha, key in keys.items():
+            if (hit := _TEXTS.get(key)) is not None:
+                _TEXTS.move_to_end(key)
+                out[sha] = hit
+    read = _read_change_texts(repo, [(s, n) for s, n in heads if s not in out])
+    with _TEXTS_LOCK:
+        for sha, text in read.items():
+            if sha in keys:
+                _TEXTS[keys[sha]] = text
+        while len(_TEXTS) > _TEXTS_MAX:
+            _TEXTS.popitem(last=False)
+    out.update(read)
+    return out
+
+
+def _read_change_texts(
+    repo: Path, heads: list[tuple[str, int]]
+) -> dict[str, tuple[str, tuple[str, ...]]]:
     out: dict[str, tuple[str, tuple[str, ...]]] = {}
     for rec in _log(repo, ["--format=%x00%H%n%b"], [s for s, _ in heads]).split("\x00"):
         sha, _, body = rec.partition("\n")

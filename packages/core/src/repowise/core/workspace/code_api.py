@@ -38,6 +38,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.fsutils import repo_relative
 from repowise.core.pyparse import parse_python
 
 if TYPE_CHECKING:
@@ -101,13 +102,6 @@ class PublishedPackage:
 # ---------------------------------------------------------------------------
 # Manifest reading — one small function per ecosystem
 # ---------------------------------------------------------------------------
-
-
-def _rel(path: Path, repo_path: Path) -> str | None:
-    try:
-        return path.relative_to(repo_path).as_posix()
-    except ValueError:
-        return None
 
 
 def _npm(data: dict[str, Any], root: str) -> tuple[str, frozenset[str]] | None:
@@ -277,7 +271,7 @@ def find_published_packages(
     for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=prune):
         if len(dirpath.relative_to(repo_path).parts) >= _MANIFEST_DEPTH:
             dirnames[:] = []
-        rel_dir = _rel(dirpath, repo_path)
+        rel_dir = repo_relative(dirpath, repo_path)
         if rel_dir is None:
             continue
         root = "" if rel_dir == "." else rel_dir
@@ -291,7 +285,7 @@ def find_published_packages(
             if ecosystem is None:
                 continue
             manifest = dirpath / fname
-            rel_manifest = _rel(manifest, repo_path)
+            rel_manifest = repo_relative(manifest, repo_path)
             if rel_manifest is None:
                 continue
             try:
@@ -322,7 +316,7 @@ def find_published_packages(
 
     for csproj in find_csproj_files(repo_path):
         project = parse_csproj(csproj)
-        rel_manifest = _rel(csproj, repo_path) if project is not None else None
+        rel_manifest = repo_relative(csproj, repo_path) if project is not None else None
         if project is None or rel_manifest is None:
             continue
         root = rel_manifest.rsplit("/", 1)[0] if "/" in rel_manifest else ""

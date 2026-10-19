@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { Input } from "../ui/input";
@@ -8,37 +7,19 @@ import { EmptyState } from "../shared/empty-state";
 import { CiHint } from "../shared/ci-hint";
 import { Segmented } from "../shared/segmented";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { PromptForRowsButton, RowPromptAction } from "../health/row-prompt-action";
+import { AGENT_PROMPT_LABEL } from "../health/ai-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
-import { securityLevel, securityPathClass, type SecurityLevel } from "./posture";
+import { FilePath } from "../shared/file-path";
+import { securityLevel, type SecurityLevel } from "./posture";
 import type { SecurityFinding } from "@repowise-dev/types";
 
 // One declaration of the wire shape, not a third hand-kept copy: this file's
 // local interface had already drifted behind the endpoint, which is how the
 // line number went unrendered.
 export type { SecurityFinding };
-
-// Break only at path separators; `anywhere` is the last resort for a single
-// segment wider than the box.
-function BreakablePath({ path }: { path: string }) {
-  const parts = path.split("/");
-  return (
-    <>
-      {parts.map((part, i) => (
-        <React.Fragment key={i}>
-          {part}
-          {i < parts.length - 1 && (
-            <>
-              /<wbr />
-            </>
-          )}
-        </React.Fragment>
-      ))}
-    </>
-  );
-}
 
 // The scanner's `med` is the shared scale's `medium`. No level maps to
 // critical: a pattern match is a lead to confirm, not a proven path to harm.
@@ -63,57 +44,37 @@ const FILTERS: { value: SeverityFilter; label: string }[] = [
  * flagged code has moved away entirely. A wrong line here sends the reader to
  * innocent code looking authoritative, which is worse than showing none.
  *
- * The path is the row's name, so it wraps rather than truncates.
+ * The path is the row's name: its file name never clips.
  */
 function FindingLocation({ finding }: { finding: SecurityFinding }) {
   const line = finding.line_number;
   const verified = finding.line_verified;
   // Tests and docs are labelled, never headlined: shipped code ranks first.
-  const where = securityPathClass(finding.file_path);
+  const where = finding.path_class ?? "source";
   const tag =
     where === "source" ? null : (
       <span className="ml-1.5 font-sans text-2xs text-[var(--color-text-tertiary)]">{where}</span>
     );
 
-  // Every state carries words, not just a colour and a tooltip: `title` is
-  // invisible to touch and to assistive tech, which is why VerificationBadge
-  // keeps an sr-only label beside its icon. Same convention here.
-  if (line == null) {
-    return (
-      <span
-        className="block min-w-[14rem] [overflow-wrap:anywhere] font-mono text-xs text-[var(--color-text-primary)]"
-        title={`${finding.file_path}: the flagged code is no longer at the recorded line`}
-      >
-        <BreakablePath path={finding.file_path} />
-        <span className="ml-1.5 not-italic text-2xs text-[var(--color-text-tertiary)]">
-          (line moved)
-        </span>
-        {tag}
-      </span>
-    );
-  }
-
+  // Every state carries words, not just a colour: a line the server could
+  // not confirm is marked `~` and named, and a line that moved away is named.
+  // The file name leads; the directory clips before it, and the tooltip and
+  // accessible name keep the whole `path:line`.
+  const note = line == null ? "line moved" : verified ? null : "unconfirmed";
   return (
-    <span
-      className="block min-w-[14rem] [overflow-wrap:anywhere] font-mono text-xs text-[var(--color-text-primary)]"
-      title={
-        verified
-          ? `${finding.file_path}:${line}`
-          : `${finding.file_path}:${line}: could not be confirmed against the current file`
-      }
-    >
-      <BreakablePath path={finding.file_path} />
-      <wbr />
-      <span
-        className={
-          verified ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)]"
-        }
-      >
-        :{verified ? "" : "~"}
-        {line}
-      </span>
-      {!verified && <span className="sr-only"> (line unconfirmed)</span>}
-      {tag}
+    <span className="flex min-w-[14rem] max-w-[28rem] items-baseline text-[var(--color-text-primary)]">
+      <FilePath
+        path={finding.file_path}
+        line={line == null ? null : verified ? line : `~${line}`}
+        fold
+        className="min-w-0"
+      />
+      {note ? (
+        <span className="ml-1.5 shrink-0 font-sans text-2xs text-[var(--color-text-tertiary)]">
+          ({note})
+        </span>
+      ) : null}
+      {tag ? <span className="shrink-0">{tag}</span> : null}
     </span>
   );
 }
@@ -121,11 +82,27 @@ function FindingLocation({ finding }: { finding: SecurityFinding }) {
 export interface SecurityFindingsTableProps {
   findings: SecurityFinding[];
   onSelect?: (finding: SecurityFinding) => void;
-  /** When set, each row shows an "AI fix prompt" action that calls this. */
+  /**
+   * When set, each row leads with an agent-prompt action that calls this:
+   * the row's primary verb, since fixes happen through the reader's agent.
+   */
   onGeneratePrompt?: (finding: SecurityFinding) => void;
+  /** The prompt action's label. */
+  promptLabel?: string;
+  /** One prompt over every finding the current filters show. */
+  onGenerateBatchPrompt?: (findings: SecurityFinding[]) => void;
+  /** The batch action's label for `n` findings. */
+  batchPromptLabel?: (count: number) => string;
 }
 
-export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: SecurityFindingsTableProps) {
+export function SecurityFindingsTable({
+  findings,
+  onSelect,
+  onGeneratePrompt,
+  promptLabel = AGENT_PROMPT_LABEL,
+  onGenerateBatchPrompt,
+  batchPromptLabel,
+}: SecurityFindingsTableProps) {
   const [q, setQ] = useState("");
   const [sev, setSev] = useState<SeverityFilter>("all");
 
@@ -152,7 +129,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
     // What to do first: shipped source before tests before docs, then severity.
     return [...items].sort(
       (a, b) =>
-        CLASS_RANK[securityPathClass(a.file_path)] - CLASS_RANK[securityPathClass(b.file_path)] ||
+        CLASS_RANK[a.path_class ?? "source"] - CLASS_RANK[b.path_class ?? "source"] ||
         LEVEL_RANK[securityLevel(a.severity)] - LEVEL_RANK[securityLevel(b.severity)],
     );
   }, [findings, q, sev]);
@@ -182,7 +159,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
         priority: 2,
         render: (f) => (
           <span
-            className="block max-w-[320px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+            className="block max-w-[240px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
             title={f.snippet ?? ""}
           >
             {f.snippet || "—"}
@@ -221,21 +198,13 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
       cols.push({
         key: "actions",
         header: "",
-        headerClassName: "w-10",
-        hideInCard: true,
         render: (f) => (
-          <span onClick={(e) => e.stopPropagation()}>
-            <AiPromptButton
-              variant="icon"
-              label="AI fix prompt"
-              onClick={() => onGeneratePrompt(f)}
-            />
-          </span>
+          <RowPromptAction label={promptLabel} subject={f.file_path} onClick={() => onGeneratePrompt(f)} />
         ),
       });
     }
     return cols;
-  }, [onGeneratePrompt]);
+  }, [onGeneratePrompt, promptLabel]);
 
   if (findings.length === 0) {
     return (
@@ -271,6 +240,14 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
           />
         </div>
         <Segmented label="Severity" value={sev} onChange={setSev} options={options} />
+        {onGenerateBatchPrompt && (
+          <PromptForRowsButton
+            count={filtered.length}
+            onClick={() => onGenerateBatchPrompt(filtered)}
+            {...(batchPromptLabel ? { label: batchPromptLabel } : {})}
+            className="sm:ml-auto"
+          />
+        )}
       </div>
 
       {/* Scrolls sideways inside its own frame on a phone rather than

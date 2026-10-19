@@ -9,6 +9,7 @@
 
 import { useMemo } from "react";
 import { cn } from "../../lib/cn";
+import { formatScore } from "@repowise-dev/types/health";
 import { performanceBurden, performanceSentence } from "./lens";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./types";
 
@@ -132,7 +133,7 @@ export function MapFieldList({
                     </span>
                   ) : (
                     <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--color-text-secondary)]">
-                      {f.score == null ? "—" : f.score.toFixed(1)}
+                      {f.score == null ? "—" : formatScore(f.score)}
                     </span>
                   )}
                 </span>

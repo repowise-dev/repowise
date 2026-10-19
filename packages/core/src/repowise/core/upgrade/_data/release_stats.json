@@ -19,24 +19,24 @@
     "test_files_new": 158,
     "issues_closed": 76
   },
-  "unreleased": {
+  "0.57.0": {
     "since": "0.56.0",
     "days": 3,
-    "prs": 205,
-    "contributors": 24,
-    "first_time_contributors": 11,
-    "files_changed": 1226,
-    "lines_added": 103206,
-    "lines_removed": 11127,
+    "prs": 264,
+    "contributors": 41,
+    "first_time_contributors": 25,
+    "files_changed": 1421,
+    "lines_added": 123474,
+    "lines_removed": 15118,
     "types": {
-      "fixes": 147,
-      "features": 45,
-      "perf": 0,
-      "refactors": 4,
-      "docs": 6
+      "fixes": 192,
+      "features": 51,
+      "perf": 3,
+      "refactors": 5,
+      "docs": 7
     },
-    "test_files_touched": 437,
-    "test_files_new": 144,
-    "issues_closed": 25
+    "test_files_touched": 504,
+    "test_files_new": 168,
+    "issues_closed": 53
   }
 }

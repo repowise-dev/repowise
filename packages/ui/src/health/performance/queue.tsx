@@ -1,224 +1,196 @@
 "use client";
 
 import { memo, useState } from "react";
-import { Copy, ExternalLink, FileCode, MoreHorizontal } from "lucide-react";
+import { Copy, FileCode, MoreHorizontal } from "lucide-react";
 import { toast } from "sonner";
-import type {
-  PerformanceActionabilityState,
-  PerformanceFacets,
-  PerformanceOpportunity,
-} from "@repowise-dev/types/health";
+import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
 import { Button } from "../../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../../shared/responsive-table";
-import { LowerPriorityTag } from "../lower-priority-tag";
-import { PreviewBadge } from "../preview-badge";
+import { AGENT_PROMPT_LABEL } from "../ai-prompt-action";
+import { AiPromptButton } from "../ai-prompt-button";
 import type { PerformanceViewAdapter } from "./adapter";
 import {
-  ACTIONABILITY_HINT,
-  ACTIONABILITY_LABEL,
   affectedSummary,
   agentHandoffCall,
-  boundaryLabel,
-  contextLabel,
-  CONFIDENCE_LABEL,
-  opportunityEvidenceLine,
+  effortLabel,
+  FIX_SAFETY_LABEL,
+  fixStrategyLabel,
   opportunityCause,
   opportunitySubject,
   opportunityTitle,
   planPresentation,
-  whyRankedLabel,
-  whyRankedPhrase,
 } from "./presentation";
+import { OpportunityTags } from "./tags";
 
 /**
- * The queue: full-width rows under section headings, one primary verb each.
- *
- * Sections are contiguous runs of the server's order, never a regrouping. The
- * server ranks actionable work first, so the runs read as tiers; if that order
- * ever changed, the runs would still describe exactly what was returned.
+ * Action-first rows: what to change, what it buys and what it costs, then the
+ * verbs. The agent prompt is the primary one, because people fix these through
+ * their agents; inspecting, the plan and the file are secondary.
  */
 
-interface Section {
-  state: PerformanceActionabilityState;
-  items: PerformanceOpportunity[];
+export interface RowCallbacks {
+  onInspect: (opportunity: PerformanceOpportunity) => void;
+  onPrompt: (opportunity: PerformanceOpportunity) => void;
+  /** Warm the detail the drawer and the prompt read, on hover or focus. */
+  onPrefetch: (opportunityId: string) => void;
 }
 
-export function contiguousSections(items: PerformanceOpportunity[]): Section[] {
-  const sections: Section[] = [];
-  for (const item of items) {
-    const last = sections[sections.length - 1];
-    if (last && last.state === item.actionability_state) last.items.push(item);
-    else sections.push({ state: item.actionability_state, items: [item] });
-  }
-  return sections;
-}
-
-function facetTotal(facets: PerformanceFacets, value: string): number | null {
-  const found = facets.actionability?.find((entry) => entry.value === value);
-  return found ? found.total : null;
-}
-
-export function OpportunityQueue({
+export function OpportunityList({
   items,
-  facets,
   adapter,
-  showSections,
   selectedId,
-  onInspect,
+  callbacks,
+  label,
 }: {
   items: PerformanceOpportunity[];
-  facets: PerformanceFacets;
   adapter: PerformanceViewAdapter;
-  /** Sections are headings over one ranked list, so a narrowed queue drops them. */
-  showSections: boolean;
   selectedId: string | null;
-  onInspect: (opportunity: PerformanceOpportunity) => void;
+  callbacks: RowCallbacks;
+  label: string;
 }) {
-  const sections = showSections
-    ? contiguousSections(items)
-    : [{ state: items[0]?.actionability_state ?? "investigate", items }];
-
   return (
-    <div className="space-y-8">
-      {sections.map((section, index) => (
-        <section key={`${section.state}-${index}`} aria-labelledby={`perf-section-${index}`}>
-          {showSections ? (
-            <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-              <h3
-                id={`perf-section-${index}`}
-                className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
-              >
-                {ACTIONABILITY_LABEL[section.state]}
-                {facetTotal(facets, section.state) != null ? (
-                  <span className="ml-2 tabular-nums">
-                    {facetTotal(facets, section.state)!.toLocaleString()} matching
-                  </span>
-                ) : null}
-              </h3>
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                {ACTIONABILITY_HINT[section.state]}
-              </p>
-            </div>
-          ) : (
-            <h3 id={`perf-section-${index}`} className="sr-only">
-              Performance opportunities
-            </h3>
-          )}
-          <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-            {section.items.map((opportunity) => (
-              <OpportunityRow
-                key={opportunity.opportunity_id}
-                opportunity={opportunity}
-                adapter={adapter}
-                selected={opportunity.opportunity_id === selectedId}
-                onInspect={onInspect}
-              />
-            ))}
-          </ul>
-        </section>
+    <ul
+      aria-label={label}
+      className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]"
+    >
+      {items.map((opportunity) => (
+        <OpportunityRow
+          key={opportunity.opportunity_id}
+          opportunity={opportunity}
+          adapter={adapter}
+          selected={opportunity.opportunity_id === selectedId}
+          onInspect={callbacks.onInspect}
+          onPrompt={callbacks.onPrompt}
+          onPrefetch={callbacks.onPrefetch}
+        />
       ))}
-    </div>
+    </ul>
   );
 }
 
-function StatusMark({ opportunity }: { opportunity: PerformanceOpportunity }) {
-  const plan = planPresentation(opportunity);
-  // Green only where the plan is proven safe: an advisory cause can carry a
-  // stored plan while the "Plan ready" count beside the queue reads 0.
-  const tone =
-    plan.actionable && opportunity.actionability_state === "plan_ready"
-      ? "var(--color-success)"
-      : "var(--color-text-tertiary)";
+/** The fix in one line: strategy, gain, effort and safety, each only when known. */
+function FixLine({ opportunity }: { opportunity: PerformanceOpportunity }) {
+  const effort = effortLabel(opportunity);
+  const { fix, gain_text: gain } = opportunity;
+  if (!fix) {
+    return (
+      <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+        No supported fix yet: read the evidence before changing anything.
+      </p>
+    );
+  }
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-[var(--color-text-secondary)]">
-      <span
-        aria-hidden="true"
-        className="h-1.5 w-1.5 shrink-0 rounded-full"
-        style={{ backgroundColor: tone }}
-      />
-      {plan.label}
-    </span>
+    <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-text-secondary)]">
+      <span className="font-medium text-[var(--color-text-primary)]">
+        {fixStrategyLabel(fix.strategy)}
+      </span>
+      {gain ? <span>saves {gain}</span> : null}
+      {effort ? (
+        <span className="rounded border border-[var(--color-border-default)] px-1.5 font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+          {effort} effort
+        </span>
+      ) : null}
+      <span className="inline-flex items-center gap-1 text-[var(--color-text-tertiary)]">
+        {fix.safety === "proven" ? (
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)]" />
+        ) : null}
+        {FIX_SAFETY_LABEL[fix.safety]}
+      </span>
+    </p>
   );
 }
+
+/** A quiet link: secondary ink at rest, the accent only on hover and focus. */
+export const QUIET_LINK_CLS =
+  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
 
 /**
- * Memoized because a page is twenty of these and the surrounding filter state
- * changes far more often than any single row does. It takes the callback
- * rather than a closure over one opportunity so the props stay comparable.
+ * Memoized because a page is up to a hundred of these and the surrounding
+ * filter state changes far more often than any single row does. It takes the
+ * callbacks rather than closures over one opportunity so the props compare.
  */
 const OpportunityRow = memo(function OpportunityRow({
   opportunity,
   adapter,
   selected,
   onInspect,
+  onPrompt,
+  onPrefetch,
 }: {
   opportunity: PerformanceOpportunity;
   adapter: PerformanceViewAdapter;
   selected: boolean;
-  onInspect: (opportunity: PerformanceOpportunity) => void;
-}) {
+} & RowCallbacks) {
   const title = opportunityTitle(opportunity);
-  const why = opportunity.why_ranked.slice(0, 3);
+  const plan = planPresentation(opportunity);
+  const planHref =
+    plan.actionable && opportunity.plan_id
+      ? adapter.refactoringPlanHref?.(opportunity.plan_id, opportunity.opportunity_id)
+      : undefined;
+  const prefetch = () => onPrefetch(opportunity.opportunity_id);
+
   return (
     <li
       data-performance-opportunity={opportunity.opportunity_id}
       aria-current={selected ? "true" : undefined}
-      className={`${CLICKABLE_ROW_CLS} flex items-start gap-3 px-1 py-4 sm:gap-4 ${
+      aria-label={`Inspect ${title}`}
+      className={`${CLICKABLE_ROW_CLS} group/row flex flex-col gap-3 px-1 py-4 sm:flex-row sm:items-start sm:gap-4 ${
         selected ? "bg-[var(--color-bg-elevated)]" : "hover:bg-[var(--color-bg-elevated)]"
       }`}
-      aria-label={`Inspect ${title}`}
+      onMouseEnter={prefetch}
+      onFocus={prefetch}
       {...clickableRowProps(() => onInspect(opportunity))}
     >
-      <span className="mt-0.5 w-7 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {(opportunity.rank_position + 1).toLocaleString()}
-      </span>
-
-      <div className="min-w-0 flex-1">
-        <p className="text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
-          {opportunityCause(opportunity)} in{" "}
-          <code className="font-mono text-[0.85em] [overflow-wrap:anywhere]">
-            {opportunitySubject(opportunity)}
-          </code>
-        </p>
-        <p className="mt-1 break-all font-mono text-xs text-[var(--color-text-secondary)]">
-          {opportunityEvidenceLine(opportunity)}
-        </p>
-        <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
-          {contextLabel(opportunity.execution_context)} ·{" "}
-          {boundaryLabel(opportunity.boundary_kind)} ·{" "}
-          <span className="tabular-nums">{affectedSummary(opportunity)}</span> ·{" "}
-          {CONFIDENCE_LABEL[opportunity.confidence]} evidence confidence
-        </p>
-        {opportunity.lower_priority ? (
-          <p className="mt-1">
-            <LowerPriorityTag reason={opportunity.lower_priority} />
+      <div className="flex min-w-0 flex-1 gap-3">
+        <span className="mt-0.5 w-7 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
+          {(opportunity.rank_position + 1).toLocaleString()}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
+            {opportunityCause(opportunity)} in{" "}
+            <code className="font-mono text-[0.85em] [overflow-wrap:anywhere]">
+              {opportunitySubject(opportunity)}
+            </code>
           </p>
-        ) : null}
-        {opportunity.preview ? (
-          <p className="mt-1">
-            <PreviewBadge note={opportunity.preview} />
+          <FixLine opportunity={opportunity} />
+          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+            <span className="break-all font-mono">{opportunity.file_path}</span> ·{" "}
+            <span className="tabular-nums">{affectedSummary(opportunity)}</span>
           </p>
-        ) : null}
-        {why.length > 0 ? (
-          <p
-            className="mt-1 text-xs text-[var(--color-text-tertiary)]"
-            title={`Ranked on ${why.map(whyRankedLabel).join(", ")}`}
-          >
-            Why here: {why.map(whyRankedPhrase).join(", ")}
-          </p>
-        ) : null}
-        <div className="mt-2 sm:hidden">
-          <StatusMark opportunity={opportunity} />
+          <OpportunityTags opportunity={opportunity} />
+          {planHref ? (
+            <p className="mt-2 text-xs">
+              <a
+                href={planHref}
+                onClick={(event) => event.stopPropagation()}
+                className={QUIET_LINK_CLS}
+              >
+                Open plan
+              </a>
+            </p>
+          ) : null}
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 sm:gap-3">
-        <span className="hidden sm:inline">
-          <StatusMark opportunity={opportunity} />
-        </span>
-        <RowOverflow opportunity={opportunity} adapter={adapter} title={title} />
+      <div className="flex shrink-0 items-center gap-1 pl-10 sm:pl-0">
+        {/* Quiet per row: a ghost button shown on hover, focus and the
+            selected row, always in the tab order; the filled prompt lives on
+            the area header and in the drawer. Interim styling until the
+            shared row-action component (L-nav) lands, then swap to it. */}
+        <AiPromptButton
+          label={AGENT_PROMPT_LABEL}
+          onClick={() => onPrompt(opportunity)}
+          className={`border-transparent bg-transparent transition-opacity focus-visible:opacity-100 sm:group-hover/row:opacity-100 sm:group-focus-within/row:opacity-100 ${
+            selected ? "" : "sm:opacity-0"
+          }`}
+        />
+        <RowOverflow
+          opportunity={opportunity}
+          title={title}
+          onOpenFile={() => adapter.navigate(adapter.fileHref(opportunity.file_path))}
+        />
       </div>
     </li>
   );
@@ -233,31 +205,19 @@ async function copy(text: string, what: string) {
   }
 }
 
-/**
- * Secondary actions. Inspect is the row itself, so nothing here repeats it and
- * each entry names a different kind of destination.
- */
+/** The row's other verbs: open the file, and the ids an agent or a script
+ *  resolves the cause by. */
 function RowOverflow({
   opportunity,
-  adapter,
   title,
+  onOpenFile,
 }: {
   opportunity: PerformanceOpportunity;
-  adapter: PerformanceViewAdapter;
   title: string;
+  onOpenFile: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const plan = planPresentation(opportunity);
-  const planHref =
-    plan.actionable && opportunity.plan_id
-      ? adapter.refactoringPlanHref?.(opportunity.plan_id, opportunity.opportunity_id)
-      : undefined;
-
-  const item = (
-    label: string,
-    Icon: typeof Copy,
-    onClick: () => void,
-  ) => (
+  const item = (label: string, Icon: typeof Copy, onClick: () => void) => (
     <button
       type="button"
       onClick={() => {
@@ -270,7 +230,6 @@ function RowOverflow({
       {label}
     </button>
   );
-
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -289,18 +248,11 @@ function RowOverflow({
         className="w-64 p-1"
         onClick={(event) => event.stopPropagation()}
       >
-        {item("Open the file", FileCode, () =>
-          adapter.navigate(adapter.fileHref(opportunity.file_path)),
-        )}
-        {planHref
-          ? item("Open the plan on Refactoring", ExternalLink, () => adapter.navigate(planHref))
-          : null}
+        {item("Open the file", FileCode, onOpenFile)}
         {item("Copy the agent drill-down", Copy, () =>
           copy(agentHandoffCall(opportunity.opportunity_id), "Drill-down call"),
         )}
-        {item("Copy the opportunity id", Copy, () =>
-          copy(opportunity.opportunity_id, "Opportunity id"),
-        )}
+        {item("Copy the opportunity id", Copy, () => copy(opportunity.opportunity_id, "Opportunity id"))}
       </PopoverContent>
     </Popover>
   );
