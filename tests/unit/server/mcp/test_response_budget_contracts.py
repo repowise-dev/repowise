@@ -528,6 +528,22 @@ def _resolve_shed_path(shape: dict[str, Any], key: str) -> str | None:
     on arguments the recording did not pass. A block whose *parent* is present
     while the leaf is not is a typo, and a silent no-op in ``fit_to_budget``.
     """
+    if key.count("[].") > 1:
+        return "only one list level ([].) is supported"
+    if "[]." in key:
+        rows_path, _, row_key = key.partition("[].")
+        rows: Any = shape
+        for part in rows_path.split("."):
+            if not isinstance(rows, dict) or part not in rows:
+                return None
+            rows = rows[part]
+        if not isinstance(rows, list):
+            return f"{rows_path} is not a list of rows"
+        row = next((r for r in rows if isinstance(r, dict)), None)
+        if row is None:
+            return None
+        # A row that is present must carry the field, top-level or not.
+        return _resolve_shed_path({"row": row}, f"row.{row_key}")
     leaf, tail = (key[:-2], True) if key.endswith("[]") else (key, False)
     *parents, name = leaf.split(".")
     node: Any = shape
@@ -782,6 +798,14 @@ def _evidence_row(kind: str, details: int) -> dict[str, Any]:
         "value": 1,
         "details": [{"path": f"src/{kind}/file_{i}.py", "note": "x" * 400} for i in range(details)],
     }
+
+
+def test_a_row_shed_path_is_checked_inside_its_rows() -> None:
+    shape = {"evidence": {"items": [{"kind": "owners", "details": []}]}}
+
+    assert _resolve_shed_path(shape, "evidence.items[].details[]") is None
+    assert _resolve_shed_path(shape, "evidence.items[].detials") is not None
+    assert _resolve_shed_path(shape, "evidence[].items[].details") is not None
 
 
 def test_requested_evidence_is_trimmed_not_dropped(setup_mcp: str) -> None:
