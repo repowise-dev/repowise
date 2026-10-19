@@ -323,6 +323,117 @@ async def sweep_absent_symbol_spotlights(
     return stale
 
 
+# A spotlight is retired only once its symbol ranks past this multiple of the
+# selection's cut (top 15% under the default 10%), so a symbol hovering at the
+# boundary keeps its page instead of losing and regaining it run to run.
+SPOTLIGHT_RETIRE_MARGIN = 1.5
+
+
+async def sweep_deselected_pages(
+    session: Any,
+    repo_id: str,
+    parsed_files: list[Any] | None,
+    graph_builder: Any,
+    config: Any,
+) -> list[str]:
+    """Delete template file pages and spotlights the selection no longer picks.
+
+    An update renders only the changed files, so a page whose file still exists
+    but fails selection (a test file, a symbol-less shim, a spotlight that fell
+    out of the top slice) was never visited again: a stale one sent every idle
+    update down the full rebuild path to re-render a page the render then
+    declined, and a fresh one kept serving its last render.
+
+    Only files in this run's parse are judged, so an unparsed file keeps its
+    pages. Model-written pages are left alone.
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.generation.page_generator.helpers import _select_clone_representatives
+    from repowise.core.generation.selection.selector import (
+        SelectionInputs,
+        _is_code_file,
+        file_page_eligible,
+        rank_symbol_candidates,
+    )
+    from repowise.core.persistence.models import GitMetadata, Page, PageVersion
+
+    parsed_by_path = {p.file_info.path: p for p in parsed_files or []}
+    if not parsed_by_path or graph_builder is None:
+        return []
+    try:
+        pagerank = graph_builder.pagerank()
+    except Exception:  # a released graph cannot rank anything
+        return []
+
+    rows = (
+        await session.execute(
+            select(Page.id, Page.page_type, Page.target_path).where(
+                Page.repository_id == repo_id,
+                Page.page_type.in_(("file_page", "symbol_spotlight")),
+                Page.freshness_status != "tombstone",
+                Page.provider_name == "template",
+            )
+        )
+    ).all()
+    file_rows = [(pid, t) for pid, kind, t in rows if kind == "file_page" and t in parsed_by_path]
+    spot_rows = [(pid, t) for pid, kind, t in rows if kind == "symbol_spotlight"]
+
+    retired: list[str] = []
+    if file_rows:
+        hotspots = set(
+            (
+                await session.execute(
+                    select(GitMetadata.file_path).where(
+                        GitMetadata.repository_id == repo_id,
+                        GitMetadata.is_hotspot.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        retired += [
+            pid
+            for pid, path in file_rows
+            if not file_page_eligible(parsed_by_path[path], is_hotspot=path in hotspots)
+        ]
+
+    if spot_rows:
+        # The same candidate pool generation ranks: near-clone losers out first.
+        parsed = list(parsed_by_path.values())
+        if getattr(config, "dedupe_near_clones", True):
+            losers = _select_clone_representatives(
+                [p for p in parsed if _is_code_file(p)], pagerank
+            )
+            parsed = [p for p in parsed if p.file_info.path not in losers]
+        ranked, keep = rank_symbol_candidates(
+            SelectionInputs(
+                parsed_files=parsed,
+                pagerank=pagerank,
+                betweenness={},
+                community={},
+                community_info=None,
+                sccs=[],
+                git_meta_map={},
+                config=config,
+            )
+        )
+        kept = {target for _, target in ranked[: int(keep * SPOTLIGHT_RETIRE_MARGIN)]}
+        for pid, target in spot_rows:
+            path, sep, name = (target or "").partition("::")
+            if sep and path in parsed_by_path and (path, name) not in kept:
+                retired.append(pid)
+
+    for i in range(0, len(retired), _PRUNE_CHUNK):
+        batch = retired[i : i + _PRUNE_CHUNK]
+        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
+    if retired:
+        logger.info("deselected_pages_swept", repo_id=repo_id, count=len(retired))
+    return retired
+
+
 async def sweep_superseded_generated_pages(
     session: Any,
     repo_id: str,

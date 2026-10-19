@@ -257,7 +257,10 @@ class PageVersion(Base):
     __tablename__ = "wiki_page_versions"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
-    page_id: Mapped[str] = mapped_column(Text, ForeignKey("wiki_pages.id"), nullable=False)
+    # Indexed so deleting a page does not scan every version for the FK check.
+    page_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("wiki_pages.id"), nullable=False, index=True
+    )
     repository_id: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)
