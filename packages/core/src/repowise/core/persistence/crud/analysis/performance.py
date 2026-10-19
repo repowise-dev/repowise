@@ -160,8 +160,8 @@ def _summary_payload(
     """The compact current headline, written once and read by primary key."""
     from ....analysis.health.perf.serving import intervention_file
     from ....analysis.health.queue.eligibility import (
+        perf_confident_verdict,
         perf_queue_counts,
-        perf_queue_verdict,
         queue_proof,
     )
 
@@ -176,14 +176,10 @@ def _summary_payload(
         boundaries[key] = boundaries.get(key, 0) + 1
         proof = queue_proof(item)
         proofs[proof] = proofs.get(proof, 0) + 1
-    # The lead is the head of the default queue, so it is production work with a
-    # strategy; never a marker whose measured precision is below the bar for leading.
+    # The lead is the first confident cause of the default queue; never a marker
+    # whose measured precision is below the bar for leading.
     lead = next(
-        (
-            o
-            for o in opportunities
-            if perf_queue_verdict(o).eligible and o.may_lead
-        ),
+        (o for o in opportunities if perf_confident_verdict(o).eligible and o.may_lead),
         None,
     )
     return {

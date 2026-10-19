@@ -64,6 +64,10 @@ def test_each_exclusion_is_counted_by_reason() -> None:
         "kind_unaudited": 0,
         "terminal_flow": 0,
         "moderate_quiet": 0,
+        "unmeasured_cost": 0,
+        "cold_role": 0,
+        "background_unproven": 0,
+        "unconfirmed_cost": 0,
     }
     assert queue.totals.dormant == 0
     assert queue.totals.eligible == 3
@@ -157,10 +161,13 @@ def test_no_kind_takes_more_than_three_of_the_first_five() -> None:
         row["file_path"] = f"src/core{n}.py"
         row["details"]["steps"] = row["details"]["steps"][:1]
         refactors.append(row)
-    # A loop that grows but no request, message or job is known to run:
-    # worth doing, ranked below the refactors' value.
+    # A loop that grows, reached from an entry point, but no request, message
+    # or job is known to run: worth doing, ranked below the refactors' value.
     perf = _perf("perf2_a", "s", execution_role="unknown")
-    perf["details"] = {**perf["details"], "facets": {"loop_magnitude": "grows_with_data"}}
+    perf["details"] = {**perf["details"], "facets": {
+        "loop_magnitude": "grows_with_data", "growth_source": "loop",
+        "exposure": "entry_reachable",
+    }}
     queue = _build(refactoring=refactors, performance=[perf], findings=[])
     # The fourth place goes to the perf fix; the fifth back to a refactor,
     # since no other kind has anything left at value 2 or above.

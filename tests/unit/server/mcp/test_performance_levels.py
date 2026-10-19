@@ -39,6 +39,7 @@ def _row(repo_id: str, caller: str, line: int) -> HealthFinding:
                 "resolution_basis": "call-site",
                 "loop_magnitude": "grows_with_data",
                 "dataflow_verified": True,
+                "execution_role": "request",
             }
         ),
         health_impact=0.0,

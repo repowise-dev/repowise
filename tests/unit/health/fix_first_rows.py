@@ -109,7 +109,8 @@ def _perf(opp: str, sink: str, **over) -> dict:
         "terminal_sink": sink, "affected_call_sites_total": 3, "affected_files_total": 2,
         "details": {
             "facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
-                       "amplification": "per_iteration", "actionability_confidence": "medium"},
+                       "growth_source": "loop", "amplification": "per_iteration",
+                       "actionability_confidence": "medium"},
             "plan": {"effort_bucket": "M", "steps": [
                 {"order": 1, "action": "Collect the keys before the loop", "symbol": "load_all",
                  "file_path": "src/repo.py", "line": 12, "applicability": "judgment"}]},

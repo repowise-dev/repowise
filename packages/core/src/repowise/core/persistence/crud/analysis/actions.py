@@ -249,23 +249,28 @@ async def _recent(
 
 
 async def _proven_performance(session: AsyncSession, repo_id: str, paths: set[str]) -> list[Any]:
-    """The queue's open causes in ``paths``; none when the store cannot be
-    read, which costs only the performance regressions, not the week's rest."""
+    """The queue's open causes in ``paths``, with what ``perf_confident_verdict``
+    reads; none when the store cannot be read, which costs only the
+    performance regressions, not the week's rest."""
+    p = PerformanceOpportunity
     try:
         async with session.begin_nested():
             return (
                 await session.execute(
                     select(
-                        PerformanceOpportunity.file_path,
-                        PerformanceOpportunity.biomarker_type,
-                        PerformanceOpportunity.status,
-                        PerformanceOpportunity.queue_eligible,
-                        PerformanceOpportunity.cost_proof,
+                        p.file_path,
+                        p.biomarker_type,
+                        p.status,
+                        p.queue_eligible,
+                        p.execution_context,
+                        p.actionability_state,
+                        p.execution_role,
+                        p.details_json,
                     ).where(
-                        PerformanceOpportunity.repository_id == repo_id,
-                        PerformanceOpportunity.status == "open",
-                        PerformanceOpportunity.queue_eligible.is_(True),
-                        PerformanceOpportunity.file_path.in_(paths),
+                        p.repository_id == repo_id,
+                        p.status == "open",
+                        p.queue_eligible.is_(True),
+                        p.file_path.in_(paths),
                     )
                 )
             ).all()

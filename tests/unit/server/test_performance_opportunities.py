@@ -431,6 +431,7 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
         "leverage",
         "change_risk",
         "loop_magnitude",
+        "growth_source",
         "execution_role",
     }
     assert body["evidence_total"] == 2

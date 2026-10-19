@@ -57,6 +57,7 @@ from .opportunity_rank import (
     change_risk,
     dominant_marker,
     exposure,
+    growth_source,
     leverage,
     loop_magnitude,
     may_lead,
@@ -175,6 +176,7 @@ class _Reading:
     role: str
     sinks: tuple[str, ...]
     magnitude: str
+    growth: str
 
 
 def _read_live(members: list[Any]) -> _Reading:
@@ -190,6 +192,7 @@ def _read_live(members: list[Any]) -> _Reading:
     marker = dominant_marker(markers)
     sites = {facts.site for facts in live}
     role = hottest_role(facts.execution_role for facts in live)
+    owners = [f for f in live if hottest_role((f.execution_role,)) == role]
     return _Reading(
         live=live,
         markers=markers,
@@ -200,9 +203,8 @@ def _read_live(members: list[Any]) -> _Reading:
         reachable=_reachability({facts.reliable_entry_reachability for facts in live}),
         role=role,
         sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
-        magnitude=loop_magnitude(
-            marker, [f.details for f in live if hottest_role((f.execution_role,)) == role]
-        ),
+        magnitude=loop_magnitude(marker, [f.details for f in owners]),
+        growth=growth_source(marker, owners),
     )
 
 
@@ -214,6 +216,7 @@ def _facets(r: _Reading, confidence: str) -> dict[str, str]:
         "leverage": leverage(len(r.sites)),
         "change_risk": change_risk(len(r.files)),
         "loop_magnitude": r.magnitude,
+        "growth_source": r.growth,
         "execution_role": r.role,
     }
 

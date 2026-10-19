@@ -436,6 +436,13 @@ export interface PerformanceWhyRanked {
 export type PerformanceLoopMagnitude = "grows_with_data" | "bounded" | "unknown" | "n/a";
 
 /**
+ * Which member loop shows the cost grows: `loop` one outside a registry and a
+ * cold path, `registry` only loops over a registry or configuration table,
+ * `cold_path` only migration, startup or recovery loops, `none` no loop grows.
+ */
+export type PerformanceGrowthSource = "loop" | "registry" | "cold_path" | "none" | "n/a";
+
+/**
  * The facets that are not published anywhere else on the row.
  * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
  * so no value appears twice.
@@ -448,6 +455,8 @@ export interface PerformanceOpportunityFacets {
   change_risk: string;
   /** Absent on rows stored before the fact existed. */
   loop_magnitude?: PerformanceLoopMagnitude;
+  /** Absent on rows stored before the fact existed. */
+  growth_source?: PerformanceGrowthSource;
   /** Absent on rows stored before the fact existed. */
   execution_role?: PerformanceExecutionRole;
 }

@@ -50,6 +50,7 @@ def _finding(path: str, line: int, *, marker: str = "serial_await_in_loop", **de
             "resolution_basis": "call-site",
             "dataflow_verified": True,
             "loop_magnitude": "grows_with_data",
+            "execution_role": "request",
             **details,
         },
         health_impact=0.0,
@@ -386,12 +387,19 @@ def test_a_non_leading_marker_never_leads_the_summary():
             terminal_sink=None, evidence=[{"file_path": "a.py"}], observations_total=1,
             affected_call_sites_total=1, affected_files_total=1, why_ranked=[],
             prerequisites=(), actionability_reason="", may_lead=may_lead,
-            facets={"loop_magnitude": "grows_with_data"},
+            facets={
+                "loop_magnitude": "grows_with_data",
+                "growth_source": "loop",
+                "execution_role": "request",
+            },
         )
 
     ranked = [_opp("lazy", "lazy_load_in_loop", False), _opp("io", "io_in_loop", True)]
     assert _summary_payload(ranked, {})["lead"]["opportunity_id"] == "io"
     assert _summary_payload(ranked[:1], {})["lead"] is None
+    # A queued cause whose growth only a registry loop shows never leads.
+    ranked[1].facets = {**ranked[1].facets, "growth_source": "registry"}
+    assert _summary_payload(ranked, {})["lead"] is None
 
 
 @pytest.mark.asyncio
