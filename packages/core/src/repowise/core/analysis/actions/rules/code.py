@@ -672,13 +672,18 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     actions = []
     # A cause this week's commits added acts now as a fresh regression, with
     # the commit that added it; it is not listed twice.
-    fresh_perf = {f.file_path for f in facts.recent_findings if f.kind == "performance"}
+    fresh_perf = {
+        (f.file_path, _short(f.symbol)) for f in facts.recent_findings if f.kind == "performance"
+    }
     # Do next's number for each item, held to the queue's order: a later item
     # never outranks an earlier one, whatever its effort.
     ceiling = math.inf
     for item in facts.fix_first:
         tier = _FIX_FIRST_TIER.get(item.tier)
-        if tier is None or (item.kind == "perf_fix" and item.target.file_path in fresh_perf):
+        if tier is None or (
+            item.kind == "perf_fix"
+            and (item.target.file_path, _short(item.target.symbol)) in fresh_perf
+        ):
             continue
         effort = _effort(item.effort.bucket)
         confidence = "high" if item.confidence.level == "high" else "medium"
@@ -729,6 +734,11 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             )
         )
     return RuleOutcome(rule, "evaluated", "", tuple(actions))
+
+
+def _short(symbol: str | None) -> str | None:
+    """A symbol's own name: ``a.py::Repo.load`` and ``Repo.load`` are ``load``."""
+    return symbol.rsplit("::", 1)[-1].rsplit(".", 1)[-1] if symbol else None
 
 
 def _effort(bucket: str | None) -> str:

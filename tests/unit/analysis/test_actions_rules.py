@@ -392,6 +392,17 @@ def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
     assert len({a.action_id for a in actions}) == 2
 
 
+def test_fix_first_leaves_a_cause_the_week_added_to_fresh_regressions() -> None:
+    perf = _fix_items()[0]
+    assert perf.kind == "perf_fix" and perf.target.symbol
+    path, symbol = perf.target.file_path, perf.target.symbol.rsplit(".", 1)[-1]
+    same = _recent(path, symbol, kind="performance")
+    other = _recent(path, "elsewhere", kind="performance")
+    for found, listed in (((same,), False), ((other,), True)):
+        actions = _run(code.fix_first, _facts(fix_first=_fix_items(), recent_findings=found)).actions
+        assert (perf.title in [a.title for a in actions]) is listed
+
+
 def test_fix_first_unavailable_is_named() -> None:
     outcome = _run(code.fix_first, _facts(unavailable={"fix_first": "Not here."}))
     assert (outcome.status, outcome.reason) == ("unavailable", "Not here.")

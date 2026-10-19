@@ -69,11 +69,7 @@ from repowise.core.analysis.finding_registry import excluded_types, is_served
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.rows import field
-from repowise.core.analysis.health.scoring import (
-    HISTORY_CATEGORY,
-    biomarker_category,
-    biomarker_dimension,
-)
+from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.author_identity import author_identity_key
 
 from .context import WEEK, build_context
@@ -308,7 +304,8 @@ def recent_kind(row: Any, hidden: frozenset[str]) -> str | None:
     ``None`` is a history or hidden marker, or one below the bar."""
     biomarker = field(row, "biomarker_type")
     path = field(row, "file_path")
-    if field(row, "dimension") == "performance" or biomarker_dimension(biomarker) == "performance":
+    # The row's own dimension, as the loader filters on it.
+    if field(row, "dimension") == "performance":
         return "performance" if is_served("performance", biomarker, path, hidden) else None
     if field(row, "severity") not in SERIOUS or not is_served("health", biomarker, path, hidden):
         return None

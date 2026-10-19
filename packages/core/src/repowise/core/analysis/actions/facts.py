@@ -68,7 +68,7 @@ class RecentFinding:
     change_kind: str
     line: int | None
     reason: str = ""
-    #: ``security``, ``performance`` or ``coverage`` for a defect-class
+    #: ``performance`` or ``coverage`` for a defect-class
     #: finding; ``shape`` for a code-shape marker (a long or nested method).
     kind: str = "shape"
 
