@@ -1,9 +1,7 @@
 """The files a synthesized answer rests on, read from the answer itself.
 
-Synthesis sees more than the retrieval hits: the structured prelude and the
-caller graph name files no hit carries. Citing only the hits the answer
-mentions would cite a hit the answer rules out ("cascade.py does not compute
-it") and miss the file it names as the answer.
+Synthesis also sees the structured prelude and caller graph, which name files
+no hit carries, and an answer can dismiss a hit ("X does not compute it").
 """
 
 from __future__ import annotations
@@ -12,13 +10,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# A file name with an extension, optionally under directories.
 _PATH_RE = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]*\w\.[A-Za-z0-9]{1,6})(?![\w/])")
 
-# A dismissal right before or after a path: "not in X", "rather than X",
-# "X does not compute it", "X is not where ...". A negated description ("X has
-# no backoff") is how an answer explains a cause, so it rules nothing out
-# (ceiling: "X does not handle it" still reads as a dismissal).
+# A dismissal next to a path ("not in X", "X is not where ..."); a negated
+# description ("X has no backoff") explains a cause and rules nothing out.
+# Ceiling: "X does not handle it" still reads as a dismissal.
 _NEG_BEFORE_RE = re.compile(
     r"(?:\bnot\s+(?:in|from|by|inside)|\brather\s+than|\binstead\s+of|\boutside(?:\s+of)?|"
     r"\bother\s+than)\s+(?:the\s+)?(?:file\s+)?[`'\"(]*$",
@@ -45,10 +41,8 @@ class AnswerFiles:
     def drops_top_hit(self, hits: list[dict], answer_text: str) -> str | None:
         """The file the answer names first when it rules out or never names the top hit.
 
-        The top hit is the file retrieval dominance was measured on, so a grade
-        drawn from it does not vouch for an answer resting elsewhere. Any
-        mention of the top hit's file name counts as naming it, even one that
-        resolves to no single file.
+        Dominance was measured on the top hit, so its grade does not vouch for
+        an answer resting elsewhere. Any mention of its file name counts.
         """
         top = hits[0].get("target_path") if hits else None
         if not (self.named and top) or top in self.citations:
@@ -68,10 +62,7 @@ def _is_ruled_out(text: str, start: int, end: int) -> bool:
 
 def _resolve(named: str, hit_paths: list[str], known: list[str], repo_root: Path | None) -> str | None:
     """``named`` as an indexed path: exact, a unique suffix of one, or a live file.
-
-    A bare file name resolves only to the one hit that carries it: against the
-    whole repository it is too loose to name a file.
-    """
+    A bare file name resolves only to the one hit that carries it."""
     named = named.removeprefix("./")
     if ".." in named.split("/"):
         return None
@@ -101,10 +92,9 @@ def answer_files(
 ) -> AnswerFiles:
     """The files ``answer_text`` names, minus the ones it rules out.
 
-    A named path resolves against the hits, then the wider ranked pool, then
-    the live checkout, so an invented path is never cited. A hit whose path
-    appears verbatim stays cited, as before. With nothing named, the top two
-    fallback targets the answer does not rule out are cited instead.
+    A path resolves against the hits, the ranked pool, then the checkout, so an
+    invented path is never cited. A file named positively anywhere stays cited.
+    With nothing named, the top two fallback targets not ruled out are cited.
     """
     hit_paths = [h["target_path"] for h in hits if h.get("target_path")]
     known = list(dict.fromkeys(hit_paths + [h["target_path"] for h in pool if h.get("target_path")]))
@@ -116,8 +106,6 @@ def answer_files(
     named = [p for p, _ in mentions] + [
         h["target_path"] for h in hits if h.get("target_path") and h["target_path"] in answer_text
     ]
-    # A file the answer relies on in one sentence and dismisses in another
-    # stays cited: only a file it never names positively is ruled out.
     ruled = {p for p, neg in mentions if neg} - {p for p, neg in mentions if not neg}
     citations = [p for p in dict.fromkeys(named) if p not in ruled]
     if citations:

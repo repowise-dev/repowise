@@ -588,8 +588,6 @@ async def _graded_payload(
 ) -> tuple[dict, str, list[str]]:
     """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
     hits = retrieved.hits
-    # Without a named file, the top-2 retrieval paths, so the agent always has
-    # something to verify.
     cited = answer_files(
         answer_text, hits, retrieved.resolved_pool, fallback_targets, _repo_root(ask.ctx)
     )

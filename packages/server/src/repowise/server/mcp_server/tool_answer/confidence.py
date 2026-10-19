@@ -816,10 +816,7 @@ def _citation_gate(s: _GradeState) -> None:
 
 def _named_file_gate(s: _GradeState) -> None:
     """The answer cites files but not the top hit dominance was measured on.
-
-    The finding is kept only when it demotes, so the note never blames it for
-    a grade another gate set.
-    """
+    Kept only when it demotes, so the note never blames it for another gate's grade."""
     if s.confidence != "high":
         s.lead_off_top = None
     elif s.lead_off_top:
