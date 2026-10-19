@@ -13,6 +13,7 @@ from repowise.core.providers.llm.base import ChatStreamEvent, ChatToolCall, Prov
 from repowise.server.chat_prompt import _build_system_prompt
 from repowise.server.chat_session import WEB_POLICY
 from repowise.server.chat_tools import get_tool_catalog
+from repowise.server.provider_config import NoProviderConfiguredError, UnknownProviderError
 from repowise.server.schemas.chat import ChatPageContext
 from tests.unit.server.test_chat_stream_terminal_event import (
     _REPO_ID,
@@ -382,6 +383,37 @@ async def test_a_route_with_no_target_leaves_the_static_tier_standing():
 
 
 @pytest.mark.asyncio
+async def test_a_route_with_no_target_quotes_datasets_a_chart_cached():
+    app = await _make_app()
+    cached = AsyncMock(return_value={"dead_code": [{}, {}, {}]})
+    execute = AsyncMock(return_value=_RISK_RESULT)
+
+    with patch("repowise.server.routers.chat.cached_rows", cached), patch(_EXECUTE, execute):
+        body = await _suggestions(app, kind="dead-code")
+
+    assert body == {
+        "suggestions": [
+            {
+                "text": "Stacked bar of the 3 dead-code findings by kind and confidence tier",
+                "source": "page",
+                "toolHint": "chart",
+            }
+        ]
+    }
+    cached.assert_awaited_once_with(["dead_code"], None)
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cache_read_yields_no_chips():
+    app = await _make_app()
+    with patch(
+        "repowise.server.routers.chat.cached_rows", AsyncMock(side_effect=RuntimeError("x"))
+    ):
+        assert await _suggestions(app, kind="health") == {"suggestions": []}
+
+
+@pytest.mark.asyncio
 async def test_a_page_kind_the_server_does_not_serve_is_not_an_error():
     app = await _make_app()
     assert await _suggestions(app, kind="not-a-page", target="x") == {"suggestions": []}
@@ -570,3 +602,37 @@ async def test_a_chip_without_a_tool_hint_omits_the_field_rather_than_nulling_it
     assert response.status_code == 200, response.text
     assert "toolHint" not in response.text
     assert response.json()["suggestions"] == hintless
+
+
+@pytest.mark.asyncio
+async def test_no_configured_provider_is_a_chat_error_event_not_an_http_error():
+    from repowise.server.chat_errors import NO_PROVIDER_MESSAGE
+
+    app = await _make_app()
+    failure = NoProviderConfiguredError("No active provider configured. Set an API key first.")
+    with patch(_PROVIDER, side_effect=failure):
+        events = _data_events(await _post(app, {"message": "hi"}))
+    assert events == [{"type": "error", "message": NO_PROVIDER_MESSAGE}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("override", "failure", "expected"),
+    [
+        (None, NoProviderConfiguredError("No active provider configured."), "No LLM provider"),
+        ("nope", UnknownProviderError("Unknown provider: nope"), "Unknown provider 'nope'"),
+        # Matched by type, not text: a plain ValueError with the same words is generic.
+        (None, ValueError("No active provider configured."), "configuration is invalid"),
+        (None, ValueError("base_url http://10.0.0.5:9/x?key=AIzaSecret1234 is invalid"), "configuration is invalid"),
+        ("openai", RuntimeError("client init failed for sk-proj-abcdef1234567890"), "Could not start the chat provider"),
+    ],
+)
+async def test_provider_setup_failures_are_plain_chat_errors(override, failure, expected):
+    app = await _make_app()
+    with patch(_PROVIDER, side_effect=failure):
+        events = _data_events(await _post(app, {"message": "hi", "provider": override}))
+    [event] = events
+    assert event["type"] == "error"
+    assert expected in event["message"]
+    assert "AIza" not in event["message"] and "sk-" not in event["message"]
+    assert "10.0.0.5" not in event["message"]

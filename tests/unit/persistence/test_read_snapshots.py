@@ -317,9 +317,11 @@ async def test_a_failed_view_write_leaves_nothing_stale(async_session, monkeypat
 
     monkeypatch.setattr(actions_loader, "write_actions_snapshot", broken)
     await _triage(async_session, rid)
-    await write_read_snapshots(async_session, rid)
+    failed = await write_read_snapshots(async_session, rid)
     await async_session.commit()
     assert await _snapshot_rows(async_session) == 0
+    # Named for the caller, whose output hides the core log.
+    assert [(name, str(exc)) for name, exc in failed] == [("actions", "build failed")]
 
 
 async def test_a_rolled_back_savepoint_still_invalidates(async_session) -> None:

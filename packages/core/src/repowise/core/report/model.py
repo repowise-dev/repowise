@@ -16,9 +16,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.registry.plugins import SeamRegistry
+
+if TYPE_CHECKING:
+    from repowise.core.changes.period import PeriodRequest
 
 SCHEMA_VERSION = 1
 INCONCLUSIVE = -1
@@ -126,6 +129,11 @@ class ReportContext:
     repo_root: Path
     alias: str | None = None
     head_commit: str | None = None
+    #: The period a ``changes`` report covers and how it builds missing
+    #: checklists (a :class:`~repowise.core.changes.period.PeriodRequest`);
+    #: ``None`` is the default request: the 90 days before the newest
+    #: indexed commit, building what is missing.
+    period: PeriodRequest | None = None
     _cache: dict[str, Any] = field(default_factory=dict)
 
     async def components(self) -> Any:
@@ -174,6 +182,8 @@ class Section:
     collect: Callable[[ReportContext], Awaitable[list[dict[str, Any]] | None]]
     #: Sections are listed by this, then by name.
     order: int = 100
+    #: The report kind the section belongs to (``assessment``, ``changes``).
+    report: str = "assessment"
 
 
 report_sections: SeamRegistry[Section] = SeamRegistry("report-section")

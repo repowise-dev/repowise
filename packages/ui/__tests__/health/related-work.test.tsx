@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { RelatedWorkFile, RelatedWorkItem } from "@repowise-dev/types/health";
-import { RelatedWork, useRelatedWork } from "../../src/health/related-work.js";
+import {
+  RelatedWork,
+  useRelatedWork,
+  useRelatedWorkQuery,
+} from "../../src/health/related-work.js";
 import { HealthFileDrawer } from "../../src/health/health-file-drawer.js";
 
 const FILE: RelatedWorkFile = {
@@ -93,7 +97,10 @@ describe("HealthFileDrawer related work", () => {
         onNavigate={onNavigate}
       />,
     );
-    expect(screen.getByText("Elsewhere for this file")).toBeInTheDocument();
+    // Collapsed, with the count on the toggle.
+    const toggle = screen.getByRole("button", { name: /Elsewhere for this file/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
     fireEvent.click(screen.getByRole("link", { name: /Unused export/ }));
     expect(onNavigate).toHaveBeenCalledWith("/go/dead_code/d1");
     expect(screen.getByRole("link", { name: /Extract method/i })).toHaveAttribute(
@@ -125,5 +132,33 @@ describe("useRelatedWork", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     const none = renderHook(() => useRelatedWork(undefined, ["a.py"]));
     expect(none.result.current).toBeUndefined();
+  });
+});
+
+describe("useRelatedWorkQuery", () => {
+  it("serves a path it already fetched from cache, even after a remount", async () => {
+    const fetcher = vi.fn(async (paths: string[]) => ({
+      files: paths.map((file_path) => ({ file_path, lenses: {} })),
+      per_lens_limit: 5,
+    }));
+    const first = renderHook(() => useRelatedWorkQuery(fetcher, ["cached.py"]));
+    await waitFor(() => expect(first.result.current.data?.files?.[0]?.file_path).toBe("cached.py"));
+    first.unmount();
+    const again = renderHook(() => useRelatedWorkQuery(fetcher, ["cached.py"]));
+    // Back on a file the reader already looked at: the answer is there at once.
+    expect(again.result.current.data?.files?.[0]?.file_path).toBe("cached.py");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a failure instead of reading it as nothing elsewhere", async () => {
+    const fetcher = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    const { result } = renderHook(() => useRelatedWorkQuery(fetcher, ["broken.py"]));
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error));
+    expect(result.current.data).toBeUndefined();
+    // The data-only hook stays silent on the same failure.
+    const plain = renderHook(() => useRelatedWork(fetcher, ["broken.py"]));
+    expect(plain.result.current).toBeUndefined();
   });
 });

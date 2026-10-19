@@ -1,6 +1,6 @@
 /**
- * Fix first renders core's queue as it arrives: the section starts open
- * with its count, the header states the scope exactly, exclusions sit in a
+ * Fix first renders core's queue as it arrives: the section starts closed
+ * with its count on the toggle, the header states the scope exactly, exclusions sit in a
  * popover, each row is two scan
  * lines that open onto the why, steps and Verify, and actions appear only
  * where the item can back them.
@@ -39,12 +39,13 @@ function openRow(item: FixItem) {
 }
 
 describe("Fix first header", () => {
-  it("starts open, with the title and the item count on the toggle", () => {
+  it("starts closed, with the title and the item count on the toggle", () => {
     const { container } = renderList();
     const details = container.querySelector("details")!;
-    expect(details.open).toBe(true);
+    // Under the score: the headline keeps the first screen.
+    expect(details.open).toBe(false);
     const summary = container.querySelector("summary")!;
-    expect(summary.textContent).toContain("Fix first");
+    expect(summary.textContent).toContain("Highest-interest technical debt");
     expect(summary.textContent).toContain("3 items");
   });
 
@@ -184,6 +185,10 @@ describe("Fix first items", () => {
     expect(fixPlanLabel(REFACTOR)).toBe("Open the refactoring plan");
     expect(fixPlanLabel(PERF)).toBe("Open the performance fix");
     expect(fixPlanLabel(FINDING)).toBeNull();
+    expect(fixPlanLabel({ kind: "finding", source: { ...FINDING.source, plan_ids: [] } })).toBeNull();
+    expect(fixPlanLabel({ kind: "finding", source: { ...FINDING.source, plan_ids: ["refac2_big"] } })).toBe(
+      "Open the refactoring plan",
+    );
     renderList();
     openRow(REFACTOR);
     expect(screen.getByRole("link", { name: "Open the refactoring plan" }).getAttribute("href")).toBe(

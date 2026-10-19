@@ -94,7 +94,7 @@ def codeowners_gates(text: str) -> list[SuggestedGate]:
 
 
 def layout_gates(
-    tracked: Iterable[str], *, roots: Any | None = None
+    tracked: Iterable[str], roots: Any | None = None
 ) -> list[SuggestedGate]:
     """One gate per package of a monorepo, else per top-level source directory.
 
@@ -129,7 +129,6 @@ def layout_gates(
 def community_gates(
     communities: Mapping[str, int],
     sizes: Mapping[str, int] | None = None,
-    *,
     roots: Any | None = None,
 ) -> tuple[list[SuggestedGate], int]:
     """Gates from graph communities (``{file: community_id}``), and how many were not tried.

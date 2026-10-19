@@ -6,7 +6,9 @@ just before this one and carries the same stamp, it stores the typed
 occurrences between the two and hands them to the configured sinks. A stamp
 change (a new analyzer, parser, git-history or contract-extraction version)
 starts a fresh baseline instead: figures computed under different rules are
-not comparable, so their difference is not an event.
+not comparable, so their difference is not an event. The contract kinds
+compare against the last run that measured contracts instead, since a run
+between them may have had none available (:func:`_contract_pairs`).
 
 An index run that takes no snapshot (events switched off, or the snapshot
 failed) leaves a gap marker, so the next snapshot is a baseline rather than a
@@ -34,13 +36,24 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from .diff import diff_snapshots
+from .diff import contract_occurrences, diff_snapshots
 from .model import EVENT_SCHEMA_VERSION, KINDS, EngineEvent, event_id, severity_for
 
 logger = logging.getLogger(__name__)
 
 #: Stamp prefix of a gap marker: an index run with no snapshot.
 GAP_STAMP = "gap:"
+#: Kinds read from the contracts the workspace's cross-repo pass extracts.
+CONTRACT_KINDS = frozenset({"contract_added", "contract_broken"})
+#: Earlier runs read when looking for a component's last measured contracts.
+#: Ceiling: past it a contract change waits for the next measured pair.
+#: Upgrade path: a column on the run saying its contracts were measured.
+CONTRACT_LOOKBACK_RUNS = 100
+#: ``session.info`` keys of the events waiting for the caller's commit.
+_PENDING = "repowise.events.pending"
+_LISTENING = "repowise.events.listening"
+#: Config errors already logged by this process; each is named once.
+_WARNED: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -139,12 +152,10 @@ async def record_snapshot(
     found nothing to do, or ``--working-tree`` on the same commit: uncommitted
     work is not history).
 
-    Ceiling: sinks are called before the caller commits, because this runs
-    inside the index run's session. An event id is keyed on the previous run,
-    so a retry after a failed commit re-delivers the same id and a consumer
-    dedupes on it. Upgrade path: a per-sink cursor read after commit.
+    The events reach the sinks once the caller's session commits
+    (:func:`_deliver_after_commit`); a transaction that rolls back delivers
+    nothing.
     """
-    from repowise.core.attribution import attribution_enabled
     from repowise.core.persistence.models import ComponentSnapshot, Repository, SnapshotRun
 
     from .snapshot import collect_facts, current_stamp
@@ -155,7 +166,9 @@ async def record_snapshot(
     root = Path(repo.local_path)
     settings = load_event_settings(root)
     for error in settings.errors:
-        logger.warning("%s (kept the default)", error)
+        if error not in _WARNED:
+            _WARNED.add(error)
+            logger.warning("%s (kept the default)", error)
     if not settings.enabled:
         await record_gap(session, repository_id, "disabled", now=now)
         return []
@@ -165,9 +178,7 @@ async def record_snapshot(
     if previous is not None and head and previous.commit_sha == head and previous.stamp == stamp:
         return []
 
-    facts = await collect_facts(
-        session, repository_id, root, head_commit=head, attribution=attribution_enabled(root)
-    )
+    facts = await collect_facts(session, repository_id, root, head_commit=head)
     taken_at = now or datetime.now(UTC)
     run = SnapshotRun(repository_id=repository_id, taken_at=taken_at, commit_sha=head, stamp=stamp)
     session.add(run)
@@ -177,18 +188,140 @@ async def record_snapshot(
         for name, f in facts.items()
     )
 
-    events: list[EngineEvent] = []
+    pairs: list[tuple[Any, Any]] = []
     # A gap marker's stamp never equals a real one, so a run after it is a baseline.
     if previous is not None and previous.stamp == stamp:
         before = await run_facts(session, previous.id)
-        events = await _store_events(
-            session, repo, run, previous, before, facts, settings, taken_at
-        )
+        kinds = settings.kinds - CONTRACT_KINDS
+        pairs = [(previous, o) for o in diff_snapshots(before, facts) if o[0] in kinds]
+    pairs += await _contract_pairs(session, run, facts, settings.kinds & CONTRACT_KINDS)
+    events = await _store_events(session, repo, run, pairs, facts, taken_at)
     await compact(session, repository_id, settings, now=taken_at)
     await session.flush()
-    if events:
-        await _deliver(events, settings, root)
+    _deliver_after_commit(session, events, settings, root)
     return events
+
+
+async def refresh_contract_facts(session: Any, repository_id: str) -> list[EngineEvent]:
+    """Measure the newest run's contracts once the workspace has extracted them.
+
+    :func:`record_snapshot` runs before the cross-repo pass extracts contracts
+    at the new commit, so that run stored them as unavailable. Called after
+    extraction, this rewrites the same run's contract facts and stores its
+    contract events (:func:`_contract_pairs`). Idempotent: event ids are keyed
+    on the two runs compared. A run whose commit or
+    stamp is no longer current, or contracts still unavailable, is left alone.
+    """
+    from repowise.core.persistence.models import Repository
+
+    from .snapshot import contract_facts
+
+    repo = await session.get(Repository, repository_id)
+    if repo is None or not repo.local_path:
+        return []
+    root = Path(repo.local_path)
+    settings = load_event_settings(root)
+    if not settings.enabled:
+        return []
+    run = await _refreshable_run(session, repo)
+    if run is None:
+        return []
+    measured = await contract_facts(session, repository_id, root, head_commit=run.commit_sha)
+    if measured is None or not await _still_current(session, repository_id, run):
+        return []
+    after = await _fill_contracts(session, run, measured)
+    pairs = await _contract_pairs(session, run, after, settings.kinds & CONTRACT_KINDS)
+    events = await _store_events(session, repo, run, pairs, after, _aware(run.taken_at))
+    await session.flush()
+    _deliver_after_commit(session, events, settings, root)
+    return events
+
+
+async def _refreshable_run(session: Any, repo: Any) -> Any:
+    """The newest run, when it is at the repo's commit under the current stamp."""
+    from .snapshot import current_stamp
+
+    run = await _newest_run(session, repo.id)
+    if run is None or not run.commit_sha or run.commit_sha != repo.head_commit:
+        return None
+    return run if run.stamp == current_stamp() else None
+
+
+async def _still_current(session: Any, repository_id: str, run: Any) -> bool:
+    """Whether *run* is still the newest and the repo still at its commit:
+    another update may have moved either during extraction."""
+    from repowise.core.persistence.models import Repository
+
+    head = await session.scalar(
+        select(Repository.head_commit).where(Repository.id == repository_id)
+    )
+    newest = await _newest_run(session, repository_id)
+    return head == run.commit_sha and newest is not None and newest.id == run.id
+
+
+async def _fill_contracts(
+    session: Any, run: Any, measured: dict[str, tuple[str, dict[str, Any]]]
+) -> dict[str, dict[str, Any]]:
+    """Write *measured* contracts into *run*'s component rows; its facts after."""
+    from repowise.core.persistence.models import ComponentSnapshot
+
+    after: dict[str, dict[str, Any]] = {}
+    for row in await session.scalars(
+        select(ComponentSnapshot).where(ComponentSnapshot.run_id == run.id)
+    ):
+        facts = json.loads(row.facts_json)
+        definition, contracts = measured.get(row.component, (None, None))
+        # A component re-drawn since the snapshot keeps what it stored.
+        if definition == facts.get("definition") and facts.get("contracts") != contracts:
+            facts["contracts"] = contracts
+            row.facts_json = json.dumps(facts, sort_keys=True)
+        after[row.component] = facts
+    return after
+
+
+def _measured(facts: dict[str, Any]) -> bool:
+    contracts = facts.get("contracts")
+    return isinstance(contracts, dict) and contracts.get("basis") == "measured"
+
+
+async def _contract_pairs(
+    session: Any, run: Any, after: dict[str, dict[str, Any]], kinds: frozenset[str]
+) -> list[tuple[Any, Any]]:
+    """``(compared run, occurrence)`` for the contract kinds of *run*.
+
+    Each component with measured contracts is compared with the most recent
+    earlier run of the same stamp that measured them under the same
+    definition. Runs whose contracts were unavailable (an index-only update
+    skips the cross-repo pass) are passed over, never read as every contract
+    removed; a stamp change, a gap marker, or the component missing or
+    re-drawn ends the search.
+    """
+    from repowise.core.persistence.models import SnapshotRun
+
+    pending = {name: f for name, f in after.items() if _measured(f)}
+    if not kinds or not pending:
+        return []
+    earlier = await session.scalars(
+        select(SnapshotRun)
+        .where(SnapshotRun.repository_id == run.repository_id, SnapshotRun.id != run.id)
+        .order_by(SnapshotRun.taken_at.desc(), SnapshotRun.id.desc())
+        .limit(CONTRACT_LOOKBACK_RUNS)
+    )
+    out: list[tuple[Any, Any]] = []
+    for prev in earlier:
+        if prev.stamp != run.stamp:
+            break
+        before = await run_facts(session, prev.id, components=pending)
+        for name in list(pending):
+            facts = before.get(name)
+            if facts is None or facts.get("definition") != pending[name].get("definition"):
+                del pending[name]
+            elif _measured(facts):
+                found = contract_occurrences(name, facts, pending.pop(name))
+                out.extend((prev, o) for o in found if o[0] in kinds)
+        if not pending:
+            break
+    return out
 
 
 async def _newest_run(session: Any, repository_id: str) -> Any:
@@ -222,15 +355,19 @@ async def record_gap(
     await session.flush()
 
 
-async def run_facts(session: Any, run_id: str) -> dict[str, dict[str, Any]]:
-    """The component facts one snapshot run stored, by component name."""
+async def run_facts(
+    session: Any, run_id: str, *, components: Iterable[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """The component facts one snapshot run stored, by component name; only
+    *components* when given."""
     from repowise.core.persistence.models import ComponentSnapshot
 
-    rows = await session.execute(
-        select(ComponentSnapshot.component, ComponentSnapshot.facts_json).where(
-            ComponentSnapshot.run_id == run_id
-        )
+    query = select(ComponentSnapshot.component, ComponentSnapshot.facts_json).where(
+        ComponentSnapshot.run_id == run_id
     )
+    if components is not None:
+        query = query.where(ComponentSnapshot.component.in_(sorted(components)))
+    rows = await session.execute(query)
     return {name: json.loads(raw) for name, raw in rows}
 
 
@@ -238,16 +375,14 @@ async def _store_events(
     session: Any,
     repo: Any,
     run: Any,
-    previous: Any,
-    before: dict[str, dict[str, Any]],
+    pairs: list[tuple[Any, Any]],
     after: dict[str, dict[str, Any]],
-    settings: EventSettings,
     taken_at: datetime,
 ) -> list[EngineEvent]:
+    """Store ``(compared run, occurrence)`` pairs of *run* as events."""
     from repowise.core.persistence.models import Change, EngineEventRecord
 
-    occurrences = [o for o in diff_snapshots(before, after) if o[0] in settings.kinds]
-    if not occurrences:
+    if not pairs:
         return []
     url = _public_url(repo.url)
     vcs: dict[str, Any] = {}
@@ -263,7 +398,7 @@ async def _store_events(
             vcs["vcs.change.id"] = change_id
     events = [
         EngineEvent(
-            # Keyed on the previous run, not only the commits: a pair seen
+            # Keyed on the compared run, not only the commits: a pair seen
             # again (A to B, back to A, to B) or a run with no commit is a new
             # occurrence, while a retry of the same run keeps its id.
             id=event_id(
@@ -281,34 +416,68 @@ async def _store_events(
             source=url,
             vcs=vcs,
         )
-        for kind, component, subject, evidence in occurrences
+        for previous, (kind, component, subject, evidence) in pairs
     ]
-    seen = set(
-        await session.scalars(
-            select(EngineEventRecord.id).where(EngineEventRecord.id.in_([e.id for e in events]))
-        )
-    )
-    events = [e for e in events if e.id not in seen]
-    session.add_all(
-        EngineEventRecord(
-            id=e.id,
-            repository_id=e.repo_id,
-            kind=e.kind,
-            component=e.component,
-            severity=e.severity,
-            occurred_at=e.occurred_at,
-            commit_sha=e.commit_sha,
-            base_commit_sha=e.base_commit_sha,
-            stamp=e.stamp,
-            payload_json=json.dumps(
+    table = EngineEventRecord.__table__
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    # Insert-or-ignore on the id: an event another run or process already
+    # stored is neither stored nor delivered twice.
+    stmt = insert(table).on_conflict_do_nothing(index_elements=[table.c.id]).returning(table.c.id)
+    stored: list[EngineEvent] = []
+    for e in events:
+        row = {
+            "id": e.id,
+            "repository_id": e.repo_id,
+            "kind": e.kind,
+            "component": e.component,
+            "severity": e.severity,
+            "occurred_at": e.occurred_at,
+            "commit_sha": e.commit_sha,
+            "base_commit_sha": e.base_commit_sha,
+            "stamp": e.stamp,
+            "payload_json": json.dumps(
                 {"evidence": dict(e.evidence), "vcs": dict(e.vcs), "source": e.source},
                 sort_keys=True,
             ),
-            schema_version=e.schema,
-        )
-        for e in events
-    )
-    return events
+            "schema_version": e.schema,
+        }
+        if (await session.execute(stmt.values(**row))).scalar() is not None:
+            stored.append(e)
+    return stored
+
+
+def _deliver_after_commit(
+    session: Any, events: Sequence[EngineEvent], settings: EventSettings, root: Path
+) -> None:
+    """Hand *events* to the sinks once the session's transaction commits.
+
+    A rollback drops them; the retry stores and delivers the same ids. The
+    commit hook runs in the async session's greenlet, so the sinks are
+    awaited there.
+    """
+    from sqlalchemy import event
+
+    if not events:
+        return
+    sync = session.sync_session
+    sync.info.setdefault(_PENDING, []).append((list(events), settings, root))
+    if not sync.info.get(_LISTENING):
+        sync.info[_LISTENING] = True
+        event.listen(sync, "after_commit", _on_commit)
+        event.listen(sync, "after_rollback", lambda s: s.info.pop(_PENDING, None))
+
+
+def _on_commit(sync_session: Any) -> None:
+    from sqlalchemy.util import await_only
+
+    for events, settings, root in sync_session.info.pop(_PENDING, []):
+        try:
+            await_only(_deliver(events, settings, root))
+        except Exception as exc:  # the store keeps them; `repowise events` replays
+            logger.warning("events not delivered: %s", exc)
 
 
 async def _deliver(events: Sequence[EngineEvent], settings: EventSettings, root: Path) -> None:
@@ -415,3 +584,35 @@ async def list_events(
         query = query.where(EngineEventRecord.kind.in_(list(kinds)))
     query = query.order_by(EngineEventRecord.occurred_at, EngineEventRecord.id).limit(limit)
     return [event_from_row(r) for r in await session.scalars(query)]
+
+
+async def snapshot_run_count(session: Any, repository_id: str) -> int:
+    """Component snapshots stored for the repository, gap markers left out."""
+    from sqlalchemy import func
+
+    from repowise.core.persistence.models import SnapshotRun
+
+    runs = await session.scalar(
+        select(func.count()).where(
+            SnapshotRun.repository_id == repository_id, ~SnapshotRun.stamp.startswith(GAP_STAMP)
+        )
+    )
+    return int(runs or 0)
+
+
+def empty_events_reason(runs: int, *, filtered: bool) -> tuple[str, str]:
+    """Why an event list is empty, as ``(code, sentence)``.
+
+    ``baseline_only``: fewer than two snapshots, so nothing could be compared
+    yet; ``no_match``: events exist but none pass the filters asked;
+    ``nothing_moved``: runs were compared and nothing crossed a threshold.
+    """
+    if runs < 2:
+        return "baseline_only", (
+            f"No events yet: {runs} component snapshot(s) stored. Events are what "
+            "moved between two index runs in a row, so they start after the next "
+            "`repowise update` on a new commit."
+        )
+    if filtered:
+        return "no_match", f"No events match these filters across {runs} stored component snapshots."
+    return "nothing_moved", f"No events across {runs} stored component snapshots."

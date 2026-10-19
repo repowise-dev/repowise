@@ -18,7 +18,7 @@ from collections import Counter
 from collections.abc import Iterable
 from itertools import islice
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -507,13 +507,24 @@ def _package_scope(
         except OSError:
             return [], package, ["go: package directory unreadable"]
         return [(parent / n).as_posix() for n in names if PurePosixPath(n).suffix in exts], package, []
-    # A JVM package can span directories (src/main and src/test) or sit off its
-    # path, and another package can name the symbol fully qualified with no
-    # import, which the graph records no edge for: both are found by text.
-    # Ceilings: the needles are literal, so ``package  a.b`` with odd spacing is
-    # missed, and gitignored sources (build/generated) are not searched, by design.
+    files, reasons = _jvm_package_files(root, node, def_lines, package, language)
+    return files, package, reasons
+
+
+def _jvm_package_files(
+    root: Path, node: GraphNode, def_lines: list[str], package: str, language: str
+) -> tuple[list[str], list[str]]:
+    """``(files, reasons)``: JVM files that declare *package* or name the symbol in it.
+
+    A JVM package can span directories (src/main and src/test) or sit off its
+    path, and another package can name the symbol fully qualified with no
+    import, which the graph records no edge for: both are found by text.
+    Ceilings: the needles are literal, so ``package  a.b`` with odd spacing is
+    missed, and gitignored sources (build/generated) are not searched, by design.
+    """
     from repowise.server.mcp_server._line_hits import _files_holding
 
+    def_file = node.file_path
     exts = REGISTRY.extensions_for(_JVM)
     top = id_segment_name(node.node_id.split("::")[1]) if "::" in node.node_id else _bare_name(node)
     needles = [f"package {package}", f"{package}.{top}"]
@@ -531,7 +542,7 @@ def _package_scope(
             reasons.append(f"{language}: could not search for {needle}")
         else:
             files.update(f for f in held if PurePosixPath(f).suffix in exts)
-    return sorted(files), package, reasons
+    return sorted(files), reasons
 
 
 def _live_definition(root: Path, node: GraphNode, name: str, language: str) -> tuple[int, int]:
@@ -550,26 +561,37 @@ def _live_definition(root: Path, node: GraphNode, name: str, language: str) -> t
     return (relocate_symbol(row, text) if text is not None else None) or (0, 0)
 
 
-async def reference_edit_set(
-    session: AsyncSession,
-    repo_id: str,
-    repo_root: str | Path,
-    node: GraphNode,
-    collector: OmissionCollector | None = None,
-) -> dict[str, Any]:
-    """Every live site naming *node*, classified, with a completeness verdict.
+def _edge_names(raw: str | None) -> list[str]:
+    """The JSON name list on an edge column; empty when absent or malformed."""
+    try:
+        return [str(n) for n in json.loads(raw or "[]")]
+    except (TypeError, ValueError):
+        return []
 
-    Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
-    plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
-    definition | import | call | reference. With a *collector*, plain
-    references past ``MAX_REFERENCES_PER_FILE`` in one file move to it and
-    ``sites_omitted_by_file`` counts every row not shown.
-    """
-    root = Path(repo_root).resolve()
-    name = _bare_name(node)
-    def_file = node.file_path
-    reasons: list[str] = []
 
+class _EdgeFacts(NamedTuple):
+    """What the edges into the symbol say about its call sites."""
+
+    call_lines: dict[str, set[int]]
+    uncertain: bool
+    dynamic: bool
+    unlined: bool
+
+
+class _ScanResult(NamedTuple):
+    """The fields :func:`_scan` returns, by name."""
+
+    sites: list[dict[str, Any]]
+    unreadable: list[str]
+    stale: int
+    renamed_in: set[str]
+    is_default: bool
+    python_aliases: dict[str, set[str]]
+    packages: dict[str, str]
+
+
+async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> list[Any]:
+    """Edges targeting *node*, plus dynamic uses of its file."""
     cols = (
         GraphEdge.source_node_id,
         GraphEdge.target_node_id,
@@ -578,28 +600,25 @@ async def reference_edit_set(
         GraphEdge.call_lines_json,
         GraphEdge.confidence,
     )
-
-    def _names(raw: str | None) -> list[str]:
-        try:
-            return [str(n) for n in json.loads(raw or "[]")]
-        except (TypeError, ValueError):
-            return []
-
-    edges = (
+    return (
         await session.execute(
             select(*cols).where(
                 GraphEdge.repository_id == repo_id,
                 or_(
                     GraphEdge.target_node_id == node.node_id,
-                    (GraphEdge.target_node_id == def_file)
+                    (GraphEdge.target_node_id == node.file_path)
                     & (GraphEdge.edge_type == "dynamic_uses"),
                 ),
             )
         )
     ).all()
 
-    # Importers of the definition file, then anything re-exporting the name
-    # onward from them, so a package barrel's own importers are scanned too.
+
+async def _importer_files(
+    session: AsyncSession, repo_id: str, def_file: str, name: str, edges: list[Any]
+) -> set[str]:
+    """The definition file, its importers, and files re-exporting the name onward."""
+    # A package barrel's own importers are scanned too.
     files: set[str] = {def_file}
     files.update(row[0] for row in edges if row[2] == "imports")
     frontier, seen = [def_file], {def_file}
@@ -616,24 +635,28 @@ async def reference_edit_set(
         frontier = []
         for src, names_json in rows:
             files.add(src)
-            names = _names(names_json)
+            names = _edge_names(names_json)
             # Unknown names may carry this one onward, so they are followed too.
             if src not in seen and (not names or name in names or "*" in names):
                 seen.add(src)
                 frontier.append(src)
+    return files
 
+
+def _edge_facts(edges: list[Any], node: GraphNode, name: str, files: set[str]) -> _EdgeFacts:
+    """Call lines per file from the call edges; adds each calling file to *files*."""
     call_lines: dict[str, set[int]] = {}
     uncertain = dynamic = unlined = False
     for src, tgt, etype, names_json, lines_json, conf in edges:
         if etype == "dynamic_uses":
-            names = _names(names_json)
+            names = _edge_names(names_json)
             if tgt == node.node_id or not names or name in names:
                 dynamic = True
             continue
         if tgt != node.node_id or etype in ("imports", "defines"):
             continue
         src_file = src.split("::", 1)[0]
-        lines = {int(n) for n in _names(lines_json) if n.isdigit()}
+        lines = {int(n) for n in _edge_names(lines_json) if n.isdigit()}
         if etype == "calls" and not lines:
             unlined = True
         if not lines:
@@ -642,87 +665,126 @@ async def reference_edit_set(
         call_lines.setdefault(src_file, set()).update(lines)
         if (conf or 0) < _MIN_CALL_CONFIDENCE:
             uncertain = True
+    return _EdgeFacts(call_lines, uncertain, dynamic, unlined)
 
-    unseen = await asyncio.to_thread(_unseen_dirty_files, root, str(repo_root))
-    if unseen is None:
-        reasons.append("working tree status unknown")
-        unseen = []
-    dirty = frozenset(unseen)
 
+async def _node_language(session: AsyncSession, repo_id: str, node: GraphNode) -> str:
+    """*node*'s language, else its file node's, lower-cased."""
     language = node.language or await session.scalar(
         select(GraphNode.language).where(
-            GraphNode.repository_id == repo_id, GraphNode.node_id == def_file
+            GraphNode.repository_id == repo_id, GraphNode.node_id == node.file_path
         )
     )
-    language = (language or "").lower()
-    package_files, package, why = await asyncio.to_thread(_package_scope, root, node, language)
-    files.update(package_files)
-    reasons += why
+    return (language or "").lower()
 
+
+def _capped_candidates(
+    files: set[str], unseen: list[str], reasons: list[str]
+) -> tuple[list[str], list[str]]:
+    """Indexed and unindexed candidate files, together at most ``MAX_FILES``."""
     unindexed = sorted(set(unseen) - files)
     ordered = sorted(files)
     if len(ordered) + len(unindexed) > MAX_FILES:
         reasons.append(f"over {MAX_FILES} candidate files")
         ordered = ordered[:MAX_FILES]
         unindexed = unindexed[: max(0, MAX_FILES - len(ordered))]
+    return ordered, unindexed
+
+
+async def _definition_span(
+    root: Path, node: GraphNode, name: str, language: str, dirty: frozenset[str]
+) -> tuple[str, int, int]:
+    """``(file, start, end)`` of the definition, re-parsed when its file has edits."""
+    def_file = node.file_path
     if def_file in dirty:
         # Indexed bounds predate the edit; re-parse as get_symbol does.
-        definition = (def_file, *await asyncio.to_thread(_live_definition, root, node, name, language))
-    else:
-        definition = (def_file, node.start_line or 0, node.end_line or node.start_line or 0)
-    sites, unreadable, stale, renamed_in, is_default, python_aliases, packages = (
-        await asyncio.to_thread(
-            _scan, root, ordered + unindexed, name, definition, call_lines, dirty
+        return (def_file, *await asyncio.to_thread(_live_definition, root, node, name, language))
+    return (def_file, node.start_line or 0, node.end_line or node.start_line or 0)
+
+
+async def _python_alias_exports(
+    session: AsyncSession, repo_id: str, python_aliases: dict[str, set[str]], renamed_in: set[str]
+) -> None:
+    """Add to *renamed_in* each file whose Python alias another file imports."""
+    if not python_aliases:
+        return
+    # Any module-level Python name is importable, so an alias another file
+    # imports (or may, by unknown names or ``*``) leaves its file.
+    rows = await session.execute(
+        select(GraphEdge.target_node_id, GraphEdge.imported_names_json).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type == "imports",
+            GraphEdge.target_node_id.in_(list(python_aliases)),
         )
     )
-    if python_aliases:
-        # Any module-level Python name is importable, so an alias another file
-        # imports (or may, by unknown names or ``*``) leaves its file.
-        rows = await session.execute(
-            select(GraphEdge.target_node_id, GraphEdge.imported_names_json).where(
-                GraphEdge.repository_id == repo_id,
-                GraphEdge.edge_type == "imports",
-                GraphEdge.target_node_id.in_(list(python_aliases)),
-            )
-        )
-        for tgt, names_json in rows.all():
-            names = _names(names_json)
-            if not names or "*" in names or python_aliases[tgt] & set(names):
-                renamed_in.add(tgt)
+    for tgt, names_json in rows.all():
+        names = _edge_names(names_json)
+        if not names or "*" in names or python_aliases[tgt] & set(names):
+            renamed_in.add(tgt)
 
-    unindexed_set = set(unindexed)
-    if unreadable:
-        reasons.append(f"unreadable: {', '.join(unreadable[:3])}")
-    if stale:
-        reasons.append(f"stale: {stale} graph call lines no longer name it")
-    if unlined:
+
+def _evidence_reasons(scan: _ScanResult, facts: _EdgeFacts) -> list[str]:
+    """Why the scan and the graph edges leave the set incomplete."""
+    reasons: list[str] = []
+    if scan.unreadable:
+        reasons.append(f"unreadable: {', '.join(scan.unreadable[:3])}")
+    if scan.stale:
+        reasons.append(f"stale: {scan.stale} graph call lines no longer name it")
+    if facts.unlined:
         reasons.append("call edges without line numbers")
-    if uncertain:
+    if facts.uncertain:
         reasons.append("low-confidence call edges")
-    if dynamic:
+    if facts.dynamic:
         reasons.append("dynamic use of the symbol or its file")
-    # A Go directory file declaring another package: the directory is not the
-    # package. Its external test package ``<name>_test`` imports it like any other.
-    scanned = set(ordered) - set(unreadable)
-    foreign = [
+    return reasons
+
+
+def _foreign_package_files(
+    package_files: list[str],
+    scanned: set[str],
+    packages: dict[str, str],
+    package: str | None,
+    language: str,
+) -> list[str]:
+    """Go files in the definition's directory that declare another package."""
+    # The directory is not the package then. Its external test package
+    # ``<name>_test`` imports it like any other.
+    return [
         f
         for f in package_files
         if language == "go" and f in scanned and packages.get(f) not in (package, f"{package}_test")
     ]
+
+
+def _scope_reasons(
+    node: GraphNode, scan: _ScanResult, foreign: list[str], language: str, unindexed: set[str]
+) -> list[str]:
+    """Why renames, default exports, members or unindexed edits leave the set incomplete."""
+    reasons: list[str] = []
     if foreign:
         reasons.append(f"{language}: another package shares its directory: {', '.join(foreign[:3])}")
-    if renamed_in:
-        reasons.append(f"renamed on import or export: {', '.join(sorted(renamed_in)[:3])}")
-    if is_default:
+    if scan.renamed_in:
+        reasons.append(f"renamed on import or export: {', '.join(sorted(scan.renamed_in)[:3])}")
+    if scan.is_default:
         reasons.append("default export: importers may rename it")
     if node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1:
         reasons.append("member: calls through untyped receivers are not scanned")
-    touched = sorted({s["path"] for s in sites if s["path"] in unindexed_set})
+    touched = sorted({s["path"] for s in scan.sites if s["path"] in unindexed})
     if touched:
         reasons.append(f"unindexed edits name it: {', '.join(touched[:3])}")
-    if not any(s["kind"] == "definition" for s in sites) and def_file not in unreadable:
+    has_definition = any(s["kind"] == "definition" for s in scan.sites)
+    if not has_definition and node.file_path not in scan.unreadable:
         reasons.append("definition not found at its indexed line")
+    return reasons
 
+
+def _served_sites(
+    sites: list[dict[str, Any]],
+    reasons: list[str],
+    node: GraphNode,
+    collector: OmissionCollector | None,
+) -> dict[str, Any]:
+    """Sort and cap *sites* into the reply, recording what the caps hid."""
     sites.sort(
         key=lambda s: (
             s["kind"] != "definition",
@@ -761,3 +823,53 @@ async def reference_edit_set(
     if reasons:
         out["reasons"] = reasons
     return out
+
+
+async def reference_edit_set(
+    session: AsyncSession,
+    repo_id: str,
+    repo_root: str | Path,
+    node: GraphNode,
+    collector: OmissionCollector | None = None,
+) -> dict[str, Any]:
+    """Every live site naming *node*, classified, with a completeness verdict.
+
+    Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
+    plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
+    definition | import | call | reference. With a *collector*, plain
+    references past ``MAX_REFERENCES_PER_FILE`` in one file move to it and
+    ``sites_omitted_by_file`` counts every row not shown.
+    """
+    root = Path(repo_root).resolve()
+    name = _bare_name(node)
+    reasons: list[str] = []
+
+    edges = await _edges_into(session, repo_id, node)
+    files = await _importer_files(session, repo_id, node.file_path, name, edges)
+    facts = _edge_facts(edges, node, name, files)
+
+    unseen = await asyncio.to_thread(_unseen_dirty_files, root, str(repo_root))
+    if unseen is None:
+        reasons.append("working tree status unknown")
+        unseen = []
+    dirty = frozenset(unseen)
+
+    language = await _node_language(session, repo_id, node)
+    package_files, package, why = await asyncio.to_thread(_package_scope, root, node, language)
+    files.update(package_files)
+    reasons += why
+
+    ordered, unindexed = _capped_candidates(files, unseen, reasons)
+    definition = await _definition_span(root, node, name, language, dirty)
+    scan = _ScanResult(
+        *await asyncio.to_thread(
+            _scan, root, ordered + unindexed, name, definition, facts.call_lines, dirty
+        )
+    )
+    await _python_alias_exports(session, repo_id, scan.python_aliases, scan.renamed_in)
+
+    reasons += _evidence_reasons(scan, facts)
+    scanned = set(ordered) - set(scan.unreadable)
+    foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
+    reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
+    return _served_sites(scan.sites, reasons, node, collector)

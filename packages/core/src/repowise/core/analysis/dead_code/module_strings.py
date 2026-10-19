@@ -78,7 +78,6 @@ def drop_named_modules(
     findings: list[DeadCodeFindingData],
     source_map: dict[str, bytes],
     runtime_importers: Iterable[str] = (),
-    *,
     is_test_by_path: Mapping[str, bool] | None = None,
     roots: Any | None = None,
 ) -> list[DeadCodeFindingData]:

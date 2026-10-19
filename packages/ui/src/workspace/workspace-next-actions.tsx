@@ -10,7 +10,7 @@ import type {
 
 import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { ActionDrawer } from "../overview/action-drawer";
-import { ActionRow, renderActionTitle } from "../overview/next-actions";
+import { ActionRow, renderActionTitle, useActionPrompt } from "../overview/next-actions";
 import { OverviewSection } from "../overview/section";
 import { Segmented } from "../shared/segmented";
 
@@ -61,6 +61,7 @@ export function WorkspaceNextActions({
     null,
   );
   const Link = LinkComponent ?? "a";
+  const { openActionPrompt, promptModal } = useActionPrompt();
   const openedRepoId = opened?.repoId;
   const loadActionPrompt = useCallback(
     (action: NextAction, flavor: AiPromptFlavor) => loadPrompt!(openedRepoId!, action, flavor),
@@ -154,6 +155,11 @@ export function WorkspaceNextActions({
                     action={action}
                     selected={opened?.action.id === action.id && opened.repoId === repoId}
                     onOpen={() => setOpened({ action, repoId })}
+                    onPrompt={
+                      loadPrompt
+                        ? () => openActionPrompt(action, (a, flavor) => loadPrompt(repoId, a, flavor))
+                        : undefined
+                    }
                   />
                 ))}
               </ul>
@@ -183,6 +189,7 @@ export function WorkspaceNextActions({
         LinkComponent={LinkComponent}
         renderTitle={renderActionTitle}
       />
+      {promptModal}
     </OverviewSection>
   );
 }

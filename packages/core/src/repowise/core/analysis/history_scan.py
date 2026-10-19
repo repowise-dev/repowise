@@ -40,10 +40,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.git_cat_file import cat_file_batch
+from repowise.core.analysis.git_cli import run_git
 from repowise.core.analysis.secret_allowlist import secret_path_allowlist
+from repowise.core.analysis.security_gate import _KEY_SHAPE_KINDS, fingerprint_of
 from repowise.core.analysis.security_scan import (
     SECRET_KINDS,
     SecurityScanner,
+    source_lines,
 )
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
 
@@ -56,21 +60,7 @@ def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
     scan rather than a crash).
     """
     try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=str(repo_path),
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            # git writes utf-8. ``text=True`` alone decodes with the locale
-            # codec, so on a default Windows install a commit subject holding
-            # an em dash raised UnicodeDecodeError. That is a ValueError, which
-            # the handler below does not catch, so the scan died rather than
-            # degrading to "".
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        result = run_git(args, str(repo_path), timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return ""
     if result.returncode != 0:
@@ -88,32 +78,6 @@ def _parse_author_date(iso: str) -> datetime | None:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(UTC)
     except ValueError:
         return None
-
-
-def _parse_cat_file_batch(data: bytes) -> dict[str, str]:
-    """Parse ``git cat-file --batch`` stdout into ``{blob_sha: content}``."""
-    contents: dict[str, str] = {}
-    pos = 0
-    while pos < len(data):
-        nl = data.find(b"\n", pos)
-        if nl == -1:
-            break
-        header = data[pos:nl].decode("ascii", errors="replace")
-        pos = nl + 1
-        parts = header.split()
-        if len(parts) < 3:
-            continue
-        sha = parts[0]
-        try:
-            size = int(parts[2])
-        except ValueError:
-            continue
-        chunk = data[pos : pos + size]
-        pos += size
-        if pos < len(data) and data[pos : pos + 1] == b"\n":
-            pos += 1
-        contents[sha] = chunk.decode("utf-8", errors="replace")
-    return contents
 
 
 @dataclass
@@ -267,19 +231,14 @@ class HistorySecurityScanner:
         """Return ``{blob_sha: content}`` via a single ``git cat-file --batch``."""
         if not blob_shas:
             return {}
-        try:
-            result = subprocess.run(
-                ["git", "cat-file", "--batch"],
-                cwd=str(repo_path),
-                input=("\n".join(blob_shas) + "\n").encode(),
-                capture_output=True,
-                timeout=120.0,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return {}
-        if result.returncode != 0:
-            return {}
-        return _parse_cat_file_batch(result.stdout)
+        read = cat_file_batch(
+            str(repo_path), blob_shas, on_missing="omit", timeout=120.0, check=True
+        )
+        return {
+            sha: blob.decode("utf-8", errors="replace")
+            for sha, blob in (read or [])
+            if blob is not None
+        }
 
     @staticmethod
     def _is_source(path: str) -> bool:
@@ -361,9 +320,19 @@ class HistorySecurityScanner:
             for blob_sha, path in blobs.items()
             if not path or self._is_source(path)
         ]
+        commit_positions = {sha: index for index, (sha, _) in enumerate(commits)}
+
+        def introduction_order(item: tuple[str, str]) -> int:
+            commit_sha = blob_introduced_at.get(item[0], "")
+            return commit_positions.get(commit_sha, len(commits))
+
+        # Keep the earliest introduction in Git history order: author dates
+        # can be backdated. Blobs with unknown provenance are processed last.
+        source_items.sort(key=introduction_order)
         contents_map = self._read_blobs_batch(
             repo_path, [blob_sha for blob_sha, _ in source_items]
         )
+        seen: set[str] = set()
 
         for idx, (blob_sha, path) in enumerate(source_items, start=1):
             summary.files_scanned += 1
@@ -392,17 +361,32 @@ class HistorySecurityScanner:
             if commit_sha:
                 commit_at = _parse_author_date(commit_dates.get(commit_sha, ""))
 
-            inserted = await self._scanner.persist(
-                path or "<unknown>",
-                kept,
-                commit_sha=commit_sha,
-                commit_at=commit_at,
-            )
-            summary.findings_inserted += inserted
+            lines = source_lines(content)
             for f in kept:
+                material = ""
+                if f["kind"] in _KEY_SHAPE_KINDS:
+                    material = "\n".join(lines[f["line"] - 1 : f.get("end_line", f["line"])])
+                fingerprint = fingerprint_of(
+                    path or "<unknown>", f["kind"], f.get("snippet", ""), material
+                )
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+
+                # Count actual writes per finding, including on idempotent
+                # re-runs where an existing provenance row inserts nothing.
+                inserted = await self._scanner.persist(
+                    path or "<unknown>",
+                    [f],
+                    commit_sha=commit_sha,
+                    commit_at=commit_at,
+                )
+                if not inserted:
+                    continue
+                summary.findings_inserted += inserted
                 sev = f.get("severity", "unknown")
                 kind = f.get("kind", "unknown")
-                summary.by_severity[sev] = summary.by_severity.get(sev, 0) + 1
-                summary.by_kind[kind] = summary.by_kind.get(kind, 0) + 1
+                summary.by_severity[sev] = summary.by_severity.get(sev, 0) + inserted
+                summary.by_kind[kind] = summary.by_kind.get(kind, 0) + inserted
 
         return summary

@@ -6,8 +6,8 @@ the normal input price on cache hits.
 
 Recommended models (as of 2026):
     - claude-haiku-5-5   — fastest and cheapest (default; ample for doc pages)
-    - claude-sonnet-4-6  — best quality/cost ratio
-    - claude-opus-4-6    — highest quality, most expensive
+    - claude-sonnet-5-5  — best quality/cost ratio
+    - claude-opus-5-5    — highest quality, most expensive
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from repowise.core.providers.llm.base import (
     temperature_kwargs,
     translate_sdk_errors,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
@@ -109,7 +110,7 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
 
     Args:
         api_key:      Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
-        model:        Model identifier. Defaults to claude-haiku-5-5.
+        model:        Model identifier. Defaults to the spec's default_model.
         base_url:     Optional custom API base URL (for proxies/self-hosted endpoints).
         rate_limiter: Optional pre-configured RateLimiter. If None, no rate limiting
                       is applied (useful when the caller manages concurrency via semaphore).
@@ -118,7 +119,7 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-haiku-5-5",
+        model: str = PROVIDER_SPECS["anthropic"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,

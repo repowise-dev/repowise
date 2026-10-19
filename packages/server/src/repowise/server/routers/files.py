@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, split_gated
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
@@ -303,19 +303,31 @@ async def file_detail(
     )
 
     # --- Health -----------------------------------------------------------
-    findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
+    findings = await crud.get_health_findings(
+        session, repo_id, file_path=file_path, include_unverified=True
+    )
+    # The score counts every finding; one a gate or file hold keeps back is left
+    # out of the list and breakdown, and ``gated`` says how many and why.
+    # History markers are held from the list only: the breakdown and the lead
+    # sum what the score counted.
+    held_files = {metric.file_path: metric} if metric is not None else None
+    scored, _ = split_gated(
+        "health", findings, kind="biomarker_type", files=held_files, hold_history=False
+    )
+    findings, gated = split_gated("health", findings, kind="biomarker_type", files=held_files)
     snapshots = await crud.list_health_snapshots(
         session, repo_id, limit=crud.FILE_TREND_SNAPSHOT_WINDOW
     )
     health = {
-        "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
+        "metric": _metric_to_dict(metric, _primary_and_magnitude(scored)) if metric else None,
         # None for a file with no score: rebuilt from findings it would read 10.0.
         "breakdown": (
-            _score_breakdown_from_findings(findings)
-            if findings and not (metric is not None and metric.score is None)
+            _score_breakdown_from_findings(scored)
+            if scored and not (metric is not None and metric.score is None)
             else None
         ),
         "findings": [_finding_dict(f, slim=slim) for f in findings],
+        "gated": gated,
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
         "signals": _file_signals_to_dict(file_signals(git_meta, degrees)),
     }

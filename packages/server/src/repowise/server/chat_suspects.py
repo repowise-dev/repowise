@@ -56,6 +56,7 @@ async def run_find_suspects(arguments: dict[str, Any], repo: str | None) -> dict
     from repowise.core.persistence.database import get_session
     from repowise.core.suspects import Symptom
     from repowise.core.suspects.index import find_suspects
+    from repowise.server.chat_tools import make_json_serializable
     from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
 
     try:
@@ -78,8 +79,10 @@ async def run_find_suspects(arguments: dict[str, Any], repo: str | None) -> dict
         ctx = await _resolve_repo_context(repo)
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-            return await find_suspects(
-                session, repository.id, repository.local_path, symptom, since=since, until=until
+            return make_json_serializable(
+                await find_suspects(
+                    session, repository.id, repository.local_path, symptom, since=since, until=until
+                )
             )
     except Exception as exc:  # a tool failure is the model's to read, not the turn's end
         return {"error": f"{type(exc).__name__}: {exc}", "error_code": "tool_failed"}

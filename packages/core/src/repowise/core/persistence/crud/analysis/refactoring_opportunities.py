@@ -312,7 +312,9 @@ async def _rank_live_plans(
             select(RefactoringSuggestion).where(
                 RefactoringSuggestion.repository_id == repository_id,
                 RefactoringSuggestion.status.in_(tuple(_LIVE_PLAN_STATUSES)),
-                shown_plan_predicate(),
+                # Test-file plans still rank: the hold is a serving rule, and
+                # ranking without them would move the tests the others list.
+                shown_plan_predicate(file_holds=False),
             )
         )
     ).scalars()

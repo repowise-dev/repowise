@@ -28,6 +28,7 @@ from .base import (
     Occurrence,
     Receiver,
     StatementDefUse,
+    echoes,
     node_text,
 )
 from .go_values import written_value
@@ -55,6 +56,8 @@ _CONDITIONAL_KINDS = frozenset(
 )
 # ``case v := <-ch:`` / ``case x = <-ch:`` in a ``select``.
 _RECEIVE = "receive_statement"
+# ``&x``: the one unary operator that hands out the variable itself.
+_UNARY = "unary_expression"
 # Selector (``obj.field``) and index (``arr[i]``) targets bind no local.
 _SELECTOR = "selector_expression"
 _INDEX = "index_expression"
@@ -196,6 +199,9 @@ class GoDefUseDialect(BaseDefUseDialect):
             defs[start:] = [replace(occ, may=True) for occ in defs[start:]]
             self._process(node.child_by_field_name("right"), defs, uses)
             return
+        if t == _UNARY and _is_address_of(node):
+            self._address_of(node.child_by_field_name("operand"), defs, uses)
+            return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; field name is not
             return
@@ -207,6 +213,22 @@ class GoDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._process(child, defs, uses)
+
+    def _address_of(
+        self, operand: Node | None, defs: list[Occurrence], uses: list[Occurrence]
+    ) -> None:
+        """``&x`` reads ``x`` and lets whoever holds the address write it:
+        ``fill(&buf)`` can assign ``*dst``, so the variable may change here.
+        A may-def (a def with its paired use), since nothing says the write
+        happens. ``&x.f`` / ``&x[i]`` reach the variable only where the path
+        stays inside the value (:func:`written_value`); through a pointer, a
+        slice or a map the storage is shared and the variable is untouched."""
+        self._process(operand, defs, uses)
+        base = written_value(operand) if operand is not None else None
+        if base is not None:
+            written = [self._occ(base)]
+            defs.extend(written)
+            uses.extend(echoes(written))
 
     def _var_spec(self, spec: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
         """A ``var_spec`` / ``const_spec``: its direct ``identifier`` children are
@@ -240,6 +262,11 @@ class GoDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._targets(child, defs, uses)
+
+
+def _is_address_of(unary: Node) -> bool:
+    op = unary.child_by_field_name("operator")
+    return op is not None and op.text == b"&"
 
 
 DIALECT = GoDefUseDialect()

@@ -30,7 +30,10 @@ def _targets(target: Any) -> list[tuple[str | None, Path]]:
     return [(r.alias, (target.ws_root / r.path).resolve()) for r in target.ws_config.repos]
 
 
-async def _build(repos: list[tuple[str | None, Path]], sections: list, scope: dict) -> dict:
+async def _build(
+    repos: list[tuple[str | None, Path]], sections: list, scope: dict, **options: Any
+) -> dict:
+    """The document over *repos*; *options* go to each :class:`ReportContext`."""
     from repowise.core.persistence.models import Repository
     from repowise.core.report.build import assemble, collect_repo
     from repowise.core.report.model import ReportContext
@@ -49,7 +52,12 @@ async def _build(repos: list[tuple[str | None, Path]], sections: list, scope: di
             session, repo_id = opened
             repo = await session.get(Repository, repo_id)
             ctx = ReportContext(
-                session, repo_id, root, alias=alias, head_commit=repo.head_commit if repo else None
+                session,
+                repo_id,
+                root,
+                alias=alias,
+                head_commit=repo.head_commit if repo else None,
+                **options,
             )
             parts.append(await collect_repo(ctx, sections))
     return assemble(scope, parts)
@@ -81,6 +89,18 @@ def _scope(target: Any) -> tuple[list[tuple[str | None, Path]], dict]:
     return repos, {"kind": "repo", "name": repos[0][1].name}
 
 
+def _renderer(fmt: str) -> Any:
+    """The renderer *fmt* names on the ``report-renderer`` seam; a usage error otherwise."""
+    from repowise.core.report.render import report_renderers
+
+    if fmt not in report_renderers.names:
+        raise click.BadParameter(
+            f"unknown format {fmt!r}; available: {', '.join(report_renderers.names)}",
+            param_hint="--format",
+        )
+    return report_renderers.get(fmt)
+
+
 def _emit(text: str, fmt: str, out_path: str | None, document: dict) -> None:
     """Write or print the rendered report, then warn about any failed section."""
     if out_path:
@@ -110,7 +130,7 @@ def _emit(text: str, fmt: str, out_path: str | None, document: dict) -> None:
     "fmt",
     default="markdown",
     show_default=True,
-    help="Renderer: json, markdown or html (or one a plugin registers).",
+    help="Renderer: json, markdown, html or csv (or one a plugin registers).",
 )
 @click.option("--out", "out_path", type=click.Path(dir_okay=False), help="Write to this file.")
 @click.option("--workspace", "workspace_flag", is_flag=True, help="Cover every workspace repo.")
@@ -127,16 +147,10 @@ def assessment_command(
 ) -> None:
     """Assessment pack: components, hotspots, bus factor, dead code, test reach,
     contracts, decisions, provenance and the quarter's moves, each with its basis."""
-    from repowise.core.report.render import report_renderers
-
     if not out_path:
         silence_logs_for_machine_output_until_close()  # stdout carries only the report
     sections = _pick_sections(wanted)
-    if fmt not in report_renderers.names:
-        raise click.BadParameter(
-            f"unknown format {fmt!r}; available: {', '.join(report_renderers.names)}",
-            param_hint="--format",
-        )
+    render = _renderer(fmt)
     target = resolve_command_target(
         path=path,
         workspace_flag=workspace_flag,
@@ -146,4 +160,4 @@ def assessment_command(
     target.notice(err_console, command="report assessment")
     repos, scope = _scope(target)
     document = run_async(_build(repos, sections, scope))
-    _emit(report_renderers.get(fmt)(document), fmt, out_path, document)
+    _emit(render(document), fmt, out_path, document)

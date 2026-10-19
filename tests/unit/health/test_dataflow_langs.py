@@ -821,6 +821,46 @@ def test_rust_def_use_classification():
     assert "new" not in uses
 
 
+@pytest.mark.parametrize(
+    "import_stmt",
+    [
+        "use foo;",
+        "use foo as bar;",
+        "use Shape::{Circle, Square};",
+        "use std::fmt;",
+        "use Shape::*;",
+    ],
+)
+def test_rust_imports_are_not_variable_reads(import_stmt):
+    fn = _first(
+        "rust",
+        f"""
+        fn main() {{
+            {import_stmt}
+            let a = 1;
+        }}
+        """,
+    )
+
+    assert not _use_names(fn), (
+        f"Import {import_stmt!r} should not create variable reads; "
+        f"got {_use_names(fn)}"
+    )
+
+
+def test_rust_import_does_not_read_local_with_same_name():
+    fn = _first(
+        "rust",
+        """
+        fn main() {
+            let io = 1;
+            use std::{fs, io};
+        }
+        """,
+    )
+
+    assert "io" not in _use_names(fn)
+
 def test_rust_while_let_binder_is_a_may_def():
     fn = _first(
         "rust",

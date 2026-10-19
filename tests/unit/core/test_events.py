@@ -38,7 +38,6 @@ def _facts(**over):
         },
         "decisions": {"governing": 1, "stale": []},
         "contracts": {"basis": "measured", "provided": {"http::GET::/a": 2}},
-        "attribution": {"commits": 20, "agent_share": 0.1, "coverage": 0.5, "window_days": 90},
     }
     for key, value in over.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
@@ -91,10 +90,7 @@ def test_owner_digests_under_another_key_are_not_compared():
     assert _kinds(_facts(declared_owner_key="x1"), renamed) == []
 
 
-def test_a_capped_recent_window_does_not_drive_activity_or_attribution():
-    reg = {"tags": ["pci"]}
-    capped = {"agent_share": 0.5, "recent_capped": True}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=capped)) == []
+def test_a_capped_recent_window_does_not_drive_activity():
     gone = {"active_main_owners": 0, "recent_capped": True}
     assert _kinds(_facts(), _facts(ownership=gone)) == []
 
@@ -162,17 +158,6 @@ def test_test_reach_drop_by_share_or_measured_coverage():
     fell = {"line_coverage": {"pct": 70.0}}
     found = diff_snapshots({"c": _facts(test_reach=cov)}, {"c": _facts(test_reach=fell)})
     assert found[0][3] == {"line_coverage": {"basis": "measured", "previous_pct": 80.0, "pct": 70.0}}
-
-
-def test_attribution_jump_only_on_regulated_components_with_coverage():
-    up = {"agent_share": 0.5}
-    assert _kinds(_facts(), _facts(attribution=up)) == []
-    reg = {"tags": ["pci"]}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=up)) == [("attribution_jump", "")]
-    withheld = {"agent_share": None}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=withheld)) == []
-    few = {"commits": 3, "agent_share": 0.9}
-    assert _kinds(_facts(**reg), _facts(**reg, attribution=few)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +262,17 @@ def test_settings_name_every_wrong_value(tmp_path):
         "events.retention_days",
         "events.sinks",
     ]
+
+
+def test_a_config_naming_a_kind_that_no_longer_exists_warns_and_keeps_defaults(tmp_path):
+    assert "attribution_jump" not in KINDS
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "events:\n  kinds: {attribution_jump: true, new_hotspot: true}\n", encoding="utf-8"
+    )
+    s = load_event_settings(tmp_path)
+    assert [e.split(":")[0] for e in s.errors] == ["events.kinds.attribution_jump"]
+    assert s.kinds == EventSettings().kinds | {"new_hotspot"}
 
 
 def test_doctor_reports_a_wrong_events_block(tmp_path):
@@ -557,3 +553,225 @@ async def test_a_failing_sink_leaves_the_event_stored(repo_db, monkeypatch):
     events = await _run(factory, repo_id, head="b" * 40, facts=after, monkeypatch=monkeypatch)
     async with get_session(factory) as session:
         assert [e.id for e in await list_events(session, repo_id)] == [events[0].id]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_event_of_a_kind_no_longer_known_still_reads(repo_db):
+    from repowise.core.events.store import list_events
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import EngineEventRecord
+
+    factory, repo_id, _root = repo_db
+    async with get_session(factory) as session:
+        session.add(
+            EngineEventRecord(
+                id="x" * 32,
+                repository_id=repo_id,
+                kind="retired_kind",
+                component="c",
+                severity="info",
+                occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
+                stamp="s1",
+                payload_json=json.dumps({"evidence": {"basis": "measured"}}),
+                schema_version=1,
+            )
+        )
+    async with get_session(factory) as session:
+        (event,) = await list_events(session, repo_id)
+    assert to_cloudevent(event)["type"] == "dev.repowise.retired_kind.0.1.0"
+
+
+# ---------------------------------------------------------------------------
+# Contract facts measured after the workspace extracts contracts
+# ---------------------------------------------------------------------------
+
+
+async def _refresh(factory, repo_id, monkeypatch, measured, stamp="s1"):
+    from repowise.core.events.store import refresh_contract_facts
+    from repowise.core.persistence.database import get_session
+
+    async def _contracts(*_a, **_k):
+        return measured
+
+    monkeypatch.setattr(snapshot_mod, "contract_facts", _contracts)
+    monkeypatch.setattr(snapshot_mod, "current_stamp", lambda: stamp)
+    async with get_session(factory) as session:
+        return await refresh_contract_facts(session, repo_id)
+
+
+async def _stored_contracts(factory, repo_id):
+    from sqlalchemy import select
+
+    from repowise.core.events.store import run_facts
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import SnapshotRun
+
+    async with get_session(factory) as session:
+        runs = await session.scalars(
+            select(SnapshotRun.id).where(SnapshotRun.repository_id == repo_id)
+            .order_by(SnapshotRun.taken_at, SnapshotRun.id)
+        )
+        return [(await run_facts(session, r))["c"]["contracts"] for r in runs]
+
+
+@pytest.mark.asyncio
+async def test_contracts_extracted_after_the_snapshot_fill_the_same_run(repo_db, monkeypatch):
+    from repowise.core.events.store import list_events
+    from repowise.core.persistence.database import get_session
+
+    factory, repo_id, _root = repo_db
+    unavailable = {"basis": "unavailable"}
+    t0 = datetime(2026, 5, 1, tzinfo=UTC)
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch, now=t0)
+    # The update's snapshot runs before extraction reaches the new commit.
+    later = {"c": {**_facts(), "contracts": unavailable}}
+    t1 = t0 + timedelta(hours=1)
+    assert await _run(factory, repo_id, head="b" * 40, facts=later, monkeypatch=monkeypatch, now=t1) == []
+
+    # Still unavailable after the pass (no workspace): nothing is written.
+    assert await _refresh(factory, repo_id, monkeypatch, None) == []
+    assert (await _stored_contracts(factory, repo_id))[1] == unavailable
+
+    now = {"basis": "measured", "provided": {"http::GET::/b": 0}}
+    events = await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)})
+    assert sorted((e.kind, e.evidence["contract_id"]) for e in events) == [
+        ("contract_added", "http::GET::/b"),
+        ("contract_broken", "http::GET::/a"),
+    ]
+    assert {e.commit_sha for e in events} == {"b" * 40}
+    assert (await _stored_contracts(factory, repo_id))[1] == now
+    # Idempotent: a second pass over the same run stores nothing new.
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)}) == []
+    async with get_session(factory) as session:
+        assert len(await list_events(session, repo_id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_contract_refresh_leaves_a_redrawn_component_or_an_old_run_alone(
+    repo_db, monkeypatch
+):
+    factory, repo_id, _root = repo_db
+    unavailable = {"basis": "unavailable"}
+    await _run(factory, repo_id, head="a" * 40, facts={"c": {**_facts(), "contracts": unavailable}}, monkeypatch=monkeypatch)
+    measured = {"basis": "measured", "provided": {}}
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d2", measured)}) == []
+    assert await _stored_contracts(factory, repo_id) == [unavailable]
+    # Under another stamp the run is not this analyzer's to fill.
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", measured)}, stamp="s2") == []
+    assert await _stored_contracts(factory, repo_id) == [unavailable]
+
+
+@pytest.mark.asyncio
+async def test_contract_facts_are_unavailable_outside_a_workspace(tmp_path):
+    assert await snapshot_mod.contract_facts(None, "r", tmp_path, head_commit="a" * 40) is None
+
+
+@pytest.mark.asyncio
+async def test_contract_kinds_skip_runs_whose_contracts_were_unavailable(repo_db, monkeypatch):
+    factory, repo_id, _root = repo_db
+    t0 = datetime(2026, 5, 1, tzinfo=UTC)
+    gone = {"basis": "measured", "provided": {}}
+    unavailable = {"basis": "unavailable"}
+
+    async def run(head, contracts, hours, **over):
+        facts = {"c": {**_facts(**over), "contracts": contracts}}
+        now = t0 + timedelta(hours=hours)
+        return await _run(factory, repo_id, head=head * 40, facts=facts, monkeypatch=monkeypatch, now=now)
+
+    await run("a", _facts()["contracts"], 0)
+    # An index-only run in between: never read as every contract removed.
+    assert await run("b", unavailable, 1) == []
+    events = await run("c", gone, 2)
+    assert [(e.kind, e.base_commit_sha) for e in events] == [("contract_broken", "a" * 40)]
+    # A component re-drawn in between ends the search.
+    await run("d", unavailable, 3, definition="d2")
+    assert await run("e", _facts()["contracts"], 4) == []
+
+
+@pytest.mark.asyncio
+async def test_contract_refresh_compares_with_the_last_measured_run(repo_db, monkeypatch):
+    from repowise.core.events.store import list_events
+    from repowise.core.persistence.database import get_session
+
+    factory, repo_id, _root = repo_db
+    t0 = datetime(2026, 5, 1, tzinfo=UTC)
+    unavailable = {"c": {**_facts(), "contracts": {"basis": "unavailable"}}}
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch, now=t0)
+    for i, head in enumerate("bc", start=1):
+        await _run(factory, repo_id, head=head * 40, facts=unavailable, monkeypatch=monkeypatch,
+                   now=t0 + timedelta(hours=i))
+    now = {"basis": "measured", "provided": {"http::GET::/a": 2, "http::GET::/b": 0}}
+    events = await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)})
+    assert [(e.kind, e.base_commit_sha, e.commit_sha) for e in events] == [
+        ("contract_added", "a" * 40, "c" * 40)
+    ]
+    assert await _refresh(factory, repo_id, monkeypatch, {"c": ("d1", now)}) == []
+    async with get_session(factory) as session:
+        assert len(await list_events(session, repo_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_events_reach_the_sinks_only_after_the_commit(repo_db, monkeypatch):
+    from repowise.core.events.store import list_events, record_snapshot
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    factory, repo_id, root = repo_db
+    sink = root / ".repowise" / "events.jsonl"
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch)
+    hot = {"c": _facts(hotspots=["a.py", "b.py"])}
+
+    async def _collect(*_a, **_k):
+        return hot
+
+    monkeypatch.setattr(snapshot_mod, "collect_facts", _collect)
+    with pytest.raises(RuntimeError):
+        async with get_session(factory) as session:
+            (await session.get(Repository, repo_id)).head_commit = "b" * 40
+            assert [e.kind for e in await record_snapshot(session, repo_id)] == ["new_hotspot"]
+            assert not sink.exists()
+            raise RuntimeError("the caller's commit fails")
+    assert not sink.exists()
+    async with get_session(factory) as session:
+        assert await list_events(session, repo_id) == []
+    # The retry stores and delivers the same event once.
+    (event,) = await _run(factory, repo_id, head="b" * 40, facts=hot, monkeypatch=monkeypatch)
+    assert [json.loads(line)["id"] for line in sink.read_text(encoding="utf-8").splitlines()] == [
+        event.id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_contract_refresh_skips_a_run_superseded_during_extraction(repo_db, monkeypatch):
+    from sqlalchemy import update
+
+    from repowise.core.events.store import refresh_contract_facts
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    factory, repo_id, _root = repo_db
+    unavailable = {"basis": "unavailable"}
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch)
+    await _run(factory, repo_id, head="b" * 40, facts={"c": {**_facts(), "contracts": unavailable}},
+               monkeypatch=monkeypatch)
+
+    async def _moved(session, *_a, **_k):
+        await session.execute(update(Repository).values(head_commit="c" * 40))
+        return {"c": ("d1", {"basis": "measured", "provided": {}})}
+
+    monkeypatch.setattr(snapshot_mod, "contract_facts", _moved)
+    async with get_session(factory) as session:
+        assert await refresh_contract_facts(session, repo_id) == []
+    assert (await _stored_contracts(factory, repo_id))[1] == unavailable
+
+
+@pytest.mark.asyncio
+async def test_a_config_error_is_logged_once_per_process(repo_db, monkeypatch, caplog):
+    factory, repo_id, root = repo_db
+    (root / ".repowise" / "config.yaml").write_text(
+        "events:\n  kinds: {once_only_retired_kind: true}\n", encoding="utf-8"
+    )
+    for head in "ab":
+        await _run(factory, repo_id, head=head * 40, facts={"c": _facts()}, monkeypatch=monkeypatch)
+    named = [r for r in caplog.records if "once_only_retired_kind" in r.getMessage()]
+    assert len(named) == 1

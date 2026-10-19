@@ -132,7 +132,7 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
             <RowActions
               actions={[
                 { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=files&node=${encodeURIComponent(entry.module_path)}` },
-                { icon: Flame, label: "Hotspots", href: `${prefix}/code-health?tab=triage` },
+                { icon: Flame, label: "Hotspots", href: `${prefix}/code-health` },
               ]}
             />
           )}

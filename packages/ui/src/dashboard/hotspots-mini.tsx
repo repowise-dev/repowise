@@ -1,7 +1,7 @@
 import { Flame } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { EmptyState } from "../shared/empty-state";
-import { truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { fileEntityPath } from "../shared/entity/routes";
 import type { Hotspot } from "@repowise-dev/types/git";
 
@@ -66,7 +66,7 @@ export function HotspotsMini({
             </span>
           </span>
           <a
-            href={`${prefix}/code-health?tab=triage`}
+            href={`${prefix}/code-health`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             View all
@@ -93,9 +93,7 @@ export function HotspotsMini({
                 </div>
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
-                  {truncatePath(h.file_path, 40)}
-                </p>
+                <FilePath path={h.file_path} fold className="flex text-[var(--color-text-primary)]" />
               </div>
               <div className="flex items-center gap-2 shrink-0 text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
                 <span>{h.commit_count_90d}c/90d</span>

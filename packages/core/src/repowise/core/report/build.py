@@ -31,14 +31,16 @@ NOTICE = (
 )
 
 
-def available_sections() -> list[tuple[str, Section]]:
-    """Every registered section, local ones and plugins', in report order."""
+def available_sections(report: str = "assessment") -> list[tuple[str, Section]]:
+    """Every registered section of the *report* kind, local ones and plugins', in report order."""
     import repowise.core.report.sections  # noqa: F401  (registers the local sections)
     from repowise.core.registry.plugins import load_plugins
 
     load_plugins()
     pairs = [(name, report_sections.get(name)) for name in report_sections.names]
-    return sorted(pairs, key=lambda p: (p[1].order, p[0]))
+    return sorted(
+        ((n, s) for n, s in pairs if s.report == report), key=lambda p: (p[1].order, p[0])
+    )
 
 
 async def _index_entry(ctx: ReportContext) -> dict[str, Any]:

@@ -10,15 +10,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Any
 
 from ...ingestion.graph.builder import GraphBuilder
-from ...ingestion.models import EXTENSION_TO_LANGUAGE, SPECIAL_FILENAMES, FileInfo, ParsedFile
+from ...ingestion.models import (
+    EXTENSION_TO_LANGUAGE,
+    SPECIAL_FILENAMES,
+    FileInfo,
+    ParsedFile,
+    Symbol,
+)
 from ...ingestion.parser import parse_file
 from ...pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots, read_pytest_roots
 from ...test_paths import is_test_related_path
-from ..health import HealthAnalyzer, HealthFindingData
+from ..health import HealthAnalyzer, HealthFileMetricData, HealthFindingData
 from ..health.complexity.languages import has_health_dialect
 from ..health.source_reader import MappingSourceReader
+
+if TYPE_CHECKING:
+    from .index_inputs import IndexInputs
 
 #: Files above this size are skipped rather than parsed on both sides.
 MAX_FILE_BYTES = 1_500_000
@@ -62,10 +72,11 @@ class RevisionAnalysis:
     findings: list[HealthFindingData] = field(default_factory=list)
     analyzed: set[str] = field(default_factory=set)
     skipped: dict[str, str] = field(default_factory=dict)
-    #: Dependents count per file, as this side's centrality gates read it.
-    dependents: dict[str, int] = field(default_factory=dict)
     #: Paths identified as tests (from FileInfo.is_test).
     test_paths: set[str] = field(default_factory=set)
+    symbols: dict[str, list[Symbol]] = field(default_factory=dict)
+    #: Per-file scores and deductions, by path.
+    metrics: dict[str, HealthFileMetricData] = field(default_factory=dict)
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -84,6 +95,7 @@ class RevisionHealthAnalyzer:
         *,
         subject_paths: set[str],
         dependents: dict[str, int] | None = None,
+        index: IndexInputs | None = None,
     ) -> RevisionAnalysis:
         """Analyze *sources*, reporting findings for the whole supplied set.
 
@@ -91,11 +103,14 @@ class RevisionHealthAnalyzer:
         remainder are closure context that shapes resolution without being
         charged to the change.
 
-        *dependents* is the other side's :attr:`RevisionAnalysis.dependents`.
-        Both sides see only the changed files, so a file's dependents count
-        here is a slice of its real one, and an import added between two
-        changed files can carry it across a centrality gate. Scoring both
-        sides against one count keeps that from reading as a code change.
+        *dependents* is one count both sides score against: the index's when
+        there is one, else the other side's :attr:`RevisionAnalysis.dependents`.
+        Both sides see only the changed files, so a local count is a slice of
+        the real one, and an import added between two changed files can carry
+        a file across a centrality gate without any change to its code.
+
+        *index* adds what the index knows (history, coverage, test pairing,
+        blame findings); without it a score is the code-shape reading.
         """
         result = RevisionAnalysis()
         parsed, usable = self._parse(sources, result)
@@ -108,11 +123,14 @@ class RevisionHealthAnalyzer:
             repo_root=self.repo_root,
             source_reader=MappingSourceReader(usable),
             file_dependents=dependents,
+            **(_index_kwargs(index) if index is not None else {}),
         )
         report = analyzer.analyze(config=self.config, changed_files=set(usable))
         result.findings = list(report.findings)
         result.analyzed = set(usable)
         result.dependents = analyzer.file_dependents()
+        result.symbols = {pf.file_info.path: pf.symbols for pf in parsed}
+        result.metrics = {m.file_path: m for m in report.metrics}
         return result
 
     # -- internals ----------------------------------------------------------
@@ -165,7 +183,20 @@ class RevisionHealthAnalyzer:
         return builder.build()
 
 
+<<<<<<< HEAD
 def _file_info(path: str, language: str, raw: bytes, roots: PytestRoots | None = None) -> FileInfo:
+=======
+def _index_kwargs(index: IndexInputs) -> dict[str, Any]:
+    return {
+        "git_meta_map": index.git_meta,
+        "coverage_map": index.coverage,
+        "tested_files": index.tested_files,
+        "stored_blame_findings": index.blame_findings,
+    }
+
+
+def _file_info(path: str, language: str, raw: bytes) -> FileInfo:
+>>>>>>> origin/main
     """A FileInfo whose ``abs_path`` is the repo-relative key.
 
     The health pass reads every byte through the injected source reader, which

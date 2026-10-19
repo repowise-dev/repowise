@@ -40,8 +40,11 @@ _PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 _PLUMBING: dict[str, str] = {
     # --- storage and schema: the value arrives already computed --------------
     "repowise/core/persistence/models.py": "the column",
-    "repowise/core/persistence/crud/analysis/health.py": "writes/reads the column",
+    "repowise/core/persistence/crud/analysis/health/snapshots.py": "writes/reads the column",
     "repowise/core/persistence/crud/git.py": "supplies the hotspot path set, not the score",
+    "repowise/server/services/health_map.py": (
+        "reads the hotspot path set for the map's hotspot lens, not the score"
+    ),
     "repowise/core/persistence/stores/_sql_analysis.py": "passthrough to the crud writer",
     "repowise/core/workspace/store.py": "copies the latest snapshot column into the workspace store",
     "repowise/core/persistence/_interfaces/_analysis.py": "the store ABC's parameter name",
@@ -60,7 +63,8 @@ _PLUMBING: dict[str, str] = {
     "repowise/cli/commands/health_cmd/command.py": "prints the KPI dict it was handed",
     "repowise/core/generation/editor_files/data.py": "the CodeHealthBlock field",
     "repowise/server/routers/_repo_summary.py": "serves the latest snapshot column on /repos/summary",
-    "repowise/server/chat_views.py": "charts the trend snapshots get_health already returned",
+    "repowise/server/chat_view_builders.py": "charts the trend snapshots get_health already returned",
+    "repowise/server/chat_datasets/history.py": "lists the snapshot scalars get_health trends read",
 }
 
 

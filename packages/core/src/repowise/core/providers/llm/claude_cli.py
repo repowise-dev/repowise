@@ -43,6 +43,7 @@ from repowise.core.providers.llm.base import (
     ProviderModelOption,
     normalize_stop_reason,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -50,7 +51,7 @@ log = structlog.get_logger(__name__)
 
 # Matches the anthropic provider's default, whose docstring calls haiku "ample
 # for doc pages". Overridable with --model / REPOWISE_MODEL.
-_DEFAULT_MODEL = "claude-haiku-5-5"
+_DEFAULT_MODEL = PROVIDER_SPECS["claude_cli"].default_model.removeprefix("claude_cli/")
 _EXEC_TIMEOUT_SECONDS = EXEC_TIMEOUT_SECONDS
 
 # This is a one-shot text generation: the prompt already carries the context.
@@ -189,8 +190,8 @@ class ClaudeCliProvider(AgentCliProvider):
             )
             for slug, recommended, notes in (
                 ("claude-haiku-5-5", True, "fastest; ample for doc pages"),
-                ("claude-sonnet-4-6", False, "better prose, slower"),
-                ("claude-opus-4-6", False, "highest quality; heaviest on subscription limits"),
+                ("claude-sonnet-5-5", False, "better prose, slower"),
+                ("claude-opus-5-5", False, "highest quality; heaviest on subscription limits"),
             )
         )
 

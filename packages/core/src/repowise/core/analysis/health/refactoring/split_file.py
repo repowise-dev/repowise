@@ -147,7 +147,6 @@ def may_split(
     language: str | None,
     line_count: int,
     top_level_symbols: int,
-    *,
     is_test: bool | None = None,
     roots: Any | None = None,
 ) -> bool:

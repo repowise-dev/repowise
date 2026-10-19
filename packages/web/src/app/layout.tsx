@@ -15,7 +15,9 @@ import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { ContextDrawerShell } from "@/components/layout/context-drawer-provider";
 import { SWRProvider } from "@/components/layout/swr-provider";
+import { PreviewBadgeStrings } from "@/components/layout/preview-badge-strings";
 import { UpgradeBanner } from "@/components/layout/upgrade-banner";
+import { ReleaseMoment } from "@/components/layout/release-moment";
 import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
@@ -94,12 +96,14 @@ export default async function RootLayout({
         <NuqsAdapter>
         <SWRProvider>
         <TooltipProvider delayDuration={300}>
+        <PreviewBadgeStrings>
           <Suspense fallback={<AppShellSkeleton />}>
             <ContextDrawerShell>
               {/* Printed, the shell unclips so a long page (a chat
                   transcript) flows across sheets instead of one viewport. */}
               <div className="flex h-screen flex-col overflow-hidden print:block print:h-auto print:overflow-visible">
                 <UpgradeBanner />
+                <ReleaseMoment firstRepoId={repos[0]?.id ?? null} />
                 <div className="flex flex-1 overflow-hidden print:block print:overflow-visible">
                 <Sidebar
                   repos={repos}
@@ -130,6 +134,7 @@ export default async function RootLayout({
               <CommandPalette repos={repos} workspace={workspace} />
             </ContextDrawerShell>
           </Suspense>
+        </PreviewBadgeStrings>
         </TooltipProvider>
         </SWRProvider>
         </NuqsAdapter>

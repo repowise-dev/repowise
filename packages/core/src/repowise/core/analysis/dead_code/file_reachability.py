@@ -61,6 +61,8 @@ _JVM_SUFFIXES: tuple[str, ...] = (".java", ".kt")
 
 CSHARP_SUFFIX = ".cs"
 
+_SWIFT_SUFFIX = ".swift"
+
 #: Objective-C implementation files, which no source ever imports.
 _OBJC_SOURCE_SUFFIXES: tuple[str, ...] = (".m", ".mm")
 
@@ -137,6 +139,10 @@ class ReachabilityRescues:
     #: so ``None`` is "not checked" and, like ``package_files``, resolves a
     #: ``.cs`` file to reachable.
     csharp_named_files: AbstractSet[str] | None = None
+    #: Swift files with no importer that a use edge, a type name or an extended
+    #: type reaches (see :mod:`swift_reachability`). ``None`` is "not checked"
+    #: and resolves a ``.swift`` file to reachable, as for C#.
+    swift_named_files: AbstractSet[str] | None = None
 
 
 #: Prefix of an :class:`repowise.core.ids.ExternalId`, matched textually rather
@@ -315,6 +321,10 @@ def is_file_reachable(
         return True if packages is None else is_cpp_file_reachable(path, graph, packages.cpp)
     if path.endswith(CSHARP_SUFFIX) and (
         rescues.csharp_named_files is None or path in rescues.csharp_named_files
+    ):
+        return True
+    if path.endswith(_SWIFT_SUFFIX) and (
+        rescues.swift_named_files is None or path in rescues.swift_named_files
     ):
         return True
 

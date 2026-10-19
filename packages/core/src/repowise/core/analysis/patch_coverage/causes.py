@@ -58,7 +58,6 @@ def name_causes(
     files: Iterable[str],
     changed: Collection[str],
     deleted: Collection[str],
-    *,
     roots: Any | None = None,
 ) -> dict[str, tuple[IndirectCause, ...]]:
     """``{file: causes}`` from git alone: changed tests named for each file."""

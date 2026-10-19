@@ -276,8 +276,9 @@ export function ResponsiveTable<T>({
                 key={key}
                 ref={tableWindow.measure}
                 data-index={index}
+                data-selected={isSelected || undefined}
                 className={cn(
-                  "border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]",
+                  "group/row border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]",
                   isSelected && "bg-[var(--color-accent-muted)]/30",
                   onRowClick && CLICKABLE_ROW_CLS,
                   rowClassName?.(row),
@@ -329,8 +330,9 @@ export function ResponsiveTable<T>({
               key={key}
               ref={cardsWindow.measure}
               data-index={index}
+              data-selected={isSelected || undefined}
               className={cn(
-                "px-3 py-2.5",
+                "group/row px-3 py-2.5",
                 isSelected && "bg-[var(--color-accent-muted)]/30",
                 onRowClick && cn("hover:bg-[var(--color-bg-elevated)]", CLICKABLE_ROW_CLS),
                 rowClassName?.(row),

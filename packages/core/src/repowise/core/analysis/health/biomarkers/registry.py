@@ -17,7 +17,6 @@ from .base import Biomarker, BiomarkerResult, FileContext
 from .blocking_io_under_lock import BlockingIoUnderLockDetector
 from .blocking_sync_in_async import BlockingSyncInAsyncDetector
 from .brain_method import BrainMethodDetector
-from .bumpy_road import BumpyRoadDetector
 from .change_entropy import ChangeEntropyDetector
 from .churn_risk import ChurnRiskDetector
 from .co_change_scatter import CoChangeScatterDetector
@@ -56,6 +55,7 @@ from .pd_concat_in_loop import PdConcatInLoopDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
 from .regex_compile_in_loop import RegexCompileInLoopDetector
+from .repeated_nesting import RepeatedNestingDetector
 from .resource_construction_in_loop import ResourceConstructionInLoopDetector
 from .serial_await_in_loop import SerialAwaitInLoopDetector
 from .sql_cartesian_join import SqlCartesianJoinDetector
@@ -72,7 +72,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     GodClassDetector,  # type: ignore[list-item]
     NestedComplexityDetector,  # type: ignore[list-item]
     ComplexMethodDetector,  # type: ignore[list-item]
-    BumpyRoadDetector,  # type: ignore[list-item]
+    RepeatedNestingDetector,  # type: ignore[list-item]
     LargeMethodDetector,  # type: ignore[list-item]
     PrimitiveObsessionDetector,  # type: ignore[list-item]
     DryViolationDetector,  # type: ignore[list-item]

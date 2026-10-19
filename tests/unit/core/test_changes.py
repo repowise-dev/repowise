@@ -19,7 +19,7 @@ from repowise.core.changes import (
     in_toto_statement,
     reconstruct_changes,
 )
-from repowise.core.changes.reconstruct import change_identity, change_title
+from repowise.core.changes.reconstruct import change_identity, change_title, without_own_ref
 from repowise.core.changes.source import GitChangeMetadata
 from repowise.core.changes.store import change_provenance, refresh_changes
 from repowise.core.ingestion.git_indexer.commit_rows import build_commit_rows
@@ -127,6 +127,7 @@ def test_every_merge_style_reads_back_as_one_change(history):
     squash = by_id["pr-12"]
     assert (squash.shape, squash.forge_ref, squash.commit_shas) == ("squash", "#12", [shas["squash"]])
     assert _files(squash) == {"src/a.py"} and squash.category == "feature"
+    assert not squash.title.endswith("(#12)")  # surfaces print the ref beside it
 
     merge = by_id["pr-13"]
     assert merge.shape == "merge" and merge.head_sha == shas["gh_merge"]
@@ -197,6 +198,15 @@ def test_title_skips_boilerplate_and_trailers():
     assert change_title(subject, "Conflicts:\n\ta.py\n", True) == subject
     # A body line that only starts with "#" is still a title.
     assert change_title(subject, "#123 Fix foo\n", True) == "#123 Fix foo"
+
+
+def test_title_drops_only_its_own_ref_suffix():
+    assert without_own_ref("feat(x): add y (#3792)", "3792") == "feat(x): add y"
+    assert without_own_ref("Fix the parser (!41)", "41") == "Fix the parser"
+    # Another change's number, or a title that is only the ref, stays.
+    assert without_own_ref("revert: z (#12)", "13") == "revert: z (#12)"
+    assert without_own_ref("(#5)", "5") == "(#5)"
+    assert without_own_ref("feat: (#5) in the middle", "5") == "feat: (#5) in the middle"
 
 
 def test_repeated_identity_gets_a_distinct_id_and_keeps_it(tmp_path):
@@ -397,6 +407,9 @@ async def test_refresh_rebuilds_then_extends(tmp_path, history):
             assert (row.provenance, row.provenance_agent, row.provenance_known) == ("agent", 1, 1)
             assert (await get_change(session, repo_id, shas["f1"][:10])).change_id == "pr-13"
             assert (await get_change(session, repo_id, "pr-7")).approvals == 1
+            # The forge ref is what `changes list` prints, so `show` takes it too.
+            assert (await get_change(session, repo_id, "#13")).change_id == "pr-13"
+            assert await get_change(session, repo_id, "#999") is None
 
         newer = r.commit("z.py", "chore: z (#40)")
         async with get_session(factory) as session:

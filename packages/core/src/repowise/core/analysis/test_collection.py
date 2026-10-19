@@ -176,9 +176,13 @@ def plan_scopes(
     namers: dict[str, list[str]] = {}
     if asked:
         namers = file_namers(asked, _scan_texts(checkout, asked, cancelled), is_manifest)
-        code = [p for p in checkout.tracked if is_code_file(p)]
-        test_code = [p for p in code if is_test_related_path(p)]
-        other = [p for p in code if not is_test_related_path(p)]
+        # One classification per file: it walks the path's parts, and the
+        # checkout is every tracked file.
+        test_code: list[str] = []
+        other: list[str] = []
+        for p in checkout.tracked:
+            if is_code_file(p):
+                (test_code if is_test_related_path(p) else other).append(p)
         namers = with_fixture_readers(namers, test_code, other, checkout.read, checkout.holding)
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))

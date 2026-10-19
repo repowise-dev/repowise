@@ -5,7 +5,8 @@ Runs the synchronous SDK call in a thread pool to avoid blocking asyncio.
 
 Recommended models:
     - gemini-3.5-flash-lite  — fast + cheap (default)
-    - gemini-3-flash-preview         — higher quality
+    - gemini-3.8-flash       — higher quality
+    - gemini-4-argon         — highest quality
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from repowise.core.providers.llm.base import (
     provider_should_retry,
     record_generation_cost,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -227,7 +229,7 @@ class GeminiProvider(BaseProvider):
     """Native Gemini provider using the google-genai SDK.
 
     Args:
-        model:        Gemini model name. Defaults to gemini-3.5-flash-lite.
+        model:        Gemini model name. Defaults to the spec's default_model.
         api_key:      Google API key. Falls back to GEMINI_API_KEY or GOOGLE_API_KEY env var.
         base_url:     Optional custom base URL (e.g., for proxy/self-hosted endpoints).
         rate_limiter: Optional RateLimiter instance.
@@ -236,7 +238,7 @@ class GeminiProvider(BaseProvider):
 
     def __init__(
         self,
-        model: str = "gemini-3.5-flash-lite",
+        model: str = PROVIDER_SPECS["gemini"].default_model,
         api_key: str | None = None,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,

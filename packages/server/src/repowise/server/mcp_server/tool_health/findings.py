@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.finding_registry import split_held
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
 from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
 from repowise.core.persistence.crud.analysis.shown import gated_counts, ungated
@@ -80,6 +81,9 @@ def _tiered(rows: list[Any], measured_over: list[Any]) -> tuple[list[Any], dict[
 
 
 def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
+    """Open findings no language gate holds back. File holds are applied after
+    the read (:func:`_listed`): the leads, worst-file order and KPIs count the
+    file-held rows, as the scores did."""
     return (
         *_open_typed(repository, req),
         ungated(
@@ -87,8 +91,16 @@ def _open_findings(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
             HealthFinding.file_path,
             HealthFinding.biomarker_type,
             include_unverified=req.include_unverified,
+            file_holds=False,
         ),
     )
+
+
+def _listed(rows: list[Any], pop: Population, req: HealthRequest) -> list[Any]:
+    """*rows* a finding list may show: those no file hold keeps back."""
+    if req.include_unverified:
+        return rows
+    return split_held("health", rows, pop.files, kind="biomarker_type")[0]
 
 
 def _open_typed(repository: Any, req: HealthRequest) -> tuple[Any, ...]:
@@ -137,7 +149,8 @@ async def load_targeted_findings(
         "file_path",
     ))
     emitted, labels = _tiered(
-        [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)], finding_rows
+        [f for f in _listed(finding_rows, pop, req) if _in_dimensions(f, req.ranked_dimensions)],
+        finding_rows,
     )
     return FindingSets(
         finding_rows=emitted,
@@ -162,7 +175,9 @@ async def load_dashboard_findings(
     )
     # ``lead_rows`` stays unfiltered: the leads and performance KPI must not
     # change because the caller asked to see one dimension.
-    dimensioned = [r for r in lead_rows if _in_dimensions(r, req.ranked_dimensions)]
+    dimensioned = [
+        r for r in _listed(lead_rows, pop, req) if _in_dimensions(r, req.ranked_dimensions)
+    ]
     ranked = req.ranks_findings
     # Tiering measures every open finding; a call that only counts them skips it.
     emitted, labels = _tiered(dimensioned, lead_rows) if ranked else (dimensioned, {})
