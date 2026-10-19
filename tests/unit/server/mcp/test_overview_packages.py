@@ -87,3 +87,20 @@ def test_commands_name_a_package_only_for_tasks_the_root_lacks(tmp_path):
 def test_twin_module_pages_do_not_stall_the_widening():
     pages = [_page("src", "1"), _page("src", "2"), _page("src/a", "1.1")]
     assert [h.target_path for h in _key_module_heads(pages)] == ["src/a"]
+
+
+def test_a_repo_summary_is_its_first_sentence_not_its_heading():
+    from repowise.server.mcp_server.tool_overview.workspace import _lead_sentence
+
+    essay = "## Project Summary\n\nRepowise indexes code. It also answers questions.\n\n## More"
+    assert _lead_sentence(essay) == "Repowise indexes code."
+    assert _lead_sentence("# Only a heading") == ""
+    long = _lead_sentence("word " * 100)
+    assert len(long) <= 140 and long.endswith("…")
+
+
+def test_a_repo_summary_skips_tables_lists_and_fences():
+    from repowise.server.mcp_server.tool_overview.workspace import _lead_sentence
+
+    essay = "## Summary\n| a | b |\n- item\n```\nRepowise indexes code. More."
+    assert _lead_sentence(essay) == "Repowise indexes code."

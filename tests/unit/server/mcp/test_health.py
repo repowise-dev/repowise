@@ -2961,3 +2961,15 @@ def test_kpis_name_production_code_beside_the_all_files_average() -> None:
     mixed = _compute_kpis([prod, test], deductions={})
     assert (mixed["average_health"], mixed["production_average"]) == (8.0, 6.0)
     assert "production_average" not in _compute_kpis([prod], deductions={})
+
+
+@pytest.mark.asyncio
+async def test_workspace_rows_count_the_files_the_overview_counts(setup_mcp, health_data, session):
+    """repo="all" and the single-repo overview state one file count."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_overview.health import _build_code_health
+    from repowise.server.mcp_server.tool_overview.workspace import _code_files
+
+    overview = await _build_code_health(session, SimpleNamespace(id=health_data))
+    assert await _code_files(session, health_data) == overview["code_files"]

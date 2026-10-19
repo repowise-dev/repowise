@@ -1073,3 +1073,26 @@ async def test_list_repos_single_repo_mode():
             "is_default": True,
         }
     ]
+
+
+def test_list_repos_reads_the_commit_a_repo_updated_on_its_own_recorded(tmp_path):
+    from repowise.core.workspace import WorkspaceConfig
+    from repowise.core.workspace.config import RepoEntry
+    from repowise.server.mcp_server.tool_repos import _workspace_repos
+
+    (tmp_path / "api" / ".repowise").mkdir(parents=True)
+    (tmp_path / "api" / ".repowise" / "state.json").write_text(
+        json.dumps({"last_sync_commit": "b" * 40})
+    )
+    config = WorkspaceConfig(
+        repos=[RepoEntry(path="api", alias="api", last_commit_at_index="a" * 40)]
+    )
+    config.save(tmp_path)
+    registry = SimpleNamespace(
+        workspace_root=tmp_path, ws_config=config, get_default_alias=lambda: "api"
+    )
+
+    [row] = _workspace_repos(registry)
+    assert row["last_commit_at_index"] == "b" * 40
+    # Read, not written: the config on disk is the CLI's to update.
+    assert WorkspaceConfig.load(tmp_path).repos[0].last_commit_at_index == "a" * 40

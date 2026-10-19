@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
+from repowise.core.ingestion.languages.registry import REGISTRY
+from repowise.core.persistence.crud.analysis.health.metrics import count_health_files
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server import _state
@@ -24,13 +26,13 @@ async def _workspace_overview(*, tools: bool = False) -> dict:
     fed = Federation()
     repos_info = [entry for _, entry in await fed.run(lambda ctx: _repo_entry(ctx, registry))]
     cross_repo_topology = _cross_repo_topology(repos_info)
-    totals = sum_fields(repos_info, ("file_count", "symbol_count"))
+    totals = sum_fields(repos_info, ("code_files", "symbol_count"))
 
     result: dict[str, Any] = {
         "workspace": True,
         "workspace_root": str(registry.workspace_root) if registry else "",
         "total_repos": len(repos_info),
-        "total_files": totals["file_count"],
+        "total_code_files": totals["code_files"],
         "total_symbols": totals["symbol_count"],
         "repos": repos_info,
         "hint": ("Use repo='<alias>' to query a specific repo. Omit repo to use the default."),
@@ -58,11 +60,47 @@ async def _repo_entry(ctx: Any, registry: Any) -> dict[str, Any]:
         return {
             "alias": ctx.alias,
             "path": str(ctx.path),
-            "summary": ov_content.split("\n")[0].strip("# ").strip()[:200],
-            "file_count": await _count_nodes(session, repo_obj.id, "file"),
+            "summary": _lead_sentence(ov_content),
+            "code_files": await _code_files(session, repo_obj.id),
             "symbol_count": await _count_nodes(session, repo_obj.id, "symbol"),
             "is_default": registry is not None and ctx.alias == registry.get_default_alias(),
         }
+
+
+def _is_prose(line: str) -> bool:
+    """Not blank, a heading, a table row, a list item, a quote or a code fence."""
+    text = line.strip()
+    return bool(text) and not text.startswith(("#", "|", "- ", "* ", "```", ">"))
+
+
+def _lead_sentence(markdown: str, limit: int = 140) -> str:
+    """The essay's first sentence of prose, past its headings."""
+    prose = " ".join(
+        line.strip() for line in markdown.splitlines() if _is_prose(line)
+    )
+    head, dot, _ = prose.partition(". ")
+    sentence = head + "." if dot else prose
+    if len(sentence) <= limit:
+        return sentence
+    return sentence[: limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+async def _code_files(session: Any, repository_id: str) -> int:
+    """The single-repo overview's ``code_health.code_files``; before health has
+    run, the graph's files in a code language."""
+    counted = await count_health_files(session, repository_id)
+    if counted:
+        return counted
+    result = await session.execute(
+        select(sa_func.count())
+        .select_from(GraphNode)
+        .where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+            GraphNode.language.in_(REGISTRY.code_languages()),
+        )
+    )
+    return result.scalar_one()
 
 
 async def _count_nodes(session: Any, repository_id: str, node_type: str) -> int:

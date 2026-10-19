@@ -335,6 +335,8 @@ The `candidates` and `history` lanes shed first under budget pressure, so an abs
 | `more` | Names the opt-in blocks |
 | `workspace` | Workspace mode footer |
 
+With `repo="all"`, each repo row carries `summary` (the overview essay's first sentence), `code_files` (the same count as that repo's `code_health.code_files`, or its graph's code-language files before health has run) and `symbol_count`; `total_code_files` sums them.
+
 Opt-in blocks: `outline` (wiki page tree, two levels), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`), `components`, `changes`, `actions`, `tools` (`tool_surface`), `scope` (the whole `_meta.index_scope`). They are not computed unless named.
 
 **changes.** Change Records over a 90-day `window` ending at the newest merged change (`since`, `until`): `total`, `by_category` (largest first), `by_week` (`{week, changes}` per week starting Monday, zero weeks included) and `provenance` over changes: `agent_changes`, `human_attested_changes`, `unknown_changes`, `coverage`, `agent_share` and `summary`. Below 30% coverage `agent_share` is null with `suppressed_reason`, and the agent and human-attested counts are left out. A change stored without a label counts as unknown, never human. `{"total": 0}` when no Change Records are stored; `provenance` is `{"unavailable": "attribution_off"}` with attribution off. Grouped by change and category only, never by person.
