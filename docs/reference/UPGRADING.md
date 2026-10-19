@@ -19,7 +19,7 @@ When you run `repowise update` (or `repowise serve`) after upgrading, repowise:
 1. **Reads your store's format version** and compares it to the running build. The on-disk store records which version wrote it, so repowise knows exactly what, if anything, an upgrade needs.
 2. **Applies any automatic, no-cost adjustments in place.** New database columns are back-filled automatically. If your embedding model changed, vectors are re-embedded for you (no LLM calls). You don't run anything.
 3. **Keeps your parse cache warm.** Ordinary releases do not invalidate cached work, so updates stay fast.
-4. **Shows you what changed.** A short "what's new" summary appears for the versions you crossed, and `repowise whats-new` shows release notes any time. The web UI surfaces a dismissible "update available" banner and a what's-new view.
+4. **Shows you what changed.** A short "what's new" summary appears for the versions you crossed, and `repowise whats-new` shows release notes any time. The web UI surfaces a dismissible "update available" banner that names the newer release's highlights, and after an upgrade it opens What's new once for a minor release (a short note for a patch), with the release's highlights, its numbers and every change.
 
 ## When a reindex is recommended
 
@@ -67,6 +67,10 @@ repowise decision source set session --on
 **A decision needs a stated reason to be accepted.** `repowise decision confirm` refuses a record whose body only restates its own title. Existing records are untouched, but ids that used to pass may now be rejected; add a reason with `repowise decision add --rationale`, or re-record it.
 
 **Your first `update` re-scores the whole repository.** The health analyzer version moved from 11 to 21 over this cycle, because new test-quality markers, a per-language assertion vocabulary, a `.tsx` grammar fix and re-ranked history gates all change how a stored health number is computed. Rather than wait out the decay timer, the first update after upgrading re-scores every file, so it takes longer than usual. On a 171-file repository that was 10.2 seconds against a 5.8 second baseline, with the next update back to normal. Nothing needs re-indexing: the store format and parser schema are unchanged.
+
+### Git history is re-read once when its rules change
+
+When a release changes how git history becomes stored rows (change numbers, author identity), the first `update` re-reads the full history once instead of only the changed files. It regenerates no pages and makes no model calls. See [GIT_HOSTS.md](../start/GIT_HOSTS.md#upgrading).
 
 ### `health-rules.json` globs now match like `.gitignore`
 

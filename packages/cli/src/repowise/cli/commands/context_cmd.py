@@ -23,6 +23,9 @@ _INCLUDE_BLOCKS = (
     "skeleton+",
     "doc_drift",
     "symbols",
+    "changes",
+    "provenance",
+    "suspects",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.
@@ -148,7 +151,9 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     }
     if payload.get("truncated"):
         out["truncated"] = True
-    for key in ("dropped_targets", "recovery", "dropped_symbols", "dropped_blocks", "omission_marker"):
+    for key in (
+        "dropped_targets", "recovery", "dropped_symbols", "dropped_blocks", "omission_marker", "suspects"
+    ):
         # omission_marker is the only handle on what truncation banked, so a
         # `truncated: true` without it says content went missing and offers no
         # way to get it back.
@@ -240,6 +245,11 @@ def _render(projected: dict) -> None:
     cards = projected.get("targets") or {}
     if not cards:
         console.print("[yellow]No context for those targets.[/yellow]")
+    for row in (projected.get("suspects") or {}).get("suspects", []):
+        console.print(
+            f"suspect {row['rank']}: {escape(row.get('ref') or row['id'])} {escape(row['title'][:70])}"
+            f" [dim]({', '.join(row['signals'])})[/dim]"
+        )
 
     for card in cards.values():
         if card.get("error"):

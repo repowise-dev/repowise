@@ -164,13 +164,20 @@ def _containing_file(symbol_id: str) -> str:
 def symbol_index(
     parsed: Any, changed_set: set[str] | None = None
 ) -> dict[str, dict[str, SymbolFacts]]:
-    """``{file_path: {symbol_name: SymbolFacts}}`` from either shape of parse.
+    """``{file_path: {symbol_id: SymbolFacts}}`` from either shape of parse.
 
     Accepts both live ``ParsedFile``-shaped objects and the plain dicts in a
     ``parsed_files.json`` artifact, so the same index builder serves the head
     parse, the base parse, and a snapshot fallback. Unknown or malformed rows
     are skipped rather than raised on: this feeds advisory evidence, and one bad
     row must not cost the whole analysis.
+
+    Keyed by ``symbol_id`` rather than the bare name: a file commonly holds
+    several classes with like-named methods (``login``, ``validate``, ``to_dict``),
+    and a name key silently keeps only the last one, hiding every change to the
+    earlier ones. The id is also what :func:`caller_index` and
+    :func:`_with_callers` use, so base and head now pair on the same key the
+    call graph does.
     """
     out: dict[str, dict[str, SymbolFacts]] = {}
     for pf in parsed or []:
@@ -187,7 +194,11 @@ def symbol_index(
         for sym in symbols or []:
             facts = _facts(sym, path)
             if facts is not None:
-                bucket[facts.name] = facts
+                # Same-arity overloads in one class share an id -- Java and C#
+                # register a parameter-count discriminator, so ``foo(int)`` and
+                # ``foo(String)`` stay one node -- and the last one still wins
+                # for them. Keying those apart is a separate change.
+                bucket[facts.symbol_id] = facts
         if bucket:
             out[path] = bucket
     return out
@@ -283,8 +294,11 @@ def analyze_contract_impact(
             continue
         ranges = added_ranges_by_file.get(path, [])
 
-        for name, facts in sorted(head_syms.items()):
-            prior = base_syms.get(name)
+        # Head and base pair by symbol id (see :func:`symbol_index`), so a method
+        # moved between classes reads as removed + added rather than as an edit
+        # to whichever same-named method sits in that class.
+        for symbol_id, facts in sorted(head_syms.items()):
+            prior = base_syms.get(symbol_id)
             effect = None
             if prior is not None and prior.signature != facts.signature:
                 effect = classify_signature_change(
@@ -312,8 +326,8 @@ def analyze_contract_impact(
                 _with_callers(path, facts, change, callers, changed_set, callers_per_symbol, effect)
             )
 
-        for name, facts in sorted(base_syms.items()):
-            if name not in head_syms:
+        for symbol_id, facts in sorted(base_syms.items()):
+            if symbol_id not in head_syms:
                 changes.append(
                     _with_callers(
                         path, facts, CHANGE_REMOVED, callers, changed_set, callers_per_symbol

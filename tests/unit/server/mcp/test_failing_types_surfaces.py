@@ -120,6 +120,50 @@ async def test_test_files_ranked_apart_from_production(setup_mcp, failing_types_
 
 
 @pytest.mark.asyncio
+async def test_dashboard_lists_read_the_fix_first_scope(setup_mcp, session, failing_types_data):
+    """Scripts and bundles leave the production lists as they leave Fix first;
+    a test helper with no stored origin is ranked with the tests."""
+    from repowise.server.mcp_server import get_health
+
+    for path, origin, is_test in (
+        ("scripts/release-checks.ts", "tooling", False),
+        ("apps/kit/a2ui.bundle.js", "generated", False),
+        ("src/bot.test-harness.ts", None, False),
+        # A stored test flag on generated code: counted, not lost.
+        ("tests/gen/schema_pb2.py", "generated", True),
+    ):
+        session.add(
+            HealthFileMetric(
+                repository_id=failing_types_data,
+                file_path=path,
+                score=1.0,
+                max_ccn=40,
+                max_nesting=6,
+                nloc=900,
+                has_test_file=False,
+                module=path.split("/")[0],
+                is_test=is_test,
+                code_origin=origin,
+            )
+        )
+    await session.commit()
+
+    result = await get_health(
+        only=["worst_files", "test_worst_files", "high_leverage_files", "kpis"], limit=50
+    )
+    production = {r["file_path"] for r in (*result["worst_files"], *result["high_leverage_files"])}
+    assert production and not production & {
+        "scripts/release-checks.ts",
+        "apps/kit/a2ui.bundle.js",
+        "src/bot.test-harness.ts",
+    }
+    assert "src/bot.test-harness.ts" in {r["file_path"] for r in result["test_worst_files"]}
+    assert result["worst_files_hidden"] == {"tooling": 1, "generated": 2}
+    assert result["kpis"]["worst_performer_path"] == result["worst_files"][0]["file_path"]
+    assert result["kpis"]["worst_test_path"] == result["test_worst_files"][0]["file_path"]
+
+
+@pytest.mark.asyncio
 async def test_perf_text_has_no_n_plus_one_without_db(setup_mcp, failing_types_data):
     from repowise.server.mcp_server import get_health
 
@@ -129,3 +173,40 @@ async def test_perf_text_has_no_n_plus_one_without_db(setup_mcp, failing_types_d
     for f in perf:
         if f["details"].get("boundary_kind") != "db":
             assert "N+1" not in f["reason"]
+
+
+@pytest.mark.asyncio
+async def test_overview_and_health_name_one_worst_file(setup_mcp, session, failing_types_data):
+    """A script and a generated schema scoring lowest are out of Fix first's
+    scope, so get_overview, the REST summary and get_health all name the same
+    production file as the worst."""
+    from repowise.core.persistence.crud import get_health_summary
+    from repowise.server.mcp_server import get_health, get_overview
+
+    for path, origin in (("scripts/migrate.py", "tooling"), ("src/proto/schema_pb2.py", "generated")):
+        session.add(
+            HealthFileMetric(
+                repository_id=failing_types_data,
+                file_path=path,
+                score=1.0,
+                max_ccn=40,
+                max_nesting=6,
+                nloc=900,
+                has_test_file=False,
+                module=path.split("/")[0],
+                is_test=False,
+                code_origin=origin,
+            )
+        )
+    await session.commit()
+
+    summary = await get_health_summary(session, failing_types_data)
+    overview = (await get_overview())["code_health"]
+    kpis = (await get_health(only=["kpis", "worst_files"]))["kpis"]
+    assert (
+        summary["worst_performer_path"]
+        == overview["worst_performer_path"]
+        == kpis["worst_performer_path"]
+        == "src/auth/service.py"
+    )
+    assert summary["worst_test_path"] == kpis["worst_test_path"] == "tests/test_service.py"

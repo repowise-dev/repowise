@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, get_args
 
 from repowise.core.code_origin import path_origin
+from repowise.core.test_paths import in_test_tree
 
 from ...execution_roles import COLD_ROLES, EXECUTION_ROLES
 from ..perf.actionability import EXPECTED_REASONS
@@ -29,8 +30,12 @@ from ..worth import (
     cost_proof,
     dispatch_shaped,
     dormant,
+    execution_role,
+    large_function,
     lead_reason,
+    measured_nloc,
     perf_facets,
+    terminal_shaped,
 )
 
 Reason = Literal[
@@ -57,6 +62,8 @@ Reason = Literal[
     "unmeasured_cost",
     "cold_role",
     "background_unproven",
+    "terminal_flow",
+    "moderate_quiet",
 ]
 """Why a unit is out of a default queue. Each surface counts the subset its
 ladders can produce (``fix_first.model.FIX_EXCLUSIONS``,
@@ -133,6 +140,7 @@ SCOPE_EXCLUSIONS = frozenset(ORIGIN_EXCLUSION.values())
 
 # Pure on the path, and the test check dominates a cold Fix first build.
 _code_context = functools.lru_cache(maxsize=65536)(code_context)
+_in_test_tree = functools.lru_cache(maxsize=65536)(in_test_tree)
 
 
 def path_verdict(
@@ -146,13 +154,15 @@ def path_verdict(
     """Whether a file's code is in scope.
 
     The stored ``code_origin`` decides first: it read the file's head, so it
-    knows a vendored library or a docs tutorial the path alone does not.
-    Then the same classifier on the path (an index stored before the origin
-    column, or a build file classed before build files were), then the path
-    context. Code-shape work reads :func:`code_context`, where a CLI ships. A
-    performance fix passes ``production``: its stored execution context is
-    judged by the performance ladder. The stored ``is_test`` flag also marks a
-    test. ``keep_tests`` keeps test code in scope (Fix first's ``scope="all"``).
+    knows a vendored library or a docs tutorial the path alone does not. A
+    stored ``production`` overrides a test verdict that rests on the name
+    alone (it saw pytest's config), never a test directory. With no stored
+    origin (an index from before the column) the same classifier runs on the
+    path; then the path context. Code-shape work reads :func:`code_context`,
+    where a CLI ships. A performance fix passes ``production``: its stored
+    execution context is judged by the performance ladder. The stored
+    ``is_test`` flag also marks a test. ``keep_tests`` keeps test code in
+    scope (Fix first's ``scope="all"``).
     """
     reason = _path_reason(path, is_test, context, origin)
     if reason == "test" and keep_tests:
@@ -165,14 +175,25 @@ def _path_reason(
 ) -> Reason | None:
     if origin in ORIGIN_EXCLUSION:
         return ORIGIN_EXCLUSION[origin]
-    ctx = context or _code_context(path)
-    if is_test or ctx == "test":
+    if is_test:
         return "test"
-    if reason := ORIGIN_EXCLUSION.get(path_origin(path)):
-        return reason
-    # ``unknown`` under a directory is docs, examples or demos at any depth:
-    # code that may not ship. A root-level file stays eligible.
-    if ctx == "tooling" or (ctx == "unknown" and "/" in path):
+    ctx = context or _code_context(path)
+    # A stored origin already saw pytest's config, which the path alone cannot:
+    # ``core/test_selection.py`` is production there and a test by name here.
+    if origin is None:
+        if ctx == "test":
+            return "test"
+        origin = path_origin(path)
+        if reason := ORIGIN_EXCLUSION.get(origin):
+            return reason
+    elif ctx == "test" and _in_test_tree(path):
+        return "test"
+    # ``unknown`` under a directory is an example, demo or docs segment at any
+    # depth. A production origin outranks it: the classifier counts such a
+    # segment only at the root or under a docs root, so ``com/example/demo/``
+    # ships. A root-level file stays eligible.
+    nested_unknown = ctx == "unknown" and "/" in path
+    if ctx == "tooling" or (nested_unknown and origin != "production"):
         return "tooling"
     return None
 
@@ -269,14 +290,14 @@ class UnitFacts(Protocol):
 
     def cloned(self, path: str, shape: Mapping[str, int]) -> bool: ...
 
+    def evidence(self, path: str, symbol: str | None) -> bool | None: ...
+
 
 def small(shape: Mapping[str, int]) -> bool:
     """Under both size floors. A function whose size findings carry no line
     count is measured by its span, which bounds its code lines from above; one
     with neither is not judged small."""
-    nloc = shape.get("nloc")
-    if not nloc and shape.get("start") and shape.get("end"):
-        nloc = shape["end"] - shape["start"] + 1
+    nloc = measured_nloc(shape)
     if not nloc:
         return False
     return nloc < SMALL_NLOC and shape.get("ccn", 0) < SMALL_CCN
@@ -291,6 +312,10 @@ def unit_verdict(
     way out, and a dormant one does not run. A complexity unit on a function
     that is mostly one dispatch on one value is usually fine as it is, unless
     a duplicate also sits in it; one on a small function is not worth an item.
+    A print or prompt flow branches on what to show, so splitting it buys
+    little. A function under :func:`worth.large_function` in a file whose
+    history is known leads only on evidence that it costs something: it
+    changes often or fixes land there. Unknown history keeps it in.
     """
     if facts.unreachable(path, symbol, line):
         return Verdict("unreachable")
@@ -305,7 +330,21 @@ def unit_verdict(
         return Verdict("inherent_dispatch")
     if small(shape):
         return Verdict("small_function")
+    if terminal_shaped(shape):
+        return Verdict("terminal_flow")
+    if (
+        _measured(shape)
+        and not large_function(shape)
+        and facts.evidence(path, symbol) is False
+    ):
+        return Verdict("moderate_quiet")
     return ELIGIBLE
+
+
+def _measured(shape: Mapping[str, int]) -> bool:
+    """Whether any size was measured: with none, there are no grounds to call
+    the function moderate."""
+    return bool(shape.get("ccn") or measured_nloc(shape))
 
 
 def refactor_verdict(
@@ -426,11 +465,10 @@ def _role_reason(item: Any) -> Reason | None:
     A loop only startup, a CLI, tooling or tests run is paid once per process.
     A scheduled job's loop matters only once it is shown to grow with the data.
     """
-    facets = perf_facets(item)
-    role = field(item, "execution_role") or facets.get("execution_role") or "unknown"
+    role = execution_role(item)
     if role in COLD_ROLES:
         return "cold_role"
-    if role == "scheduled_job" and facets.get("loop_magnitude") != "grows_with_data":
+    if role == "scheduled_job" and perf_facets(item).get("loop_magnitude") != "grows_with_data":
         return "background_unproven"
     return None
 

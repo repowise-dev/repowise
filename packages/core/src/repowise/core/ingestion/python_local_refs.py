@@ -48,7 +48,9 @@ import ast
 from collections.abc import Iterator
 from collections.abc import Set as AbstractSet
 
-__all__ = ["extract_python_local_refs"]
+from repowise.core.pyparse import parse_python
+
+__all__ = ["extract_python_local_refs", "local_refs_from_tree", "parse_python_module"]
 
 
 def extract_python_local_refs(
@@ -79,13 +81,28 @@ def extract_python_local_refs(
     back to the analyzer's prior behaviour, never a false negative on a
     genuinely-dead symbol elsewhere.
     """
+    tree = parse_python_module(source) if defined_names else None
+    if tree is None:
+        return frozenset()
+    return local_refs_from_tree(tree, defined_names, nested_classes)
+
+
+def parse_python_module(source: str) -> ast.Module | None:
+    """*source* as an ``ast`` module, or ``None`` when Python 3 cannot parse it."""
+    try:
+        return parse_python(source)
+    except (SyntaxError, ValueError):
+        return None
+
+
+def local_refs_from_tree(
+    tree: ast.Module,
+    defined_names: frozenset[str] | set[str],
+    nested_classes: AbstractSet[tuple[str, str]] = frozenset(),
+) -> frozenset[str]:
+    """:func:`extract_python_local_refs` over a tree the caller already parsed."""
     if not defined_names:
         return frozenset()
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return frozenset()
-
     referenced: set[str] = set()
     # Walk each top-level statement separately so a definition can be told
     # apart from its own body: the name a top-level ``def``/``class`` binds
@@ -170,7 +187,7 @@ def _forward_ref_nodes(annotation: ast.expr) -> Iterator[tuple[ast.AST, int]]:
         if not (isinstance(sub, ast.Constant) and isinstance(sub.value, str)):
             continue
         try:
-            inner = ast.parse(sub.value, mode="eval")
+            inner = parse_python(sub.value, mode="eval")
         except (SyntaxError, ValueError):
             continue
         for ref in ast.walk(inner):

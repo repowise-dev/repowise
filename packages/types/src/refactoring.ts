@@ -2,7 +2,7 @@
 
 import type { ActionCommand } from "./actions.js";
 import type { FixExclusion } from "./fix-first.js";
-import type { Paginated } from "./pagination.js";
+import type { GatedByLanguage } from "./health.js";
 import type { QueueCounts } from "./queue.js";
 
 export type RefactoringType =
@@ -44,6 +44,11 @@ export interface RecommendationValidation {
   /** Set when no test reaches the change: the step to take before the edit.
    *  Absent on a payload from an older server. */
   prerequisite?: string | null;
+  /** How each shown JS/TS, Go, Rust, JVM, Ruby or C# test runs: the command
+   *  that runs its package from the repository root and the argument narrowing
+   *  it to the test's target (null runs the whole package). Absent when the
+   *  plan names no test any of them can run. */
+  test_runs?: Record<string, [string, string | null]>;
 }
 
 /** How a step's tests were found: coverage runs its lines, the graph reaches
@@ -60,9 +65,9 @@ export interface StepVerify {
 }
 
 /** What another layer says to check before applying a plan: a decision that
- *  governs its file, consumers of what it moves, dead code it touches, or
- *  recent commits on its lines. */
-export type PlanRiskKind = "decision" | "public_api" | "active_edit" | "dead_code";
+ *  governs its file, consumers of what it moves, dead code it touches, recent
+ *  commits on its lines, or a test that reads the function's source text. */
+export type PlanRiskKind = "decision" | "public_api" | "active_edit" | "dead_code" | "source_text";
 
 /** One sentence to read before applying the plan. `ref` is the decision id or
  *  the newest commit sha, when the risk has one. */
@@ -123,12 +128,184 @@ export interface RefactoringPlan {
   file_nloc?: number;
   file_weighted_deficit?: number;
   validation?: RecommendationValidation;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   /** Plan detail only: ids of the accepted decisions governing the file.
    *  Absent when the plan was never checked (not yet re-indexed). */
   governed_by?: string[];
   /** Plan detail only: what to check before applying it. Absent when the
    *  plan was never checked; empty when nothing was found. */
   risks?: PlanRisk[];
+  /** Plan detail with `include=recipe` only: the plan as an agent applies it. */
+  recipe?: RefactoringRecipe;
+  /** Plan detail only, on a plan the index resolved as no longer detected. */
+  payoff?: RefactoringPlanPayoff;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
+}
+
+/** What happened to a resolved plan. Mirrors ``refactoring.payoff.PAYOFF_OUTCOMES``. */
+export type RefactoringPayoffOutcome =
+  | "applied"
+  | "file_deleted"
+  | "superseded"
+  | "target_changed"
+  | "unknown";
+
+/** A function's stored size measures; an absent one was not measured. */
+export interface PlanMeasures {
+  ccn?: number;
+  nloc?: number;
+  params?: number;
+}
+
+export interface RefactoringPlanPayoff {
+  outcome: RefactoringPayoffOutcome;
+  resolved_commit?: string;
+  resolved_at?: string;
+  before?: PlanMeasures;
+  after?: PlanMeasures;
+  /** Measured drop (`ccn_removed`, `nloc_removed`), beside the plan's predicted `evidence`. */
+  realised?: Record<string, number>;
+  /** The function that appeared beside the target, sized like the plan's slice. */
+  new_symbol?: string;
+}
+
+/** What an Extract Helper reuse plan does at a site: replace the lines with a
+ *  call to the existing function, or delete a whole copy of it. Mirrors
+ *  ``refactoring.reuse.REUSE_SITE_ACTIONS``. */
+export type ReuseSiteAction = "replace_with_call" | "delete";
+
+/** An Extract Helper plan's `plan.reuse`, on plan detail only: one site is
+ *  already a function the others call instead of a new helper. */
+export interface ExtractHelperReuse {
+  existing_symbol: string;
+  file: string;
+  span: { start: number; end: number };
+  reason: string;
+  sites: Array<{
+    file: string;
+    span: { start: number; end: number };
+    action: ReuseSiteAction;
+    /** The statement that replaces the span; null for a deleted copy. */
+    new_text: string | null;
+    /** The copy's symbol id, when the site is a whole copy. */
+    replaces: string | null;
+  }>;
+}
+
+/** What one recipe step does to the code. Mirrors ``refactoring.recipe.RECIPE_ACTIONS``. */
+export type RecipeAction =
+  | "extract"
+  | "add_helper"
+  | "replace_with_call"
+  | "extract_class"
+  | "move"
+  | "cut_import"
+  | "keep"
+  | "reexport"
+  | "edit"
+  | "delete";
+
+/** What must hold before the edit: tests that pass, a characterization test to
+ *  add, a plan risk, risks never checked (`unchecked`), or a plan type not yet
+ *  audited (`kind_unaudited`). Mirrors ``refactoring.recipe.PRECONDITION_KINDS``. */
+export type RecipePreconditionKind =
+  | "tests"
+  | "characterization"
+  | "decision"
+  | "public_api"
+  | "active_edit"
+  | "dead_code"
+  | "source_text"
+  | "unchecked"
+  | "kind_unaudited";
+
+/** Where an Extract Method anchor is unique: the whole file, or only inside
+ *  its function (a text match must then stay inside the host). */
+export type AnchorScope = "file" | "function";
+
+export interface RecipeStep {
+  n: number;
+  action: RecipeAction;
+  file: string | null;
+  span: { start: number; end: number } | null;
+  /** The instruction, in one or two sentences. */
+  text: string;
+  /** Extract Method: the helper to write and its copyable header. */
+  new_symbol?: {
+    name: string;
+    kind: "method" | "function" | null;
+    async: boolean;
+    params: string[];
+    returns: string[];
+    signature_text: string | null;
+    /** The helper's last line handing its outputs back (`return a, b`);
+     *  null without outputs or on a plan stored before it. */
+    return_text?: string | null;
+    notes: string[];
+  };
+  call_site?: ExtractCallSite;
+  /** Extract Method: the exact text the span starts and ends with, so the
+   *  step is found by text, not line. */
+  anchors?: { first: string; last: string; unique_in: AnchorScope };
+  symbols?: string[];
+  to_file?: string | null;
+  /** Extract Helper: the directory the shared helper belongs in. */
+  directory?: string | null;
+  /** Extract Helper: the existing function this step calls (or whose copy it
+   *  deletes) instead of a new helper. */
+  reuse?: { existing_symbol: string; file: string; reason: string };
+  applicability?: "mechanical" | "judgment";
+  /** This step's own checks, where they differ from the plan's. */
+  verify?: { commands: string[]; tests: string[]; coverage: string };
+}
+
+/**
+ * One plan as a spec an agent applies (Repowise never applies it): what must
+ * hold before, the edits in order, what must hold after, and what not to do.
+ * Built by ``refactoring.recipe.build_recipe``.
+ */
+export interface RefactoringRecipe {
+  id: string | null;
+  kind: RefactoringType | string;
+  /** The steps are one way to do it, for a person to judge (Break Cycle). */
+  advisory: boolean;
+  summary: string;
+  target: { file: string; symbol: string | null; span: { start: number; end: number } | null };
+  preconditions: Array<{ kind: RecipePreconditionKind; text: string; ref?: string }>;
+  steps: RecipeStep[];
+  postconditions: Array<
+    | {
+        kind: "verify";
+        text: string;
+        tests?: string[];
+        tests_total?: number;
+        commands?: string[];
+        basis?: string | null;
+        reasons?: Record<string, string>;
+      }
+    | { kind: "metric"; text: string }
+  >;
+  /** `constraint` reads after "Do not"; `reason` says why, when it is not obvious. */
+  does_not: Array<{ constraint: string; reason: string | null }>;
+  /** A staged plan over five stages only: its steps in ordered batches of at
+   *  most five, each with the tests to run before the next; a failing batch
+   *  stops the plan. */
+  batches?: RecipeBatch[];
+}
+
+/** One batch of a long staged plan. Mirrors `stage_batches`. */
+export interface RecipeBatch {
+  n: number;
+  /** Recipe step numbers, in order. */
+  steps: number[];
+  stages: { first: number; last: number };
+  tests: string[];
+  commands: string[];
+  text: string;
 }
 
 export interface RefactoringTypeCount {
@@ -155,13 +332,8 @@ export interface RefactoringSummary {
 export interface RefactoringTargets {
   summary: RefactoringSummary;
   plans: RefactoringPlan[];
-}
-
-/** Bounded product list. The legacy unpaged RefactoringTargets path remains. */
-export interface RefactoringPlanPage extends Paginated<RefactoringPlan> {
-  summary: RefactoringSummary;
-  /** Bounded canonical structural head used by the existing Start here section. */
-  structural_leads: RefactoringPlan[];
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
 }
 
 export interface GeneratedSpan {
@@ -229,6 +401,9 @@ export interface OpportunityStep {
   /** Findings this step's cause produced, for a round trip to the diagnosis. */
   finding_ids?: string[];
   validation_profile_id?: string;
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
 }
 
 /** A supporting observation. Never an instruction to change anything. */
@@ -306,6 +481,9 @@ export interface RefactoringOpportunity {
   /** Files importing the lead file. Absent when the store predates the figure. */
   dependents?: number;
   steps?: OpportunityStep[];
+  /** Why it still leaves a function above the break-up bar, so it ranks after
+   *  the rest. Absent when it does not. */
+  leaves_above_bar?: string;
   steps_total?: number;
   steps_emitted?: number;
   steps_reduced_reason?: string;
@@ -315,6 +493,9 @@ export interface RefactoringOpportunity {
   evidence_truncated?: boolean;
   evidence_reduced_reason?: string;
   evidence_next_cursor?: number;
+  /** The measurement note when the row's language cell is served as a preview;
+   *  null or absent for a validated cell. */
+  preview?: string | null;
 }
 
 /**
@@ -423,8 +604,11 @@ export interface RefactoringRollupAvailable {
   by_confidence: Record<string, number>;
   by_status: Record<string, number>;
   addresses_primary_problem: { yes: number; no: number; unknown: number };
-  /** The same lead the directive reads; null when nothing is open. */
+  /** The same lead the directive reads; null when nothing is open, or when
+   *  it is on a gated language. */
   lead: RefactoringDirectiveLead | null;
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
   refactoring_model_version: number;
   analyzed_commit: string | null;
   /** Present on the MCP block only. */
@@ -459,7 +643,10 @@ export type RefactoringDirective =
   | RefactoringDirectiveAvailable
   | {
       status: "clear";
-      reason: "no_open_opportunities" | "only_test_file_opportunities";
+      reason:
+        | "no_open_opportunities"
+        | "only_test_file_opportunities"
+        | "lead_in_gated_language";
       detail: string;
       opportunities_total: number;
     }
@@ -500,6 +687,8 @@ export interface RefactoringOpportunityPage {
   hidden?: RefactoringHiddenCounts;
   /** The plans' count vocabulary over the open inventory in the queried files. */
   counts?: QueueCounts;
+  /** What a language gate held back, by language. Empty or absent when nothing was. */
+  gated?: GatedByLanguage;
 }
 
 /** ``GET /api/repos/{repo_id}/refactoring/summary``. */

@@ -154,6 +154,68 @@ async def test_stored_patch_coverage_marks_coverage_from_another_commit(
     assert stored is not None
     assert stored.scope.freshness == "stale"
     assert "measured at abcdef0, not at this change's head" in render_markdown(stored)
+    # No checkout to diff: nothing tells which files kept their line numbers.
+    assert [f.status for f in stored.files] == ["stale_file"]
+    assert stored.patch_coverage_pct is None
+
+
+def _git(cwd, *args: str) -> str:
+    import subprocess
+
+    out = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+async def test_stale_coverage_keeps_figures_only_for_files_untouched_since(
+    async_session, repo, tmp_path
+) -> None:
+    from repowise.core.analysis.patch_coverage import stored_patch_coverage
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t.co")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    for name in ("a.py", "b.py"):
+        (tmp_path / "src" / name).write_text("x = 1\ny = 2\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    # Coverage measured at A, after both files changed; then B edits a.py alone.
+    (tmp_path / "src" / "b.py").write_text("x = 1\ny = 3\n", encoding="utf-8")
+    (tmp_path / "src" / "a.py").write_text("x = 1\ny = 3\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "A")
+    measured = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / "src" / "a.py").write_text("x = 1\ny = 4\nz = 5\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-qam", "B")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    files = [file_coverage("src/a.py", [1], [1, 2]), file_coverage("src/b.py", [1], [1, 2])]
+    await save_coverage_files(
+        async_session, repo.id, files, source_format="lcov", ingested_commit_sha=measured
+    )
+    changed = {"src/a.py": {2, 3}, "src/b.py": {2}}
+
+    stored = await stored_patch_coverage(
+        async_session, repo.id, changed, label=f"{base}..{head}", head_commit=head,
+        repo_path=str(tmp_path),
+    )
+
+    assert stored is not None and stored.scope.freshness == "stale"
+    a, b = stored.files
+    assert (a.file_path, a.status, a.coverable_line_count, a.uncovered_ranges) == (
+        "src/a.py", "stale_file", 0, ()
+    )
+    assert (b.file_path, b.status, b.uncovered_ranges) == ("src/b.py", "measured", ((2, 2),))
+    assert stored.patch_coverage_pct == 0.0
+    assert stored.to_dict()["file_counts"]["stale_file"] == 1
+
+    # Uncommitted work diffs against the working tree: an edit on disk is stale too.
+    (tmp_path / "src" / "b.py").write_text("x = 1\ny = 9\n", encoding="utf-8")
+    working = await stored_patch_coverage(
+        async_session, repo.id, changed, working_tree_mtime=float("inf"),
+        repo_path=str(tmp_path),
+    )
+    assert [f.status for f in working.files] == ["stale_file", "stale_file"]
+    assert working.patch_coverage_pct is None
 
 
 async def test_stored_patch_coverage_is_none_without_coverage(async_session, repo) -> None:

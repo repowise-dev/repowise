@@ -6,10 +6,10 @@ so it checks them and reports the ones the tree refutes.
 
 This is part of the code-health layer, not a separate analysis you run. It
 happens on every `init` and every `update` and needs no model. The four
-file-level kinds take well under a second; the `symbol` kind reads git history
-and, measured on a repository of about 4,800 files and 190 documents, adds
-about 7 seconds to `init` and 1 to 4 seconds to an `update`, which re-resolves
-only the references the update could have changed.
+file-level kinds take well under a second. The `symbol` kind reads git history:
+on a repository of about 4,800 files and 190 documents it adds about 7 seconds
+to `init` and 1 to 4 seconds to an `update`, which re-resolves only the
+references the update could have changed.
 
 ## What it checks
 
@@ -20,7 +20,7 @@ Five classes of reference, all of them things the repository itself can settle:
 | `path` | a document names a file or directory | nothing at that path |
 | `link` | a document links to another document | the target is not there |
 | `anchor` | a link points at a heading | the heading was renamed or removed |
-| `command` | a document tells you to run something | the manifest no longer declares it |
+| `command` | a document tells you to run something | the manifest does not declare it |
 | `symbol` | a document names a function, class or method | it was defined when the line was written and is defined nowhere now |
 
 The anchor case is the one people are most surprised by, because it is the one
@@ -137,25 +137,18 @@ record it again when you add the kind.
 repowise doc-drift --check --format github
 ```
 
-`--format github` annotates each finding on the document line and writes a
-summary to the job page. `--format sarif` produces a file for GitHub code
-scanning, `--format gitlab` a GitLab Code Quality report for the merge request
-widget (baselined findings left out), and `--format markdown` is for posting a
-comment yourself. In the Code Quality report a finding at or above
-`--fail-on-confidence` is `major` and one below it `minor`.
+| Format | Output | Likely replacement carried as |
+|---|---|---|
+| `github` | an annotation on each document line, plus a job summary | in the annotation |
+| `sarif` | a file for GitHub code scanning | a `fixes` entry that replaces exactly the reference spans |
+| `gitlab` | a Code Quality report for the merge request widget, baselined findings left out; `major` at or above `--fail-on-confidence`, `minor` below | a description ending in "Likely now:" and the replacement |
+| `markdown` | a summary to post as a comment yourself | a `suggestion` block with the replaced line, ready to paste into a pull-request review |
+| `json` | one object per finding | `suggestion`, `suggested_line` (the whole line with every copy of the reference replaced) and `suggestion_columns` (each replaced span: 1-based, end exclusive, in UTF-16 code units) |
 
-A finding with a likely replacement carries it into every format. The JSON has
-`suggestion`, plus `suggested_line` (the whole document line with every copy of
-the reference replaced) and `suggestion_columns` (each replaced span: 1-based,
-end exclusive, in UTF-16 code units). SARIF carries a `fixes` entry that
-replaces exactly those spans, the markdown summary adds a `suggestion` block
-with the replaced line under each finding, ready to paste into a pull-request
-review, and the Code Quality description ends with "Likely now:" and the
-replacement. Findings read back from an index keep the suggestion but not the
-placed line. Full history
-(`fetch-depth: 0`) is optional and only improves the rename suggestions. The
-GitHub Action and GitLab template that run it beside the other gates are in
-[Repowise in CI](../start/CI.md).
+Findings read back from an index keep the suggestion but not the placed line.
+For the file-level kinds, full history (`fetch-depth: 0`) is optional and only
+improves the rename suggestions. The GitHub Action and GitLab template that run
+the check beside the other gates are in [Repowise in CI](../start/CI.md).
 
 To adopt the gate on a repository that already has drift, record what is there
 and fail only on new findings:
@@ -211,6 +204,6 @@ or rename something and want to know what will go stale.
 
 ## See also
 
-- [CODE_HEALTH.md](CODE_HEALTH.md) — the layer this belongs to
-- [`repowise doc-drift`](../reference/CLI_REFERENCE.md#repowise-doc-drift-path) — every flag
-- [MCP_TOOLS.md](../agent/MCP_TOOLS.md) — the agent-facing surface
+- [CODE_HEALTH.md](CODE_HEALTH.md): the layer this belongs to
+- [`repowise doc-drift`](../reference/CLI_REFERENCE.md#repowise-doc-drift-path): every flag
+- [MCP_TOOLS.md](../agent/MCP_TOOLS.md): the agent-facing surface

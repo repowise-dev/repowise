@@ -97,6 +97,27 @@ def test_developer_congestion_skips_quiet_files_for_this_repo():
     assert DeveloperCongestionDetector().detect(_ctx(meta)) == []
 
 
+def _quiet_hotspot_meta(commits_90d: int) -> dict:
+    return {
+        "contributor_count": 5,
+        "churn_percentile": 0.9,
+        "commit_count_90d": commits_90d,
+        "primary_owner_commit_pct": 0.3,
+    }
+
+
+def test_developer_congestion_skips_files_with_no_recent_commits():
+    """A high percentile alone does not mean the file changed in the window."""
+    assert DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(0))) == []
+
+
+def test_developer_congestion_needs_the_hotspot_commit_floor():
+    assert DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(2))) == []
+    out = DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(3)))
+    assert len(out) == 1
+    assert out[0].severity == "low"
+
+
 # ---- knowledge_loss ------------------------------------------------------
 
 
@@ -244,6 +265,27 @@ def test_ownership_risk_skips_clear_single_owner():
 def test_ownership_risk_skips_low_commit_files():
     meta = {"top_authors_json": _authors(("Alice", 2), ("Bob", 1))}
     assert OwnershipRiskDetector().detect(_ctx(meta)) == []
+
+
+def test_ownership_risk_no_clear_owner_names_the_share_arm():
+    # Under 20 commits nobody can hold <5%, so only the share arm fires.
+    meta = {"top_authors_json": _authors(("a", 3), ("b", 3), ("c", 2), ("d", 2))}
+    out = OwnershipRiskDetector().detect(_ctx(meta))
+    assert len(out) == 1
+    assert out[0].severity == "low"
+    assert out[0].details["minor_contributors"] == 0
+    assert out[0].reason == (
+        "no clear owner: the top author holds 30% of 10 commits across 4 contributors"
+    )
+
+
+def test_ownership_risk_caps_a_small_file_at_low():
+    ctx = _ctx(dict(_FRAGMENTED, is_hotspot=True))
+    ctx.nloc = 9  # a bodyless Spring Data interface
+    out = OwnershipRiskDetector().detect(ctx)
+    assert len(out) == 1
+    assert out[0].severity == "low"  # high on a 120-line file
+    assert out[0].reason.endswith("(low: only 9 code lines)")
 
 
 # ---- small-team calibration (issue #361) ---------------------------------

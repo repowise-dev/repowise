@@ -19,9 +19,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from repowise.core.sessions.events import Event
+from repowise.core.sessions.events import Event, ToolResult, ToolUse
+
+if TYPE_CHECKING:
+    from repowise.core.edit_capture.edits import FileEdit
 
 #: Cheap gate on the raw line, applied before paying for JSON parsing.
 #: Transcript lines routinely run to hundreds of kilobytes; a substring
@@ -40,6 +43,10 @@ INTENT_TOOL_CALLS = "tool_calls"
 #: Conversation turns: user prose, assistant prose, and the tool traffic
 #: carried on them.
 INTENT_TURNS = "turns"
+#: Tool calls that may change a file, plus the lines that scope them (cwd,
+#: model). Results are not included: a consumer pairing them admits a result
+#: line by its call id, which only it knows.
+INTENT_EDIT_CALLS = "edit_calls"
 
 
 class HarnessAdapter(ABC):
@@ -78,6 +85,15 @@ class HarnessAdapter(ABC):
         *projects_root* overrides the harness's real transcript root (for
         tests). An absent directory yields an empty list, never an error.
         """
+
+    def discover_all(self, *, projects_root: Path | None = None) -> list[Path]:
+        """Every transcript this harness keeps on this machine, sorted.
+
+        For a pass that scopes each edit by its own path rather than by where
+        the session started: worktree sessions and subagent transcripts sit
+        outside :meth:`discover`'s directory. Empty unless an adapter says.
+        """
+        return []
 
     @abstractmethod
     def normalize(self, raw_line: str) -> Event | None:
@@ -155,6 +171,23 @@ class HarnessAdapter(ABC):
                     yield event
         finally:
             self.end_file()
+
+    def file_edits(self, use: ToolUse, result: ToolResult | None = None) -> list[FileEdit]:
+        """Lines a recorded tool call added, per file; empty for a non-edit call.
+
+        The same extractor the live capture hook runs (keyed by this adapter's
+        ``name`` in :data:`repowise.core.edit_capture.edits.EXTRACTORS`), so a
+        transcript and a hook payload of one call can never disagree. A result
+        marked as an error wrote nothing.
+        """
+        from repowise.core.edit_capture.edits import EXTRACTORS
+
+        extractor = EXTRACTORS.get(self.name)
+        if extractor is None or use.name not in self.edit_tool_names:
+            return []
+        if result is not None and result.is_error:
+            return []
+        return extractor(use.name, use.input, result.payload if result is not None else None)
 
     def iter_events(self, path: Path, *, prefilter: RawPrefilter | None = None) -> Iterator[Event]:
         """Events from one transcript file, in order.

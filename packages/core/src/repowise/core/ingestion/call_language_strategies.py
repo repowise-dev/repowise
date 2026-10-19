@@ -6,11 +6,29 @@ targets and crate roots that no import statement names.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .models import CallSite, ParsedFile
+from .call_receiver_typing import (
+    _BODY_TYPE_CACHE_ENTRIES,
+    _FUNCTION_KINDS,
+    _TYPE_KINDS,
+    _store_capped,
+)
+from .lang_helpers.kotlin_lambdas import in_lambda
+from .languages.receiver_types import dart_named_constructors
+from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
+from .resolvers.jvm_gradle import (
+    SourceSetGraph,
+    build_source_set_graph,
+    declaration_rank,
+    source_set_dir,
+)
+from .symbol_identity import outer_scope
+from .type_names import bare_type_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,18 +38,42 @@ class _LanguageCallStrategies:
     ``free`` runs after the same-file tier and before the import tiers;
     ``member`` runs before every receiver strategy; ``member_fallback`` runs
     after all of them, so a strategy there only ever sees a call nothing else
-    claimed and can only add an edge. All three stop at the first hit.
+    claimed and can only add an edge. ``constructor`` runs ahead of ``member``,
+    even for a name no symbol carries, since a named constructor is no symbol.
+    All four stop at the first hit.
     Strategies are named rather than bound so a probe can substitute one.
+
+    ``member_bare_fallback`` lets a member or chained call nothing claimed fall
+    back to the bare-name tiers. ``inherited_typed_receiver`` lets a typed
+    receiver whose type lacks the method answer with the one ancestor that
+    declares it.
     """
 
     free: tuple[str, ...] = ()
+    constructor: tuple[str, ...] = ()
     member: tuple[str, ...] = ()
     member_fallback: tuple[str, ...] = ()
+    member_bare_fallback: bool = True
+    inherited_typed_receiver: bool = False
 
 
 _NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
 
+# Languages whose builds are told apart by ``build_roots``.
+_BUILD_ROOT_LANGUAGES = frozenset({"dart", "java", "kotlin", "scala", "swift"})
+
 _TYPED_RECEIVER = ("_resolve_typed_receiver",)
+
+# Kotlin Multiplatform's common declaration.
+_EXPECT = "expect"
+
+
+def _gradle_script_receiver(path: str) -> str | None:
+    """The ``this`` a Gradle Kotlin script's own code runs with."""
+    if not path.endswith(".gradle.kts"):
+        return None
+    return "Settings" if path.rpartition("/")[2] == "settings.gradle.kts" else "Project"
+
 
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
@@ -61,18 +103,31 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # Kotlin shares the JVM tiers and the typed-receiver fallback. Java takes
     # the uniqueness-gated package tier, Kotlin the open one; see
     # ``_resolve_java_same_package_unique`` for why that is a language rule.
+    # A Java member call never reaches the bare-name tiers: measured on jsoup
+    # and gson, they bound such calls at 0.38 site precision. Kotlin is
+    # unmeasured, so it keeps both defaults.
     "java": replace(
         _JVM_STRATEGIES,
         free=("_resolve_java_same_package_unique",),
         member_fallback=_TYPED_RECEIVER,
+        member_bare_fallback=False,
+        inherited_typed_receiver=True,
     ),
     "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    # Swift registers the fallback and nothing else: it has no package
-    # tier of its own, so a typed receiver is looked for in the caller's
-    # file, in what the file imports, and then in the global pair index.
+    # Swift and Dart register the fallback: neither has a package tier of its
+    # own, so a typed receiver is looked for in the caller's file, in what the
+    # file imports, and then in the global pair index. A Dart chained call is
+    # resolved by its inner call's return type or not at all: on pub its bare
+    # name bound `File(p).statSync()` and `.then()` to repo functions. The
+    # flag reaches chains only, since no Dart member call has a bare twin.
     "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    "dart": _LanguageCallStrategies(
+        constructor=("_resolve_dart_named_constructor",),
+        member_fallback=_TYPED_RECEIVER,
+        member_bare_fallback=False,
+    ),
     # TypeScript's typed fallback also walks a dotted receiver's fields.
     "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # Rust types a local or parameter only; a `self.field` receiver is not
@@ -97,6 +152,15 @@ class LanguageStrategiesMixin:
         self._go_index: Any = None
         self._go_index_built = False
 
+        # Whether any symbol is a Kotlin Multiplatform ``expect``; None until asked.
+        self._has_expect: bool | None = None
+
+        # Kotlin Multiplatform source-set dependencies; None until asked.
+        self._source_set_graph: SourceSetGraph | None = None
+
+        # {Dart class id: the named constructors its body declares}
+        self._dart_constructors: dict[str, frozenset[str]] = {}
+
         # JVM same-package resolution (lazy JvmWorkspaceIndex)
         self._jvm_index: Any = None
         self._jvm_index_built = False
@@ -104,6 +168,11 @@ class LanguageStrategiesMixin:
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
         self._cpp_index_built = False
+
+        # Independent builds in the repo (lazy BuildRoots), and the build roots
+        # each file's imports land in.
+        self._build_roots: Any = None
+        self._imported_roots: dict[str, frozenset[str | None]] = {}
 
     def _get_rust_crate_src(self) -> dict[str, str]:
         """Lazily build a mapping from normalised crate name to src/ dir."""
@@ -252,6 +321,61 @@ class LanguageStrategiesMixin:
                 return ResolvedCall(caller_id, sym_id, 0.85, call.line, "same_target")
         return None
 
+    def _in_reach_of_build(self, file_path: str, target_path: str) -> bool:
+        """May a bare name in *file_path* mean a symbol in *target_path*, by name alone?
+
+        Not across independent builds, unless the caller's build composes the
+        target's in or the caller imports a file there. A Gradle build
+        script's classpath is its build logic, not the sources it builds, so a
+        script's name reaches only into a build its own composes in.
+        """
+        if self._language_of(file_path) not in _BUILD_ROOT_LANGUAGES:
+            return True
+        if self._build_roots is None:
+            from .build_roots import BuildRoots
+
+            self._build_roots = BuildRoots(self._repo_path, self._parsed_files)
+        roots = self._build_roots
+        other = roots.root_of(target_path)
+        if file_path.endswith(".gradle.kts"):
+            return roots.script_sees(file_path, other)
+        own = roots.root_of(file_path)
+        return not roots.separates(own, other) or other in self._roots_imported_by(file_path)
+
+    def _roots_imported_by(self, file_path: str) -> frozenset[str | None]:
+        """The build roots *file_path*'s imports land in, re-exports followed."""
+        imported = self._imported_roots.get(file_path)
+        if imported is None:
+            assert self._build_roots is not None
+            imported = frozenset(map(self._build_roots.root_of, self._visible_files(file_path)))
+            self._imported_roots[file_path] = imported
+        return imported
+
+    def _visible_files(self, file_path: str) -> set[str]:
+        """The files *file_path* imports, and every file those re-export (Dart ``export``)."""
+        seen: set[str] = set()
+        pending = list(self._import_targets.get(file_path, ()))
+        while pending:
+            target = pending.pop()
+            if target in seen:
+                continue
+            seen.add(target)
+            parsed = self._parsed_files.get(target)
+            pending.extend(
+                imp.resolved_file
+                for imp in (parsed.imports if parsed else ())
+                if imp.is_reexport and imp.resolved_file in self._parsed_files
+            )
+        return seen
+
+    def _same_package_siblings(self, index: Any, file_path: str) -> list[str]:
+        """*file_path*'s JVM package siblings within its own build."""
+        return [
+            sibling
+            for sibling in index.same_package_files(file_path)
+            if self._in_reach_of_build(file_path, sibling)
+        ]
+
     def _get_jvm_index(self) -> Any:
         """Lazily build the JvmWorkspaceIndex (or None if unavailable)."""
         if self._jvm_index_built:
@@ -314,19 +438,88 @@ class LanguageStrategiesMixin:
         index = self._get_jvm_index()
         if index is None:
             return None
-        found: str | None = None
-        for sibling in index.same_package_files(file_path):
-            sym_id = self._file_symbols.get(sibling, {}).get(call.target_name)
-            if sym_id is not None and sym_id != caller_id:
-                if not unique_only:
-                    return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
-                if found is not None:
-                    # Two siblings declare it and nothing here can tell them apart.
-                    return None
-                found = sym_id
-        if found is None:
+        found = (
+            (sibling, sym_id)
+            for sibling in self._same_package_siblings(index, file_path)
+            if (sym_id := self._package_symbol(sibling, call.target_name, caller_id)) is not None
+        )
+        if unique_only:
+            # Two siblings declare it and, for Java, nothing here can tell them apart.
+            first, second = next(found, None), next(found, None)
+            sym_id = first[1] if first is not None and second is None else None
+        else:
+            sym_id = self._most_visible(file_path, found)
+        if sym_id is None:
             return None
-        return ResolvedCall(caller_id, found, 0.90, call.line, "same_package")
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
+
+    def _most_visible(self, file_path: str, found: Iterator[tuple[str, str]]) -> str | None:
+        """The first of *found*'s ``(file, symbol id)`` declarations *file_path* sees most directly.
+
+        A Kotlin Multiplatform name has one declaration per source set; see
+        ``declaration_rank``. *found* is read lazily: the first declaration
+        answers when no rank can tell them apart, and one in the caller's own
+        source set ends the search. A declaration in a source set the caller
+        cannot see is skipped.
+        """
+        if source_set_dir(file_path) is None and not self._repo_declares_expect():
+            return next(found, (None, None))[1]
+        graph = self._get_source_set_graph()
+        best: str | None = None
+        best_rank: int | None = None
+        for path, sym_id in found:
+            rank = declaration_rank(file_path, path, self._is_expect(sym_id), graph)
+            if rank is None:
+                continue
+            if rank == 0:
+                return sym_id
+            if best_rank is None or rank < best_rank:
+                best, best_rank = sym_id, rank
+        return best
+
+    def _get_source_set_graph(self) -> SourceSetGraph:
+        """The repository's Kotlin Multiplatform source-set dependencies. Built once."""
+        if self._source_set_graph is None:
+            from pathlib import Path
+
+            self._source_set_graph = build_source_set_graph(
+                self._parsed_files, Path(self._repo_path) if self._repo_path else None
+            )
+        return self._source_set_graph
+
+    def _is_expect(self, sym_id: str) -> bool:
+        """Is *sym_id* an ``expect`` declaration, or a member of an ``expect`` type?"""
+        symbol = self._symbols_by_id[sym_id]
+        if _EXPECT in symbol.modifiers:
+            return True
+        if symbol.parent_name is None:
+            return False
+        owner = self._symbols_by_id.get(self._caller_class_id(sym_id))
+        return owner is not None and _EXPECT in owner.modifiers
+
+    def _repo_declares_expect(self) -> bool:
+        """Does any repository symbol carry ``expect``? Asked once."""
+        if self._has_expect is None:
+            self._has_expect = any(_EXPECT in s.modifiers for s in self._symbols_by_id.values())
+        return self._has_expect
+
+    def _package_symbol(self, sibling: str, name: str, caller_id: str) -> str | None:
+        """What *name* means in *sibling* to a bare call from another package file.
+
+        The package shares top-level names, not members: a data class's
+        synthesized ``copy`` or a ViewModel's ``onClick`` is reached through a
+        receiver, an ancestor or a scope function, never by the package alone.
+        A nested type and a constructor (named for its class) are not members.
+        A member indexed last under the name hides no top-level symbol of it.
+        """
+        sym_id = self._file_symbols.get(sibling, {}).get(name)
+        if sym_id is None:
+            return None
+        symbol = self._symbols_by_id[sym_id]
+        parent = symbol.parent_name
+        if parent is not None and symbol.name != parent and symbol.kind not in _TYPE_KINDS:
+            sym_id = self._file_top_level.get(sibling, {}).get(name)
+        return None if sym_id == caller_id else sym_id
 
     def _resolve_jvm_receiver_same_package(
         self,
@@ -345,11 +538,15 @@ class LanguageStrategiesMixin:
         index = self._get_jvm_index()
         if index is None:
             return None
-        for sibling in index.same_package_files(file_path):
-            sym_id = self._file_methods.get(sibling, {}).get(key)
-            if sym_id is not None:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
-        return None
+        found = (
+            (sibling, sym_id)
+            for sibling in self._same_package_siblings(index, file_path)
+            if (sym_id := self._file_methods.get(sibling, {}).get(key)) is not None
+        )
+        sym_id = self._most_visible(file_path, found)
+        if sym_id is None:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
 
     def _resolve_go_package_call(
         self,
@@ -373,7 +570,8 @@ class LanguageStrategiesMixin:
         if pkg is None:
             return None
         for sibling in pkg.files:
-            syms = self._file_symbols.get(sibling, {})
+            # A package qualifier reaches package-level names, never a method.
+            syms = self._file_top_level.get(sibling, {})
             sym_id = syms.get(call.target_name)
             if sym_id is not None and sym_id != caller_id:
                 return ResolvedCall(caller_id, sym_id, 0.88, call.line, "package_alias")
@@ -406,3 +604,124 @@ class LanguageStrategiesMixin:
             if sym_id is not None and sym_id != caller_id:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
         return None
+
+    def _resolve_dart_named_constructor(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Foo.named(..)``: the class, when its body declares that constructor.
+
+        A Dart named or factory constructor is no symbol, so the call binds to
+        its class, as ``Foo(..)`` does. A static member of the name is a symbol
+        and is left to the member tiers. Ceiling: a prefixed ``p.Foo.named(..)``
+        is not captured with ``Foo`` as its receiver, so it binds nothing.
+        """
+        class_name = call.receiver_name or ""
+        if class_name not in self._known_type_names:
+            return None
+        hit = self._class_seen_from(file_path, caller_id, class_name, call.line)
+        if hit is None or self._declares(hit.callee_id, call.target_name) is not None:
+            return None
+        return hit if call.target_name in self._dart_constructors_of(hit.callee_id) else None
+
+    def _dart_constructors_of(self, class_id: str) -> frozenset[str]:
+        """The named constructors the Dart class *class_id* declares, scanned once."""
+        found = self._dart_constructors.get(class_id)
+        if found is None:
+            class_file = self._symbol_paths_by_id.get(class_id, "")
+            start, end = self._spans_for(class_file).get(class_id, (1, 0))
+            body = "\n".join(self._text_of(class_file).splitlines()[start - 1 : end])
+            found = dart_named_constructors(body, self._symbols_by_id[class_id].name)
+            _store_capped(self._dart_constructors, class_id, found, _BODY_TYPE_CACHE_ENTRIES)
+        return found
+
+    def _lacks_extension_receiver(self, file_path: str, call: CallSite, callee_id: str) -> bool:
+        """Is *callee_id* a Kotlin extension this bare call has no receiver for?
+
+        Written bare, ``digest(..)`` reaches ``fun AuthenticationConfig.digest``
+        only where the implicit ``this`` is that type: in a member or an
+        extension of it or of a subtype, or in a lambda, whose receiver
+        (``routing { .. }``) a text scan cannot type and so never refuses.
+        """
+        receiver = self._extension_receiver(callee_id)
+        if receiver is None:
+            return False
+        caller = self._symbols_by_id.get(call.caller_symbol_id or "")
+        if receiver in self._receivers_in_scope(file_path, caller):
+            return False
+        return not self._call_in_lambda(file_path, call, caller)
+
+    def _extension_receiver(self, callee_id: str) -> str | None:
+        """The repo class a Kotlin extension needs as ``this``.
+
+        None for an external receiver (``List<String>``, a library base the
+        caller may extend) or an alias: no repo class says which callers
+        have one, so nothing is refused.
+        """
+        callee = self._symbols_by_id.get(callee_id)
+        if callee is None or callee.language != "kotlin" or callee.kind not in _FUNCTION_KINDS:
+            return None
+        receiver = self._kotlin_receiver(callee)
+        return receiver if receiver in self._known_type_names else None
+
+    def _receivers_in_scope(self, file_path: str, caller: Symbol | None) -> set[str]:
+        """The bare type names ``this`` may be outside any lambda of *caller*."""
+        if caller is not None:
+            return self._implicit_receivers(caller)
+        script = _gradle_script_receiver(file_path)
+        return {script} if script else set()
+
+    def _call_in_lambda(self, file_path: str, call: CallSite, caller: Symbol | None) -> bool:
+        """Is *call* inside a lambda of *caller*? True when the text cannot tell."""
+        lines = self._text_of(file_path).splitlines()
+        start = caller.start_line if caller is not None else 1
+        if not 1 <= start <= call.line <= len(lines):
+            return True
+        last = lines[call.line - 1]
+        at = re.search(rf"(?<![\w.]){re.escape(call.target_name)}\b", last)
+        source = "\n".join([*lines[start - 1 : call.line - 1], last[: at.start() if at else 0]])
+        return in_lambda(source, caller is not None and caller.kind in _FUNCTION_KINDS)
+
+    def _kotlin_receiver(self, symbol: Symbol) -> str | None:
+        """The type a Kotlin function extends, as the parser read it off its header."""
+        return symbol.extension_receiver
+
+    def _implicit_receivers(self, caller: Symbol) -> set[str]:
+        """The bare type names ``this`` may be inside *caller*."""
+        extended = self._kotlin_receiver(caller) if caller.language == "kotlin" else None
+        names = {extended} if extended else set()
+        names.update(self._names_of_classes(self._receiver_classes(caller)))
+        parsed = self._parsed_files.get(self._symbol_paths_by_id.get(caller.id, ""))
+        names.update(
+            bare_type_name(h.parent_name)
+            for h in (parsed.heritage if parsed else ())
+            if h.child_name in names
+        )
+        return names
+
+    def _receiver_classes(self, caller: Symbol) -> list[str]:
+        """The class whose code *caller* is, then each outer class an ``inner`` one sees."""
+        if caller.kind in _TYPE_KINDS:
+            class_id = caller.id
+        elif caller.parent_name:
+            class_id = self._caller_class_id(caller.id)
+        else:
+            return []
+        found = []
+        while (symbol := self._symbols_by_id.get(class_id)) is not None:
+            found.append(class_id)
+            if "inner" not in symbol.modifiers:
+                break
+            class_id = outer_scope(class_id)
+        return found
+
+    def _names_of_classes(self, class_ids: list[str]) -> set[str]:
+        """The names of *class_ids* and of their repo ancestors."""
+        return {
+            symbol.name
+            for class_id in class_ids
+            for symbol in map(self._symbols_by_id.get, (class_id, *self._ancestors_of(class_id)))
+            if symbol is not None
+        }

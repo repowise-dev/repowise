@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import math
 import posixpath
 from collections import defaultdict
 from datetime import datetime
 
 from ..context import HISTORY_TOO_SHORT, RepoContext
 from ..facts import FileFacts, RepoFacts
-from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
+from ..model import (
+    Action,
+    ActionCommand,
+    ActionDetail,
+    RuleOutcome,
+    WhyFact,
+    fingerprint,
+    shared_priority,
+)
 from ._text import code, plural
 
 #: Files that tell the week's story as well as the quarter's: busy fragile
@@ -72,6 +81,18 @@ def fresh_regressions(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     )
 
 
+def _regression_value(critical: int) -> int:
+    """The value a regression ranks on: a week with critical findings still
+    outranks one without, as it did when the action itself read critical.
+
+    The action's severity tops out at high. Health detectors tag a long method
+    critical, and a routine week of feature work leaves dozens of those, so a
+    critical label here would read as an emergency most weeks. Critical on an
+    action is kept for a live credential (``live_secret``).
+    """
+    return 4 if critical else 3
+
+
 def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) -> Action:
     symbols = sorted({f.symbol for f in found if f.symbol})
     critical = sum(f.severity == "critical" for f in found)
@@ -88,7 +109,7 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         rule="fresh_regressions",
         tier="act_now",
         horizons=("week",),
-        severity="critical" if critical else "high",
+        severity="high",
         title=title,
         impact=(
             f"{plural(len(commits), 'commit')} in the last 7 days added or worsened "
@@ -97,7 +118,7 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         ),
         why=(
             WhyFact("serious findings", str(len(found))),
-            WhyFact("critical", str(critical)),
+            WhyFact("critical findings", str(critical)),
             WhyFact("latest commit", latest.subject[:72] or latest.sha[:7]),
         ),
         target_kind="symbol" if len(symbols) == 1 else "file",
@@ -109,6 +130,7 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         done_when="The findings close on the next update.",
         marker=lead.biomarker,
         weight=weight,
+        value=_regression_value(critical),
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
         fingerprint=fingerprint(len(found), critical),
@@ -167,7 +189,7 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         rule="fresh_regressions",
         tier="act_now",
         horizons=("week",),
-        severity="critical" if critical else "high",
+        severity="high",
         title=(
             f"Clean up what this week's commits left: {plural(len(found), 'serious finding')} "
             f"in {len(ranked):,} files"
@@ -179,7 +201,7 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         ),
         why=(
             WhyFact("serious findings", str(len(found))),
-            WhyFact("critical", str(critical)),
+            WhyFact("critical findings", str(critical)),
             WhyFact("files", str(len(ranked))),
         ),
         target_kind="repo",
@@ -189,6 +211,7 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         confidence="high",
         done_when="The findings close on the next update.",
         weight=float(critical * 10 + len(found)),
+        value=_regression_value(critical),
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
         includes=tuple(path for path, _ in ranked[:10]),
@@ -378,7 +401,10 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
 
     Told as an area of work rather than a list of files, because that is how a
     lead plans it. The deepest folder that still clears the share wins, so the
-    answer is `update_cmd/`, not `packages/`.
+    answer is `update_cmd/`, not `packages/`. The title names where to start:
+    the first step of its most fixed fragile file. A folder with no such step
+    is left out and counted in the outcome's reason, and its files keep their
+    own rows.
     """
     rule = "fix_concentration"
     if "files" in facts.unavailable:
@@ -429,72 +455,110 @@ def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             continue
         chosen.append(folder)
     actions = []
+    no_step = 0
     for folder in chosen[:CONCENTRATION_MAX_ACTIONS]:
         n = len(shas_per_folder[folder])
-        share = round(100 * n / total)
         members = sorted(
             fixed_files[folder], key=lambda p: -production[p].fix_commits_90d
         )
         includes = tuple(
             p for p in members if is_fragile(production[p], ctx) and p not in named
         )
+        first = _first_step(includes, production)
+        if first is None:
+            no_step += 1
+            continue
         actions.append(
-            Action(
-                rule=rule,
-                tier="plan",
-                horizons=("quarter",),
-                severity="high",
-                title=(
-                    f"Stabilise {code(folder + '/')}: {share}% of the bug fixes land in "
-                    f"its {plural(files_per_folder[folder], 'file')}"
-                ),
-                impact=(
-                    f"{n} of the {total} bug-fix commits in the last 90 days touched "
-                    f"this folder, which holds {files_per_folder[folder] / n_prod:.1%} "
-                    "of the production files."
-                ),
-                why=(
-                    WhyFact("share of bug-fix commits", f"{share}%"),
-                    WhyFact("files with repeated fixes", str(len(members))),
-                    WhyFact("most fixed", posixpath.basename(members[0])),
-                ),
-                target_kind="folder",
-                target_path=folder,
-                surface="findings",
-                effort="L",
-                confidence="medium",
-                done_when="Its share of bug-fix commits falls over the next 90 days.",
-                weight=float(n),
-                evidence_total=len(members),
+            _folder_action(
+                folder,
+                first=first,
+                fixes=(n, total),
+                files=(files_per_folder[folder], n_prod),
+                members=[(p, production[p]) for p in members],
                 includes=includes,
-                fingerprint=fingerprint(share // 5),
-                details=tuple(
-                    ActionDetail(
-                        path=p,
-                        reason=(
-                            f"{production[p].fix_commits_90d} bug-fix commits, "
-                            f"{production[p].commits_90d} commits in 90 days"
-                        ),
-                    )
-                    for p in members
-                ),
-                commands=(
-                    ActionCommand.call(
-                        "Bug-fix history and co-change partners for the most fixed files",
-                        "get_risk",
-                        {"targets": members[:5]},
-                        cli="repowise risk " + " ".join(f"-t {p}" for p in members[:5]),
-                    ),
-                    ActionCommand.call(
-                        "Why the folder is shaped this way",
-                        "get_why",
-                        {"targets": [f"{folder}/"]},
-                        cli=f"repowise why {folder}/",
-                    ),
-                ),
             )
         )
-    return RuleOutcome(rule, "evaluated", "", tuple(actions))
+    reason = (
+        f"{plural(no_step, 'folder')} left out: no file in it names a first step."
+        if no_step
+        else ""
+    )
+    return RuleOutcome(rule, "evaluated", reason, tuple(actions))
+
+
+def _folder_action(
+    folder: str,
+    *,
+    first: str,
+    fixes: tuple[int, int],
+    files: tuple[int, int],
+    members: list[tuple[str, FileFacts]],
+    includes: tuple[str, ...],
+) -> Action:
+    """The folder's action: ``fixes`` is (the folder's bug-fix commits, the
+    repository's), ``files`` (its production files, the repository's)."""
+    n, total = fixes
+    share = round(100 * n / total)
+    paths = [p for p, _f in members]
+    return Action(
+        rule="fix_concentration",
+        tier="plan",
+        horizons=("quarter",),
+        severity="high",
+        title=f"Stabilise {code(folder + '/')}: first, {first}",
+        impact=(
+            f"{n} of the {total} bug-fix commits in the last 90 days ({share}%) "
+            f"touched this folder's {plural(files[0], 'file')}, "
+            f"{files[0] / files[1]:.1%} of the production files."
+        ),
+        why=(
+            WhyFact("share of bug-fix commits", f"{share}%"),
+            WhyFact("files with repeated fixes", str(len(members))),
+            WhyFact("most fixed", posixpath.basename(paths[0])),
+        ),
+        target_kind="folder",
+        target_path=folder,
+        surface="findings",
+        effort="L",
+        confidence="medium",
+        done_when="Its share of bug-fix commits falls over the next 90 days.",
+        weight=float(n),
+        evidence_total=len(members),
+        includes=includes,
+        fingerprint=fingerprint(share // 5),
+        details=tuple(
+            ActionDetail(
+                path=p,
+                reason=f"{f.fix_commits_90d} bug-fix commits, {f.commits_90d} commits in 90 days",
+            )
+            for p, f in members
+        ),
+        commands=(
+            ActionCommand.call(
+                "Bug-fix history and co-change partners for the most fixed files",
+                "get_risk",
+                {"targets": paths[:5]},
+                cli="repowise risk " + " ".join(f"-t {p}" for p in paths[:5]),
+            ),
+            ActionCommand.call(
+                "Why the folder is shaped this way",
+                "get_why",
+                {"targets": [f"{folder}/"]},
+                cli=f"repowise why {folder}/",
+            ),
+        ),
+    )
+
+
+def _first_step(includes: tuple[str, ...], production: dict[str, FileFacts]) -> str | None:
+    """The first step of the most fixed file in ``includes`` that has one, as
+    a clause: ``simplify `run` in `a.py```."""
+    for path in includes:
+        step = _fragile_step(production[path])
+        if step is not None:
+            title = step[0].split(": ", 1)[0]
+            return title[0].lower() + title[1:]
+    return None
 
 
 def _ancestors(path: str) -> list[str]:
@@ -503,6 +567,7 @@ def _ancestors(path: str) -> list[str]:
 
 
 #: Fix-first tiers that become actions; ``later`` stays on the Code Health page.
+#: Both are due, so both are listed this week as well as this quarter.
 _FIX_FIRST_TIER = {"now": "act_now", "next": "plan"}
 
 
@@ -521,18 +586,25 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     if "fix_first" in facts.unavailable:
         return RuleOutcome(rule, "unavailable", facts.unavailable["fix_first"])
     actions = []
+    # Do next's number for each item, held to the queue's order: a later item
+    # never outranks an earlier one, whatever its effort.
+    ceiling = math.inf
     for item in facts.fix_first:
         tier = _FIX_FIRST_TIER.get(item.tier)
         if tier is None:
             continue
+        effort = _effort(item.effort.bucket)
+        confidence = "high" if item.confidence.level == "high" else "medium"
+        severity = "high" if tier == "act_now" else "medium"
+        ceiling = min(ceiling, shared_priority(item.value, severity, confidence, effort))
         target = item.target
         symbol = target.symbol
         actions.append(
             Action(
                 rule=rule,
                 tier=tier,
-                horizons=("week", "quarter") if tier == "act_now" else ("quarter",),
-                severity="high" if tier == "act_now" else "medium",
+                horizons=("week", "quarter"),
+                severity=severity,
                 title=item.title,
                 impact=item.why,
                 why=(
@@ -544,10 +616,12 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
                 target_symbol=symbol,
                 identity=item.id,
                 surface="performance" if item.kind == "perf_fix" else "findings",
-                effort=_effort(item.effort.bucket),
-                confidence="high" if item.confidence.level == "high" else "medium",
+                effort=effort,
+                confidence=confidence,
                 done_when="It leaves Fix first on the next update.",
                 weight=float(len(facts.fix_first) - item.rank),
+                value=item.value,
+                priority=ceiling,
                 evidence_ids=tuple(
                     x for x in (item.source.opportunity_id, *item.source.finding_ids) if x
                 ),

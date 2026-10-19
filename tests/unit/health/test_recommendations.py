@@ -18,7 +18,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     build_validation_plan,
     detector_native_benefit,
     hub_files,
-    hydrate_recommendations,
+    listed_steps,
     rehydrate_suggestion,
     steps_with_verify,
     stored_recommendation,
@@ -27,6 +27,9 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 )
 from repowise.core.analysis.test_reachability import ReachDistance, ReachedBy, clear_test_map_cache
 from repowise.core.persistence.crud import save_test_coverage
+from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
+    hydrate_recommendations,
+)
 from repowise.core.persistence.database import init_db
 from tests.unit.persistence.helpers import insert_repo
 
@@ -888,3 +891,21 @@ def test_a_stored_row_without_usable_step_verify_serves_no_step_verify() -> None
     assert stored is not None
     steps = stored.detail_dict()["plan"]["steps"]
     assert ["verify" in step for step in steps] == [True, False, False]
+
+
+def test_a_split_stands_for_the_steps_it_relocates():
+    steps = [
+        {"plan_id": "a", "refactoring_type": "break_cycle"},
+        {"plan_id": "s", "refactoring_type": "split_file"},
+        {"plan_id": "m1", "refactoring_type": "extract_method", "relocated_by": "s"},
+        {"plan_id": "c", "refactoring_type": "extract_class", "relocated_by": "s"},
+        {"plan_id": "m2", "refactoring_type": "extract_method", "relocated_by": "c"},
+    ]
+    rows = listed_steps(steps, 0, 2)
+    assert [r["plan_id"] for r in rows] == ["a", "s"]
+    assert rows[1]["relocates"] == ["m1", "c"]
+    # A step another relocation moves keeps its row; the folded ones do not.
+    assert [r["plan_id"] for r in listed_steps(steps, 2, 5)] == ["m2"]
+    # Without a split, steps list one by one.
+    plain = [{"plan_id": "x", "refactoring_type": "extract_method"}] * 2
+    assert listed_steps(plain, 0, 2) == plain

@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import get_args
 
 import pytest
 
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, LowPriority, low_priority
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "repowise.core.analysis.health.worth",
+        "repowise.core.analysis.health.perf.opportunities",
+        "repowise.core.analysis.health.perf.actionability",
+        "repowise.core.analysis.health.perf.opportunity_rank",
+    ],
+)
+def test_health_module_imports_cleanly_in_fresh_interpreter(module: str) -> None:
+    """Importing worth must not pull complexity before worth is initialized."""
+    subprocess.run([sys.executable, "-c", f"import {module}"], check=True)
 
 
 @pytest.mark.parametrize(
@@ -166,6 +182,29 @@ def test_findings_are_tiered_per_function_and_history_waits() -> None:
              "severity": "high", "health_impact": 2.5, "dimension": "defect"}
     rows = [churn, small, deep, big]
     assert finding_priorities(rows) == ["history", "near_bar", None, None]
+
+
+def test_stored_rows_tier_as_the_findings_they_were_read_from() -> None:
+    """A server reads narrow tuples with the details still JSON text; the tier
+    must match the in-memory findings, each function measured over all its rows."""
+    import json
+    from collections import namedtuple
+
+    from repowise.core.analysis.health.worth import finding_priorities
+
+    big = _finding("src/a.py", "big", {"ccn": 47, "nloc": 191, "max_nesting": 5}, 0.4)
+    deep = _finding("src/a.py", "big", {"max_nesting": 5}, 0.9, marker="nested_complexity")
+    small = _finding("src/b.py", "small", {"ccn": 12, "nloc": 40}, 1.5)
+    loose = {**_finding("src/b.py", "", {"ccn": 90}, 0.2), "function_name": None}
+    in_memory = [small, deep, big, loose, small]
+    Row = namedtuple(
+        "Row", "file_path biomarker_type severity function_name line_start line_end details_json"
+    )
+    stored = [
+        Row(*(f[k] for k in Row._fields[:-1]), json.dumps(f["details"])) for f in in_memory
+    ]
+    assert finding_priorities(stored) == finding_priorities(in_memory)
+    assert finding_priorities(stored) == ["near_bar", None, None, None, "near_bar"]
 
 
 @pytest.mark.parametrize(

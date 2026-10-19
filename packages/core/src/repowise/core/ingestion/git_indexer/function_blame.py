@@ -46,6 +46,10 @@ __all__ = [
 # per-function mod counts cannot exceed file mod counts, and noise dominates.
 _MIN_COMMITS_FOR_BLAME = 5
 
+# GitHub's and git's own convention: a repo-root file listing bulk/formatting
+# commits whose lines blame should skip past to the real prior author (#3056).
+_BLAME_IGNORE_REVS_FILENAME = ".git-blame-ignore-revs"
+
 
 @dataclass
 class BlameIndex:
@@ -65,6 +69,15 @@ class BlameIndex:
     # The indexer's history anchor (unix seconds), so line ages are measured
     # from the indexed commit like every other git window.
     as_of_ts: int | None = None
+    # Shas git marks ``boundary`` in the porcelain output: the oldest commit
+    # it can see on each line's history. On a full clone this is the true
+    # root commit; on a shallow clone it is the fetch boundary, and every
+    # line older than it is misattributed to whoever happened to touch it
+    # last before the cutoff (#3055). Ownership excludes these shas only
+    # when ``is_shallow`` is set, since a full clone's true root author is a
+    # real signal, not an artifact.
+    boundary_shas: frozenset[str] = field(default_factory=frozenset)
+    is_shallow: bool = False
 
 
 def blame_as_of(idx: BlameIndex) -> int:
@@ -77,14 +90,18 @@ def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float
 
     Returns ``(name, email, share)`` where ``share`` is the fraction of
     blamed lines authored by the top author. ``None``s when the index is
-    empty (no signal).
+    empty, or when every blamed line is a shallow-clone boundary line (no
+    attributable signal) — the caller falls back to the commit-based owner.
     """
     if not idx.lines:
         return None, None, None
     from collections import Counter
 
+    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
     counts: Counter[str] = Counter()
     for sha, _ts in idx.lines.values():
+        if sha in excluded:
+            continue
         name = idx.authors.get(sha, ("unknown", ""))[0]
         counts[name] += 1
     if not counts:
@@ -113,10 +130,11 @@ def owner_in_range(
         return None, None, None
     from collections import Counter
 
+    excluded = idx.boundary_shas if idx.is_shallow else frozenset()
     counts: Counter[str] = Counter()
     for ln in range(start_line, end_line + 1):
         entry = idx.lines.get(ln)
-        if entry is None:
+        if entry is None or entry[0] in excluded:
             continue
         name = idx.authors.get(entry[0], ("unknown", ""))[0]
         counts[name] += 1
@@ -134,7 +152,7 @@ def owner_in_range(
 
 def _parse_porcelain(
     raw: str,
-) -> tuple[dict[int, tuple[str, int]], dict[str, tuple[str, str]]]:
+) -> tuple[dict[int, tuple[str, int]], dict[str, tuple[str, str]], frozenset[str]]:
     """Parse ``git blame --line-porcelain`` output into the line index.
 
     Porcelain format per line block::
@@ -142,11 +160,17 @@ def _parse_porcelain(
         <sha> <orig-line> <final-line> [<num-lines>]
         author Name
         author-time 1700000000
+        boundary
         ... other headers ...
         \t<source line>
+
+    ``boundary`` marks the oldest commit git can see for that line — the true
+    root on a full clone, the fetch cutoff on a shallow one. It is a plain
+    keyword line with no value, emitted once per sha like the other headers.
     """
     out: dict[int, tuple[str, int]] = {}
     authors: dict[str, tuple[str, str]] = {}
+    boundary_shas: set[str] = set()
     current_sha: str | None = None
     current_final: int | None = None
     current_author_time: int = 0
@@ -193,6 +217,10 @@ def _parse_porcelain(
         if line.startswith("author-mail "):
             current_author_email = line[len("author-mail ") :].strip()
             continue
+        if line == "boundary":
+            if current_sha is not None:
+                boundary_shas.add(current_sha)
+            continue
         # Header lines are space-separated; only the very first header of a
         # block starts with a 40-char hex sha. Other headers start with
         # alphabetic keywords (author, committer, summary, previous, filename).
@@ -206,7 +234,7 @@ def _parse_porcelain(
                 except ValueError:
                     current_final = None
             current_author_time = sha_author_time.get(current_sha, 0)
-    return out, authors
+    return out, authors, frozenset(boundary_shas)
 
 
 def build_blame_index(
@@ -236,22 +264,74 @@ def build_blame_index(
                 return BlameIndex()
         except OSError:
             return BlameIndex()
+    ignore_revs_args = _blame_ignore_revs_args(repo, repo_path)
+    raw = _run_blame(repo, file_path, ignore_revs_args)
+    if not raw:
+        return BlameIndex()
+    lines, authors, boundary_shas = _parse_porcelain(raw)
+    shallow = False
+    if boundary_shas and repo_path is not None:
+        from repowise.core.git_refs import is_shallow
+
+        shallow = is_shallow(str(repo_path))
+        if shallow:
+            logger.info(
+                "blame_shallow_clone_boundary_excluded",
+                path=file_path,
+                boundary_commits=len(boundary_shas),
+            )
+    return BlameIndex(
+        lines=lines, authors=authors, boundary_shas=boundary_shas, is_shallow=shallow
+    )
+
+
+def _run_blame(repo: Any, file_path: str, ignore_revs_args: list[str]) -> str | None:
+    """Run ``git blame --line-porcelain``, retrying once without
+    *ignore_revs_args* on failure.
+
+    A malformed ``.git-blame-ignore-revs`` line that is not a valid object
+    name makes git exit 128 (#3056); retrying once without the flag lets a
+    bad ignore-revs file degrade to ordinary blame instead of losing the
+    signal entirely. Returns ``None`` (never raises) on any subprocess
+    error, same as every other ``repo.git`` call site in this module.
+    """
     try:
         # ``repo.git.blame`` invokes the git binary directly (shell=False).
         # ``--line-porcelain`` repeats headers on every line which makes the
         # parser robust to out-of-order line emission from --incremental.
-        raw = repo.git.blame("--line-porcelain", "HEAD", "--", file_path)
+        return repo.git.blame("--line-porcelain", *ignore_revs_args, "HEAD", "--", file_path)
     except Exception as exc:
-        logger.debug(
-            "blame_index_failed",
-            path=file_path,
-            error=str(exc),
-        )
-        return BlameIndex()
-    if not raw:
-        return BlameIndex()
-    lines, authors = _parse_porcelain(raw)
-    return BlameIndex(lines=lines, authors=authors)
+        if not ignore_revs_args:
+            logger.debug("blame_index_failed", path=file_path, error=str(exc))
+            return None
+        try:
+            return repo.git.blame("--line-porcelain", "HEAD", "--", file_path)
+        except Exception as retry_exc:
+            logger.debug("blame_index_failed", path=file_path, error=str(retry_exc))
+            return None
+
+
+def _blame_ignore_revs_args(repo: Any, repo_path: Path | None) -> list[str]:
+    """``["--ignore-revs-file", path]`` when a ``.git-blame-ignore-revs`` file
+    exists at the repo root and nothing already configures one, else ``[]``.
+
+    A repo whose ``blame.ignoreRevsFile`` is already set in git config applies
+    it automatically on every blame call; adding our own flag on top of that
+    would be redundant, not wrong, but checking first avoids the extra
+    subprocess work being pointless.
+    """
+    if repo_path is None:
+        return []
+    ignore_file = repo_path / _BLAME_IGNORE_REVS_FILENAME
+    if not ignore_file.is_file():
+        return []
+    try:
+        configured = repo.git.config("--get", "blame.ignoreRevsFile")
+    except Exception:
+        configured = ""
+    if configured.strip():
+        return []
+    return ["--ignore-revs-file", str(ignore_file)]
 
 
 def distinct_commits_in_range(idx: BlameIndex, start_line: int, end_line: int) -> set[str]:

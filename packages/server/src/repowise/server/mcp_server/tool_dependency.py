@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.communities import has_community
 from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.database import get_session
@@ -232,8 +233,12 @@ def _build_visual_context(
     # --- Community analysis ---
     src_meta = node_meta.get(source)
     tgt_meta = node_meta.get(target)
-    src_community = src_meta.community_id if src_meta else None
-    tgt_community = tgt_meta.community_id if tgt_meta else None
+    src_community = (
+        src_meta.community_id if src_meta and has_community(src_meta.community_id) else None
+    )
+    tgt_community = (
+        tgt_meta.community_id if tgt_meta and has_community(tgt_meta.community_id) else None
+    )
 
     context["community"] = {
         "source_community": src_community,
@@ -246,8 +251,9 @@ def _build_visual_context(
         # Find nodes that have edges crossing these two communities
         bridge_nodes = []
         nodes_by_community: dict[int, set[str]] = {}
-        for n in nodes:
-            nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
+        for n in nodes: 
+            if has_community(n.community_id):
+                nodes_by_community.setdefault(n.community_id, set()).add(n.node_id)
 
         src_community_nodes = nodes_by_community.get(src_community, set())
         tgt_community_nodes = nodes_by_community.get(tgt_community, set())

@@ -16,10 +16,11 @@ It also detects monorepo structure and returns a RepoStructure.
 from __future__ import annotations
 
 import configparser
+import functools
 import os
 import re
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ import structlog
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
 from ..code_origin import is_generated_header
+from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
 from ..phpunit_roots import (
     PHPUNIT_CONFIG_NAMES,
@@ -100,6 +102,7 @@ class _DirIgnore(NamedTuple):
 
     gitignore: pathspec.PathSpec
     extra: pathspec.PathSpec
+    reincluded: tuple[re.Pattern[str], ...] = ()
 
 
 class _TrackedPaths(NamedTuple):
@@ -169,6 +172,20 @@ class TraversalStats:
     workers would name a different subset on every run.
     """
 
+    def unindexed_source_files(self) -> list[tuple[str, str]]:
+        """``(path, reason)`` for each dropped file the dead-code analyzer reads.
+
+        Without them it cannot tell "nothing uses this" from "its user was
+        never read" (#1237). Generated files count too: they are skipped for
+        being generated, not for naming nothing, so a header function called
+        only from a jnigen ``.c`` is used. Sorted, so a read budget that runs
+        out skips the same generated files every run.
+        """
+        return [
+            *((s.path, s.reason) for s in (*self.skipped_source_files, *self.unknown_language_files)),
+            *((path, "generated") for path in sorted(self.generated_files)),
+        ]
+
 
 log = structlog.get_logger(__name__)
 
@@ -230,13 +247,6 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         ".eggs",
         "site-packages",
         ".cache",
-        # Unity generated state / editor data
-        "Library",
-        "Temp",
-        "Logs",
-        "UserSettings",
-        "MemoryCaptures",
-        "Builds",
         ".idea",
         ".vscode",
         # Test dirs (tests/, spec/, __tests__/, e2e/) are indexed on purpose
@@ -292,7 +302,8 @@ _BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Package-root manifests for monorepo detection, from the language registry.
-# .NET is absent: its ``.csproj`` glob is not an exact filename.
+# Exact names only: a .NET project (``*.csproj``) is a package root for module
+# attribution but not a monorepo package, which reads a manifest by its name.
 _MANIFEST_FILES: frozenset[str] = _LANG_REGISTRY.package_manifest_filenames()
 
 # Entry-point evidence from the registry: exact filenames, "*"-prefixed
@@ -340,6 +351,13 @@ _SKIP_GENERATED_CHECK: frozenset[str] = _LANG_REGISTRY.unparseable_data_language
 #: no ignore file can re-include a pruned directory yet. A ``package.json`` is
 #: no evidence: bundlers write one beside their output.
 _OUTPUT_DIR_NAMES: frozenset[str] = frozenset({"build", "coverage", "dist", "target"})
+
+#: Unity generated state and editor data. Pruned only directly inside a Unity
+#: project root (see :func:`is_unity_state_dir`): .NET and C++ repos keep
+#: source in ``Library/``, ``Logs/`` and ``Builds/`` folders.
+_UNITY_STATE_DIR_NAMES: frozenset[str] = frozenset(
+    {"Library", "Temp", "Logs", "UserSettings", "MemoryCaptures", "Builds"}
+)
 
 #: Languages a build or report writes (bundles, generated C, HTML reports),
 #: so their files are no evidence that an output-named directory is source.
@@ -399,10 +417,22 @@ class FileTraverser:
         self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
         self._extra_exclude = _compile_gitignore(patterns)
+        root_ignore_lines: list[str] = []
+        root_ignore_file = self.repo_root / extra_ignore_filename
+        if root_ignore_file.exists():
+            root_ignore_lines = root_ignore_file.read_text(
+                encoding="utf-8", errors="ignore"
+            ).splitlines()
+        self._reincluded_patterns: tuple[re.Pattern[str], ...] = _compile_reincluded_patterns(
+            (*root_ignore_lines, *patterns)
+        )
+        self._output_dir_cache: dict[Path, bool] = {}
         # Absolute dir path -> that directory's nested ignore spec. The root is
         # pre-seeded because its files are already loaded above.
         self._dir_ignore_cache: dict[str, _DirIgnore] = {
-            str(self.repo_root): _DirIgnore(_compile_gitignore([]), self._extra_ignore),
+            str(self.repo_root): _DirIgnore(
+                _compile_gitignore([]), self._extra_ignore, self._reincluded_patterns
+            ),
         }
         # Lazy: read only once a .gitignore rule matches something.
         self._tracked: _TrackedPaths | None = None
@@ -468,6 +498,11 @@ class FileTraverser:
     def phpunit_roots(self) -> PhpunitRoots:
         """Where PHPUnit collects, from the configs the console-script pass read."""
         return self._console_script_tables().phpunit_roots
+
+    @property
+    def dotnet_test_projects(self) -> DotnetTestProjects:
+        """The .NET test projects, from the .csproj files the config pass read."""
+        return self._console_script_tables().dotnet_test_projects
 
     @property
     def _console_script_names(self) -> frozenset[str]:
@@ -580,6 +615,7 @@ class FileTraverser:
             spec = _DirIgnore(
                 load_extra_ignore_spec(dirpath, ".gitignore"),
                 load_extra_ignore_spec(dirpath, self._extra_ignore_filename),
+                _load_dir_reincluded_patterns(dirpath, self._extra_ignore_filename),
             )
             with self._dir_ignore_lock:
                 # Keep the first published spec so every caller shares one object.
@@ -614,28 +650,45 @@ class FileTraverser:
         tracked = self._tracked_paths()
         return rel_str in (tracked.dirs if is_dir else tracked.files)
 
+    def _in_blocked_dir(self, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
+        return in_blocked_dir(
+            rel_str,
+            self.repo_root,
+            self._output_dir_cache,
+            reincluded_patterns=self._reincluded_patterns,
+            is_dir=True,
+            dir_ignore=dir_ignore,
+            extra_ignore_filename=self._extra_ignore_filename,
+        )
+
+    def _is_dir_ignored(self, dirname: str, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
+        dir_slash = f"{dirname}/"
+        if self._extra_ignore.match_file(f"{rel_str}/") or self._extra_exclude.match_file(
+            f"{rel_str}/"
+        ):
+            return True
+        if dir_ignore is not None and dir_ignore.extra.match_file(dir_slash):
+            return True
+        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dir_slash)
+        return self._dir_gitignored(rel_str, nested)
+
     def _should_skip_dir(
         self,
         dirname: str,
         rel_path: Path,
         dir_ignore: _DirIgnore | None = None,
     ) -> bool:
-        if dirname in _BLOCKED_DIRS:
-            return True
         rel_str = rel_path.as_posix()
+        # Submodules and nested repos are hard boundaries; negation rules never bypass them.
         if self._is_repo_boundary(rel_str, self.repo_root / rel_path):
             return True
-        dir_pattern = rel_str + "/"
-        if self._extra_ignore.match_file(dir_pattern) or self._extra_exclude.match_file(
-            dir_pattern
-        ):
+        if dirname in _BLOCKED_DIRS:
+            return self._in_blocked_dir(rel_str, dir_ignore)
+        if self._is_dir_ignored(dirname, rel_str, dir_ignore):
             return True
-        # Per-directory ignore: pattern is relative to the parent directory.
-        if dir_ignore is not None and dir_ignore.extra.match_file(dirname + "/"):
-            return True
-        nested = dir_ignore is not None and dir_ignore.gitignore.match_file(dirname + "/")
-        # Last, so a gitignored output tree is pruned before anything lists it.
-        return self._dir_gitignored(rel_str, nested) or is_output_dir(self.repo_root / rel_path)
+        if dirname in _OUTPUT_DIR_NAMES or dirname in _UNITY_STATE_DIR_NAMES:
+            return self._in_blocked_dir(rel_str, dir_ignore)
+        return False
 
     def _dir_gitignored(self, rel_str: str, nested_match: bool) -> bool:
         """Whether ``.gitignore`` prunes the directory, which it may not if git tracks a file in it."""
@@ -827,7 +880,8 @@ class FileTraverser:
         is_test = is_test_related_path(
             rel_str,
             language,
-            tables.pytest_roots,
+            roots=tables.pytest_roots,
+            dotnet_projects=tables.dotnet_test_projects,
             phpunit_roots=tables.phpunit_roots,
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
@@ -877,8 +931,8 @@ class FileTraverser:
 
         for rel_pkg, found in sorted(self.package_manifests().items()):
             pkg_dir = self.repo_root / rel_pkg
-            manifests = sorted(found)
-            if is_test_or_example_path(f"{rel_pkg}/{manifests[0]}"):
+            manifests = sorted(found & _MANIFEST_FILES)
+            if not manifests or is_test_or_example_path(f"{rel_pkg}/{manifests[0]}"):
                 continue
             declaring = [m for m in manifests if rel_pkg in members.get(m, ())]
             if not declaring and (
@@ -1164,7 +1218,7 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
 
 
 class ConsoleScriptTables(NamedTuple):
-    """What one pass over the repo's Python project configs yields."""
+    """What one pass over the repo's Python and .NET project configs yields."""
 
     names: frozenset[str]
     """Launcher names an installer drops in the environment's script dir."""
@@ -1178,6 +1232,8 @@ class ConsoleScriptTables(NamedTuple):
     """Where a bare pytest run collects tests, which decides a test-named module."""
     phpunit_roots: PhpunitRoots = PhpunitRoots()
     """Where PHPUnit collects tests, which decides a test-named PHP class."""
+    dotnet_test_projects: DotnetTestProjects = DotnetTestProjects()
+    """.NET test projects, which govern .cs files beneath them."""
 
 
 def _collect_console_scripts(
@@ -1204,15 +1260,24 @@ def _collect_console_scripts(
     unreadable: list[str] = []
     phpunit_configs: list[tuple[str, Any]] = []
     phpunit_unreadable: list[str] = []
-    all_configs = tuple(PYTEST_CONFIG_NAMES | PHPUNIT_CONFIG_NAMES)
+    csproj_files: list[tuple[str, str]] = []
+    manifest_patterns = (*PYTEST_CONFIG_NAMES, *PHPUNIT_CONFIG_NAMES, "*.csproj")
     try:
         config_files = list(
-            iter_glob(repo_root, all_configs, prune_nested_git=prune_nested_git)
+            iter_glob(repo_root, manifest_patterns, prune_nested_git=prune_nested_git)
         )
     except OSError:
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
         name = config_file.name
+        if name.endswith(".csproj"):
+            rel = config_file.relative_to(repo_root).as_posix()
+            try:
+                text = config_file.read_text(encoding="utf-8", errors="replace")
+                csproj_files.append((rel, text))
+            except Exception:
+                csproj_files.append((rel, ""))
+            continue
         rel = config_file.relative_to(repo_root).as_posix()
         if name in PHPUNIT_CONFIG_NAMES:
             try:
@@ -1245,6 +1310,7 @@ def _collect_console_scripts(
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
         phpunit_roots(phpunit_configs, phpunit_unreadable),
+        read_dotnet_test_projects(csproj_files),
     )
 
 
@@ -1445,8 +1511,174 @@ def is_output_dir(abs_dir: Path) -> bool:
         return False
 
 
+def is_unity_state_dir(abs_dir: Path) -> bool:
+    """Whether *abs_dir* is a Unity state directory (see ``_UNITY_STATE_DIR_NAMES``).
+
+    Its parent must be a Unity project root: ``ProjectSettings/ProjectVersion.txt``,
+    or ``ProjectSettings/`` beside ``Assets/``. Checking the parent, not the
+    repo root, also covers a Unity project nested in a monorepo.
+    """
+    if abs_dir.name not in _UNITY_STATE_DIR_NAMES:
+        return False
+    settings = abs_dir.parent / "ProjectSettings"
+    return (settings / "ProjectVersion.txt").is_file() or (
+        settings.is_dir() and (abs_dir.parent / "Assets").is_dir()
+    )
+
+
+def _compile_reincluded_patterns(lines: Iterable[str]) -> tuple[re.Pattern[str], ...]:
+    """Compile '!' gitignore patterns to exact directory matchers.
+
+    Standard GitWildMatchPattern appends recursive descendant wildcards
+    (e.g. '.*$'), which would treat '!src/build/' as matching
+    'src/build/node_modules/x.js'. Replacing the trailing descendant wildcard
+    with an optional trailing slash ensures only the explicitly negated
+    directory itself is re-included.
+    """
+    patterns: list[re.Pattern[str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("!"):
+            continue
+        try:
+            regex_str, _ = GitWildMatchPattern.pattern_to_regex(stripped)
+            if regex_str:
+                trimmed = re.sub(
+                    r"(\(\?:\(\?P<ps_d>/\)\.\*\)\?|\(\?P<ps_d>/\)\.\*|/\.\*)\$$",
+                    r"(?:/)?$",
+                    regex_str,
+                )
+                patterns.append(re.compile(trimmed))
+        except GitWildMatchPatternError:
+            continue
+    return tuple(patterns)
+
+
+@functools.lru_cache(maxsize=1024)
+def _compile_reincluded_file(filepath: str, mtime_ns: int) -> tuple[re.Pattern[str], ...]:
+    try:
+        lines = Path(filepath).read_text(encoding="utf-8", errors="ignore").splitlines()
+        return _compile_reincluded_patterns(lines)
+    except OSError:
+        return ()
+
+
+def _load_dir_reincluded_patterns(
+    dirpath: Path, filename: str = REPOWISE_IGNORE_FILENAME
+) -> tuple[re.Pattern[str], ...]:
+    """Re-included directory patterns loaded from a directory's ignore file.
+
+    Keyed by file path and modification time so changes to nested ignore files
+    refresh automatically across traversals without stale cache hits.
+    """
+    ignore_file = dirpath / filename
+    try:
+        mtime_ns = ignore_file.stat().st_mtime_ns
+    except OSError:
+        return ()
+    return _compile_reincluded_file(str(ignore_file), mtime_ns)
+
+
+def _is_dir_reincluded(
+    rel_dir: str,
+    dirname: str,
+    root_patterns: Sequence[re.Pattern[str]],
+    parent_dir: Path | None = None,
+    dir_ignore: _DirIgnore | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
+) -> bool:
+    """Whether directory *rel_dir* (POSIX, repo-relative) or *dirname* is re-included."""
+    if any(pat.match(rel_dir) for pat in root_patterns):
+        return True
+    if dir_ignore is not None:
+        return any(pat.match(dirname) for pat in dir_ignore.reincluded)
+    if parent_dir is not None:
+        return any(
+            pat.match(dirname)
+            for pat in _load_dir_reincluded_patterns(parent_dir, extra_ignore_filename)
+        )
+    return False
+
+
+def _check_output_dir_cached(
+    abs_dir: Path,
+    is_leaf_file: bool,
+    leaf_name: str,
+    cache: dict[Path, bool] | None,
+) -> bool:
+    """Whether *abs_dir* is an output root, using *cache* when provided."""
+    cached = None if cache is None else cache.get(abs_dir)
+    if cached is None or (
+        cached and is_leaf_file and _is_handwritten_source_name(leaf_name)
+    ):
+        cached = is_output_dir(abs_dir)
+        if cache is not None:
+            cache[abs_dir] = cached
+    return bool(cached)
+
+
+def _resolve_root_reincluded_patterns(
+    repo_root: Path | None,
+    extra_exclude_patterns: Sequence[str] | None,
+    extra_ignore_filename: str,
+) -> tuple[re.Pattern[str], ...]:
+    """Compile root negation patterns from ignore file and exclude patterns."""
+    lines: list[str] | tuple[str, ...] = ()
+    if repo_root is not None:
+        root_ignore = repo_root / extra_ignore_filename
+        if root_ignore.exists():
+            lines = root_ignore.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return _compile_reincluded_patterns((*lines, *(extra_exclude_patterns or ())))
+
+
+def _is_segment_blocked(
+    dirs: Sequence[str],
+    depth: int,
+    part: str,
+    leaf_name: str,
+    is_dir: bool,
+    repo_root: Path | None,
+    root_patterns: Sequence[re.Pattern[str]],
+    dir_ignore: _DirIgnore | None,
+    extra_ignore_filename: str,
+    cache: dict[Path, bool] | None,
+) -> bool:
+    """Whether directory segment *part* at *depth* within *dirs* is blocked."""
+    is_blocked_name = part in _BLOCKED_DIRS
+    is_output_name = part in _OUTPUT_DIR_NAMES
+    is_unity_name = part in _UNITY_STATE_DIR_NAMES
+    if not (is_blocked_name or is_output_name or is_unity_name):
+        return False
+
+    cur_rel = "/".join(dirs[:depth])
+    parent_dir = None
+    if repo_root is not None:
+        parent_dir = repo_root if depth == 1 else repo_root.joinpath(*dirs[:depth - 1])
+    active_dir_ignore = dir_ignore if (is_dir and depth == len(dirs)) else None
+    if _is_dir_reincluded(
+        cur_rel, part, root_patterns, parent_dir, active_dir_ignore, extra_ignore_filename
+    ):
+        return False
+
+    if is_blocked_name or repo_root is None:
+        return True
+
+    abs_dir = repo_root.joinpath(*dirs[:depth])
+    if is_unity_name:
+        return is_unity_state_dir(abs_dir)
+    is_leaf = not is_dir and depth == len(dirs)
+    return _check_output_dir_cached(abs_dir, is_leaf, leaf_name, cache)
+
+
 def in_blocked_dir(
-    rel_path: str, repo_root: Path | None, cache: dict[Path, bool] | None = None
+    rel_path: str,
+    repo_root: Path | None = None,
+    cache: dict[Path, bool] | None = None,
+    extra_exclude_patterns: Sequence[str] | None = None,
+    reincluded_patterns: Sequence[re.Pattern[str]] | None = None,
+    is_dir: bool = False,
+    dir_ignore: _DirIgnore | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
 ) -> bool:
     """Whether a directory on *rel_path* (POSIX, repo-relative) is blocklisted.
 
@@ -1456,30 +1688,40 @@ def in_blocked_dir(
     once. A hand-written file directly in a directory cached as output lists
     it again, since that file may be what makes it source; build output never
     has such a name, so a burst of it stays cached.
+
+    A directory matched by a '!' pattern in .repowiseIgnore or
+    extra_exclude_patterns is re-included and not considered blocked, unless a
+    sub-directory beneath it is itself in the blocklist without its own
+    negation pattern.
     """
-    *dirs, name = rel_path.split("/")
-    for depth, part in enumerate(dirs, 1):
-        if part in _BLOCKED_DIRS:
-            return True
-        if part not in _OUTPUT_DIR_NAMES:
-            continue
-        if repo_root is None:
-            return True
-        abs_dir = repo_root.joinpath(*dirs[:depth])
-        cached = None if cache is None else cache.get(abs_dir)
-        if cached is None or (
-            cached and depth == len(dirs) and _is_handwritten_source_name(name)
-        ):
-            cached = is_output_dir(abs_dir)
-            if cache is not None:
-                cache[abs_dir] = cached
-        if cached:
-            return True
-    return False
+    posix = rel_path.replace("\\", "/")
+    parts = posix.split("/")
+    dirs = parts if is_dir else parts[:-1]
+    if not dirs:
+        return False
+
+    root_pats = reincluded_patterns
+    if root_pats is None:
+        root_pats = _resolve_root_reincluded_patterns(
+            repo_root, extra_exclude_patterns, extra_ignore_filename
+        )
+
+    leaf_name = parts[-1] if not is_dir else ""
+    return any(
+        _is_segment_blocked(
+            dirs, depth, part, leaf_name, is_dir, repo_root,
+            root_pats, dir_ignore, extra_ignore_filename, cache
+        )
+        for depth, part in enumerate(dirs, 1)
+    )
 
 
 def is_candidate_source_path(
-    rel_path: str, repo_root: Path | None = None, cache: dict[Path, bool] | None = None
+    rel_path: str,
+    repo_root: Path | None = None,
+    cache: dict[Path, bool] | None = None,
+    extra_exclude_patterns: Sequence[str] | None = None,
+    extra_ignore_filename: str = REPOWISE_IGNORE_FILENAME,
 ) -> bool:
     """Whether *rel_path* is shaped like a file this repo would index.
 
@@ -1501,7 +1743,13 @@ def is_candidate_source_path(
     parts = Path(posix).parts
     if not parts:
         return False
-    if in_blocked_dir(posix, repo_root, cache):
+    if in_blocked_dir(
+        posix,
+        repo_root,
+        cache,
+        extra_exclude_patterns=extra_exclude_patterns,
+        extra_ignore_filename=extra_ignore_filename,
+    ):
         return False
 
     name = parts[-1]

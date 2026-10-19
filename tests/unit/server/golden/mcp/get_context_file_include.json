@@ -1,0 +1,70 @@
+{
+  "targets": {
+    "src/auth/service.py": {
+      "type": "file",
+      "path": "src/auth/service.py",
+      "docs": {
+        "title": "Auth Service",
+        "summary": "service.py: defines AuthService; function login.",
+        "symbols": [
+          {
+            "name": "AuthService",
+            "kind": "class",
+            "signature": "class AuthService",
+            "line": 10
+          },
+          {
+            "name": "login",
+            "kind": "method",
+            "signature": "async def login(self, username: str, password: str) -> Token",
+            "line": 20
+          }
+        ]
+      },
+      "hotspot": true,
+      "ownership": {
+        "primary_owner": "Alice",
+        "owner_pct": 0.65,
+        "owner_line_pct": null,
+        "contributor_count": 2,
+        "bus_factor": 0
+      },
+      "last_change": {
+        "date": "2026-03-15T00:00:00",
+        "author": "Alice",
+        "days_ago": 0
+      },
+      "decisions": [],
+      "candidates": [
+        {
+          "id": "dec1",
+          "title": "Use JWT for authentication",
+          "status": "proposed",
+          "decision": "Use JWT tokens for all API authentication",
+          "rationale": "Stateless, scalable, works across services",
+          "confidence": 0.6,
+          "authority": "candidate"
+        }
+      ],
+      "freshness": {
+        "confidence_score": 0.85,
+        "freshness_status": "fresh",
+        "is_stale": false
+      },
+      "callers": [
+        {
+          "file": "src/auth/middleware.py",
+          "imports": true
+        },
+        {
+          "file": "tests/test_service.py",
+          "imports": true
+        }
+      ],
+      "_call_graph_note": "File-level rollup: importing files plus inbound cross-file call counts. For symbol-precise callers pass 'file.py::Symbol'."
+    }
+  },
+  "_meta": {
+    "index_age_days": 7
+  }
+}

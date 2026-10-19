@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
     RepoUpdateResult,
@@ -141,6 +142,7 @@ def _write_state(repo: Path, commit: str | None) -> None:
     state = {}
     if commit:
         state["last_sync_commit"] = commit
+        state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     (state_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -344,7 +346,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -380,7 +382,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ) as mocked:
@@ -411,7 +413,7 @@ class TestUpdateWorkspace:
 
         async def _run() -> int:
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ) as mocked:
@@ -544,7 +546,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -644,7 +646,7 @@ class TestWorkspaceSingleFlight:
 
             async def _run():
                 with patch(
-                    "repowise.core.workspace.update.update_single_repo_index",
+                    "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                     new_callable=AsyncMock,
                     return_value=mock_result,
                 ):
@@ -686,7 +688,7 @@ class TestWorkspaceSingleFlight:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -711,6 +713,30 @@ class TestCrossRepoHooks:
 
         import asyncio
         asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["backend"]))
+
+    def test_measures_contract_facts_of_the_changed_repos_last(self, tmp_path: Path) -> None:
+        """The snapshot each update took ran before extraction, so the hooks
+        end by filling its contract facts, for the repos that changed only."""
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
+        )
+        order: list[str] = []
+
+        async def _phases(*_a, **_k):
+            order.append("phases")
+
+        async def _refresh(path):
+            order.append(path.name)
+
+        import asyncio
+
+        with (
+            patch("repowise.core.workspace.update.phases._run_phases", _phases),
+            patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
+            patch("repowise.core.workspace.update.phases._refresh_contract_facts", _refresh),
+        ):
+            asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["api"]))
+        assert order == ["phases", "api"]
 
 
 # ---------------------------------------------------------------------------

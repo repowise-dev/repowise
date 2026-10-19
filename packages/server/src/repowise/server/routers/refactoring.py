@@ -7,18 +7,24 @@ web tab, CLI, and MCP share priority components and ordering. Centrality is
 leverage; a larger change surface raises cost and risk rather than benefit.
 
 No on-disk work happens here, so this works on hosted backends without a
-checkout — the same property the C4 endpoints rely on.
+checkout — the same property the C4 endpoints rely on. The exceptions are the
+code-generation settings and code generation itself, which need the checkout.
+
+Routes only adapt: reads and ranking are ``services/refactoring_health.py``,
+the settings ``services/refactoring_settings.py``, the shapes
+``schemas/refactoring.py``.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.agent_prompts import Flavor, render_opportunity, render_plan
+from repowise.core.analysis.finding_registry import label_previews, preview_label
+from repowise.core.analysis.health.refactoring.recipe import build_recipe
 from repowise.core.analysis.health.refactoring.serving import (
     CANONICAL_ORDERS,
     CANONICAL_VIEWS,
@@ -26,133 +32,41 @@ from repowise.core.analysis.health.refactoring.serving import (
     parse_query,
 )
 from repowise.core.persistence import crud
-from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
+from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES, gated_plan_counts
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._local_git import local_repo_path
+from repowise.server.routers._unverified import UnverifiedQuery
 from repowise.server.schemas import (
+    GenerateCodeRequest,
+    GenerateCodeResponse,
     RefactoringOpportunitiesResponse,
     RefactoringOpportunityDetailResponse,
     RefactoringOpportunityStatusResponse,
+    RefactoringOpportunityStatusUpdate,
+    RefactoringPlanDetailResponse,
     RefactoringPlanStatusResponse,
     RefactoringRollupResponse,
+    RefactoringSettings,
+    RefactoringSettingsUpdate,
+    RefactoringStatusUpdate,
+    RefactoringTargetsResponse,
 )
+from repowise.server.schemas.agent_prompts import AgentPromptResponse
 from repowise.server.services.refactoring_health import PlanListQuery, RefactoringHealthService
+from repowise.server.services.refactoring_settings import refactoring_settings, save_llm_enabled
 
 _STEPS_PER_ROW = 3
 """Steps carried on a queue row; the detail call pages the rest."""
+
+_PROMPT_STEPS = 50
+_PROMPT_EVIDENCE = 20
+"""What an opportunity prompt inlines: the pages the web drawer reads."""
 
 router = APIRouter(
     prefix="/api/repos",
     tags=["refactoring"],
     dependencies=[Depends(verify_api_key)],
 )
-
-
-# ---------------------------------------------------------------------------
-# Response shapes (kept local — these surface only the refactoring layer)
-# ---------------------------------------------------------------------------
-
-
-class RefactoringPlanResponse(BaseModel):
-    """One ranked refactoring plan, with its open ``plan`` / ``evidence`` /
-    ``blast_radius`` dicts re-hydrated from the persisted ``*_json`` columns."""
-
-    id: str
-    refactoring_type: str
-    file_path: str
-    target_symbol: str
-    line_start: int | None = None
-    line_end: int | None = None
-    plan: dict[str, Any] = Field(default_factory=dict)
-    evidence: dict[str, Any] = Field(default_factory=dict)
-    impact_delta: float = 0.0
-    effort_bucket: str = ""
-    blast_radius: dict[str, Any] = Field(default_factory=dict)
-    confidence: str = "medium"
-    source_biomarker: str = ""
-    benefit: float = 0.0
-    leverage: float = 0.0
-    cost: float = 0.0
-    risk: float = 0.0
-    # The unified-rank score (higher = surface sooner). Carried so the tab can
-    # plot/sort without recomputing the blend client-side.
-    rank_score: float = 0.0
-    # Two plot-ready figures, served rather than derived client-side.
-    #
-    # `dependents` is the file's in-degree — the same centrality the rank reads,
-    # so every type reports it the same way. The blast-radius dict was the only
-    # other source and it carries the count under `file_count`, `dependents_count`
-    # or `callers` depending on which detector wrote it, which is how one file
-    # ended up reporting two different dependent counts from two of its plans.
-    #
-    # Both default to 0 rather than being optional: a repo with no graph metrics
-    # or no health pass yet is a real state, and 0 reads as "not measured" in the
-    # same place a missing field would have.
-    dependents: int = 0
-    file_nloc: int = 0
-    file_weighted_deficit: int = 0
-    validation: dict[str, Any] = Field(default_factory=dict)
-
-
-class PlanRiskResponse(BaseModel):
-    kind: str
-    text: str
-    ref: str | None = None
-
-
-class RefactoringPlanDetailResponse(RefactoringPlanResponse):
-    """One plan read alone: what other layers say about its target. Lists stay
-    on :class:`RefactoringPlanResponse` and never carry these; both are absent
-    on a plan that was never checked."""
-
-    governed_by: list[str] | None = None
-    risks: list[PlanRiskResponse] | None = None
-
-
-class RefactoringTypeCount(BaseModel):
-    type: str
-    count: int
-
-
-class RefactoringSummary(BaseModel):
-    total: int
-    by_type: list[RefactoringTypeCount]
-    files_total: int | None = None
-    structural_total: int | None = None
-    design_total: int | None = None
-    performance_total: int | None = None
-    small_effort_total: int | None = None
-    health_recovery_total: int | None = None
-    negligible_health_total: int | None = None
-    best_health_gain: float | None = None
-
-
-class RefactoringTargetsResponse(BaseModel):
-    summary: RefactoringSummary
-    plans: list[RefactoringPlanResponse]
-
-
-class RefactoringPlanPageResponse(BaseModel):
-    """Bounded product page; the legacy targets response remains unpaged."""
-
-    items: list[RefactoringPlanResponse]
-    total: int
-    has_more: bool
-    next_offset: int | None
-    summary: RefactoringSummary
-    structural_leads: list[RefactoringPlanResponse]
-
-
-# ---------------------------------------------------------------------------
-# Row → dataclass → response adapters
-# ---------------------------------------------------------------------------
-
-
-def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
-    return RefactoringPlanResponse(**data)
-
-
-def _csv_values(value: str | None) -> frozenset[str]:
-    return frozenset(part.strip() for part in (value or "").split(",") if part.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +87,7 @@ async def get_refactoring_targets(
     view: Literal["canonical", "file_spread"] = Query(
         "canonical", description="Named ordering view; canonical is the product default"
     ),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringTargetsResponse:
     """Ranked refactoring plans for the repo, filterable by type, confidence,
@@ -183,7 +98,7 @@ async def get_refactoring_targets(
     honor *min_confidence* — so the summary and the plan list stay consistent
     under a confidence filter.
     """
-    body = await _service(session, repo_id).ranked_plans(
+    body = await _service(session, repo_id, include_unverified=include_unverified).ranked_plans(
         PlanListQuery(
             refactoring_type=refactoring_type,
             min_confidence=min_confidence,
@@ -191,95 +106,11 @@ async def get_refactoring_targets(
             view=view,
         )
     )
-    return RefactoringTargetsResponse(**body)
-
-
-@router.get("/{repo_id}/refactoring/targets/page", response_model=RefactoringPlanPageResponse)
-async def get_refactoring_plan_page(
-    repo_id: str,
-    refactoring_type: str | None = Query(None),
-    min_confidence: str | None = Query(None, description="Compatibility confidence floor"),
-    confidence: str | None = Query(None, description="Comma-separated exact confidence values"),
-    effort: str | None = Query(None, description="Comma-separated effort buckets"),
-    file_path: str | None = Query(None),
-    search: str | None = Query(None, max_length=200),
-    sort: Literal["canonical", "health", "effort", "blast", "file"] = Query("canonical"),
-    view: Literal["canonical", "file_spread"] = Query("canonical"),
-    limit: int = Query(60, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),
-) -> RefactoringPlanPageResponse:
-    """Bounded list with server-owned filters and deterministic ordering.
-
-    Reads the rank, factors and validation the finalizer stored: filters,
-    order and paging are SQL, so the cost follows the page, not the plan count.
-    """
-    body = await _service(session, repo_id).ranked_plan_page(
-        PlanListQuery(
-            refactoring_type=refactoring_type,
-            min_confidence=min_confidence,
-            confidences=_csv_values(confidence),
-            efforts=_csv_values(effort),
-            file_path=file_path,
-            search=(search or "").strip().lower(),
-            sort=sort,
-            view=view,
-            limit=limit,
-            offset=offset,
-        )
+    body["plans"] = label_previews("refactoring", body["plans"], kind="refactoring_type")
+    return RefactoringTargetsResponse(
+        **body,
+        gated=await gated_plan_counts(session, repo_id, include_unverified=include_unverified),
     )
-    return RefactoringPlanPageResponse(**body)
-
-
-# ---------------------------------------------------------------------------
-# Code-gen settings — read/write the refactoring.llm config block. Declared
-# before the dynamic /{suggestion_id} GET so the static `settings` path wins.
-# ---------------------------------------------------------------------------
-
-
-class RefactoringSettings(BaseModel):
-    """The code-generation switch plus the model it will use.
-
-    ``provider`` / ``model`` are read-only: they come from the same resolver
-    chat uses, so the user configures a model once. Never carries a key.
-    """
-
-    enabled: bool = False
-    provider: str | None = None
-    model: str | None = None
-
-
-class RefactoringSettingsUpdate(BaseModel):
-    """The one writable field, ``refactoring.llm.enabled``."""
-
-    enabled: bool
-
-
-def _read_refactoring_settings(
-    config: dict[str, Any], repo_id: str, repo_path: Path
-) -> RefactoringSettings:
-    """The switch from ``config`` plus the model chat would build, or none."""
-    from repowise.core.analysis.health.refactoring.llm import llm_enrichment_enabled
-    from repowise.server.provider_config import get_configured_active_provider
-
-    provider, model = get_configured_active_provider(repo_id=repo_id, repo_path=repo_path)
-    return RefactoringSettings(
-        enabled=llm_enrichment_enabled(config), provider=provider, model=model
-    )
-
-
-async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
-    """The repo's on-disk checkout, or a 404 — code-gen settings are a
-    local-``serve`` capability (they live in the repo's ``.repowise``)."""
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None or not repo.local_path:
-        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
-    repo_path = Path(repo.local_path)
-    if not repo_path.exists():
-        raise HTTPException(
-            status_code=404, detail="repository checkout not accessible on this server"
-        )
-    return repo_path
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +120,12 @@ async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _service(session: AsyncSession, repo_id: str) -> RefactoringHealthService:
-    return RefactoringHealthService(session, repo_id, repo_id)
+def _service(
+    session: AsyncSession, repo_id: str, *, include_unverified: bool = False
+) -> RefactoringHealthService:
+    return RefactoringHealthService(
+        session, repo_id, repo_id, include_unverified=include_unverified
+    )
 
 
 @router.get(
@@ -330,6 +165,7 @@ async def get_refactoring_opportunities(
     ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One page of composed opportunities, with facets and the rollup.
@@ -353,14 +189,14 @@ async def get_refactoring_opportunities(
         offset=offset,
         scope=scope,
     )
-    page = await _service(session, repo_id).page(
+    page = await _service(session, repo_id, include_unverified=include_unverified).page(
         query,
         steps_per_item=step_preview if step_preview > 0 else None,
         with_facets=True,
         with_summary=True,
     )
     body: dict[str, Any] = {
-        "items": page.items,
+        "items": label_previews("refactoring", page.items, kind="lead_refactoring_type"),
         "total": page.total,
         "offset": page.offset,
         "has_more": page.next_offset is not None,
@@ -369,6 +205,7 @@ async def get_refactoring_opportunities(
         "summary": page.summary,
         "scope": page.scope,
         "counts": page.counts,
+        "gated": page.gated,
     }
     # ``hidden`` restates ``counts.excluded`` for the board; remove once the
     # web reads ``counts`` (UI adoption).
@@ -382,10 +219,11 @@ async def get_refactoring_opportunities(
 @router.get("/{repo_id}/refactoring/summary", response_model=RefactoringRollupResponse)
 async def get_refactoring_rollup(
     repo_id: str,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """The repository rollup and its one lead, by primary key."""
-    service = _service(session, repo_id)
+    service = _service(session, repo_id, include_unverified=include_unverified)
     return {"summary": await service.summary(), "directive": await service.directive()}
 
 
@@ -413,13 +251,31 @@ async def get_refactoring_opportunity_detail(
     )
     if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
-    return detail
+    return label_previews("refactoring", [detail], kind="lead_refactoring_type")[0]
 
 
-class RefactoringOpportunityStatusUpdate(BaseModel):
-    """The finding-triage vocabulary, applied to a whole opportunity."""
-
-    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+@router.get(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}/prompt",
+    response_model=AgentPromptResponse,
+)
+async def get_refactoring_opportunity_prompt(
+    repo_id: str,
+    opportunity_id: str,
+    flavor: Flavor = Query("generic"),
+    session: AsyncSession = Depends(get_db_session),
+) -> AgentPromptResponse:
+    """One opportunity, its ordered steps and their plans, as an agent prompt."""
+    repo = await _repository(session, repo_id)
+    detail = await _service(session, repo_id).detail(
+        opportunity_id, step_limit=_PROMPT_STEPS, evidence_limit=_PROMPT_EVIDENCE
+    )
+    if not detail.get("found"):
+        raise HTTPException(status_code=404, detail="Unknown opportunity id")
+    text = render_opportunity(detail, flavor, repo.name)
+    note = preview_label(
+        "refactoring", detail.get("file_path") or "", detail.get("lead_refactoring_type")
+    )
+    return AgentPromptResponse.labelled(flavor, text, note)
 
 
 @router.patch(
@@ -468,6 +324,10 @@ async def update_refactoring_opportunity_state(
     }
 
 
+# Code-gen settings: the refactoring.llm config block. Declared before the
+# dynamic /{suggestion_id} GET so the static `settings` path wins.
+
+
 @router.get("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
 async def get_refactoring_settings(
     repo_id: str,
@@ -476,8 +336,10 @@ async def get_refactoring_settings(
     """Whether code generation is on for the repo, and the provider/model it uses."""
     from repowise.core.repo_config import load_repo_config
 
-    repo_path = await _local_repo_path(session, repo_id)
-    return _read_refactoring_settings(load_repo_config(repo_path), repo_id, repo_path)
+    repo_path = await local_repo_path(session, repo_id)
+    return RefactoringSettings(
+        **refactoring_settings(load_repo_config(repo_path), repo_id, repo_path)
+    )
 
 
 @router.put("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
@@ -486,27 +348,10 @@ async def update_refactoring_settings(
     body: RefactoringSettingsUpdate,
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringSettings:
-    """Write ``refactoring.llm.enabled`` to the repo's ``.repowise/config.yaml``.
-
-    Round-trips through the loaded config so unrelated keys are preserved.
-    """
-    from repowise.core.repo_config import load_repo_config, save_repo_config
-
-    repo_path = await _local_repo_path(session, repo_id)
-    config = load_repo_config(repo_path)
-
-    refactoring = config.get("refactoring")
-    if not isinstance(refactoring, dict):
-        refactoring = {}
-        config["refactoring"] = refactoring
-    llm = refactoring.get("llm")
-    if not isinstance(llm, dict):
-        llm = {}
-        refactoring["llm"] = llm
-    llm["enabled"] = body.enabled
-
-    save_repo_config(repo_path, config)
-    return _read_refactoring_settings(config, repo_id, repo_path)
+    """Write ``refactoring.llm.enabled`` to the repo's ``.repowise/config.yaml``."""
+    repo_path = await local_repo_path(session, repo_id)
+    config = save_llm_enabled(repo_path, body.enabled)
+    return RefactoringSettings(**refactoring_settings(config, repo_id, repo_path))
 
 
 @router.get(
@@ -518,20 +363,53 @@ async def update_refactoring_settings(
 async def get_refactoring_plan(
     repo_id: str,
     suggestion_id: str,
+    include: Literal["recipe"] | None = Query(None),
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringPlanDetailResponse:
     """One plan + its blast radius detail (deep-link / drill-down target)."""
+    detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
+    if include == "recipe":
+        detail["recipe"] = build_recipe({**detail, "id": public_id})
+    (detail,) = label_previews("refactoring", [detail], kind="refactoring_type")
+    return RefactoringPlanDetailResponse(**detail)
+
+
+async def _plan_detail(
+    session: AsyncSession, repo_id: str, suggestion_id: str
+) -> tuple[dict[str, Any], str]:
+    """The plan's detail dict and the public id an agent quotes back (the
+    detail's own ``id`` is the storage key this route has always served)."""
     row = await crud.get_refactoring_suggestion(session, repo_id, suggestion_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
-    recommendation = await _service(session, repo_id).plan_recommendation(row)
-    return RefactoringPlanDetailResponse(**recommendation.detail_dict())
+    detail = await _service(session, repo_id).plan_detail_dict(row)
+    return detail, row.public_id or row.id
 
 
-class RefactoringStatusUpdate(BaseModel):
-    """Same shape and vocabulary as health finding triage — one triage system."""
+async def _repository(session: AsyncSession, repo_id: str) -> Any:
+    """The repository a prompt route names in its heading; 404 when unknown."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return repo
 
-    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+@router.get(
+    "/{repo_id}/refactoring/{suggestion_id}/prompt",
+    response_model=AgentPromptResponse,
+)
+async def get_refactoring_plan_prompt(
+    repo_id: str,
+    suggestion_id: str,
+    flavor: Flavor = Query("generic"),
+    session: AsyncSession = Depends(get_db_session),
+) -> AgentPromptResponse:
+    """One plan as the prompt an agent starts from, worded for its harness."""
+    repo = await _repository(session, repo_id)
+    detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
+    text = render_plan({**detail, "id": public_id}, flavor, repo.name)
+    note = preview_label("refactoring", detail.get("file_path") or "", detail.get("refactoring_type"))
+    return AgentPromptResponse.labelled(flavor, text, note)
 
 
 @router.patch(
@@ -571,31 +449,6 @@ async def update_refactoring_plan_status(
 # ---------------------------------------------------------------------------
 
 
-class GenerateCodeRequest(BaseModel):
-    """Optional per-call provider/model overrides, as chat accepts."""
-
-    provider: str | None = None
-    model: str | None = None
-
-
-class GenerateCodeResponse(BaseModel):
-    """Generated refactored code + diff for one plan, with the self-check."""
-
-    suggestion_id: str | None = None
-    refactoring_type: str
-    file_path: str
-    target_symbol: str
-    content: str
-    diff: str
-    provider: str
-    model: str
-    cached: bool
-    input_tokens: int
-    output_tokens: int
-    validation: dict[str, Any] = Field(default_factory=dict)
-    spans: list[dict[str, Any]] = Field(default_factory=list)
-
-
 @router.post(
     "/{repo_id}/refactoring/{suggestion_id}/generate-code",
     response_model=GenerateCodeResponse,
@@ -621,16 +474,7 @@ async def generate_refactoring_code(
     from repowise.core.repo_config import load_repo_config
     from repowise.server.provider_config import get_chat_provider_instance
 
-    repo = await crud.get_repository(session, repo_id)
-    if repo is None or not repo.local_path:
-        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
-    repo_path = Path(repo.local_path)
-    if not repo_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="repository checkout not accessible on this server",
-        )
-
+    repo_path = await local_repo_path(session, repo_id)
     if not llm_enrichment_enabled(load_repo_config(repo_path)):
         raise HTTPException(
             status_code=403,
@@ -642,6 +486,7 @@ async def generate_refactoring_code(
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
     recommendation = await _service(session, repo_id).plan_recommendation(row)
     sug = recommendation.suggestion
+    detail = {**recommendation.detail_dict(), "id": row.public_id or row.id}
 
     body = body or GenerateCodeRequest()
     try:
@@ -654,5 +499,5 @@ async def generate_refactoring_code(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path)
+    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path, detail=detail)
     return GenerateCodeResponse(**result.to_dict())

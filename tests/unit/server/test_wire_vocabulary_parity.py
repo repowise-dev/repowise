@@ -92,6 +92,9 @@ def test_action_tier_labels_match_python() -> None:
     match = re.search(r"export const ACTION_TIER_LABELS[^=]*= \{(.*?)\};", text, re.DOTALL)
     assert match, "ACTION_TIER_LABELS is not declared in actions.ts"
     assert dict(re.findall(r'(\w+): "([^"]+)"', match.group(1))) == TIER_LABELS
+    order = re.search(r"export const ACTION_TIER_ORDER[^=]*= \[(.*?)\];", text, re.DOTALL)
+    assert order, "ACTION_TIER_ORDER is not declared in actions.ts"
+    assert re.findall(r'"(\w+)"', order.group(1)) == list(TIER_LABELS)
 
 
 def test_fix_first_vocabularies_match_python() -> None:
@@ -167,6 +170,33 @@ def test_agent_prompt_flavors_match_python() -> None:
         assert match, f"{alias} is not declared in {module}"
         assert set(re.findall(r'"([a-z-]+)"', match.group(1))) == set(FLAVORS), alias
 
+
+def test_refactoring_recipe_vocabularies_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.recipe import (
+        PRECONDITION_KINDS,
+        RECIPE_ACTIONS,
+    )
+
+    assert _union_members("RecipeAction", "refactoring.ts") == set(RECIPE_ACTIONS)
+    assert _union_members("RecipePreconditionKind", "refactoring.ts") == set(PRECONDITION_KINDS)
+
+
+def test_anchor_scopes_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.anchors import ANCHOR_SCOPES
+
+    assert _union_members("AnchorScope", "refactoring.ts") == set(ANCHOR_SCOPES)
+
+
+def test_refactoring_payoff_outcomes_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.payoff import PAYOFF_OUTCOMES
+
+    assert _union_members("RefactoringPayoffOutcome", "refactoring.ts") == set(PAYOFF_OUTCOMES)
+
+
+def test_reuse_site_actions_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.reuse import REUSE_SITE_ACTIONS
+
+    assert _union_members("ReuseSiteAction", "refactoring.ts") == set(REUSE_SITE_ACTIONS)
 
 
 def _interface_body(name: str, module: str) -> str:

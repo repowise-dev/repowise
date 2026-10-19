@@ -15,7 +15,7 @@ from repowise.core.analysis.health.queue.order import DUE_TIERS, Tier
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when ranking, eligibility or the item shape changes meaning.
-FIX_FIRST_MODEL_VERSION = 1
+FIX_FIRST_MODEL_VERSION = 2
 
 FixTier = Tier
 FIX_TIERS: tuple[str, ...] = get_args(FixTier)
@@ -43,6 +43,8 @@ FIX_FACT_BASES: tuple[str, ...] = get_args(FixFactBasis)
 # ``expected`` and ``no_strategy`` come from the performance ladder; ``gated_off``
 # also keeps out any other unit in a function a constant-false flag switches
 # off. ``unreachable``: an open dead-code finding covers the target.
+# ``terminal_flow``: a print or prompt flow; ``moderate_quiet``: a function
+# under the large-size bar with no churn or bug-fix history.
 FixExclusion = Literal[
     "test",
     "tooling",
@@ -64,6 +66,8 @@ FixExclusion = Literal[
     "no_concrete_step",
     "low_value_kind",
     "kind_unaudited",
+    "terminal_flow",
+    "moderate_quiet",
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 
@@ -106,6 +110,12 @@ class FixStep:
     file_path: str
     line: int | None = None
     mechanical: bool = False
+    #: An Extract Method helper's header and the statement that replaces the
+    #: span, in the file's language, when the plan wrote them.
+    signature: str | None = None
+    call: str | None = None
+    #: The command that checks this step, when it differs from the item's.
+    command: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +165,8 @@ class FixVerify:
     tests_total: int
     command: str | None
     basis: FixFactBasis
+    #: What to do before the edit when no test reaches it.
+    prerequisite: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +203,9 @@ class FixItem:
     source: FixSource
     next_call: ActionCommand
     why_ranked: tuple[FixRankFact, ...] = ()
+    #: The value band (``queue.value``) Do next ranks the item on; ``None`` on a
+    #: snapshot stored before items carried it.
+    value: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -207,8 +222,29 @@ class FixItem:
             "gain": self.gain.text,
             "effort": self.effort.bucket,
             "confidence": self.confidence.level,
+            **(self._inline_plan() if self.tier in DUE_TIERS else {}),
             "next_call": self.next_call.as_dict(),
         }
+
+    def _inline_plan(self) -> dict[str, Any]:
+        """A due item's first edit and how to check it, so it can be started
+        without the lookup. ``file`` only when the step edits another file,
+        ``line`` only when it names one. ``verify`` is the item's: a step's
+        own, narrower command is on the step, in the full item."""
+        out: dict[str, Any] = {}
+        step = self.action.steps[0] if self.action.steps else None
+        if step is not None:
+            first: dict[str, Any] = {"action": step.text}
+            if step.line is not None:
+                first["line"] = step.line
+            if step.file_path != self.target.file_path:
+                first["file"] = step.file_path
+            out["first_step"] = first
+        if self.verify.command:
+            out["verify"] = {"command": self.verify.command}
+        elif self.verify.prerequisite:
+            out["verify"] = {"prerequisite": self.verify.prerequisite}
+        return out
 
 
 def _exclusions() -> dict[str, int]:

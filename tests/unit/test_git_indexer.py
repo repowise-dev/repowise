@@ -448,6 +448,43 @@ class TestStableClassification:
         assert authors["Alice"]["last_commit_ts"] < authors["Bob"]["last_commit_ts"]
         assert authors["Bob"]["last_commit_ts"] == bob_last
 
+    def test_top_authors_carry_each_authors_own_recent_commit_count(self) -> None:
+        """Each top-author entry records how many of ITS OWN commits on this
+        file fall in the 90-day window, not the file's own window-wide count (#2862)."""
+        import json
+
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        now = datetime.now(UTC)
+        # A bare MagicMock resolves ``float(repo.head.commit.committed_date)``
+        # to 1.0 (its default __float__), anchoring the 90-day window at the
+        # epoch instead of raising and falling back to wall-clock "now" — so
+        # the anchor must be set explicitly for the window to mean anything.
+        mock_repo.head.commit.committed_date = int(now.timestamp())
+        # Alice: one commit 200 days ago (outside the window) and one 10 days
+        # ago (inside). Bob: one commit 150 days ago (outside) only.
+        specs = [
+            ("Alice", "alice@example.com", now - timedelta(days=200)),
+            ("Alice", "alice@example.com", now - timedelta(days=10)),
+            ("Bob", "bob@example.com", now - timedelta(days=150)),
+        ]
+        log_lines = []
+        for i, (name, email, when) in enumerate(specs):
+            ts = int(when.timestamp())
+            log_lines.append(
+                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{name}\x1f{email}\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: c{i}\x1f"
+            )
+        mock_repo.git.log.return_value = "\n".join(log_lines)
+
+        meta = indexer._index_file("shared.py", mock_repo)
+        authors = {a["name"]: a for a in json.loads(meta["top_authors_json"])}
+
+        assert authors["Alice"]["commit_count"] == 2
+        assert authors["Alice"]["recent_commit_count"] == 1
+        assert authors["Bob"]["commit_count"] == 1
+        assert authors["Bob"]["recent_commit_count"] == 0
+
 
 class TestGitWindowAnchor:
     """Recency windows are anchored to the indexed commit by default;
@@ -489,8 +526,10 @@ class TestGitWindowAnchor:
 
 
 class TestFixCommitClassifier:
-    """``is_fix_commit`` must agree byte-for-byte with the benchmark's
-    ``lib/defect_counter.find_fix_commits`` keyword rule (product == benchmark)."""
+    """``is_fix_commit`` must agree with the benchmark's
+    ``lib/defect_counter.find_fix_commits`` keyword rule (product == benchmark),
+    including verb inflections ("fixed", "fixes", "fixing") and compounds
+    ("hotfix", "bugfix")."""
 
     def test_include_patterns_match(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -501,6 +540,12 @@ class TestFixCommitClassifier:
         assert is_fix_commit("closes #123")
         assert is_fix_commit("fixes #99 regression")
         assert is_fix_commit("squash a nasty bug")
+        assert is_fix_commit("Fixed #36012 -- Made QuerySet.update() respect ...")
+        assert is_fix_commit("Fixes crash when config is empty")
+        assert is_fix_commit("Fixing race in worker shutdown")
+        assert is_fix_commit("Fixed a crash in the pager")
+        assert is_fix_commit("hotfix: restore login")
+        assert is_fix_commit("bugfix: off-by-one in pager")
 
     def test_exclude_overrides_include(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -511,12 +556,21 @@ class TestFixCommitClassifier:
         assert not is_fix_commit("Merge fix branch")
         assert not is_fix_commit("bump deps to fix CVE")
         assert not is_fix_commit("fix a typo")
+        assert not is_fix_commit("Fixed typo in docs")
+        assert not is_fix_commit("Fixes lint")
+        assert not is_fix_commit("Fixing formatting in docs")
 
     def test_non_fixes_silent(self) -> None:
         from repowise.core.ingestion.git_indexer._constants import is_fix_commit
 
         assert not is_fix_commit("feat: add new endpoint")
         assert not is_fix_commit("refactor the walker")
+        assert not is_fix_commit("affixed the label")
+        assert not is_fix_commit("fixture update")
+        assert not is_fix_commit("prefix with namespace")
+        assert not is_fix_commit("postfix expression")
+        assert not is_fix_commit("prefixed #123")
+        assert not is_fix_commit("affixed #123")
         assert not is_fix_commit("")
 
 
@@ -1285,3 +1339,45 @@ class TestCoChangeCommitWidth:
         assert partner["frequency"] == 2
         assert partner["self_commits"] == 11  # 2 shared + 9 alone
         assert partner["partner_commits"] == 2
+
+    def test_the_focused_count_leaves_out_sweep_commits(self) -> None:
+        """A sweep is still a commit of every file it touches, and still a
+        shared commit, but not one the focused count holds as evidence."""
+        import time
+
+        from repowise.core.ingestion.git_indexer._constants import (
+            _MAX_FILES_PER_COMMIT_FOR_ENTROPY,
+        )
+
+        now = int(time.time())
+        sweep = ("a.py", "b.py", *(f"s{i}.py" for i in range(_MAX_FILES_PER_COMMIT_FOR_ENTROPY)))
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = self._log(now, ("a.py", "b.py"), sweep, sweep)
+
+        result = compute_co_changes_and_entropy(mock_repo, set(sweep), commit_limit=500)
+
+        partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        assert partner["frequency"] == 3
+        assert partner["focused_frequency"] == 1
+        assert partner["self_commits"] == 3
+
+    def test_the_sweep_cap_is_inclusive(self) -> None:
+        """A commit of exactly the cap is focused; one file more is a sweep."""
+        import time
+
+        from repowise.core.ingestion.git_indexer._constants import (
+            _MAX_FILES_PER_COMMIT_FOR_ENTROPY as CAP,
+        )
+
+        now = int(time.time())
+        at_cap = ("a.py", "b.py", *(f"s{i}.py" for i in range(CAP - 2)))
+        over_cap = (*at_cap, "extra.py")
+        assert (len(at_cap), len(over_cap)) == (CAP, CAP + 1)
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = self._log(now, at_cap, over_cap)
+
+        result = compute_co_changes_and_entropy(mock_repo, set(over_cap), commit_limit=500)
+
+        partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
+        assert partner["frequency"] == 2
+        assert partner["focused_frequency"] == 1

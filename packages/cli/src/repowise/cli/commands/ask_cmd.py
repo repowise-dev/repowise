@@ -31,7 +31,7 @@ def project(payload: dict, question: str) -> dict:
 
     ==================  ===========================================
     kept                answer, confidence, grounding,
-                        retrieval_quality, citations, quotes,
+                        citations, quotes,
                         fallback_targets, candidate_files,
                         best_guesses (without their
                         excerpts), next_action_hint, note,
@@ -52,7 +52,6 @@ def project(payload: dict, question: str) -> dict:
         "question": question,
         "answer": payload.get("answer", ""),
         "confidence": payload.get("confidence", ""),
-        "retrieval_quality": payload.get("retrieval_quality", ""),
         "citations": list(payload.get("citations") or []),
     }
     quotes = payload.get("quotes") or []
@@ -181,13 +180,11 @@ def _render(projected: dict) -> None:
         console.print("[yellow]No answer synthesised for that question.[/yellow]")
 
     confidence = projected.get("confidence") or "?"
-    quality = projected.get("retrieval_quality") or "?"
     colour = {"high": "green", "medium": "yellow"}.get(confidence, "red")
     grounding = projected.get("grounding")
     console.print(
-        f"\n[{colour}]confidence: {confidence}[/{colour}]  [dim]retrieval: {quality}"
-        + (f"  grounding: {grounding}" if grounding else "")
-        + "[/dim]"
+        f"\n[{colour}]confidence: {confidence}[/{colour}]"
+        + (f"  [dim]grounding: {grounding}[/dim]" if grounding else "")
     )
     if projected.get("note"):
         # The value-grounding gate ("the numbers may be synthesised, read X

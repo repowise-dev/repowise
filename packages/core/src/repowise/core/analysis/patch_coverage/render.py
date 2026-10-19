@@ -20,7 +20,7 @@ from collections.abc import Callable, Sequence
 
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, details, more_line, plural
-from .compute import FilePatchCoverage, PatchCoverage, PathGateResult
+from .compute import UNMEASURED, FilePatchCoverage, PatchCoverage, PathGateResult
 from .delta import IndirectCause, IndirectChange, ProjectDelta
 from .hints import RANGE_LIMIT, TestHint, first_hint, hint_phrase
 from .risk import FileRisk
@@ -30,6 +30,7 @@ STATUS_TEXT = {
     "not_in_report": "not in report",
     "no_line_data": "report has no line data",
     "no_coverable_changes": "no executable lines changed",
+    "stale_file": "changed since coverage was measured",
 }
 
 
@@ -285,8 +286,8 @@ def attention_rows(pc: PatchCoverage) -> list[FilePatchCoverage]:
         key=risk_order_key,
     )
     unmeasured = sorted(
-        pc.with_status("not_in_report") + pc.with_status("no_line_data"),
-        key=lambda f: (f.status != "not_in_report", *risk_order_key(f)),
+        (f for f in pc.files if f.status in UNMEASURED),
+        key=lambda f: (UNMEASURED.index(f.status), *risk_order_key(f)),
     )
     return gaps + unmeasured
 
@@ -306,6 +307,7 @@ def render_markdown(pc: PatchCoverage) -> str:
     out += _path_gate_table(pc)
     out += _gap_table(pc)
     out += _details(pc.with_status("not_in_report"), "not in the coverage report")
+    out += _details(pc.with_status("stale_file"), "changed since the coverage was measured")
     out += _details(pc.with_status("no_line_data"), "in a report without line data")
     out += _outside_section(pc)
     return "\n".join(out) + "\n"
@@ -648,6 +650,8 @@ def _no_data_reason(pc: PatchCoverage) -> str:
         if pc.scope.ignored_file_count:
             return "Every changed file is ignored by coverage.ignore."
         return "The change has no changed lines."
+    if pc.with_status("stale_file"):
+        return "The changed source files changed since the coverage was measured."
     if pc.with_status("no_line_data"):
         return "The report does not say which lines are executable."
     if pc.with_status("not_in_report"):

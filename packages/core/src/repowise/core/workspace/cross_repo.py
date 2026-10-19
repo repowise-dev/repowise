@@ -47,7 +47,7 @@ CROSS_REPO_EDGES_FILENAME = "cross_repo_edges.json"
 _OVERLAY_VERSION: int = 2
 
 _DEFAULT_TIME_WINDOW_HOURS: int = 24
-_DEFAULT_COMMIT_LIMIT: int = 500
+_CROSS_REPO_COMMIT_LIMIT: int = 500
 # Strength is a bounded [0, 1) share (see detect_cross_repo_co_changes), so
 # the floor is a ratio: pairs that co-occur in under ~20% of the less-active
 # file's sessions are coincidence, not coupling.
@@ -257,7 +257,7 @@ class _GitCommit:
 
 def _parse_git_log(
     repo_path: Path,
-    commit_limit: int = _DEFAULT_COMMIT_LIMIT,
+    commit_limit: int = _CROSS_REPO_COMMIT_LIMIT,
 ) -> list[_GitCommit]:
     """Run ``git log`` and parse into structured commit records.
 
@@ -401,7 +401,7 @@ def detect_cross_repo_co_changes(
     repo_paths: dict[str, Path],
     *,
     time_window_hours: int = _DEFAULT_TIME_WINDOW_HOURS,
-    commit_limit: int = _DEFAULT_COMMIT_LIMIT,
+    commit_limit: int = _CROSS_REPO_COMMIT_LIMIT,
     min_score: float = _MIN_CROSS_REPO_SCORE,
     min_sessions: int = _MIN_CO_SESSIONS,
 ) -> tuple[list[CrossRepoCoChange], int]:

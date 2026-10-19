@@ -213,6 +213,48 @@ async def test_qualified_name_keeps_its_qualifier(session, populated_db):
 
 
 @pytest.mark.asyncio
+async def test_a_module_name_means_the_module_when_the_question_names_its_defs(
+    session, populated_db
+):
+    """``symbol_identity`` is a module and a function elsewhere; the topic picks one."""
+    rid = populated_db
+    py = {"language": "python"}
+    module = "core/symbol_identity.py"
+    session.add_all(
+        [
+            GraphNode(
+                id=f"gc_{module}", repository_id=rid, node_id=module, node_type="file",
+                file_path=module, language="python", created_at=_NOW,
+            ),
+            _sym(rid, f"{module}::symbol_discriminator", **py),
+            _sym(rid, "core/references.py::symbol_identity", **py),
+            _sym(rid, "core/parser.py::parse_file", lines=(1, 90), **py),
+            _sym(rid, "core/views.py::render", lines=(1, 20), **py),
+            _edge(rid, "core/parser.py::parse_file", f"{module}::symbol_discriminator"),
+            _edge(rid, "core/views.py::render", "core/references.py::symbol_identity"),
+        ]
+    )
+    await session.flush()
+    hits = [
+        {
+            "target_path": module,
+            "symbols": [{"name": "symbol_discriminator", "kind": "function", "_relevance": 9}],
+        }
+    ]
+
+    ev = await callers.caller_evidence(
+        session, rid, "How does symbol_identity pick a discriminator, and where is it called?",
+        {"symbol_identity"}, hits,
+    )
+    assert [r["caller"] for r in ev.rows] == ["core/parser.py::parse_file"]
+    # Nothing but the name: the function stays the target.
+    ev = await callers.caller_evidence(
+        session, rid, "Where is symbol_identity called?", {"symbol_identity"}, hits
+    )
+    assert [r["caller"] for r in ev.rows] == ["core/views.py::render"]
+
+
+@pytest.mark.asyncio
 async def test_go_target_resolved_from_retrieval_lists_other_files_only(session, populated_db):
     rid = populated_db
     go = {"language": "go"}

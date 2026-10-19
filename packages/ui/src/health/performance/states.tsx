@@ -54,14 +54,32 @@ export function UnavailableQueue({ summary }: { summary: PerformanceOpportunityS
   );
 }
 
-/** Analyzed, and nothing supported surfaced. Say exactly that. */
-export function EmptyQueue() {
+/**
+ * Analyzed, and nothing in this scope needs a change: the good state. It
+ * names the scope and commit it holds for; the accounting sentence beneath
+ * says where the rest of the repository is, so "clear" is a statement about
+ * something specific and the reader can check the rest.
+ */
+export function GoodState({
+  scope,
+  analyzedCommit,
+  children,
+}: {
+  /** "worth doing now in production code", "in all code". */
+  scope: string;
+  analyzedCommit: string | null | undefined;
+  /** The accounting sentence for the scope. */
+  children?: React.ReactNode;
+}) {
+  const at = analyzedCommit ? ` at ${analyzedCommit.slice(0, 7)}` : "";
   return (
     <EmptyState
       tone="positive"
-      title="No supported pattern surfaced"
-      description="The detectors are high precision and low recall, so an empty queue means nothing they recognize was found. It does not measure latency and does not claim the code is fast."
-    />
+      title={`No performance changes ${scope}${at}`}
+      description="The detectors read code shape, not latency, and are high precision and low recall."
+    >
+      {children}
+    </EmptyState>
   );
 }
 

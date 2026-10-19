@@ -484,6 +484,7 @@
         "ccn_removed": 2,
         "end_line": 173,
         "params": [
+          "limit",
           "rows"
         ],
         "returns": [
@@ -496,6 +497,7 @@
         "ccn_removed": 2,
         "end_line": 173,
         "params": [
+          "limit",
           "rows"
         ],
         "returns": [
@@ -505,28 +507,28 @@
         "start_line": 160
       },
       {
-        "ccn_removed": 2,
-        "end_line": 173,
-        "params": [
-          "rows"
-        ],
-        "returns": [],
-        "slice_nloc": 12,
-        "start_line": 161
-      },
-      {
         "ccn_removed": 1,
         "end_line": 173,
-        "params": [],
-        "returns": [],
+        "params": [
+          "limit",
+          "total"
+        ],
+        "returns": [
+          "flag"
+        ],
         "slice_nloc": 8,
         "start_line": 166
       },
       {
         "ccn_removed": 1,
         "end_line": 172,
-        "params": [],
-        "returns": [],
+        "params": [
+          "limit",
+          "total"
+        ],
+        "returns": [
+          "flag"
+        ],
         "slice_nloc": 7,
         "start_line": 166
       }
@@ -735,6 +737,7 @@
         "end_line": 250,
         "params": [
           "block",
+          "expect",
           "limit",
           "names"
         ],
@@ -748,6 +751,7 @@
         "params": [
           "block",
           "depth",
+          "expect",
           "limit",
           "names"
         ],

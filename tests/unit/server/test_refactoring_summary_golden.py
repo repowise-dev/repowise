@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from repowise.core.analysis.health.refactoring.recommendations import plan_types
 from repowise.core.analysis.health.refactoring_summary import summarize_plans
-from repowise.server.routers.refactoring import RefactoringSummary
+from repowise.server.schemas import RefactoringSummary
 
 
 def _rec(kind: str, path: str, effort: str, impact: float) -> SimpleNamespace:

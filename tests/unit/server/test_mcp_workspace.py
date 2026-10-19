@@ -787,6 +787,16 @@ def test_enricher_get_repos_depending_on(enricher_data):
     assert "frontend" in depending
 
 
+def test_enricher_get_repos_depending_on_lists_each_repo_once(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    data = json.loads(enricher_data.read_text())
+    data["package_deps"].append({**data["package_deps"][0], "source_manifest": "apps/web/package.json"})
+    enricher_data.write_text(json.dumps(data))
+    enricher = CrossRepoEnricher(enricher_data)
+    assert enricher.get_repos_depending_on("backend") == ["frontend"]
+
+
 def test_enricher_has_cross_repo_consumers(enricher_data):
     from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 

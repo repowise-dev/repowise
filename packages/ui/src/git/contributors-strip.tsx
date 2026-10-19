@@ -11,11 +11,18 @@ export interface StripOwner {
   email?: string | undefined;
 }
 
+/** Commits by attribution label, as `/commits/agent-trend` reports them.
+ * Unknown commits are their own band and are never shown as human. */
 export interface StripProvenance {
-  /** Share of indexed commits attributed to coding agents, 0–100. */
-  agentPct: number;
   agentCommits: number;
+  humanAttestedCommits: number;
+  unknownCommits: number;
   totalCommits: number;
+  /** Agent share of commits with a known source, 0–100; null below the
+   * coverage floor. */
+  agentPctOfCovered: number | null;
+  /** Commits with a known source / all commits, 0–100. */
+  coveragePct: number | null;
   /** Per-agent commit counts, biggest first. */
   agentNames: { name: string; count: number }[];
 }
@@ -24,10 +31,22 @@ interface ContributorsStripProps {
   owners: StripOwner[];
   /** Approx number of distinct contributors (defaults to owners.length). */
   contributorCount?: number;
-  /** Agent-vs-human authorship; omit/null when provenance isn't indexed. */
+  /** Attribution by label; omit/null when attribution is off or not indexed. */
   provenance?: StripProvenance | null;
   ownersHref: string;
   commitsHref: string;
+}
+
+function authorshipSegments(p: StripProvenance) {
+  const share = (n: number) => (n / p.totalCommits) * 100;
+  const shown = p.agentNames.slice(0, 3);
+  const rest = p.agentNames.slice(3).reduce((sum, a) => sum + a.count, 0);
+  return [
+    ...shown.map((a) => ({ key: a.name, label: a.name, value: share(a.count) })),
+    { key: "__other_agents", label: "Other agents", value: share(rest) },
+    { key: "__human_attested", label: "Human-attested", value: share(p.humanAttestedCommits) },
+    { key: "__unknown", label: "Unknown", value: share(p.unknownCommits), tail: true },
+  ];
 }
 
 function firstName(name: string): string {
@@ -102,10 +121,16 @@ export function ContributorsStrip({
                   href={commitsHref}
                   className="text-xs tabular-nums text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
                 >
-                  <span className="font-semibold text-[var(--color-accent-primary)]">
-                    {Math.round(provenance!.agentPct)}%
-                  </span>{" "}
-                  agent-written
+                  {provenance!.agentPctOfCovered != null && (
+                    <>
+                      at least{" "}
+                      <span className="font-semibold text-[var(--color-accent-primary)]">
+                        {Math.round(provenance!.agentPctOfCovered)}%
+                      </span>{" "}
+                      of covered,{" "}
+                    </>
+                  )}
+                  coverage {Math.round(provenance!.coveragePct ?? 0)}%
                 </a>
                 <InfoTip content={AGENT_PCT_HINT} label="How agent authorship is measured" />
               </span>
@@ -113,16 +138,10 @@ export function ContributorsStrip({
             <ProportionBar
               label="Commits by author"
               size="sm"
-              segments={[
-                { key: "human", label: "Human", value: 100 - provenance!.agentPct },
-                ...provenance!.agentNames.map((a) => ({
-                  key: a.name,
-                  label: a.name,
-                  value: (a.count / provenance!.totalCommits) * 100,
-                })),
-              ]}
-              maxSegments={3}
-              othersLabel={() => "Other agents"}
+              // Agents first, then the known human band, then unknown, in
+              // that fixed order so unknown never folds into another band.
+              sort={false}
+              segments={authorshipSegments(provenance!)}
             />
           </div>
         )}

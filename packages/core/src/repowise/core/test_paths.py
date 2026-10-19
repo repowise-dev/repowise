@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    from .dotnet_test_projects import DotnetTestProjects
     from .phpunit_roots import PhpunitRoots
     from .pytest_roots import PytestRoots
 
@@ -173,6 +174,16 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
     {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
+)
+
+
+# A source file whose name ends in "test" and a scaffolding word is the support
+# for some module's tests: ``bot.test-harness.ts``, ``card-test-helpers.ts``,
+# ``test-support.mjs``. Words split as directory segments do. Not ``spec``,
+# which ``spec_utils.py`` uses for OpenAPI tooling, and not ``utils``: React
+# and Preact publish ``test-utils.js`` as a package entry.
+_SUPPORT_NAME_WORDS: frozenset[str] = frozenset(
+    {"harness", "support", "helper", "helpers", "mock", "mocks", "fixture", "fixtures", "setup"}
 )
 
 
@@ -294,10 +305,23 @@ def _is_support_name(filename: str) -> bool:
         return False
     rules = _conventions()
     lowered = filename.lower()
-    if PurePosixPath(lowered).stem in rules.support_stems:
+    if PurePosixPath(lowered).stem in rules.support_stems or _is_support_compound(filename):
         return True
     camel_re = rules.support_camel_res.get(PurePosixPath(lowered).suffix)
     return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
+
+
+def _is_support_compound(filename: str) -> bool:
+    """``x.test-harness.ts``: a test name (``test_utils.py``) stays a test."""
+    lowered = PurePosixPath(filename.lower())
+    words = _words(lowered.stem)
+    return (
+        len(words) >= 2
+        and words[-2] == "test"
+        and words[-1] in _SUPPORT_NAME_WORDS
+        and lowered.suffix in _conventions().source_exts
+        and not _is_test_name(filename)
+    )
 
 
 def _is_test_dir(
@@ -399,7 +423,7 @@ def _classify(
     path: str,
     language: str | None,
     roots: PytestRoots | None = None,
-    *,
+    dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
@@ -440,7 +464,11 @@ def _classify(
         or _pytest_skips(path, filename, roots)
         or _phpunit_skips(path, filename, phpunit_roots)
     )
-    if needs_test_dir and not _is_test_dir(segments, original_segments, filename, language):
+    if (
+        needs_test_dir
+        and not _is_test_dir(segments, original_segments, filename, language)
+        and not _dotnet_project_collects(path, filename, dotnet_projects)
+    ):
         return ""
 
     # Inside test material. A test-shaped filename wins; otherwise a
@@ -459,6 +487,17 @@ def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool
     )
 
 
+def _dotnet_project_collects(
+    path: str, filename: str, dotnet_projects: DotnetTestProjects | None
+) -> bool:
+    """Whether a .cs file is governed by a .NET test project."""
+    return (
+        dotnet_projects is not None
+        and filename.lower().endswith(".cs")
+        and dotnet_projects.collects(path) is True
+    )
+
+
 def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
     """Whether pytest's config keeps a test-named Python file out of collection."""
     return (
@@ -472,7 +511,7 @@ def is_test_path(
     path: str,
     language: str | None = None,
     roots: PytestRoots | None = None,
-    *,
+    dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """Whether *path* is a test.
@@ -482,17 +521,18 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name, and
-    *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
+    *roots* to let pytest's config overrule a test-shaped Python name, pass
+    *dotnet_projects* to recognize C# files governed by a test project, and
+    pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
     """
-    return _classify(path, language, roots, phpunit_roots=phpunit_roots) == "test"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots) == "test"
 
 
 def is_test_support_path(
     path: str,
     language: str | None = None,
     roots: PytestRoots | None = None,
-    *,
+    dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
@@ -501,14 +541,14 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, phpunit_roots=phpunit_roots) == "support"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots) == "support"
 
 
 def is_test_related_path(
     path: str,
     language: str | None = None,
     roots: PytestRoots | None = None,
-    *,
+    dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
@@ -518,7 +558,22 @@ def is_test_related_path(
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
-    return _classify(path, language, roots, phpunit_roots=phpunit_roots) != ""
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots) != ""
+
+
+def in_test_tree(path: str, language: str | None = None) -> bool:
+    """Whether a directory alone makes *path* test material, whatever its name.
+
+    ``tests/x.py`` and ``src/__mocks__/api.ts`` are; ``core/test_selection.py``
+    is test-shaped only by name. ``.github/`` makes no test tree.
+    """
+    original, lowered = _parts(path)
+    segments = lowered[:-1]
+    if not segments or _REPO_METADATA_DIR in segments:
+        return False
+    return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
+        segments, original[:-1], "", language
+    )
 
 
 def is_unambiguous_test_path(path: str, language: str | None = None) -> bool:

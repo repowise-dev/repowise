@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { ConfidenceBadge } from "../wiki/confidence-badge";
 import { READER_PERSONAS, type ReaderPersona } from "./reader-persona";
 import { cn } from "../lib/cn";
@@ -114,71 +115,66 @@ export function ExportMenu({
   const itemClass =
     "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]";
 
+  // The menu is portalled: the docs header scrolls its actions horizontally, and
+  // an absolutely positioned menu inside that scroll container gets clipped.
   return (
-    <div className="relative">
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => setOpen((o) => !o)}
-        disabled={isExporting}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        {isExporting ? (
-          <Spinner size="sm" className="mr-1.5" />
-        ) : (
-          <Download className="h-3.5 w-3.5 mr-1.5" />
-        )}
-        Export
-        <ChevronDown className="h-3 w-3 ml-1 opacity-60" />
-      </Button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div
-            role="menu"
-            className="absolute right-0 top-full z-20 mt-1 w-52 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-1 shadow-md"
-          >
-            {hasPage && (
-              <>
-                <button
-                  role="menuitem"
-                  className={itemClass}
-                  onClick={() => {
-                    setOpen(false);
-                    onExportPage();
-                  }}
-                >
-                  <Download className="h-3.5 w-3.5 shrink-0" />
-                  This page (Markdown)
-                </button>
-                <div className="my-1 border-t border-[var(--color-border-default)]" />
-              </>
-            )}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isExporting}
+          aria-haspopup="menu"
+          aria-expanded={open}
+        >
+          {isExporting ? (
+            <Spinner size="sm" className="mr-1.5" />
+          ) : (
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+          )}
+          Export
+          <ChevronDown className="h-3 w-3 ml-1 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent role="menu" align="end" className="w-52 p-1">
+        {hasPage && (
+          <>
             <button
               role="menuitem"
               className={itemClass}
               onClick={() => {
                 setOpen(false);
-                onExportAll();
+                onExportPage();
               }}
             >
-              <FileText className="h-3.5 w-3.5 shrink-0" />
-              All pages (Markdown)
+              <Download className="h-3.5 w-3.5 shrink-0" />
+              This page (Markdown)
             </button>
-            <a
-              role="menuitem"
-              href={zipHref}
-              download
-              className={itemClass}
-              onClick={() => setOpen(false)}
-            >
-              <FolderArchive className="h-3.5 w-3.5 shrink-0" />
-              ZIP archive
-            </a>
-          </div>
-        </>
-      )}
-    </div>
+            <div className="my-1 border-t border-[var(--color-border-default)]" />
+          </>
+        )}
+        <button
+          role="menuitem"
+          className={itemClass}
+          onClick={() => {
+            setOpen(false);
+            onExportAll();
+          }}
+        >
+          <FileText className="h-3.5 w-3.5 shrink-0" />
+          All pages (Markdown)
+        </button>
+        <a
+          role="menuitem"
+          href={zipHref}
+          download
+          className={itemClass}
+          onClick={() => setOpen(false)}
+        >
+          <FolderArchive className="h-3.5 w-3.5 shrink-0" />
+          ZIP archive
+        </a>
+      </PopoverContent>
+    </Popover>
   );
 }

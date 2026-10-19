@@ -66,7 +66,8 @@ async def test_finding_ids_distinguish_same_coordinate_evidence(
     session.add_all(rows)
     await session.commit()
 
-    emitted = await get_health(only=["top_findings"], limit=10)
+    # A history marker is held from the default list; the opt-in lists it.
+    emitted = await get_health(only=["top_findings"], include=["unverified"], limit=10)
     findings = [
         row
         for row in emitted["top_findings"]
@@ -154,6 +155,29 @@ async def test_get_health_dashboard_surfaces_performance(setup_mcp, health_data)
 
 
 @pytest.mark.asyncio
+async def test_a_file_with_short_history_says_so_beside_its_score(
+    setup_mcp, session, health_data
+):
+    """Most history markers need more commits than it has."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_health
+
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/db/models.py")
+        .values(commit_count_total=2)
+    )
+    await session.commit()
+    rows = {m["file_path"]: m for m in (await get_health(only=["worst_files"]))["worst_files"]}
+    assert rows["src/db/models.py"]["history"] == "short"
+    assert "history" not in rows["src/auth/service.py"]
+    targeted = await get_health(targets=["src/db/models.py"], only=["metrics"])
+    assert targeted["metrics"][0]["history"] == "short"
+
+
+@pytest.mark.asyncio
 async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
     """Leverage view: which files move the NLOC-weighted headline, not just which score low."""
     from repowise.server.mcp_server import get_health
@@ -189,6 +213,60 @@ async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
     assert gap["files_for_half_gap"] == 1
 
 
+def test_gap_analysis_needs_no_file_when_the_average_is_at_target():
+    """Above target on average, one file below it: nothing to reach, so no file
+    is needed, while the gross gap still names the below-target file."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_health.summary import _gap_analysis
+
+    gap = _gap_analysis(
+        [SimpleNamespace(score=7.0, nloc=10), SimpleNamespace(score=9.0, nloc=100)]
+    )
+    assert gap["weighted_gap_points"] == 0
+    assert gap["files_to_reach_target"] == 0
+    assert gap["files_for_half_gap"] == 0
+    assert gap["files_below_target"] == 1
+    assert gap["weighted_gross_gap_points"] == 10
+
+
+@pytest.mark.asyncio
+async def test_targeted_card_accounts_for_a_withheld_deduction(setup_mcp, health_data, session):
+    """A hidden finding type never lists, but the score counted it, so the card
+    reports its deduction and ``_meta.withheld`` names it."""
+    from repowise.server.mcp_server import get_health
+
+    session.add(
+        HealthFinding(
+            id="dry-models",
+            repository_id=health_data,
+            file_path="src/db/models.py",
+            biomarker_type="dry_violation",
+            severity="high",
+            details_json="{}",
+            health_impact=0.6,
+            reason="36% duplicated with src/db/other.py",
+            dimension="maintainability",
+            status="open",
+        )
+    )
+    await session.commit()
+
+    result = await get_health(targets=["src/db/models.py"])
+    card = result["metrics"][0]
+    assert card["total_deduction"] == 0.6
+    assert card["withheld_deduction"] == 0.6
+    assert card["primary_biomarker"] is None
+    assert all(f["biomarker_type"] != "dry_violation" for f in result["findings"])
+    assert result["_meta"]["withheld"]["dry_violation"]["count"] == 1
+    assert result["_meta"]["withheld"]["dry_violation"]["status"] == "hidden"
+
+    # A file with no withheld deduction carries neither field.
+    other = await get_health(targets=["src/auth/service.py"])
+    assert "withheld_deduction" not in other["metrics"][0]
+    assert "withheld" not in other["_meta"]
+
+
 @pytest.mark.asyncio
 async def test_get_health_refactoring_capped_and_leverage_ranked(setup_mcp, health_data):
     """refactoring_plans is bounded by limit and reports the honest total.
@@ -221,7 +299,7 @@ async def _seed_plans(session, rid, plans):
                 "target_symbol": p.get("target_symbol", "authenticate"),
                 "line_start": 10,
                 "line_end": 80,
-                "plan": {"groups": []},
+                "plan": p.get("plan", {"groups": []}),
                 "evidence": {},
                 "impact_delta": p["impact_delta"],
                 "effort_bucket": "S",
@@ -497,6 +575,7 @@ async def test_get_health_dashboard_leads_with_fix_first(setup_mcp, health_data)
     assert full["item"]["id"] == lead["id"] and full["item"]["action"]["steps"]
     missing = await get_health(fix_id="fix1_00000000000000000000")
     assert missing["found"] is False and missing["item"] is None
+    assert "fix1_" in missing["next_action"] and "act_" in missing["next_action"]
 
 
 @pytest.mark.asyncio
@@ -1148,7 +1227,8 @@ async def health_data_with_tests(session, health_data: str) -> str:
     ``is_test=True``; this gives it health rows. Its findings carry the two
     highest impacts in the fixture, so an unsplit list leads with the test
     suite — which is the shape measured on the real index, where 2 of the top
-    5 open findings repo-wide sat on test files.
+    5 open findings repo-wide sat on test files. Both are code-shape markers:
+    a history marker is held from finding lists on any file.
 
     Rows are added through the ORM rather than ``save_health_metrics`` /
     ``save_health_findings``: both are delete-then-insert over the whole repo,
@@ -1174,7 +1254,7 @@ async def health_data_with_tests(session, health_data: str) -> str:
         )
     )
     for biomarker, fn, impact, reason in (
-        ("change_entropy", None, 3.02, "tests/test_service.py changes with unrelated files"),
+        ("god_class", None, 3.02, "tests/test_service.py holds one class doing everything"),
         ("complex_method", "test_everything", 2.5, "test_everything has complexity 12"),
     ):
         session.add(
@@ -1528,6 +1608,75 @@ async def test_refactoring_plans_follow_the_queue_in_queue_order(setup_mcp, heal
 
 
 @pytest.mark.asyncio
+async def test_a_split_stands_for_the_plans_it_relocates(setup_mcp, health_data, session):
+    """The plans after a split work on code it moves: the split's row lists
+    them as ``relocates`` and they take no rows, so one file cannot fill the
+    list. Offsets and the total still count every plan."""
+    from repowise.server.mcp_server import get_health
+
+    await _seed_plans(
+        session,
+        health_data,
+        [
+            {
+                "refactoring_type": "split_file",
+                "file_path": "src/auth/service.py",
+                "target_symbol": "service.py",
+                "plan": {
+                    "groups": [
+                        {"suggested_file": "src/auth/tokens.py", "symbols": ["moved_0"]},
+                        {"suggested_file": "src/auth/login.py", "symbols": ["moved_1"]},
+                    ]
+                },
+                "source_biomarker": "large_file",
+                "impact_delta": 9.0,
+            }
+        ]
+        + [
+            {
+                "file_path": "src/auth/service.py",
+                "target_symbol": f"moved_{i}",
+                "source_biomarker": "complex_method",
+                "impact_delta": 5.0,
+            }
+            for i in range(3)
+        ]
+        + [
+            {
+                "file_path": "src/utils/helpers.py",
+                "target_symbol": f"other_{i}",
+                "source_biomarker": "complex_method",
+                "impact_delta": 0.1,
+            }
+            for i in range(2)
+        ],
+    )
+    asked = {"include": ["refactoring"], "only": ["refactoring_plans"], "refactoring_scope": "all"}
+    first = await get_health(**asked, limit=2)
+    rows = first["refactoring_plans"]
+    assert [r["refactoring_type"] for r in rows] == ["split_file", "extract_method"]
+    assert len(rows[0]["relocates"]) == 3
+    assert rows[1]["file_path"] == "src/utils/helpers.py"
+    assert first["refactoring_plans_total"] == 6
+    # The page covered the split, the three it stands for and one more plan.
+    assert first["recovery"]["refactoring_plans"]["call"].endswith("cursor=5)")
+    rest = (await get_health(**asked, limit=10, cursor=5))["refactoring_plans"]
+    assert [r["target_symbol"] for r in rest] == ["other_1"]
+    detail = await get_health(plan_id=rows[0]["relocates"][0])
+    assert detail["plan"]["target_symbol"].startswith("moved_")
+    # The REST plan list ranks plans one by one and folds nothing.
+    from repowise.server.services.refactoring_health import (
+        PlanListQuery,
+        RefactoringHealthService,
+    )
+
+    ranked = await RefactoringHealthService(session, health_data, "default").ranked_plans(
+        PlanListQuery()
+    )
+    assert {p["target_symbol"] for p in ranked["plans"]} >= {f"moved_{i}" for i in range(3)}
+
+
+@pytest.mark.asyncio
 async def test_refactoring_plans_honour_scope(setup_mcp, health_data, session):
     """``refactoring_scope="all"`` lists the inventory; the default lists what
     Fix first takes and counts the rest by reason, as the queue does."""
@@ -1585,7 +1734,7 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert len(block["items"]) == min(eligible, FIX_FIRST_PAGE_CAP)
     assert block["items_total"] == eligible
     counts = block["counts"]
-    assert set(counts) == {"inventory", "in_scope", "eligible", "due", "shown", "excluded"}
+    assert set(counts) == {"inventory", "in_scope", "eligible", "due", "shown", "excluded", "gated"}
     assert counts["inventory"] >= counts["in_scope"] >= counts["eligible"] >= counts["due"]
     assert counts["shown"] == len(block["items"])
     assert all(n > 0 for n in counts["excluded"].values())
@@ -1601,6 +1750,54 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert second["items"] == block["items"][1:2]
     # The lead is the queue's, whatever page is shown.
     assert second["lead"] == block["lead"] == dashboard["lead"]
+
+
+@pytest.mark.asyncio
+async def test_due_items_carry_their_first_step_once_and_only_in_the_head(
+    setup_mcp, health_data, monkeypatch
+):
+    """The dashboard inlines a due lead's first step and verify on ``lead``
+    only; a named page inlines them on its first five other due items and
+    leaves the rest to ``fix_id``."""
+    from dataclasses import replace
+
+    from repowise.core.analysis.health.fix_first.model import FixStep
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health import loading
+
+    real = loading.load_fix_first
+
+    async def due(session, repository_id, **kwargs):
+        queue = await real(session, repository_id, **kwargs)
+        head = queue.items[0]
+        step = FixStep(1, "Extract lines 5-9 of run into _load(path)", "src/other.py", 5)
+        items = tuple(
+            replace(
+                head,
+                id=f"fix1_{index:020d}",
+                rank=index,
+                tier="next",
+                action=replace(head.action, steps=(step,)),
+                verify=replace(head.verify, command="pytest tests/test_run.py"),
+            )
+            for index in range(8)
+        )
+        return replace(queue, items=items, totals=replace(queue.totals, eligible=8, shown=8))
+
+    monkeypatch.setattr(loading, "load_fix_first", due)
+
+    block = (await get_health())["fix_first"]
+    assert block["lead"]["first_step"] == {
+        "action": "Extract lines 5-9 of run into _load(path)",
+        "line": 5,
+        "file": "src/other.py",
+    }
+    assert block["lead"]["verify"] == {"command": "pytest tests/test_run.py"}
+    assert not any({"first_step", "verify"} & set(item) for item in block["items"])
+    default = (await get_health(only=["fix_first"]))["fix_first"]["items"]
+    assert [("verify" in item) for item in default] == [False, *[True] * 4]
+    page = (await get_health(only=["fix_first"], limit=25))["fix_first"]["items"]
+    assert [("first_step" in item) for item in page] == [False, *[True] * 4, *[False] * 3]
 
 
 @pytest.mark.asyncio
@@ -1675,6 +1872,7 @@ def test_fix_first_counts_split_scope_from_worth():
         "due": 0,
         "shown": 1,
         "excluded": {"test": 4, "tooling": 1, "below_min_worth": 3},
+        "gated": 0,
     }
 
 
@@ -1723,6 +1921,26 @@ async def test_no_such_path_redirects_to_a_renamed_file(setup_mcp, health_data, 
     assert unresolved["reason"] == "no_such_path"
     assert unresolved["moved_to"] == ["new_name.py"]
     assert unresolved["removed_by_commit"]
+
+
+@pytest.mark.asyncio
+async def test_no_such_path_names_the_branch_that_has_it(setup_mcp, health_data, tmp_path):
+    """A file only a worktree's branch has is absent from the served checkout, not a typo."""
+    from repowise.server.mcp_server import get_health
+
+    ident = ("-c", "user.email=t@t", "-c", "user.name=t")
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, *ident, "commit", "--allow-empty", "-m", "seed")
+    _git(tmp_path, "worktree", "add", "-b", "feature", str(tmp_path / "wt"), "main")
+    (tmp_path / "wt" / "only_there.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path / "wt", "add", "only_there.py")
+    _git(tmp_path / "wt", *ident, "commit", "-m", "add on the branch")
+
+    unresolved = (await get_health(targets=["only_there.py"]))["unresolved"][0]
+
+    assert unresolved["reason"] == "no_such_path"
+    assert unresolved["on_branch"] == "feature"
+    assert "branch feature has it" in unresolved["note"]
 
 
 @pytest.mark.asyncio
@@ -2091,6 +2309,53 @@ async def test_a_misspelled_control_is_named_rather_than_silently_defaulted(
     assert result["counts"] == "everything"
     assert result["scope"] == "all"
     assert result["ignored_arguments"] == {"counts": "code-shape", "scope": "prod"}
+
+
+@pytest.mark.asyncio
+async def test_a_value_passed_to_the_other_control_names_the_right_one(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(
+        targets=["src/auth/service.py"], scope="code_shape", only=["metrics"]
+    )
+    assert result["ignored_arguments"] == {"scope": "code_shape"}
+    assert 'counts="code_shape"' in result["ignored_arguments_hint"]
+    reverse = await get_health(counts="production")
+    assert 'scope="production"' in reverse["ignored_arguments_hint"]
+    plain = await get_health(counts="code-shape")
+    assert "ignored_arguments_hint" not in plain
+
+
+@pytest.mark.asyncio
+async def test_metric_rows_carry_the_structure_and_history_split(
+    setup_mcp, session, populated_db
+):
+    """The two halves the score is ``10 - structure - history`` of, per file."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 3.0,
+                "nloc": 100,
+                "is_test": False,
+                "structure_deduction": 1.0,
+                "history_deduction": 6.0,
+            }
+        ],
+    )
+    row = (await get_health(targets=["src/auth/service.py"]))["metrics"][0]
+    assert (row["structure_deduction"], row["history_deduction"]) == (1.0, 6.0)
+    worst = (await get_health(only=["worst_files"]))["worst_files"][0]
+    assert (worst["structure_deduction"], worst["history_deduction"]) == (1.0, 6.0)
+    shaped = (await get_health(targets=["src/auth/service.py"], counts="code_shape"))["metrics"]
+    assert (shaped[0]["structure_deduction"], shaped[0]["history_deduction"]) == (1.0, 0.0)
 
 
 @pytest.mark.asyncio
@@ -2589,3 +2854,96 @@ async def test_dashboard_unanalysed_file_count_name(setup_mcp, health_data, sess
     only = await get_health(only=["unanalysed_file_count"])
     assert only["unanalysed_file_count"] == 1
     assert "unknown_only_keys" not in only
+
+
+@pytest.mark.asyncio
+async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, health_data, session):
+    """A few scored files beside many unanalysed ones: no band, both counts said."""
+    import uuid
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_overview.health import _build_code_health
+
+    repo = SimpleNamespace(id=health_data)
+    full = await _build_code_health(session, repo)
+    assert full["band"] is not None
+    assert "unanalysed_file_count" not in full
+    assert "analysed_share" not in full
+
+    for i in range(3):
+        session.add(
+            HealthFileMetric(
+                id=uuid.uuid4().hex,
+                repository_id=health_data,
+                file_path=f"Sources/View{i}.swift",
+                score=None,
+                nloc=10,
+            )
+        )
+    await session.flush()
+
+    partial = await _build_code_health(session, repo)
+    assert partial["file_count"] == 2
+    assert partial["unanalysed_file_count"] == 3
+    assert partial["analysed_share"] == 0.4
+    assert partial["band"] is None
+
+
+@pytest.mark.asyncio
+async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, populated_db):
+    """Per finding, per file and per headline, with the ceiling history leaves."""
+    from repowise.core.persistence.crud import save_health_findings, save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    await save_health_metrics(
+        session,
+        populated_db,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 4.5,
+                "nloc": 200,
+                "is_test": False,
+                "structure_deduction": 3.0,
+                "history_deduction": 2.5,
+            },
+            {"file_path": "src/db/models.py", "score": 9.0, "nloc": 50, "is_test": False},
+            # Off the worst-files list, but inside the headline average.
+            {"file_path": "tests/test_auth.py", "score": 9.0, "nloc": 250, "is_test": True},
+        ],
+    )
+    finding = {
+        "file_path": "src/auth/service.py",
+        "severity": "high",
+        "line_start": 10,
+        "line_end": 80,
+        "details": {},
+        "reason": "r",
+    }
+    await save_health_findings(
+        session,
+        populated_db,
+        [
+            {**finding, "biomarker_type": "complex_method", "function_name": "a", "health_impact": 2.0},
+            {**finding, "biomarker_type": "nested_complexity", "function_name": "b", "health_impact": 1.0},
+        ],
+    )
+    await session.commit()
+
+    plain = await get_health()
+    assert "what_if" not in plain
+    assert plain["kpis"]["file_count"] == 3
+    block = (await get_health(include=["what_if"], only=["what_if"]))["what_if"]
+    row = block["files"][0]
+    assert row["file_path"] == "src/auth/service.py"
+    assert row["is_hotspot"] is True
+    # With no structure left, history may deduct at most 1.0: a 9.0 ceiling.
+    assert row["ceiling"] == 9.0
+    assert "target_out_of_reach" not in row
+    top = block["top_fixes"][0]
+    assert (top["biomarker_type"], top["points"]) == ("complex_method", 2.0)
+    # 2.0 structure points also lower history's cap from 2.5 to 2.0: 4.5 -> 7.0,
+    # on 200 of the headline's 500 nloc; the only hotspot carries all of it.
+    assert top["gain"] == {"file": 2.5, "average": 1.0, "hotspot": 2.5}
+    assert row["fix_all_structure"]["file"] == 4.5

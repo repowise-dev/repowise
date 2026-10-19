@@ -30,6 +30,7 @@ overrides without static callers, etc.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 # Method names reserved by COM / IUnknown / IDispatch. Case-sensitive —
 # Windows COM uses PascalCase universally.
@@ -284,7 +285,12 @@ _GODOT_CALLBACK_NAMES: frozenset[str] = frozenset({
 })
 
 
-def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None) -> bool:
+def is_contract_method(
+    sym_name: str,
+    sym_kind: str | None,
+    language: str | None,
+    modifiers: Iterable[str] | None = None,
+) -> bool:
     """Return True if *sym_name* is a reserved contract-method name in *language*.
 
     The check is intentionally narrow: only kind=``method`` symbols in
@@ -307,6 +313,8 @@ def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None
     if language in _COM_LANGUAGES and sym_name in _COM_CONTRACT_METHOD_NAMES:
         return True
     if language in _JVM_LANGUAGES and sym_name in _JVM_CONTRACT_METHOD_NAMES:
+        return True
+    if language == "kotlin" and "operator" in (modifiers or ()):
         return True
     if language == "gdscript" and sym_name in _GODOT_CALLBACK_NAMES:
         return True

@@ -55,6 +55,10 @@ _MIN_NAME_JACCARD = 0.5
 # lists are parallel; ``names[i]`` is empty unless token ``i`` is an ``ID``.
 _Stream = tuple[list[str], list[str]]
 
+# Hash buckets are scoped to a grammar tag so Python and TypeScript windows
+# with the same normalized token shape never verify together.
+_BucketKey = tuple[str, int]
+
 
 @dataclass(slots=True)
 class ClonePair:
@@ -257,7 +261,7 @@ def detect_clones(
         # Fall through to the full pipeline; it refreshes the artifact.
         diag = DuplicationDiagnostics()
 
-    per_file_streams, per_file_nloc, all_windows, per_file_hash = _collect_windows(
+    per_file_streams, per_file_nloc, windows_by_grammar, per_file_hash = _collect_windows(
         parsed_list, window_tokens, lim, diag, cache, source_reader
     )
     if cache is not None:
@@ -272,14 +276,20 @@ def detect_clones(
             hits=cache.hits,
             misses=cache.misses,
         )
-    if not all_windows:
+    if not windows_by_grammar:
         return DuplicationReport(diagnostics=diag.as_log_fields())
 
-    bucket = index_by_hash(all_windows)
-    # Every WindowHash is now owned by a bucket. Keeping the flat list too
-    # adds millions of redundant references at the scan's high-water mark.
-    del all_windows
-    raw_pairs = _pairs_from_buckets(bucket, per_file_streams, window_tokens, lim, diag)
+    raw_pairs: list[ClonePair] = []
+    for grammar_windows in windows_by_grammar.values():
+        if len(grammar_windows) < 2:
+            continue
+        bucket = index_by_hash(grammar_windows)
+        raw_pairs.extend(
+            _pairs_from_buckets(bucket, per_file_streams, window_tokens, lim, diag)
+        )
+    # Every WindowHash is now owned by a bucket. Drop the per-grammar lists before
+    # merge/finalize so freed arenas can be reused.
+    del windows_by_grammar
 
     if cache is not None and cache_dir is not None:
         all_paths = {pf.file_info.path for pf in parsed_list}
@@ -297,7 +307,7 @@ def detect_clones(
     # Neither structure participates in merge/finalize/aggregation. Drop
     # them before those stages allocate their output lists so freed arenas
     # can be reused inside this phase rather than growing the process again.
-    del bucket, per_file_streams
+    del per_file_streams
 
     final = _finalize_pairs(_merge_adjacent_pairs(raw_pairs), min_lines, meta_map)
     pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)
@@ -322,7 +332,7 @@ def _collect_windows(
     diag: DuplicationDiagnostics,
     cache: Any | None = None,
     read_source: Any | None = None,
-) -> tuple[dict[str, _Stream], dict[str, int], list[WindowHash], dict[str, str]]:
+) -> tuple[dict[str, _Stream], dict[str, int], dict[str, list[WindowHash]], dict[str, str]]:
     """Tokenize each file once and emit its informative rolling-hash windows.
 
     Files are dropped (and counted in *diag*) when they are unreadable,
@@ -339,9 +349,11 @@ def _collect_windows(
     """
     import hashlib
 
+    from repowise.core.ingestion.parser import grammar_tag_for
+
     per_file_streams: dict[str, _Stream] = {}
     per_file_nloc: dict[str, int] = {}
-    all_windows: list[WindowHash] = []
+    windows_by_grammar: dict[str, list[WindowHash]] = defaultdict(list)
     per_file_hash: dict[str, str] = {}
 
     for pf in parsed_files:
@@ -358,17 +370,16 @@ def _collect_windows(
             diag.skipped_minified += 1
             continue
 
+        grammar = grammar_tag_for(language, path)
+
         cached = None
         content_hash = ""
         if cache is not None:
-            from repowise.core.ingestion.parser import grammar_tag_for
-
             content_hash = hashlib.sha256(source).hexdigest()
             # The grammar joins the key where it is not the language tag: a
             # .tsx file and a byte-identical .ts file tokenize differently now,
             # and this cache and the pair index below both key on this value.
             # Every other file keys exactly as before and no entry ages out.
-            grammar = grammar_tag_for(language, path)
             if grammar != language:
                 content_hash = f"{grammar}:{content_hash}"
             cached = cache.get(content_hash)
@@ -402,19 +413,20 @@ def _collect_windows(
             diag.skipped_token_cap += 1
             continue
 
-        if len(all_windows) + len(windows) > limits.max_total_windows:
+        n_windows_so_far = sum(len(ws) for ws in windows_by_grammar.values())
+        if n_windows_so_far + len(windows) > limits.max_total_windows:
             diag.window_budget_hit = True
             break
 
         per_file_streams[path] = (kinds, names)
         per_file_nloc[path] = nloc
-        all_windows.extend(windows)
+        windows_by_grammar[grammar].extend(windows)
         if content_hash:
             per_file_hash[path] = content_hash
         diag.files_tokenized += 1
 
-    diag.total_windows = len(all_windows)
-    return per_file_streams, per_file_nloc, all_windows, per_file_hash
+    diag.total_windows = sum(len(ws) for ws in windows_by_grammar.values())
+    return per_file_streams, per_file_nloc, dict(windows_by_grammar), per_file_hash
 
 
 # ---------------------------------------------------------------------------
@@ -591,9 +603,10 @@ def _detect_clones_incremental(
     # 1. Collect the changed files live (read, gates, tokenize, windows).
     #    Sorted for deterministic window-budget behaviour.
     changed_pfs = [current[p] for p in sorted(changed)]
-    new_streams, new_nloc, new_windows, new_hash = _collect_windows(
+    new_streams, new_nloc, new_windows_by_grammar, new_hash = _collect_windows(
         changed_pfs, window_tokens, lim, diag, cache, read_source
     )
+    new_windows = [w for ws in new_windows_by_grammar.values() for w in ws]
     if diag.window_budget_hit:
         return None
 
@@ -612,18 +625,24 @@ def _detect_clones_incremental(
     if index.total_windows - n_old_aff + len(new_windows) > lim.max_total_windows:
         return None
 
-    # 4. Touched buckets = hashes present in moving windows (old or new).
-    touched: set[int] = {w.hash_value for w in new_windows}
-    for _stream, window_tuples in old_aff.values():
-        touched.update(row[0] for row in window_tuples)
+    # 4. Touched buckets = (grammar, hash) pairs present in moving windows.
+    path_grammar = {
+        p: _grammar_tag_for_path(p, current) for p in set(current) | set(old_files)
+    }
+    touched: set[_BucketKey] = set()
+    for w in new_windows:
+        touched.add((path_grammar[w.file_path], w.hash_value))
+    for p, (_stream, window_tuples) in old_aff.items():
+        g = path_grammar[p]
+        touched.update((g, row[0]) for row in window_tuples)
 
     # 5. One pass over the unchanged files' cached windows builds the
     #    touched buckets' membership; rows of unchanged files belong to
     #    both the old and the new bucket composition. Stream maps are
     #    split because a modified file verifies with its old stream on
     #    the old side and its new stream on the new side.
-    old_rows: dict[int, list[WindowHash]] = defaultdict(list)
-    new_rows: dict[int, list[WindowHash]] = defaultdict(list)
+    old_rows: dict[_BucketKey, list[WindowHash]] = defaultdict(list)
+    new_rows: dict[_BucketKey, list[WindowHash]] = defaultdict(list)
     old_streams_map: dict[str, _Stream] = {}
     new_streams_map: dict[str, _Stream] = dict(new_streams)
     per_file_nloc: dict[str, int] = dict(new_nloc)
@@ -636,8 +655,10 @@ def _detect_clones_incremental(
         kinds, names, nloc, window_tuples = entry
         per_file_nloc[p] = nloc
         hit = False
+        g = path_grammar[p]
         for row in window_tuples:
-            if row[0] in touched:
+            key = (g, row[0])
+            if key in touched:
                 w = WindowHash(
                     file_path=p,
                     hash_value=row[0],
@@ -645,8 +666,8 @@ def _detect_clones_incremental(
                     start_line=row[2],
                     end_line=row[3],
                 )
-                old_rows[row[0]].append(w)
-                new_rows[row[0]].append(w)
+                old_rows[key].append(w)
+                new_rows[key].append(w)
                 hit = True
         if hit:
             old_streams_map[p] = (kinds, names)
@@ -654,9 +675,11 @@ def _detect_clones_incremental(
         cache.retain(h)
 
     for p, (stream, window_tuples) in old_aff.items():
+        g = path_grammar[p]
         for row in window_tuples:
-            if row[0] in touched:
-                old_rows[row[0]].append(
+            key = (g, row[0])
+            if key in touched:
+                old_rows[key].append(
                     WindowHash(
                         file_path=p,
                         hash_value=row[0],
@@ -667,7 +690,7 @@ def _detect_clones_incremental(
                 )
         old_streams_map[p] = stream
     for w in new_windows:
-        new_rows[w.hash_value].append(w)
+        new_rows[(path_grammar[w.file_path], w.hash_value)].append(w)
 
     # 6. Per-bucket contributions, old and new.
     old_contrib = _bucket_contributions(old_rows, old_streams_map, window_tokens, lim, None)
@@ -752,8 +775,18 @@ def _pair_key(p: ClonePair) -> _PairKey:
     return (p.file_a, p.file_b, p.a_start_line, p.a_end_line, p.b_start_line, p.b_end_line)
 
 
+def _grammar_tag_for_path(path: str, current: dict[str, Any]) -> str:
+    """Grammar tag used to tokenize *path* in the current parse set."""
+    from repowise.core.analysis.change_health.analyzer import language_of
+    from repowise.core.ingestion.parser import grammar_tag_for
+
+    pf = current.get(path)
+    language = pf.file_info.language if pf is not None else (language_of(path) or "")
+    return grammar_tag_for(language, path)
+
+
 def _bucket_contributions(
-    rows_by_hash: dict[int, list[WindowHash]],
+    rows_by_hash: dict[_BucketKey, list[WindowHash]],
     streams_map: dict[str, _Stream],
     window_tokens: int,
     lim: DuplicationLimits,

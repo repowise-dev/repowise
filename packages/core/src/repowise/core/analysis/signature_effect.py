@@ -329,6 +329,52 @@ def _parse_signature(sig: str, lang: str | None, kind: str | None) -> _Signature
     return _Signature(params=params, returns=returns, receiver=receiver)
 
 
+def _parsed(signature: str, language: str | None, kind: str | None) -> _Signature | None:
+    lang = (language or "").lower() or None
+    return _parse_signature(_normalize(signature, lang), lang, kind)
+
+
+def parameter_names(
+    signature: str, language: str | None = None, kind: str | None = None
+) -> tuple[str | None, list[str]] | None:
+    """The receiver (Python's ``self`` / ``cls``, a Rust ``&self``, a Go
+    receiver; None when there is none) and the names a call passes in order.
+
+    None when the list cannot be parsed or a call could not fill it by
+    position alone: a variadic, a keyword-only marker or argument, or a
+    destructured parameter.
+    """
+    parsed = _parsed(signature, language, kind)
+    if parsed is None:
+        return None
+    names: list[str] = []
+    for param in parsed.params:
+        if param.kind != "param" or param.keyword_only or not param.name.isidentifier():
+            return None
+        names.append(param.name)
+    return parsed.receiver, names
+
+
+def bound_names(
+    signature: str, language: str | None = None, kind: str | None = None
+) -> set[str] | None:
+    """Every name the parameter list binds, variadic and keyword-only ones
+    and an identifier receiver included, in any language
+    :func:`_parse_signature` reads (typed ``Go`` / ``Java`` lists too); None
+    when the list cannot be parsed or a parameter is destructured."""
+    parsed = _parsed(signature, language, kind)
+    if parsed is None:
+        return None
+    out = {parsed.receiver} if parsed.receiver and parsed.receiver.isidentifier() else set()
+    for param in parsed.params:
+        if param.kind in ("kw_marker", "pos_marker"):
+            continue
+        if not param.name.isidentifier():
+            return None
+        out.add(param.name)
+    return out
+
+
 def _split_default(text: str, lang: str | None, param: _Param) -> str:
     at = _find_top(text, lang, "=")
     if at is None:

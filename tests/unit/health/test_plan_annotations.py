@@ -217,3 +217,101 @@ def test_composition_not_told_about_decisions_leaves_governance_unknown() -> Non
     step = live.steps[0].applicability
     assert "governed_by_decision" in step.unknowns
     assert "governed_by_decision" not in step.reasons
+
+
+def test_a_test_reading_the_split_function_source_is_a_risk(tmp_path: Path) -> None:
+    from repowise.core.analysis.health.refactoring.annotations import _sources_read
+
+    # ours ``test_full_upgrade_progress.py`` asserts on ``inspect.getsource(_run_upgrade)``.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_flow.py").write_text(
+        "import inspect\nimport svc.orders as so\nsrc = inspect.getsource(so.handle)\n"
+        "lines = inspect.getsourcelines(other.handle)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_plain.py").write_text(
+        "def test_x():\n    assert handle()\n", encoding="utf-8"
+    )
+    files = ["tests/test_flow.py", "tests/test_plain.py", "tests/missing.py", "../outside.py"]
+    (tmp_path.parent / "outside.py").write_text("inspect.getsource(handle)\n", encoding="utf-8")
+    read = _sources_read(tmp_path, files)
+    # The alias reads as the module it names; a file outside the root is not read.
+    assert read == {"tests/test_flow.py": frozenset({"orders.handle", "other.handle"})}
+    facts = AnnotationFacts(sources_read=read)
+    notes = annotate(plan(), facts, ["tests/test_flow.py::test_a", "tests/test_plain.py::test_x"])
+    assert kinds(notes) == ["source_text"]
+    assert notes.risks[0].ref == "tests/test_flow.py"
+    assert "may read the source text of `handle`" in notes.risks[0].text
+    # Another module's ``handle``, a test the plan does not run, a plan that keeps the body.
+    other = AnnotationFacts(sources_read={"tests/test_flow.py": frozenset({"other.handle"})})
+    assert annotate(plan(), other, ["tests/test_flow.py::test_a"]).risks == ()
+    assert annotate(plan(), facts, ["tests/test_plain.py::test_x"]).risks == ()
+    assert annotate(plan("split_file"), facts, ["tests/test_flow.py::test_a"]).risks == ()
+
+
+def test_changing_an_exported_symbol_warns_about_outside_callers() -> None:
+    exported = {"svc/orders.py": {"svc/orders.py::Orders::handle": "svc/__init__.py"}}
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(plan(target_symbol="Orders.handle"), facts)
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Orders.handle` is exported from `svc/__init__.py`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+    # Only the exported symbol, never a neighbour in the same file.
+    assert not annotate_any(plan(target_symbol="_helper"), facts)
+    assert not annotate_any(plan(file_path="svc/other.py", target_symbol="handle"), facts)
+
+
+def test_changing_an_exported_jvm_symbol_warns_about_outside_callers() -> None:
+    exported = {
+        "lib/src/main/java/a/Api.java": {
+            "lib/src/main/java/a/Api.java::Api::run": "lib/src/main/java/a/Api.java"
+        }
+    }
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(
+        plan(file_path="lib/src/main/java/a/Api.java", target_symbol="Api.run"), facts
+    )
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Api.run` is exported from `lib/src/main/java/a/Api.java`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+
+
+def test_changing_an_exported_go_method_warns_about_outside_callers() -> None:
+    exported = {"lib/send.go": {"lib/send.go::Client::Send": "lib/send.go"}}
+    notes = annotate(
+        plan(file_path="lib/send.go", target_symbol="Client.Send"),
+        AnnotationFacts(exported=exported),
+    )
+    assert kinds(notes) == ["public_api"]
+    assert notes.risks[0].text.endswith("breaks consumers outside the repo.")
+
+
+def test_a_moved_exported_method_carries_one_public_api_risk() -> None:
+    exported = {
+        "svc/orders.py": {
+            "svc/orders.py::Order::total": "svc/__init__.py",
+            "svc/orders.py::Order": "svc/__init__.py",
+            "svc/orders.py::Pricing": "svc/__init__.py",
+        }
+    }
+    moved = plan(
+        "move_method",
+        target_symbol="Order.total",
+        plan={"from_class": "Order", "to_class": "Pricing"},
+        blast_radius={"callers": 2},
+    )
+    notes = annotate(moved, AnnotationFacts(exported=exported))
+    assert kinds(notes) == ["public_api"]
+    text = notes.risks[0].text
+    # Callers inside the repo first, then every exported symbol the plan changes.
+    assert text.startswith("`Order.total` has 2 callers")
+    assert "`Order` (from `svc/__init__.py`)" in text and "`Pricing`" in text
+    assert text.endswith("are exported; changing their signatures breaks consumers outside the repo.")

@@ -1038,6 +1038,8 @@ def test_stored_coverage_is_judged_by_the_configured_path_gates(monkeypatch, tmp
     assert seen["config"].gates == cfg.gates
     assert seen["config"].ignore == ("gen/",)
     assert seen["config"].min_coverable_lines == 3
+    # The checkout to diff stale coverage against, as every other reader passes it.
+    assert seen["repo_path"] == str(tmp_path)
 
 
 # -- coverage suggest-gates --------------------------------------------------

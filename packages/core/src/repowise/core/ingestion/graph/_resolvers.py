@@ -11,7 +11,9 @@ from typing import Any
 
 import structlog
 
+from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from ..models import REGISTRATION_HINT, CallSite, ParsedFile
 
 log = structlog.get_logger(__name__)
 
@@ -653,6 +655,7 @@ class ResolveMixin:
                             "edge_type": "calls",
                             "call_lines": [rc.line],
                             "supplied_props": rc.supplied_props,
+                            **({"spawn_lines": [rc.line]} if rc.spawned else {}),
                         }
                         if rc.edge_type == "calls"
                         else {"edge_type": "references"}
@@ -686,6 +689,10 @@ class ResolveMixin:
                 if rc.line not in lines:
                     lines.append(rc.line)
                     lines.sort()
+                spawned = existing.setdefault("spawn_lines", []) if rc.spawned else None
+                if spawned is not None and rc.line not in spawned:
+                    spawned.append(rc.line)
+                    spawned.sort()
                 if rc.confidence > existing.get("confidence", 0):
                     existing["confidence"] = rc.confidence
                     existing["resolution_origin"] = rc.origin
@@ -708,6 +715,7 @@ class ResolveMixin:
         )
 
         self._add_reference_edges(resolver)
+        self._add_registration_edges(resolver)
 
     def _add_reference_edges(self, resolver: Any) -> None:
         """Emit ``references`` edges for functions named but never called.
@@ -762,14 +770,82 @@ class ResolveMixin:
                         continue
                     if self._graph.nodes[rc.callee_id].get("kind") not in allowed_kinds:
                         continue
-                    if self._graph.has_edge(rc.caller_id, rc.callee_id):
-                        continue
-                    self._graph.add_edge(
-                        rc.caller_id,
-                        rc.callee_id,
-                        edge_type="references",
-                        confidence=rc.confidence,
-                        resolution_origin=rc.origin,
-                    )
-                    total += 1
+                    total += self._add_reference_edge(rc.caller_id, rc.callee_id, rc)
         log.info("Reference edges resolved", total=total)
+
+    def _add_reference_edge(
+        self, source: str, target: str, rc: Any, hint_source: str | None = None
+    ) -> int:
+        """Add a ``references`` edge between two graph nodes unless the pair has one."""
+        if source not in self._graph or target not in self._graph:
+            return 0
+        if self._graph.has_edge(source, target):
+            return 0
+        self._graph.add_edge(
+            source,
+            target,
+            edge_type="references",
+            confidence=rc.confidence,
+            resolution_origin=rc.origin,
+            **({"hint_source": hint_source} if hint_source else {}),
+        )
+        return 1
+
+    def _add_registration_edges(self, resolver: Any) -> None:
+        """Link each registering decorator to the functions it decorates.
+
+        The decorated function is reached through the registry, never by name.
+        A mention, not a call: running the decorator does not run the function.
+        """
+        registrar_ids = {
+            f"{path}::{name}"
+            for path, parsed in self._parsed_files.items()
+            for name in parsed.registrars
+        }
+        if not registrar_ids:
+            return
+        names = {node_id.rsplit("::", 1)[1] for node_id in registrar_ids}
+        total = 0
+        for path, parsed in self._parsed_files.items():
+            sites = _decorator_sites(parsed, names)
+            if not sites:
+                continue
+            for rc in resolver.resolve_file(path, sites):
+                if rc.confidence < _MIN_REFERENCE_CONFIDENCE or rc.callee_id not in registrar_ids:
+                    continue
+                total += self._add_reference_edge(
+                    rc.callee_id, rc.caller_id, rc, hint_source=REGISTRATION_HINT
+                )
+        log.info("Registration edges resolved", total=total)
+
+
+def _decorator_sites(parsed: ParsedFile, registrar_names: set[str]) -> list[CallSite]:
+    """One site per Python decorator that may name a registrar, called from the decorated symbol.
+
+    A name imported under an alias (``import rule as r``) is matched by its alias;
+    the resolver then binds it back through the same import.
+    """
+    if parsed.file_info.language != "python":
+        return []
+    names = registrar_names | {
+        b.local_name
+        for imp in parsed.imports
+        for b in imp.bindings
+        if b.exported_name in registrar_names
+    }
+    sites: list[CallSite] = []
+    for sym in parsed.symbols:
+        for text in sym.decorators:
+            receiver, _, name = decorator_base(text).rpartition(".")
+            if name in names:
+                sites.append(
+                    CallSite(
+                        target_name=name,
+                        receiver_name=receiver or None,
+                        caller_symbol_id=sym.id,
+                        line=sym.start_line,
+                        argument_count=None,
+                        edge_type="references",
+                    )
+                )
+    return sites

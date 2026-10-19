@@ -135,7 +135,9 @@ async def test_get_context_single_file(setup_mcp):
     assert t["ownership"]["contributor_count"] == 2
     # Last change
     assert t["last_change"]["author"] == "Alice"
-    assert t["last_change"]["days_ago"] == 443
+    # Days from the file's last commit to the repository's newest one, not the
+    # file's age: this row is the newest, so nothing has changed since.
+    assert t["last_change"]["days_ago"] == 0
     # Decisions. The fixture record is ``proposed`` with no acceptance behind
     # it, so it is a candidate — it used to be served as a governing decision.
     assert t["decisions"] == []
@@ -1015,3 +1017,73 @@ def test_survivors_keep_their_detail_when_identity_cards_overflow():
     # Eviction came first, so the fair share had room: no survivor lost a block.
     assert not out.get("dropped_blocks")
     assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 6000
+
+
+def _git_row(rid: str, path: str, last_commit_at: datetime | None) -> GitMetadata:
+    return GitMetadata(
+        id=f"gm-{path}",
+        repository_id=rid,
+        file_path=path,
+        commit_count_total=1,
+        commit_count_90d=0,
+        commit_count_30d=0,
+        first_commit_at=datetime(2020, 1, 1, tzinfo=UTC),
+        last_commit_at=last_commit_at,
+        primary_owner_name="Dana",
+        primary_owner_email="dana@example.com",
+        primary_owner_commit_pct=1.0,
+        top_authors_json=json.dumps([{"name": "Dana", "count": 1}]),
+        significant_commits_json=json.dumps([]),
+        co_change_partners_json=json.dumps([]),
+        is_hotspot=False,
+        is_stable=True,
+        churn_percentile=0.1,
+        age_days=2000,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+async def _days_ago(path: str) -> int | None:
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context([path], include=["last_change"], compact=False)
+    return result["targets"][path]["last_change"]["days_ago"]
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_counts_to_the_newest_commit_not_the_files_age(
+    setup_mcp, session
+):
+    # A later commit elsewhere in the repository moves the reference date:
+    # service.py was last changed 2026-03-15, four days before it.
+    session.add(_git_row(setup_mcp, "src/later.py", datetime(2026, 3, 19, tzinfo=UTC)))
+    await session.flush()
+
+    assert await _days_ago("src/auth/service.py") == 4
+    assert await _days_ago("src/later.py") == 0
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_is_none_without_a_last_commit(setup_mcp, session):
+    session.add(_git_row(setup_mcp, "src/undated.py", None))
+    await session.flush()
+
+    assert await _days_ago("src/undated.py") is None
+
+
+@pytest.mark.asyncio
+async def test_last_change_days_ago_accepts_a_naive_timestamp(setup_mcp, session):
+    # SQLite hands timestamps back naive; they are read as UTC, not rejected.
+    session.add(_git_row(setup_mcp, "src/naive.py", datetime(2026, 3, 10)))
+    await session.flush()
+
+    assert await _days_ago("src/naive.py") == 5
+
+
+async def test_days_since_last_change_prefers_as_of_ts(session):
+    from repowise.server.mcp_server.tool_context.targets import _days_since_last_change
+
+    last = datetime(2026, 3, 15)
+    as_of = datetime(2026, 3, 25)
+    assert await _days_since_last_change(session, "any-repo-id", last, as_of) == 10

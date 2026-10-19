@@ -9,6 +9,7 @@
 
 import type {
   ExtractCallSite,
+  ExtractHelperReuse,
   ExtractSlot,
   GeneratedCode,
   RefactoringPlan,
@@ -74,6 +75,38 @@ export function extractHelperOccurrences(plan: RefactoringPlan): ExtractHelperOc
       line_end: Number(rec.line_end ?? 0),
     };
   });
+}
+
+/** The existing function an Extract Helper plan calls instead of a new
+ *  helper, and what happens at each other site; `null` when the plan adds a
+ *  new helper. Sites with an unknown action are dropped. */
+export function extractHelperReuse(plan: RefactoringPlan): ExtractHelperReuse | null {
+  const r = plan.plan?.reuse as Record<string, unknown> | undefined;
+  if (!r || typeof r.existing_symbol !== "string" || !Array.isArray(r.sites)) return null;
+  const span = (v: unknown) => {
+    const s = (v ?? {}) as Record<string, unknown>;
+    return { start: Number(s.start ?? 0), end: Number(s.end ?? 0) };
+  };
+  const sites = r.sites.flatMap((raw): ExtractHelperReuse["sites"] => {
+    const s = (raw ?? {}) as Record<string, unknown>;
+    if (s.action !== "replace_with_call" && s.action !== "delete") return [];
+    return [
+      {
+        file: String(s.file ?? ""),
+        span: span(s.span),
+        action: s.action,
+        new_text: typeof s.new_text === "string" ? s.new_text : null,
+        replaces: typeof s.replaces === "string" ? s.replaces : null,
+      },
+    ];
+  });
+  return {
+    existing_symbol: r.existing_symbol,
+    file: String(r.file ?? ""),
+    span: span(r.span),
+    reason: typeof r.reason === "string" ? r.reason : "",
+    sites,
+  };
 }
 
 /** Where the shared helper should live — a directory.
@@ -181,6 +214,9 @@ export interface ExtractMethodPlan {
    *  the span. Null when the helper's form is unknown or the plan predates it.
    *  `<name>` / `<type>` are placeholders to fill. */
   signature_text: string | null;
+  /** The helper's last line handing its outputs back; null without outputs
+   *  or on a plan stored before it. */
+  return_text: string | null;
   call_site: ExtractCallSite | null;
   /** What the texts cannot say (a value that may move, a call the host
    *  cannot await). */
@@ -211,6 +247,7 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
     typed_params: Array.isArray(sym.params) ? (sym.params as ExtractSlot[]) : [],
     typed_returns: Array.isArray(sym.returns) ? (sym.returns as ExtractSlot[]) : [],
     signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
+    return_text: typeof sym.return_text === "string" ? sym.return_text : null,
     call_site: callSite(p.call_site),
     notes: Array.isArray(sym.notes) ? (sym.notes as string[]) : [],
   };
@@ -233,6 +270,96 @@ export function slotLabel(slot: ExtractSlot): string {
   return slot.type ? `${slot.name}: ${slot.type}` : slot.name;
 }
 
+/** One helper of a staged Extract Method plan, in the order the function
+ *  calls them. `name` is null when nothing in the code anchors one. */
+export interface ExtractStage {
+  name: string | null;
+  span: { start: number; end: number };
+  ccn: number | null;
+  signature_text: string | null;
+  call_text: string | null;
+  return_text: string | null;
+  notes: string[];
+}
+
+/** The object carrying the values the stages share, declared once. */
+export interface ExtractParameterObject {
+  name: string;
+  declaration_text: string | null;
+  construct_text: string;
+  construct_before: number | null;
+}
+
+/** A positive whole line number: not a numeric string, a boolean or a float. */
+function isLine(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v > 0;
+}
+
+/** A staged plan's helpers (`plan.stages`) with valid line bounds; empty for
+ *  a single-span plan. */
+export function extractMethodStages(plan: RefactoringPlan): ExtractStage[] {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).stages;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry): ExtractStage[] => {
+    const s = (entry ?? {}) as Record<string, unknown>;
+    const span = (s.span ?? {}) as Record<string, unknown>;
+    const start = span.start;
+    const end = span.end;
+    if (!isLine(start) || !isLine(end)) return [];
+    const sym = (s.new_symbol ?? {}) as Record<string, unknown>;
+    const site = callSite(s.call_site);
+    return [
+      {
+        name: typeof s.suggested_name === "string" ? s.suggested_name : null,
+        span: { start, end },
+        ccn: typeof s.ccn === "number" ? s.ccn : null,
+        signature_text: typeof sym.signature_text === "string" ? sym.signature_text : null,
+        call_text: site ? site.new_text : null,
+        return_text: typeof sym.return_text === "string" ? sym.return_text : null,
+        notes: Array.isArray(sym.notes) ? (sym.notes as string[]) : [],
+      },
+    ];
+  });
+}
+
+/** A staged plan's shared parameter object, or null without one. */
+export function extractParameterObject(plan: RefactoringPlan): ExtractParameterObject | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).parameter_object as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (!raw || typeof raw !== "object" || typeof raw.construct_text !== "string") return null;
+  return {
+    name: typeof raw.name === "string" ? raw.name : HELPER_NAME_PLACEHOLDER,
+    declaration_text: typeof raw.declaration_text === "string" ? raw.declaration_text : null,
+    construct_text: raw.construct_text,
+    construct_before: typeof raw.construct_before === "number" ? raw.construct_before : null,
+  };
+}
+
+/** The function's cyclomatic complexity before and after a staged split. */
+export function extractOrchestrator(plan: RefactoringPlan): { before: number; after: number } | null {
+  const raw = ((plan.plan ?? {}) as Record<string, unknown>).orchestrator as
+    | Record<string, unknown>
+    | undefined;
+  if (!raw || typeof raw.ccn_before !== "number" || typeof raw.ccn_after !== "number") return null;
+  return { before: raw.ccn_before, after: raw.ccn_after };
+}
+
+/** Line spans as every staged surface prints them: `10–30, 34–60`. */
+export function formatSpans(spans: ReadonlyArray<{ start: number; end: number }>): string {
+  return spans.map((sp) => `${sp.start}–${sp.end}`).join(", ");
+}
+
+/** The lines a staged plan lifts, as the CLI reports them (`evidence.slice_nloc`).
+ *  Null for a single-span plan or when the figure was not stored, so no surface
+ *  prints a sum of spans as if it were that number. */
+export function stagedLineCount(plan: RefactoringPlan): number | null {
+  if (extractMethodStages(plan).length < 2) return null;
+  const n = Number(plan.evidence?.slice_nloc ?? 0);
+  return n > 0 ? n : null;
+}
+
 /** The helper an extraction proposes, as one line: `async name(a, b) -> c`.
  *  For a plan stored before the server rendered `signature_text`. */
 export function extractMethodSignature(em: ExtractMethodPlan): string {
@@ -249,11 +376,18 @@ export function extractMethodSignature(em: ExtractMethodPlan): string {
 export function stepExcerptRange(
   step: { line_start: number | null; line_end: number | null },
   plan: RefactoringPlan | undefined,
-): { start: number; end: number; extraction: ExtractMethodPlan | null } | null {
-  const extraction = plan?.refactoring_type === "extract_method" ? extractMethodPlan(plan) : null;
-  if (extraction?.span) return { ...extraction.span, extraction };
+): { start: number; end: number; extraction: ExtractMethodPlan | null; stages: ExtractStage[] } | null {
+  const isExtract = plan?.refactoring_type === "extract_method";
+  // A staged plan's top-level span is only its first stage. start..end spans
+  // every stage for callers that need one range; excerpts read `stages`.
+  const stages = isExtract ? extractMethodStages(plan!) : [];
+  if (stages.length >= 2) {
+    return { start: stages[0]!.span.start, end: stages[stages.length - 1]!.span.end, extraction: null, stages };
+  }
+  const extraction = isExtract ? extractMethodPlan(plan!) : null;
+  if (extraction?.span) return { ...extraction.span, extraction, stages: [] };
   if (!step.line_start) return null;
-  return { start: step.line_start, end: step.line_end ?? step.line_start, extraction };
+  return { start: step.line_start, end: step.line_end ?? step.line_start, extraction, stages: [] };
 }
 
 export interface SplitGroup {
@@ -574,7 +708,8 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
     case "extract_helper": {
       const occ = extractHelperOccurrences(plan).length;
       const lines = Number(plan.evidence?.duplicated_lines ?? 0);
-      const name = extractHelperDetail(plan).suggestedName;
+      const existing = extractHelperReuse(plan)?.existing_symbol.split("::").pop();
+      const name = existing ?? extractHelperDetail(plan).suggestedName;
       if (occ)
         wins.push({
           label: name
@@ -587,7 +722,12 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
     case "extract_method": {
       const em = extractMethodPlan(plan);
       const ccn = Number(plan.evidence?.ccn_removed ?? 0);
-      if (em.span) {
+      const stages = extractMethodStages(plan);
+      if (stages.length >= 2) {
+        // Every stage moves, not only the first span the plan's top level carries.
+        const lines = stagedLineCount(plan);
+        if (lines) wins.push({ label: `${lines} lines lifted into ${stages.length} helpers` });
+      } else if (em.span) {
         const lines = em.span.end - em.span.start + 1;
         wins.push({
           label: `${lines} line${lines === 1 ? "" : "s"} lifted into a focused helper`,

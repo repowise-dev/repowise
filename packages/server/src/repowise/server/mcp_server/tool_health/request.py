@@ -55,10 +55,15 @@ _KNOWN_INCLUDES = frozenset(
         "defect",
         "maintainability",
         "advisory",
-        # Opts into provisional finding types, each labelled "unverified".
+        # Opts into provisional finding types, each labelled "unverified", and
+        # into the layers a language gate holds back.
         "unverified",
         # The shared legend for deficit points and percentiles, in ``_meta``.
         "semantics",
+        # With ``plan_id``: the plan as preconditions, steps and postconditions.
+        "recipe",
+        # Points each fix would recover, per worst file and for the repo.
+        "what_if",
     }
 )
 
@@ -103,6 +108,7 @@ class HealthRequest:
     withheld_types: frozenset[str] = field(init=False)
     #: The caller passed ``limit``: a response grows past a default only when asked.
     limit_explicit: bool = field(init=False)
+    include_unverified: bool = field(init=False)
 
     def __post_init__(self) -> None:
         self.limit_explicit = self.limit is not None
@@ -119,8 +125,10 @@ class HealthRequest:
         # eligible for the impact cap rather than filtering an already-capped list.
         self.dimension_filter = self.include_set & set(ALL_DIMENSIONS)
         # Finding types the registry keeps off this surface, dropped at the read
-        # so no list, lead or total counts one.
-        self.withheld_types = excluded_types(include_provisional="unverified" in self.include_set)
+        # so no list or total counts one; ``read_withheld_rows`` reads them back
+        # only for the deduction the score took from them.
+        self.include_unverified = "unverified" in self.include_set
+        self.withheld_types = excluded_types(include_provisional=self.include_unverified)
         # Performance findings carry zero impact, so an impact-ranked list
         # leaves them out unless asked for; the performance blocks rank them.
         self.ranked_dimensions = self.dimension_filter or _RANKED_DIMENSIONS_DEFAULT
@@ -200,6 +208,21 @@ class HealthRequest:
             or self.wants("metrics")
             or ("refactoring" in self.include_set and self.wants("suggestion_legend"))
         )
+
+    @property
+    def ranks_findings(self) -> bool:
+        """Whether the dashboard prints findings, so their tier order matters.
+
+        The bare dashboard turns its finding lists into calls, so there only
+        ``biomarkers`` and the suggestion legend print one. Every other block
+        reads totals, which need no order.
+        """
+        listed = bool(self.only) and (self.wants("top_findings") or self.wants("test_findings"))
+        biomarkers = "biomarkers" in self.include_set and (
+            self.wants("findings") or self.wants("test_findings")
+        )
+        legend = "refactoring" in self.include_set and self.wants("suggestion_legend")
+        return listed or biomarkers or legend
 
     @property
     def plans_requested(self) -> bool:

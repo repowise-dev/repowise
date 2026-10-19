@@ -3,6 +3,7 @@ and client construction inside a loop."""
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -116,6 +117,92 @@ def _is_collection_spread_of(node: Node, name: str) -> bool:
     return identifier_name(first_named_child(node)) == name
 
 
+# A literal table up to this size is a fixed set; past it a linear probe can
+# still cost enough to be worth a ``Set``. Ceiling: the size is a judgement, not
+# a measurement.
+_FIXED_TABLE_MAX = 64
+_SCALAR_KINDS: frozenset[str] = frozenset({"string", "number", "true", "false", "null"})
+# Array methods that change an array in place; ``sort`` / ``reverse`` / ``fill``
+# keep its length but show the file treats it as data, not a table.
+_MUTATING_METHODS: frozenset[str] = frozenset(
+    {"push", "unshift", "splice", "pop", "shift", "fill", "sort", "reverse", "copyWithin"}
+)
+_ASSIGN_KINDS: frozenset[str] = frozenset(
+    {"assignment_expression", "augmented_assignment_expression"}
+)
+
+
+def _is_fixed_table(declarator: Node, array: Node) -> bool:
+    """``const xs = ['a', 1, `b`]``: a non-empty ``const`` literal of at most
+    ``_FIXED_TABLE_MAX`` scalars. An empty literal is a container filled later.
+
+    The TS twin of the Python dialect's ``_fixed_set``.
+    """
+    decl = declarator.parent
+    if decl is None or decl.type != "lexical_declaration" or decl.children[0].type != "const":
+        return False
+    items = [c for c in array.children if c.is_named and c.type != "comment"]
+    return 0 < len(items) <= _FIXED_TABLE_MAX and all(_is_scalar(item) for item in items)
+
+
+def _is_scalar(item: Node) -> bool:
+    if item.type == "template_string":
+        return not any(c.type == "template_substitution" for c in item.children)
+    return item.type in _SCALAR_KINDS
+
+
+def _changed_arrays(node: Node) -> list[str]:
+    """Names *node* may change: ``xs.push(...)`` and the other mutating methods,
+    ``xs[i] = v`` / ``xs.length = 0``, and ``xs`` handed to a call (the callee
+    may change it)."""
+    if node.type in _ASSIGN_KINDS:
+        left = node.child_by_field_name("left")
+        if left is not None and left.type in ("subscript_expression", "member_expression"):
+            return [n for n in (identifier_name(left.child_by_field_name("object")),) if n]
+        return []
+    if node.type != "call_expression":
+        return []
+    names: list[str] = []
+    fn = node.child_by_field_name("function")
+    if fn is not None and fn.type == "member_expression":
+        method = node_text(fn.child_by_field_name("property"))
+        name = identifier_name(fn.child_by_field_name("object"))
+        if name is not None and method in _MUTATING_METHODS:
+            names.append(name)
+    args = node.child_by_field_name("arguments")
+    if args is not None:
+        names.extend(n for c in args.children if (n := identifier_name(c)) is not None)
+    return names
+
+
+# Nodes that bind the names under them (or under the named field).
+_BINDING_FIELDS: dict[str, str | None] = {
+    "variable_declarator": "name",
+    "formal_parameters": None,
+    "catch_clause": "parameter",
+    "arrow_function": "parameter",
+}
+
+
+def _declared_names(node: Node) -> list[str]:
+    """Identifiers *node* declares: a variable (plain or destructured), a
+    parameter list, a catch binding or a bare arrow parameter. A default value
+    inside a parameter list over-counts, which only keeps a table unfixed."""
+    if node.type not in _BINDING_FIELDS:
+        return []
+    field = _BINDING_FIELDS[node.type]
+    target = node.child_by_field_name(field) if field else node
+    if target is None:
+        return []
+    stack, names = [target], []
+    while stack:
+        cur = stack.pop()
+        if cur.type in ("identifier", "shorthand_property_identifier_pattern"):
+            names.extend(n for n in (node_text(cur),) if n)
+        stack.extend(cur.children)
+    return names
+
+
 class TsJsMarkerHooks(BasePerfDialect):
     def loop_call_marker(
         self, root: str, method: str, node: Node, list_names: frozenset[str]
@@ -149,13 +236,29 @@ class TsJsMarkerHooks(BasePerfDialect):
         return None
 
     def list_bound_names(self, root: Node) -> frozenset[str]:
-        """Names bound to an array literal (``const arr = [...]``)."""
+        """Names bound to an array literal (``const arr = [...]``), less fixed tables.
+
+        A ``const`` bound to a short literal of scalars that the file never
+        changes or hands to a call (``const booleanAttributes = ['async',
+        'checked', ...]``) has a fixed length, so a probe per iteration is not
+        the O(n·m) the marker means.
+        """
         names: set[str] = set()
+        fixed: set[str] = set()
+        changed: set[str] = set()
+        declared: Counter[str] = Counter()
         for n in self._walk(root):
+            declared.update(_declared_names(n))
+            if n.type == "call_expression" or n.type in _ASSIGN_KINDS:
+                changed.update(_changed_arrays(n))
+                continue
             if n.type != "variable_declarator":
                 continue
             name = identifier_name(n.child_by_field_name("name"))
             value = n.child_by_field_name("value")
             if name is not None and value is not None and value.type == "array":
-                names.add(name)
-        return frozenset(names)
+                (fixed if _is_fixed_table(n, value) else names).add(name)
+        # A name the file binds again (a parameter, a local) may not be the table
+        # at a given probe; scope is not resolved, so such a table is not fixed.
+        reused = {name for name in fixed if declared[name] > 1}
+        return frozenset(names | (fixed & (changed | reused)))

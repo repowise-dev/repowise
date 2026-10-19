@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, BarChart3 } from "lucide-react";
+import { BookOpen, BarChart3, FileWarning } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { ReaderLinkComponent } from "./docs-reader";
 
@@ -8,17 +8,20 @@ export interface DocsHeaderTab {
   label: string;
   href: string;
   isActive: boolean;
-  icon: "explorer" | "freshness";
+  icon: "explorer" | "freshness" | "drift";
+  /** A cheap count shown beside the label, e.g. open drift findings. */
+  badge?: number | undefined;
 }
 
 const ICONS = {
   explorer: BookOpen,
   freshness: BarChart3,
+  drift: FileWarning,
 } as const;
 
 /**
  * Single compact chrome row for the documentation surface: the Explorer /
- * Doc-freshness view switch as a segmented control, and a right-aligned slot
+ * Doc freshness / Doc drift view switch as a segmented control, and a right-aligned slot
  * for page-specific actions. Pure presentation — the host resolves tab
  * hrefs/active state and injects a router-aware ``LinkComponent``.
  *
@@ -67,6 +70,11 @@ export function DocsHeader({
                   in the row and the least load-bearing, since the active tab is
                   already marked by its filled ground. */}
               <span className="hidden sm:inline">{tab.label}</span>
+              {tab.badge !== undefined && (
+                <span className="font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+                  {tab.badge}
+                </span>
+              )}
             </Link>
           );
         })}

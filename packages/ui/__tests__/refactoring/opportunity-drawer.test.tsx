@@ -223,6 +223,46 @@ describe("OpportunityDrawer reach, verification and code", () => {
     expect(screen.queryByText("return c", { exact: false })).toBeNull();
   });
 
+  it("shows each stage of a staged plan as its own excerpt, not the lines between", async () => {
+    // 120 lines; stages 10-12 and 90-92, a gap far over the 40-line excerpt cap.
+    const source = Array.from({ length: 120 }, (_, i) => `line_${i + 1}`).join("\n");
+    const readSource = vi.fn().mockResolvedValue(source);
+    const stage = (start: number, end: number) => ({
+      span: { start, end },
+      params: [],
+      returns: [],
+      suggested_name: null,
+      ccn: 3,
+      new_symbol: { signature_text: "def <name>():" },
+      call_site: { replace_span: { start, end }, new_text: "<name>()" },
+    });
+    const plan = {
+      ...PLAN,
+      line_start: 1,
+      line_end: 120,
+      plan: { ...stage(10, 12), stages: [stage(10, 12), stage(90, 92)] },
+    } as unknown as RefactoringPlan;
+    render(
+      <OpportunityDrawer
+        detail={detail({
+          steps: [{ ...STEP, line_start: 1, line_end: 120 }],
+          steps_emitted: 1,
+          plans: [plan],
+        })}
+        open
+        onOpenChange={() => {}}
+        readSource={readSource}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
+    expect(await screen.findByText("line_10", { exact: false })).toBeTruthy();
+    expect(await screen.findByText("line_92", { exact: false })).toBeTruthy();
+    expect(screen.queryByText("line_50", { exact: false })).toBeNull();
+    expect(screen.getByText("Stage 2 · lines 90–92")).toBeTruthy();
+    // Both excerpts share one read of the file.
+    expect(readSource).toHaveBeenCalledTimes(1);
+  });
+
   it("offers the model-drafted diff preview when the host turned generation on", () => {
     render(
       <OpportunityDrawer
@@ -234,6 +274,38 @@ describe("OpportunityDrawer reach, verification and code", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
     expect(screen.getByRole("button", { name: /Generate code/ })).toBeTruthy();
+  });
+
+  it("shows the model toggle when modelSetting is passed and onGenerateCode is not", () => {
+    render(
+      <OpportunityDrawer
+        detail={detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] })}
+        open
+        onOpenChange={() => {}}
+        modelSetting={{
+          value: { enabled: false, provider: "anthropic", model: "claude-test" },
+          onToggle: vi.fn(),
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
+    expect(screen.getByRole("switch", { name: /name helpers and draft code/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Generate code/ })).toBeNull();
+    expect(screen.queryByText(/Code generation is off here/)).toBeNull();
+  });
+
+  it("shows the code generation off sentence when neither onGenerateCode nor modelSetting is passed", () => {
+    render(
+      <OpportunityDrawer
+        detail={detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] })}
+        open
+        onOpenChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show the code" }));
+    expect(screen.getByText(/Code generation is off here/)).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Generate code/ })).toBeNull();
   });
 });
 
@@ -343,5 +415,26 @@ describe("RefactoringDrawer risks", () => {
   it("renders no risk section when the plan carries none", () => {
     render(<RefactoringDrawer plan={{ ...PLAN, risks: [] }} open onOpenChange={() => {}} />);
     expect(screen.queryByText("Before you start")).toBeNull();
+  });
+});
+
+describe("OpportunityDrawer preview", () => {
+  const NOTE = "preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15";
+
+  it("marks a preview opportunity and its preview plan", () => {
+    renderDrawer(
+      detail({
+        preview: NOTE,
+        steps: [STEP],
+        steps_emitted: 1,
+        plans: [{ ...PLAN, preview: NOTE }],
+      }),
+    );
+    expect(screen.getAllByRole("button", { name: `Preview: ${NOTE}` })).toHaveLength(2);
+  });
+
+  it("carries no mark for a validated cell", () => {
+    renderDrawer(detail({ steps: [STEP], steps_emitted: 1, plans: [PLAN] }));
+    expect(document.querySelector("[data-preview]")).toBeNull();
   });
 });

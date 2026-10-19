@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
-from repowise.core.analysis.health.grading import TARGET_SCORE, band_for
+from repowise.core.analysis.health.grading import TARGET_SCORE, analysed_share, headline_band
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
-from repowise.core.analysis.health.rows import split_tests
+from repowise.core.analysis.health.ranking import worst_kpis
 from repowise.core.analysis.health.scoring import (
     hotspot_health,
     nloc_weighted_attr,
@@ -16,20 +16,35 @@ from repowise.core.analysis.health.scoring import (
 from repowise.core.persistence.models import HealthFileMetric
 
 
-def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
+def _leads_by_file(
+    findings: list[Any], withheld: list[Any] | None = None
+) -> dict[str, dict[str, Any]]:
     """Reduce each file's findings to its dominant cause + pre-clamp magnitude.
 
     ``primary_*`` is the one reason to lead with; ``total_deduction`` (summed
     ``health_impact``) tells apart two files that both floor at 1.0. The
     selection rule lives in ``analysis.health.models.primary_finding``.
+
+    *withheld* rows, of types the registry keeps off this surface, never lead.
+    The score counted them, so they add to ``total_deduction`` and show as
+    ``withheld_deduction``: the card always accounts for what lowered the score.
     """
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
+    hidden: dict[str, float] = {}
+    for f in withheld or ():
+        hidden[f.file_path] = hidden.get(f.file_path, 0.0) + float(f.health_impact or 0.0)
     leads: dict[str, dict[str, Any]] = {}
-    for path, fs in by_file.items():
+    for path in by_file.keys() | hidden.keys():
+        fs = by_file.get(path, [])
+        withheld_points = round(hidden.get(path, 0.0), 3)
+        total = round(sum(float(x.health_impact or 0.0) for x in fs) + withheld_points, 3)
+        extra = {"withheld_deduction": withheld_points} if withheld_points else {}
         primary = primary_finding(fs)
         if primary is None:
+            if withheld_points:
+                leads[path] = {"total_deduction": total, **extra}
             continue
         # No edit resolves a history marker, so ``actionable_*`` uses code shape
         # alone and ``watch_*`` carries history as context.
@@ -43,7 +58,8 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
             "actionable_reason": actionable.reason if actionable else None,
             "watch_biomarker": watch.biomarker_type if watch else None,
             "watch_reason": watch.reason if watch else None,
-            "total_deduction": round(sum(float(x.health_impact or 0.0) for x in fs), 3),
+            "total_deduction": total,
+            **extra,
         }
     return leads
 
@@ -87,6 +103,8 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
         }
 
     def _files_for(points: float) -> int:
+        if points <= 0:
+            return 0
         acc = 0.0
         for i, d in enumerate(below, 1):
             acc += d
@@ -96,10 +114,11 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
 
     # At or above target there is nothing to reach, but the gross gap still
     # stands while any file is below target.
-    reachable = max(net_gap, 0)
+    # Rounded first, so a gap reported as 0 never needs a file to close it.
+    reachable = round(max(net_gap, 0))
     return {
         "target_score": TARGET_SCORE,
-        "weighted_gap_points": round(max(net_gap, 0)),
+        "weighted_gap_points": reachable,
         "weighted_gross_gap_points": round(gross_gap),
         "files_below_target": len(below),
         "files_to_reach_target": _files_for(reachable),
@@ -142,9 +161,11 @@ def _compute_kpis(
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
     unanalysed: int = 0,
+    deductions: dict[str, float],
 ) -> dict[str, Any]:
     """*metrics* are scored rows; *unanalysed* counts the files left out of
-    them because health has no dialect for their language."""
+    them because health has no dialect for their language. *deductions* is the
+    worst-first tiebreak ``get_health_metrics`` ranks with."""
     if not metrics:
         return {
             "file_count": 0,
@@ -165,10 +186,7 @@ def _compute_kpis(
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
-    # Production first; test files are ranked apart and named on their own.
-    production, tests = split_tests(metrics)
-    worst = min(production or metrics, key=lambda r: r.score)
-    worst_test = min(tests, key=lambda r: r.score) if tests else None
+    share = analysed_share(len(metrics), unanalysed)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
@@ -177,11 +195,12 @@ def _compute_kpis(
         # Weighted vs plain mean: a gap means a few large files hold it down.
         "average_health_weighting": "nloc",
         "average_health_unweighted": round(sum(m.score for m in metrics) / len(metrics), 2),
-        "band": band_for(round(avg, 2)),
-        "worst_performer_path": worst.file_path,
-        "worst_performer_score": round(worst.score, 2),
-        "worst_test_path": worst_test.file_path if worst_test else None,
-        "worst_test_score": round(worst_test.score, 2) if worst_test else None,
+        # Withheld when too few code files were analysed to grade the repo.
+        "band": headline_band(round(avg, 2), share),
+        # Only said when some files were left out, as ``unanalysed_file_count`` is.
+        **({"analysed_share": share} if unanalysed else {}),
+        # The heads of ``worst_files`` and ``test_worst_files``, as REST names them.
+        **worst_kpis(metrics, deductions),
         # ``None`` until the pillar is measured.
         "maintainability_average": _avg(metrics, "maintainability_score"),
         "performance_average": _avg(metrics, "performance_score"),

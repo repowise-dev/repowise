@@ -205,25 +205,3 @@ def risk_evidence(factors: tuple[str, ...] | list[str]) -> str | None:
         "outside static imports — review before deleting"
     )
 
-
-def effective_safe_to_delete(
-    confidence: float,
-    file_path: str,
-    stored_safe: bool = True,
-    kind: str | None = None,
-) -> bool:
-    """Re-derive whether a finding is genuinely deletion-ready.
-
-    Monotonic — only ever *downgrades* the stored flag, never upgrades it, so
-    it is safe to apply to findings persisted before risk factors existed:
-
-    - never True when ``stored_safe`` is already False,
-    - never True below :data:`SAFE_CONFIDENCE_THRESHOLD`,
-    - never True when the path carries any runtime-load risk factor,
-    - never True for a :data:`REVIEW_ONLY_KINDS` finding.
-    """
-    if not stored_safe or kind in REVIEW_ONLY_KINDS:
-        return False
-    if confidence < SAFE_CONFIDENCE_THRESHOLD:
-        return False
-    return not path_risk_factors(file_path)

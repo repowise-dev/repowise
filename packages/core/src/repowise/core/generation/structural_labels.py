@@ -349,3 +349,16 @@ def structural_page_title(language: str | None, page_type: str, target: str) -> 
     *target* is a path or a qualified symbol name and is never translated.
     """
     return f"{resolve_structural_labels(language)[_TITLE_LABEL_KEYS[page_type]]}: {target}"
+
+
+def is_structural_title(language: str | None, page_type: str, target: str, title: str | None) -> bool:
+    """True when *title* is exactly what :func:`structural_page_title` would store.
+
+    A structural title only restates the page's own target in a localized
+    wrapper, so a caller that still has the target can rebuild it and need not
+    ship it. False for a page type with no structural title and for a title that
+    differs in any way (an edited or prose title carries information).
+    """
+    if page_type not in _TITLE_LABEL_KEYS or not target or not title:
+        return False
+    return title == structural_page_title(language, page_type, target)

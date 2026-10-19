@@ -228,6 +228,7 @@ async def _recent(
                 select(*_HEALTH_FINDING_COLUMNS).where(
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
+                    HealthFinding.severity.in_(("critical", "high")),
                     HealthFinding.file_path.in_({r.file_path for r in rows}),
                 )
             )
@@ -506,14 +507,19 @@ async def write_actions_snapshot(session: AsyncSession, repo_id: str) -> bool:
     )
 
 
-async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
-    """Store the Fix first queue, then the actions view that quotes its head.
+async def write_read_snapshots(
+    session: AsyncSession, repo_id: str
+) -> list[tuple[str, Exception]]:
+    """Store the Fix first queue, then the actions view that quotes its head,
+    then the run's component snapshot (:mod:`repowise.core.events`).
 
     For a writer whose stores are final for this run, on the session that
     wrote them or a later one. Best-effort, each in its own savepoint: a view
-    that fails to build is built live on read instead.
+    that fails to build is built live on read instead. Returns
+    ``(snapshot, error)`` per snapshot not written, for a caller whose output
+    the core log level hides.
     """
-    written = True
+    failed: list[tuple[str, Exception]] = []
     for kind, write in (
         ("fix_first", write_fix_first_snapshot),
         (SNAPSHOT_KIND, write_actions_snapshot),
@@ -523,11 +529,29 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
                 await write(session, repo_id)
         except Exception as exc:  # a reader builds live instead
             logger.warning("read snapshot %s not written: %s", kind, exc)
-            written = False
+            failed.append((kind, exc))
+    written = not failed
     # Built after this session's own writes, so its commit may keep them; a
     # kind that failed may have left an older row, which the commit drops.
     if written:
         await mark_current(session)
+    # The run's component snapshot and its events read the same final stores.
+    try:
+        from repowise.core.events.store import record_snapshot
+
+        async with session.begin_nested():
+            await record_snapshot(session, repo_id)
+    except Exception as exc:  # history skips a run; the index is unaffected
+        logger.warning("component snapshot not written: %s", exc)
+        failed.append(("component", exc))
+        try:  # so the next snapshot is a baseline, not a diff across the gap
+            from repowise.core.events.store import record_gap
+
+            async with session.begin_nested():
+                await record_gap(session, repo_id, "failed")
+        except Exception as gap_exc:
+            logger.warning("component snapshot gap not recorded: %s", gap_exc)
+    return failed
 
 
 def _view(ruled: dict[str, Any], states: dict[str, ActionStateRecord], now: datetime) -> dict:

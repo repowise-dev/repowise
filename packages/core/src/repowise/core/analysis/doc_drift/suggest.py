@@ -26,6 +26,7 @@ from functools import cache
 from pathlib import Path
 from typing import Literal
 
+from ..git_cli import run_git
 from .constants import SuggestionBasis
 from .models import DocReference, DriftKind
 from .renderer import github_slug
@@ -254,14 +255,12 @@ def git_run(
     """
     env = {**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_LITERAL_PATHSPECS": "1"}
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(root), "-c", "core.quotePath=false", *args],
-            capture_output=True,
+        proc = run_git(
+            ["-C", str(root), "-c", "core.quotePath=false", *args],
+            text=False,
             input=stdin,
-            stdin=None if stdin is not None else subprocess.DEVNULL,
             env=env,
             timeout=timeout,
-            check=False,
         )
     except (OSError, subprocess.SubprocessError, ValueError):
         return None

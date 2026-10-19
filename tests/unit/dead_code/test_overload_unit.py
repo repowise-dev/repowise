@@ -9,9 +9,12 @@ put them.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import networkx as nx
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
 _FILE = "src/Box.cs"
 _CONFIG = {
@@ -105,3 +108,34 @@ def test_a_call_to_one_cpp_overload_uses_the_exported_set() -> None:
     assert sorted(f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT) == [
         "spare"
     ]
+
+
+def test_a_call_tied_between_overloads_keeps_the_set_used(tmp_path: Path) -> None:
+    """``new Inner(x)`` and ``cs(x)`` tie between one-argument members.
+
+    The tie still draws an edge into the set, so neither the class nor the
+    method set reads as unused. ``Spare`` is the control.
+    """
+    source = tmp_path / "app" / "Main.java"
+    source.parent.mkdir()
+    source.write_text(
+        "package app;\n"
+        "public class Main {\n"
+        "  private static class Inner {\n"
+        "    Inner() { }\n"
+        "    Inner(String s) { }\n"
+        "    Inner(int n) { }\n"
+        "  }\n"
+        "  private static class Spare { }\n"
+        "  private String cs() { return null; }\n"
+        "  private Main cs(String s) { return this; }\n"
+        "  private Main cs(Object o) { return this; }\n"
+        "  public void run(String x) { new Inner(x); cs(x); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    parser, builder = ASTParser(), GraphBuilder(repo_path=tmp_path)
+    for fi in FileTraverser(tmp_path).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    report = DeadCodeAnalyzer(builder.build(), git_meta_map={}).analyze(_CONFIG)
+    assert sorted(f.symbol_name for f in report.findings) == ["Spare"]

@@ -76,7 +76,7 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/jobs.py",
             "line": 40,
@@ -84,7 +84,7 @@
             "symbol": "drain"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/jobs.py",
             "line": 42,
@@ -92,7 +92,7 @@
             "symbol": "drain"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key save call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key save database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/jobs.py",
             "line": 44,
@@ -191,7 +191,7 @@
             "symbol": "src/app/reindex.py::_write"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _write database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/reindex.py",
             "line": 210,
@@ -199,7 +199,7 @@
             "symbol": "one"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _write call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _write database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/reindex.py",
             "line": 215,
@@ -270,7 +270,7 @@
         "safety": "proven",
         "steps": [
           {
-            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key database call",
             "applicability": "mechanical",
             "file_path": "src/app/owners.py",
             "line": 20,
@@ -369,7 +369,7 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Collect the keys before the loop and replace the per-key _move call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _move database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/ledger.py",
             "line": 587,
@@ -377,7 +377,7 @@
             "symbol": "apply"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _fold_one call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _fold_one database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/ledger.py",
             "line": 590,
@@ -385,7 +385,7 @@
             "symbol": "apply"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _write_alias call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _write_alias database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/ledger.py",
             "line": 591,
@@ -483,7 +483,7 @@
             "symbol": "src/app/entry.py::_hit"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _hit call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _hit database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/entry.py",
             "line": 250,
@@ -491,7 +491,7 @@
             "symbol": "a"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _hit call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _hit database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/entry.py",
             "line": 255,
@@ -589,7 +589,7 @@
             "symbol": "src/app/repo.py::fetch_page"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key fetch_page call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key fetch_page database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/api.py",
             "line": 30,
@@ -597,7 +597,7 @@
             "symbol": "list_users"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key fetch_page call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key fetch_page database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/api.py",
             "line": 31,
@@ -695,7 +695,7 @@
             "symbol": "src/app/sync.py::_load"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _load call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _load database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/sync.py",
             "line": 70,
@@ -703,7 +703,7 @@
             "symbol": "sync_one"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key _load call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key _load database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/sync.py",
             "line": 71,
@@ -851,7 +851,7 @@
         "safety": "proven",
         "steps": [
           {
-            "action": "Run the independent calls concurrently, each still inside self._sem",
+            "action": "Run the independent network calls concurrently, each still inside self._sem",
             "applicability": "mechanical",
             "file_path": "src/app/fetch.py",
             "line": 40,
@@ -922,7 +922,7 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key call",
+            "action": "Collect the keys before the loop and make one call with .in_(\"repo_id\", keys) in place of the per-key database call",
             "applicability": "judgment",
             "file_path": "src/app/commits.py",
             "line": 30,
@@ -993,7 +993,7 @@
         "safety": "advisory",
         "steps": [
           {
-            "action": "Run the independent calls concurrently, with a bound on how many at once",
+            "action": "Run the independent network calls concurrently, with a bound on how many at once",
             "applicability": "judgment",
             "file_path": "src/app/fanout.py",
             "line": 90,
@@ -1078,7 +1078,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key get_session database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/job.py",
             "line": 200,
@@ -1161,7 +1161,7 @@
             "symbol": "src/app/db.py::only_sink"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/lone.py",
             "line": 9,
@@ -1370,7 +1370,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key get_session database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/orders.py",
             "line": 10,
@@ -1455,7 +1455,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key get_session database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/reports.py",
             "line": 12,
@@ -1468,77 +1468,6 @@
       "refactoring_type": "performance_fix",
       "source_biomarker": "io_in_loop",
       "target_symbol": "src/app/reports.py::handle"
-    },
-    {
-      "blast_radius": {
-        "call_sites": 1,
-        "file_count": 1,
-        "files": [
-          "src/app/retry.py"
-        ]
-      },
-      "confidence": "medium",
-      "evidence": {
-        "affected_files_total": 1,
-        "biomarker_type": "io_in_loop",
-        "biomarker_types": [
-          "io_in_loop"
-        ],
-        "boundary_kind": "network",
-        "execution_context": "production",
-        "observations_total": 1,
-        "provenance": "direct",
-        "rank_factors": {
-          "affected_call_sites": 2,
-          "boundary_kind": 4,
-          "execution_context": 3,
-          "execution_role": 1,
-          "loop_magnitude": 0,
-          "multiplier_shape": 4,
-          "provenance": 3
-        },
-        "rank_score": 17,
-        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
-        "reliable_entry_reachability": null
-      },
-      "file_path": "src/app/retry.py",
-      "impact_delta": 0.0,
-      "line_end": 52,
-      "line_start": 50,
-      "plan": {
-        "affected_locations": [
-          {
-            "file_path": "src/app/retry.py",
-            "function_name": "post_with_retry",
-            "line_end": 52,
-            "line_start": 50
-          }
-        ],
-        "affected_locations_total": 1,
-        "api": null,
-        "evidence_truncated": false,
-        "intervention_symbol": "src/app/retry.py::post_with_retry",
-        "judgment_steps": 1,
-        "mechanical_steps": 0,
-        "opportunity_id": "perf3_bd36a05060a6d02a1245",
-        "paths": [],
-        "paths_total": 1,
-        "safety": "advisory",
-        "steps": [
-          {
-            "action": "Collect the keys before the loop and replace the per-key call with one batched call",
-            "applicability": "judgment",
-            "file_path": "src/app/retry.py",
-            "line": 50,
-            "order": 1,
-            "symbol": "post_with_retry"
-          }
-        ],
-        "strategy": "batch_or_prefetch_io"
-      },
-      "refactoring_type": "performance_fix",
-      "source_biomarker": "io_in_loop",
-      "target_symbol": "src/app/retry.py::post_with_retry"
     },
     {
       "blast_radius": {
@@ -1611,7 +1540,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key get_session database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/billing.py",
             "line": 11,
@@ -1696,7 +1625,7 @@
             "symbol": "src/app/db.py::get_session"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key get_session call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key get_session database call with one batched call",
             "applicability": "judgment",
             "file_path": "scripts/backfill.py",
             "line": 200,
@@ -1781,7 +1710,7 @@
             "symbol": "src/app/db.py::reliable_sink"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key reliable_sink call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key reliable_sink database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/edge.py",
             "line": 230,
@@ -1866,7 +1795,7 @@
             "symbol": "src/app/db.py::guessed_sink"
           },
           {
-            "action": "Collect the keys before the loop and replace the per-key guessed_sink call with one batched call",
+            "action": "Collect the keys before the loop and replace the per-key guessed_sink database call with one batched call",
             "applicability": "judgment",
             "file_path": "src/app/guess.py",
             "line": 240,

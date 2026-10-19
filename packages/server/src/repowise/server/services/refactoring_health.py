@@ -21,22 +21,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.queue.counts import NOT_JUDGED
-from repowise.core.analysis.health.queue_rules import keep, sort_key
-from repowise.core.analysis.health.refactoring.identity import REFACTORING_MODEL_VERSION
+from repowise.core.analysis.health.queue_rules import keep
 from repowise.core.analysis.health.refactoring.recommendations import (
-    EFFORT_RANK,
     PLAN_FILTERS,
-    PLAN_SORTS,
-    UNKNOWN_EFFORT,
-    apply_view,
-    blast_size,
-    detail_recommendations,
-    hydrate_recommendations,
-    matches_search,
+    listed_steps,
     plan_types,
     stored_recommendation,
 )
@@ -58,18 +49,25 @@ from repowise.core.persistence.crud.analysis.queue_counts import any_unjudged, u
 from repowise.core.persistence.crud.analysis.refactoring import (
     get_refactoring_suggestions,
     ranked_refactoring_suggestions,
+    refactoring_suggestions_by_public_id,
     summarize_open_plans,
 )
 from repowise.core.persistence.crud.analysis.refactoring_opportunities import (
+    gated_opportunity_counts,
     get_refactoring_opportunity,
     get_refactoring_summary,
     list_refactoring_opportunities,
+    owning_refactoring_opportunity,
     refactoring_facet_counts,
     refactoring_opportunities_by_id,
     refactoring_reason_counts,
     refactoring_step_counts,
 )
-from repowise.core.persistence.models import RefactoringOpportunity, RefactoringSuggestion
+from repowise.core.persistence.crud.analysis.refactoring_payoff import plan_payoff
+from repowise.core.persistence.crud.analysis.refactoring_recommendations import (
+    hydrate_recommendations,
+    plan_rank_inputs,
+)
 
 
 def _hidden(left_out: dict[str, int]) -> dict[str, Any]:
@@ -94,6 +92,8 @@ class RefactoringPage:
     hidden: dict[str, Any] | None = None
     #: The plans' count vocabulary (``queue.counts``) in the query's files.
     counts: dict[str, Any] = field(default_factory=dict)
+    #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +109,8 @@ class RefactoringPlanPage:
     scope: str = "all"
     hidden: dict[str, Any] | None = None
     counts: dict[str, Any] = field(default_factory=dict)
+    #: Open opportunities a language gate held back, ``{language: {count, ...}}``.
+    gated: dict[str, dict] = field(default_factory=dict)
 
 
 def _filters(query: RefactoringQuery) -> dict[str, Any]:
@@ -148,77 +150,44 @@ def _plan_window(
 
 @dataclass(frozen=True, slots=True)
 class PlanListQuery:
-    """One plan-list request: the filters, search, order and page."""
+    """One plan-list request: the filters and the view."""
 
     refactoring_type: str | None = None
     min_confidence: str | None = None
-    confidences: frozenset[str] = frozenset()
-    efforts: frozenset[str] = frozenset()
     file_path: str | None = None
-    search: str = ""
-    sort: str = "canonical"
     view: Literal["canonical", "file_spread"] = "canonical"
-    limit: int | None = None
-    offset: int = 0
 
     def filters(self) -> dict[str, Any]:
         """The params ``PLAN_FILTERS`` reads, on either path."""
         return {
             "refactoring_types": plan_types(self.refactoring_type),
             "file_path": self.file_path,
-            "confidences": self.confidences,
-            "efforts": self.efforts,
         }
-
-
-#: Structural plans a plan page leads with.
-_STRUCTURAL_LEADS = 12
-
-
-def _live_sorted(items: list[Any], sort: str) -> list[Any]:
-    """*items*, in view order, under a named sort from the shared table."""
-    position = {id(item): index for index, item in enumerate(items)}
-
-    def key(item: Any) -> tuple[Any, ...]:
-        suggestion = item.suggestion
-        if sort == "effort":
-            bucket = EFFORT_RANK.get(suggestion.effort_bucket, UNKNOWN_EFFORT)
-            return (bucket, position[id(item)])
-        row = {
-            "impact_delta": suggestion.impact_delta,
-            "blast_size": blast_size(suggestion),
-            "file_path": suggestion.file_path,
-            "target_symbol": suggestion.target_symbol,
-            "id": item.id,
-        }
-        return (*sort_key(PLAN_SORTS[sort], row), position[id(item)])
-
-    if sort != "effort" and sort not in PLAN_SORTS:
-        return items
-    return sorted(items, key=key)
-
-
-def _plan_page_payload(
-    items: list[Any], total: int, offset: int, summary: dict[str, Any], leads: list[Any]
-) -> dict[str, Any]:
-    next_offset = offset + len(items) if offset + len(items) < total else None
-    return {
-        "items": [item.as_dict() for item in items],
-        "total": total,
-        "has_more": next_offset is not None,
-        "next_offset": next_offset,
-        "summary": summary,
-        "structural_leads": [item.as_dict() for item in leads],
-    }
 
 
 class RefactoringHealthService:
-    """Query, page, detail and headline over the materialized opportunities."""
+    """Query, page, detail and headline over the materialized opportunities.
 
-    def __init__(self, session: AsyncSession, repository_id: str, repository: str) -> None:
+    Lists, counts, facets and the lead leave out what a language gate holds
+    back unless ``include_unverified``; a lookup by id never does.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        repository_id: str,
+        repository: str,
+        *,
+        include_unverified: bool = False,
+    ) -> None:
         self._session = session
         self._repository_id = repository_id
         self._repository = repository
+        self._include_unverified = include_unverified
+
+    def _filters(self, query: RefactoringQuery) -> dict[str, Any]:
+        """The store's filter arguments for *query*, under this service's gate."""
+        return {**_filters(query), "include_unverified": self._include_unverified}
 
     # -- queue ------------------------------------------------------------
 
@@ -244,7 +213,7 @@ class RefactoringHealthService:
         write) says which opportunities it takes, and one id-only read of the
         filtered set counts what it leaves out, by reason.
         """
-        filters, hidden = await self._scope(query, _filters(query))
+        filters, hidden = await self._scope(query, self._filters(query))
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
@@ -274,6 +243,7 @@ class RefactoringHealthService:
             scope=query.scope,
             hidden=hidden,
             counts=await self._counts(query, len(items)),
+            gated=await self.gated(),
         )
 
     async def plan_page(self, query: RefactoringQuery) -> RefactoringPlanPage:
@@ -282,34 +252,48 @@ class RefactoringHealthService:
         A plan is a step of one opportunity, so the plan list is a view of the
         queue: the same scope, filters and order, paged by plan. One narrow read
         of step counts places the page; only the opportunities it touches are
-        decoded.
+        decoded. A split stands for the steps it relocates (``listed_steps``),
+        so a page that folds some reads on until it holds ``limit`` rows;
+        offsets and the total still count every plan.
         """
-        filters, hidden = await self._scope(query, _filters(query))
+        filters, hidden = await self._scope(query, self._filters(query))
         counts = await refactoring_step_counts(
             self._session,
             self._repository_id,
             **filters,
             order=query.resolved_order,
         )
-        window = _plan_window(counts, query.offset, query.limit)
-        rows = await refactoring_opportunities_by_id(
-            self._session, self._repository_id, list(window), status=query.status
-        )
-        # The window is in queue order; the read is not.
-        items = [
-            {**step, "opportunity_id": opportunity_id}
-            for opportunity_id, (start, stop) in window.items()
-            if opportunity_id in rows
-            for step in (detail_map(rows[opportunity_id]).get("steps") or [])[start:stop]
-        ]
+        items: list[dict[str, Any]] = []
+        touched: set[str] = set()
+        position = query.offset
+        # A page of splits standing for many plans costs a read or two more.
+        while len(items) < query.limit:
+            window = _plan_window(counts, position, query.limit - len(items))
+            if not window:
+                break
+            before = position
+            rows = await refactoring_opportunities_by_id(
+                self._session, self._repository_id, list(window), status=query.status
+            )
+            # The window is in queue order; the read is not.
+            for opportunity_id, (start, stop) in window.items():
+                row = rows.get(opportunity_id)
+                steps = (detail_map(row).get("steps") or []) if row is not None else []
+                shown = listed_steps(steps, start, stop)
+                items.extend({**step, "opportunity_id": opportunity_id} for step in shown)
+                position += stop - start
+                touched.add(opportunity_id)
+            if position == before:
+                break
         return RefactoringPlanPage(
             items=items,
             total=sum(steps for _id, steps in counts),
             opportunities_total=len(counts),
-            next_offset=query.offset + sum(stop - start for start, stop in window.values()),
+            next_offset=position,
             scope=query.scope,
             hidden=hidden,
-            counts=await self._counts(query, len(window)),
+            counts=await self._counts(query, len(touched)),
+            gated=await self.gated(),
         )
 
     async def _scope(
@@ -351,14 +335,27 @@ class RefactoringHealthService:
             "plans",
             shown=shown,
             file_paths=query.file_paths,
+            include_unverified=self._include_unverified,
         )
         return counts.as_dict()
 
     # -- headline ---------------------------------------------------------
 
     async def summary(self) -> dict[str, Any]:
-        """The Level-1 rollup, read by primary key."""
-        return summary_payload(await get_refactoring_summary(self._session, self._repository_id))
+        """The Level-1 rollup, read by primary key, plus what the gates hold back."""
+        payload = summary_payload(
+            await get_refactoring_summary(self._session, self._repository_id),
+            include_unverified=self._include_unverified,
+        )
+        if payload.get("status") == "available":
+            payload["gated"] = await self.gated()
+        return payload
+
+    async def gated(self) -> dict[str, dict]:
+        """Open opportunities a language gate holds back; empty when opted in."""
+        return await gated_opportunity_counts(
+            self._session, self._repository_id, include_unverified=self._include_unverified
+        )
 
     async def directive(self) -> dict[str, Any]:
         """The Level-0 lead: one opportunity, and the exact call that opens it.
@@ -367,7 +364,8 @@ class RefactoringHealthService:
         statement for it and never touches the queue.
         """
         return directive_from_summary(
-            await get_refactoring_summary(self._session, self._repository_id)
+            await get_refactoring_summary(self._session, self._repository_id),
+            include_unverified=self._include_unverified,
         )
 
     # -- detail -----------------------------------------------------------
@@ -423,14 +421,19 @@ class RefactoringHealthService:
         payload["lead_finding_ids"] = list(details.get("lead_finding_ids") or [])
         payload["next_actions"] = next_actions(row, page)
         if with_plans and page:
-            payload["plans"] = await self._plans_for([s["plan_id"] for s in page])
+            payload["plans"] = [
+                plan_payload(row)
+                for row in await refactoring_suggestions_by_public_id(
+                    self._session, self._repository_id, [s["plan_id"] for s in page]
+                )
+            ]
         # Ordered steps carry ``relocated_by``; a surface that renders them must
         # say the symbol has to be located again before the step is applied.
         if any(step.get("relocated_by") for step in page):
             payload["ordering_note"] = (
-                "A step carrying `relocated_by` names a symbol an earlier step moves. "
-                "Locate it again before applying the step; its file and span describe "
-                "where the symbol was."
+                "A step marked 'Moved by an earlier step' names a symbol an earlier step "
+                "relocates. Locate it again before applying the step; its file and span "
+                "describe where the symbol was."
             )
         return payload
 
@@ -445,8 +448,10 @@ class RefactoringHealthService:
         row = await get_refactoring_suggestion(self._session, self._repository_id, plan_id)
         if row is None:
             return {"resolved": False, "plan_id": plan_id, "reason": "unknown_plan_id"}
-        owner = await self._owning_opportunity(row.public_id, row.file_path)
-        payload = (await self.plan_recommendation(row, owner=owner)).detail_dict()
+        owner = await owning_refactoring_opportunity(
+            self._session, self._repository_id, row.public_id, row.file_path
+        )
+        payload = await self.plan_detail_dict(row, owner=owner)
         payload["id"] = row.public_id or row.id
         payload["status"] = row.status
         result: dict[str, Any] = {"resolved": True, "plan_id": plan_id, "plan": payload}
@@ -461,11 +466,11 @@ class RefactoringHealthService:
             }
         return result
 
-    # -- plan lists ---------------------------------------------------------
+    # -- plan list ----------------------------------------------------------
     #
-    # Each list reads the rank, factors and validation the finalizer stored, so
-    # its cost follows the page. A store with an open plan the finalizer did
-    # not rank is ranked per request instead. Remove that live path once every
+    # The list reads the rank, factors and validation the finalizer stored. A
+    # store with an open plan the finalizer did not rank is ranked per request
+    # instead. Remove that live path once every
     # served store has been indexed by a version that writes ranks.
 
     async def ranked_plans(self, query: PlanListQuery) -> dict[str, Any]:
@@ -480,15 +485,22 @@ class RefactoringHealthService:
             min_confidence=query.min_confidence,
             filters=query.filters(),
             view=query.view,
+            include_unverified=self._include_unverified,
         )
         if stored is not None:
             chips = await summarize_open_plans(
-                self._session, self._repository_id, min_confidence=query.min_confidence
+                self._session,
+                self._repository_id,
+                min_confidence=query.min_confidence,
+                include_unverified=self._include_unverified,
             )
-            plans = [stored_recommendation(row).as_dict() for row in stored[0]]
+            plans = [stored_recommendation(row).as_dict() for row in stored]
         else:
             rows = await get_refactoring_suggestions(
-                self._session, self._repository_id, min_confidence=query.min_confidence
+                self._session,
+                self._repository_id,
+                min_confidence=query.min_confidence,
+                include_unverified=self._include_unverified,
             )
             chips = summarize_plans(rows)
             kept = [row for row in rows if keep(PLAN_FILTERS, row, query.filters())]
@@ -498,76 +510,14 @@ class RefactoringHealthService:
             plans = [item.as_dict() for item in ranked]
         return {"summary": {"total": chips["total"], "by_type": chips["by_type"]}, "plans": plans}
 
-    async def ranked_plan_page(self, query: PlanListQuery) -> dict[str, Any]:
-        """One page of open plans, its total, the chips and the structural leads."""
-        stored = await ranked_refactoring_suggestions(
-            self._session,
-            self._repository_id,
-            min_confidence=query.min_confidence,
-            filters=query.filters(),
-            search=query.search,
-            sort=query.sort,
-            view=query.view,
-            limit=query.limit,
-            offset=query.offset,
-        )
-        if stored is None:
-            return await self._live_plan_page(query)
-        rows, total = stored
-        leads = await ranked_refactoring_suggestions(
-            self._session,
-            self._repository_id,
-            min_confidence=query.min_confidence,
-            filters={"refactoring_types": plan_types("structural")},
-            limit=_STRUCTURAL_LEADS,
-        )
-        return _plan_page_payload(
-            [stored_recommendation(row) for row in rows],
-            total,
-            query.offset,
-            await summarize_open_plans(
-                self._session, self._repository_id, min_confidence=query.min_confidence
-            ),
-            [stored_recommendation(row) for row in (leads[0] if leads else [])],
-        )
-
-    async def _live_plan_page(self, query: PlanListQuery) -> dict[str, Any]:
-        """The page ranked per request. One batched ranking pass over the open
-        plans; the symbol-level evidence that orders each plan's tests is read
-        only for the rows this response returns."""
-        rows = await get_refactoring_suggestions(
-            self._session, self._repository_id, min_confidence=query.min_confidence
-        )
-        canonical = await hydrate_recommendations(
-            self._session, self._repository_id, rows, view="canonical", rank_only=True
-        )
-        structural = plan_types("structural") or ()
-        leads = [item for item in canonical if item.suggestion.refactoring_type in structural]
-        leads = leads[:_STRUCTURAL_LEADS]
-        filters = query.filters()
-        ordered = _live_sorted(
-            [
-                item
-                for item in apply_view(canonical, query.view)
-                if keep(PLAN_FILTERS, item.suggestion, filters)
-                and (not query.search or matches_search(item.suggestion, query.search))
-            ],
-            query.sort,
-        )
-        end = None if query.limit is None else query.offset + query.limit
-        page = ordered[query.offset : end]
-        shown = list({id(item): item for item in [*page, *leads]}.values())
-        detailed = {
-            id(item.suggestion): item
-            for item in await detail_recommendations(self._session, self._repository_id, shown)
-        }
-        return _plan_page_payload(
-            [detailed[id(item.suggestion)] for item in page],
-            len(ordered),
-            query.offset,
-            summarize_plans(item.suggestion for item in canonical),
-            [detailed[id(item.suggestion)] for item in leads],
-        )
+    async def plan_detail_dict(self, row: Any, *, owner: Any = None) -> dict[str, Any]:
+        """One stored plan's detail, as REST and MCP serve it: the ranked plan,
+        and what happened to it when the index resolved it."""
+        detail = (await self.plan_recommendation(row, owner=owner)).detail_dict()
+        payoff = await plan_payoff(self._session, row)
+        if payoff is not None:
+            detail["payoff"] = payoff
+        return detail
 
     async def plan_recommendation(self, row: Any, *, owner: Any = None) -> Any:
         """One stored plan as a ranked recommendation, without the repository.
@@ -589,8 +539,12 @@ class RefactoringHealthService:
         if stored is not None:
             return stored
         if owner is None:
-            owner = await self._owning_opportunity(row.public_id, row.file_path)
-        metric_by_path, centrality = await self._rank_inputs(row.file_path)
+            owner = await owning_refactoring_opportunity(
+                self._session, self._repository_id, row.public_id, row.file_path
+            )
+        metric_by_path, centrality = await plan_rank_inputs(
+            self._session, self._repository_id, row.file_path
+        )
         return build_recommendations(
             [rehydrate_suggestion(row)],
             metric_by_path=metric_by_path,
@@ -622,95 +576,6 @@ class RefactoringHealthService:
         )
         profile = (detail_map(owner).get("plan") or {}).get("validation") if owner else None
         return validation_from_profile(profile) if profile else None
-
-    async def _rank_inputs(self, file_path: str) -> tuple[dict[str, Any], dict[str, float]]:
-        """The two rank inputs for one file, as seeks rather than repo reads.
-
-        ``build_recommendations`` wants a metric per path and an in-degree per
-        node. Serving one plan used to load every metric row and every graph
-        metric in the repository to supply them for a single file.
-        """
-        from repowise.core.persistence.models import GraphMetric, HealthFileMetric
-
-        metric = (
-            await self._session.execute(
-                select(HealthFileMetric).where(
-                    HealthFileMetric.repository_id == self._repository_id,
-                    HealthFileMetric.file_path == file_path,
-                )
-            )
-        ).scalar_one_or_none()
-        rows = (
-            await self._session.execute(
-                select(GraphMetric.node_id, GraphMetric.in_degree).where(
-                    GraphMetric.repository_id == self._repository_id,
-                    or_(
-                        GraphMetric.node_id == file_path,
-                        # The separator matters: a bare ``f"{file_path}%"`` also
-                        # matches a sibling whose name extends this one, so
-                        # ``Component.ts`` would absorb ``Component.tsx``.
-                        GraphMetric.node_id.like(f"{file_path}::%"),
-                    ),
-                )
-            )
-        ).all()
-        return (
-            {metric.file_path: metric} if metric is not None else {},
-            {node_id: float(in_degree or 0.0) for node_id, in_degree in rows},
-        )
-
-    # -- internals --------------------------------------------------------
-
-    async def _owning_opportunity(self, public_id: str | None, file_path: str) -> Any | None:
-        """The opportunity holding this plan, found through its file.
-
-        One indexed lookup on ``(repository_id, status, file_path)``: a plan
-        belongs to at most one file's opportunity, so the file narrows it to a
-        single candidate and the step list confirms it.
-        """
-        if not public_id:
-            return None
-        rows = list(
-            (
-                await self._session.execute(
-                    select(RefactoringOpportunity)
-                    .where(
-                        RefactoringOpportunity.repository_id == self._repository_id,
-                        RefactoringOpportunity.status == "open",
-                        RefactoringOpportunity.refactoring_model_version
-                        == REFACTORING_MODEL_VERSION,
-                        RefactoringOpportunity.file_path == file_path,
-                    )
-                    .limit(5)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for row in rows:
-            steps = detail_map(row).get("steps") or []
-            if any(step.get("plan_id") == public_id for step in steps):
-                return row
-        return None
-
-    async def _plans_for(self, plan_ids: list[str]) -> list[dict[str, Any]]:
-        """The member plans' payloads, in one indexed query over the page."""
-        if not plan_ids:
-            return []
-        rows = list(
-            (
-                await self._session.execute(
-                    select(RefactoringSuggestion).where(
-                        RefactoringSuggestion.repository_id == self._repository_id,
-                        RefactoringSuggestion.public_id.in_(plan_ids),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        by_id = {row.public_id: row for row in rows}
-        return [plan_payload(by_id[pid]) for pid in plan_ids if pid in by_id]
 
 
 __all__ = ["RefactoringHealthService", "RefactoringPage", "RefactoringPlanPage"]

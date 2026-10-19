@@ -124,6 +124,9 @@ def detect_php_framework(manifest: ComposerManifest) -> FrameworkFacts | None:
     return next((facts for facts in PHP_FRAMEWORKS if facts.matches(manifest)), None)
 
 
+#: The runtime that starts the components an ``AndroidManifest.xml`` registers.
+ANDROID = FrameworkFacts(name="Android", anchor="framework:android")
+
 ANGULAR = FrameworkFacts(name="Angular", anchor="framework:angular")
 
 #: Workspace config naming what an Angular build loads: Angular CLI's
