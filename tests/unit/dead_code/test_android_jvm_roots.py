@@ -188,3 +188,23 @@ def test_android_layout_and_proguard_roots_rescued(tmp_path: Path) -> None:
     assert "com.example.app.DocsFragment" not in discovered
     assert "com.example.app.KeepModel" in discovered
     assert "com.example.wildcard.**" not in discovered
+
+
+def test_manifest_application_attributes_rescued(tmp_path: Path) -> None:
+    manifest = """<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="de.danoeh.antennapod">
+        <application
+            android:backupAgent=".storage.importexport.OpmlBackupAgent"
+            android:manageSpaceActivity="de.danoeh.antennapod.activity.PreferenceActivity"
+            android:appComponentFactory=".core.AppComponentFactory" />
+    </manifest>"""
+    (tmp_path / "AndroidManifest.xml").write_text(manifest)
+
+    from repowise.core.ingestion.framework_edges.android_manifest import _registered_class_names
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    registered = set(_registered_class_names(tmp_path, ctx))
+    assert "de.danoeh.antennapod.storage.importexport.OpmlBackupAgent" in registered
+    assert "de.danoeh.antennapod.activity.PreferenceActivity" in registered
+    assert "de.danoeh.antennapod.core.AppComponentFactory" in registered
+

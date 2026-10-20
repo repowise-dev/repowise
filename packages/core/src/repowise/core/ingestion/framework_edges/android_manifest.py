@@ -37,6 +37,9 @@ if TYPE_CHECKING:
 
 # XML allows either quote and spaces around ``=``.
 _ANDROID_NAME_RE = re.compile(r"""android:name\s*=\s*['"]([\w.$]+)['"]""")
+_APPLICATION_CLASS_ATTR_RE = re.compile(
+    r"""(?:android:backupAgent|android:manageSpaceActivity|android:appComponentFactory)\s*=\s*['"]([\w.$]+)['"]"""
+)
 _ANDROID_COMPONENT_TAGS = ("<activity", "<service", "<receiver",
                            "<provider", "<application")
 
@@ -127,6 +130,10 @@ def _component_class_names(text: str) -> Iterator[str]:
             for m in _ANDROID_NAME_RE.finditer(head):
                 if m.group(1).strip("."):
                     yield m.group(1)
+            if tag == "<application":
+                for m in _APPLICATION_CLASS_ATTR_RE.finditer(head):
+                    if m.group(1).strip("."):
+                        yield m.group(1)
 
 
 class _AndroidManifestHandler:
