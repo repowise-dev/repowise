@@ -221,13 +221,16 @@ def subscription_minutes(
 
 
 def subscription_quota(
-    provider_name: str, model_calls: int, concurrency: int | None = None
+    provider_name: str,
+    model_calls: int,
+    concurrency: int | None = None,
+    billing: str | None = None,
 ) -> str:
     """``uses your Claude Code login, about 14 model calls, 4 at a time``."""
     parallel = _parallel(provider_name, concurrency)
     calls = "call" if model_calls == 1 else "calls"
     return (
-        f"{PROVIDER_SPECS[provider_name].note}, about {model_calls:,} model {calls}, "
+        f"{billing or PROVIDER_SPECS[provider_name].note}, about {model_calls:,} model {calls}, "
         f"{parallel} at a time"
     )
 
@@ -246,7 +249,8 @@ def subscription_estimate(
     (from :func:`agent_cli_auth`) replaces the generic login note.
     """
     minutes = subscription_minutes(provider_name, model_calls, concurrency)
-    return f"{subscription_quota(provider_name, model_calls, concurrency)}, about {minutes:,} min"
+    quota = subscription_quota(provider_name, model_calls, concurrency, billing)
+    return f"{quota}, about {minutes:,} min"
 
 
 def subscription_note(ready: tuple[str, ...], auth: CliAuth | None = None) -> str | None:
