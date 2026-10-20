@@ -83,8 +83,11 @@ THEME = Theme(
 _BANNER_WIDTH_MARGIN = 7
 
 
-def print_banner(console: Console, repo_name: str | None = None) -> None:
-    """Print the owl banner, or the one-line header when the art cannot show, then the repo."""
+def print_banner(console: Console, repo_name: str | None = None, *, workspace: bool = False) -> None:
+    """Print the owl banner, or the one-line header when the art cannot show, then the repo.
+
+    *repo_name* is a bare name; *workspace* labels it ``Workspace:`` instead of ``Repository:``.
+    """
     from repowise.cli import __version__
     from repowise.cli.ui import mascot
 
@@ -95,7 +98,8 @@ def print_banner(console: Console, repo_name: str | None = None) -> None:
         console.print(mascot.banner_text(__version__), highlight=False)
     if repo_name:
         console.print()
-        console.print(f" Repository: [bold]{escape(repo_name)}[/bold]", highlight=False)
+        label = "Workspace" if workspace else "Repository"
+        console.print(f" {label}: [bold]{escape(repo_name)}[/bold]", highlight=False)
     console.print()
 
 

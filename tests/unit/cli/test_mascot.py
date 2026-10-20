@@ -121,3 +121,11 @@ def test_ascii_terminal_gets_the_ascii_header(monkeypatch) -> None:
 
 def test_repo_name_with_markup_is_escaped() -> None:
     assert "evil[/bold]name" in _printed(100, repo_name="evil[/bold]name")
+
+
+def test_a_workspace_is_labelled_once() -> None:
+    console = Console(width=100, record=True, force_terminal=True, theme=THEME)
+    print_banner(console, repo_name="ws", workspace=True)
+    out = console.export_text()
+    assert "Workspace: ws" in out
+    assert "Repository:" not in out

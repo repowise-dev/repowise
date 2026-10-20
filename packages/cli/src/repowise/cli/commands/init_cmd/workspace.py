@@ -788,7 +788,7 @@ def _workspace_init(
     start = time.monotonic()
     root = scan.root
 
-    print_banner(console, repo_name=f"Workspace: {root.name}")
+    print_banner(console, repo_name=root.name, workspace=True)
     console.print(f"  Detected [bold]{len(scan.repos)}[/bold] repositories in {root}\n")
 
     # --yes, --all or a non-terminal stdin take every detected repo (and the
