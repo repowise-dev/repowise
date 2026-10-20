@@ -100,12 +100,20 @@ def _legacy_health_finding_id(f: Any, repository: str) -> str:
 
 
 def _serialize_finding(
-    f: HealthFinding, repository: str = "default", lower_priority: str | None = None
+    f: HealthFinding,
+    repository: str = "default",
+    lower_priority: str | None = None,
+    *,
+    with_actions: bool = False,
 ) -> dict[str, Any]:
+    """One finding as a row. ``details.actions`` (prompts, a suppress rule) ride
+    only on the single-finding view, so a list keeps its size."""
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
         details = {}
+    if not with_actions and isinstance(details, dict):
+        details.pop("actions", None)
     dimension = getattr(f, "dimension", None) or "defect"
     rank = (
         {"perf_rank": _perf_rank(f.biomarker_type, details)} if dimension == "performance" else {}

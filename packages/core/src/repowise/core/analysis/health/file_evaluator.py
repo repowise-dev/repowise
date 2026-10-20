@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...ingestion.git_indexer.function_blame import BlameIndex
 from ...ingestion.package_roots import module_for as _module_for
+from ..execution_graph import file_of_symbol
 from ..graph_view import HasEdge
 from ..test_reach.type_only import is_type_only, may_be_type_only
 from .asserts.lexicon import AssertVocabulary
@@ -16,6 +17,7 @@ from .biomarkers.base import BiomarkerResult
 from .biomarkers.function_hotspot import refresh_replayed
 from .complexity import FileComplexity, FunctionComplexity
 from .complexity.languages import has_health_dialect
+from .coverage_actions import nearest_test_file
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
@@ -28,7 +30,7 @@ from .scoring import attach_impacts, file_score_fields, remap_severities, score_
 from .source_reader import SourceReader
 
 if TYPE_CHECKING:
-    from ..function_test_map import FunctionTests
+    from ..function_test_map import FunctionTests, MappedTest
     from .engine import HealthAnalyzer
 
 #: Function facts a finding inside the function carries in its details.
@@ -224,6 +226,8 @@ class FileEvaluator:
     methods_by_file: dict[str, tuple[str, ...]] | None = None
     dataflow_cache: FileDataflowCache | None = None
     function_tests: FunctionTests | None = None
+    #: Test files by file name (``coverage_actions.paired_test_index``).
+    paired_test_files: dict[str, list[str]] | None = None
 
     def evaluate(
         self, pf: Any, fcx: FileComplexity
@@ -306,23 +310,39 @@ class FileEvaluator:
             perf_hits=fcx.perf_hits,
             io_boundary_names=set(fcx.io_boundary_names),
             cross_file_oracle_lines=frozenset(getattr(fcx, "cross_file_oracles", ())),
-            function_test_hops=self._function_test_hops(pf, fcx),
+            **self._nearest_tests(pf, fcx),
         )
 
-    def _function_test_hops(self, pf: Any, fcx: FileComplexity) -> dict[int, int]:
-        """Each function's start line to the hops of the nearest test that reaches it."""
-        if not self.function_tests or pf.file_info.is_test:
+    def _nearest_tests(self, pf: Any, fcx: FileComplexity) -> dict[str, Any]:
+        """Each function's nearest test (hops and file), and the file's own test."""
+        if pf.file_info.is_test:
+            return {}
+        path = pf.file_info.path
+        nearest = self._function_tests(path, fcx)
+        hops = {line: test.hops for line, test in nearest.items()}
+        files = {line: file_of_symbol(test.selector) for line, test in nearest.items()}
+        closest = min(nearest.values(), key=lambda t: t.hops, default=None)
+        return {
+            "function_test_hops": hops,
+            "function_test_files": files,
+            "file_test": nearest_test_file(
+                path, closest.selector if closest else None, self.paired_test_files
+            ),
+        }
+
+    def _function_tests(self, path: str, fcx: FileComplexity) -> dict[int, MappedTest]:
+        """Each function's start line to the nearest test that reaches it."""
+        if not self.function_tests:
             return {}
         index = self.analyzer._execution_graph()
         if index is None:
             return {}
-        path = pf.file_info.path
-        out: dict[int, int] = {}
+        out: dict[int, MappedTest] = {}
         for fc in fcx.functions:
             symbol = index.resolve_function(path, fc.start_line, func_end=fc.end_line)
             tests = self.function_tests.get(symbol) if symbol is not None else None
             if tests:
-                out[fc.start_line] = tests[0].hops
+                out[fc.start_line] = tests[0]
         return out
 
     def _findings(

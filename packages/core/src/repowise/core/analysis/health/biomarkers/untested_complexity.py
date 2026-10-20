@@ -13,6 +13,7 @@ refactor rather than tests. Test files are exempt.
 from __future__ import annotations
 
 from ..complexity.dispatch import judged_ccn
+from ..coverage_actions import coverage_actions
 from ..crap import CRAP_THRESHOLD, coverage_tier, function_coverage, function_crap
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
@@ -86,6 +87,18 @@ class UntestedComplexityDetector:
             reason = f"{fn.name} has CRAP {result.crap:.0f} (complexity {ccn}, {covered})"
             if refactor:
                 reason += "; full coverage would not bring it under 30, so simplify it"
+            # ``actions`` carries the step ``action`` names, with its prompt.
+            # Only on evidence of what runs: a measurement, or a test that calls
+            # it. A graph that found no test is not a reason to act.
+            if is_measured or tier == "direct":
+                details["actions"] = coverage_actions(
+                    self.name,
+                    ctx.file_path,
+                    function=fn.name,
+                    target_test=ctx.function_test_files.get(fn.start_line) or ctx.file_test,
+                    evidence=f"CRAP {result.crap:.0f} at complexity {ccn}, {covered}",
+                    refactor=refactor,
+                )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,

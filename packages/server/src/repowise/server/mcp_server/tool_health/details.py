@@ -104,7 +104,10 @@ async def _finding_detail_response(
         "finding_id": finding_id,
         "finding": (
             _serialize_finding(
-                match, reference_repository, await _lower_priority(session, repository.id, match)
+                match,
+                reference_repository,
+                await _lower_priority(session, repository.id, match),
+                with_actions=True,
             )
             if match
             else None

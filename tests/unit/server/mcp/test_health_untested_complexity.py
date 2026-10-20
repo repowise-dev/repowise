@@ -24,7 +24,14 @@ def _row(repo_id: str, name: str, basis: str, crap: float) -> HealthFinding:
         line_start=10,
         line_end=40,
         details_json=json.dumps(
-            {"crap": crap, "ccn": 8, "coverage_basis": basis, "action": "add_tests", **cov}
+            {
+                "crap": crap,
+                "ccn": 8,
+                "coverage_basis": basis,
+                "action": "add_tests",
+                **cov,
+                "actions": [{"kind": "add-tests", "prompt": f"Test {name}."}],
+            }
         ),
         reason=f"{name} has CRAP {crap:.0f}",
         dimension="advisory",
@@ -96,3 +103,15 @@ async def test_held_estimates_are_counted_not_listed(setup_mcp, crap_rows):
     gated = (await get_health(targets=["src/auth/service.py"], include=["advisory"]))["_meta"]["gated"]
     assert gated["health"]["estimated"] == 1
     assert gated["opt_in"] == {"include": ["unverified"]}
+
+
+@pytest.mark.asyncio
+async def test_actions_ride_only_on_the_single_finding_view(setup_mcp, crap_rows):
+    from repowise.server.mcp_server import get_health
+
+    listed = await get_health(targets=["src/auth/service.py"], include=["advisory"])
+    rows = [f for f in listed["findings"] if f["biomarker_type"] == "untested_complexity"]
+    assert rows and all("actions" not in f["details"] for f in rows)
+
+    detail = await get_health(finding_id=rows[0]["id"])
+    assert detail["finding"]["details"]["actions"][0]["kind"] == "add-tests"

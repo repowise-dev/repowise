@@ -177,7 +177,10 @@ those two, `MEDIUM` otherwise. `coverage_gap` covers thin-but-present coverage, 
 `untested_complexity` reads the CRAP score: complexity weighted by the share of
 the function a report measured as run, or by its reach tier when no report covers
 it. A tier never becomes a percentage, and only measured findings are listed by
-default. The graph check
+default. A `coverage_gap` finding, and an `untested_complexity` finding on measured
+coverage or a direct test, carries `actions`: a prompt to add tests (or to split
+the function at complexity 30 and above) naming the nearest test file to extend,
+and the `.repowise/health-rules.json` rule that silences it for that file. The graph check
 matters because a filename convention misses tests in both directions
 ([examples](../architecture/test-intelligence.md#why-a-graph-signal)).
 

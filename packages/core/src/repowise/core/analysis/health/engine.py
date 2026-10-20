@@ -46,6 +46,7 @@ from ..graph_view import ImportEdgeView
 from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
 from .complexity import FileComplexity, FunctionComplexity, walk_file
+from .coverage_actions import paired_test_index
 from .crossfn_perf import CrossFunctionPerfStage
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
@@ -972,6 +973,7 @@ class HealthAnalyzer:
             methods_by_file=build_methods_by_file(self.graph),
             dataflow_cache=dataflow_cache,
             function_tests=function_tests,
+            paired_test_files=paired_test_index(self.test_index.all_test_files()),
         )
 
     def _evaluate_all(

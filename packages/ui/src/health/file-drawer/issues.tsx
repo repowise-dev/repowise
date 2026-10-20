@@ -23,6 +23,7 @@ import {
   isHistoryBiomarker,
 } from "../biomarker-glossary";
 import { BiomarkerDetails } from "../biomarker-details";
+import { FindingActions } from "../finding-actions";
 import { plainIssue } from "../plain-language";
 import { SeverityMark } from "../severity-mark";
 import { VerificationTag } from "../verification-tag";
@@ -75,6 +76,7 @@ export function FindingDetail({
           {suggestion}
         </p>
       ) : null}
+      <FindingActions details={f.details} />
     </>
   );
 }

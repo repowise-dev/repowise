@@ -138,6 +138,11 @@ class FileContext:
     # Start line of each function a test reaches on the call graph, to the call
     # hops of the nearest such test (1: a test calls it). Empty without a graph.
     function_test_hops: dict[int, int] = field(default_factory=dict)
+    # The same functions' nearest test file, and the file's own: the nearest
+    # test any of its functions has, else a test file named for it. ``None``
+    # when nothing names one.
+    function_test_files: dict[int, str] = field(default_factory=dict)
+    file_test: str | None = None
 
     @property
     def is_test_material(self) -> bool:
