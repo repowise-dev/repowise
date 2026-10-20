@@ -157,3 +157,14 @@ def test_a_path_to_a_repo_folder_matches_it(tmp_path, monkeypatch):
     assert match_repo_names(repos, [str(tmp_path / "repo-a")], tmp_path) == [repos[0]]
     with pytest.raises(ValueError, match=r"Unknown repo: \./nope"):
         match_repo_names(repos, ["./nope"], tmp_path)
+
+
+def test_a_relative_path_is_read_from_the_workspace_root(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    repos = [SimpleNamespace(path=root / n, name=n, alias=n) for n in ("repo-a", "repo-b")]
+    for repo in repos:
+        repo.path.mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert match_repo_names(repos, ["./repo-b"], root) == [repos[1]]

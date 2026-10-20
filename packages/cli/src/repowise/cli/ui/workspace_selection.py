@@ -141,9 +141,10 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
 
     A name matches a repo's alias, its directory name, or its path relative to
     *root* (the column the picker shows), case-insensitively. A filesystem path
-    (``./api`` or absolute) that resolves to a repo's folder matches it too. A name two repos
-    share is ambiguous: the path tells them apart. Raises ``ValueError`` with a
-    message that names every bad name and what would work instead.
+    (``./api`` or absolute, relative ones read from *root* first) that resolves
+    to a repo's folder matches it too. A name two repos share is ambiguous: the
+    path tells them apart. Raises ``ValueError`` with a message that names every
+    bad name and what would work instead.
     """
     picked: list[Any] = []
     seen: set[str] = set()
@@ -156,8 +157,10 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
             if name in (r.alias.casefold(), r.name.casefold(), display_path(r, root).casefold())
         ]
         if not hits:
-            target = _resolved(Path(raw).expanduser())
-            hits = [r for r in repos if target is not None and _resolved(r.path) == target]
+            given = Path(raw).expanduser()
+            bases = [Path(root) / given] if root is not None and not given.is_absolute() else []
+            targets = {t for t in map(_resolved, [*bases, given]) if t is not None}
+            hits = [r for r in repos if _resolved(r.path) in targets]
         if not hits:
             unknown.append(raw)
         elif len(hits) > 1:
