@@ -145,14 +145,16 @@ class FileView:
         missed would make an unchanged head marker read as added, so base
         errs toward seeing more, which only makes a rule abstain.
         """
-        hits: list[Hit] = []
-        for index, line in enumerate(self.lines):
-            for marker in markers:
-                match = marker.pattern.search(line)
-                if match is not None:
-                    key = _marker_text(line, match.start()) if comment else marker.label
-                    hits.append(Hit(index + 1, marker.label, key))
-        return hits
+        found = (
+            (index, line, marker, marker.pattern.search(line))
+            for index, line in enumerate(self.lines)
+            for marker in markers
+        )
+        return [
+            Hit(index + 1, marker.label, _marker_text(line, x.start()) if comment else marker.label)
+            for index, line, marker, x in found
+            if x is not None
+        ]
 
     def _in_local_string(self, index: int, at: int) -> bool:
         if self.prose:
@@ -213,30 +215,34 @@ def _prose_comments(lines: list[str]) -> list[str]:
     out: list[str] = []
     fenced = in_comment = False
     for raw in lines:
-        if not in_comment and _FENCE.match(raw):
-            fenced = not fenced
+        fence = not in_comment and _FENCE.match(raw)
+        fenced ^= bool(fence)
+        if fence or fenced:
             out.append("")
             continue
-        if fenced:
-            out.append("")
-            continue
-        line = _hide_code_spans(raw)
-        kept: list[str] = []
-        at = 0
-        while at < len(line):
-            if in_comment:
-                close = line.find("-->", at)
-                stop = len(line) if close == -1 else close + 3
-                kept.append(line[at:stop])
-                in_comment = close == -1
-            else:
-                opened = line.find("<!--", at)
-                stop = len(line) if opened == -1 else opened
-                kept.append(_HIDDEN * (stop - at))
-                in_comment = opened != -1
-            at = stop
-        out.append("".join(kept))
+        line, in_comment = _html_comments(_hide_code_spans(raw), in_comment)
+        out.append(line)
     return out
+
+
+def _html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    """*line* with everything outside ``<!-- -->`` hidden, and whether a
+    comment is still open at its end."""
+    kept: list[str] = []
+    at = 0
+    while at < len(line):
+        if in_comment:
+            close = line.find("-->", at)
+            stop = len(line) if close == -1 else close + 3
+            kept.append(line[at:stop])
+            in_comment = close == -1
+        else:
+            opened = line.find("<!--", at)
+            stop = len(line) if opened == -1 else opened
+            kept.append(_HIDDEN * (stop - at))
+            in_comment = opened != -1
+        at = stop
+    return "".join(kept), in_comment
 
 
 def _hide_code_spans(line: str) -> str:
