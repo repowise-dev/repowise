@@ -158,6 +158,7 @@ def show_completion(
     # Unavailable also describes a keyless run; only a failed write earns
     # the failure line.
     _embed_failed = getattr(result, "embed_failed_pages", 0)
+    _semantic_on = _scope["search"]["semantic"] == "available"
 
     _graph_final = result.graph_builder.graph()
     _dc_unreachable = sum(
@@ -270,7 +271,7 @@ def show_completion(
             # status and MCP report for the same run.
             if _embed_failed:
                 _search_note = "Full-text\n  search works now."
-            elif _scope["search"]["semantic"] == "available":
+            elif _semantic_on:
                 _search_note = "Full-text\n  and semantic search work now."
             else:
                 _search_note = (
@@ -285,9 +286,8 @@ def show_completion(
             # two upgrades available from here and the command for each, so
             # the headless path (no editor setup, no `generate` row in
             # build_contextual_next_steps) still learns about them (#3105).
-            console.print(
-                f"  [dim]{keyless_upgrade_note(_scope['search']['semantic'] == 'available')}[/dim]"
-            )
+            _note = keyless_upgrade_note(_semantic_on, _scope["search"]["next_command"])
+            console.print(f"  [dim]{_note}[/dim]")
             _print_embed_failure(_embed_failed)
         else:
             console.print(
@@ -354,6 +354,11 @@ def show_completion(
         )
         console.print()
         _print_embed_failure(_embed_failed)
+        if not _semantic_on and not _embed_failed and _scope["search"]["next_command"]:
+            console.print(
+                "  [dim]Semantic search is off. Run "
+                f"[bold]{_scope['search']['next_command']}[/bold] to turn it on.[/dim]"
+            )
         _render_defect_accuracy(result)
         # A concise, dynamic MCP note (who is connected, how others connect)
         # replaces the old wall of manual per-client config: init already wrote

@@ -102,7 +102,7 @@ def _fail_on_embed_failure(
     let a scripted run, or the post-commit log, read a failed write as a
     healthy index.
     """
-    from repowise.cli.providers import embed_failure_message
+    from repowise.cli.providers import embed_failure_message, semantic_search_command
     from repowise.core.index_scope import stamp_index_scope
 
     message = embed_failure_message(embedder, embed_failed_pages)
@@ -112,7 +112,10 @@ def _fail_on_embed_failure(
     stamp_index_scope(
         state,
         load_config(repo_path),
-        search={"semantic": "unavailable", "next_command": "repowise reindex"},
+        search={
+            "semantic": "unavailable",
+            "next_command": semantic_search_command(repo_path, embedder),
+        },
     )
     save_state(repo_path, state)
     if emitter is not None:

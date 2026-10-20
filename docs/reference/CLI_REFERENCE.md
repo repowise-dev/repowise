@@ -216,13 +216,20 @@ repowise init . --no-prose -x "node_modules/"        # workspace, no LLM
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 
-**Exit status when embedding fails.** With a real embedder (anything but
-`mock`), a run whose page vectors fail to write, for example because the
-LanceDB install is broken, still saves its pages and full-text index but
-exits `1`, records `search.semantic: unavailable` in the index scope, and names
-the fix: reinstall the dependency, then `repowise reindex`. `update` follows the
-same rule, and a workspace `init` exits `1` after saving every repo, naming the
-repos whose embed failed. The keyless `mock` embedder never fails a run this way.
+**Exit codes.** `0` ready. `2` finished with gaps: everything is saved, and the
+last line names what is missing and the command that adds it (for example
+documentation built from code because the cost estimate needed confirmation and
+there was no terminal, so re-run with `--yes`). `130` interrupted: run
+`repowise init --resume` to continue. Any other non-zero code is a failure; a
+usage error (a bad flag) also exits `2`, before anything runs.
+
+With a real embedder (anything but `mock`), a run whose page vectors fail to
+write, for example because the LanceDB install is broken, keeps its pages and
+full-text index, records `search.semantic: unavailable` in the index scope, and
+exits `2` naming the fix: reinstall the dependency, then `repowise reindex`. A
+workspace `init` exits `2` after saving every repo, naming the repos with gaps.
+`update` exits `1` on a failed embed. The keyless `mock` embedder never fails a
+run this way.
 
 **Documentation output limit.** Set `max_tokens` in
 `.repowise/config.yaml` to bound each model-written page. It is persistent, not
