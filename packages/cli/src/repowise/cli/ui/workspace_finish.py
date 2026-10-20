@@ -34,7 +34,11 @@ from repowise.cli.ui.mode_names import (
     mode_label,
     pages,
 )
-from repowise.cli.ui.result_panels import build_completion_panel, serve_step
+from repowise.cli.ui.result_panels import (
+    build_completion_panel,
+    print_completion_panel,
+    serve_step,
+)
 from repowise.core.index_scope import fast_to_full_command
 
 #: Repos listed by name; the rest are counted, problems listed first.
@@ -188,15 +192,30 @@ def _questions() -> list[str]:
 
 def build_workspace_finish_panel(facts: WorkspaceFacts, *, setup: Any = None) -> Any:
     """The workspace completion panel: counts, repos, Connected, questions, steps."""
-    body = _repo_lines(facts)
-    connected = connected_lines(setup)
-    if connected:
-        body += [Text(""), *connected]
-    body += ask_lines(_questions())
     return build_completion_panel(
         TITLE_WORKSPACE,
         _metrics(facts),
         next_steps=workspace_steps(facts, setup),
-        body=body,
+        body=_body(facts, setup),
         footer=autosync_lines(setup),
     )
+
+
+def print_workspace_finish_panel(console: Any, facts: WorkspaceFacts, *, setup: Any = None) -> None:
+    """The workspace panel on a terminal; the same rows as plain lines off one."""
+    print_completion_panel(
+        console,
+        TITLE_WORKSPACE,
+        _metrics(facts),
+        workspace_steps(facts, setup),
+        body=_body(facts, setup),
+        footer=autosync_lines(setup),
+    )
+
+
+def _body(facts: WorkspaceFacts, setup: Any) -> list[RenderableType]:
+    body = _repo_lines(facts)
+    connected = connected_lines(setup)
+    if connected:
+        body += [Text(""), *connected]
+    return body + ask_lines(_questions())

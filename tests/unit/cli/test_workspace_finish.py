@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 from rich.console import Console
 
 from repowise.cli.editor_setup import EditorSetupOutcome
@@ -11,6 +13,7 @@ from repowise.cli.ui.workspace_finish import (
     RepoOutcome,
     WorkspaceFacts,
     build_workspace_finish_panel,
+    print_workspace_finish_panel,
 )
 
 _WRITTEN = {
@@ -111,3 +114,12 @@ def test_model_name_drops_a_repeated_provider_prefix():
         "claude_cli / claude-haiku-5-5"
     )
     assert provider_model("gemini", "gemini-2.5-flash") == "gemini / gemini-2.5-flash"
+
+
+def test_off_a_terminal_the_workspace_panel_is_plain_lines():
+    console = Console(file=io.StringIO(), width=100, force_terminal=False)
+    print_workspace_finish_panel(console, _facts([RepoOutcome("api", _FROM_CODE, pages=3)]))
+    out = console.file.getvalue()
+
+    assert "╭" not in out and "│" not in out
+    assert "api" in out and "repowise serve" in out

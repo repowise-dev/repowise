@@ -21,7 +21,7 @@ from repowise.cli.ui.mode_names import pages, provider_model
 from repowise.cli.ui.workspace_finish import (
     RepoOutcome,
     WorkspaceFacts,
-    build_workspace_finish_panel,
+    print_workspace_finish_panel,
 )
 
 
@@ -259,5 +259,5 @@ def show_workspace_completion(
         else provider_model(provider.provider_name, provider.model_name),
     )
     console.print()
-    console.print(build_workspace_finish_panel(facts, setup=setup))
+    print_workspace_finish_panel(console, facts, setup=setup)
     console.print()
