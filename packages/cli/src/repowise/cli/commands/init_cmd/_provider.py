@@ -95,9 +95,11 @@ def note_subscription_cli(run: InitRun) -> None:
         return
     if not (run.opts.index_only or run.no_provider):
         return
-    from repowise.cli.ui.subscription import ready_agent_providers, subscription_note
+    from repowise.cli.ui.subscription import logged_in_agent_providers, subscription_note
 
-    note = subscription_note(ready_agent_providers())
+    offered = {n: auth for n, auth in logged_in_agent_providers().items() if auth.offer}
+    first = next(iter(offered), None)
+    note = subscription_note(tuple(offered), offered[first]) if first else None
     if note:
         console.print(f"  [dim]{note}[/dim]")
 

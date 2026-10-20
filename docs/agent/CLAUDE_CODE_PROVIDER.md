@@ -119,13 +119,14 @@ same limits as your interactive Claude Code sessions. On a large repo, prefer
 
 ### Detected, never picked for you
 
-`repowise init` checks `claude auth status`. When it is logged in, the
-interactive provider picker lists `claude_cli` as ready with its estimate in
-place of a price, for example "uses your Claude Code login, about 14 model
-calls, 4 at a time, about 4 min" (one minute per call per process). A
-non-interactive run (`--yes`) never switches to it: it stays free and prints
-one line naming the command that uses your subscription. The same holds for a
-logged-in Codex CLI and an installed OpenCode.
+`repowise init` reads `claude auth status` (and `codex login status`,
+`opencode auth list`) to see how each CLI is billed. The interactive picker
+shows that in place of a price, for example "Claude team plan: uses your plan
+quota, about 14 model calls, 4 at a time, about 4 min" (one minute per call
+per process). A non-interactive run (`--yes`) never switches to one: it stays
+free and prints one line naming the command that would use it, Claude Code
+first. A CLI signed in without a paid plan, or with no stored credentials, is
+still listed but never recommended.
 
 ### Running from inside Claude Code
 
