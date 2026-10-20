@@ -691,6 +691,26 @@ class TestScanFile:
             ("a.py", 'key = hashlib.sha1(f"({a})".encode(), usedforsecurity=False)\n', False),
             ("a.py", 'key = hashlib.sha1(b"usedforsecurity=False")\n', True),
             ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
+            # Cut to a few characters where it is computed, or kept as a key: an id.
+            ("a.py", "short = hashlib.md5(name.encode()).hexdigest()[:8]\n", False),
+            ("a.py", "short = hashlib.sha1(name.encode()).hexdigest()[0:12]\n", False),
+            ("a.js", 'const id = crypto.createHash("md5").update(s).digest("hex").slice(0, 8);\n', False),
+            ("a.py", "etag = hashlib.md5(body).hexdigest()\n", False),
+            ("a.py", "cache_key = hashlib.sha1(url.encode()).hexdigest()\n", False),
+            ("a.ts", 'const cacheKey = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'slug = title + "-" + md5(title.encode()).hexdigest()\n', False),
+            # A credential stays a finding, truncated or named as a key.
+            ("a.py", "pw = hashlib.md5(password.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "cache_key = hashlib.md5(token).hexdigest()\n", True),
+            ("a.py", "digest = hashlib.md5(data).hexdigest()[8:]\n", True),
+            ("a.py", "full = hashlib.md5(data).digest()\n", True),
+            ("a.py", "pw = hashlib.md5(p.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "whole = hashlib.md5(data).hexdigest()[:32]\n", True),
+            ("a.py", "mac = hmac.new(k, m, hashlib.md5).hexdigest()[:8]\n", True),
+            ("a.py", "if cache_key in seen: h = hashlib.md5(data).hexdigest()\n", True),
+            ("a.ts", 'const cacheKey: string = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'row = {"etag": hashlib.md5(body).hexdigest()}\n', False),
+            ("a.py", "author_slug = hashlib.md5(name.encode()).hexdigest()\n", False),
         ],
     )
     def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:

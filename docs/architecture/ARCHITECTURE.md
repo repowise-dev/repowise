@@ -1579,7 +1579,7 @@ Key files:
 | `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher`, queries DB for architecture summary, modules, hotspots, decisions |
 | `core/generation/editor_files/tech_stack.py` | Filesystem scan for languages, frameworks, build commands |
 | `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator`, 30-line subclass that binds filename + template |
-| `core/generation/templates/claude_md.j2` | Jinja2 template for the Repowise-managed section |
+| `core/generation/templates/_editor_block.j2` | Jinja2 template for the Repowise-managed section |
 | `cli/commands/claude_md_cmd.py` | `repowise generate-claude-md` CLI command |
 | `server/routers/claude_md.py` | `GET/POST /api/repos/{id}/claude-md` REST endpoints |
 

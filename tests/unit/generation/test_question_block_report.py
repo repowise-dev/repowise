@@ -99,4 +99,4 @@ def test_the_check_prints_even_when_it_measured_nothing():
     buffer = StringIO()
     render_generation_checks(GenerationReport.from_pages([]), Console(file=buffer, width=100))
 
-    assert "Question-shaped text" in buffer.getvalue()
+    assert "Pages with question text" in buffer.getvalue()

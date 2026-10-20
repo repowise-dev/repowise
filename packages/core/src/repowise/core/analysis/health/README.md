@@ -199,4 +199,4 @@ parallel path automatically when `len(parsed_files) >= 500`.
 - API: `packages/server/src/repowise/server/routers/code_health.py`.
 - UI primitives: `packages/ui/src/health/`. Web routes:
   `packages/web/src/app/repos/[id]/health/`.
-- CLAUDE.md template stanza: `packages/core/src/repowise/core/generation/templates/claude_md.j2`.
+- CLAUDE.md template stanza: `packages/core/src/repowise/core/generation/templates/_editor_block.j2`.

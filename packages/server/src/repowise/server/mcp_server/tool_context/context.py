@@ -133,23 +133,23 @@ async def get_context(
     include: list[str] | None = None,
     compact: bool = True,
     repo: str | None = None,
+    symptom: str | None = None,
 ) -> dict:
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Returns title, summary, signatures with line numbers, hotspot bit, and
+    Returns title, summary, signatures with lines, hotspot bit and
     decision_record titles. A symbol row without symbol_id is path::name.
-    fix_history appears only on files with counted bug fixes (count, age,
-    bug_magnet); hotspot is churn. Either one is a cue to
-    call get_risk. episodes counts the dated records bound to a target
-    (absent at zero); get_why serves the bodies. A symbol target is counted as its file, and a
-    module aggregates everything beneath it.
-    Batch targets in one call. No source bytes by default: pass
-    include=["skeleton"] for the whole file body-elided and line-verified in
+    fix_history (count, age, bug_magnet) appears only on files with counted
+    bug fixes; hotspot is churn. Either is a cue to call get_risk. episodes
+    counts the dated records bound to a target (absent at zero); get_why serves
+    the bodies. A symbol target counts as its file; a module aggregates all
+    beneath it. Batch targets in one call. No source bytes by default:
+    include=["skeleton"] gives the whole file body-elided and line-verified in
     ONE call, or Read it. Do not call get_symbol per signature.
     For a rename or update-all-callers task, include=["references"] is the
-    whole edit set when complete is true.
+    whole edit set when complete.
 
-    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
+    Defaults fit 24,000 serialized chars; nonempty ``include`` uses
     32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
     ``_meta.recovery_unavailable`` names a storage failure.
     Include-gated blocks are projections, not omissions.
@@ -159,11 +159,11 @@ async def get_context(
             "change:<id>" (pr-123 or a sha), "package:<name>".
         include: opt-in blocks: full_doc | ownership | last_change | callers
             | callees | references | metrics | community | decisions | skeleton
-            | skeleton+ | health | doc_drift (docs naming this file)
-            | symbols (all, not the top 15) | changes | provenance
-            | suspects.
+            | skeleton+ | health | doc_drift (docs naming it) | symbols
+            (all, not top 15) | changes | provenance | suspects.
         compact: False adds structure+imports+docstrings.
         repo: usually omitted.
+        symptom: issue text, error or stack trace suspects ranks on.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
@@ -171,12 +171,18 @@ async def get_context(
     if needs_routing(routes):
         return await run_grouped(
             routes,
-            lambda alias, local: get_context(local, include=include, compact=compact, repo=alias),
+            lambda alias, local: get_context(
+                local, include=include, compact=compact, repo=alias, symptom=symptom
+            ),
         )
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_context", repo_root=ctx.path)
     ignored: list[dict[str, Any]] = []
     include_set = _include_set(include, ignored)
+    if symptom and "suspects" not in include_set:
+        ignored.append(
+            {"argument": "symptom", "values": [symptom[:80]], "valid": ['include=["suspects"]']}
+        )
     exclude_spec = _get_exclude_spec(ctx.path)
 
     import time as _time
@@ -197,7 +203,9 @@ async def get_context(
             collector=collector,
         )
         suspects = (
-            await suspects_block(session, repository, targets) if "suspects" in include_set else None
+            await suspects_block(session, repository, targets, symptom)
+            if "suspects" in include_set
+            else None
         )
 
     results = _per_target_results(targets, raw_results)

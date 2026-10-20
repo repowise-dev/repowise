@@ -25,7 +25,7 @@ repowise dead-code --kind unused_export --format json
  unreachable_file  src/legacy/parser.ts           100%    ✗      212  File has no importers (in_degree=0)
  unreachable_file  config/feature_flags.py         40%    ✗       31  File has no importers (in_degree=0)
 
-Cleanup-candidate lines: 14 (high 2, medium 1 confidence)
+Cleanup-candidate lines: 14 · findings by confidence: high 2, medium 1
 ```
 
 From an agent, `get_dead_code()` or `get_dead_code(tier="high", safe_only=True)`.

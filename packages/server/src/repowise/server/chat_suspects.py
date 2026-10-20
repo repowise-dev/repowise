@@ -1,8 +1,8 @@
 """The chat-only ``find_suspects`` tool: changes before a symptom, in reading order.
 
-MCP has no free-text symptom input (get_context's ``include=["suspects"]``
-takes its targets as the symptom), so chat gets this tool for an incident
-described in words, the input the suspects measurement scored. It reads the
+Chat gets its own tool for an incident described in words, the input the
+suspects measurement scored, rather than routing it through get_context's
+``include=["suspects"]`` and its ``symptom`` argument. It reads the
 same index through the in-process tool state, so it is offered only on the
 local backend, and only when the session may run ``get_context``, which reads
 the same data under the same scope.

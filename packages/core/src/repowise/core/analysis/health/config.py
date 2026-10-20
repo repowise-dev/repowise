@@ -334,14 +334,17 @@ class HealthConfig:
         something here would change the analysis: a disabled/severity-remapped
         biomarker, or any refactoring-layer knob set away from its default.
         """
-        return bool(
-            self.disabled_biomarkers
-            or self.rules
-            or self.severity_overrides
-            or self.profile
-            or not self.refactoring_enabled
-            or self.disabled_refactorings
-            or self.refactoring_min_confidence
+        return any(
+            (
+                self.disabled_biomarkers,
+                self.rules,
+                self.severity_overrides,
+                self.profile,
+                not self.refactoring_enabled,
+                self.disabled_refactorings,
+                self.refactoring_min_confidence,
+                self.assert_extra_names,
+            )
         )
 
     @classmethod
@@ -354,7 +357,9 @@ class HealthConfig:
         rules: list[HealthRule] = []
         raw_rules = raw.get("rules")
         if raw_rules is not None and not isinstance(raw_rules, list | tuple):
-            log.warning("health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__)
+            log.warning(
+                "health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__
+            )
             raw_rules = []
         for entry in raw_rules or []:
             if not isinstance(entry, dict):

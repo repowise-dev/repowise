@@ -114,7 +114,8 @@ class ChangeHealthDeltaService:
             source = GitRevisionSource(repo_path)
         self.source = source
         self.repo_path = repo_path
-        self.analyzer = analyzer or RevisionHealthAnalyzer()
+        self._custom_analyzer = analyzer is not None
+        self.analyzer = analyzer or RevisionHealthAnalyzer(repo_root=repo_path)
         self.rules_fingerprint = rules_fingerprint
         self._cache: OrderedDict[str, ChangeHealthDelta] = OrderedDict()
         self._lock = threading.Lock()
@@ -320,15 +321,22 @@ class ChangeHealthDeltaService:
         )
         base_sources = self.source.read(pair.base_sha, base_paths)
         rename = pair.rename_map()
-        head_run = self.analyzer.analyze(
-            head_sources, subject_paths=set(head_paths), dependents=index
-        )
-        base_run = self.analyzer.analyze(
+        analyzer = self._analyzer_for([*head_paths, *base_paths])
+        head_run = analyzer.analyze(head_sources, subject_paths=set(head_paths), dependents=index)
+        base_run = analyzer.analyze(
             base_sources,
             subject_paths=set(base_paths),
             dependents=index if index is not None else _on_base(head_run, rename),
         )
         return _Sides(head_paths, head_sources, base_sources, head_run, base_run, rename)
+
+    def _analyzer_for(self, paths: list[str]) -> RevisionHealthAnalyzer:
+        if self._custom_analyzer or self.repo_path is None:
+            return self.analyzer
+        config = _analyzer_config(self.repo_path, paths)
+        if config is None:
+            return self.analyzer
+        return RevisionHealthAnalyzer(repo_root=self.repo_path, config=config)
 
     def _surface(
         self,
@@ -502,8 +510,7 @@ def _nothing_compared(changes: list[FileChange], skipped: dict[str, str]) -> str
         )
     if all(r in NO_CODE_GAP for r in skipped.values()):
         return (
-            "Only query, template or other data files changed; "
-            "health analysis does not cover them."
+            "Only query, template or other data files changed; health analysis does not cover them."
         )
     return "No changed file is health-analyzable, so nothing was compared."
 
@@ -690,6 +697,8 @@ _EXPECTED_TEXT: dict[str | None, str] = {
     "gated_off": "Nothing to change while a constant-False flag switches this function off.",
     "cold_path": "Runs once per deploy, boot or incident; not worth scheduling.",
     "bounded_loop": "Nothing to change: the loop runs a fixed number of times.",
+    "small_table": "Nothing to change: the loop walks a table that does not grow with the "
+    "repository.",
     None: _INHERENT,
 }
 
@@ -738,3 +747,11 @@ def _unavailable(
         fingerprint=fingerprint,
         scope=scope or ScopeCounts(),
     )
+
+
+def _analyzer_config(repo_path: str, paths: list[str]) -> dict[str, object] | None:
+    """The repo's `.repowise/health-rules.json` as analyzer config, or `None`."""
+    from ..health.config import HealthConfig
+
+    cfg = HealthConfig.load(repo_path)
+    return cfg.to_analyzer_config(paths) if cfg.has_overrides() else None

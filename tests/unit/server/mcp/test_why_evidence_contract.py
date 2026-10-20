@@ -590,7 +590,8 @@ async def test_no_decision_and_unsupported_modes_remain_compatible(
     assert unsupported == {
         "error": (
             "repo='all' is not supported for get_why (health dashboard). "
-            "Specify a repo alias instead. Available: []"
+            "Specify a repo alias instead. Available: [] "
+            "To search all repositories, pass a query."
         )
     }
 

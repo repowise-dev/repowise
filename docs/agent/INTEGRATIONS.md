@@ -26,6 +26,10 @@ it and repowise does not write it. `No` means the surface does not exist
 for that agent. `Indexing` is `Yes` when the agent's own CLI can run as the
 LLM that writes the index, selected by its provider id (`claude_cli`, for
 example). It is separate from the tier: it says nothing about the session.
+`init` offers a logged-in agent CLI but uses it only when you pick it or pass
+`--provider`. An agent CLI has no embedder, so semantic search needs an
+embedder key of its own: see
+[Embeddings](../reference/CONFIG.md#embeddings-for-semantic-search).
 
 `Attribution` is `Yes` when repowise can record the agent's edits as they
 happen, an opt-in set by `attribution.capture` and `attribution.agents`. Every

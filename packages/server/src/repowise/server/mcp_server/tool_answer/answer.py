@@ -133,6 +133,7 @@ from repowise.server.mcp_server.tool_answer.callers import (
     is_caller_question,
     is_impact_question,
 )
+from repowise.server.mcp_server.tool_answer.citations import answer_files
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
     _grade_answer,
@@ -587,13 +588,11 @@ async def _graded_payload(
 ) -> tuple[dict, str, list[str]]:
     """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
     hits = retrieved.hits
-    citations = [
-        h["target_path"] for h in hits if h.get("target_path") and h["target_path"] in answer_text
-    ]
-    if not citations:
-        # Top-2 retrieval paths, so the agent always has something to verify.
-        citations = fallback_targets[:2]
-    quotes = build_quotes(hits, answer_text)
+    cited = answer_files(
+        answer_text, hits, retrieved.resolved_pool, fallback_targets, _repo_root(ask.ctx)
+    )
+    citations = cited.citations
+    quotes = [q for q in build_quotes(hits, answer_text) if q["path"] not in cited.ruled_out]
     # ``served_named_body``: the question-named symbol's live body is inlined and
     # carries what was asked, so the response is content-grounded even when
     # synthesis hedges.
@@ -615,6 +614,7 @@ async def _graded_payload(
         served_named_body=served_named_body,
         dominance=dominance,
         uncovered=uncovered,
+        lead_off_top=cited.drops_top_hit(hits, answer_text),
     )
     payload = await build_synthesized_payload(
         question=ask.question,

@@ -4,17 +4,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from repowise.core.persistence.crud.authority import accepted_decision_ids
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import DecisionEvidence, GitMetadata
+from repowise.core.persistence.models import DecisionEvidence, GitMetadata, GraphNode
 from repowise.server.mcp_server._helpers import (
+    LIKE_ESCAPE,
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     decision_is_excluded,
+    escape_like,
+    is_excluded,
 )
+from repowise.server.mcp_server._query_shape import path_tokens
 from repowise.server.mcp_server.tool_why.caps import _DECISION_CORPUS_LIMIT
 
 
@@ -27,6 +31,43 @@ async def _git_metadata_for(session: Any, repository_id: Any, file_path: str) ->
         )
     )
     return git_res.scalar_one_or_none()
+
+
+async def _named_file(query: str, repo: str | None) -> str | None:
+    """The one indexed file a question names, by path or file name, or ``None``.
+
+    An exact path wins; the first token naming one file wins. A name several
+    files end with anchors nothing (ceiling: the question's words could pick one).
+    """
+    tokens = [t.replace("\\", "/").removeprefix("./") for t in path_tokens(query)]
+    if not tokens:
+        return None
+    ctx = await _resolve_repo_context(repo)
+    spec = _get_exclude_spec(ctx.path)
+    node = func.lower(GraphNode.node_id)
+    lows = [t.lower() for t in tokens]
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        res = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repository.id,
+                GraphNode.node_type == "file",
+                or_(
+                    *(
+                        or_(node == low, node.like(f"%/{escape_like(low)}", escape=LIKE_ESCAPE))
+                        for low in lows
+                    )
+                ),
+            )
+        )
+        paths = {p for (p,) in res.all() if not is_excluded(p, spec)}
+    for token, low in zip(tokens, lows, strict=True):
+        if token in paths:
+            return token
+        found = [p for p in paths if (q := p.lower()) == low or q.endswith(f"/{low}")]
+        if len(found) == 1:
+            return found[0]
+    return None
 
 
 async def _all_git_metadata(session: Any, repository_id: Any) -> list:

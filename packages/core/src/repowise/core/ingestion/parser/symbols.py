@@ -70,6 +70,28 @@ _node_text = node_text
 _MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
 
 
+def _normalize_newlines(text: str | None) -> str | None:
+    """Return *text* with CRLF line endings rewritten as LF.
+
+    The signature and docstring strings are sliced straight out of the file
+    bytes, so a repository committed with CRLF — or a Windows checkout with
+    ``core.autocrlf=true`` — stores literal ``\r\n`` in them. The same
+    symbol then reads differently depending on the checkout's line-ending
+    setting, and the extra carriage returns cost tokens on every MCP reply.
+
+    Normalising the source before parsing is not an option: tree-sitter byte
+    offsets and line numbers have to keep matching the real file. So it
+    happens here, where the stored strings are produced. A lone ``\r`` is
+    not a line ending and is left alone.
+
+    *None* passes straight through: the docstring helpers return it when a
+    symbol has no docstring, and that absence is information.
+    """
+    if text is None:
+        return None
+    return text.replace("\r\n", "\n")
+
+
 def _match_identity(
     capture_dict: dict,
     config: LanguageConfig,
@@ -330,10 +352,14 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         name=name,
         qualified_name=_build_qualified_name(file_info.path, scope, name),
         kind=_method_or_kind(kind, parent_name, def_node, language),  # type: ignore[arg-type]
-        signature=build_signature(node_type, name, params_text, def_node, src),
+        signature=_normalize_newlines(
+            build_signature(node_type, name, params_text, def_node, src)
+        ) or "",
         start_line=start_line,
         end_line=end_line,
-        docstring=extract_symbol_docstring(def_node, src, language),
+        docstring=_normalize_newlines(
+            extract_symbol_docstring(def_node, src, language)
+        ),
         decorators=(
             [m for m in modifier_texts if m.startswith("@")]
             + _attribute_decorators(def_node, language, src)

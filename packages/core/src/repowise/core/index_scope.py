@@ -18,6 +18,23 @@ from typing import Any
 
 INDEX_SCOPE_VERSION = 1
 
+#: The one command that takes an Index only repo to full git history and
+#: documentation. It needs no key: without a model the documentation is built
+#: from code.
+FAST_TO_FULL_COMMAND = "repowise update --full"
+
+
+def fast_to_full_command(repo_alias: str | None = None) -> str:
+    """:data:`FAST_TO_FULL_COMMAND`, aimed at one workspace repo when *repo_alias* is set."""
+    return f"repowise update --repo {repo_alias} --full" if repo_alias else FAST_TO_FULL_COMMAND
+
+
+def upgrade_command(scope: Mapping[str, Any] | None) -> str | None:
+    """The fast-to-full command when *scope* is Index only (no documentation), else None."""
+    if isinstance(scope, Mapping) and scope.get("content_provenance") == "none":
+        return FAST_TO_FULL_COMMAND
+    return None
+
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
 # re-parses config.yaml. Keyed on mtime+size so an index rebuild invalidates it.
@@ -176,6 +193,8 @@ def resolve_index_scope(
             else None
         ),
         "dropped_files": _dropped_files(scope.get("dropped_files")),
+        # ``init --test-run``: the model wrote documentation for a sample of files.
+        "test_run": scope.get("test_run") if isinstance(scope.get("test_run"), bool) else None,
         "file_pages": {
             "configured_cap": configured_cap,
             "effective_cap": _number(pages.get("effective_cap")),
@@ -369,7 +388,7 @@ def index_scope_fingerprint(scope: Mapping[str, Any]) -> str:
 
 
 def compact_index_scope(
-    scope: Mapping[str, Any] | None, *, full_hint: str = "get_overview()"
+    scope: Mapping[str, Any] | None, *, full_hint: str = 'get_overview(include=["scope"])'
 ) -> dict[str, Any] | None:
     """The routine-response projection of a canonical scope.
 
@@ -407,6 +426,10 @@ def compact_index_scope(
             compact["degraded_analyses_total"] = len(unavailable)
             compact["degraded_analyses_emitted"] = len(shown)
             compact["degraded_analyses_reduced_reason"] = "compact_projection"
+    # Only an Index only repo carries it, so no other response grows.
+    command = upgrade_command(scope)
+    if command:
+        compact["upgrade_command"] = command
     return compact
 
 
@@ -430,9 +453,16 @@ def file_page_scope(
     *, configured_cap: int | None, eligible: int, generated_pages: list[Any] | None
 ) -> dict[str, int | None]:
     """Build configured/effective/achieved file-page figures for one run."""
+    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
+    return file_page_counts(configured_cap=configured_cap, eligible=eligible, generated=generated)
+
+
+def file_page_counts(
+    *, configured_cap: int | None, eligible: int, generated: int
+) -> dict[str, int | None]:
+    """The file-page figures from counts, for a run that holds no page list."""
     from repowise.core.generation.selection import auto_file_page_cap
 
-    generated = sum(1 for page in (generated_pages or []) if page.page_type == "file_page")
     effective = configured_cap
     if configured_cap is None:
         effective = auto_file_page_cap(eligible)

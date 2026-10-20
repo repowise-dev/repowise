@@ -63,6 +63,43 @@ def _call_text(masked: list[str], lineno: int, start: int, limit: int = 600) -> 
     return code
 
 
+# ``.hexdigest()[:8]`` or ``.digest("hex").slice(0, 8)`` right after the call.
+_TRUNCATED_DIGEST = re.compile(
+    r"\A(?:\s*\.\s*update\s*\([^()]*(?:\([^()]*\)[^()]*)*\))*"
+    r"\s*\.\s*(?:hex)?digest\s*\([^()]*\)\s*"
+    r"(?:\[\s*0?\s*:\s*(\d{1,2})\s*\]|\.\s*(?:slice|substring|substr)\s*\(\s*0\s*,\s*(\d{1,2})\s*\))"
+)
+_ID_PREFIX_MAX = 16  # longer is most of the digest
+# The assignment target of a digest that names content.
+_DIGEST_KEY_NAME = re.compile(
+    r"(?i)(?<![a-z])(?:e_?tag|cache_?key|slug)s?"
+    r"""(?:["']?\s*:\s*|(?:\s*:\s*[\w.|<>\[\] ]+)?\s*=(?!=))[^=:]*\Z"""
+)
+_CREDENTIAL_WORD = re.compile(
+    r"(?i)passw|pwd|\bpw\b|\bpass\b|salt|\botp\b|bearer|secret|token|credential"
+    r"|api_?key|auth(?!or)"
+)
+
+
+def _weak_hash_is_an_id(line: str, masked: list[str], lineno: int, start: int) -> bool:
+    """Whether the weak hash at *start* on *line* is a declared non-security
+    use: ``usedforsecurity=False``, a digest truncated to a short prefix where
+    it is computed, or one assigned to a cache key, ETag or slug. A line that
+    names a credential is only ever exempt by ``usedforsecurity=False``."""
+    call = _call_text(masked, lineno, start)
+    if _NOT_FOR_SECURITY.search(call):
+        return True
+    # ``hashlib.md5`` passed to ``hmac.new`` names a MAC's algorithm, not an id.
+    if _CREDENTIAL_WORD.search(line) or "(" not in call:
+        return False
+    if "\n" not in call:
+        code = masked[lineno - 1] if lineno <= len(masked) else line
+        cut = _TRUNCATED_DIGEST.match(code[start + len(call) :])
+        if cut and int(cut.group(1) or cut.group(2)) <= _ID_PREFIX_MAX:
+            return True
+    return bool(_DIGEST_KEY_NAME.search(line[:start]))
+
+
 _TS_TYPE_VALUE = re.compile(
     r"(?:string|number|boolean|any|unknown|never|undefined|null|TrustedHTML)\b"
     r"(?:\s*\|\s*[\w$.]+)*\s*"

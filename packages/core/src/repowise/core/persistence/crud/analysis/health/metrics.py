@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
@@ -21,7 +21,7 @@ from .....analysis.health.scope import scores_language
 from .....analysis.health.scoring import SCORE_FIELDS
 from .....test_paths import is_test_related_path
 from ....models import GraphNode, HealthFileMetric, HealthFinding, _new_uuid
-from ..._shared import _BATCH_SIZE
+from ..._shared import _BATCH_SIZE, _batch_delete_in
 from .exclude import _filter_excluded_paths, health_exclude_spec
 from .findings import get_deduction_by_path
 
@@ -74,12 +74,9 @@ async def save_health_metrics(
     so ``Repository.head_commit`` cannot answer "how old is this score". Omitted
     → NULL, which reads as "not recorded" rather than "current".
     """
-    existing = await session.execute(
-        select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
+    await session.execute(
+        delete(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
     )
-    for row in existing.scalars().all():
-        await session.delete(row)
-    await session.flush()
 
     for i in range(0, len(metrics), _BATCH_SIZE):
         batch = metrics[i : i + _BATCH_SIZE]
@@ -210,19 +207,10 @@ async def prune_unscored_health_rows(session: AsyncSession, repository_id: str) 
     if not stale:
         return 0
     removed = 0
-    for i in range(0, len(stale), _BATCH_SIZE):
-        batch = stale[i : i + _BATCH_SIZE]
-        for model in (HealthFileMetric, HealthFinding):
-            rows = await session.execute(
-                select(model).where(
-                    model.repository_id == repository_id,
-                    model.file_path.in_(batch),
-                )
-            )
-            for row in rows.scalars().all():
-                await session.delete(row)
-                removed += 1
-        await session.flush()
+    for model in (HealthFileMetric, HealthFinding):
+        removed += await _batch_delete_in(
+            session, model, model.file_path, stale, prefilter=(model.repository_id == repository_id,)
+        )
     return removed
 
 
@@ -289,6 +277,19 @@ async def backfill_module_attribution(
     if changed:
         await session.flush()
     return changed
+
+
+async def count_health_files(session: AsyncSession, repository_id: str) -> int:
+    """Code files health read, scored or not, inside the health exclude rules.
+
+    The same population :func:`get_health_metrics` returns, counted without
+    loading the rows.
+    """
+    result = await session.execute(
+        select(HealthFileMetric.file_path).where(HealthFileMetric.repository_id == repository_id)
+    )
+    rows = result.all()
+    return len(_filter_excluded_paths(rows, await health_exclude_spec(session, repository_id)))
 
 
 async def get_health_metrics(

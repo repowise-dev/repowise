@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.loop_facts import BatchForm, LoopFacts, LoopSource, combined_magnitude
+from ..perf.table_scale import small_table_candidate
 from .ast_utils import (
     _dart_signature_sibling,
     _find_function_entry_name,
@@ -688,13 +689,15 @@ class _PerfWalk:
         loop = loops[0]
         do_magnitude = self.do_magnitude
         chunked = self.do_chunked and dialect.is_chunked_loop(loop)
-        magnitude = (
-            combined_magnitude([self.source(lp) for lp in loops]) if do_magnitude else "unknown"
-        )
+        sources = [self.source(lp) for lp in loops] if do_magnitude else []
+        magnitude = combined_magnitude(sources) if do_magnitude else "unknown"
+        read_tables, small_magnitude = small_table_candidate(sources)
         batch, bound = self.sink_facts(node, loop, sink)
         facts = LoopFacts(
             chunked=chunked,
             magnitude=magnitude,
+            read_tables=read_tables,
+            small_magnitude=small_magnitude,
             batch=batch,
             concurrency_bound=bound,
             # Only a native loop header names its key; a block loop (Ruby

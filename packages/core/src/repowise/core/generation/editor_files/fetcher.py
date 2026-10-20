@@ -6,16 +6,17 @@ Uses the existing CRUD layer where possible; raw selects for aggregate queries.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import subprocess
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.grading import (
     BAND_LABEL,
     analysed_note,
@@ -28,17 +29,18 @@ from repowise.core.analysis.health.rows import split_unscored
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
-from repowise.core.generation.entry_points import rank_entry_points
+from repowise.core.generation.entry_points import (
+    orientation_entry_points_view,
+    rank_entry_points,
+)
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
-from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
     GraphNode,
     HealthFileMetric,
-    HealthFinding,
     Page,
 )
 
@@ -51,13 +53,14 @@ from .data import (
     KGLayerSummary,
     KGTourStepSummary,
 )
+from .sections import load_sections, resolve_sections
 from .tech_stack import detect_build_commands, detect_tech_stack
 
-# Maximum items per section to keep CLAUDE.md within ~200 lines
+# Maximum items per section: the block is read into every agent turn.
 _MAX_MODULES = 10
 _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
-_MAX_DECISIONS = 8
+_MAX_DECISIONS = 3
 _MAX_FIX_FIRST = 3
 
 
@@ -87,13 +90,20 @@ class EditorFileDataFetcher:
         session: AsyncSession,
         repo_id: str,
         repo_path: Path,
+        *,
+        sections: Iterable[str] | None = None,
     ) -> None:
         self._session = session
         self._repo_id = repo_id
         self._repo_path = repo_path
+        # ``None`` reads ``editor_files.sections`` from the repo's config.
+        self._sections = (
+            load_sections(repo_path) if sections is None else resolve_sections(list(sections))
+        )
 
     async def fetch(self) -> EditorFileData:
-        """Run all queries and return a populated EditorFileData."""
+        """Run the queries the configured sections need and return EditorFileData."""
+        s = self._sections
         repo = await crud.get_repository(self._session, self._repo_id)
         repo_name = repo.name if repo else self._repo_path.name
 
@@ -111,18 +121,25 @@ class EditorFileDataFetcher:
             repo_name=repo_name,
             indexed_at=datetime.now(UTC).strftime("%Y-%m-%d"),
             indexed_commit=stored_commit or _get_head_short_sha(self._repo_path),
-            architecture_summary=await self._get_architecture_summary(),
-            key_modules=await self._get_key_modules(),
-            entry_points=await self._get_entry_points(),
+            architecture_summary=(
+                await self._get_architecture_summary() if "architecture" in s else ""
+            ),
+            key_modules=await self._get_key_modules() if "key_modules" in s else [],
+            entry_points=await self._get_entry_points() if "entry_points" in s else [],
             tech_stack=detect_tech_stack(self._repo_path),
-            hotspots=await self._get_hotspots(),
-            decisions=await self._get_decisions(),
-            build_commands=detect_build_commands(self._repo_path),
+            hotspots=await self._get_hotspots() if "hotspots" in s else [],
+            decisions=await self._get_decisions() if "decisions" in s else [],
+            build_commands=detect_build_commands(self._repo_path) if "commands" in s else {},
             avg_confidence=await self._get_avg_confidence(),
-            code_health=await self._get_code_health(),
+            code_health=(
+                await self._get_code_health(full="code_health" in s, fix_first="fix_first" in s)
+                if s & {"health", "code_health", "fix_first"}
+                else None
+            ),
             kg_layers=kg_layers,
             kg_tour=kg_tour,
             index_scope=self._get_index_scope(),
+            sections=s,
         )
 
     def _get_index_scope(self) -> dict:
@@ -219,7 +236,7 @@ class EditorFileDataFetcher:
             except (json.JSONDecodeError, TypeError):
                 curated = []
             if curated:
-                return curated[:_MAX_ENTRY_POINTS]
+                return orientation_entry_points_view(curated)[:_MAX_ENTRY_POINTS]
 
         result = await self._session.execute(
             select(GraphNode.node_id, GraphNode.pagerank, GraphNode.betweenness).where(
@@ -229,7 +246,7 @@ class EditorFileDataFetcher:
         )
         candidates = [(node_id, pr or 0.0, bt or 0.0) for node_id, pr, bt in result.all()]
         ranked = rank_entry_points(candidates, conventional_entry_stems())
-        return ranked[:_MAX_ENTRY_POINTS]
+        return orientation_entry_points_view(ranked)[:_MAX_ENTRY_POINTS]
 
     async def _get_hotspots(self) -> list[HotspotFile]:
         """Top attention-worthy files: bug-fix history first, churn as fallback.
@@ -277,7 +294,6 @@ class EditorFileDataFetcher:
                 GitMetadata.file_path.asc(),  # deterministic tie-break
             )
         )
-        now = datetime.now(UTC)
         hotspots: list[HotspotFile] = []
         for row in result.all():
             if len(hotspots) >= _MAX_HOTSPOTS:
@@ -285,12 +301,12 @@ class EditorFileDataFetcher:
             if not (self._repo_path / row[0]).exists():
                 continue
             last_fix_at = row[6]
-            age: str | None = None
+            fixed_on: str | None = None
             if isinstance(last_fix_at, datetime):
-                # SQLite hands these back naive; re-attach UTC before subtracting
-                # or the delta is wrong by the local offset (see signals.iso_utc).
+                # SQLite hands these back naive; re-attach UTC before converting
+                # or the date can shift by the local offset (see signals.iso_utc).
                 moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
-                age = _humanize_age(max(0, (now - moment).days))
+                fixed_on = moment.astimezone(UTC).strftime("%Y-%m-%d")
             hotspots.append(
                 HotspotFile(
                     path=row[0],
@@ -298,9 +314,9 @@ class EditorFileDataFetcher:
                     commit_count_90d=row[2],
                     owner=row[3],
                     fix_count=row[4] or 0,
-                    # Never claim "bug magnet" without an age to anchor it.
-                    bug_magnet=bool(row[5]) and age is not None,
-                    last_fix_age=age,
+                    # Never claim "bug magnet" without a date to anchor it.
+                    bug_magnet=bool(row[5]) and fixed_on is not None,
+                    last_fix_date=fixed_on,
                 )
             )
         return hotspots
@@ -361,11 +377,14 @@ class EditorFileDataFetcher:
         avg = result.scalar_one_or_none()
         return round(float(avg), 2) if avg is not None else 0.0
 
-    async def _get_code_health(self) -> CodeHealthBlock | None:
+    async def _get_code_health(
+        self, *, full: bool = True, fix_first: bool = True
+    ) -> CodeHealthBlock | None:
         """Build the compact code-health block for CLAUDE.md.
 
-        KPIs, then the lead of the Fix-first queue every other surface renders.
-        ``None`` when no health data yet.
+        The headline KPIs, then (``full``) the pillar and performance figures and
+        (``fix_first``) the lead of the Fix-first queue every other surface
+        renders. ``None`` when no health data yet.
         """
         # Scored rows only: a file in a language health has no dialect for
         # carries no score, and a repository of nothing else has no block.
@@ -411,6 +430,18 @@ class EditorFileDataFetcher:
         # line renders conditionally, drop this fallback and pass ``hotspot_kpi``
         # straight through. Affects only repos with no recent churn at all.
         hotspot_for_claude_md = hotspot_kpi if hotspot_kpi is not None else avg
+        band = headline_band(round(avg, 2), analysed_share(len(metric_rows), unanalysed))
+        headline = CodeHealthBlock(
+            hotspot_health=round(hotspot_for_claude_md, 2),
+            average_health=round(avg, 2),
+            band=BAND_LABEL[band] if band is not None else "",
+            analysed_note=analysed_note(len(metric_rows), unanalysed),
+            worst_score=round(worst.score, 2) if worst is not None else None,
+            worst_path=worst.file_path if worst is not None else None,
+            fix_first=await self._get_fix_first() if fix_first else [],
+        )
+        if not full:
+            return headline
 
         # Maintainability pillar headline: NLOC-weighted over the per-file
         # maintainability scores, skipping rows that predate the split. ``None``
@@ -446,25 +477,10 @@ class EditorFileDataFetcher:
         lang_by_path = await crud.get_file_language_map(self._session, self._repo_id)
         perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
 
-        # Open performance-finding count + density over covered LOC (the honest
-        # headline the diluted /10 hides).
-        performance_findings = (
-            await self._session.execute(
-                select(func.count()).where(
-                    HealthFinding.repository_id == self._repo_id,
-                    HealthFinding.status == "open",
-                    HealthFinding.dimension == "performance",
-                    HealthFinding.biomarker_type.not_in(excluded_types()),
-                    ungated("health", HealthFinding.file_path, HealthFinding.biomarker_type),
-                )
-            )
-        ).scalar_one()
-        performance_findings_density: float | None = None
-        if perf_coverage.covered_nloc > 0:
-            performance_findings_density = round(
-                10000.0 * performance_findings / perf_coverage.covered_nloc, 2
-            )
-
+        # The causes worth fixing now lead; production and every cause are context.
+        performance_causes = await crud.performance_headline(
+            self._session, self._repo_id, covered_nloc=perf_coverage.covered_nloc
+        )
 
         # The trend the snapshots record, or nothing: a repository indexed once
         # has no trend, and the section used to print "stable" for it anyway.
@@ -472,14 +488,8 @@ class EditorFileDataFetcher:
             self._session, self._repo_id, limit=DECLINE_LOOKBACK + 1
         )
 
-        band = headline_band(round(avg, 2), analysed_share(len(metric_rows), unanalysed))
-        return CodeHealthBlock(
-            hotspot_health=round(hotspot_for_claude_md, 2),
-            average_health=round(avg, 2),
-            band=BAND_LABEL[band] if band is not None else "",
-            analysed_note=analysed_note(len(metric_rows), unanalysed),
-            worst_score=round(worst.score, 2) if worst is not None else None,
-            worst_path=worst.file_path if worst is not None else None,
+        return dataclasses.replace(
+            headline,
             hotspot_trend=hotspot_trend(history),
             maintainability_average=(
                 round(maintainability_average, 2) if maintainability_average is not None else None
@@ -487,14 +497,12 @@ class EditorFileDataFetcher:
             performance_average=(
                 round(performance_average, 2) if performance_average is not None else None
             ),
-            performance_findings=performance_findings,
-            performance_findings_density=performance_findings_density,
+            performance_causes=performance_causes,
             performance_coverage_pct=(
                 perf_coverage.pct_loc if perf_coverage.analyzed_files else None
             ),
             performance_skipped_files=perf_coverage.skipped_files,
             performance_unsupported_languages=perf_coverage.unsupported_languages,
-            fix_first=await self._get_fix_first(),
         )
 
     async def _get_fix_first(self) -> list[dict]:
@@ -605,24 +613,6 @@ def _get_head_short_sha(repo_path: Path) -> str:
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
-
-
-def _humanize_age(days: int) -> str:
-    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count.
-
-    Twin of the pre-edit hook's ``decision_inject._humanize_age``, which states
-    why the two are not shared: that module is on a sub-100ms budget and cannot
-    afford to import ``repowise.core``. Keep the phrasing in step by hand.
-    """
-    if days <= 1:
-        return "today" if days <= 0 else "yesterday"
-    if days < 14:
-        return f"{days} days ago"
-    if days < 60:
-        weeks = round(days / 7)
-        return f"{weeks} week{'' if weeks == 1 else 's'} ago"
-    months = round(days / 30)
-    return f"{months} month{'' if months == 1 else 's'} ago"
 
 
 def _extract_sentences(text: str, max_sentences: int) -> str:

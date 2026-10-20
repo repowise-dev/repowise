@@ -130,7 +130,7 @@ def test_the_report_leads_with_fix_first() -> None:
     # The growing, reachable database loop leads; the refactor follows.
     assert " 1. Batch the database calls loops make through load_all " in out
     assert " 2. Start breaking up run (CCN 44, 50 lines): first lift lines 20-35 " in out
-    assert "src/core.py:20" in out
+    assert "src/core.py:10" in out
     assert "verify: pytest tests/test_core_0.py" in out
 
 
@@ -182,3 +182,37 @@ def test_a_mostly_unanalysed_repo_gets_no_band_in_any_scope() -> None:
         assert "Code health: 10.0/10 ·" in out, args
         assert "Excellent" not in out, args
         assert "analysed 4 of 435 code files" in out, args
+
+
+def test_the_headline_names_production_code_while_tests_are_in_it() -> None:
+    def headline(**kpis) -> str:
+        console = Console(file=io.StringIO(), width=400, force_terminal=False)
+        with patch.object(health_module, "console", console):
+            health_module._render_headline(kpis, False, 0)
+        return console.file.getvalue()
+
+    base = {"average_health": 8.0, "production_average": 6.0, "file_count": 2}
+    assert "Production code: 6.0/10 · Hotspot: ?/10" in headline(**base, production_file_count=1)
+    # Narrowed to production, the two figures are one.
+    narrowed = headline(**base, production_file_count=2)
+    assert "Production code" not in narrowed and "Hotspot: ?/10" in narrowed
+
+
+def test_the_performance_line_leads_with_the_causes_worth_fixing_now() -> None:
+    """The stored headline every surface prints, not a raw finding count."""
+    from repowise.cli.commands.health_cmd.summary import _render_performance_section
+    from repowise.core.analysis.health.perf.coverage import PerfCoverage
+    from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
+
+    coverage = PerfCoverage(
+        analyzed_files=10, covered_files=9, covered_nloc=9000, total_nloc=10000
+    )
+    report = SimpleNamespace(kpis={"performance_average": 9.7})
+    console = Console(file=io.StringIO(), width=400, force_terminal=False)
+    with patch("repowise.cli.commands.health_cmd.summary.console", console):
+        _render_performance_section(report, coverage, PerformanceHeadline(4, 415, 926, 9.03))
+    out = console.file.getvalue()
+    assert (
+        "4 causes worth fixing now · 415 open in production code · 926 overall · "
+        "9.03/10K covered LOC · avg score 9.7/10" in out
+    )

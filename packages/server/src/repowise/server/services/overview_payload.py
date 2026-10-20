@@ -309,7 +309,8 @@ async def health_block(
         # The two co-equal pillars surfaced alongside the defect headline.
         "maintainability_average": summary.get("maintainability_average"),
         "performance_average": summary.get("performance_average"),
-        "performance_findings": summary.get("performance_findings", 0),
+        # Open causes: worth fixing now, in production code, overall.
+        "performance_causes": summary.get("performance_causes"),
         "worst_performance_path": summary.get("worst_performance_path"),
         "worst_performance_score": summary.get("worst_performance_score"),
         "severity_breakdown": health_severity_breakdown(findings),

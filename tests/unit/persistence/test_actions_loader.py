@@ -106,6 +106,16 @@ async def _seed(session) -> str:
                                    biomarker_type="change_entropy", severity="high",
                                    file_path="src/hist.py", symbol=None,
                                    attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c4",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/repo.py", symbol="load",
+                                   attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c5",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/other.py", symbol="f",
+                                   attribution_basis="added_lines"),
             HealthFinding(repository_id=rid, file_path="src/new.py", biomarker_type="complex_method",
                           severity="high", function_name="build", health_impact=1.0,
                           line_start=10, line_end=60, details_json=DEEP),
@@ -122,9 +132,10 @@ async def _seed(session) -> str:
                 plan_state="available", fix_strategy="batch_or_prefetch_io",
                 boundary_kind="db", biomarker_type="n_plus_one", file_path="src/repo.py",
                 intervention_symbol="src/repo.py::Repo.load", affected_call_sites_total=4,
-                affected_files_total=2,
+                affected_files_total=2, queue_eligible=True,
                 details_json=json.dumps(
                     {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                                "growth_source": "loop",
                                 "actionability_confidence": "medium"},
                      "plan": {"effort_bucket": "S"}}
                 ),
@@ -191,12 +202,12 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     rules = _by_rule(view)
 
     # Fix first names the busy bug magnet by its code-shape finding, not the
-    # higher-impact history marker, and the plan-ready loop; the fragile-file
-    # rule does not repeat the file it already names.
+    # higher-impact history marker; the fragile-file rule does not repeat the
+    # file it already names. The plan-ready loop this week's commit added is a
+    # fresh regression (below), so Fix first does not list it again.
     fixes = {a["target"]["path"]: a for a in rules["fix_first"]}
     assert fixes["src/core.py"]["title"] == "Break up run (CCN 44)"
-    assert fixes["src/repo.py"]["title"] == "Batch the database calls loops make through Repo.load"
-    assert fixes["src/repo.py"]["effort"] == "S"
+    assert "src/repo.py" not in fixes
     assert "fragile_file" not in rules
 
     (secret,) = rules["live_secret"]
@@ -207,9 +218,15 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     assert dead["evidence_total"] == 3
 
     week = _by_rule(view, "week")
-    (fresh,) = week["fresh_regressions"]
-    assert fresh["title"] == "Simplify `build` in `src/new.py` while the change is fresh"
-    assert fresh["evidence_ids"] == ["recent"]
+    # The proven performance cause acts now; the unproven one is left out, and
+    # the code-shape finding is one item to plan.
+    perf, shape = sorted(week["fresh_regressions"], key=lambda a: a["tier"])
+    assert (perf["tier"], perf["target"]["path"]) == ("act_now", "src/repo.py")
+    assert perf["title"] == "Fix the performance regression in `load` in `src/repo.py`"
+    assert (shape["tier"], shape["severity"], shape["target"]["path"]) == (
+        "plan", "medium", "src/new.py"
+    )
+    assert shape["evidence_ids"] == ["recent"]
 
 
 async def test_a_missing_store_is_reported_and_the_rest_still_load(async_session) -> None:

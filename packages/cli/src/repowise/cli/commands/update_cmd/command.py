@@ -42,6 +42,7 @@ from repowise.cli.helpers import (
     try_acquire_update_lock,
     write_update_pending,
 )
+from repowise.cli.ui.mode_names import scope_line
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
@@ -78,6 +79,7 @@ from .persistence import (
     parser_changed,
     rescan_security_if_changed,
     security_scanner_changed,
+    stamp_file_page_scope,
     stamp_head_commit,
 )
 from .reporting import (
@@ -101,7 +103,7 @@ def _fail_on_embed_failure(
     let a scripted run, or the post-commit log, read a failed write as a
     healthy index.
     """
-    from repowise.cli.providers import embed_failure_message
+    from repowise.cli.providers import embed_failure_message, semantic_search_command
     from repowise.core.index_scope import stamp_index_scope
 
     message = embed_failure_message(embedder, embed_failed_pages)
@@ -111,7 +113,10 @@ def _fail_on_embed_failure(
     stamp_index_scope(
         state,
         load_config(repo_path),
-        search={"semantic": "unavailable", "next_command": "repowise reindex"},
+        search={
+            "semantic": "unavailable",
+            "next_command": semantic_search_command(repo_path, embedder),
+        },
     )
     save_state(repo_path, state)
     if emitter is not None:
@@ -353,12 +358,12 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     is_flag=True,
     default=False,
     help=(
-        "Upgrade an index with a model: backfill the git tier ESSENTIAL -> "
-        "FULL if it was built with `--mode fast`, and write the subsystem pages "
-        "with a provider on a wiki that has none yet. Incremental: reuses the "
-        "persisted graph, records resumable stage progress, reuses persisted "
-        "provider/embedder choices, and previews model cost before generation. "
-        "Single-repo only."
+        "Take an Index only (`--mode fast`) repo to a full index: backfill the "
+        "full git history and build the documentation. Works without a key: with "
+        "no model configured the documentation is built from code (no model calls, "
+        "no spend); with one, the model writes it after a cost preview. Reuses the "
+        "persisted graph and resumes from the last completed stage. One repo at a "
+        "time (in a workspace, pass --repo <alias>)."
     ),
 )
 @click.option(
@@ -498,11 +503,12 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
     console.print(
-        f"  Persisted scope: [cyan]{scope['run_mode']} / {scope['content_provenance']}[/cyan]"
+        f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
     )
     console.print(
-        "  The whole-repository wiki would be generated after an explicit cost preview; "
-        "completed stages are resumable. No changes made."
+        "  Documentation for the whole repository: written by the model after a cost "
+        "preview, or built from code when no model is configured. Completed stages "
+        "are resumable. No changes made."
     )
 
 
@@ -686,10 +692,14 @@ def _resolve_target(opts: UpdateOptions):
 
 
 def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> UpdateOutcome:
+    if opts.full and opts.repo_alias:
+        entry = target.ws_config.get_repo(opts.repo_alias)
+        run.repo_path = (target.ws_root / entry.path).resolve()
+        return _full_upgrade(opts, run)
     if opts.full:
         raise click.ClickException(
-            "--full is single-repo only. Run it inside a specific repo "
-            "(or pass --no-workspace / --repo <alias>)."
+            "--full upgrades one repo at a time. Run it inside that repo, or pass "
+            "--repo <alias>."
         )
     with _errors_reported(run):
         _workspace_update(
@@ -952,7 +962,7 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     # A template wiki is current but has no model-written pages yet.
     if resolve_docs_mode(run.state) == "deterministic":
         console.print(
-            "[dim]The wiki is rendered from templates. "
+            "[dim]Documentation is built from code. "
             "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
         )
     if not opts.dry_run:
@@ -1424,6 +1434,7 @@ def _run_partial_analyses(run: UpdateRun) -> None:
         stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=repo_function_mod_p80,
         timings=run.timings,
+        dead_code=not _dead_code_unchanged(run),
     )
     run.doc_drift_report = _run_doc_drift_partial(
         run.graph_builder,
@@ -1433,6 +1444,40 @@ def _run_partial_analyses(run: UpdateRun) -> None:
         base_ref=run.base_ref,
         file_diffs=run.file_diffs,
     )
+
+
+def _is_prose(path: str) -> bool:
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    suffix = Path(path).suffix.lower()
+    # .mdx imports mark components reachable; .rst is read for symbol names.
+    return suffix != ".mdx" and REGISTRY.from_extension(suffix) in ("markdown", "asciidoc")
+
+
+def _dead_code_unchanged(run: UpdateRun) -> bool:
+    """Whether the stored dead-code findings still stand and nothing this run reads new ones.
+
+    True only when every changed file is prose, no analyzer, parser, renderer,
+    history or config change forces a re-score, and no page render in this run
+    consumes the report. (The knowledge graph takes the report but does not read it.)
+    """
+    config = run.config
+    if (
+        run.analyzer_changed
+        or run.extraction_changed
+        or run.renderer_changed
+        or run.history_stale
+        or config.changed
+    ):
+        return False
+    changed = [path for fd in run.file_diffs for path in (fd.path, fd.old_path) if path]
+    if not all(map(_is_prose, changed)):
+        return False
+    # Index-only renders template wikis only.
+    if run.index_only and resolve_docs_mode(run.state) != "deterministic":
+        return True
+    rendered = run.affected.regenerate if run.affected is not None else []
+    return all(map(_is_prose, rendered)) and not run.stale_deterministic_ids
 
 
 def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
@@ -1553,8 +1598,8 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
         if run.head:
             run.state["last_docs_commit"] = run.head
         console.print(
-            f"  [green]✓[/green] Re-rendered [bold]{len(out.pages)}[/bold] "
-            "wiki pages from structure"
+            f"  [green]✓[/green] Rebuilt [bold]{len(out.pages):,}[/bold] "
+            "documentation pages from code"
         )
 
 
@@ -1726,6 +1771,11 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         with timed(run.timings, "security_rescan"):
             rescan_security_if_changed(repo_path, run.state, run.exclude_patterns)
 
+    # Saved before the editor files quote it.
+    stamp_file_page_scope(
+        repo_path, run.state, run.parsed_files, run.graph_builder, run.persisted_git_meta
+    )
+    save_state(repo_path, run.state)
     _finish_outcome(repo_path, opts.agents_md, run.degraded, timings=run.timings)
     _save_docs_state(run, docs)
 

@@ -124,6 +124,7 @@ from .symbols import (
     _java_enum_constant,
     _match_identity,
     _nesting_parent,
+    _normalize_newlines,
     _parent_type_name,
 )
 
@@ -242,7 +243,7 @@ class ASTParser:
             export_aliases=ts_export_aliases(src) if lang in _TS_JS_LANGUAGES else {},
             calls=calls,
             heritage=extract_heritage(matches, config, file_info, src),
-            docstring=extract_module_docstring(root, src, lang),
+            docstring=_normalize_newlines(extract_module_docstring(root, src, lang)),
             parse_errors=parse_errors,
             content_hash=content_hash,
             type_refs=_extract_type_refs(matches, src, lang),

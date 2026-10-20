@@ -56,7 +56,10 @@ from repowise.core.entry_candidacy import (
     conventional_entry_stems,
     not_an_execution_start,
 )
-from repowise.core.generation.entry_points import rank_entry_points
+from repowise.core.generation.entry_points import (
+    orientation_entry_points_view,
+    rank_entry_points,
+)
 from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
@@ -400,7 +403,7 @@ def _curate_entry_points(
     candidates = [(path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)) for path in paths]
 
     ranked = rank_entry_points(candidates, conventional_entry_stems(), manifest)
-    kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
+    kg.project["entry_points"] = orientation_entry_points_view(ranked)[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
 
 

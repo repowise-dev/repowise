@@ -15,7 +15,7 @@ from repowise.core.analysis.health.queue.order import DUE_TIERS, Tier
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when ranking, eligibility or the item shape changes meaning.
-FIX_FIRST_MODEL_VERSION = 2
+FIX_FIRST_MODEL_VERSION = 3
 
 FixTier = Tier
 FIX_TIERS: tuple[str, ...] = get_args(FixTier)
@@ -40,9 +40,11 @@ FIX_FACT_BASES: tuple[str, ...] = get_args(FixFactBasis)
 
 # The reasons Fix first's ladders produce, from the one vocabulary in
 # ``queue.eligibility.Reason``. ``unknown``, ``gated_off``, ``cold_path``,
-# ``expected`` and ``no_strategy`` come from the performance ladder; ``gated_off``
-# also keeps out any other unit in a function a constant-false flag switches
-# off. ``unreachable``: an open dead-code finding covers the target.
+# ``expected`` and ``no_strategy`` come from the performance ladder, with the
+# queue's ``unmeasured_cost``, ``cold_role``, ``background_unproven`` and
+# ``unconfirmed_cost``; ``gated_off`` also keeps out any other unit in a
+# function a constant-false flag switches off. ``unreachable``: an open
+# dead-code finding covers the target.
 # ``terminal_flow``: a print or prompt flow; ``moderate_quiet``: a function
 # under the large-size bar with no churn or bug-fix history.
 FixExclusion = Literal[
@@ -68,6 +70,10 @@ FixExclusion = Literal[
     "kind_unaudited",
     "terminal_flow",
     "moderate_quiet",
+    "unmeasured_cost",
+    "cold_role",
+    "background_unproven",
+    "unconfirmed_cost",
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 

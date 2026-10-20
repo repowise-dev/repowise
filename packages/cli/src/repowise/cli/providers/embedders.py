@@ -40,14 +40,84 @@ def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = 
     this is the choice ``init`` makes afresh. Order: flag > ``REPOWISE_EMBEDDER``
     > detection from keys > ``~/.repowise/config.yaml``'s ``embedder`` > mock.
     """
-    from repowise.core.providers.embedding.resolve import resolve_embedder_name
+    return resolve_embedder_choice(embedder_flag, env)[0]
+
+
+def resolve_embedder_choice(
+    embedder_flag: str | None, env: Mapping[str, str] | None = None
+) -> tuple[str, str]:
+    """:func:`resolve_embedder` plus why it was picked, for the run to state."""
+    from repowise.core.providers.embedding.resolve import embedder_reason, resolve_embedder_name
 
     overlay = env or {}
 
     def getenv(name: str) -> str | None:
         return os.environ.get(name) or overlay.get(name) or None
 
-    return resolve_embedder_name(embedder_flag, getenv=getenv, use_pin=False)[0]
+    name, source = resolve_embedder_name(embedder_flag, getenv=getenv, use_pin=False)
+    return name, embedder_reason(name, source, getenv=getenv)
+
+
+def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
+    """``(name, stated, replaced_mock)`` for a run that pays a model.
+
+    A keyless run pins ``mock`` because it promised no spend. A run already
+    paying a model re-resolves it, or the written pages stay unsearchable.
+    *stated* is the ``gemini (GEMINI_API_KEY is set)`` text the run prints.
+    """
+    name, reason, upgraded = pinned, "pinned in .repowise/config.yaml", False
+    if not pinned or pinned == "mock":
+        resolved, reason = resolve_embedder_choice(None)
+        if resolved != (pinned or "mock"):
+            if pinned == "mock":
+                reason += ", replacing the keyless mock"
+            name, upgraded = resolved, True
+    stated = name or "mock"
+    if stated == "mock":
+        reason += ", semantic search off"
+    return name, f"{stated} ({reason})", upgraded
+
+
+def keyless_run_embedder(pinned: str | None) -> tuple[str, str]:
+    """``(name, stated)`` for a run with no model, which promises no spend.
+
+    An embedder the user chose (a real pin, ``REPOWISE_EMBEDDER``) is kept and
+    named as such; one only inferred from a key falls back to the mock.
+    """
+    if pin_names_an_embedder(pinned):
+        name, reason = str(pinned).strip(), "pinned in .repowise/config.yaml"
+    else:
+        name, reason = resolve_embedder_choice(None)
+        kept = template_run_embedder(name, embedder_was_requested(None, pinned))
+        if kept != name:
+            name, reason = kept, "keyless run"
+    if name == "mock":
+        reason += ", semantic search off"
+    return name, f"{name} ({reason})"
+
+
+def semantic_search_command(repo_path: Any = None, used: str | None = None) -> str:
+    """The one command that turns semantic search on for *repo_path* here.
+
+    *used* is the embedder the run wrote with: a real one that failed is the
+    one to retry. Otherwise names the embedder ``reindex`` would pick now, or
+    with none detectable the local one, since it needs no key.
+    """
+    from repowise.core.providers.embedding.resolve import resolve_reindex_embedder
+
+    name = used if used and used != "mock" else resolve_reindex_embedder(repo_path)[0]
+    return f"repowise reindex --embedder {'ollama' if name == 'mock' else name}"
+
+
+def semantic_search_setup_hint() -> str:
+    """How to get an embedder when none is detectable, for a one-line note."""
+    from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
+
+    keys = " or ".join(EMBEDDER_KEY_ENVS[name][0] for name in ("gemini", "openai"))
+    return (
+        "Run [bold]repowise reindex --embedder ollama[/bold] with Ollama running, "
+        f"or set {keys} and run [bold]repowise reindex[/bold]."
+    )
 
 
 def pin_names_an_embedder(pinned_embedder: Any) -> bool:
@@ -82,6 +152,16 @@ def embedder_was_requested(embedder_flag: str | None, pinned_embedder: Any = Non
     )
 
 
+def is_free_embedder(name: str) -> bool:
+    """Whether an embedder can never put anything on the bill.
+
+    The keyless mock and the local ollama server cost nothing; every other
+    built-in calls a hosted endpoint. Runs that promise "no spend" ask this
+    instead of spelling the names, so the answer lives in one place.
+    """
+    return name in ("mock", "ollama")
+
+
 def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: bool) -> str:
     """The embedder a template-only run actually embeds with.
 
@@ -93,7 +173,7 @@ def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: b
     Shared because ``init`` has to predict this answer before the pipeline, to
     build the run's vector store with the backend generation will actually use.
     """
-    hosted = embedder_name_resolved not in ("mock", "ollama")
+    hosted = not is_free_embedder(embedder_name_resolved)
     return "mock" if hosted and not embedder_was_requested else embedder_name_resolved
 
 

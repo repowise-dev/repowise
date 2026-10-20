@@ -29,7 +29,7 @@ from repowise.core.persistence.crud import (
     get_repository,
     update_job_status,
 )
-from repowise.core.persistence.database import get_session
+from repowise.core.persistence.database import get_session, refresh_planner_stats
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
 from repowise.core.pipeline.modes import OrchestratorMode
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
@@ -565,6 +565,7 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
 
     all_pages = (result.generated_pages or []) + incremental_pages
     await _refresh_fts(run.fts, swept_page_ids, all_pages)
+    await refresh_planner_stats(run.session_factory.kw["bind"])
 
     # Stop progress updates first, so none overwrites "completed".
     await run.progress.drain_and_stop()

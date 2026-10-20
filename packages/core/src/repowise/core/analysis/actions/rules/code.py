@@ -10,6 +10,7 @@ from datetime import datetime
 from ..context import HISTORY_TOO_SHORT, RepoContext
 from ..facts import FileFacts, RepoFacts
 from ..model import (
+    SEVERITY_VALUE,
     Action,
     ActionCommand,
     ActionDetail,
@@ -50,60 +51,89 @@ REGRESSION_FILE_ROWS = 3
 
 
 def fresh_regressions(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
-    """Serious findings the last week of commits added and nobody has fixed yet.
+    """Findings the last week of commits added and nobody has fixed yet.
 
     The loader keeps only findings the commit demonstrably wrote (added lines,
     a new file, or a changed symbol), still open, in production code, and not
     history markers: "you made this worse" has to be true of the diff.
+
+    Only defect-class findings act now: a proven performance cause or lost
+    coverage. Code shape (a long or nested method) is what a week of feature
+    work leaves on any active repository, so it rolls up into one maintainability
+    item to plan. A credential is ``live_secret``'s whichever commit added it,
+    and the scanner's pattern kinds stay on the Security tab (``hygiene``).
     """
     rule = "fresh_regressions"
     if "commit_health" in facts.unavailable:
         return RuleOutcome(rule, "unavailable", facts.unavailable["commit_health"])
     if ctx.anchor is None:
         return RuleOutcome(rule, "not_applicable", "No commit history in the index.")
-    by_file: dict[str, list] = defaultdict(list)
+    defects: dict[str, list] = defaultdict(list)
+    shape: dict[str, list] = defaultdict(list)
     for f in facts.recent_findings:
-        by_file[f.file_path].append(f)
-    if not by_file:
-        return RuleOutcome(rule, "evaluated")
+        (defects if f.defect else shape)[f.file_path].append(f)
+    actions: list[Action] = []
+    if defects:
+        ranked = sorted(defects.items(), key=lambda kv: (-_regression_weight(kv[1]), kv[0]))
+        if len(ranked) > REGRESSION_FILE_ROWS:
+            actions.append(_regression_rollup(ranked))
+        else:
+            actions.extend(
+                _regression_file(path, found, ctx, _regression_weight(found))
+                for path, found in ranked
+            )
+    if shape:
+        ranked = sorted(shape.items(), key=lambda kv: (-_shape_weight(kv[1]), kv[0]))
+        actions.append(_shape_rollup(ranked))
+    return RuleOutcome(rule, "evaluated", "", tuple(actions))
 
-    def weight(found: list) -> float:
-        return sum(f.severity == "critical" for f in found) * 10.0 + len(found)
 
-    ranked = sorted(by_file.items(), key=lambda kv: (-weight(kv[1]), kv[0]))
-    if len(ranked) > REGRESSION_FILE_ROWS:
-        return RuleOutcome(rule, "evaluated", "", (_regression_rollup(ranked),))
-    return RuleOutcome(
-        rule,
-        "evaluated",
-        "",
-        tuple(_regression_file(path, found, ctx, weight(found)) for path, found in ranked),
-    )
+#: How much each defect class weighs when files are ordered: a proven
+#: performance cause runs on every call, lost coverage is a risk to the next one.
+_KIND_WEIGHT = {"performance": 3.0, "coverage": 1.0}
+
+#: How a defect-class finding is named in a sentence.
+_KIND_NOUN = {"performance": "performance regression", "coverage": "coverage drop"}
 
 
-def _regression_value(critical: int) -> int:
-    """The value a regression ranks on: a week with critical findings still
-    outranks one without, as it did when the action itself read critical.
+def _regression_weight(found: list) -> float:
+    return sum(_KIND_WEIGHT.get(f.kind, 1.0) for f in found)
 
-    The action's severity tops out at high. Health detectors tag a long method
-    critical, and a routine week of feature work leaves dozens of those, so a
-    critical label here would read as an emergency most weeks. Critical on an
-    action is kept for a live credential (``live_secret``).
+
+def _shape_weight(found: list) -> float:
+    return sum(f.severity == "critical" for f in found) * 10.0 + len(found)
+
+
+def _regression_value(found: list) -> int:
+    """The value a defect-class regression ranks on: a proven performance
+    cause outranks lost coverage.
+
+    The action's severity tops out at high. Critical on an action is kept for
+    a live credential (``live_secret``).
     """
-    return 4 if critical else 3
+    return 4 if any(f.kind == "performance" for f in found) else 3
+
+
+def _kinds_text(found: list) -> str:
+    """``1 performance regression and 2 coverage drops``, worst class first."""
+    counts = {k: sum(f.kind == k for f in found) for k in _KIND_NOUN}
+    parts = [plural(n, _KIND_NOUN[k]) for k, n in counts.items() if n]
+    return " and ".join(parts) or plural(len(found), "finding")
 
 
 def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) -> Action:
     symbols = sorted({f.symbol for f in found if f.symbol})
-    critical = sum(f.severity == "critical" for f in found)
     commits = {f.sha: f for f in found}
-    lead = max(found, key=lambda f: (f.severity == "critical", f.line or 0))
-    if len(symbols) == 1:
-        title = f"Simplify {code(symbols[0])} in {code(path)} while the change is fresh"
-    elif symbols:
-        title = f"Tidy {plural(len(symbols), 'function')} you changed in {code(path)} this week"
+    lead = max(found, key=lambda f: (_KIND_WEIGHT.get(f.kind, 1.0), f.line or 0))
+    kinds = {f.kind for f in found}
+    if kinds == {"coverage"}:
+        title = f"Restore the test coverage this week's changes lost in {code(path)}"
+    elif kinds == {"performance"} and len(symbols) == 1:
+        title = f"Fix the performance regression in {code(symbols[0])} in {code(path)}"
+    elif kinds == {"performance"}:
+        title = f"Fix the performance regressions this week's changes added to {code(path)}"
     else:
-        title = f"Tidy what this week's changes left in {code(path)}"
+        title = f"Fix what this week's changes added to {code(path)}"
     latest = max(commits.values(), key=lambda f: f.committed_at or ctx.anchor)
     return Action(
         rule="fresh_regressions",
@@ -112,35 +142,38 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         severity="high",
         title=title,
         impact=(
-            f"{plural(len(commits), 'commit')} in the last 7 days added or worsened "
-            f"{plural(len(found), 'critical or high finding')} here, still open. "
+            f"{plural(len(commits), 'commit')} in the last 7 days added "
+            f"{_kinds_text(found)} here, still open. "
             "Fixing now costs less than after the next change."
         ),
         why=(
-            WhyFact("serious findings", str(len(found))),
-            WhyFact("critical findings", str(critical)),
+            WhyFact("defect findings", str(len(found))),
+            WhyFact("kinds", ", ".join(sorted(kinds))),
             WhyFact("latest commit", latest.subject[:72] or latest.sha[:7]),
         ),
         target_kind="symbol" if len(symbols) == 1 else "file",
         target_path=path,
         target_symbol=symbols[0] if len(symbols) == 1 else None,
-        surface="findings",
+        surface="performance" if kinds == {"performance"} else "findings",
         effort="S" if len(symbols) <= 2 else "M",
         confidence="high",
         done_when="The findings close on the next update.",
         marker=lead.biomarker,
         weight=weight,
-        value=_regression_value(critical),
+        value=_regression_value(found),
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
-        fingerprint=fingerprint(len(found), critical),
+        fingerprint=fingerprint(len(found), *sorted(kinds)),
         details=_regression_details(found),
         commands=_regression_commands([path], latest.sha),
     )
 
 
 def _regression_details(found: list) -> tuple[ActionDetail, ...]:
-    ordered = sorted(found, key=lambda f: (f.severity != "critical", f.file_path, f.line or 0))
+    ordered = sorted(
+        found,
+        key=lambda f: (-_KIND_WEIGHT.get(f.kind, 0.0), f.severity != "critical", f.file_path, f.line or 0),
+    )
     return tuple(
         ActionDetail(
             path=f.file_path,
@@ -181,27 +214,24 @@ def _regression_commands(paths: list[str], sha: str) -> tuple[ActionCommand, ...
 
 def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
     found = [f for _, fs in ranked for f in fs]
-    critical = sum(f.severity == "critical" for f in found)
     commits = {f.sha for f in found}
     worst_path, worst = ranked[0]
-    worst_critical = sum(f.severity == "critical" for f in worst)
     return Action(
         rule="fresh_regressions",
         tier="act_now",
         horizons=("week",),
         severity="high",
         title=(
-            f"Clean up what this week's commits left: {plural(len(found), 'serious finding')} "
+            f"Fix what this week's commits added: {_kinds_text(found)} "
             f"in {len(ranked):,} files"
         ),
         impact=(
-            f"{plural(len(commits), 'commit')} in the last 7 days added or worsened them, and they are "
-            f"still open. Start with {code(worst_path)}"
-            + (f", which has {worst_critical} critical." if worst_critical else ".")
+            f"{plural(len(commits), 'commit')} in the last 7 days added them, and they are "
+            f"still open. Start with {code(worst_path)}, which has {_kinds_text(worst)}."
         ),
         why=(
-            WhyFact("serious findings", str(len(found))),
-            WhyFact("critical findings", str(critical)),
+            WhyFact("defect findings", str(len(found))),
+            WhyFact("kinds", ", ".join(sorted({f.kind for f in found}))),
             WhyFact("files", str(len(ranked))),
         ),
         target_kind="repo",
@@ -210,15 +240,69 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         effort="L" if len(ranked) > 10 else "M",
         confidence="high",
         done_when="The findings close on the next update.",
-        weight=float(critical * 10 + len(found)),
-        value=_regression_value(critical),
+        weight=_regression_weight(found),
+        value=_regression_value(found),
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
         includes=tuple(path for path, _ in ranked[:10]),
-        fingerprint=fingerprint(len(found) // 10, critical // 5),
+        fingerprint=fingerprint(len(found) // 10, *sorted({f.kind for f in found})),
         # Evidence in the order the files are ranked, so it starts where the
         # impact line says to start; the commit to inspect is the latest one
         # that touched that same file.
+        details=tuple(d for _, fs in ranked for d in _regression_details(fs)),
+        details_total=len(found),
+        commands=_regression_commands(
+            [path for path, _ in ranked],
+            max(worst, key=lambda f: f.committed_at or datetime.min).sha,
+        ),
+    )
+
+
+def _shape_rollup(ranked: list[tuple[str, list]]) -> Action:
+    """The week's code-shape findings as one maintainability item to plan.
+
+    One item however many files: a week of feature work can leave long or
+    nested methods in seventy files, and none of them is an emergency.
+    """
+    found = [f for _, fs in ranked for f in fs]
+    commits = {f.sha for f in found}
+    worst_path, worst = ranked[0]
+    where = code(worst_path) if len(ranked) == 1 else f"{len(ranked):,} files"
+    return Action(
+        rule="fresh_regressions",
+        tier="plan",
+        horizons=("week",),
+        severity="medium",
+        title=(
+            f"Tidy the code shape this week's commits left: "
+            f"{plural(len(found), 'finding')} in {where}"
+        ),
+        impact=(
+            f"{plural(len(commits), 'commit')} in the last 7 days added or worsened long, "
+            f"complex or deeply nested code, still open. Start with {code(worst_path)}"
+            f" ({plural(len(worst), 'finding')}): tidying it while the change is fresh "
+            "costs less than after the next one."
+        ),
+        why=(
+            WhyFact("code-shape findings", str(len(found))),
+            WhyFact("files", str(len(ranked))),
+            WhyFact("commits", str(len(commits))),
+        ),
+        target_kind="repo" if len(ranked) > 1 else "file",
+        target_path="" if len(ranked) > 1 else worst_path,
+        # Its own identity, so it never shares an id with a defect action.
+        identity="code_shape",
+        surface="commits" if len(ranked) > 1 else "findings",
+        effort="L" if len(ranked) > 10 else "M",
+        confidence="high",
+        done_when="The findings close on the next update.",
+        marker=max(worst, key=lambda f: (f.severity == "critical", f.line or 0)).biomarker,
+        weight=float(len(found)),
+        value=SEVERITY_VALUE["medium"],
+        evidence_ids=tuple(sorted(commits)),
+        evidence_total=len(found),
+        includes=tuple(path for path, _ in ranked[:10]),
+        fingerprint=fingerprint("shape", len(found) // 10),
         details=tuple(d for _, fs in ranked for d in _regression_details(fs)),
         details_total=len(found),
         commands=_regression_commands(
@@ -586,12 +670,20 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     if "fix_first" in facts.unavailable:
         return RuleOutcome(rule, "unavailable", facts.unavailable["fix_first"])
     actions = []
+    # A cause this week's commits added acts now as a fresh regression, with
+    # the commit that added it; it is not listed twice.
+    fresh_perf = {
+        (f.file_path, _short(f.symbol)) for f in facts.recent_findings if f.kind == "performance"
+    }
     # Do next's number for each item, held to the queue's order: a later item
     # never outranks an earlier one, whatever its effort.
     ceiling = math.inf
     for item in facts.fix_first:
         tier = _FIX_FIRST_TIER.get(item.tier)
-        if tier is None:
+        if tier is None or (
+            item.kind == "perf_fix"
+            and (item.target.file_path, _short(item.target.symbol)) in fresh_perf
+        ):
             continue
         effort = _effort(item.effort.bucket)
         confidence = "high" if item.confidence.level == "high" else "medium"
@@ -642,6 +734,11 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             )
         )
     return RuleOutcome(rule, "evaluated", "", tuple(actions))
+
+
+def _short(symbol: str | None) -> str | None:
+    """A symbol's own name: ``a.py::Repo.load`` and ``Repo.load`` are ``load``."""
+    return symbol.rsplit("::", 1)[-1].rsplit(".", 1)[-1] if symbol else None
 
 
 def _effort(bucket: str | None) -> str:

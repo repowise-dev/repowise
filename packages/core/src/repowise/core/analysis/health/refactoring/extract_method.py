@@ -700,6 +700,11 @@ def _render_fields(
             out_rebound=rebound,
             typed_host=fn_node is not None
             and fn_node.child_by_field_name("return_type") is not None,
+            throws_clause=(
+                next((child.text.decode() for child in fn_node.named_children if child.type == "throws"), None)
+                if language == "java" and fn_node is not None
+                else None
+            ),
         )
     )
     rendered = {

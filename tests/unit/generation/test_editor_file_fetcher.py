@@ -326,7 +326,7 @@ async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
     assert paths == ["src/broken.py", "src/busy.py"]  # fix evidence leads
     assert data.hotspots[0].fix_count == 4
     assert data.hotspots[0].bug_magnet is True
-    assert data.hotspots[0].last_fix_age == "2 weeks ago"
+    assert data.hotspots[0].last_fix_date == (datetime.now(UTC) - timedelta(days=14)).strftime("%Y-%m-%d")
 
 
 async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session, repo, tmp_path):
@@ -340,7 +340,7 @@ async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert [h.path for h in data.hotspots] == ["src/high.py", "src/low.py"]
-    assert all(h.fix_count == 0 and h.last_fix_age is None for h in data.hotspots)
+    assert all(h.fix_count == 0 and h.last_fix_date is None for h in data.hotspots)
 
 
 async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
@@ -362,7 +362,7 @@ async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.hotspots[0].bug_magnet is False
-    assert data.hotspots[0].last_fix_age is None
+    assert data.hotspots[0].last_fix_date is None
 
 
 async def test_fetch_active_decisions_only(session, repo, tmp_path):
@@ -601,7 +601,7 @@ async def test_code_health_trend_is_read_from_the_snapshots(session, repo, tmp_p
             taken_at=_now() + timedelta(days=day),
         )
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=["code_health"]).fetch()
 
     assert data.code_health.hotspot_trend == "declining"
 
@@ -636,8 +636,65 @@ async def test_code_health_names_production_files_only(session, repo, tmp_path):
         ],
     )
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=["+fix_first"])
+    data = await fetcher.fetch()
 
     assert data.code_health.worst_path == "src/a.py"
     assert [f["where"] for f in data.code_health.fix_first] == ["src/a.py:1"]
     assert data.code_health.fix_first[0]["title"] == "Reduce the branching in f"
+
+
+# ---------------------------------------------------------------------------
+# Sections: the fetcher reads only what the configured block renders
+# ---------------------------------------------------------------------------
+
+
+def _write_config(root: Path, text: str) -> None:
+    (root / ".repowise").mkdir(exist_ok=True)
+    (root / ".repowise" / "config.yaml").write_text(text, encoding="utf-8")
+
+
+async def test_the_lean_default_skips_commands_and_caps_decisions(session, repo, tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}', encoding="utf-8")
+    for i in range(5):
+        await _add_decision(session, repo.id, f"Decision {i}")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.build_commands == {}
+    assert len(data.decisions) == 3
+    assert "commands" not in data.sections
+
+
+async def test_config_sections_add_commands_back(session, repo, tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}', encoding="utf-8")
+    _write_config(tmp_path, "editor_files:\n  sections: [+commands]\n")
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.build_commands == {"test": "npm run test"}
+    assert "hotspots" in data.sections and "commands" in data.sections
+
+
+async def test_a_section_left_out_is_never_queried(session, repo, tmp_path):
+    _touch(tmp_path, "src/a.py")
+    await _add_git_meta(session, repo.id, "src/a.py", is_hotspot=True)
+    await _add_decision(session, repo.id, "Use JWT")
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=["tools"]).fetch()
+
+    assert data.hotspots == [] and data.decisions == [] and data.code_health is None
+
+
+async def test_the_default_health_line_skips_the_detail_queries(session, repo, tmp_path):
+    await _add_metric(session, repo.id, "src/a.py", 7.0)
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.code_health.average_health == 7.0
+    assert data.code_health.worst_path == "src/a.py"
+    assert data.code_health.maintainability_average is None
+    assert data.code_health.fix_first == []

@@ -29,6 +29,7 @@ from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     escape_like,
     filter_path_list,
+    filter_rows_by_attr,
     is_excluded,
 )
 from repowise.server.mcp_server._references import symbol_identity
@@ -152,11 +153,15 @@ async def _excluded(q: TargetQuery) -> Resolution | None:
     aren't path-matchable here and fall through to neighbor filtering)."""
     gate_path = q.target.split("::", 1)[0] if "::" in q.target else q.target
     if is_excluded(gate_path, q.exclude_spec):
-        return {
-            "target": q.target,
-            "error": f"'{q.target}' is excluded by exclude_patterns configuration",
-        }
+        return _excluded_error(q)
     return None
+
+
+def _excluded_error(q: TargetQuery) -> Resolution:
+    return {
+        "target": q.target,
+        "error": f"'{q.target}' is excluded by exclude_patterns configuration",
+    }
 
 
 async def _file_page_by_id(q: TargetQuery) -> Resolution | None:
@@ -253,6 +258,11 @@ async def _symbol(q: TargetQuery) -> Resolution | None:
     sym_matches = await _symbol_rows(q)
     if not sym_matches:
         return None
+    # A bare name isn't path-matchable in ``_excluded``, so drop the rows in
+    # excluded files here; if none is left, answer as a ``path::Name`` would.
+    sym_matches = filter_rows_by_attr(sym_matches, "file_path", q.exclude_spec)
+    if not sym_matches:
+        return _excluded_error(q)
     return ResolvedTarget(
         "symbol",
         file_path=sym_matches[0].file_path,

@@ -482,6 +482,98 @@ def _stamp_scope(repo_path: Any, new_state: dict, failed_steps: list[str]) -> No
     )
 
 
+def stamp_file_page_scope(
+    repo_path: Any,
+    state: dict,
+    parsed_files: list | None,
+    graph_builder: Any,
+    git_meta_map: dict | None,
+) -> None:
+    """Recount ``index_scope.file_pages`` from this run's parse and the stored pages.
+
+    Eligibility applies selection's gates except the cap, as init's figure does;
+    an unreadable store keeps the previous figures.
+    """
+    if not parsed_files or graph_builder is None:
+        return
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.generation.selection.selector import eligible_file_page_paths
+    from repowise.core.index_scope import file_page_counts, resolve_index_scope, stamp_index_scope
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        pagerank = graph_builder.pagerank()
+    except Exception as exc:  # a released graph cannot rank anything
+        log.debug("file_page_scope_skipped", error=str(exc))
+        return
+    stored = run_async(_load_page_paths_and_hotspots(repo_path))
+    if stored is None:
+        return
+    page_paths, hotspots = stored
+    for path, meta in (git_meta_map or {}).items():
+        if meta.get("is_hotspot"):
+            hotspots.add(path)
+        else:
+            hotspots.discard(path)
+    eligible = eligible_file_page_paths(
+        parsed_files,
+        pagerank,
+        hotspots=hotspots,
+        dedupe_near_clones=GenerationConfig.from_repo_config(
+            load_repo_config(Path(repo_path))
+        ).dedupe_near_clones,
+    )
+    config = load_config(repo_path)
+    stamp_index_scope(
+        state,
+        config,
+        file_pages=file_page_counts(
+            configured_cap=resolve_index_scope(state, config)["file_pages"]["configured_cap"],
+            eligible=len(eligible),
+            generated=len(eligible & page_paths),
+        ),
+    )
+
+
+async def _load_page_paths_and_hotspots(repo_path: Any) -> tuple[set[str], set[str]] | None:
+    """Paths with a live file page, and the stored hotspot paths."""
+    from sqlalchemy import select
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+    )
+    from repowise.core.persistence.models import GitMetadata, Page
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
+            pages = await session.execute(
+                select(Page.target_path).where(
+                    Page.repository_id == repo.id,
+                    Page.page_type == "file_page",
+                    Page.freshness_status != "tombstone",
+                )
+            )
+            hotspots = await session.execute(
+                select(GitMetadata.file_path).where(
+                    GitMetadata.repository_id == repo.id, GitMetadata.is_hotspot.is_(True)
+                )
+            )
+            return set(pages.scalars()), set(hotspots.scalars())
+    except Exception as exc:
+        log.warning("file_page_scope_read_failed", error=str(exc))
+        return None
+    finally:
+        await engine.dispose()
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,
@@ -636,8 +728,11 @@ def _persist_index_only_update(
         timings.stop("run")
         new_state["phase_timings"] = timings.totals
     _stamp_scope(repo_path, new_state, failed_steps)
+    stamp_file_page_scope(repo_path, new_state, parsed_files, graph_builder, git_meta_map)
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
+    from repowise.core.index_scope import upgrade_command
+
     from .reporting import show_index_only_completion
 
     show_index_only_completion(
@@ -650,6 +745,7 @@ def _persist_index_only_update(
         pages_rendered=pages_rendered,
         template_wiki=template_wiki,
         changed_paths=changed_paths,
+        upgrade_command=upgrade_command(new_state.get("index_scope")),
     )
 
 

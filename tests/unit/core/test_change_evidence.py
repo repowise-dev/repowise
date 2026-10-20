@@ -135,6 +135,18 @@ def test_every_kind_is_present_in_order_and_round_trips():
     assert all(i.status == "unknown" and i.basis == "unresolved" for i in evidence.items)
 
 
+def test_a_partial_health_comparison_never_reads_ok():
+    partial = dataclasses.replace(_delta([]), status="partial", explanation="base not indexed")
+    evidence = build_change_evidence(_bundle(["src/a.py"], health=partial), change_id=None, revspec="abc")
+    item = next(i for i in evidence.items if i.kind == "health_delta")
+    assert (item.status, item.basis, item.value["complete"]) == ("unknown", "measured", False)
+    # A record kept before this rule reads under it.
+    kept = {**item.to_dict(), "status": "ok"}
+    assert EvidenceItem.from_dict(kept).status == "unknown"
+    full = build_change_evidence(_bundle(["src/a.py"], health=_delta([])), change_id=None, revspec="abc")
+    assert next(i for i in full.items if i.kind == "health_delta").status == "ok"
+
+
 def test_statuses_follow_the_facts():
     paths = ["src/a.py", "src/b.py", "tests/test_a.py"]
     bundle = _bundle(

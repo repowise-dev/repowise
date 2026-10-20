@@ -96,3 +96,23 @@ def test_every_item_type_is_ranked_and_rolled_up() -> None:
 )
 def test_file_score_maps_every_band(score: float, severity: str) -> None:
     assert severity_of_file_score(score) == severity
+
+
+def test_proposed_wording_names_a_hand_recorded_decision() -> None:
+    """``source="cli"`` is a manual entry (``SOURCE_RANK``): it is not a proposal.
+
+    The attention list's wording is what the Overview page, the dashboard and
+    agent prompts repeat, so a human-recorded decision must not be described
+    as auto-proposed (#3993).
+    """
+    result = decision_source(
+        [],
+        [
+            DecisionAttentionInput(id="d-manual", title="Manual", source="cli"),
+            DecisionAttentionInput(id="d-auto", title="Auto", source="inferred"),
+        ],
+        [],
+    )
+    descriptions = {item["target_id"]: item["description"] for item in result.items}
+    assert descriptions["d-manual"] == "Decision recorded by hand, awaiting review"
+    assert descriptions["d-auto"] == "Auto-proposed decision awaiting review"

@@ -324,6 +324,7 @@ def _sole_where_pair(call: Node) -> tuple[Node, Node] | None:
 
 class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
     language = "typescript"
+    read_call_kinds = frozenset({"call_expression"})
     markers = frozenset(
         {
             "io_in_loop",
@@ -526,7 +527,8 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
         iterates, claim = self._source(right, loop, probe, hop=True)
         if iterates == "unknown" and baseline is None:
             return None
-        return LoopSource(iterates, claim or baseline or "unknown")
+        source = LoopSource(iterates, claim or baseline or "unknown")
+        return self.with_read_tables(source, right, loop, probe)
 
     def _expr_magnitude(
         self, expr: Node | None, loop: Node, probe: SinkProbe
@@ -618,17 +620,18 @@ class TsJsPerfDialect(TsJsMarkerHooks, IterableSources):
             return self._source(first, loop, probe, hop=hop)
         return self._source(receiver, loop, probe, hop=hop)
 
-    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
-        """Every table the read names is a registry (``FROM repos``), or with no SQL,
-        the delegate does (``prisma.repository.findMany()``)."""
-        sql = [n.text or b"" for n in self._walk(call) if n.type in ("string", "template_string")]
-        sql = [text for text in sql if lex.sql_tables(text)]
-        if sql:
-            return all(lex.is_config_sql(text) for text in sql)
+    def read_tables(self, call: Node, nodes: list[Node]) -> tuple[str, ...]:
+        """The tables the read's SQL names (``FROM repos``), or with no SQL, its
+        delegate's model (``prisma.repository.findMany()`` -> ``Repository``)."""
+        texts = [n.text or b"" for n in self._walk(call) if n.type in ("string", "template_string")]
+        texts = [text for text in texts if lex.sql_tables(text)]
+        if texts:
+            tables = [lex.read_sql_tables(text) for text in texts]
+            return tuple(dict.fromkeys(t for found in tables for t in found)) if all(tables) else ()
         model = _callee_object(call)
         prop = model.child_by_field_name("property") if model is not None else None
         delegate = _text(prop) if prop is not None and model.type == "member_expression" else ""
-        return bool(delegate) and lex.is_config_model(delegate[:1].upper() + delegate[1:])
+        return (delegate[:1].upper() + delegate[1:],) if delegate else ()
 
     def _awaited_wrapper_call(self, closure: Node) -> Node | None:
         """The awaited call *closure* is passed to (``await limit(() => f(x))``).

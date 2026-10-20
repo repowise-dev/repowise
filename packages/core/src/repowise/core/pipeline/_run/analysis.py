@@ -16,6 +16,7 @@ from repowise.core.pipeline.phases._common import (
     _phase_done,
     limit_to_top_pagerank,
 )
+from repowise.core.pipeline.phases.analysis import STRUCTURAL_RUN_REASON
 from repowise.core.pipeline.progress import STAGE_ANALYSIS, emit_stage
 from repowise.core.pipeline.resume import ResumePhase
 
@@ -44,7 +45,7 @@ def _limit_test_run(run: PipelineRun) -> None:
         run.parsed_files, run.graph_builder, n=TEST_RUN_FILE_LIMIT
     )
     if run.progress:
-        run.progress.on_message("warning", f"Test run: limiting to {len(run.parsed_files)} files")
+        run.progress.on_message("notice", f"Test run: limiting to {len(run.parsed_files)} files")
 
 
 async def _rehydrate_analysis(run: PipelineRun) -> bool:
@@ -71,6 +72,12 @@ async def _rehydrate_analysis(run: PipelineRun) -> bool:
     return True
 
 
+def _no_model_reason(run: PipelineRun) -> str | None:
+    """Why a deterministic run has no model, for its skipped decision sources."""
+    config = run.generation_config
+    return STRUCTURAL_RUN_REASON if config is not None and config.deterministic else None
+
+
 async def _backfill_decisions(run: PipelineRun) -> None:
     """Run decision extraction alone when a resumed analysis never finished it."""
     if run.progress:
@@ -86,6 +93,7 @@ async def _backfill_decisions(run: PipelineRun) -> None:
         parsed_files=run.parsed_files,
         source_map=run.source_map,
         progress=run.progress,
+        no_model_reason=_no_model_reason(run),
     )
     if run.decision_report is not None:
         run.gen_decision_report = run.decision_report
@@ -131,6 +139,7 @@ async def _compute_analysis(run: PipelineRun) -> None:
             parsed_files=run.parsed_files,
             source_map=run.source_map,
             progress=progress,
+            no_model_reason=_no_model_reason(run),
         ),
         _orch._run_doc_drift_analysis(
             run.source_map,
@@ -221,6 +230,7 @@ def _build_kg_skeleton(run: PipelineRun, build_skeleton: Any, new_fingerprint: s
         repo_path=run.repo_path,
     )
     run.knowledge_graph_result.fingerprint = new_fingerprint
+    _phase_done(progress, "knowledge_graph.skeleton")
     if progress:
         kg = run.knowledge_graph_result
         progress.on_message(

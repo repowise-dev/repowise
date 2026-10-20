@@ -10,6 +10,7 @@ the LLM to:
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any
 
 import structlog
@@ -197,6 +198,7 @@ async def _enrich_layers(
                 "id": layer.get("id", ""),
                 "heuristic_label": layer["name"],
                 "file_count": len(file_paths),
+                "folders": _folder_breakdown(file_paths),
                 "top_files": top_files,
             })
 
@@ -258,6 +260,22 @@ def _dedupe_layer_names(layers: list[dict]) -> None:
         seen.add(name.casefold())
 
 
+_FOLDER_DEPTH = 2
+_TOP_FOLDERS = 5
+
+
+def _folder_breakdown(file_paths: list[str]) -> list[tuple[str, int]]:
+    """``(folder, file count)`` for a layer's largest folders, two segments deep.
+
+    The top files are ranked by PageRank, so a layer that is mostly one area
+    but headed by another reads as the head; the counts show the majority.
+    """
+    counts = Counter(
+        "/".join(p.split("/")[:-1][:_FOLDER_DEPTH]) or "(root)" for p in file_paths
+    )
+    return counts.most_common(_TOP_FOLDERS)
+
+
 def _build_layer_naming_prompt(
     batch_context: list[dict],
     tech_stack: list[dict],
@@ -292,6 +310,11 @@ def _build_layer_naming_prompt(
         lines.append(f"\n--- Community \"{ctx['id']}\" ---")
         lines.append(f"Heuristic label: {ctx['heuristic_label']}")
         lines.append(f"File count: {ctx['file_count']}")
+        folders = ctx.get("folders") or []
+        if folders:
+            shown = ", ".join(f"{folder} {n}" for folder, n in folders)
+            rest = ctx["file_count"] - sum(n for _, n in folders)
+            lines.append(f"Files by folder: {shown}" + (f", other folders {rest}" if rest else ""))
         lines.append(f"Top files: {', '.join(ctx['top_files'][:10])}")
 
     lines.append("")

@@ -431,6 +431,7 @@ async def test_detail_carries_the_facets_and_evidence_for_one_cause(
         "leverage",
         "change_risk",
         "loop_magnitude",
+        "growth_source",
         "execution_role",
     }
     assert body["evidence_total"] == 2
@@ -682,3 +683,43 @@ async def test_an_opened_area_narrows_the_rows_but_not_the_scope_sizes(
     opened = await _page(client, repo_id, **_EVERYTHING, area=area)
     assert opened["total"] == whole["areas"]["items"][0]["total"]
     assert opened["scopes"] == whole["scopes"]
+
+
+async def test_a_row_is_numbered_by_its_place_in_the_list_it_is_served_in(
+    app, client: AsyncClient
+) -> None:
+    """The stored rank counts every cause in the repository, so a filtered list
+    numbered by it skips; each row carries its place in the list instead."""
+    # A helper four callers reach outranks the queued causes, but nothing
+    # measured its loop, so the default queue leaves it out.
+    unmeasured = [
+        _finding(
+            f"src/{name}.py",
+            50,
+            [f"src/{name}.py::run", "src/slow.py::load", "src/db.py::fetch"],
+            magnitude=None,
+        )
+        for name in ("f", "g", "h", "i")
+    ]
+    repo_id, _ = await _seed(app, client, [*_two_production_causes(), *unmeasured])
+    queue = await _page(client, repo_id)
+    async with app.state.session_factory() as session:
+        stored = dict(
+            (
+                await session.execute(
+                    select(
+                        PerformanceOpportunity.opportunity_id, PerformanceOpportunity.rank_position
+                    )
+                )
+            ).all()
+        )
+    assert [stored[item["opportunity_id"]] for item in queue["items"]] == [0, 2]
+    assert [item["rank_position"] for item in queue["items"]] == [0, 1]
+    second = await _page(client, repo_id, limit=1, offset=1)
+    assert second["items"][0]["opportunity_id"] == queue["items"][1]["opportunity_id"]
+    assert second["items"][0]["rank_position"] == 1
+    # Another order is not a rank: the row keeps the stored one.
+    by_leverage = await _page(client, repo_id, sort="leverage")
+    assert [item["rank_position"] for item in by_leverage["items"]] == [
+        stored[item["opportunity_id"]] for item in by_leverage["items"]
+    ]

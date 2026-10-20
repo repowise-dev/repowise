@@ -21,6 +21,7 @@ import { HighlightedCodeBlock } from "../../shared/code-block";
 import { CommandLine } from "../../shared/command-line";
 import { PlaceholderHint } from "../../refactoring/placeholder-hint";
 import { AiPromptButton } from "../ai-prompt-button";
+import { MICRO } from "../tokens";
 import { AGENT_PROMPT_LABEL } from "../ai-prompt-action";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, STATUS_LABEL } from "../labels";
 import { TIER_LABEL, fixLocation, fixPlanLabel, tierReason } from "./scope";
@@ -39,7 +40,6 @@ const TIER_DOT: Record<FixTier, string> = {
   later: "border border-[var(--color-text-tertiary)]",
 };
 
-const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 const LINK =
   "rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";

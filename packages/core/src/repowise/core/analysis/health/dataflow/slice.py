@@ -106,6 +106,7 @@ from .slice_writes import (
     _outs_definitely_assigned,
     _stmt_assigns,
     _stmts_assign,
+    _trailing_constant_output,
     _unconditional_write,
     _writes_var,
 )
@@ -408,6 +409,12 @@ class _FunctionSlicer:
         s, e = span.start, span.end
         if any(import_line < s <= use_line <= e for import_line, use_line in self.import_reads):
             return None
+        byref_alias_lines = self.def_lines.get("__byref_alias__")
+        if byref_alias_lines:
+            b_lo = bisect_left(byref_alias_lines, s)
+            b_hi = bisect_right(byref_alias_lines, e)
+            if b_lo < b_hi:
+                return None
         if self.reads is None:
             self.reads = _reads_observing(self.analysis, self.def_lines)
         params, returns = _infer_in_out(
@@ -422,6 +429,8 @@ class _FunctionSlicer:
         if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
             return None
         if not _outs_definitely_assigned(span.nodes, returns, self.def_lines, self.lmap):
+            return None
+        if _trailing_constant_output(span.nodes, s, e, returns, self.def_lines, self.lmap):
             return None
         return params, returns
 

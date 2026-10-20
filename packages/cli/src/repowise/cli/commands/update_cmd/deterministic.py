@@ -263,7 +263,7 @@ def _render_pages(
         )
         # A template render takes every page it is fed; deterministic mode
         # bypasses the budget already, so no page-id scoping is needed.
-        with console.status("  Re-rendering wiki pages from structure…"):
+        with console.status("  Rebuilding documentation pages from code…"):
             pages = run_async(
                 generator.generate_all(
                     affected_parsed,

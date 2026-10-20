@@ -117,9 +117,9 @@ def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
 
 def _git_check(repo_path: _DoctorPath) -> DoctorCheck:
     try:
-        import git as gitpython
+        from repowise.core.git_repo import Repo
 
-        gitpython.Repo(repo_path, search_parent_directories=True)
+        Repo(repo_path, search_parent_directories=True).close()
         return _check("Git repository", True, str(repo_path))
     except Exception:
         return _check("Git repository", False, "Not a git repo")
