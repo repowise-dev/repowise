@@ -19,6 +19,8 @@ from repowise.core.cost_estimator import approximate_generation_plan, estimate_c
 from repowise.core.providers.llm import resolve
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
+from ._provider_picker import pick_default
+
 _KEYS = tuple(
     var for spec in PROVIDER_SPECS.values() for var in (*spec.api_key_envs, *spec.base_url_envs)
 )
@@ -41,16 +43,7 @@ def _logged_in(monkeypatch: Any, *names: str, auth: Any = _PLAN) -> None:
 
 
 def _default_pick(monkeypatch: Any, repo: Path | None = None, **kwargs: Any) -> tuple[str, str]:
-    seen: dict[str, str] = {}
-
-    def ask(*_a: object, default: str, **_k: object) -> str:
-        seen["default"] = default
-        return default
-
-    monkeypatch.setattr(ui.Prompt, "ask", ask)
-    buf = io.StringIO()
-    ui._interactive_provider_name(Console(file=buf, width=160), None, repo_path=repo, **kwargs)
-    return ui._PROVIDER_CHOICES[int(seen["default"]) - 1], buf.getvalue()
+    return pick_default(monkeypatch, repo_path=repo, **kwargs)
 
 
 # -- detection ----------------------------------------------------------------

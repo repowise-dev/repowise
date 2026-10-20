@@ -10,7 +10,7 @@ from rich.table import Table
 
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.helpers import console, load_config, warn
-from repowise.cli.ui import BRAND, VALUE, print_phase_header
+from repowise.cli.ui import BRAND, VALUE, print_stage
 from repowise.cli.ui.mode_names import INDEX_ONLY
 from repowise.core.generation.styles import DEFAULT_STYLE
 
@@ -111,11 +111,10 @@ def _run_deterministic_generation_phase(
 
     embedder = template_run_embedder(embedder_name_resolved, embedder_was_requested)
 
-    print_phase_header(
+    print_stage(
         console,
-        3,
+        "generation",
         total_phases,
-        "Generation",
         "Building documentation from code (no model, no cost)",
     )
     # Both knobs only reach a model: templates are English and unstyled, so say
@@ -159,6 +158,7 @@ def _run_deterministic_generation_phase(
         verbose=True,
         timings=timings,
         warnings=warnings,
+        total_phases=total_phases,
     )
     return embedder
 
@@ -260,11 +260,10 @@ def _run_generation_phase(
     """
     from repowise.core.generation import GenerationConfig
 
-    print_phase_header(
+    print_stage(
         console,
-        3,
+        "generation",
         total_phases,
-        "Generation",
         f"Writing documentation with {provider.provider_name} / {provider.model_name}",
     )
 
@@ -330,6 +329,7 @@ def _run_generation_phase(
         test_run=test_run,
         timings=timings,
         warnings=warnings,
+        total_phases=total_phases,
     )
     return False, False
 
@@ -434,11 +434,12 @@ def _generate(run: InitRun) -> bool:
 
     # Fast mode is a graph-and-git index only.
     if opts.index_only and opts.run_mode == "fast":
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
         console.print(
             f"  [dim]{INDEX_ONLY}: fast mode skips documentation. Run "
-            "[bold]repowise init[/bold] without [bold]--mode fast[/bold] to "
-            "build it from code, or [bold]repowise update --full[/bold] "
-            "to write it with a model.[/dim]"
+            f"[bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from code (no key "
+            "needed), or have a model write it when one is configured.[/dim]"
         )
         return False
     if opts.index_only or run.no_provider:

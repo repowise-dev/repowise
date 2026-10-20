@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.editor_setup import register_editor_clients, write_editor_project_files
 from repowise.cli.helpers import (
@@ -22,14 +20,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
-from repowise.cli.ui import (
-    BRAND_STYLE,
-    OK,
-    OWL_SPINNER,
-    MaybeCountColumn,
-    RichProgressCallback,
-    print_phase_header,
-)
+from repowise.cli.ui import OK, RichProgressCallback, make_progress, print_stage
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.decision_lanes import record_decision_lanes
@@ -51,36 +42,25 @@ from .reporting import show_completion
 
 
 def persist_index(run: InitRun) -> None:
-    """Save to the database and build the search index."""
-    print_phase_header(
-        console,
-        run.total_phases,
-        run.total_phases,
-        "Persistence",
-        "Saving to database and building search index",
-    )
+    """Save to the database and build the search index, then bank agent savings."""
+    print_stage(console, "persistence", run.total_phases)
 
-    # The index run's columns, minus cost.
     recorder = run.recorder
-    with Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as persist_bar:
-        persist_callback = recorder.rebind(RichProgressCallback(persist_bar, console))
+    with make_progress(console) as persist_bar:
+        steps = RichProgressCallback(persist_bar, console)
+        persist_callback = recorder.rebind(steps)
         # Indeterminate, announced so the stage is never silent.
         persist_callback.on_phase_start("persist", None)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
-    # Persistence has its own callback; fold its warnings into the run record.
-    run.run_warnings.extend(persist_callback.warnings)
-    # Read last: every stage writes into the one table.
-    recorder.table.stop("run")
-    run.phase_timings = recorder.timings
-    console.print(f"  [{OK}]✓[/] Database updated")
+        # Persistence has its own callback; fold its warnings into the run record.
+        run.run_warnings.extend(persist_callback.warnings)
+        # Read last: every stage writes into the one table.
+        recorder.table.stop("run")
+        run.phase_timings = recorder.timings
+        with steps.step("savings"):
+            catch_up_savings(run.repo_path)
+    save_run_config(run)
 
 
 def catch_up_savings(repo_path: Path) -> None:
@@ -379,7 +359,7 @@ def _record_init_outcome(run: InitRun) -> None:
     )
 
 
-def _write_editor_files(run: InitRun) -> list[Path]:
+def _write_editor_files(run: InitRun, steps: RichProgressCallback) -> list[Path]:
     """Read views, project editor files and the coverage hook; returns the files written.
 
     Runs after state is saved so the guidance reads the final index_scope.
@@ -387,14 +367,19 @@ def _write_editor_files(run: InitRun) -> list[Path]:
     repo_path = run.repo_path
     editor_setup = run.opts.editor_setup
     # Before the editor files, which quote Fix first from these views.
-    refresh_read_snapshots(repo_path)
-    files_written = write_editor_project_files(
-        console,
-        repo_path,
-        options=run.editor_options,
-        no_editor_setup=not editor_setup,
-    )
-    if editor_setup:
+    with steps.step("views"):
+        refresh_read_snapshots(repo_path)
+    if not editor_setup:
+        return write_editor_project_files(
+            console, repo_path, options=run.editor_options, no_editor_setup=True
+        )
+    with steps.step("editor_files"):
+        files_written = write_editor_project_files(
+            console,
+            repo_path,
+            options=run.editor_options,
+            no_editor_setup=False,
+        )
         from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
 
         sync_repo_hook(repo_path, console)
@@ -402,10 +387,15 @@ def _write_editor_files(run: InitRun) -> list[Path]:
 
 
 def complete_setup(run: InitRun) -> None:
-    """Editor files, hook offers, then the completion panel."""
+    """State, read views and editor files, hook offers, then the completion panel."""
     opts = run.opts
     repo_path = run.repo_path
-    files_written = _write_editor_files(run)
+    # The prompts below cannot run under a live display, so it closes first.
+    with make_progress(console) as tail_bar:
+        steps = RichProgressCallback(tail_bar, console)
+        with steps.step("state"):
+            write_run_state(run)
+        files_written = _write_editor_files(run, steps)
     _record_init_outcome(run)
 
     offer_hook_install(

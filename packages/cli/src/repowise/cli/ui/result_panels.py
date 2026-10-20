@@ -1,10 +1,10 @@
-"""Analysis readout, completion panel, and the notes that sit beside it.
+"""Completion panel, and the notes that sit beside it.
 
 One panel per run, and it is the last thing printed. Everything else on these
-screens is a readout — the analysis interstitial, the MCP note, the list of
-files init wrote into the working tree — and readouts get a section heading and
-vertical rhythm rather than a border, because a border means "a discrete object
-you act on" and none of them is.
+screens is a readout — the MCP note, the list of files init wrote into the
+working tree — and readouts get a section heading and vertical rhythm rather
+than a border, because a border means "a discrete object you act on" and none
+of them is.
 
 The completion panel carries **two** commands. It used to carry up to seven,
 assembled from every signal the run produced: the dashboard, the mode's upgrade
@@ -25,62 +25,8 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 
-from repowise.cli.ui.brand import BRAND, DIM, VALUE, key_value_table, print_section
+from repowise.cli.ui.brand import BRAND, DIM, VALUE, key_value_table
 from repowise.cli.ui.mascot import EYES_HAPPY, mini
-
-
-def print_analysis_summary(
-    console: Console,
-    *,
-    file_count: int,
-    symbol_count: int,
-    graph_nodes: int,
-    graph_edges: int,
-    dead_unreachable: int = 0,
-    dead_unused: int = 0,
-    dead_lines: int = 0,
-    decision_count: int = 0,
-    git_files: int = 0,
-    hotspot_count: int = 0,
-    community_count: int = 0,
-    lang_summary: str = "",
-) -> None:
-    """Print the analysis-complete readout shown before generation."""
-    # The headline is printed rather than passed as the blurb: ``print_section``
-    # dims its blurb, and a bold count inside a dim wrapper renders bold *and*
-    # dim, which is quieter than the plain bold it replaced.
-    print_section(console, "Analysis complete")
-    headline = (
-        f"[bold]{file_count:,}[/bold] files · [bold]{symbol_count:,}[/bold] symbols"
-        + (f" · [bold]{community_count}[/bold] communities" if community_count else "")
-    )
-    console.print(f"  {headline}")
-    if lang_summary:
-        console.print(f"  [dim]{lang_summary}[/dim]")
-    console.print()
-
-    rows: list[tuple[str, str]] = [
-        ("Graph", f"{graph_nodes:,} nodes · {graph_edges:,} edges"),
-    ]
-    if git_files:
-        rows.append(
-            (
-                "Git",
-                f"{git_files:,} files indexed"
-                + (f" · {hotspot_count} hotspots" if hotspot_count else ""),
-            )
-        )
-    if dead_unreachable or dead_unused:
-        rows.append(
-            (
-                "Dead code",
-                f"{dead_unreachable} unreachable · {dead_unused} unused exports"
-                + (f" · ~{dead_lines:,} lines" if dead_lines else ""),
-            )
-        )
-    if decision_count:
-        rows.append(("Decisions", f"{decision_count} extracted"))
-    console.print(key_value_table(rows, label_width=11))
 
 
 def build_completion_panel(
@@ -170,7 +116,11 @@ def build_contextual_next_steps(
         steps.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
     elif fast_mode:
         # Fast index: graph + essential git, no docs. Point at the full result.
-        steps.append(("repowise init", "add full git history and documentation"))
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
+        steps.append(
+            (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
+        )
     elif index_only:
         # `generate` is the scoped, cost-gated upgrade path — a coverage, a
         # directory or one page at a time, each behind an estimate — not the

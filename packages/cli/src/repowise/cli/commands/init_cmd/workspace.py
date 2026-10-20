@@ -17,8 +17,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-
 from repowise.cli._setup import setup_logging_silence
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.editor_integrations.defaults import (
@@ -54,18 +52,16 @@ from repowise.cli.providers import (
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
-    BRAND_STYLE,
     ERR,
     OK,
-    OWL_SPINNER,
     VALUE,
     WARN,
-    MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
     interactive_mode_select,
     interactive_provider_config_select,
     load_dotenv,
+    make_progress,
     print_banner,
 )
 from repowise.cli.ui.mode_names import pages
@@ -73,6 +69,7 @@ from repowise.core.ci.markdown import plural
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
+from repowise.core.index_scope import fast_to_full_command
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
@@ -427,14 +424,7 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
 
-    with Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress_bar:
+    with make_progress(console) as progress_bar:
         callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
 
         _prev_state = load_state(repo.path)
@@ -527,8 +517,8 @@ def _generate_repo_with_model(
             ctx.gaps.append(f"{repo.alias}: {COST_UNCONFIRMED_BUILT}")
         console.print(
             "    [dim]Building this repo's documentation from code instead. Run "
-            "[bold]repowise update --repo "
-            f"{repo.alias} --full[/bold] to write it with a model later.[/dim]"
+            f"[bold]{fast_to_full_command(repo.alias)}[/bold] to write it with a model "
+            "later.[/dim]"
         )
         _render_repo_from_templates(repo, ctx, index, docs)
     except Exception as gen_exc:
@@ -566,13 +556,7 @@ def _persist_repo_index(repo_path: Path, index: _RepoIndex) -> list[str]:
     """Persist to the repo-local DB; returns the persist phase's warnings."""
     persist_warnings: list[str] = []
     callback = index.callback
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=True,
-    ) as persist_bar:
+    with make_progress(console, transient=True) as persist_bar:
         persist_callback = callback.rebind(RichProgressCallback(persist_bar, console))
         persist_callback.on_phase_start("persist", None)
         try:
@@ -928,6 +912,7 @@ def _workspace_init(
         index_only=answers.index_only,
         provider=provider,
         docs_outcomes=totals.docs_outcomes,
+        run_mode=run_mode,
     )
     if not dry_run:
         _offer_workspace_hooks(
