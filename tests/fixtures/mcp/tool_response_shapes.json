@@ -767,8 +767,12 @@
       "performance_average": null,
       "performance_coverage_pct": null,
       "performance_covered_files": null,
-      "performance_findings": null,
-      "performance_findings_density_per_10k_loc": null,
+      "performance_causes": {
+        "all": null,
+        "now": null,
+        "per_10k_loc": null,
+        "production": null
+      },
       "performance_skipped_files": null,
       "performance_unsupported_languages": [
         null
@@ -1244,40 +1248,18 @@
     "code_health": {
       "average_health": null,
       "band": null,
-      "distribution": {
-        "bands": {
-          "at_risk": {
-            "files": null,
-            "nloc": null,
-            "pct": null
-          },
-          "excellent": {
-            "files": null,
-            "nloc": null,
-            "pct": null
-          },
-          "fair": {
-            "files": null,
-            "nloc": null,
-            "pct": null
-          },
-          "good": {
-            "files": null,
-            "nloc": null,
-            "pct": null
-          },
-          "needs_work": {
-            "files": null,
-            "nloc": null,
-            "pct": null
-          }
-        },
-        "total_files": null,
-        "total_nloc": null
+      "code_files": null,
+      "files_by_band": {
+        "at_risk": null,
+        "excellent": null,
+        "fair": null,
+        "good": null,
+        "needs_work": null
       },
-      "file_count": null,
+      "files_scored": null,
       "hotspot_health": null,
       "open_findings": null,
+      "production_average": null,
       "worst_performer_path": null,
       "worst_performer_score": null
     },
@@ -1287,12 +1269,9 @@
       null
     ],
     "git_health": {
-      "avg_bus_factor": null,
       "churn_trend": null,
-      "files_git_attributed": null,
-      "files_with_bus_factor_1": null,
       "hotspot_count": null,
-      "top_churn_modules": [
+      "riskiest_files": [
         null
       ]
     },

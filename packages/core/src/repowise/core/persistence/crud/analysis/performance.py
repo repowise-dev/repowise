@@ -160,8 +160,8 @@ def _summary_payload(
     """The compact current headline, written once and read by primary key."""
     from ....analysis.health.perf.serving import intervention_file
     from ....analysis.health.queue.eligibility import (
+        perf_confident_verdict,
         perf_queue_counts,
-        perf_queue_verdict,
         queue_proof,
     )
 
@@ -176,14 +176,10 @@ def _summary_payload(
         boundaries[key] = boundaries.get(key, 0) + 1
         proof = queue_proof(item)
         proofs[proof] = proofs.get(proof, 0) + 1
-    # The lead is the head of the default queue, so it is production work with a
-    # strategy; never a marker whose measured precision is below the bar for leading.
+    # The lead is the first confident cause of the default queue; never a marker
+    # whose measured precision is below the bar for leading.
     lead = next(
-        (
-            o
-            for o in opportunities
-            if perf_queue_verdict(o).eligible and o.may_lead
-        ),
+        (o for o in opportunities if perf_confident_verdict(o).eligible and o.may_lead),
         None,
     )
     return {
@@ -659,6 +655,51 @@ async def performance_facet_counts(
     return [tuple(row) for row in result.all()]
 
 
+class PerformanceHeadline(NamedTuple):
+    """The performance headline every surface prints, in the Performance
+    view's three scopes: the default queue (worth fixing now) leads, and every
+    production cause and every cause give it context."""
+
+    now: int
+    production: int
+    all: int
+    per_10k_loc: float | None
+    """Every cause per 10K lines a performance detector ran on; ``None`` with none."""
+
+    def as_dict(self) -> dict[str, Any]:
+        return self._asdict()
+
+
+async def performance_headline(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    covered_nloc: int,
+    include_unverified: bool = False,
+) -> PerformanceHeadline:
+    """The one count of open performance causes, read by every surface.
+
+    The scope sizes the Performance view's scope control shows, from the same
+    grouped aggregate, so a headline never states a number that view
+    contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
+    """
+    from ....analysis.health.perf.serving import scope_counts
+    from .queue_counts import any_unjudged
+
+    groups = await performance_facet_counts(
+        session, repository_id, include_unverified=include_unverified, scoped=True
+    )
+    judged = not await any_unjudged(session, repository_id, "causes")
+    scopes = scope_counts(groups, judged=judged)
+    every = scopes["all"]
+    return PerformanceHeadline(
+        now=scopes["now"],
+        production=scopes["production"],
+        all=every,
+        per_10k_loc=round(10000.0 * every / covered_nloc, 2) if covered_nloc > 0 else None,
+    )
+
+
 async def performance_area_counts(
     session: AsyncSession,
     repository_id: str,
@@ -696,6 +737,10 @@ class PerformanceFileRollup(NamedTuple):
     expected: int
     best_rank: int
     """Lowest ``rank_position`` on the file, so a map can rank files by cause."""
+    queued: int = 0
+    """Causes in the default queue: what a map colours, as the headline leads with them."""
+    queued_states: frozenset[str] = frozenset()
+    """The actionability states among those queued causes."""
 
 
 async def gated_performance_counts(
@@ -713,39 +758,17 @@ async def gated_performance_counts(
     )
 
 
-async def performance_file_rollups(
-    session: AsyncSession,
-    repository_id: str,
-    *,
-    file_paths: tuple[str, ...] | None = None,
-) -> list[PerformanceFileRollup]:
-    """Per-file burden for every file carrying an open opportunity.
-
-    One indexed aggregate over ``(repository_id, status, file_path)`` returning
-    at most three rows per file rather than one per observation, so a caller
-    that needs the whole repository still pays a grouped scan and not a
-    per-file query. Ordered best-rank first, which is the order a bounded map
-    feed admits files in.
-    """
-    where = _predicates(repository_id, file_paths=file_paths)
-    result = await session.execute(
-        select(
-            PerformanceOpportunity.file_path,
-            PerformanceOpportunity.actionability_state,
-            func.count(),
-            func.sum(PerformanceOpportunity.observations_total),
-            func.min(PerformanceOpportunity.rank_position),
-        )
-        .where(*where)
-        .group_by(
-            PerformanceOpportunity.file_path,
-            PerformanceOpportunity.actionability_state,
-        )
-    )
+def _fold_rollups(groups: Any) -> list[PerformanceFileRollup]:
+    """One rollup per file from the grouped ``performance_file_rollups`` rows."""
     folded: dict[str, dict[str, int]] = {}
-    for path, state, count, observations, best_rank in result.all():
+    queued_states: dict[str, set[str]] = {}
+    for path, state, count, observations, best_rank, eligible in groups:
         if not path:
             continue
+        # The stored verdict: a row stored before causes were judged counts as
+        # not queued until the next index judges it.
+        if eligible:
+            queued_states.setdefault(path, set()).add(state)
         row = folded.setdefault(
             path,
             {
@@ -756,8 +779,10 @@ async def performance_file_rollups(
                 "investigate": 0,
                 "expected": 0,
                 "best_rank": best_rank or 0,
+                "queued": 0,
             },
         )
+        row["queued"] += int(count or 0) if eligible else 0
         row["opportunities"] += int(count or 0)
         row["observations"] += int(observations or 0)
         if state in _ACTIONABILITY_STATES:
@@ -773,9 +798,46 @@ async def performance_file_rollups(
             investigate=row["investigate"],
             expected=row["expected"],
             best_rank=row["best_rank"],
+            queued=row["queued"],
+            queued_states=frozenset(queued_states.get(path, ())),
         )
         for path, row in folded.items()
     ]
+    return rollups
+
+
+async def performance_file_rollups(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: tuple[str, ...] | None = None,
+) -> list[PerformanceFileRollup]:
+    """Per-file burden for every file carrying an open opportunity.
+
+    One indexed aggregate over ``(repository_id, status, file_path)`` returning
+    a few rows per file rather than one per observation, so a caller
+    that needs the whole repository still pays a grouped scan and not a
+    per-file query. Ordered best-rank first, which is the order a bounded map
+    feed admits files in.
+    """
+    where = _predicates(repository_id, file_paths=file_paths)
+    result = await session.execute(
+        select(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            func.count(),
+            func.sum(PerformanceOpportunity.observations_total),
+            func.min(PerformanceOpportunity.rank_position),
+            PerformanceOpportunity.queue_eligible,
+        )
+        .where(*where)
+        .group_by(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            PerformanceOpportunity.queue_eligible,
+        )
+    )
+    rollups = _fold_rollups(result.all())
     # Best rank first, then path, so the order a cap is applied against is
     # total and does not move between two reads of the same store.
     rollups.sort(key=lambda r: (r.best_rank, r.file_path))
@@ -920,6 +982,7 @@ async def get_health_finding_by_public_id(
 
 
 __all__ = [
+    "PerformanceHeadline",
     "finalize_performance_opportunities",
     "gated_performance_counts",
     "get_health_finding_by_public_id",
@@ -931,4 +994,5 @@ __all__ = [
     "list_performance_opportunities",
     "opportunity_details",
     "performance_facet_counts",
+    "performance_headline",
 ]

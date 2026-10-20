@@ -68,6 +68,7 @@ from typing import TYPE_CHECKING, Any
 
 import pathspec
 
+from ..phpunit_roots import PhpunitRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
@@ -273,8 +274,8 @@ class Selection:
     ``conftest-import-check`` (one test that loads a conftest the change reaches
     only through its imports), ``filename-pattern``, ``unknown``, ``none`` when
     nothing was asked (no index), or a scope's ``ecosystem``,
-    ``package-importers``, ``named-by`` or ``owner-package``. ``why`` says, per
-    selected test file, what put it in: the changed file and evidence that
+    ``package-importers``, ``named-by``, ``fixture-readers`` or ``owner-package``.
+    ``why`` says, per selected test file, what put it in: the changed file and evidence that
     reached it, or the reason it runs with every subset. ``known_tests`` are
     the checkout's runnable test files (empty when not read), so a selection
     can say how much of the suite it is.
@@ -463,13 +464,22 @@ def is_test_helper(path: str) -> bool:
     )
 
 
-def is_runnable_test(path: str, roots: PytestRoots | None = None) -> bool:
+def is_runnable_test(
+    path: str,
+    roots: PytestRoots | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
 
     With *roots*, a Python file pytest's config leaves out of collection
     (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
+    With *phpunit_roots*, a PHP file PHPUnit leaves out of collection is not runnable.
     """
-    return _runnable_name(path) and (roots is None or is_test_path(path, roots=roots))
+    return (
+        _runnable_name(path)
+        and (roots is None or is_test_path(path, roots=roots))
+        and (phpunit_roots is None or is_test_path(path, phpunit_roots=phpunit_roots))
+    )
 
 
 @functools.lru_cache(maxsize=_PATH_MEMO)

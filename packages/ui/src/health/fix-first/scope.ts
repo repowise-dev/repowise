@@ -53,6 +53,10 @@ export const EXCLUSION_LABEL: Record<FixExclusion, string> = {
   kind_unaudited: "of a kind not yet audited for this list",
   terminal_flow: "print and prompt flows",
   moderate_quiet: "moderate functions that rarely change or break",
+  unmeasured_cost: "performance causes whose loop is not shown to grow",
+  cold_role: "performance causes only startup, a CLI, tooling or tests run",
+  background_unproven: "scheduled-job causes not shown to grow",
+  unconfirmed_cost: "performance causes whose cost rests on a name or a guess",
 };
 
 const EXCLUSION_ORDER: FixExclusion[] = [
@@ -78,6 +82,10 @@ const EXCLUSION_ORDER: FixExclusion[] = [
   "kind_unaudited",
   "terminal_flow",
   "moderate_quiet",
+  "unmeasured_cost",
+  "cold_role",
+  "background_unproven",
+  "unconfirmed_cost",
 ];
 
 /**

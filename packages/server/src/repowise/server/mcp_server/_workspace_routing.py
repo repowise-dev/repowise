@@ -38,7 +38,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from repowise.server.mcp_server import _state
@@ -166,9 +166,32 @@ _MISS_HINT = (
 )
 
 
+def _miss_hint(target: str) -> str:
+    """Name an unknown repo prefix; keep the search hint for ordinary misses."""
+    registry = _state._registry
+    if registry is None:
+        return _MISS_HINT
+    head, sep, rest = _LINE_SUFFIX_RE.sub("", target).partition(":")
+    head = head.strip()
+    if not head or not sep or not rest:
+        return _MISS_HINT
+    # Symbol references and target kinds are not repository prefixes.
+    if rest.startswith(":") or head.casefold() in _TARGET_KINDS:
+        return _MISS_HINT
+    # A path separator or Windows drive identifies a filesystem path.
+    if "/" in head or "\\" in head:
+        return _MISS_HINT
+    if Path(target).is_absolute() or PureWindowsPath(target).drive:
+        return _MISS_HINT
+    aliases = registry.get_all_aliases()
+    if head.casefold() in {alias.casefold() for alias in aliases}:
+        return _MISS_HINT
+    return f"Unknown repository alias '{head}'. Available aliases: {', '.join(aliases)}."
+
+
 def hint_misses(response: dict[str, Any], routes: list[Route]) -> None:
-    """Add the search hint to a not-found answer for each target no repo has."""
-    missed = {r.target for r in routes if r.missed}
+    """Add an alias or search hint to each missed target's not-found answer."""
+    missed = {r.target: _miss_hint(r.target) for r in routes if r.missed}
     if not missed:
         return
     cards = response.get("targets")
@@ -177,12 +200,12 @@ def hint_misses(response: dict[str, Any], routes: list[Route]) -> None:
             if key in missed and isinstance(card, dict) and (
                 card.get("error") or card.get("unresolved_reason")
             ):
-                card["hint"] = _MISS_HINT
+                card["hint"] = missed[key]
     for item in response.get("unresolved") or ():
         if isinstance(item, dict) and item.get("target") in missed:
-            item["hint"] = _MISS_HINT
+            item["hint"] = missed[item["target"]]
     if response.get("error") and not isinstance(cards, dict):
-        response["hint"] = _MISS_HINT
+        response["hint"] = " ".join(dict.fromkeys(missed.values()))
 
 
 def rekey_targets(response: dict[str, Any], routes: list[Route]) -> None:

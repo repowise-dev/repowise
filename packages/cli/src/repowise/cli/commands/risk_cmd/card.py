@@ -130,18 +130,17 @@ def _print_cross_repo(cross: dict) -> None:
     repos = cross.get("affected_repos") or []
     historical = cross.get("cross_repo_consumers") or []
     contracts = cross.get("contract_consumers") or []
-    console.print(
-        "  [bold]Crosses repo boundaries[/bold] [dim]"
-        f"{cross.get('cross_repo_consumers_total', len(historical))} historical co-change(s)"
-        + (
-            f", {cross.get('contract_consumers_total', len(contracts))} "
-            "typed contract consumer(s)"
-            if contracts
-            else ""
+    parts = []
+    if historical:
+        parts.append(
+            f"{cross.get('cross_repo_consumers_total', len(historical))} historical co-change(s)"
         )
-        + (f" in {', '.join(str(r) for r in repos)}" if repos else "")
-        + "[/dim]"
-    )
+    if contracts:
+        parts.append(
+            f"{cross.get('contract_consumers_total', len(contracts))} typed contract consumer(s)"
+        )
+    where = f" in {', '.join(str(r) for r in repos)}" if repos else ""
+    console.print(f"  [bold]Crosses repo boundaries[/bold] [dim]{', '.join(parts)}{where}[/dim]")
 
 
 def _print_defects(defect: dict | None) -> None:

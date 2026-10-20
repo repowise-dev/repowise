@@ -149,6 +149,7 @@ from repowise.server.mcp_server.tool_change_risk.payload import (
     _INCLUDE_BLOCKS,
     _SHED_ORDER,
     _attach_health,
+    _compact_patch_coverage,
     _diff_shape_sentence,
     _drill_down,
     _include_blocks,

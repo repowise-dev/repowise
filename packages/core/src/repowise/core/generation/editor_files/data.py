@@ -8,6 +8,12 @@ without any DB or filesystem dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
+
+from .sections import DEFAULT_SECTIONS
 
 
 def _render_tool_table(*, keyless: bool = False) -> str:
@@ -42,12 +48,13 @@ class HotspotFile:
     owner: str | None
     # Bug-fix history for the same file. ``fix_count`` is the windowed
     # production-code fix count (``GitMetadata.prior_defect_count``), and
-    # ``last_fix_age`` is pre-rendered ("2 weeks ago") because a count with no
-    # recency reads as an accusation about 2019. ``bug_magnet`` is only ever set
-    # alongside an age, per the recency contract in ``types/health.ts``.
+    # ``last_fix_date`` (``YYYY-MM-DD``) anchors it, because a count with no
+    # recency reads as an accusation about 2019; a date stays true between
+    # regenerations. ``bug_magnet`` is only ever set alongside a date, per the
+    # recency contract in ``types/health.ts``.
     fix_count: int = 0
     bug_magnet: bool = False
-    last_fix_age: str | None = None
+    last_fix_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,14 +92,12 @@ class CodeHealthBlock:
     # performance scores: static performance RISK). ``None`` when unmeasured, so
     # the section omits the line rather than printing a misleading 10.0.
     performance_average: float | None = None
-    # Honest performance headline: the open finding count, its density per 10K
-    # covered LOC, and how much of the analyzed code a perf detector actually ran
-    # on. An agent reading a bare 9.9/10 should still see "N findings" and "perf
-    # ran on X% of the code" so a mostly-unsupported-language repo never reads as
-    # verified-fast. ``performance_coverage_pct`` is ``None`` when no code file
-    # carries a supported language.
-    performance_findings: int = 0
-    performance_findings_density: float | None = None
+    # Honest performance headline: the open causes (worth fixing now, in
+    # production code, overall) and how much of the analyzed code a perf
+    # detector actually ran on, so a bare 9.9/10 on a mostly-unsupported-language
+    # repo never reads as verified-fast. ``performance_coverage_pct`` is ``None``
+    # when no code file carries a supported language.
+    performance_causes: PerformanceHeadline | None = None
     performance_coverage_pct: float | None = None
     performance_skipped_files: int = 0
     performance_unsupported_languages: list[tuple[str, int]] = field(default_factory=list)
@@ -133,6 +138,7 @@ class EditorFileData:
     kg_layers: list[KGLayerSummary] = field(default_factory=list)
     kg_tour: list[KGTourStepSummary] = field(default_factory=list)
     index_scope: dict = field(default_factory=dict)
+    sections: frozenset[str] = DEFAULT_SECTIONS
 
     @property
     def keyless(self) -> bool:
@@ -143,6 +149,27 @@ class EditorFileData:
             scope.get("content_provenance") in ("template", "none")
             and search.get("semantic") == "unavailable"
         )
+
+    @property
+    def scope_gaps(self) -> list[str]:
+        """What this index lacks, for the header; empty when nothing does."""
+        scope = self.index_scope
+        upgrade = scope.get("upgrade") if isinstance(scope.get("upgrade"), dict) else {}
+        gaps = []
+        if self.keyless:
+            gaps.append("no model (template prose, full-text search)")
+        if scope.get("git_tier") == "essential":
+            gaps.append("essential Git history only")
+        if self.upgrade_pending:
+            gaps.append(f"model upgrade {upgrade.get('status')}")
+        return gaps
+
+    @property
+    def upgrade_pending(self) -> bool:
+        upgrade = self.index_scope.get("upgrade")
+        status = upgrade.get("status") if isinstance(upgrade, dict) else None
+        # `--full` needs a key, so a keyless index is never told to continue one.
+        return status in ("pending", "resumable", "failed") and not self.keyless
 
     @property
     def tool_table_md(self) -> str:

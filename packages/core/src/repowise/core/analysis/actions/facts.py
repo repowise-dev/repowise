@@ -68,6 +68,13 @@ class RecentFinding:
     change_kind: str
     line: int | None
     reason: str = ""
+    #: ``performance`` or ``coverage`` for a defect-class
+    #: finding; ``shape`` for a code-shape marker (a long or nested method).
+    kind: str = "shape"
+
+    @property
+    def defect(self) -> bool:
+        return self.kind != "shape"
 
 
 @dataclass(frozen=True, slots=True)

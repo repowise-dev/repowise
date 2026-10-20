@@ -407,7 +407,7 @@
         "is_silo": false,
         "decision_count": 1,
         "doc_coverage_pct": 100.0,
-        "health_score": 100.0
+        "health_score": 95.5
       }
     ],
     "total": 3,
@@ -484,7 +484,7 @@
       "is_silo": false,
       "decision_count": 1,
       "doc_coverage_pct": 100.0,
-      "health_score": 100.0,
+      "health_score": 95.5,
       "owners": [
         {
           "name": "Alice",

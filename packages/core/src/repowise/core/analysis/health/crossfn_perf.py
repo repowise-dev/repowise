@@ -19,6 +19,8 @@ from .perf import (
     collect_crossfn_io_in_loop,
 )
 from .perf.lazy_load import collect_lazy_loads
+from .perf.orm_models import build_model_index
+from .perf.table_scale import settle_small_table_loops
 from .perf.unbounded_reduction import collect_unbounded_reductions
 from .source_reader import SourceReader
 
@@ -61,7 +63,13 @@ class CrossFunctionPerfStage:
         with timed(timings, "analysis.health.unbounded_reduction"):
             collect_unbounded_reductions(walked, read_source=self._read_source)
         with timed(timings, "analysis.health.lazy_load"):
-            collect_lazy_loads(walked, self._parsed_files, read_source=self._read_source)
+            index = build_model_index(self._parsed_files, self._read_source)
+            collect_lazy_loads(walked, self._parsed_files, read_source=self._read_source, index=index)
+        with timed(timings, "analysis.health.small_tables"):
+            try:
+                settle_small_table_loops(walked, index)
+            except Exception as exc:  # the loops keep the magnitude the walk gave them
+                log.debug("health_small_tables_failed", error=str(exc))
 
     def apply_crossfn(self, walked: list[tuple[Any, FileComplexity]]) -> None:
         """Append cross-function and centrality-gated perf hits to each file, in place.

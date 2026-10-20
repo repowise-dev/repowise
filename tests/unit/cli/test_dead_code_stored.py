@@ -195,3 +195,14 @@ def test_safe_only_rereads_a_stored_safe_flag_through_the_gate(indexed_repo, mon
     out = _md(indexed_repo, "--safe-only")
     assert "gone/settings.py" not in out
     assert "1 finding(s), none deletion-ready" in out
+
+
+def test_footer_names_the_tier_counts_as_findings(indexed_repo, monkeypatch):
+    monkeypatch.setattr(dead_code_cmd, "_analyze_live", None)
+
+    result = CliRunner().invoke(dead_code_command, [str(indexed_repo), "--no-workspace"])
+
+    assert result.exit_code == 0, result.output
+    assert "Cleanup-candidate lines:" in result.output
+    assert "findings by confidence: high 1" in result.output
+    assert "confidence)" not in result.output

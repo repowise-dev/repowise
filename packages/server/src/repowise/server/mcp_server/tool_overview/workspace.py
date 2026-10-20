@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
+from repowise.core.ingestion.languages.registry import REGISTRY
+from repowise.core.persistence.crud.analysis.health.metrics import count_health_files
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server import _state
@@ -18,25 +20,26 @@ from repowise.server.mcp_server.tool_overview.pages import _load_overview_page
 from repowise.server.mcp_server.tool_overview.surface import _tool_surface_guide
 
 
-async def _workspace_overview() -> dict:
+async def _workspace_overview(*, tools: bool = False) -> dict:
     """Build a concise workspace-level overview across all repos."""
     registry = _state._registry
     fed = Federation()
     repos_info = [entry for _, entry in await fed.run(lambda ctx: _repo_entry(ctx, registry))]
     cross_repo_topology = _cross_repo_topology(repos_info)
-    totals = sum_fields(repos_info, ("file_count", "symbol_count"))
+    totals = sum_fields(repos_info, ("code_files", "symbol_count"))
 
     result: dict[str, Any] = {
         "workspace": True,
         "workspace_root": str(registry.workspace_root) if registry else "",
         "total_repos": len(repos_info),
-        "total_files": totals["file_count"],
+        "total_code_files": totals["code_files"],
         "total_symbols": totals["symbol_count"],
         "repos": repos_info,
         "hint": ("Use repo='<alias>' to query a specific repo. Omit repo to use the default."),
-        "tool_surface": _tool_surface_guide(is_workspace=True),
         "_meta": _build_meta(),
     }
+    if tools:
+        result["tool_surface"] = _tool_surface_guide(is_workspace=True)
     if cross_repo_topology:
         result["cross_repo_topology"] = cross_repo_topology
 
@@ -57,11 +60,47 @@ async def _repo_entry(ctx: Any, registry: Any) -> dict[str, Any]:
         return {
             "alias": ctx.alias,
             "path": str(ctx.path),
-            "summary": ov_content.split("\n")[0].strip("# ").strip()[:200],
-            "file_count": await _count_nodes(session, repo_obj.id, "file"),
+            "summary": _lead_sentence(ov_content),
+            "code_files": await _code_files(session, repo_obj.id),
             "symbol_count": await _count_nodes(session, repo_obj.id, "symbol"),
             "is_default": registry is not None and ctx.alias == registry.get_default_alias(),
         }
+
+
+def _is_prose(line: str) -> bool:
+    """Not blank, a heading, a table row, a list item, a quote or a code fence."""
+    text = line.strip()
+    return bool(text) and not text.startswith(("#", "|", "- ", "* ", "```", ">"))
+
+
+def _lead_sentence(markdown: str, limit: int = 140) -> str:
+    """The essay's first sentence of prose, past its headings."""
+    prose = " ".join(
+        line.strip() for line in markdown.splitlines() if _is_prose(line)
+    )
+    head, dot, _ = prose.partition(". ")
+    sentence = head + "." if dot else prose
+    if len(sentence) <= limit:
+        return sentence
+    return sentence[: limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+async def _code_files(session: Any, repository_id: str) -> int:
+    """The single-repo overview's ``code_health.code_files``; before health has
+    run, the graph's files in a code language."""
+    counted = await count_health_files(session, repository_id)
+    if counted:
+        return counted
+    result = await session.execute(
+        select(sa_func.count())
+        .select_from(GraphNode)
+        .where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+            GraphNode.language.in_(REGISTRY.code_languages()),
+        )
+    )
+    return result.scalar_one()
 
 
 async def _count_nodes(session: Any, repository_id: str, node_type: str) -> int:
@@ -107,22 +146,14 @@ def _build_workspace_footer() -> dict | None:
     if not other_repos:
         return None
 
-    footer: dict[str, Any] = {
+    # Names only: the cross-repo links are what repo="all" serves, so the
+    # footer points there rather than restating them.
+    return {
         "workspace_root": str(registry.workspace_root),
         "default_repo": default_alias,
         "other_repos": other_repos,
         "hint": (
-            "This repo is part of a workspace. "
-            f"Other repos: {', '.join(other_repos)}. "
-            "Use repo='<alias>' to query another repo, "
-            "or repo='all' for workspace-wide results."
+            "Use repo='<alias>' for another repo, "
+            "or repo='all' for cross-repo links and contracts."
         ),
     }
-
-    enricher = _enricher_with_data()
-    if enricher is not None:
-        footer["cross_repo"] = enricher.get_cross_repo_summary()
-        if enricher.has_contract_data:
-            footer["contract_links"] = enricher.get_contract_summary()
-
-    return footer

@@ -300,7 +300,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
       - run: pip install repowise
-      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
+      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
       - uses: actions/cache/save@v4
         with: {path: .repowise, key: "repowise-${{ github.sha }}"}
 ```
@@ -334,7 +334,7 @@ repowise-index:
   variables: {GIT_DEPTH: "0"}
   script:
     - pip install repowise
-    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
+    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
   cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

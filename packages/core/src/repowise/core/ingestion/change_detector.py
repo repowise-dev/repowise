@@ -502,9 +502,9 @@ class ChangeDetector:
         if self._repo is not None:
             return self._repo
         try:
-            import git as gitpython
+            from repowise.core.git_repo import Repo
 
-            self._repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
+            self._repo = Repo(self.repo_path, search_parent_directories=True)
             return self._repo
         except Exception as exc:
             log.info(
@@ -599,9 +599,9 @@ def has_working_tree_changes(repo_path: Path) -> bool:
     False on a non-git directory or a repo with no commits yet.
     """
     try:
-        import git
+        from repowise.core.git_repo import Repo
 
-        repo = git.Repo(repo_path, search_parent_directories=True)
+        repo = Repo(repo_path, search_parent_directories=True)
     except Exception:
         return False
     try:

@@ -32,6 +32,7 @@ HAPPY_ORDER = [
     "sweep_retired_pages",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
+    "sweep_deselected_pages",
     "tombstone_candidates",
     "mark_tombstone_pages",
     "rebuild_page_tree",

@@ -208,3 +208,37 @@ async def test_vector_cleanup_open_failure_keeps_debt_for_retry(repo, monkeypatc
     await _persist_once()
     assert deleted == [orphan]
     assert load_cleanup_debt(repo)["vectors"] == set()
+
+
+async def test_unwritable_cleanup_debt_still_degrades_the_step(repo, monkeypatch):
+    import repowise.core.persistence.vector_store as vector_store_mod
+    import repowise.core.pipeline.cleanup_debt as cleanup_debt_mod
+
+    cleanup_debt_mod.record_cleanup_debt(repo, "vectors", {"file_page:removed.py"})
+    (repo / ".repowise" / "lancedb").mkdir()
+
+    def _open(*args, **kwargs):
+        raise RuntimeError("lance unavailable")
+
+    def _ledger_fails(*args, **kwargs):
+        raise OSError("ledger is read-only")
+
+    monkeypatch.setattr(vector_store_mod, "LanceDBVectorStore", _open)
+    monkeypatch.setattr(cleanup_debt_mod, "record_cleanup_debt", _ledger_fails)
+
+    degraded: list[str] = []
+    failed_steps: list[str] = []
+    await persist_incremental_index(
+        repo,
+        object(),
+        {},
+        None,
+        None,
+        [],
+        log=lambda _msg: None,
+        degraded=degraded,
+        failed_steps=failed_steps,
+    )
+
+    assert "Tombstone vector-store open" in failed_steps
+    assert any(entry.startswith("Tombstone vector-store open:") for entry in degraded)

@@ -590,6 +590,36 @@ def biomarker_dimension(name: str) -> str:
     return "defect"
 
 
+#: Categories whose markers read the code's shape: what a refactor changes.
+CODE_SHAPE_CATEGORIES: frozenset[str] = frozenset(
+    {"structural_complexity", "size_and_complexity", "duplication", "error_handling"}
+)
+
+#: The most severe a code-shape marker reads where work is ranked or listed.
+SHAPE_SEVERITY_CAP = "high"
+
+
+def is_code_shape(name: str) -> bool:
+    """True for a scored marker a refactor fixes: not history, coverage,
+    performance or advisory."""
+    return biomarker_dimension(name) in ("defect", "maintainability") and (
+        biomarker_category(name) in CODE_SHAPE_CATEGORIES
+    )
+
+
+def ranked_severity(name: str, severity: str | None) -> str | None:
+    """*severity* as work is ranked and shown: a critical code-shape marker
+    reads :data:`SHAPE_SEVERITY_CAP`.
+
+    Detectors tag a long method critical, and an active repository writes many
+    a week; ranked as critical they would outrank a defect. The stored severity
+    keeps its calibrated deduction (``_SEVERITY_DEDUCTION``).
+    """
+    if severity == "critical" and is_code_shape(name):
+        return SHAPE_SEVERITY_CAP
+    return severity
+
+
 def is_advisory(name: str) -> bool:
     """True when *name* is a non-scoring marker (see ``ADVISORY_DIMENSION``)."""
     return name in _ADVISORY_HOME

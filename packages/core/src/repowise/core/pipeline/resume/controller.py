@@ -27,7 +27,7 @@ import structlog
 
 from ..persist import persist_analysis, persist_git, persist_ingestion, persist_symbol_analysis
 from ..phase_timing import timed
-from ..progress import emit_warning
+from ..progress import emit_phase_failed, emit_warning
 from .ledger import ResumeLedger
 from .phases import RESUME_PHASE_ORDER, ResumePhase
 from .rehydrate import (
@@ -39,6 +39,21 @@ from .rehydrate import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+# A checkpoint write is a step of its own on screen: on a large repo it is
+# the longest stretch between two pipeline phases. A failed write gets no done
+# row (``emit_phase_failed``); its warning says what happened instead.
+def _show_start(progress: Any | None, phase: str) -> None:
+    start = getattr(progress, "on_phase_start", None)
+    if start is not None:
+        start(phase, None)
+
+
+def _show_done(progress: Any | None, phase: str) -> None:
+    done = getattr(progress, "on_phase_done", None)
+    if done is not None:
+        done(phase)
 
 
 class ResumeController:
@@ -169,9 +184,10 @@ class ResumeController:
             source_map=source_map or {},
         )
         await self._ledger.mark_started(ResumePhase.INDEX)
+        _show_start(progress, "checkpoint.index")
         try:
-            # No progress phase covers this write, and on a large repo it runs
-            # for minutes; without its own timing it is missing from the totals.
+            # On a large repo this write runs for minutes; without its own
+            # timing it is missing from the totals.
             with timed(getattr(progress, "table", None), "persist.checkpoint"):
                 async with get_session(self._sf) as session:
                     await persist_ingestion(view, session, self._repo_id)
@@ -187,7 +203,9 @@ class ResumeController:
                 f"Index checkpoint not saved ({exc}); "
                 "a resumed run will have to recompute it.",
             )
+            emit_phase_failed(progress, "checkpoint.index")
             return
+        _show_done(progress, "checkpoint.index")
         self._index_persisted = True
         await self._ledger.mark_completed(ResumePhase.INDEX)
         logger.info("resume_checkpoint_index", repo_id=self._repo_id)
@@ -225,6 +243,7 @@ class ResumeController:
             vector_store=vector_store,
         )
         await self._ledger.mark_started(ResumePhase.ANALYSIS)
+        _show_start(progress, "checkpoint.analysis")
         try:
             async with get_session(self._sf) as session:
                 await persist_symbol_analysis(session, self._repo_id, parsed_files)
@@ -236,7 +255,9 @@ class ResumeController:
                 f"Analysis checkpoint not saved ({exc}); "
                 "a resumed run will have to recompute dead code, health and decisions.",
             )
+            emit_phase_failed(progress, "checkpoint.analysis")
             return
+        _show_done(progress, "checkpoint.analysis")
         extraction_completed = decision_report is not None
         decisions_count = (
             len(getattr(decision_report, "decisions", []) or []) if extraction_completed else 0

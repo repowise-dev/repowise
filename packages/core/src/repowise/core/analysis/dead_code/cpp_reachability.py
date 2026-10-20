@@ -178,6 +178,11 @@ def is_cpp_file_reachable(
     if has_dependency_importer(graph, node):
         return True
 
+    # Build-listed rescue: the file is compiled by a CMake target, MSBuild
+    # .vcxproj, or included by an .rc resource script.
+    if graph.nodes.get(node, {}).get("build_listed"):
+        return True
+
     # ``int main`` / ``WinMain`` / fuzzer entry — the file IS the binary
     # entry point.
     if _file_defines_entry_function(graph, node):

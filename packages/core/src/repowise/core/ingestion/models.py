@@ -238,6 +238,14 @@ class Symbol:
     # names its modifier nodes. Access keywords land here too; ``visibility``
     # stays the field to read for those.
     modifiers: tuple[str, ...] = ()
+    # The bare name this symbol is a plain alias of (``s`` in ``s = widget``,
+    # or ``s`` and ``attributes`` in ``s = attributes = widget``), else None.
+    # Set only when an assignment's right-hand side is, at any depth of a
+    # chain, a bare identifier — never for a call, an attribute access, or any
+    # other expression. The call resolver redirects a call through the alias
+    # onto whatever ``alias_of`` resolves to in the same file, the same way it
+    # redirects a C/C++ declaration onto its definition (#2791).
+    alias_of: str | None = None
 
 
 @dataclass

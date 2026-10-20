@@ -28,10 +28,24 @@ import contextlib
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import click
 
+from repowise.cli.commands.decision_lanes import (
+    print_lane_estimate,
+    run_and_report_lanes,
+    still_pending_after,
+    with_lane_plan,
+)
+from repowise.cli.commands.upgrade_state import (
+    _finish_upgrade_state,
+    _mark_transition,
+    _start_transition,
+    _unpack_upgrade_result,
+    _upgrade_checkpoint,
+)
 from repowise.cli.helpers import (
     console,
     get_head_commit,
@@ -42,13 +56,10 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     run_async,
     save_state,
-    stamp_offered_slots,
 )
-from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
-from repowise.core.docs_mode import docs_mode_state_fields
-from repowise.core.index_scope import file_page_scope, stamp_index_scope
-from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
-from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+from repowise.cli.providers import is_free_embedder
+from repowise.core.decision_lanes import plan_decision_lanes
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND, file_page_scope
 from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 
 
@@ -60,8 +71,12 @@ def _gate_cost(
     repo_path: Path,
     *,
     yes: bool,
+    embedder: str = "mock",
+    decisions: Any = None,
 ) -> None:
-    """Print the estimated spend and confirm past the gate. Raises on decline.
+    """Print the estimated spend, embedding included, and confirm past the gate.
+
+    Raises on decline.
 
     Best-effort on the estimate itself: a failure there prints the reason and
     lets the run proceed rather than blocking an upgrade on a number that is
@@ -71,22 +86,36 @@ def _gate_cost(
         from repowise.cli.commands.init_cmd.generation import (
             COST_GATE_USD,
             cost_gate_declined,
+            embedding_note,
             format_cost,
             structural_page_summary,
         )
+        from repowise.cli.cost_gate import spend_phrase
+        from repowise.cli.providers.embedders import resolve_embedding_model
         from repowise.core.cost_estimator import build_generation_plan, estimate_cost
 
         plans = build_generation_plan(parsed_files, graph_builder, config)
-        est = estimate_cost(plans, provider.provider_name, provider.model_name, repo_path=repo_path)
+        est = estimate_cost(
+            with_lane_plan(plans, decisions),
+            provider.provider_name,
+            provider.model_name,
+            repo_path=repo_path,
+            embedder=embedder,
+            embedding_model=resolve_embedding_model(embedder),
+        )
     except Exception as exc:
         console.print(f"[yellow]Cost estimate unavailable ({exc}); continuing.[/yellow]")
         return
 
     pages = sum(p.count for p in plans)
-    console.print(f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold].")
+    console.print(f"[bold]{pages}[/bold] pages. {spend_phrase(est, config.max_concurrency)}.")
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"  [dim]{structural}[/dim]")
+    embedding = embedding_note(est)
+    if embedding:
+        console.print(f"  [dim]{embedding}[/dim]")
+    print_lane_estimate(decisions, provider)
 
     # Nothing to ask on a run that cannot be asked. Without this the confirm
     # reads EOF, raises, and the caller reports a successful run that generated
@@ -187,6 +216,18 @@ async def _backfill_git(
     )
 
 
+async def _scan_commit_health(sf: Any, repo_id: str, repo_path: Path) -> None:
+    """Per-commit health at the full index's budget: an upgrade is expected to take long."""
+    from repowise.core.pipeline.commit_health import (
+        budget_seconds,
+        refresh_commit_health_after_update,
+    )
+
+    budget = budget_seconds()
+    console.print(f"Scanning commit health (up to {budget:.0f} s)…")
+    await refresh_commit_health_after_update(sf, repo_id, str(repo_path), budget=budget)
+
+
 async def _persist_authoritative_pages(
     *,
     session: Any,
@@ -282,9 +323,35 @@ async def _run_upgrade(
         "(graph reused from index — not re-resolved)."
     )
 
+    # The decision lanes a keyless index skipped run with this model as well.
+    lane_inputs = SimpleNamespace(
+        graph_builder=graph_builder,
+        git_meta_map=git_meta_map,
+        parsed_files=parsed_files,
+        source_map=source_map,
+    )
+    # A keyless upgrade has no model for them, so they stay pending.
+    lane_plan = (
+        None
+        if getattr(config, "deterministic", False)
+        else plan_decision_lanes(load_state(repo_path), repo_path, lane_inputs)
+    )
+
     # Show the bill before running it, as init does: the user reaching for
-    # `--full` has never been shown a cost for this repo.
-    _gate_cost(parsed_files, graph_builder, config, provider, repo_path, yes=yes)
+    # `--full` has never been shown a cost for this repo. Documentation built
+    # from code with a free embedder has no bill to show.
+    free_run = getattr(config, "deterministic", False) and is_free_embedder(embedder_name or "mock")
+    if not free_run:
+        _gate_cost(
+            parsed_files,
+            graph_builder,
+            config,
+            provider,
+            repo_path,
+            yes=yes,
+            embedder=embedder_name or "mock",
+            decisions=lane_plan,
+        )
 
     # 5. Generate the docs the fast index skipped, embedding as we go.
     cost_tracker = _upgrade_cost_tracker(sf, repo_id)
@@ -308,6 +375,17 @@ async def _run_upgrade(
     # Flush buffered cost rows now generation is done (best-effort).
     await cost_tracker.flush()
 
+    lanes = await run_and_report_lanes(
+        sf,
+        repo_id,
+        repo_path,
+        lane_plan,
+        provider=provider,
+        inputs=lane_inputs,
+        vector_store=vector_store,
+        cost_tracker=cost_tracker,
+    )
+
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     retired_page_ids = await _persist_upgrade_pages(
         sf, repo_id, generated_pages, vector_store, stub_fallbacks
@@ -329,14 +407,19 @@ async def _run_upgrade(
     await _recompute_full_tier_health(
         engine, sf, repo_id, repo_path, graph_builder, git_meta_map, parsed_files
     )
+    await _scan_commit_health(sf, repo_id, repo_path)
     if checkpoint:
         checkpoint("health")
 
     total_pages = await _repository_page_count(sf, repo_id, fallback=len(generated_pages))
 
     await engine.dispose()
+    from repowise.cli.providers import semantic_search_command
     from repowise.core.generation.selection import count_documentable_files
+    from repowise.core.providers.embedding.base import MockEmbedder
 
+    # Mock vectors are hashes: a store built on them is no semantic search.
+    semantic_on = vector_store is not None and not isinstance(embedder, MockEmbedder)
     return (
         generated_pages,
         total_pages,
@@ -355,12 +438,15 @@ async def _run_upgrade(
             },
             "search": {
                 "full_text": "available",
-                "semantic": "available" if vector_store is not None else "unavailable",
-                "next_command": "repowise reindex" if vector_store is None else None,
+                "semantic": "available" if semantic_on else "unavailable",
+                "next_command": (
+                    None if semantic_on else semantic_search_command(repo_path, embedder_name)
+                ),
             },
             "embedding_error": embedding_error,
             "stub_fallbacks": stub_fallbacks,
             "stub_reasons": stub_reasons,
+            "decision_lanes_pending": still_pending_after(lanes),
         },
     )
 
@@ -445,29 +531,13 @@ async def _generate_upgrade_pages(
     ``inputs`` is (parsed_files, source_map, graph_builder, repo_structure,
     git_meta_map).
     """
-    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-
     from repowise.cli.commands.init_cmd._generation_persist import (
         run_generation_with_persistence,
     )
-    from repowise.cli.ui import (
-        BRAND_STYLE,
-        OK,
-        OWL_SPINNER,
-        MaybeCountColumn,
-        RichProgressCallback,
-    )
+    from repowise.cli.ui import RichProgressCallback, make_progress
 
     parsed_files, source_map, graph_builder, repo_structure, git_meta_map = inputs
-    with Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-        TextColumn(f"[{OK}]${{task.fields[cost]:.3f}}[/]"),
-        console=console,
-    ) as upgrade_progress:
+    with make_progress(console, cost=True) as upgrade_progress:
         gen_callback = RichProgressCallback(upgrade_progress, console)
         return await run_generation_with_persistence(
             repo_path=repo_path,
@@ -658,22 +728,6 @@ def _report_placeholders(count: int, reasons: list[str]) -> None:
     )
 
 
-#: The resumable stages of a full upgrade, in run order.
-_UPGRADE_STAGES = ["git_backfill", "generation", "search", "health"]
-
-
-def _completed_stages(state: dict[str, Any]) -> list[str]:
-    return list(
-        state.get("full_upgrade", {}).get("completed_stages", [])
-        if isinstance(state.get("full_upgrade"), dict)
-        else []
-    )
-
-
-def _next_stage(stages: list[str]) -> str:
-    return next((item for item in _UPGRADE_STAGES if item not in stages), "finalize")
-
-
 def upgrade_to_full(
     repo_path: Path,
     *,
@@ -683,12 +737,13 @@ def upgrade_to_full(
     concurrency: int,
     yes: bool = False,
 ) -> None:
-    """Write the repo's wiki with a model, reusing the persisted graph.
+    """Take the repo to a full index, reusing the persisted graph.
 
-    Two repos arrive here. A ``--mode fast`` index has no pages and an
-    ESSENTIAL git tier, both of which this fills in. An ``--index-only`` repo
-    has a full git tier and a wiki rendered from templates, and this replaces
-    those pages with written ones.
+    A ``--mode fast`` index has no pages and an ESSENTIAL git tier, both of
+    which this fills in. An index-only repo has a full git tier and
+    documentation built from code, which a model run replaces with written
+    pages. With no model configured the documentation is built from code: no
+    model calls and no spend.
     """
     from repowise.cli.ui import load_dotenv
     from repowise.core.generation import GenerationConfig
@@ -704,20 +759,12 @@ def upgrade_to_full(
     head = get_head_commit(repo_path)
     start = time.monotonic()
 
-    # Provider is required — the fast index made no LLM calls, so the repo may
-    # not have one configured yet. resolve_provider surfaces a clear error.
-    provider = resolve_provider(provider_name, model, repo_path=repo_path)
-    persisted_provider = state.get("provider") or cfg.get("provider")
-    persisted_model = state.get("model") or cfg.get("model")
-    provider_reused = (
-        provider_name is None
-        and model is None
-        and persisted_provider == provider.provider_name
-        and persisted_model == provider.model_name
-    )
+    provider = _resolve_upgrade_provider(provider_name, model, repo_path, state)
+    keyless = provider is None
 
     config = GenerationConfig.from_repo_config(
         cfg,
+        deterministic=keyless,
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
@@ -731,12 +778,8 @@ def upgrade_to_full(
     commit_limit = cfg.get("commit_limit")
     follow_renames = bool(cfg.get("follow_renames", False))
 
-    console.print(f"[bold]repowise update --full[/bold] — upgrading {repo_path}")
-    console.print(
-        f"Provider: [cyan]{provider.provider_name}[/cyan] / "
-        f"[cyan]{provider.model_name}[/cyan]. This generates docs for the whole repo."
-    )
-    embedder_name = _upgrade_embedder_name(cfg)
+    _announce_upgrade(repo_path, provider)
+    embedder_name = _keyless_embedder_name(cfg) if keyless else _upgrade_embedder_name(cfg)
 
     # The same single-flight lock as an incremental update: a concurrent
     # `repowise update` must not race this run's save_state. If another update
@@ -754,26 +797,24 @@ def upgrade_to_full(
     # Released when this function returns (success, cost-gate Abort or failure),
     # not at process exit.
     try:
-        provider_block = {
-            "name": provider.provider_name,
-            "model": provider.model_name,
-            "embedder": embedder_name,
-            "reused": provider_reused,
-            "model_cost_possible": True,
-        }
-        _start_transition(repo_path, state, cfg, provider, embedder_name, provider_block)
+        provider_block = _provider_block(
+            provider,
+            embedder_name,
+            reused=provider_name is None and model is None and _persisted(provider, state, cfg),
+        )
+        _start_transition(repo_path, state, cfg, provider_block)
         try:
             upgrade_result = run_async(
                 _run_upgrade(
                     repo_path,
-                    provider,
+                    _template_provider() if keyless else provider,
                     config,
                     exclude_patterns=exclude_patterns,
                     commit_limit=commit_limit,
                     follow_renames=follow_renames,
                     embedder_name=embedder_name,
                     yes=yes,
-                    checkpoint=_upgrade_checkpoint(repo_path, cfg, provider, embedder_name),
+                    checkpoint=_upgrade_checkpoint(repo_path, cfg, provider_block),
                 )
             )
             generated_pages, total_pages, outcome = _unpack_upgrade_result(upgrade_result, cfg)
@@ -800,7 +841,6 @@ def upgrade_to_full(
             state,
             cfg,
             head=head,
-            provider=provider,
             config=config,
             commit_limit=commit_limit,
             total_pages=total_pages,
@@ -815,9 +855,74 @@ def upgrade_to_full(
             # passing `embedder` alone does not.
             save_config_partial(repo_path, embedder=embedder_name, embedding_model=None)
 
-        _report_upgrade(time.monotonic() - start, generated_pages, outcome)
+        _report_upgrade(time.monotonic() - start, generated_pages, outcome, keyless=keyless)
     finally:
         release_update_lock(repo_path)
+
+
+def _resolve_upgrade_provider(
+    provider_name: str | None, model: str | None, repo_path: Path, state: dict[str, Any]
+) -> Any | None:
+    """The model to write with, or None to build the documentation from code.
+
+    None only when nothing names a model and none is configured anywhere. A repo
+    whose documentation a model wrote keeps the error instead: building from
+    code would replace that writing.
+    """
+    from repowise.core.docs_mode import resolve_docs_mode
+
+    try:
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+    except click.ClickException as exc:
+        unconfigured = getattr(exc, "reason", None) == "no_provider_configured"
+        if provider_name is not None or model is not None or not unconfigured:
+            raise
+        if resolve_docs_mode(state) == "llm":
+            exc.message = (
+                "This repo's documentation was written by a model, and no model is "
+                f"configured to rewrite it. {exc.message}"
+            )
+            raise
+        return None
+
+
+def _announce_upgrade(repo_path: Path, provider: Any | None) -> None:
+    console.print(f"[bold]{FAST_TO_FULL_COMMAND}[/bold]: upgrading {repo_path}")
+    if provider is None:
+        console.print(
+            "No model configured: documentation is built from code "
+            "[dim](no model calls, no spend)[/dim]."
+        )
+        return
+    console.print(
+        f"Provider: [cyan]{provider.provider_name}[/cyan] / "
+        f"[cyan]{provider.model_name}[/cyan]. This writes documentation for the whole repo."
+    )
+
+
+def _persisted(provider: Any | None, state: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    """Whether *provider* is the one this repo already recorded."""
+    return provider is not None and (
+        (state.get("provider") or cfg.get("provider")) == provider.provider_name
+        and (state.get("model") or cfg.get("model")) == provider.model_name
+    )
+
+
+def _provider_block(provider: Any | None, embedder_name: str | None, *, reused: bool) -> dict:
+    """The scope's provider record; a keyless run names no provider and no cost."""
+    return {
+        "name": provider.provider_name if provider is not None else None,
+        "model": provider.model_name if provider is not None else None,
+        "embedder": embedder_name,
+        "reused": reused,
+        "model_cost_possible": provider is not None,
+    }
+
+
+def _template_provider() -> Any:
+    from repowise.core.providers.llm.template import TemplateProvider
+
+    return TemplateProvider()
 
 
 def _upgrade_embedder_name(cfg: dict[str, Any]) -> str | None:
@@ -827,168 +932,34 @@ def _upgrade_embedder_name(cfg: dict[str, Any]) -> str | None:
     paying a model here, and the mock would leave the written wiki invisible to
     semantic search, so re-resolve; the answer is recorded for later updates.
     """
-    embedder_name = cfg.get("embedder")
-    if not embedder_name or embedder_name == "mock":
-        from repowise.cli.providers import resolve_embedder
+    from repowise.cli.providers import model_run_embedder
 
-        resolved = resolve_embedder(None)
-        if resolved != (embedder_name or "mock"):
-            console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
-            embedder_name = resolved
+    embedder_name, stated, _replaced = model_run_embedder(cfg.get("embedder"))
+    console.print(f"Embedder: [cyan]{stated}[/cyan].")
     return embedder_name
 
 
-def _start_transition(
-    repo_path: Path,
-    state: dict[str, Any],
-    cfg: dict[str, Any],
-    provider: Any,
-    embedder_name: str | None,
-    provider_block: dict[str, Any],
+def _keyless_embedder_name(cfg: dict[str, Any]) -> str:
+    """The embedder a keyless upgrade uses: the one the user chose, else the free mock."""
+    from repowise.cli.providers import keyless_run_embedder
+
+    embedder_name, stated = keyless_run_embedder(cfg.get("embedder"))
+    console.print(f"Embedder: [cyan]{stated}[/cyan].")
+    return embedder_name
+
+
+def _report_upgrade(
+    elapsed: float, generated_pages: list[Any], outcome: dict[str, Any], *, keyless: bool = False
 ) -> None:
-    """Record the running transition before any backfill or model work.
-
-    A killed process then leaves an honest resumable transition while the prior
-    index_scope keeps describing the usable index.
-    """
-    completed_stages = _completed_stages(state)
-    state["full_upgrade"] = {
-        "status": "running",
-        "retryable": True,
-        "completed_stages": completed_stages,
-        "next_stage": _next_stage(completed_stages),
-        "provider": provider.provider_name,
-        "model": provider.model_name,
-        "embedder": embedder_name,
-    }
-    stamp_index_scope(state, cfg, upgrade=state["full_upgrade"], provider=dict(provider_block))
-    save_state(repo_path, state)
-
-
-def _upgrade_checkpoint(
-    repo_path: Path, cfg: dict[str, Any], provider: Any, embedder_name: str | None
-) -> Any:
-    """A callback that records each completed stage in state.json."""
-
-    def _checkpoint(stage: str, **fields: Any) -> None:
-        current = load_state(repo_path)
-        stages = _completed_stages(current)
-        if stage not in stages:
-            stages.append(stage)
-        current["full_upgrade"] = {
-            "status": "running",
-            "retryable": True,
-            "completed_stages": stages,
-            "next_stage": _next_stage(stages),
-            "provider": provider.provider_name,
-            "model": provider.model_name,
-            "embedder": embedder_name,
-        }
-        if fields.get("git_history_coverage") is not None:
-            current["git_history_coverage"] = fields["git_history_coverage"]
-        stamp_index_scope(current, cfg, upgrade=current["full_upgrade"])
-        save_state(repo_path, current)
-
-    return _checkpoint
-
-
-def _mark_transition(repo_path: Path, cfg: dict[str, Any], **updates: Any) -> None:
-    """Update the recorded transition after the upgrade stopped early."""
-    current = load_state(repo_path)
-    transition = current.get("full_upgrade", {})
-    transition.update(**updates)
-    current["full_upgrade"] = transition
-    stamp_index_scope(current, cfg, upgrade=transition)
-    save_state(repo_path, current)
-
-
-def _unpack_upgrade_result(
-    upgrade_result: tuple[Any, ...], cfg: dict[str, Any]
-) -> tuple[list[Any], int, dict[str, Any]]:
-    """Pages, page count and outcome; a 2-tuple from a wrapper gets an unknown outcome."""
-    if len(upgrade_result) != 2:
-        generated_pages, total_pages, outcome = upgrade_result
-        return generated_pages, total_pages, outcome
-    generated_pages, total_pages = upgrade_result
-    outcome = {
-        "git_history_coverage": None,
-        "file_pages": {
-            "configured_cap": resolve_max_file_pages(config=cfg),
-            "effective_cap": None,
-            "eligible": None,
-            "generated": None,
-            "omitted": None,
-        },
-        "search": {
-            "full_text": "unknown",
-            "semantic": "unknown",
-            "next_command": None,
-        },
-        "embedding_error": None,
-    }
-    return generated_pages, total_pages, outcome
-
-
-def _finish_upgrade_state(
-    state: dict[str, Any],
-    cfg: dict[str, Any],
-    *,
-    head: str | None,
-    provider: Any,
-    config: Any,
-    commit_limit: Any,
-    total_pages: int,
-    outcome: dict[str, Any],
-    provider_block: dict[str, Any],
-) -> None:
-    """Flip the persisted state to full, so later updates take the normal LLM path."""
-    state["last_sync_commit"] = head
-    state.update(docs_mode_state_fields("llm"))
-    state["git_tier"] = "full"
-    state["run_mode"] = "standard"
-    if outcome["git_history_coverage"] is not None:
-        state["git_history_coverage"] = outcome["git_history_coverage"]
-    state["total_pages"] = total_pages
-    # Record who wrote the pages, or `status` reports them as unknown.
-    state["provider"] = provider.provider_name
-    state["model"] = provider.model_name
-    # Every onboarding slot was evaluated against whole-repo signals, so the
-    # missing-slot notice has nothing left to report.
-    stamp_offered_slots(state, enabled=config.enable_onboarding)
-    # Health and the git backfill ran over the whole repo under the current
-    # analyzer and history rules, so the next update need not redo them.
-    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
-    state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
-    state["full_upgrade"] = {
-        "status": "complete",
-        "retryable": False,
-        "completed_stages": [*_UPGRADE_STAGES, "finalize"],
-        "next_stage": None,
-    }
-    stamp_index_scope(
-        state,
-        cfg,
-        run_mode="standard",
-        content_provenance="model",
-        git_tier="full",
-        git_commit_cap=(commit_limit if isinstance(commit_limit, int) else _DEFAULT_COMMIT_LIMIT),
-        git_history_coverage=outcome["git_history_coverage"],
-        file_pages=outcome["file_pages"],
-        analysis={"unavailable": [], "skipped": []},
-        upgrade=state["full_upgrade"],
-        provider=dict(provider_block),
-        search=outcome["search"],
-    )
-
-
-def _report_upgrade(elapsed: float, generated_pages: list[Any], outcome: dict[str, Any]) -> None:
+    how = "built from code" if keyless else "written"
     console.print(
-        f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f}s — "
-        f"{len(generated_pages)} pages generated, git tier now FULL."
+        f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f} s: "
+        f"{len(generated_pages)} documentation pages {how}, full git history."
     )
     _report_placeholders(outcome.get("stub_fallbacks", 0), outcome.get("stub_reasons", []))
     if outcome["search"]["semantic"] != "available":
         console.print(
-            "[yellow]Semantic search is unavailable.[/yellow] Set an embedder key and run "
-            "[bold]repowise reindex[/bold] (embedding calls only; no model calls)."
+            "[yellow]Semantic search is off.[/yellow] Run "
+            f"[bold]{outcome['search']['next_command'] or 'repowise reindex'}[/bold] to turn it on "
+            "(embedding calls only, no model calls)."
         )

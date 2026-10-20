@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.dotnet_test_projects import read_dotnet_test_projects
+from repowise.core.phpunit_roots import read_phpunit_roots
 from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
     is_skippable_test_path,
@@ -437,6 +438,49 @@ def test_pytest_config_overrules_a_test_shaped_python_name(path: str, expected: 
     assert got == expected
     # Without the config the name decides, as it does for a bare pytest.
     assert is_test_related_path(path)
+
+
+_PHPUNIT_ROOTS = read_phpunit_roots(
+    [
+        (
+            "phpunit.xml.dist",
+            """
+            <phpunit>
+                <testsuites>
+                    <testsuite name="Suite">
+                        <directory suffix="Test.php">./tests</directory>
+                    </testsuite>
+                </testsuites>
+            </phpunit>
+            """,
+        )
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # Suite tests keep their test classification
+        ("tests/RouterTest.php", "test"),
+        # Laravel framework production classes named like tests are demoted
+        ("src/Testing/Attributes/UnitTest.php", ""),
+        ("src/Illuminate/Console/Concerns/CreatesMatchingTest.php", ""),
+        ("src/Illuminate/Support/Testing/Fakes/ChainedBatchTruthTest.php", ""),
+        # Non-PHP files are untouched by PHPUnit config
+        ("src/app/format.test.ts", "test"),
+        ("pkg/server/handler_test.go", "test"),
+    ],
+)
+def test_phpunit_config_overrules_a_test_shaped_php_name(path: str, expected: str) -> None:
+    got = "test" if is_test_path(path, phpunit_roots=_PHPUNIT_ROOTS) else ""
+    got = "support" if is_test_support_path(path, phpunit_roots=_PHPUNIT_ROOTS) else got
+    assert got == expected
+    # Without the config, test-shaped PHP filenames decide
+    if path.endswith(".php"):
+        assert is_test_related_path(path)
+
+
 
 
 @pytest.mark.parametrize(

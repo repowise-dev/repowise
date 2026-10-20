@@ -218,12 +218,34 @@ describe("PerformanceView queue", () => {
     expect(within(first!).getByText("Run the independent awaits together")).toBeTruthy();
     expect(within(first!).getByText("Proven safe")).toBeTruthy();
     expect(within(first!).getByText(/2 call sites across 2 files/)).toBeTruthy();
-    expect(within(first!).getByRole("button", { name: "Copy prompt for your agent" })).toBeTruthy();
+    expect(within(first!).getByText("Plan ready")).toBeTruthy();
+    expect(
+      within(first!).getByRole("button", { name: /^Copy prompt for your agent: Database call/ }),
+    ).toBeTruthy();
     expect(within(first!).getByRole("link", { name: "Open plan" })).toBeTruthy();
     // The file is one verb among the row's others, behind its menu.
     expect(within(first!).queryByRole("button", { name: "Open file" })).toBeNull();
     fireEvent.click(within(first!).getByRole("button", { name: /More actions for/ }));
     expect(await screen.findByRole("button", { name: "Open the file" })).toBeTruthy();
+  });
+
+  it("keeps every prompt on the queue quiet: no filled prompt without a scope-level one", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    await rows();
+    const filled = screen
+      .getAllByRole("button", { name: /Copy prompt/ })
+      .filter((button) => button.className.split(/\s+/).includes("bg-[var(--color-model-muted)]"));
+    expect(filled).toEqual([]);
+    expect(screen.getByRole("button", { name: /^Copy prompt for these \d+ in / })).toBeTruthy();
+  });
+
+  it("keeps the row's tip from opening the drawer, by click or by key", async () => {
+    render(<PerformanceView adapter={adapter()} />);
+    const [first] = await rows();
+    const tip = within(first!).getByRole("button", { name: "Why this cause sits here" });
+    fireEvent.click(tip);
+    fireEvent.keyDown(tip, { key: "Enter" });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("offers no plan link where there is no plan, and says there is no fix yet", async () => {
@@ -397,6 +419,16 @@ describe("PerformanceView drawer", () => {
     render(<PerformanceView adapter={adapter()} />);
     const first = await openFirstRow();
     expect(within(first).getByText("1")).toBeTruthy();
+    const panel = await screen.findByRole("dialog");
+    expand(panel, "Why it ranks here");
+    expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
+  });
+
+  it("keeps the row's queue position when the detail by id carries the repository rank", async () => {
+    const getDetail = vi.fn(async () => resolvedDetail({ rank_position: 7 }));
+    render(<PerformanceView adapter={adapter({ getPerformanceOpportunity: getDetail })} />);
+    await openFirstRow();
+    await waitFor(() => expect(getDetail).toHaveBeenCalled());
     const panel = await screen.findByRole("dialog");
     expand(panel, "Why it ranks here");
     expect(within(panel).getByText(/Position/).textContent).toMatch(/^Position 1 in the queue/);
@@ -637,7 +669,7 @@ describe("PerformanceView drawer", () => {
     const served = vi.fn(async (planId: string, flavor: string) => `served ${planId} ${flavor}`);
     render(<PerformanceView adapter={adapter({ getRefactoringPlanPrompt: served })} />);
     const [first] = await rows();
-    fireEvent.click(within(first!).getByRole("button", { name: "Copy prompt for your agent" }));
+    fireEvent.click(within(first!).getByRole("button", { name: /^Copy prompt for your agent:/ }));
     // No plan fetch on this host, so the evidence handoff, and no drawer.
     expect(await screen.findByText(/Causal performance opportunity/)).toBeTruthy();
     expect(screen.queryByText("Show this cause on the map")).toBeNull();
@@ -647,7 +679,7 @@ describe("PerformanceView drawer", () => {
   it("hands a whole area to an agent as one prompt", async () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();
-    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for these 3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for these 3 in src" }));
     expect(await screen.findByText(/Performance causes in `src`/)).toBeTruthy();
     expect(document.body.textContent).toContain("perf2_investigate");
   });

@@ -17,20 +17,21 @@ from typing import Any
 import click
 
 from repowise.cli.errors import reasoned_error
+from repowise.cli.exit_codes import EXIT_CODES_HELP
 from repowise.cli.helpers import resolve_repo_path
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.update_lock import init_in_progress
 
+from ._agent_summary import init_output
+from ._exit import exit_interrupted
 from ._finish import (
-    catch_up_savings,
     complete_setup,
+    exit_with_gaps,
     persist_index,
-    raise_on_embed_failure,
     register_clients,
-    save_run_config,
-    write_run_state,
 )
 from ._generate import (
     _generate,
@@ -47,37 +48,26 @@ from ._prepare import (
     _editor_options,
     _interactive_gate,
     _prepare_single_repo,
-    _resolve_decision_provider,
     _resolve_provider_stage,
     _resolve_settings,
     _start_run,
 )
-from ._questions import (
-    _apply_advanced_answers,
-    _ask_mode,
-    _ask_provider,
-    _ask_questions,
-    _offer_fast_mode,
-)
+from ._questions import _apply_advanced_answers, _ask_questions
 from ._seed import delegate_to_seeded_update
-from .reporting import show_analysis_summary
+from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
 __all__ = [
     "_apply_advanced_answers",
-    "_ask_mode",
-    "_ask_provider",
     "_ask_questions",
     "_confirm_wiki_overwrite",
     "_editor_options",
     "_generate",
     "_generate_with_model",
     "_interactive_gate",
-    "_offer_fast_mode",
     "_prepare_single_repo",
     "_print_structural_plan",
     "_render_template_wiki",
-    "_resolve_decision_provider",
     "_resolve_provider_stage",
     "_resolve_settings",
     "_run_deterministic_generation_phase",
@@ -93,6 +83,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     _workspace_init(
         scan=scan,
         init_all=opts.init_all,
+        repo_names=split_repo_names(opts.repos),
         exclude_patterns=list(opts.exclude),
         commit_limit=opts.commit_limit,
         follow_renames=opts.follow_renames,
@@ -126,7 +117,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     )
 
 
-@click.command("init")
+@click.command("init", epilog=EXIT_CODES_HELP)
 @click.argument("path", required=False, default=None)
 @click.option(
     "--provider",
@@ -159,9 +150,27 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=False,
     # "No wiki", not "writes nothing": the pipeline still warms its parse and
     # duplication caches, which are derived data.
-    help="Show the generation plan and cost estimate. Writes no wiki.",
+    help="Show the generation plan and cost estimate. Writes no documentation.",
 )
-@click.option("--yes", "-y", is_flag=True, default=False, help="Skip cost confirmation prompt.")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help=(
+        "Start at once with every answer at its default. Skips the plan screen "
+        "and every question after it: documentation is written by a model only "
+        "when a provider is configured (an API key in the environment or "
+        ".repowise/.env), else built from code; a logged-in Claude Code, Codex "
+        "or OpenCode is used only with --provider; the cost confirmation is "
+        "accepted; advanced options keep their defaults (standard run mode at "
+        "any size, comprehensive style); the detected agents "
+        "are connected; the global repowise MCP entry is pointed here, with the "
+        "old and new target printed; the post-commit hook is installed and the "
+        "distill rewrite hook is not; and with --no-prose, documentation a "
+        "model wrote is replaced without asking."
+    ),
+)
 @click.option(
     "--resume",
     is_flag=True,
@@ -188,18 +197,23 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "--test-run",
     is_flag=True,
     default=False,
-    help="Limit generation to top 10 files by PageRank for quick validation.",
+    help=(
+        "Limit the model run to the top 10 files by PageRank for quick validation. "
+        "Needs a model, so not with --no-prose or --mode fast."
+    ),
 )
 @click.option(
     "--prose/--no-prose",
     "prose",
     default=None,
     help=(
-        "Write the subsystem (concept) pages as model prose (needs a key), or "
-        "render the whole wiki from structure with no model and no spend. Every "
-        "other page is structural either way. Default: prose when a key is "
-        "available. With --no-prose, an explicit --provider or API key still "
-        "enables model-based decision extraction. Use --mode fast for no wiki at all."
+        "Documentation written by a model (--prose, needs a key) or built from "
+        "code (--no-prose). Only the subsystem (concept) pages differ; every other "
+        "page is built from code either way. Default: written by a model when a key "
+        "is available. --no-prose makes no model calls, whatever keys are set: it "
+        "skips the written subsystem pages and model decision extraction from PRs, "
+        "commit history and code comments. Run repowise generate later to add both. "
+        "Use --mode fast for an index only, with no documentation."
     ),
 )
 @click.option(
@@ -223,9 +237,9 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     type=click.Choice(["standard", "fast"]),
     default="standard",
     help=(
-        "Pipeline depth. 'fast' indexes graph + essential git only (no per-file "
-        "blame, no co-change, no LLM docs) for a quick first pass on very large "
-        "repos; backfill the rest later. Default: standard."
+        "Pipeline depth. 'fast' is an index only: graph + essential git (no "
+        "per-file blame, no co-change, no documentation) for a quick first pass "
+        "on very large repos; backfill the rest later. Default: standard."
     ),
 )
 @click.option(
@@ -347,7 +361,22 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "init_all",
     is_flag=True,
     default=False,
-    help="In multi-repo mode, index all detected repos without prompting.",
+    help=(
+        "In a folder with several repos, index every detected repo without "
+        "prompting. --yes and a piped stdin do the same; use --repos to pick some."
+    ),
+)
+@click.option(
+    "--repos",
+    "repos",
+    default=None,
+    metavar="NAMES",
+    help=(
+        "In a folder with several repos, index only these, with no picker. "
+        "Comma-separated names (alias, directory name, or path relative to the "
+        "folder when two repos share a name). In a new workspace the first one "
+        "listed is primary; an existing workspace keeps its primary."
+    ),
 )
 @click.option(
     "--onboarding/--no-onboarding",
@@ -405,7 +434,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=None,
     metavar="CODE",
     help=(
-        "Output language for generated wiki pages (e.g. en, zh, ru, hi). "
+        "Output language for the documentation (e.g. en, zh, ru, hi). "
         "Code, file paths, and symbol names stay untranslated. Saved to "
         "config so `update` keeps the language. Default: en."
     ),
@@ -445,18 +474,34 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "--progress",
     type=click.Choice(["rich", "json"]),
     default="rich",
-    help="Progress output style.",
+    help=(
+        "Progress output. 'rich' (default) draws a live checklist in a terminal "
+        "and one short line per step anywhere else. 'json' writes one JSON event "
+        "per line to stdout (stages, steps, warnings) and ends with a summary "
+        "line: status, mode, restart_required, spend, warnings, files_written "
+        "and next commands. Human text goes to stderr."
+    ),
 )
 def init_command(**params: Any) -> None:
-    """Generate wiki documentation for a codebase.
+    """Index a codebase and build its documentation.
 
     PATH defaults to the current directory.
-    Use --no-prose to render the whole wiki from structure with no model and no
-    key; --prose writes the subsystem pages with a model. Every other page is
-    structural either way.
-    Use --mode fast for a quick graph + essential-git index of a very large repo.
+    --prose: documentation written by a model (needs a key).
+    --no-prose: documentation built from code, no model and no key.
+    Only the subsystem pages differ; every other page is built from code.
+    --mode fast: index only (graph + essential git), for a very large repo.
     """
-    opts = resolve_structural_flags(InitOptions(**params))
+    from repowise.core.cancellation import PipelineCancelled
+
+    with init_output(params.get("progress", "rich"), resolve_repo_path(params.get("path"))):
+        try:
+            _run_init(resolve_structural_flags(InitOptions(**params)))
+        except (PipelineCancelled, KeyboardInterrupt):
+            exit_interrupted()
+
+
+def _run_init(opts: InitOptions) -> None:
+    """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
     repo_path = resolve_repo_path(opts.path)
 
@@ -471,9 +516,11 @@ def init_command(**params: Any) -> None:
 
     scan = scan_for_repos(repo_path, include_submodules=opts.include_submodules)
 
+    is_workspace = len(scan.repos) > 1 and not opts.no_workspace
+    check_repos_flag(opts.repos, init_all=opts.init_all, is_workspace=is_workspace)
     if delegate_to_seeded_update(opts, repo_path, scan):
         return
-    if len(scan.repos) > 1 and not opts.no_workspace:
+    if is_workspace:
         _run_workspace_init(opts, scan)
         return
 
@@ -482,20 +529,25 @@ def init_command(**params: Any) -> None:
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
 
-    run = _prepare_single_repo(opts, repo_path, start)
-    if run is None or not index_repository(run):
-        return
+    with init_in_progress(repo_path):
+        _run_single_repo(opts, repo_path, start)
 
-    show_analysis_summary(run.result)
+
+def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
+    run = _prepare_single_repo(opts, repo_path, start)
+    if run is None:
+        return
+    index_repository(run)
+    # Each one is an analysis step the pipeline skipped on an error.
+    if run.run_warnings:
+        run.gaps.append(f"{len(run.run_warnings):,} warning(s) while indexing (see above)")
+
     if _generate(run):
         return
 
     # A declined cost gate or a missing provider persists like index-only.
     run.effective_index_only = run.opts.index_only or run.cost_declined or run.no_provider
     persist_index(run)
-    catch_up_savings(run.repo_path)
-    save_run_config(run)
     register_clients(run)
-    write_run_state(run)
     complete_setup(run)
-    raise_on_embed_failure(run)
+    exit_with_gaps(run)

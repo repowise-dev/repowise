@@ -20,6 +20,7 @@ from repowise.core.analysis.review_directive import (
     ReviewAction,
     ReviewDirective,
     review_directive,
+    review_order,
 )
 from repowise.server.mcp_server._test_selection import UNAVAILABLE_REASON
 
@@ -67,6 +68,8 @@ def _test_evidence(tests: dict[str, Any] | None) -> CoveringTestEvidence:
     run_all = None
     if tests.get("run_all"):
         run_all = (tests.get("reasons") or [UNAVAILABLE_REASON])[0]
+    elif tests.get("status") == "degraded":
+        run_all = tests["summary"]
     return CoveringTestEvidence(
         state=state, tests_to_run=to_run, basis=tests.get("basis"), run_all=run_all
     )
@@ -163,9 +166,15 @@ def _scope_words(label: str) -> str:
     return f" in {label}" if label else ""
 
 
-def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict[str, Any]:
-    """The compact delta: what got worse, how much was compared, and how sure."""
-    emitted = delta.findings[:TOP_FINDINGS_LIMIT]
+def health_delta_block(
+    delta: ChangeHealthDelta, *, revspec: str | None, full: bool = False
+) -> dict[str, Any]:
+    """The compact delta: what got worse, how much was compared, and how sure.
+
+    ``files`` rows leave out the structure deductions their scores already
+    state; *full* keeps them.
+    """
+    emitted = review_order(delta.findings)[:TOP_FINDINGS_LIMIT]
     block: dict[str, Any] = {
         "status": delta.status,
         "explanation": delta.explanation,
@@ -193,7 +202,7 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     if delta.moved_to:
         block["moved_to"] = dict(list(delta.moved_to.items())[:MOVED_TO_LIMIT])
     if delta.files:
-        block.update(_file_scores(delta.files))
+        block.update(_file_scores(delta.files, full=full))
     if delta.skipped:
         block["skipped"] = _skipped(delta.skipped)
     if delta.limits:
@@ -201,11 +210,21 @@ def health_delta_block(delta: ChangeHealthDelta, *, revspec: str | None) -> dict
     return block
 
 
-def _file_scores(rows: list[FileScoreDelta]) -> dict[str, Any]:
+#: ``10 - score`` under ``structure_only``, so a default row leaves them out.
+_DERIVED_FILE_FIELDS = ("base_structure", "head_structure")
+
+
+def _file_scores(rows: list[FileScoreDelta], *, full: bool = False) -> dict[str, Any]:
     """The changed files' scores before and after, and their base-nloc average."""
+    shown = [r.as_dict() for r in rows]
+    if not full:
+        shown = [
+            {k: v for k, v in row.items() if k not in _DERIVED_FILE_FIELDS}
+            for row in shown
+        ]
     out: dict[str, Any] = {
         "score_basis": SCORE_BASIS,
-        "files": [r.as_dict() for r in rows[:FILE_ROWS_LIMIT]],
+        "files": shown[:FILE_ROWS_LIMIT],
         "files_total": len(rows),
     }
     change = score_change(rows)
@@ -214,8 +233,10 @@ def _file_scores(rows: list[FileScoreDelta]) -> dict[str, Any]:
     return out
 
 
-def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
-    """One surfaced finding, with the exact call that expands it."""
+def finding_row(
+    finding: ChangeFinding, revspec: str | None, *, inspect: bool = False
+) -> dict[str, Any]:
+    """One surfaced finding; *inspect* adds the exact call that expands it."""
     row: dict[str, Any] = {
         "id": finding.change_finding_id,
         "change": finding.change_kind,
@@ -229,8 +250,9 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
             "confidence": finding.attribution_confidence,
             "why": finding.attribution_detail,
         },
-        "inspect": _call(revspec, extra=f"finding_id={finding.change_finding_id!r}"),
     }
+    if inspect:
+        row["inspect"] = _call(revspec, extra=f"finding_id={finding.change_finding_id!r}")
     if finding.suggestion and finding.suggestion != finding.reason:
         row["suggestion"] = finding.suggestion
     if finding.symbol:
@@ -252,7 +274,6 @@ def finding_row(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
 def finding_detail(finding: ChangeFinding, revspec: str | None) -> dict[str, Any]:
     """The drill-down view: the row plus the evidence behind it."""
     row = finding_row(finding, revspec)
-    row.pop("inspect", None)
     row["evidence"] = finding.evidence
     row["health_impact"] = finding.health_impact
     return row

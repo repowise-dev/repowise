@@ -72,25 +72,7 @@ export function Sidebar({
       });
     }
   }, [derivedActiveRepoId]);
-  // Docs is a reading surface — auto-collapse the sidebar on entering it so
-  // the page gets the width, and restore the previous state on leaving.
-  // Manual toggles always win while the route type is unchanged.
-  const isDocsRoute = /^\/repos\/[^/]+\/docs(\/|$)/.test(pathname ?? "");
-  const [collapsed, setCollapsed] = React.useState(isDocsRoute);
-  const preDocsCollapsed = React.useRef(false);
-  const wasDocsRoute = React.useRef(isDocsRoute);
-  React.useEffect(() => {
-    if (isDocsRoute === wasDocsRoute.current) return;
-    wasDocsRoute.current = isDocsRoute;
-    if (isDocsRoute) {
-      setCollapsed((c) => {
-        preDocsCollapsed.current = c;
-        return true;
-      });
-    } else {
-      setCollapsed(preDocsCollapsed.current);
-    }
-  }, [isDocsRoute]);
+  const [collapsed, setCollapsed] = React.useState(false);
 
   // Workspace group: collapsed unless the user is on a workspace route, so
   // the (more used) per-repo navigation leads. Tracks route changes in both
@@ -307,8 +289,7 @@ export function Sidebar({
 
                   if (isIconOnly) {
                     // Collapsed: the active repo still exposes its full nav as
-                    // icons (so the repository-view options stay reachable, e.g.
-                    // on Docs where the sidebar auto-collapses); inactive repos
+                    // icons (so the repository-view options stay reachable); inactive repos
                     // stay a single dot that jumps to their overview.
                     if (isActive) {
                       return (

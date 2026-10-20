@@ -12,7 +12,7 @@ using real CLI commands. No LLM key required for these steps.
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Read code health

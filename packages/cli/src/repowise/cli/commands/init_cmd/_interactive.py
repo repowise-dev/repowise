@@ -9,6 +9,7 @@ from typing import Any
 import click
 
 from repowise.cli.ui.brand import OK, WARN
+from repowise.cli.ui.glyphs import glyph
 
 
 def offer_distill_rewrite_hook(
@@ -110,7 +111,7 @@ def offer_distill_rewrite_hook(
     if flag:
         path = adapter.install_rewrite_hook()
         if path:
-            console_obj.print(f"  [{OK}]✓[/] Rewrite hook installed ({path})")
+            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Rewrite hook installed ({path})")
         else:
             console_obj.print(f"  [{WARN}]Rewrite hook install failed.[/]")
     else:
@@ -246,7 +247,7 @@ def _install_hook(console_obj: Any, repo_path: Path, label: str) -> bool:
     if result.startswith("not "):
         console_obj.print(f"  [dim]{label}: no post-commit hook, {result}.[/dim]")
         return False
-    console_obj.print(f"  [{OK}]✓[/] {label}: post-commit hook {result}")
+    console_obj.print(f"  [{OK}]{glyph('ok')}[/] {label}: post-commit hook {result}")
     return True
 
 
@@ -270,7 +271,7 @@ def _offer_hook_install_prompts(
 
     console_obj.print()
     console_obj.print(
-        "[bold]Auto-sync:[/bold] Install a post-commit hook to keep the wiki "
+        "[bold]Auto-sync:[/bold] Install a post-commit hook to keep the index "
         "in sync after every commit?"
     )
 

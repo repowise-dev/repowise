@@ -187,7 +187,7 @@ This is the main event, and it has its own docs. The short version:
 VS Code itself. Codex needs `--codex` on `init`; Cursor, OpenCode and Hermes
 need `repowise agents add --target=<id>`. The Claude Code plugin is optional
 and adds slash commands and skills. The per-host table is in
-[Quickstart](QUICKSTART.md#3-connect-your-agent); [Codex](../agent/CODEX.md),
+[Quickstart](QUICKSTART.md#4-connect-your-agent); [Codex](../agent/CODEX.md),
 [OpenCode](../agent/OPENCODE.md) and [Hermes](../agent/HERMES.md) have their
 own guides.
 
@@ -261,7 +261,7 @@ repowise serve
 
 API on `http://localhost:7337`, dashboard on `http://localhost:3000`. Node.js
 20+, `--no-ui` and the Docker image are covered in
-[Quickstart](QUICKSTART.md#open-the-dashboard).
+[Quickstart](QUICKSTART.md#3-open-the-dashboard).
 
 `Ctrl+K` / `Cmd+K` opens a command palette from any page, which is the fastest way
 to move between views and repos.

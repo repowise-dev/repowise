@@ -796,3 +796,13 @@ def _no_omission_writes_outside_a_test_repo(monkeypatch, tmp_path):
     # misses the read.
     monkeypatch.setattr(store_module, "default_store_path", resolve)
     monkeypatch.setattr(collector, "default_store_path", resolve)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_change_risk_cache(monkeypatch):
+    """Each test scores its ranges itself; a cached payload would hide its patches."""
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server.tool_change_risk import cache
+
+    monkeypatch.setattr(cache, "_SCORED", OrderedDict())

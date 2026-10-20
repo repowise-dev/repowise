@@ -172,6 +172,9 @@ Now, Worth planning and Improve what Repowise can see. Within a group, rows rank
 by value times confidence over effort, and the top due Fix first item leads its
 group, so Do next and Fix first lead with the same work. Dismissing or snoozing a
 row takes effect at once.
+A fresh regression is in Now only when this week's commits added a proven
+performance cause (one in the performance queue) or lost measured coverage. The
+long, complex or nested code a week of work leaves becomes one row to plan.
 A fragile file asks for tests only when no measured coverage and no test in the
 code graph reaches it; otherwise the row asks you to simplify its lead function. A
 folder where bug fixes concentrate names its first step, the most fixed file's, or

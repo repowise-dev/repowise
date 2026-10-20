@@ -62,6 +62,7 @@ Reason = Literal[
     "unmeasured_cost",
     "cold_role",
     "background_unproven",
+    "unconfirmed_cost",
     "terminal_flow",
     "moderate_quiet",
 ]
@@ -431,10 +432,6 @@ QUEUE_ROLES = frozenset(EXECUTION_ROLES) - COLD_ROLES
 """Execution roles the performance queue holds; a scheduled job also needs
 proven growth. ``unknown`` is no evidence either way, so it stays."""
 
-#: Causes whose cost is real only in shipped code over a loop that grows: a
-#: string built in a bounded loop, or in a script, costs nothing a user sees.
-GROWS_ONLY_MARKERS = frozenset({"string_concat_in_loop"})
-
 
 def perf_strategy_verdict(
     item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
@@ -443,9 +440,7 @@ def perf_strategy_verdict(
 
     Reads an opportunity, an ORM row or a plain row. *contexts* widens it for a
     caller that asked for more (Fix first's ``scope="all"`` keeps test code);
-    the state rule never moves. Fix first reads this rather than
-    :func:`perf_queue_verdict` because it keeps an unproven cause, as a
-    ``later`` item.
+    the state rule never moves.
     """
     context = field(item, "execution_context")
     if context not in contexts:
@@ -489,16 +484,53 @@ def queue_proof(item: Any) -> QueueProof:
     return proof
 
 
-def perf_queue_verdict(item: Any) -> Verdict:
+def perf_queue_verdict(item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS) -> Verdict:
     """Whether the performance default queue holds *item*.
 
     One reason per cause, context first and role last, so the counts of every
     reason and the queue add up to the whole.
     """
-    verdict = perf_strategy_verdict(item)
+    verdict = perf_strategy_verdict(item, contexts)
     if verdict.eligible and cost_proof(item) not in DEFAULT_QUEUE_PROOFS:
         return Verdict("unmeasured_cost")
     return verdict if not verdict.eligible else _verdict(_role_reason(item))
+
+
+def _unconfirmed(item: Any) -> bool:
+    """Whether nothing but a name or a guess says a queued cause costs anything.
+
+    Its cost must be one that may lead (:func:`worth.lead_reason`); a loop's
+    growth must come from a loop outside a registry and a cold path
+    (``opportunity_rank.growth_source``, absent on rows stored before it); and
+    with no known role, an entry point must reach it. Only a ``plan_ready``
+    cause qualifies.
+    """
+    # Deliberate ceiling: advisory causes in the default queue labelled 0 TRUE
+    # of 14 on our index, dify-api and polar-server (2026-10-19). Admit
+    # advisory once a blind held-out sample of it clears 90%.
+    if field(item, "actionability_state") != "plan_ready":
+        return True
+    facets = perf_facets(item)
+    if lead_reason(field(item, "biomarker_type"), facets) is not None:
+        return True
+    if facets.get("loop_magnitude") == "grows_with_data" and facets.get("growth_source") != "loop":
+        return True
+    return execution_role(item) == "unknown" and facets.get("exposure") != "entry_reachable"
+
+
+def perf_confident_verdict(
+    item: Any, contexts: frozenset[str] = DEFAULT_QUEUE_CONTEXTS
+) -> Verdict:
+    """Whether *item* is a cause sure enough to be told to do: the only
+    performance work Fix first, Do next and the queue's lead name.
+
+    A default-queue cause (:func:`perf_queue_verdict`) that :func:`_unconfirmed`
+    clears; the rest stay listed in the performance queue.
+    """
+    verdict = perf_queue_verdict(item, contexts)
+    if verdict.eligible and _unconfirmed(item):
+        return Verdict("unconfirmed_cost")
+    return verdict
 
 
 def perf_queue_counts(items: Iterable[Any]) -> dict[str, Any]:
@@ -524,37 +556,32 @@ def _has_plan(row: Any) -> bool:
     return field(row, "plan_state") == "available" and bool(field(row, "fix_strategy"))
 
 
-def _perf_worth(row: Any) -> bool:
-    """Whether a planned cause is worth an item at all."""
-    return field(row, "biomarker_type") not in GROWS_ONLY_MARKERS or perf_low_priority(row) is None
-
-
 def perf_fix_verdict(
     rows: list[Any], contexts: frozenset[str], unreachable: Callable[[], bool]
 ) -> tuple[Verdict, list[Any]]:
     """Whether the causes one intervention groups make a Fix first item, and
     the rows worth one.
 
-    The performance queue's context and actionability rule decides which
-    causes are work; an unproven cost stays in, tiered later by
-    :func:`perf_low_priority`. An item needs a stored plan to quote.
-    ``unreachable()`` says whether dead code covers the intervention.
+    Only a confident cause (:func:`perf_confident_verdict`) is work here. An
+    item needs a stored plan to quote. ``unreachable()`` says whether dead
+    code covers the intervention.
     """
-    verdicts = [perf_strategy_verdict(r, contexts) for r in rows]
-    queued = [r for r, v in zip(rows, verdicts, strict=True) if v.eligible]
-    ready = [r for r in queued if _has_plan(r)]
+    # A row with no plan is judged on strategy alone: its facets are not loaded,
+    # and it is no item either way, so it counts as ``no_plan``.
+    verdicts = [
+        perf_confident_verdict(r, contexts) if _has_plan(r) else perf_strategy_verdict(r, contexts)
+        for r in rows
+    ]
+    ready = [r for r, v in zip(rows, verdicts, strict=True) if v.eligible and _has_plan(r)]
     if not ready:
-        if queued:
+        if any(v.eligible for v in verdicts):
             return Verdict("no_plan"), []
         # Dormant only when every row is: one live row speaks for the group.
         live = [v for v in verdicts if v.reason != "gated_off"]
         return (live[0] if live else Verdict("gated_off")), []
-    worth = [r for r in ready if _perf_worth(r)]
-    if not worth:
-        return Verdict("below_min_worth"), []
     if unreachable():
         return Verdict("unreachable"), []
-    return ELIGIBLE, worth
+    return ELIGIBLE, ready
 
 
 __all__ = [
@@ -564,7 +591,6 @@ __all__ = [
     "DEFAULT_QUEUE_PROOFS",
     "DEFAULT_QUEUE_STATES",
     "ELIGIBLE",
-    "GROWS_ONLY_MARKERS",
     "LOW_VALUE_DETAIL_KINDS",
     "LOW_VALUE_KINDS",
     "MIN_WORTH",
@@ -586,6 +612,7 @@ __all__ = [
     "dead_target",
     "finding_verdict",
     "path_verdict",
+    "perf_confident_verdict",
     "perf_fix_verdict",
     "perf_low_priority",
     "perf_queue_counts",

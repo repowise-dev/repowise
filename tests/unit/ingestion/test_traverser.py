@@ -568,6 +568,53 @@ class TestFileTraverser:
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
 
+    def test_a_test_named_php_class_outside_phpunit_testsuites_is_production(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+            "tools/HelperTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+        # A nested config governs its own directory.
+        (tmp_path / "tools" / "phpunit.xml").write_text(
+            '<phpunit><testsuites><testsuite name="Tools">'
+            '<directory>tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["src/Testing/Attributes/UnitTest.php"] is False
+        assert files["tests/RouterTest.php"] is True
+        assert files["tools/HelperTest.php"] is False
+
+    def test_malformed_primary_phpunit_config_does_not_fall_back_to_dist(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml").write_text("not valid xml <")
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        # Fails closed: unreadable primary does not fall back, so test-named class stays True
+        assert files["src/Testing/Attributes/UnitTest.php"] is True
+        assert files["tests/RouterTest.php"] is True
+
     def test_csharp_test_project_classifies_files_as_tests(self, tmp_path: Path) -> None:
         (tmp_path / "acceptance" / "Acme.Acceptance.csproj").parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / "acceptance" / "Acme.Acceptance.csproj").write_text(

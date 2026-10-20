@@ -305,23 +305,23 @@ class TestInitYesFlag:
                 return_value=fake_scan,
             ),
             patch(
-                "repowise.cli.commands.init_cmd._questions.prompt_wiki_style",
+                "repowise.cli.ui.mode_selection.prompt_wiki_style",
                 side_effect=_fake_prompt_wiki_style,
             ),
             patch(
-                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", "--index-only", str(tmp_path)])
             assert not prompt_called, "-y should bypass the wiki-style interactive prompt"
 
-    def test_yes_skips_mode_select_on_tty(self, runner, tmp_path):
-        """With -y on a TTY, the interactive mode-selection menu is never shown.
+    def test_yes_skips_plan_screen_on_tty(self, runner, tmp_path):
+        """With -y on a TTY, the plan screen is never shown.
 
         Without the ``and not yes`` guard on ``is_interactive`` a scripted
-        ``init -y`` would still block on ``interactive_mode_select`` whenever
-        stdin happens to be a TTY.
+        ``init -y`` would still block on the plan screen whenever stdin
+        happens to be a TTY.
         """
         from unittest.mock import MagicMock, patch
 
@@ -339,18 +339,18 @@ class TestInitYesFlag:
             ),
             patch("sys.stdin.isatty", return_value=True),
             patch(
-                "repowise.cli.commands.init_cmd._questions.interactive_mode_select",
+                "repowise.cli.commands.init_cmd._plan.run_plan_screen",
                 side_effect=lambda *_a, **_kw: mode_select_called.append(True),
             ),
             # Stop before the real pipeline runs.
             patch(
-                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
             runner.invoke(cli, ["init", "-y", str(tmp_path)])
             assert not mode_select_called, (
-                "-y must bypass the interactive mode-selection menu even on a TTY"
+                "-y must bypass the plan screen even on a TTY"
             )
 
 

@@ -34,7 +34,7 @@ source file references it, which is real evidence and a much cruder one. A test
 importing a module pulls in every symbol the module defines while the test body
 may touch one function.
 
-Measured against a real ``coverage run --contexts=test`` on this repository,
+Measured against real per-test coverage on this repository,
 over the slice where per-test attribution is complete and both sides see the
 same 37 test files (159 production files provably executed):
 

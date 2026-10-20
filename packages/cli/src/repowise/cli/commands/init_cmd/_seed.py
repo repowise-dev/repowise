@@ -36,8 +36,10 @@ def _seed_base(opts: InitOptions, repo_path: Path) -> Path | None:
             seed_base = detected
             if not opts.force:
                 console.print(
-                    f"[dim]\\[worktree][/dim] Linked worktree of {detected} detected; "
-                    f"seeding its index."
+                    f"This is a linked worktree of {detected}, which is already "
+                    "indexed. init copies that index and catches it up with "
+                    "[bold]repowise update[/bold] instead of indexing from scratch.\n"
+                    "[dim]Pass --no-seed for a full init here.[/dim]"
                 )
 
     # ``--force`` asks for the re-index seeding exists to avoid, so the two do
@@ -120,6 +122,9 @@ def delegate_to_seeded_update(opts: InitOptions, repo_path: Path, scan: Any) -> 
     if opts.dry_run:
         console.print("[dim]Dry run: Would seed worktree index and delegate to update.[/dim]")
         return True
-    console.print(f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]")
+    console.print(
+        f"[{OK}]Index copied from {seed_base}.[/] Running [bold]repowise update[/bold] "
+        "to catch it up."
+    )
     _run_seeded_update(opts, repo_path, scan)
     return True

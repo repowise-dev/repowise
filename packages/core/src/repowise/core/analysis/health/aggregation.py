@@ -26,6 +26,7 @@ from .scoring import (
     biomarker_weight,
     deduction_split,
     destacked,
+    dimensions_for,
     history_cap,
     is_advisory,
     severity_deduction,
@@ -139,9 +140,7 @@ def module_rollups(
         if module:
             buckets.setdefault(str(module), []).append(row)
 
-    rows = [
-        {"module": name, **group_rollup(group, deductions)} for name, group in buckets.items()
-    ]
+    rows = [{"module": name, **group_rollup(group, deductions)} for name, group in buckets.items()]
     rows.sort(key=lambda row: (row["average_health"], row["module"]))
     return rows
 
@@ -279,7 +278,9 @@ def _scored_raw(findings: list[Any]) -> list[float]:
         else finding_raw_deduction(f)
         for f in findings
     ]
-    names = [(field(f, "biomarker_type", "") or "", field(f, "function_name", None)) for f in findings]
+    names = [
+        (field(f, "biomarker_type", "") or "", field(f, "function_name", None)) for f in findings
+    ]
     group_by_function(names, raw)
     return raw
 
@@ -329,9 +330,11 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     Categories are emitted in :data:`CATEGORY_CAPS` order and a category with no
     findings is omitted, not zero-filled.
     """
-    # Advisory findings deduct nothing; left in, they report a raw deduction
-    # the file never paid.
-    kept = [f for f in findings if not is_advisory(field(f, "biomarker_type", None) or "")]
+    # Findings outside the defect dimension deduct nothing; left in, they
+    # report a raw deduction the file never paid.
+    kept = [
+        f for f in findings if "defect" in dimensions_for(field(f, "biomarker_type", None) or "")
+    ]
     per_category: dict[str, list[tuple[Any, float]]] = {}
     for finding, raw in zip(kept, _scored_raw(kept), strict=True):
         category = biomarker_category(field(finding, "biomarker_type", None))

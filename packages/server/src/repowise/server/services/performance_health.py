@@ -34,6 +34,7 @@ from repowise.core.analysis.health.perf.serving import (
     rescope_summary,
     scope_counts,
     serialize,
+    served_position,
     summary_payload,
     unresolved_detail,
 )
@@ -146,6 +147,7 @@ class PerformanceHealthService:
                     summary=query.view == "summary",
                     decisions=row_decisions,
                 ),
+                "rank_position": served_position(query, index, row.rank_position),
                 **(
                     evidence_block(
                         evidence.get(row.opportunity_id, []), row.observations_total, 0
@@ -154,7 +156,7 @@ class PerformanceHealthService:
                     else {}
                 ),
             }
-            for row in rows
+            for index, row in enumerate(rows)
         ]
         emitted = query.offset + len(items)
         facets: dict[str, list[dict[str, Any]]] = {}

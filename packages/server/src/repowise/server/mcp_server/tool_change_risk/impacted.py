@@ -82,6 +82,7 @@ async def _impacted_tests_block(
     revspec: str | None = None,
     working_tree: bool = False,
     owned_excludes: tuple[str, ...] = (),
+    detail: bool = True,
 ) -> dict[str, Any]:
     """The tests the change needs, decided as ``repowise impacted-tests`` decides them.
 
@@ -122,7 +123,12 @@ async def _impacted_tests_block(
     try:
         result, selection, _ = await _pkg.select_change_tests(ctx.path, session_factory, change)
         block = selection_block(
-            result, selection, collector, limit=_IMPACTED_TESTS_LIMIT, label="impacted_tests"
+            result,
+            selection,
+            collector,
+            limit=_IMPACTED_TESTS_LIMIT,
+            label="impacted_tests",
+            detail=detail,
         )
         if not result["map_empty"]:
             lines = query_lines(change, result["measured_commit"])

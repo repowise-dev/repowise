@@ -15,10 +15,7 @@ from repowise.cli.editor_integrations.defaults import (
     get_default_integration_overrides,
     get_default_project_file_overrides,
 )
-from repowise.cli.editor_setup import (
-    resolve_editor_setup_options,
-    select_agents_interactively,
-)
+from repowise.cli.editor_setup import resolve_editor_setup_options
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     console,
@@ -26,17 +23,20 @@ from repowise.cli.helpers import (
     load_config,
     load_state,
     resolve_max_file_pages,
-    resolve_provider,
     resolve_reasoning,
 )
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import resolve_embedder_choice
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.ui import WARN, load_dotenv
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.generation.styles import resolve_style
 
 from ._options import InitOptions, InitRun
-from ._provider import announce_index_only, decision_key_in_env, resolve_docs_provider
+from ._provider import (
+    announce_index_only,
+    note_subscription_cli,
+    resolve_docs_provider,
+)
 from ._questions import _ask_questions
 from .persistence import effective_run_mode_for_resume
 
@@ -62,6 +62,7 @@ def _interactive_gate(
 
 def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
     """Prepare ``.repowise/``, logging and the resume mode, then open the run."""
+    dir_created = not (repo_path / ".repowise").exists()
     ensure_repowise_dir(repo_path)
     load_dotenv(repo_path)
 
@@ -95,13 +96,20 @@ def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
         start=start,
         is_interactive=is_interactive,
         generate_docs=not opts.index_only,
+        repowise_dir_created=dir_created,
     )
 
 
 def _editor_options(run: InitRun) -> Any:
-    """Which editor files and integrations this run writes."""
+    """Which editor files and integrations this run writes.
+
+    The agent checklist on the plan screen's ``e`` sets ``run.editor_options``;
+    otherwise the flags and detection decide, with no question.
+    """
+    if run.editor_options is not None:
+        return run.editor_options
     opts = run.opts
-    editor_options = resolve_editor_setup_options(
+    return resolve_editor_setup_options(
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=opts.no_claude_md,
         ),
@@ -112,13 +120,6 @@ def _editor_options(run: InitRun) -> Any:
             codex_setup=opts.codex_setup,
         ),
     )
-    # Ask which agents to wire up whenever the user is engaging interactively:
-    # either generating docs or customizing an index-only run. Not asked when
-    # editor setup is off: every answer would be discarded by
-    # `write_editor_project_files`.
-    if opts.editor_setup and run.is_interactive and (run.generate_docs or run.customize):
-        editor_options = select_agents_interactively(console, run.repo_path, editor_options)
-    return editor_options
 
 
 def _resolve_settings(run: InitRun) -> None:
@@ -150,8 +151,17 @@ def _resolve_settings(run: InitRun) -> None:
     if opts.follow_renames:
         config["follow_renames"] = True
 
-    run.embedder_name_resolved = resolve_embedder(opts.embedder_name)
+    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(opts.embedder_name)
     run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
+
+
+def _announce_kept_documentation(run: InitRun) -> None:
+    """Fast mode writes no pages, so documentation already here stays."""
+    if run.prior_docs_mode != "none":
+        console.print(
+            "[dim]Keeping the documentation this repo already has. "
+            "Fast mode rebuilds the index and leaves the pages as they are.[/dim]"
+        )
 
 
 def _confirm_wiki_overwrite(run: InitRun) -> bool:
@@ -170,42 +180,47 @@ def _confirm_wiki_overwrite(run: InitRun) -> bool:
     run.first_index = not prior_state.get("last_sync_commit")
     run.prior_docs_mode = resolve_docs_mode(prior_state)
     opts = run.opts
+    if opts.run_mode == "fast":
+        _announce_kept_documentation(run)
+        return True
     if not opts.index_only or run.prior_docs_mode != "llm" or opts.force or opts.yes:
         return True
     console.print(
-        f"\n[{WARN}]This repo already has a model-written wiki.[/] "
-        "Indexing without a model\nrewrites every page from templates; the "
+        f"\n[{WARN}]This repo already has documentation written by a model.[/] "
+        "Indexing without a model\nrebuilds every page from code; the "
         "written versions stay in page history."
     )
     if not sys.stdin.isatty():
         raise reasoned_error(
-            "Refusing to replace a model-written wiki with template pages. "
-            "Re-run with --yes to confirm, or drop --index-only.",
+            "Refusing to replace documentation written by a model with pages built "
+            "from code. Re-run with --yes to confirm, or drop --no-prose.",
             reason="wiki_overwrite_unconfirmed",
         )
-    if not click.confirm("  Replace the written wiki with template pages?", default=False):
+    if not click.confirm(
+        "  Replace the written documentation with pages built from code?", default=False
+    ):
         console.print("[dim]Nothing changed.[/dim]")
         return False
     return True
 
 
-def _resolve_decision_provider(run: InitRun) -> None:
-    """Index-only: a decision-extraction provider when one is named or keyed."""
-    opts = run.opts
-    try:
-        if opts.provider_name or decision_key_in_env():
-            run.decision_provider = resolve_provider(opts.provider_name, opts.model, run.repo_path)
-    except Exception:
-        pass
-
-
 def _resolve_provider_stage(run: InitRun) -> None:
-    """Which model this run calls: none, a decision extractor, or the docs model."""
+    """Which model this run calls: none for a structural run, else the docs model.
+
+    The one gate for ``--no-prose`` (and ``--mode fast``): no provider is
+    resolved, so nothing later in the run can call a model, whatever keys the
+    environment or stored config holds.
+    """
     if run.opts.index_only:
-        _resolve_decision_provider(run)
+        if run.opts.provider_name:
+            console.print(
+                f"[dim]--provider {run.opts.provider_name} is not used: this run "
+                "builds from code and makes no model calls.[/dim]"
+            )
         announce_index_only(run)
     else:
         resolve_docs_provider(run)
+    note_subscription_cli(run)
 
 
 def _prepare_single_repo(opts: InitOptions, repo_path: Path, start: float) -> InitRun | None:

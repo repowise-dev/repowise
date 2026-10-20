@@ -96,7 +96,12 @@ def _run_api(
 @click.option("--port", default=7337, type=int, help="API server port.", envvar="REPOWISE_PORT")
 @click.option("--host", default="127.0.0.1", help="Host to bind to.")
 @click.option("--workers", default=1, type=int, help="Number of uvicorn workers.")
-@click.option("--ui-port", default=3000, type=int, help="Web UI port.")
+@click.option(
+    "--ui-port",
+    default=_ports.DEFAULT_UI_PORT,
+    type=int,
+    help="Web UI port (the next free one if taken).",
+)
 @click.option("--no-ui", is_flag=True, help="Start API server only, skip the web UI.")
 @click.option(
     "--refresh-ui",

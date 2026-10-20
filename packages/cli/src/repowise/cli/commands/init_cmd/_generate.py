@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
 from rich.table import Table
 
+from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.helpers import console, load_config, warn
-from repowise.cli.ui import BRAND, VALUE, print_phase_header
+from repowise.cli.ui import BRAND, VALUE, print_stage
+from repowise.cli.ui.mode_names import INDEX_ONLY, provider_model
 from repowise.core.generation.styles import DEFAULT_STYLE
 
+from ._exit import COST_UNCONFIRMED_BUILT, COST_UNCONFIRMED_KEPT
 from ._options import InitRun
 from .generation import (
     concept_page_count,
     cost_gate_declined,
+    embedding_note,
     estimate_generation,
-    format_cost,
     page_type_label,
     run_repo_generation,
     structural_page_summary,
@@ -65,7 +69,7 @@ def _print_structural_plan(
     )
 
     table = Table(title="Generation Plan (dry run)", border_style=BRAND)
-    table.add_column("Pages", style="cyan")
+    table.add_column("Pages", style=VALUE)
     table.add_column("Count", justify="right")
     total = 0
     for plan in plans:
@@ -74,7 +78,7 @@ def _print_structural_plan(
     table.add_section()
     table.add_row("[bold]Total[/bold]", f"[bold]{total:,}[/bold]")
     console.print(table)
-    console.print("  Dry run: every page above is rendered from structure. No wiki written.")
+    console.print("  Dry run: every page above is built from code. No documentation written.")
 
 
 def _run_deterministic_generation_phase(
@@ -107,24 +111,23 @@ def _run_deterministic_generation_phase(
 
     embedder = template_run_embedder(embedder_name_resolved, embedder_was_requested)
 
-    print_phase_header(
+    print_stage(
         console,
-        3,
+        "generation",
         total_phases,
-        "Generation",
-        "Building wiki pages from the code's structure (no model, no cost)",
+        "Building documentation from code (no model, no cost)",
     )
     # Both knobs only reach a model: templates are English and unstyled, so say
     # so rather than record a style the pages do not have.
     if language != "en":
         console.print(
-            f"  [dim]Templates are written in English, so [bold]--language "
+            f"  [dim]Documentation built from code is in English, so [bold]--language "
             f"{language}[/bold] has no effect here. Run [bold]repowise update "
-            "--full[/bold] to write the wiki with a model in that language.[/dim]"
+            "--full[/bold] to have a model write the documentation in that language.[/dim]"
         )
     if wiki_style != DEFAULT_STYLE:
         console.print(
-            f"  [dim]Wiki styles shape how a model writes, so [bold]--wiki-style "
+            f"  [dim]Documentation styles shape how a model writes, so [bold]--wiki-style "
             f"{wiki_style}[/bold] has no effect here.[/dim]"
         )
     if embedder != embedder_name_resolved:
@@ -155,8 +158,22 @@ def _run_deterministic_generation_phase(
         verbose=True,
         timings=timings,
         warnings=warnings,
+        total_phases=total_phases,
     )
     return embedder
+
+
+def _local_server_overloaded(provider_name: str, concurrency: int) -> bool:
+    """A local model server (Ollama) at high concurrency, which can time out.
+
+    An agent CLI bounds its own process count (its estimate says so), so it
+    never needs the advice to lower --concurrency.
+    """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider_name)
+    is_local_server = spec is not None and spec.local and not spec.agent
+    return is_local_server and concurrency > 4
 
 
 def _print_generation_plan(
@@ -168,7 +185,7 @@ def _print_generation_plan(
     # "Written by" answers the question the price below raises: most of this
     # total is free.
     table = Table(title="Generation Plan", border_style=BRAND)
-    table.add_column("Pages", style="cyan")
+    table.add_column("Pages", style=VALUE)
     table.add_column("Count", justify="right")
     table.add_column("Written by")
     model_pages = 0
@@ -178,13 +195,13 @@ def _print_generation_plan(
         table.add_row(
             page_type_label(plan.page_type),
             f"{plan.count:,}",
-            "model" if from_model else "[dim]structure[/dim]",
+            "model" if from_model else "[dim]code[/dim]",
         )
     table.add_section()
     table.add_row(
         "[bold]Total[/bold]",
         f"[bold]{est.total_pages:,}[/bold]",
-        f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from structure[/bold]",
+        f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from code[/bold]",
     )
     console.print(table)
 
@@ -195,11 +212,7 @@ def _print_generation_plan(
         lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
-    # Warn when a local provider runs with default concurrency
-    from repowise.core.providers.llm.specs import PROVIDER_SPECS
-
-    spec = PROVIDER_SPECS.get(provider.provider_name)
-    if spec is not None and spec.local and concurrency > 4:
+    if _local_server_overloaded(provider.provider_name, concurrency):
         warn(
             f"  {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
@@ -247,12 +260,11 @@ def _run_generation_phase(
     """
     from repowise.core.generation import GenerationConfig
 
-    print_phase_header(
+    print_stage(
         console,
-        3,
+        "generation",
         total_phases,
-        "Generation",
-        f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
+        f"Writing documentation with {provider_model(provider.provider_name, provider.model_name)}",
     )
 
     gen_config = GenerationConfig.from_repo_config(
@@ -271,6 +283,7 @@ def _run_generation_phase(
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
+        embedder=embedder_name_resolved,
     )
 
     _print_generation_plan(est, result, provider, concurrency=concurrency, onboarding=onboarding)
@@ -286,17 +299,20 @@ def _run_generation_phase(
     concept_n = concept_page_count(plans)
     console.print(
         f"  Writing [bold]{concept_n:,}[/bold] subsystem pages with "
-        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. {spend_phrase(est, concurrency)}."
     )
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"  [dim]{structural}[/dim]")
+    embedding = embedding_note(est)
+    if embedding:
+        console.print(f"  [dim]{embedding}[/dim]")
     if cost_gate_declined(est, yes=yes, message="  Continue?"):
-        console.print("  Skipping the model. [dim]Building the wiki from structure instead.[/dim]")
+        console.print("  Skipping the model. [dim]Building documentation from code instead.[/dim]")
         console.print(
             "  [dim]Run [bold]repowise generate[/bold] any time to write the subsystem "
             "pages, or re-run init with [bold]--yes[/bold] to accept the cost now.\n"
-            "  Post-commit updates stay index-only, so no hook will start a model run "
+            "  Post-commit updates stay built from code, so no hook will start a model run "
             "on its own.[/dim]"
         )
         return False, True
@@ -313,6 +329,7 @@ def _run_generation_phase(
         test_run=test_run,
         timings=timings,
         warnings=warnings,
+        total_phases=total_phases,
     )
     return False, False
 
@@ -364,22 +381,31 @@ def _generate_with_model(run: InitRun) -> bool:
     )
     if gen_stop:
         return True
-    if cost_declined and run.prior_docs_mode == "llm":
+    if cost_declined:
+        _after_cost_declined(run)
+    return False
+
+
+def _after_cost_declined(run: InitRun) -> None:
+    """Keep model-written pages, or build from code; a gap when nobody could say no."""
+    kept = run.prior_docs_mode == "llm"
+    if not sys.stdin.isatty():
+        run.gaps.append(COST_UNCONFIRMED_KEPT if kept else COST_UNCONFIRMED_BUILT)
+    if kept:
         # Declining new pages is no request to replace the written ones.
         console.print(
-            "  [dim]Keeping the wiki this repo already has. Nothing was "
+            "  [dim]Keeping the documentation this repo already has. Nothing was "
             "generated and nothing was replaced.[/dim]"
         )
-    elif cost_declined:
-        run.cost_declined = True
-        console.print(
-            "  [dim]Building the wiki from structure instead. Run "
-            "[bold]repowise update --full[/bold] to write it with a "
-            "model later.[/dim]"
-        )
-        # Declining the bill keeps the configured embedder.
-        _render_template_wiki(run, embedder_was_requested=True)
-    return False
+        return
+    run.cost_declined = True
+    console.print(
+        "  [dim]Building documentation from code instead. Run "
+        "[bold]repowise update --full[/bold] to write it with a "
+        "model later.[/dim]"
+    )
+    # Declining the bill keeps the configured embedder.
+    _render_template_wiki(run, embedder_was_requested=True)
 
 
 def _generate(run: InitRun) -> bool:
@@ -388,7 +414,10 @@ def _generate(run: InitRun) -> bool:
     # The priced branch has its own dry-run exit.
     if opts.dry_run and (opts.index_only or run.no_provider):
         if opts.run_mode == "fast":
-            console.print("\n  Dry run: fast mode indexes graph and git only. No wiki written.")
+            console.print(
+                f"\n  Dry run: {INDEX_ONLY.lower()}, fast mode indexes graph and git. "
+                "No documentation written."
+            )
         else:
             _print_structural_plan(
                 result=run.result,
@@ -405,11 +434,12 @@ def _generate(run: InitRun) -> bool:
 
     # Fast mode is a graph-and-git index only.
     if opts.index_only and opts.run_mode == "fast":
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
         console.print(
-            "  [dim]Skipping wiki generation in fast mode. Run "
-            "[bold]repowise init[/bold] without [bold]--mode fast[/bold] to "
-            "render it from structure, or [bold]repowise update --full[/bold] "
-            "to write it with a model.[/dim]"
+            f"  [dim]{INDEX_ONLY}: fast mode skips documentation. Run "
+            f"[bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from code (no key "
+            "needed), or have a model write it when one is configured.[/dim]"
         )
         return False
     if opts.index_only or run.no_provider:

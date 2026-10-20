@@ -260,7 +260,7 @@ def test_a_function_no_test_reaches_asks_for_a_characterization_test_in_a_tested
     plan = build_validation_plan(_extract(), {}, _FILE_REACH, evidence=_evidence(()))
     assert plan.tests == ["tests/test_core.py", "tests/test_misc.py"]
     assert plan.prerequisite == (
-        "No test reaches this; add a characterization test for `parse` before the edit."
+        "No test reaches `parse` (2 reach its file); add a characterization test first."
     )
 
 

@@ -432,19 +432,55 @@ class _CFGBuilder:
         self._raises.append(RaiseSite(st.start_point[0] + 1, kind, exc, caught))
 
     def _record_arm_raises(self, switch: Node) -> None:
-        """The raises in a ``switch`` / ``match`` the graph keeps whole. The
-        statement is one graph node, so its arms are walked here, once, and
-        only within it: nested functions and lambdas are not entered."""
-        scopes = self.lmap.function_kinds | self.lmap.lambda_kinds
-        stack = list(reversed(switch.named_children))
-        while stack:
-            node = stack.pop()
-            if node.type in self.lmap.raise_kinds:
-                self._record_exit(node)
-            elif node.type not in scopes:
-                stack.extend(reversed(node.named_children))
+        """The raises and nested try regions in a ``switch`` / ``match`` the
+        graph keeps whole. The statement is one graph node, so its arms are
+        walked here, once, and only within it: nested functions and lambdas are
+        not entered."""
+        for child in switch.named_children:
+            self._walk_arm_node(child)
 
-    def _build_if(self, if_node: Node, cur: BasicBlock) -> BasicBlock:
+    def _walk_arm_node(self, node: Node) -> None:
+        scopes = self.lmap.function_kinds | self.lmap.lambda_kinds
+        if node.type in self.lmap.raise_kinds:
+            self._record_exit(node)
+        elif node.type in self.lmap.try_kinds:
+            clauses = [c for c in node.children if c.type in self.lmap.catch_kinds]
+            heads = [self._handler(c) for c in clauses]
+            body = node.child_by_field_name("body")
+            else_clause = next((c for c in node.children if c.type == "else_clause"), None)
+            finally_clause = next((c for c in node.children if c.type == "finally_clause"), None)
+
+            self._guards.append(tuple(heads))
+            if body is not None:
+                for child in body.children:
+                    self._walk_arm_node(child)
+            self._guards.pop()
+
+            if else_clause is not None:
+                for child in else_clause.children:
+                    self._walk_arm_node(child)
+
+            handlers = []
+            for clause, head in zip(clauses, heads, strict=True):
+                self._handling.append(head)
+                handler_entry = self._new("handler")
+                handler_out = self._process_seq(
+                    self._body_stmts(self._block_of(clause)), handler_entry
+                )
+                self._handling.pop()
+                handlers.append(replace(head, completes=handler_out is not None))
+
+            if finally_clause is not None:
+                for child in finally_clause.children:
+                    self._walk_arm_node(child)
+
+            parts = (body, else_clause, clauses, finally_clause)
+            self._regions.append(_try_region(node, parts, tuple(handlers)))
+        elif node.type not in scopes:
+            for child in node.named_children:
+                self._walk_arm_node(child)
+
+    def _build_if(self, if_node: Node, cur: BasicBlock) -> BasicBlock | None:
         cur.kind = "branch"
         self._record_head(cur, if_node)
         join = self._new("join")
@@ -452,46 +488,57 @@ class _CFGBuilder:
         # then-branch
         then_entry = self._new()
         self._edge(cur, then_entry)
-        then_out = self._process_seq(
-            self._body_stmts(if_node.child_by_field_name("consequence")), then_entry
-        )
+        then_block = if_node.child_by_field_name("consequence") or if_node.child_by_field_name("body")
+        then_out = self._process_seq(self._body_stmts(then_block), then_entry)
         if then_out is not None:
             self._edge(then_out, join)
 
         # Two grammar families for the false arm:
-        #  - Python's *flat* ``elif`` chain: sibling ``elif_clause`` (and a final
-        #    ``else_clause``) children, all converging on one join.
+        #  - Python / PHP flat chain: sibling clauses (``elif_clause`` /
+        #    ``else_if_clause`` and a final ``else_clause``) children, all
+        #    converging on one join.
         #  - everything else (a plain ``else``, or the C-family's nested
         #    ``else if``): a single else arm reached via the ``alternative`` field
-        #    or an ``else_clause`` child. ``else_clause`` is shared between Python
-        #    and TS, so the discriminator is specifically an ``elif_clause``.
-        if any(c.type == "elif_clause" for c in if_node.children):
-            alts = [c for c in if_node.children if c.type in ("elif_clause", "else_clause")]
-            self._build_py_else_chain(alts, cur, join)
+        #    or an ``else_clause`` child.
+        if any(c.type in ("elif_clause", "else_if_clause") for c in if_node.children):
+            alts = [
+                c
+                for c in if_node.children
+                if c.type in ("elif_clause", "else_if_clause", "else_clause")
+            ]
+            self._build_flat_else_chain(alts, cur, join)
         else:
             self._build_c_alternative(if_node, cur, join)
-        return join
+        return join if join.predecessors else None
 
-    def _build_py_else_chain(self, alts: list[Node], cur: BasicBlock, join: BasicBlock) -> None:
-        """Python ``elif`` / ``else`` clause chain off *cur*'s false edge."""
+    def _build_flat_else_chain(self, alts: list[Node], cur: BasicBlock, join: BasicBlock) -> None:
+        """Flat ``elif`` / ``else_if`` / ``else`` clause chain off *cur*'s false edge."""
         false_src: BasicBlock | None = cur
         for alt in alts:
-            if alt.type == "elif_clause":
+            if alt.type in ("elif_clause", "else_if_clause"):
                 elif_test = self._new("branch")
                 self._record_head(elif_test, alt)
                 self._edge(false_src, elif_test)
                 elif_entry = self._new()
                 self._edge(elif_test, elif_entry)
-                elif_out = self._process_seq(
-                    self._body_stmts(alt.child_by_field_name("consequence")), elif_entry
+                body = (
+                    alt.child_by_field_name("consequence")
+                    or alt.child_by_field_name("body")
+                    or self._block_of(alt)
                 )
+                elif_out = self._process_seq(self._body_stmts(body), elif_entry)
                 if elif_out is not None:
                     self._edge(elif_out, join)
                 false_src = elif_test
             else:  # else_clause
                 else_entry = self._new()
                 self._edge(false_src, else_entry)
-                else_out = self._process_seq(self._body_stmts(self._block_of(alt)), else_entry)
+                body = (
+                    alt.child_by_field_name("body")
+                    or alt.child_by_field_name("consequence")
+                    or self._block_of(alt)
+                )
+                else_out = self._process_seq(self._body_stmts(body), else_entry)
                 if else_out is not None:
                     self._edge(else_out, join)
                 false_src = None

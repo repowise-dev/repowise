@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import shutil
 import subprocess
 import time
@@ -22,6 +23,7 @@ from repowise.server.mcp_server._helpers import (
     attach_ignored_arguments,
 )
 
+from . import cache as _cache
 from .branches import _branch_overlap_block, _independent_changes_block
 from .changed import _changed_in_scope, _push_change
 from .cross_repo import _cross_repo_block
@@ -67,7 +69,8 @@ async def _score_change(
     except ValueError as exc:
         return None, {"error": str(exc)}
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip() or str(exc)
+        detail = (exc.stderr or "").partition("\nUse '--' to separate paths from revisions")[0]
+        detail = detail.strip() or str(exc)
         return None, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
     except subprocess.TimeoutExpired:
         return None, {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
@@ -91,6 +94,7 @@ async def _attach_change_blocks(
     changed_read: tuple[Any, Any],
     collector: OmissionCollector,
     include_paths: tuple[str, ...] = (),
+    tests_detail: bool = False,
 ) -> None:
     """Attach the tests, patch coverage, prior fixes and cross-repo blocks, in that order."""
     changed, changed_error = changed_read
@@ -102,6 +106,7 @@ async def _attach_change_blocks(
         revspec=revspec,
         working_tree=result.working_tree,
         owned_excludes=result.owned_excludes,
+        detail=tests_detail,
     )
     patch_changed, patch_error, patch_label, patch_revspec = await _push_change(
         str(ctx.path),
@@ -151,6 +156,10 @@ async def _attach_branch_blocks(
     return await _independent_changes_block(ctx, changed, collector, revspec)
 
 
+#: ``_meta`` keys a cached payload keeps; the rest is rebuilt on every serve.
+_CARRIED_META = frozenset({"omitted", "recovery_unavailable"})
+
+
 @mcp.tool(
     surface_order=60,
     artifact_type="change_risk",
@@ -178,7 +187,7 @@ async def get_change_risk(
     were skipped. ``risk_percentile`` and ``diff_shape`` measure diff size
     only, not danger.
 
-    ``impacted_tests`` is the ``impacted-tests`` selection; read ``run_all``.
+    ``impacted_tests`` is the ``impacted-tests`` selection; read ``status``.
     ``patch_coverage`` is the share of changed executable lines stored coverage
     ran; ``hints`` name tests to extend. ``fix_history`` is the changed files'
     bug-fix record, ``overlap`` the past fixes on these exact lines,
@@ -195,7 +204,7 @@ async def get_change_risk(
             comma-separated string, e.g. ``"src/api/,src/db/"``. Omit for all.
         baseline: Recent commits sampled for percentile ranking; 0 disables it.
         include: ``"findings"``, ``"diagnostics"`` (raw mechanics),
-            ``"scales"`` (units, tercile) or ``"evidence"`` (checklist).
+            ``"scales"``, ``"evidence"`` or ``"tests"`` (why each runs).
         finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
@@ -203,6 +212,13 @@ async def get_change_risk(
     ctx = await _pkg._resolve_repo_context(repo)
     started = time.perf_counter()
     includes = _path_patterns(include_paths)
+    key = await _cache.cache_key(ctx, revspec, extensions, exclude_patterns, includes, baseline)
+    hit = _cache.lookup(key)
+    if hit is not None and finding_id is not None:
+        return _drill_down({"ref": hit.ref}, hit.delta, finding_id, revspec)
+    stored = hit.payloads.get(_cache.payload_key(include)) if hit is not None else None
+    if stored is not None:
+        return await _served(ctx, stored, started)
     result, error = await _score_change(
         ctx.path, revspec, extensions, exclude_patterns, includes, baseline
     )
@@ -255,6 +271,7 @@ async def get_change_risk(
                 (changed, changed_error),
                 collector,
                 includes,
+                tests_detail="tests" in include_set,
             )
         independent = await _attach_branch_blocks(
             ctx, payload, changed, collector, revspec, finding_id
@@ -265,6 +282,7 @@ async def get_change_risk(
         raise
     delta = await delta_task
     await _attach_health_references(ctx, delta)
+    scored_entry = _cache.remember(key, payload["ref"], delta)
     if finding_id is not None:
         return _drill_down(payload, delta, finding_id, revspec)
     payload["diff_shape"] = _diff_shape_sentence(payload, diagnostics)
@@ -300,7 +318,30 @@ async def get_change_risk(
     )
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
+    if scored_entry is not None:
+        scored_entry.payloads[_cache.payload_key(include)] = (
+            copy.deepcopy(payload),
+            sorted(changed) or None,
+        )
     return payload
+
+
+async def _served(ctx: Any, stored: tuple[dict, list[str] | None], started: float) -> dict:
+    """A cached payload with its ``_meta`` rebuilt, since freshness reads the live checkout."""
+    payload, targets = stored
+    out = copy.deepcopy(payload)
+    # Omission refs belong to the stored blocks, so they carry over.
+    kept = {k: v for k, v in out.get("_meta", {}).items() if k in _CARRIED_META}
+    out["_meta"] = {
+        **_pkg._build_meta(
+            timing_ms=(time.perf_counter() - started) * 1000,
+            repository=await _repository(ctx),
+            targets=targets,
+            extra={"source": "live_git", "cached": True},
+        ),
+        **kept,
+    }
+    return out
 
 
 async def _nothing_to_score(ctx: Any, ref: str, scored: dict[str, Any], started: float) -> dict:

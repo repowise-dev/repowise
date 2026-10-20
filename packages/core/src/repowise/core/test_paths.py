@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from .dotnet_test_projects import DotnetTestProjects
+    from .phpunit_roots import PhpunitRoots
     from .pytest_roots import PytestRoots
 
 # Directory segments that mark every file beneath them as test material,
@@ -423,6 +424,7 @@ def _classify(
     language: str | None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
@@ -455,8 +457,13 @@ def _classify(
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
 
-    # A test name outside a test directory still needs pytest to collect it.
-    needs_test_dir = not named_test or _pytest_skips(path, filename, roots)
+    # A test name outside a test directory still needs pytest to collect it,
+    # or PHPUnit config not to keep it out of collection.
+    needs_test_dir = (
+        not named_test
+        or _pytest_skips(path, filename, roots)
+        or _phpunit_skips(path, filename, phpunit_roots)
+    )
     if (
         needs_test_dir
         and not _is_test_dir(segments, original_segments, filename, language)
@@ -469,6 +476,15 @@ def _classify(
     if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
         return "support"
     return "test"
+
+
+def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool:
+    """Whether PHPUnit's config keeps a test-named PHP file out of collection."""
+    return (
+        roots is not None
+        and PurePosixPath(filename).suffix.lower() == ".php"
+        and roots.collects(path.replace("\\", "/")) is False
+    )
 
 
 def _dotnet_project_collects(
@@ -496,6 +512,7 @@ def is_test_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """Whether *path* is a test.
 
@@ -504,10 +521,11 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name. Pass
-    *dotnet_projects* to recognize C# files governed by a test project.
+    *roots* to let pytest's config overrule a test-shaped Python name, pass
+    *dotnet_projects* to recognize C# files governed by a test project, and
+    pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
     """
-    return _classify(path, language, roots, dotnet_projects) == "test"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots) == "test"
 
 
 def is_test_support_path(
@@ -515,6 +533,7 @@ def is_test_support_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
@@ -522,7 +541,7 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, dotnet_projects) == "support"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots) == "support"
 
 
 def is_test_related_path(
@@ -530,6 +549,7 @@ def is_test_related_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
 
@@ -538,8 +558,7 @@ def is_test_related_path(
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
-    return _classify(path, language, roots, dotnet_projects) != ""
-
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots) != ""
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:

@@ -132,7 +132,6 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "framework_edges/micronaut.py": 2,
     _PREFIX + "framework_edges/spring.py": 4,
     _PREFIX + "parser_helpers.py": 1,
-    _PREFIX + "languages/go_interface_satisfaction.py": 1,
 }
 
 # Builtin-type lists are language identity data and belong on the spec beside
