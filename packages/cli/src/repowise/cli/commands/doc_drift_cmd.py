@@ -511,8 +511,8 @@ def doc_drift_command(
         raise click.UsageError("--baseline and --write-baseline require --check.")
     if since is not None and not check:
         raise click.UsageError("--since requires --check.")
-    if fail_on_growth and baseline_path is None:
-        raise click.UsageError("--fail-on-baseline-growth needs --baseline.")
+    if fail_on_growth and (baseline_path is None or write_baseline_path is not None):
+        raise click.UsageError("--fail-on-baseline-growth needs --baseline, not --write-baseline.")
     if since is not None and write_baseline_path:
         raise click.UsageError("--write-baseline records every finding; drop --since.")
     root = _repo_path(path, repo_alias, no_workspace, fmt)

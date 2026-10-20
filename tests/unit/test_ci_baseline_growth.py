@@ -83,6 +83,18 @@ def test_the_checkout_is_compared_with_the_merge_base(repo):
     assert grown == _entries("c")
 
 
+def test_a_root_below_the_git_toplevel_reads_its_own_baseline(repo):
+    package = repo / "pkg"
+    package.mkdir()
+    (package / "baseline.json").write_text(_doc("a"), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "package baseline")
+    _git(repo, "switch", "-qc", "feature")
+    (package / "baseline.json").write_text(_doc("a", "n"), encoding="utf-8")
+    grown = growth_since_base(package, package / "baseline.json", "main...HEAD")
+    assert grown == _entries("n")
+
+
 def test_a_baseline_new_in_the_change_is_not_growth(repo):
     _git(repo, "switch", "-qc", "feature")
     _commit_baseline(repo, _doc("a"))

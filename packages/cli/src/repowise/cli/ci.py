@@ -150,7 +150,8 @@ def baseline_growth(root: Path, path: Path, revspec: str | None) -> list[dict]:
         )
     try:
         # A resolved commit, so a miss is the file the base lacks, not an unknown rev.
-        read = cat_file_batch(str(root), [f"{base}:{relative}"], check=True)
+        # ``./`` resolves against *root*, which may sit below the git toplevel.
+        read = cat_file_batch(str(root), [f"{base}:./{relative}"], check=True)
         head = path.read_bytes()
     except (subprocess.SubprocessError, OSError) as exc:
         raise CannotEvaluateError("git_failed", f"Could not read the baseline: {exc}") from exc

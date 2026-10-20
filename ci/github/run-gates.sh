@@ -28,7 +28,7 @@ done
 # the target branch; risk also ranks it against recent commits. Baseline growth
 # reads the doc-drift baseline at the change's base.
 growth=()
-[[ "$FAIL_ON_BASELINE_GROWTH" == "true" ]] && growth=(--fail-on-baseline-growth)
+[[ "${FAIL_ON_BASELINE_GROWTH:-}" == "true" ]] && growth=(--fail-on-baseline-growth)
 if wants coverage || wants security || wants risk   || { wants doc-drift && [[ -n "$DOC_DRIFT_BASELINE" && ${#growth[@]} -gt 0 ]]; }; then
   here=${0//\\//}
   source "${here%/*}/fetch-base.sh"

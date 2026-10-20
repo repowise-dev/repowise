@@ -444,3 +444,10 @@ def test_baseline_growth_without_a_baseline_is_refused(monkeypatch, tmp_path):
     result = _invoke(monkeypatch, tmp_path, [], ["--fail-on-baseline-growth"])
     assert result.exit_code == 2
     assert "needs --baseline" in result.output
+
+
+def test_baseline_growth_refuses_write_baseline(monkeypatch, tmp_path):
+    args = ["--baseline", "b.json", "--write-baseline", "c.json", "--fail-on-baseline-growth"]
+    result = _invoke(monkeypatch, tmp_path, [], args)
+    assert result.exit_code == 2
+    assert "not --write-baseline" in result.output

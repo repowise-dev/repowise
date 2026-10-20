@@ -306,8 +306,8 @@ def security_check(
     """
     if staged and revspec:
         raise click.UsageError("--staged checks the staged changes; drop REVSPEC.")
-    if fail_on_growth and baseline_path is None:
-        raise click.UsageError("--fail-on-baseline-growth needs --baseline.")
+    if fail_on_growth and (baseline_path is None or write_baseline_path is not None):
+        raise click.UsageError("--fail-on-baseline-growth needs --baseline, not --write-baseline.")
     if fmt != "table":
         silence_logs_for_machine_output_until_close()
     try:
