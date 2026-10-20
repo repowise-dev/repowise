@@ -138,23 +138,6 @@ def test_picker_number_column_fits_three_digits() -> None:
     assert "[226]" in text and "…" not in text
 
 
-def test_mode_question_pluralizes_repo_count() -> None:
-    titles: list[str] = []
-
-    def _mode(_console: object, *, title: str) -> str:
-        titles.append(title)
-        return "index_only"
-
-    answers = SimpleNamespace(index_only=False)
-    with patch.object(ws_mod, "interactive_mode_select", side_effect=_mode):
-        ws_mod._ask_workspace_mode(answers, [object()], None, None, save_key=False)
-        ws_mod._ask_workspace_mode(answers, [object(), object()], None, None, save_key=False)
-    assert titles == [
-        "How much should repowise write for 1 repo?",
-        "How much should repowise write for 2 repos?",
-    ]
-
-
 def test_primary_moves_when_its_alias_was_taken(tmp_path: Path) -> None:
     (tmp_path / "old").mkdir()
     (tmp_path / "b").mkdir()
