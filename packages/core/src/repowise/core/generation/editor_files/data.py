@@ -157,7 +157,11 @@ class EditorFileData:
         upgrade = scope.get("upgrade") if isinstance(scope.get("upgrade"), dict) else {}
         gaps = []
         if self.keyless:
-            gaps.append("no model (template prose, full-text search)")
+            # The CLI's mode names (cli/ui/mode_names.py), which core cannot import.
+            if scope.get("content_provenance") == "none":
+                gaps.append("Index only (no documentation, full-text search)")
+            else:
+                gaps.append("Built from code (no model, full-text search)")
         if scope.get("git_tier") == "essential":
             gaps.append("essential Git history only")
         if self.upgrade_pending:
@@ -168,7 +172,7 @@ class EditorFileData:
     def upgrade_pending(self) -> bool:
         upgrade = self.index_scope.get("upgrade")
         status = upgrade.get("status") if isinstance(upgrade, dict) else None
-        # `--full` needs a key, so a keyless index is never told to continue one.
+        # A keyless index gets its next command from the keyless bullet instead.
         return status in ("pending", "resumable", "failed") and not self.keyless
 
     @property
