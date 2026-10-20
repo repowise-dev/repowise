@@ -34,15 +34,9 @@ def mode_of(scope: Mapping[str, Any]) -> dict[str, Any]:
     key = scope.get("content_provenance") or "unknown"
     if key == "unknown" and scope.get("run_mode") == "fast":
         key = "none"
-    provider = scope.get("provider") if isinstance(scope.get("provider"), Mapping) else {}
-    model = provider.get("model")
-    # Ceiling: the CLI's naming table is not on this branch yet; read these
-    # labels from it once it is, so the two cannot drift.
-    if key in ("model", "mixed"):
-        label = f"Written by {model}" if model else "Written by a model"
-    else:
-        label = {"template": "Built from code", "none": "Index only"}.get(key, "Mode unknown")
-    return {"key": key, "label": label, "run_mode": scope.get("run_mode")}
+    from repowise.cli.ui.mode_names import mode_label
+
+    return {"key": key, "label": mode_label(scope), "run_mode": scope.get("run_mode")}
 
 
 def _stored_mode(repo_path: Path) -> dict[str, Any] | None:

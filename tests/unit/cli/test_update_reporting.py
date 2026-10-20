@@ -199,7 +199,7 @@ class TestCompletionPanels:
             git_files=12,
             elapsed=8.3,
         )
-        assert any("index-only update complete" in line for line in printed.lines)
+        assert any("Index updated" in line for line in printed.lines)
 
     def test_workspace_completion_renders(self, monkeypatch):
         printed = _capture(monkeypatch)

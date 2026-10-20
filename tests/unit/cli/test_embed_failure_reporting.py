@@ -49,7 +49,7 @@ def test_only_a_real_embedder_that_failed_is_an_error():
     assert "pip install --force-reinstall lancedb" in message
 
 
-def test_the_full_init_scope_marks_a_failed_embed_unavailable():
+def test_the_full_init_scope_marks_a_failed_embed_unavailable(tmp_path):
     from repowise.cli.commands.init_cmd.persistence import _stamp_full_init_scope
 
     def _stamp(failed: int) -> dict:
@@ -67,6 +67,7 @@ def test_the_full_init_scope_marks_a_failed_embed_unavailable():
             resolved_commit_limit=10,
             max_file_pages=None,
             embedder_name_resolved="openai",
+            repo_path=tmp_path,
         )
         return state["index_scope"]["search"]
 
@@ -76,7 +77,8 @@ def test_the_full_init_scope_marks_a_failed_embed_unavailable():
         "next_command": None,
     }
     assert _stamp(3)["semantic"] == "unavailable"
-    assert _stamp(3)["next_command"] == "repowise reindex"
+    # The embedder that failed is the one to retry.
+    assert _stamp(3)["next_command"] == "repowise reindex --embedder openai"
 
 
 def test_run_repo_generation_records_the_failed_count(tmp_path, monkeypatch):
@@ -265,7 +267,7 @@ def test_update_marks_semantic_unavailable_and_fails(tmp_path):
 
     state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert state["index_scope"]["search"]["semantic"] == "unavailable"
-    assert state["index_scope"]["search"]["next_command"] == "repowise reindex"
+    assert state["index_scope"]["search"]["next_command"] == "repowise reindex --embedder openai"
     emitter.error.assert_called_once()
 
 
@@ -470,4 +472,4 @@ def test_update_with_a_failing_store_exits_nonzero(tmp_path, monkeypatch, extra_
     assert "Embedding failed for" in " ".join(result.output.split())
     state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert state["index_scope"]["search"]["semantic"] == "unavailable"
-    assert state["index_scope"]["search"]["next_command"] == "repowise reindex"
+    assert state["index_scope"]["search"]["next_command"] == "repowise reindex --embedder ollama"

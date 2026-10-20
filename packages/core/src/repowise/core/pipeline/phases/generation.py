@@ -287,8 +287,8 @@ async def run_generation(
         )
         selection_out["omitted"] = max(0, selection_out["eligible"] - selection_out["generated"])
 
-    # Onboarding summary — count generated slots and surface which ones
-    # were gated out so the user can see the curated collection's state.
+    # Which onboarding slots were made goes to the log; the screen has the
+    # onboarding row's page count.
     onboarding_generated = [p for p in generated_pages if p.page_type == "onboarding"]
     promoted_present = {
         p.metadata.get("onboarding_slot")
@@ -296,32 +296,14 @@ async def run_generation(
         if p.metadata.get("onboarding_slot")
         and p.page_type in ("repo_overview", "architecture_diagram")
     }
-    if progress:
-        if onboarding_generated or promoted_present:
-            # Imported here, not at module scope: importing the onboarding
-            # package registers every subkind, and this module is on the CLI's
-            # import path where that cost buys nothing.
-            from repowise.core.generation.onboarding.slots import ONBOARDING_ORDER
-
-            slots_made = sorted(
-                {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
-            )
-            progress.on_message(
-                "info",
-                # Derived rather than written down: the denominator was a
-                # literal 8 and went stale the first time a slot was added.
-                f"Onboarding: {len(slots_made)}/{len(ONBOARDING_ORDER)} slots"
-                f" — {', '.join(slots_made)}",
-            )
-        # Placeholders left behind by a failed provider call are in this list
-        # like any other page, and the run reports them as failures a line
-        # later. Counting the list here made the two lines disagree.
-        progress.on_message(
-            "info",
-            f"Generated {len(generated_pages) - count_stub_fallbacks(generated_pages)} pages",
-        )
-        # Surface the FAQ-weighted budget tilt when session demand shaped it
-        # (silent on fresh repos with no history — nothing to weight yet).
+    slots_made = sorted(
+        {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
+    )
+    logger.info(
+        "generation_done",
+        pages=len(generated_pages) - count_stub_fallbacks(generated_pages),
+        onboarding_slots=slots_made,
+    )
     _phase_done(progress, "onboarding")
     _phase_done(progress, "generation.llm")
     _phase_done(progress, "generation")

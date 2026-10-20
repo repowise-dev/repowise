@@ -142,9 +142,9 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 
 **Interactive modes.** Running a bare `repowise init` on a TTY (no `--provider`, `--prose`/`--no-prose`, or `--yes`) opens a menu:
 
-1. **Everything**, index + model-written docs. After picking a provider you can answer **"Customize?"** to tune any setting before the run.
-2. **Index only**, the same layers plus a wiki rendered from structure; no LLM, no key, no cost. Answer **"Customize indexing?"** to set exclude patterns, commit limit, skip-tests/infra, submodules, and fast mode.
-3. **Advanced**, full control. First choose **"Generate model-written wiki docs?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, tiering, only when model-written docs are on).
+1. **Written by a model**, index + documentation a model writes. After picking a provider you can answer **"Customize?"** to tune any setting before the run.
+2. **Built from code**, the same layers plus documentation built from code; no LLM, no key, no cost. Answer **"Customize indexing?"** to set exclude patterns, commit limit, skip-tests/infra, submodules, and fast mode.
+3. **Advanced**, full control. First choose **"Have a model write the documentation?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, tiering, only when model-written docs are on).
 
 **Page volume.** File pages are rendered from structure and cost no model tokens, so what bounds them buys wiki size, embedding calls and less retrieval noise, never spend. Two numbers govern it, both derived from the size distribution of real indexed repos. Above **2,000** documentable files (p95), an interactive advanced-mode run offers the top 2,000 by importance instead of one page per file, quoted in pages and megabytes; nothing is capped automatically at that size. Above **4,500** file pages (about 40 MB of file layer, near p99), every run holds the bucket to 4,500 and says so in its output, because that is where the tail is the difference between a wiki that publishes and one that does not. `--max-file-pages N` sets a cap directly and `--max-file-pages 0` refuses one; either way the answer is saved as `max_file_pages` in `config.yaml`, which `update --full` and `generate` honour. A hosted or scripted caller sets the same field with no terminal involved.
 
@@ -159,7 +159,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `edenai`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `mock` (default: auto-detect) |
-| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. Fill or refill that prose later with [`repowise generate`](#repowise-generate-path). |
+| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. `--no-prose` makes no model calls even when a key is set, so decision extraction from PRs, commit history and comments waits for a model run. Fill or refill that prose, and add those decisions, later with [`repowise generate`](#repowise-generate-path). |
 | `--index-only` | Deprecated hidden alias for `--no-prose`. |
 | `--docs` | Deprecated hidden alias: `--docs llm` == `--prose`, `--docs deterministic` == `--no-prose`. Prefer `--prose` / `--no-prose`. |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only, no per-file blame/co-change, no LLM docs, for very large repos; upgrade later with `update --full`) |
@@ -189,7 +189,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--dry-run` | Show the generation plan and cost estimate. Writes no wiki |
-| `--test-run` | Generate docs for only the top 10 files (by PageRank) |
+| `--test-run` | Write docs with the model for only the top 10 files (by PageRank). Not with `--no-prose` or `--mode fast` |
 | `--all` | In multi-repo mode, index every detected repo without prompting |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
 | `--progress` | `rich` (default): a live checklist in a terminal, one short line per step (at most 100 columns) anywhere else. `json`: one JSON event per line on stdout, ending with a summary line; see below. |
@@ -303,7 +303,7 @@ See [WORKTREES.md](../scale/WORKTREES.md).
 
 **First-time indexing:** `update --workspace` runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only, no LLM cost, and writes a state.json marker. Doc generation then follows on the next update once the repo has an index: pass `--docs` (or set its `docs_enabled`) and it regenerates pages like any other member.
 
-**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no model-written docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL using a resumable checkpoint, reuses the persisted graph, generates the missing prose, rebuilds full-text search, embeds pages when the resolved embedder is available, and recomputes health against FULL history. The command records the transition before work and checkpoints each completed stage; failure or cancellation leaves the prior scope truthful and a retryable upgrade instead of stamping the repository full early. Persisted provider/model/embedder choices are reused when valid, overrides remain explicit, and estimated model cost is shown before paid generation. If embedding is unavailable the completed scope says so and gives the exact recovery command, `repowise reindex`; it never implies semantic search was built. Single-repo only; it errors in workspace mode.
+**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no model-written docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL using a resumable checkpoint, reuses the persisted graph, builds the missing documentation, rebuilds full-text search, embeds pages when the resolved embedder is available, and recomputes health against FULL history. The command records the transition before work and checkpoints each completed stage; failure or cancellation leaves the prior scope truthful and a retryable upgrade instead of stamping the repository full early. Persisted provider/model/embedder choices are reused when valid, overrides remain explicit, and estimated model cost is shown before paid generation. If embedding is unavailable the completed scope says so and gives the exact recovery command, `repowise reindex`; it never implies semantic search was built. It needs no key: with no model configured the documentation is built from code, with no model calls and no spend, and the embedder stays the free one unless you chose another. With a model configured, the model writes it. One repo at a time; in a workspace, pass `--repo <alias>`.
 
 `state.json:index_scope` is the canonical machine-readable description used by `status --format json`, `/api/repos`, generated agent guidance, and MCP `_meta.index_scope`. It separately records run mode, content provenance (`none`, `template`, or `model`), Git tier, configured commit cap, achieved Git-history coverage, configured/effective file-page caps, eligible/generated/omitted file-page counts, unavailable/skipped analysis, search availability, provider choices, and upgrade state. Older indexes project missing facts as `unknown`/`null`; a configured cap is never reported as achieved coverage and a missing analysis result is never reported as a clean result.
 
@@ -345,6 +345,12 @@ the onboarding collection. Every structural page (file, symbol, API, infra,
 cycle) is rendered from structure and refreshes on `repowise update`, so
 naming one with `--page` is an actionable error rather than a silent LLM
 re-render.
+
+**Decisions a keyless index skipped.** An index built without a model (no key,
+or `--no-prose`) cannot read decisions from PRs, git history or code comments.
+The first `generate` (or `update --full`) with a model runs those lanes too, and
+the cost estimate prices them on their own line. Later runs skip them, and
+`repowise status` shows a Decisions row while they are still pending.
 
 **Interactive chooser.** Run `repowise generate` with no selection flag on a
 terminal and it prints the wiki's state (written / unwritten / stale on the

@@ -114,7 +114,7 @@ def test_run_repo_generation_reports_failures(tmp_path, monkeypatch):
     # Deliberately not "due to provider failures": the commonest cause is this
     # run's own artifact check rejecting the model's text, and naming the
     # provider sent people to check a key that was working.
-    assert "The wiki is incomplete: some pages were not written." in output
+    assert "The documentation is incomplete: some pages were not written." in output
     assert "provider failures" not in output
     assert "repowise init --resume" in output
 
@@ -182,7 +182,7 @@ def test_recorded_cost_includes_the_knowledge_graph_enrichment(tmp_path, monkeyp
 
 @pytest.mark.parametrize("verbose_flag", [True, False])
 def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
-    """When no pages fail, run_repo_generation prints success summary only when verbose, stays silent otherwise."""
+    """A clean run prints nothing here: the "Generating pages" done row carries the count."""
     jobs_dir = tmp_path / ".repowise" / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -235,11 +235,8 @@ def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
     assert len(pages) == 1
     output = "\n".join(printed_lines)
     assert "failed" not in output
-    assert "The wiki is incomplete" not in output
-    if verbose_flag:
-        assert "Generated [bold]1[/bold] pages" in output
-    else:
-        assert output.strip() == ""
+    assert "The documentation is incomplete" not in output
+    assert "Generated" not in output
 
 
 def test_show_completion_panel_with_failures(monkeypatch):
@@ -286,7 +283,7 @@ def test_show_completion_panel_with_failures(monkeypatch):
 
     assert printed_panels
     metrics_dict = dict(printed_panels[0])
-    assert metrics_dict.get("Pages generated") == "1 (2 failed)"
+    assert metrics_dict.get("Documentation") == "1 page (2 failed)"
 
 
 def _completion_result(pages: list) -> SimpleNamespace:
@@ -462,7 +459,7 @@ class TestStubsAreNotCountedTwice:
     def test_a_clean_run_is_unaffected(self, tmp_path, monkeypatch):
         output = self._run(tmp_path, monkeypatch, [_page("module_page:a")], [])
 
-        assert "Generated [bold]1[/bold] pages" in output
+        assert "Generated" not in output
         assert "failed" not in output
 
 
@@ -489,7 +486,7 @@ def test_completion_panel_excludes_placeholders_from_the_page_count(monkeypatch)
         provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
     )
 
-    assert dict(printed_panels[0]).get("Pages generated") == "1 (1 failed)"
+    assert dict(printed_panels[0]).get("Documentation") == "1 page (1 failed)"
 
 
 def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypatch):

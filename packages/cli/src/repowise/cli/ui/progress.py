@@ -115,7 +115,7 @@ _PHASE_LABELS: dict[str, str] = {
     "knowledge_graph.enrich": "  ↳ Naming layers and building the tour",
     "generation": "Generating pages…",
     "generation.llm": "  ↳ Writing overview and subsystem pages",
-    "onboarding": "Curating onboarding docs…",
+    "onboarding": "  ↳ Curating onboarding docs",
     "embedding": "Embedding pages for semantic search…",
     "vector_store": "Opening the search index…",
     "persist": "Saving to the database…",
@@ -134,6 +134,8 @@ _PHASE_UNITS: dict[str, str] = {
     "graph.heritage": "files",
     "graph.calls": "files",
     "graph.type_refs": "files",
+    "graph.metrics": "algorithms",
+    "graph.communities": "algorithms",
     "git": "files",
     "co_change": "commits",
     "dead_code": "checks",
@@ -145,6 +147,15 @@ _PHASE_UNITS: dict[str, str] = {
     "onboarding": "pages",
     "embedding": "pages",
 }
+
+# A step whose work is split across live rows: its done row counts its parts
+# too, so the step reports one total. Generation draws free and paid pages as
+# separate bars (one bar of mostly free pages reads as frozen on the paid ones).
+_PHASE_PARTS: dict[str, tuple[str, ...]] = {"generation": ("generation.llm",)}
+
+# Steps whose announced total is an upper bound (a page may gate-skip), so the
+# done row counts the items actually finished rather than the total.
+_ESTIMATED_TOTALS = frozenset({"generation", "generation.llm", "onboarding"})
 
 
 class RichProgressCallback:
@@ -173,6 +184,8 @@ class RichProgressCallback:
         self._console = console
         self._tasks: dict[str, Any] = {}
         self._done: set[str] = set()
+        # Items each finished step reported in its done row.
+        self._done_counts: dict[str, float] = {}
         # Every warning this callback rendered, in order. Printing is enough
         # for a human watching, but agent-driven mode is the primary path and
         # nobody is watching there: a run that degraded and a run that did not
@@ -229,6 +242,7 @@ class RichProgressCallback:
     def on_phase_start(self, phase: str, total: int | None) -> None:
         label = _PHASE_LABELS.get(phase, f"{phase}…")
         self._done.discard(phase)
+        self._done_counts.pop(phase, None)
         # If phase already has a task, update its total and make visible
         if phase in self._tasks:
             self._progress.update(self._tasks[phase], total=total, visible=True)
@@ -266,6 +280,7 @@ class RichProgressCallback:
         self._done.add(phase)
         try:
             task = next((t for t in self._progress.tasks if t.id == task_id), None)
+            finished = task.completed if task is not None else 0
             if task is not None and task.total is not None:
                 self._progress.update(task_id, completed=task.total, visible=False)
             else:
@@ -274,11 +289,14 @@ class RichProgressCallback:
             return
         if task is None:
             return
+        count = finished if phase in _ESTIMATED_TOTALS else (task.total or finished)
+        count += sum(self._done_counts.get(p, 0) for p in _PHASE_PARTS.get(phase, ()))
+        self._done_counts[phase] = count
         line = checklist.done_line(
             checklist.FinishedStep(
                 label=str(task.description),
-                completed=task.completed,
-                total=task.total,
+                completed=count,
+                total=None,
                 unit=str(task.fields.get("unit", "")),
                 elapsed=task.elapsed,
             )

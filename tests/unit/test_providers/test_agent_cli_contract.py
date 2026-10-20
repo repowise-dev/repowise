@@ -83,7 +83,8 @@ BACKENDS = [
         tokens=(140, 40, 30),
         books_cost=True,
         repo_flag=None,
-        env=None,
+        # A filtered copy of the parent env (nested-session markers removed).
+        env={},
     ),
     Backend(
         CodexCliProvider,

@@ -23,6 +23,7 @@ from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.update_lock import init_in_progress
 
 from ._agent_summary import init_output
 from ._exit import exit_interrupted
@@ -47,7 +48,6 @@ from ._prepare import (
     _editor_options,
     _interactive_gate,
     _prepare_single_repo,
-    _resolve_decision_provider,
     _resolve_provider_stage,
     _resolve_settings,
     _start_run,
@@ -60,7 +60,6 @@ from ._questions import (
     _offer_fast_mode,
 )
 from ._seed import delegate_to_seeded_update
-from .reporting import show_analysis_summary
 from .workspace import _workspace_init
 
 __all__ = [
@@ -77,7 +76,6 @@ __all__ = [
     "_prepare_single_repo",
     "_print_structural_plan",
     "_render_template_wiki",
-    "_resolve_decision_provider",
     "_resolve_provider_stage",
     "_resolve_settings",
     "_run_deterministic_generation_phase",
@@ -159,7 +157,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=False,
     # "No wiki", not "writes nothing": the pipeline still warms its parse and
     # duplication caches, which are derived data.
-    help="Show the generation plan and cost estimate. Writes no wiki.",
+    help="Show the generation plan and cost estimate. Writes no documentation.",
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip cost confirmation prompt.")
 @click.option(
@@ -188,18 +186,23 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "--test-run",
     is_flag=True,
     default=False,
-    help="Limit generation to top 10 files by PageRank for quick validation.",
+    help=(
+        "Limit the model run to the top 10 files by PageRank for quick validation. "
+        "Needs a model, so not with --no-prose or --mode fast."
+    ),
 )
 @click.option(
     "--prose/--no-prose",
     "prose",
     default=None,
     help=(
-        "Write the subsystem (concept) pages as model prose (needs a key), or "
-        "render the whole wiki from structure with no model and no spend. Every "
-        "other page is structural either way. Default: prose when a key is "
-        "available. With --no-prose, an explicit --provider or API key still "
-        "enables model-based decision extraction. Use --mode fast for no wiki at all."
+        "Documentation written by a model (--prose, needs a key) or built from "
+        "code (--no-prose). Only the subsystem (concept) pages differ; every other "
+        "page is built from code either way. Default: written by a model when a key "
+        "is available. --no-prose makes no model calls, whatever keys are set: it "
+        "skips the written subsystem pages and model decision extraction from PRs, "
+        "commit history and code comments. Run repowise generate later to add both. "
+        "Use --mode fast for an index only, with no documentation."
     ),
 )
 @click.option(
@@ -223,9 +226,9 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     type=click.Choice(["standard", "fast"]),
     default="standard",
     help=(
-        "Pipeline depth. 'fast' indexes graph + essential git only (no per-file "
-        "blame, no co-change, no LLM docs) for a quick first pass on very large "
-        "repos; backfill the rest later. Default: standard."
+        "Pipeline depth. 'fast' is an index only: graph + essential git (no "
+        "per-file blame, no co-change, no documentation) for a quick first pass "
+        "on very large repos; backfill the rest later. Default: standard."
     ),
 )
 @click.option(
@@ -405,7 +408,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=None,
     metavar="CODE",
     help=(
-        "Output language for generated wiki pages (e.g. en, zh, ru, hi). "
+        "Output language for the documentation (e.g. en, zh, ru, hi). "
         "Code, file paths, and symbol names stay untranslated. Saved to "
         "config so `update` keeps the language. Default: en."
     ),
@@ -454,13 +457,13 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     ),
 )
 def init_command(**params: Any) -> None:
-    """Generate wiki documentation for a codebase.
+    """Index a codebase and build its documentation.
 
     PATH defaults to the current directory.
-    Use --no-prose to render the whole wiki from structure with no model and no
-    key; --prose writes the subsystem pages with a model. Every other page is
-    structural either way.
-    Use --mode fast for a quick graph + essential-git index of a very large repo.
+    --prose: documentation written by a model (needs a key).
+    --no-prose: documentation built from code, no model and no key.
+    Only the subsystem pages differ; every other page is built from code.
+    --mode fast: index only (graph + essential git), for a very large repo.
     """
     from repowise.core.cancellation import PipelineCancelled
 
@@ -498,6 +501,11 @@ def _run_init(opts: InitOptions) -> None:
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
 
+    with init_in_progress(repo_path):
+        _run_single_repo(opts, repo_path, start)
+
+
+def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     run = _prepare_single_repo(opts, repo_path, start)
     if run is None:
         return
@@ -506,7 +514,6 @@ def _run_init(opts: InitOptions) -> None:
     if run.run_warnings:
         run.gaps.append(f"{len(run.run_warnings):,} warning(s) while indexing (see above)")
 
-    show_analysis_summary(run.result)
     if _generate(run):
         return
 

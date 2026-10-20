@@ -13,6 +13,7 @@ from repowise.cli.helpers import (
     console,
     get_head_commit,
     head_commit_ts,
+    load_config,
     load_state,
     run_async,
     save_config_partial,
@@ -22,15 +23,18 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.cli.ui import OK, print_stage, progress_steps
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 from repowise.core.repo_config import config_dependency_fingerprints
 
+from ._ingest import decision_llm_client
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from ._options import InitRun
 from .persistence import (
     apply_git_history_coverage_state,
     git_tier_for_run_mode,
+    keep_prior_documentation,
     persist_result,
     save_full_state_and_config,
 )
@@ -102,9 +106,17 @@ def save_run_config(run: InitRun) -> None:
 
 def register_clients(run: InitRun) -> None:
     """Global client registration, then the workspace's distill verdict."""
-    if run.opts.editor_setup:
+    from repowise.cli.editor_integrations.global_mcp import confirm_global_mcp
+
+    no_editor_setup = not run.opts.editor_setup
+    if confirm_global_mcp(
+        console,
+        run.repo_path,
+        yes=run.opts.yes,
+        no_editor_setup=no_editor_setup,
+    ):
         run.mcp_repointed = _mcp_entry_moves(run.repo_path)
-    register_editor_clients(console, run.repo_path, no_editor_setup=not run.opts.editor_setup)
+        register_editor_clients(console, run.repo_path, no_editor_setup=no_editor_setup)
 
     # Before the config fingerprint: left unwritten, the first update writes it,
     # sees a fingerprint change and re-scores every file.
@@ -114,14 +126,15 @@ def register_clients(run: InitRun) -> None:
 
 
 def _mcp_entry_moves(repo_path: Path) -> bool:
-    """Whether registering repoints an existing global repowise MCP entry. Read-only.
+    """Whether registering writes a new or moved global repowise MCP entry. Read-only.
 
-    Unguarded: the probe already treats an unreadable config as absent, and
-    registration runs the same probe unguarded right after.
+    The consent gate's own probe, so the two cannot disagree; an unreadable
+    config reads as no move, as it does there.
     """
-    from repowise.cli.editor_integrations.claude_config import describe_mcp_registration_change
+    from repowise.cli.editor_integrations.global_mcp import _probe
 
-    return describe_mcp_registration_change(repo_path) is not None
+    target = _probe(repo_path)
+    return target is not None and (target.repoints or target.command_changes)
 
 
 def _docs_mode(run: InitRun) -> str:
@@ -133,8 +146,27 @@ def _docs_mode(run: InitRun) -> str:
     return "deterministic"
 
 
+def _search_scope(run: InitRun) -> dict[str, Any]:
+    """The search leg of the scope: what works now, and the command that adds the rest."""
+    from repowise.cli.providers import semantic_search_command, semantic_search_status
+
+    result = run.result
+    if not result.generated_pages:
+        # Fast mode has no pages for reindex to embed.
+        return {"full_text": "unavailable", "semantic": "unavailable", "next_command": None}
+    semantic = semantic_search_status(run.scope_embedder, getattr(result, "embed_failed_pages", 0))
+    return {
+        "full_text": "available",
+        "semantic": semantic,
+        "next_command": (
+            semantic_search_command(run.repo_path, run.scope_embedder)
+            if semantic == "unavailable"
+            else None
+        ),
+    }
+
+
 def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> None:
-    from repowise.cli.providers import semantic_search_status
     from repowise.core.generation.selection import count_documentable_files
     from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
 
@@ -156,6 +188,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=run.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
+        test_run=run.opts.test_run and docs_mode == "llm",
         file_pages={
             "configured_cap": run.max_file_pages,
             **(
@@ -176,15 +209,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
             "reused": False,
             "model_cost_possible": docs_mode == "llm",
         },
-        search={
-            "full_text": "available" if result.generated_pages else "unavailable",
-            "semantic": (
-                semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
-                if result.generated_pages
-                else "unavailable"
-            ),
-            "next_command": "repowise reindex" if result.generated_pages else None,
-        },
+        search=_search_scope(run),
         upgrade={
             "status": "pending" if docs_mode != "llm" else "not_applicable",
             "retryable": docs_mode != "llm",
@@ -204,6 +229,7 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     result = run.result
     run_mode = run.opts.run_mode
     head = get_head_commit(repo_path)
+    prior_state = load_state(repo_path)
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
     docs_mode = _docs_mode(run)
@@ -214,6 +240,10 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
     _stamp_scope(run, base_state, docs_mode)
+    record_decision_lanes(
+        base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
+    )
+    keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings
@@ -287,6 +317,19 @@ def write_run_state(run: InitRun) -> None:
             include_submodules=opts.include_submodules,
             save_key=opts.save_key,
         )
+        _stamp_test_run(run)
+
+
+def _stamp_test_run(run: InitRun) -> None:
+    """Record ``--test-run`` on the model path, which re-reads state from disk.
+
+    Stamped every run, so a whole-repo init clears an earlier sample's mark.
+    """
+    from repowise.core.index_scope import stamp_index_scope
+
+    state = load_state(run.repo_path)
+    stamp_index_scope(state, load_config(run.repo_path), test_run=run.opts.test_run)
+    save_state(run.repo_path, state, full_index=True)
 
 
 def _record_init_outcome(run: InitRun) -> None:
