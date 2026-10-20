@@ -70,9 +70,8 @@ def _ask_mode(run: InitRun) -> None:
 def _ask_provider(run: InitRun, scan_info: Any = None) -> None:
     """Provider selection, only when docs will be generated.
 
-    Index-only runs auto-detect a decision-extraction provider later without
-    prompting. The scan's file count sizes the estimate shown beside a
-    subscription CLI, from the same pre-index plan the server quotes.
+    The scan's file count sizes the estimate shown beside a subscription CLI,
+    from the same pre-index plan the server quotes.
     """
     from repowise.core.cost_estimator import approximate_generation_plan
 

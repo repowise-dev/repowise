@@ -327,6 +327,45 @@ def git_tier_for_run_mode(run_mode: str) -> str:
     return "essential" if run_mode == "fast" else "full"
 
 
+#: The ``index_scope`` sections that describe documentation.
+_DOCS_SCOPE_KEYS = ("content_provenance", "file_pages", "provider", "search")
+
+
+def keep_prior_documentation(
+    state: dict[str, Any], prior_state: dict[str, Any], run_mode: str
+) -> None:
+    """Restore the documentation stamps a fast run would otherwise clear from *state*.
+
+    Fast mode writes and removes no pages, so over an index that has them the
+    pages stay and so must what state says about them. The git tier stays
+    this run's: fast re-indexed git at the essential tier.
+    """
+    from repowise.core.docs_mode import resolve_docs_mode
+
+    prior_mode = resolve_docs_mode(prior_state)
+    if run_mode != "fast" or prior_mode == "none":
+        return
+    state.update(docs_mode_state_fields(prior_mode))
+    state["total_pages"] = prior_state.get("total_pages", 0)
+    for key in ("provider", "model"):
+        if prior_state.get(key):
+            state[key] = prior_state[key]
+    _restore_docs_scope(state["index_scope"], prior_state, prior_mode)
+
+
+def _restore_docs_scope(scope: dict[str, Any], prior_state: dict[str, Any], prior_mode: str) -> None:
+    """Put the prior run's documentation sections back into this run's *scope*."""
+    from repowise.core.index_scope import resolve_index_scope
+
+    prior_scope = resolve_index_scope(prior_state)
+    for key in _DOCS_SCOPE_KEYS:
+        scope[key] = prior_scope[key]
+    if scope["content_provenance"] in ("none", "unknown"):
+        # A state older than index_scope records only the docs mode.
+        scope["content_provenance"] = "model" if prior_mode == "llm" else "template"
+    scope["analysis"]["skipped"] = [s for s in scope["analysis"]["skipped"] if s != "generation"]
+
+
 def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) -> str:
     """On ``--resume``, continue the git tier the prior run used.
 

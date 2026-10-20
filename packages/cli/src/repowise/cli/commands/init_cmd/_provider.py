@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from typing import Any
 
@@ -15,32 +14,14 @@ from repowise.cli.ui import OK, OWL_SPINNER, VALUE, WARN, print_index_only_intro
 
 from ._options import InitRun
 
-# Keys whose presence lets an index-only run pick a decision-extraction
-# provider without a --provider flag.
-_DECISION_KEY_VARS = (
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-)
-
-
-def decision_key_in_env() -> bool:
-    """Whether the environment holds a key a decision provider can use."""
-    return any(os.environ.get(k) for k in _DECISION_KEY_VARS)
-
 
 def announce_index_only(run: InitRun) -> None:
     """Tell the user this run builds the wiki from structure."""
     if run.is_interactive:
-        print_index_only_intro(console, has_provider=run.decision_provider is not None)
+        print_index_only_intro(console)
         return
     console.print(f"[bold]repowise index-only[/bold] — {run.repo_path}")
     console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
-    if run.decision_provider:
-        console.print(
-            f"Decision extraction provider: [{VALUE}]{run.decision_provider.provider_name}[/]"
-        )
 
 
 def _resolve_or_fall_back(run: InitRun) -> None:

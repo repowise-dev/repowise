@@ -26,7 +26,6 @@ from repowise.cli.helpers import (
     load_config,
     load_state,
     resolve_max_file_pages,
-    resolve_provider,
     resolve_reasoning,
 )
 from repowise.cli.providers import resolve_embedder
@@ -38,7 +37,6 @@ from repowise.core.generation.styles import resolve_style
 from ._options import InitOptions, InitRun
 from ._provider import (
     announce_index_only,
-    decision_key_in_env,
     note_subscription_cli,
     resolve_docs_provider,
 )
@@ -159,6 +157,15 @@ def _resolve_settings(run: InitRun) -> None:
     run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
 
 
+def _announce_kept_documentation(run: InitRun) -> None:
+    """Fast mode writes no pages, so documentation already here stays."""
+    if run.prior_docs_mode != "none":
+        console.print(
+            "[dim]Keeping the documentation this repo already has. "
+            "Fast mode rebuilds the index and leaves the pages as they are.[/dim]"
+        )
+
+
 def _confirm_wiki_overwrite(run: InitRun) -> bool:
     """Read the prior state; False when the user keeps a model-written wiki.
 
@@ -175,6 +182,9 @@ def _confirm_wiki_overwrite(run: InitRun) -> bool:
     run.first_index = not prior_state.get("last_sync_commit")
     run.prior_docs_mode = resolve_docs_mode(prior_state)
     opts = run.opts
+    if opts.run_mode == "fast":
+        _announce_kept_documentation(run)
+        return True
     if not opts.index_only or run.prior_docs_mode != "llm" or opts.force or opts.yes:
         return True
     console.print(
@@ -194,20 +204,19 @@ def _confirm_wiki_overwrite(run: InitRun) -> bool:
     return True
 
 
-def _resolve_decision_provider(run: InitRun) -> None:
-    """Index-only: a decision-extraction provider when one is named or keyed."""
-    opts = run.opts
-    try:
-        if opts.provider_name or decision_key_in_env():
-            run.decision_provider = resolve_provider(opts.provider_name, opts.model, run.repo_path)
-    except Exception:
-        pass
-
-
 def _resolve_provider_stage(run: InitRun) -> None:
-    """Which model this run calls: none, a decision extractor, or the docs model."""
+    """Which model this run calls: none for a structural run, else the docs model.
+
+    The one gate for ``--no-prose`` (and ``--mode fast``): no provider is
+    resolved, so nothing later in the run can call a model, whatever keys the
+    environment or stored config holds.
+    """
     if run.opts.index_only:
-        _resolve_decision_provider(run)
+        if run.opts.provider_name:
+            console.print(
+                f"[dim]--provider {run.opts.provider_name} is not used: this run "
+                "builds from code and makes no model calls.[/dim]"
+            )
         announce_index_only(run)
     else:
         resolve_docs_provider(run)
