@@ -389,7 +389,9 @@ Several reports merge: a line any of them ran counts as run. A coverage.py
 do not line up with the repository (a build directory, a container path), set
 `coverage.strip_prefix` or `coverage.path_prefix` in `.repowise/config.yaml`.
 The gate reports how many report paths matched the repository, and exits `2`
-when none did, so a wrong prefix never passes as zero.
+when none did, so a wrong prefix never passes as zero. When more than half did
+not match, it suggests the prefix to set; `repowise coverage add` then stores
+nothing unless `--allow-partial` is passed.
 
 The threshold can live in config instead of the workflow:
 

@@ -1405,7 +1405,14 @@ repowise coverage suggest-gates         # propose path-scoped gates for coverage
 | `--path` | Repo path (defaults to cwd / workspace primary) |
 | `--format` | Force a parser instead of auto-detecting: `lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco` |
 | `--strict` | Also exit non-zero when some report files did not map to the repo tree |
+| `--allow-partial` | Store the coverage even when more than half the report did not map to the repo tree; the rows are flagged partial |
 | `--verbose` / `-v` | Show debug logs while discovering and ingesting coverage |
+
+When more than half the report did not map to the repo tree, `add` stores
+nothing, exits `1`, and suggests the `coverage.strip_prefix` or
+`coverage.path_prefix` that would map it. `init` and `update` keep no coverage
+from such a report either, so an `update` that re-reads it clears a fragment
+stored with `--allow-partial`.
 
 Each `PATH` is a report path or a quoted glob, relative to cwd, as in
 `coverage check --report`; only when it matches nothing is it read as

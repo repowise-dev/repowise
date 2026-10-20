@@ -23,7 +23,7 @@ Two jobs that make ingested coverage *actually line up* with the repo:
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import chain
@@ -420,6 +420,11 @@ class ResolvedCoverage:
     # applied: with ``mapping_partial``, what makes two measurements comparable.
     report_formats: list[str] = field(default_factory=list)
     ignore: tuple[str, ...] = ()
+    # A partial mapping :func:`build_coverage_map` was not allowed to keep:
+    # ``files`` and ``coverage_map`` are empty, the diagnostics stay.
+    withheld: bool = False
+    # With ``mapping_partial``, the :func:`suggest_prefixes` answer (``None``: abstained).
+    suggested_prefixes: tuple[str, str] | None = None
 
     @property
     def matched(self) -> int:
@@ -998,14 +1003,81 @@ def resolve_reports(
     # (issue #1746), and it deliberately avoids a hard ratio on the matched
     # side so monorepos ingesting one package's report stay unflagged.
     # Ignored entries were dropped on purpose, so they count on neither side.
-    measured_count = report_file_count - result.ignored
-    if measured_count:
-        result.mapping_partial = result.matched * 2 < measured_count
+    result.mapping_partial = mostly_unmapped(result.matched, report_file_count - result.ignored)
+    if result.mapping_partial:
+        result.suggested_prefixes = suggest_prefixes(
+            result.unmatched + result.ambiguous, repo_keys, mapped=by_key
+        )
 
     for key, fc in by_key.items():
         result.coverage_map[key] = coverage_map_entry(fc, result.source_format)
     result.files = list(by_key.values())
     return result
+
+
+def mostly_unmapped(matched: int, measured: int) -> bool:
+    """Whether fewer than half of *measured* report files mapped: the ingest is a fragment.
+
+    A fragment is stored or scored only when the caller allows it
+    (``coverage add --allow-partial``); every other reader drops it.
+    """
+    return bool(measured) and matched * 2 < measured
+
+
+#: Unmapped report paths :func:`suggest_prefixes` looks at; enough to vote, cheap to scan.
+_SUGGEST_SAMPLE = 200
+
+
+def suggest_prefixes(
+    unmapped: Sequence[str], repo_keys: set[str], mapped: Iterable[str] = ()
+) -> tuple[str, str] | None:
+    """The ``(strip_prefix, path_prefix)`` that maps most *unmapped* report paths onto *repo_keys*.
+
+    Each path votes for every rewrite that turns it into an indexed key: drop
+    the leading segments before its longest shared tail with a key, prepend
+    that key's own leading segments. Either side may be ``""`` (nothing to
+    set). A tie in votes goes to the rewrite whose ``path_prefix`` holds more
+    of the *mapped* keys, the files the same report did resolve (a monorepo
+    package's report whose shared file names tie between packages).
+    ``None`` (abstain) unless one rewrite explains more than half the paths
+    and no other ranks as high.
+    """
+    sample = list(dict.fromkeys(normalize_report_path(p) for p in unmapped[:_SUGGEST_SAMPLE]))
+    suffix_index = _build_suffix_index(repo_keys)
+    votes: Counter[tuple[str, str]] = Counter()
+    for norm in sample:
+        segs = norm.split("/")
+        rewrites: set[tuple[str, str]] = set()
+        for key in suffix_index.get(segs[-1], ()):
+            key_segs = key.split("/")
+            tail = _common_run(reversed(segs), reversed(key_segs))
+            rewrites.add(("/".join(segs[:-tail]), "/".join(key_segs[:-tail])))
+        rewrites.discard(("", ""))
+        votes.update(rewrites)
+    mapped = list(mapped)
+
+    def rank(rewrite: tuple[str, str]) -> tuple[int, int]:
+        prefix = rewrite[1] + "/"
+        return votes[rewrite], sum(k.startswith(prefix) for k in mapped) if rewrite[1] else 0
+
+    ranked = sorted(votes, key=rank, reverse=True)
+    if not ranked or votes[ranked[0]] * 2 <= len(sample):
+        return None
+    if len(ranked) > 1 and rank(ranked[0]) == rank(ranked[1]):
+        return None
+    return ranked[0]
+
+
+def prefix_hint(suggested: tuple[str, str] | None) -> str:
+    """What to change so a partial mapping maps, worded for every surface alike."""
+    if suggested is None:
+        return "fix coverage.strip_prefix or coverage.path_prefix in .repowise/config.yaml"
+    named = [
+        f"{name}: {value}"
+        for name, value in zip(("coverage.strip_prefix", "coverage.path_prefix"), suggested, strict=True)
+        if value
+    ]
+    return f"set {' and '.join(named)} in .repowise/config.yaml"
 
 
 @dataclass
@@ -1034,6 +1106,13 @@ class ResolvedTestCoverage:
     @property
     def matched(self) -> int:
         return self.matched_exact + self.matched_suffix
+
+    @property
+    def mapping_partial(self) -> bool:
+        """:func:`mostly_unmapped` over distinct source files, as for the aggregate."""
+        mapped = len({r.file_path for r in self.records})
+        missed = len(set(self.unmatched)) + len(set(self.ambiguous))
+        return mostly_unmapped(mapped, mapped + missed)
 
 
 # Extensions that make a test-id prefix look like a real source path (rather
@@ -1125,6 +1204,7 @@ def build_coverage_map(
     path_prefix: str | None = None,
     report_prefixes: Mapping[Path, str | None] | None = None,
     ignore: Sequence[str] = (),
+    allow_partial: bool = False,
 ) -> tuple[ResolvedCoverage, list[tuple[Path, str]]]:
     """Read + parse + resolve coverage reports end-to-end.
 
@@ -1136,6 +1216,10 @@ def build_coverage_map(
     a ``coverage.paths`` mapping entry), overriding *path_prefix*. *ignore* is
     ``coverage.ignore``. A Go coverprofile's import paths are mapped back to
     the directories of the ``go.mod`` files on disk.
+
+    A partial mapping (:func:`mostly_unmapped`) keeps no coverage unless
+    *allow_partial*; it comes back ``withheld`` so nothing stores or scores a
+    fragment as the repository's coverage.
     """
     prefixes = report_prefixes or {}
     parsed: list[CoverageReport] = []
@@ -1172,6 +1256,8 @@ def build_coverage_map(
             else ()
         ),
     )
+    if resolved.mapping_partial and not allow_partial:
+        resolved.coverage_map, resolved.files, resolved.withheld = {}, [], True
     return resolved, errors
 
 

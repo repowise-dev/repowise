@@ -115,3 +115,23 @@ def test_dot_coverage_says_why_it_has_no_per_file_coverage(tmp_path: Path) -> No
     assert coverage_map == {}
     assert files == []
     assert ("warning", f"  ↳ coverage .coverage: {COVERAGE_DATA_FILE_NOTE}") in messages
+
+
+def test_a_partial_mapping_keeps_no_coverage_and_says_what_to_set(tmp_path: Path) -> None:
+    report = tmp_path / "lcov.info"
+    report.write_text(
+        "".join(f"SF:src/{n}.py\nDA:1,1\nend_of_record\n" for n in "abc"), encoding="utf-8"
+    )
+    keys = ["web/src/a.py", "api/src/a.py", "web/src/b.py", "api/src/b.py", "web/src/c.py"]
+    messages: list[tuple[str, str]] = []
+    progress = SimpleNamespace(on_message=lambda level, msg: messages.append((level, msg)))
+
+    coverage_map, files, _fmt, _provenance = _build_pipeline_coverage(
+        tmp_path, [_parsed(k) for k in keys], [report], progress=progress
+    )
+
+    assert coverage_map == {}
+    assert files == []
+    assert any(
+        "no coverage was kept; set coverage.path_prefix: web" in msg for _, msg in messages
+    )

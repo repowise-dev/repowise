@@ -31,8 +31,10 @@ from .discovery import (
     expand_report_args,
     expand_report_patterns,
     normalize_report_path,
+    prefix_hint,
     resolve_reports,
     resolve_test_reports,
+    suggest_prefixes,
 )
 from .freshness import FreshnessStatus, coverage_freshness
 from .goprofile import parse_go_coverprofile
@@ -86,6 +88,8 @@ __all__ = [
     "parse_lcov",
     "parse_lcov_contexts",
     "parse_repowise_json",
+    "prefix_hint",
     "resolve_reports",
     "resolve_test_reports",
+    "suggest_prefixes",
 ]

@@ -400,3 +400,66 @@ def test_coverage_add_dot_coverage_without_contexts_stores_nothing(
     assert "Nothing was stored." in output
     # The paths were never the problem, so no prefix advice.
     assert "strip_prefix" not in output
+
+
+_MONOREPO_KEYS = {"web/src/a.py", "api/src/a.py", "web/src/b.py", "api/src/b.py", "web/src/c.py"}
+
+
+def _package_report(tmp_path) -> None:
+    """A web package's lcov, paths from the package root: two tie, one maps."""
+    (tmp_path / "lcov.info").write_text(
+        "".join(f"SF:src/{n}.py\nDA:1,1\nend_of_record\n" for n in "abc"), encoding="utf-8"
+    )
+
+
+def test_coverage_add_stores_nothing_from_a_partial_mapping_and_suggests_a_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, _MONOREPO_KEYS)
+    _package_report(tmp_path)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "nothing was stored" in output
+    assert "set coverage.path_prefix: web in .repowise/config.yaml" in output
+    assert "--allow-partial" in output
+
+
+def test_coverage_add_allow_partial_stores_the_flagged_fragment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, _MONOREPO_KEYS)
+    _package_report(tmp_path)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "lcov.info", "--allow-partial"])
+
+    assert result.exit_code == 0, result.output
+    assert [f.file_path for f in stored] == ["web/src/c.py"]
+    assert "flagged partial" in " ".join(result.output.split())
+
+
+def test_coverage_add_withholds_a_partial_per_test_map(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    mapped: list = []
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        mapped.extend(records)
+        return len(records)
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    coverage = pytest.importorskip("coverage")
+    data = coverage.CoverageData(basename=str(tmp_path / ".coverage"))
+    data.set_context("tests/test_a.py::test_one|run")
+    data.add_lines({str(tmp_path / n): [1] for n in ("src/a.py", "gone/b.py", "gone/c.py")})
+    data.write()
+
+    result = CliRunner().invoke(cli, ["coverage", "add", ".coverage"])
+
+    assert result.exit_code == 1, result.output
+    assert mapped == []
+    assert "More than half the per-test map did not map" in " ".join(result.output.split())
