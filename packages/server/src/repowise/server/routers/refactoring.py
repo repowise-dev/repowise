@@ -257,8 +257,6 @@ async def get_refactoring_opportunity_detail(
 @router.get(
     "/{repo_id}/refactoring/opportunities/{opportunity_id}/prompt",
     response_model=AgentPromptResponse,
-    # ``preview`` is sent only when the item sits on a preview cell.
-    response_model_exclude_none=True,
 )
 async def get_refactoring_opportunity_prompt(
     repo_id: str,
@@ -399,8 +397,6 @@ async def _repository(session: AsyncSession, repo_id: str) -> Any:
 @router.get(
     "/{repo_id}/refactoring/{suggestion_id}/prompt",
     response_model=AgentPromptResponse,
-    # ``preview`` is sent only when the item sits on a preview cell.
-    response_model_exclude_none=True,
 )
 async def get_refactoring_plan_prompt(
     repo_id: str,

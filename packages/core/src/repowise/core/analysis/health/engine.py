@@ -20,8 +20,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -38,59 +36,44 @@ from ...ingestion.git_indexer.function_blame import (
 
 # Package attribution lives in one place, shared with the traverser and with
 # the `repowise update` backfill, so all three agree on what a package is.
-from ...ingestion.package_roots import module_for as _module_for
+from ...ingestion.package_roots import module_for as _module_for  # noqa: F401 (re-export)
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
-from ...test_paths import paired_test_names
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
-from ..function_test_map import FunctionTests, function_test_map
-from ..graph_view import HasEdge, ImportEdgeView
-from ..test_reachability import files_reached_by_tests, files_with_paired_tests
+from ..graph_view import ImportEdgeView
 from .asserts.lexicon import AssertVocabulary
 from .asserts.oracle_reach import collect_cross_file_oracles
-from .biomarkers import FileContext, detect_all
 from .complexity import FileComplexity, FunctionComplexity, walk_file
-from .complexity.languages import has_health_dialect
+from .crossfn_perf import CrossFunctionPerfStage
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.detector import clone_ranges, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
-from .finding_identity import SYMBOL_INDEX_KEY, SYMBOL_KEY, SYMBOL_LINE_KEY
-from .function_blame_rollup import blame_commit_entries, commit_spans
-from .history_refresh import BLAME_MARKERS, as_biomarker_result
-from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
+from .file_evaluator import FileEvaluator, _read_source_lines, _RunConfig
+from .file_evaluator import _mark_deepest_block as _mark_deepest_block
+from .file_evaluator import _mark_function_facts as _mark_function_facts
+from .file_evaluator import walked_functions as walked_functions
+from .models import HealthFileMetricData, HealthFindingData, HealthReport
 from .perf import (
     CallGraphIndex,
-    PerfRanker,
-    apply_perf_promotions,
     build_performance_opportunities,
-    collect_blocking_io_under_lock,
-    collect_centrality_gated,
-    collect_crossfn_io_in_loop,
     link_performance_findings,
 )
-from .perf.lazy_load import collect_lazy_loads
-from .perf.unbounded_reduction import collect_unbounded_reductions
 from .ranking import deduction_by_path
 from .refactoring import (
     PerformancePlanPolicy,
-    RefactoringContext,
     RefactoringSuggestion,
-    detect_refactorings,
     performance_fix_suggestions,
     rank_suggestions,
 )
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
+from .repo_tests import RepoTestIndex
+from .repo_tests import _has_paired_test_file as _has_paired_test_file
+from .repo_tests import _path_basenames as _path_basenames
 from .scope import scores_language
-from .scoring import (
-    attach_impacts,
-    compute_kpis,
-    file_score_fields,
-    remap_severities,
-    score_file,
-)
+from .scoring import compute_kpis
 from .source_reader import SourceReader, disk_source_reader
 from .walk_cache import HealthWalkCache
 
@@ -115,7 +98,21 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp (v40): an Extract Method plan names its helper with a placeholder
+# v41 (also): a loop that grows only by reading tables that do not grow with
+# the repository is bounded (``perf.table_scale``), so its causes leave the queue.
+# v41 (also): ``docs`` / ``docs_src`` count as a docs root only at the
+# repository root or beside a docs-site generator's config, so a product's
+# ``app/docs/`` route is production and stored ``code_origin`` is re-read.
+# v41: ``brain_method`` is advisory, so every stored score that carried one
+# moves. Parameter counts exclude every comment kind and discover C/C++
+# declarators and Kotlin lists; cached walks refresh the total, typed and scalar
+# counts, enabling primitive_obsession in those languages.
+# History findings de-stack before the history cap (``scoring.destacked``).
+# Defect code categories follow a saturating curve scaled by their cap, findings on
+# one function group, and critical size findings scale past their threshold
+# (``shape_curve``).
+#
+# v40: an Extract Method plan names its helper with a placeholder
 # (``extracted_helper``, numbered when taken in scope) and asks the agent applying
 # it to rename it, so every stored plan's ``suggested_name``, header and call text
 # change. Plan ids do not depend on the name and hold.
@@ -401,123 +398,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 40
-
-
-#: Function facts a finding inside the function carries in its details.
-_FUNCTION_FACTS = ("deprecated", "gated_off")
-
-
-def _mark_function_facts(
-    findings: list[HealthFindingData], functions: list[FunctionComplexity]
-) -> None:
-    """Stamp ``deprecated: true`` / ``gated_off: true`` on each function-level
-    finding inside a function with that fact. Absent, not false, everywhere
-    else, so the details of every other finding are byte-for-byte what they
-    were."""
-    spans = [
-        (fact, fc.name, fc.start_line, fc.end_line)
-        for fc in functions
-        for fact in _FUNCTION_FACTS
-        if getattr(fc, fact, False)
-    ]
-    for finding in findings:
-        if finding.function_name is None:
-            continue
-        line = finding.line_start
-        for fact, name, start, end in spans:
-            if name == finding.function_name and (line is None or start <= line <= end):
-                finding.details[fact] = True
-
-
-#: Function-size findings whose fix starts at the deepest nested block.
-_DEEPEST_BLOCK_MARKERS = frozenset(
-    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
-)
-
-
-def _mark_deepest_block(
-    findings: list[HealthFindingData], functions: list[FunctionComplexity]
-) -> None:
-    """Copy the function's deepest nested block onto its size findings as
-    ``deepest_block: {start, end}``, so a fix list can name where to start
-    without re-walking the file. Absent when the function does not nest."""
-    blocks = {
-        (fc.name, fc.start_line): fc.deepest_block
-        for fc in functions
-        if fc.deepest_block
-    }
-    if not blocks:
-        return
-    for finding in findings:
-        if finding.biomarker_type not in _DEEPEST_BLOCK_MARKERS:
-            continue
-        block = blocks.get((finding.function_name, finding.line_start))
-        if block:
-            # A mapping, not a pair: surfaces count every nested list as a collection.
-            finding.details["deepest_block"] = {"start": block[0], "end": block[1]}
-
-
-def walked_functions(
-    fc_list: list[FunctionComplexity], language: str
-) -> tuple[FunctionComplexity, ...]:
-    """The functions a file's biomarkers see, in document order.
-
-    Sorted because the walker collects sibling nodes off a LIFO stack and so
-    returns them last-first, and a marker should report a file top-down. Two
-    rows can share a span (a one-line callback and its enclosing call), and a
-    stable sort leaves those in walk order.
-
-    SQL routine metrics are text-counted and defect-uncalibrated; they exist
-    for symbol stamping and the ``sql_high_complexity`` marker
-    (maintainability). Holding them back here keeps the calibrated method
-    biomarkers (defect dimension) from firing on SQL.
-    """
-    if language == "sql":
-        return ()
-    return tuple(sorted(fc_list, key=lambda fc: (fc.start_line, fc.end_line)))
-
-
-
-def _stamp_symbol_lines(findings: list[HealthFindingData], fcx: FileComplexity) -> None:
-    """Record the symbol each finding sits in, so its id can be anchored there.
-
-    The finding id is the symbol plus the offset into it, so an edit above the
-    symbol leaves the id alone. The anchor is the innermost function or class
-    holding the finding's line and sharing its name; a finding the detector
-    left unnamed takes the innermost one of any name, recorded under
-    ``symbol``. ``symbol_index`` tells same-named symbols in one file apart (two
-    ``run`` methods, sibling ``it`` callbacks). A finding outside every symbol
-    keeps absolute lines, and a replayed stored finding keeps its anchor.
-    """
-    spans = sorted(
-        [(fc.start_line, fc.end_line, fc.name) for fc in fcx.functions]
-        + [(c.start_line, c.end_line, c.name) for c in fcx.classes]
-    )
-    for f in findings:
-        if f.line_start is None or SYMBOL_LINE_KEY in f.details:
-            continue
-        holding = [
-            span
-            for span in spans
-            if span[0] <= f.line_start <= span[1]
-            and (not f.function_name or span[2] == f.function_name)
-        ]
-        if not holding:
-            continue
-        start, _, name = max(holding, key=lambda span: (span[0], -span[1]))
-        stamp: dict = {SYMBOL_LINE_KEY: start}
-        if not f.function_name:
-            stamp[SYMBOL_KEY] = name
-        index = sum(1 for span in spans if span[2] == name and span[0] < start)
-        if index:
-            stamp[SYMBOL_INDEX_KEY] = index
-        f.details = {**f.details, **stamp}
-
-
-# Method-level smells that make the dataflow / Extract Method pass worthwhile.
-# Only files carrying one of these get a CFG + def/use + reaching pass built.
-_EXTRACT_METHOD_SOURCES = frozenset({"large_method", "brain_method", "complex_method"})
+HEALTH_ANALYZER_VERSION = 41
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -543,15 +424,6 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
-def _commit_entries(fcx: FileComplexity, git_meta: dict) -> list:
-    """Split File's per-function commit sets: from the blame index, the stored
-    rows, or the blame a re-score took for a file stored without them."""
-    idx = git_meta.get("blame_index") or git_meta.get("commit_set_blame")
-    if isinstance(idx, BlameIndex):
-        return blame_commit_entries(fcx.functions, idx)
-    return list(git_meta.get("function_commit_shas") or ())
-
-
 def _partner(file_path: str, pair: ClonePair) -> str:
     """The other file of *pair*: *file_path* itself for a clone inside it."""
     return pair.file_b if pair.file_a == file_path else pair.file_a
@@ -568,44 +440,8 @@ def _pct_of_kept(
     return round(dup_pct * share, 2)
 
 
-def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
-    """Read a file's source as 1-indexed lines for the Extract Helper snippet.
-
-    Failure-isolated: a read or decode error yields ``None`` (the detector then
-    omits the snippet and keeps its line ranges), never an exception into the
-    health pass. Decodes UTF-8 leniently since the snippet is for display, not
-    re-parsing.
-    """
-    raw = read_source(abs_path)
-    if raw is None:
-        return None
-    try:
-        text = raw.decode("utf-8", errors="replace")
-    except (UnicodeError, AttributeError):
-        return None
-    return text.splitlines()
-
-
 #: Partner files whose lines one analysis pass keeps (``_repo_lines``).
 _PARTNER_LINES_CACHE = 256
-
-
-def _clone_sources(
-    file_path: str,
-    own_lines: list[str],
-    clones: list[ClonePair],
-    read_lines: Callable[[str], list[str] | None],
-) -> dict[str, list[str]]:
-    """This file's lines plus each clone partner's, for text-level checks."""
-    out = {file_path: own_lines}
-    for clone in clones:
-        for path in (clone.file_a, clone.file_b):
-            if path in out:
-                continue
-            lines = read_lines(path)
-            if lines is not None:
-                out[path] = lines
-    return out
 
 
 def _percentile_p80(counts: list[int]) -> int | None:
@@ -697,83 +533,6 @@ def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | No
         return None
 
 
-def _path_basenames(all_paths: set[str]) -> set[str]:
-    """Final path components of *all_paths*, split on ``/`` only.
-
-    A path matches ``other.endswith("/" + c) or other == c`` for a
-    slash-free candidate filename ``c`` exactly when its ``/``-basename
-    equals ``c``, so one precomputed basename set answers every
-    ``_has_paired_test_file`` lookup. Splitting on ``/`` only (not ``\\``)
-    preserves that equivalence for any non-POSIX path that slips in.
-    """
-    return {p.rsplit("/", 1)[-1] for p in all_paths}
-
-
-def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
-    """Whether any analyzed file is named like a test for *rel_path*."""
-    return not paired_test_names(rel_path).isdisjoint(path_basenames)
-
-
-@dataclass(frozen=True, slots=True)
-class _RunConfig:
-    """The analyzer config one pass reads, with its per-file overrides."""
-
-    vocab: AssertVocabulary
-    disabled: list[str]
-    per_file_disabled: dict[str, set[str]]
-    severity_overrides: dict[str, Severity]
-    per_file_severity_overrides: dict[str, dict[str, Severity]]
-    disabled_refactorings: list[str]
-    refactoring_enabled: bool
-    refactoring_min_confidence: str | None
-
-    @classmethod
-    def read(cls, config: dict | None) -> _RunConfig:
-        cfg = config or {}
-        return cls(
-            vocab=AssertVocabulary.from_analyzer_config(cfg),
-            disabled=list(cfg.get("disabled_biomarkers", ())),
-            per_file_disabled=cfg.get("per_file_disabled", {}) or {},
-            severity_overrides=cfg.get("severity_overrides", {}) or {},
-            per_file_severity_overrides=cfg.get("per_file_severity_overrides", {}) or {},
-            disabled_refactorings=list(cfg.get("disabled_refactorings", ())),
-            refactoring_enabled=bool(cfg.get("refactoring_enabled", True)),
-            refactoring_min_confidence=cfg.get("refactoring_min_confidence"),
-        )
-
-    @property
-    def performance_fix(self) -> bool:
-        return self.refactoring_enabled and "performance_fix" not in self.disabled_refactorings
-
-    def file_disabled(self, path: str) -> list[str]:
-        out = list(self.disabled)
-        for name in self.per_file_disabled.get(path) or ():
-            if name not in out:
-                out.append(name)
-        return out
-
-    def file_severity_overrides(self, path: str) -> dict[str, Severity] | None:
-        out = dict(self.severity_overrides)
-        out.update(self.per_file_severity_overrides.get(path, {}))
-        return out or None
-
-
-@dataclass(frozen=True, slots=True)
-class _RepoInputs:
-    """Repo-wide inputs every file's evaluation reads, built once per pass."""
-
-    paired_tests: set[str]
-    package_roots: set[str]
-    graph_view: HasEdge | None
-    dup_report: DuplicationReport
-    function_mod_p80: int | None
-    dependents_p80: int | None
-    active_contributors: int | None
-    file_scc_index: dict[str, tuple[str, ...]]
-    methods_by_file: dict[str, tuple[str, ...]]
-    dataflow_cache: FileDataflowCache
-
-
 class HealthAnalyzer:
     """Pure-Python health analyzer. No LLM, no network."""
 
@@ -789,6 +548,7 @@ class HealthAnalyzer:
         source_reader: SourceReader | None = None,
         stored_blame_findings: dict[str, list[Any]] | None = None,
         file_dependents: dict[str, int] | None = None,
+        tested_files: set[str] | frozenset[str] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -840,9 +600,14 @@ class HealthAnalyzer:
         # revision comparison passes the other side's, so a file crossing a
         # centrality gate inside a partial graph is not read as a code change.
         self._file_dependents_override = file_dependents
+        # Files the index records as tested (paired or reached), for a pass holding no tests.
+        self._tested_files = frozenset(tested_files or ())
         self._package_roots_cache: set[str] | None = None
-        self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
+        self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
+        self.perf_stage = CrossFunctionPerfStage(
+            self.graph, self._execution_graph, self._origins, self.parsed_files, self.read_source
+        )
 
     def file_dependents(self) -> dict[str, int]:
         """Each analysed file's dependents count, as the centrality gates read it."""
@@ -869,46 +634,6 @@ class HealthAnalyzer:
         if self.graph is not None and self._execution_graph_cache is None:
             self._execution_graph_cache = CallGraphIndex(self.graph)
         return self._execution_graph_cache
-
-    def _files_reached_by_tests(self) -> set[str]:
-        """Non-test files that some test file can execute into, per the call graph.
-
-        The graph-backed half of "is this file tested". Computed once per
-        analyzer over the whole file set (one multi-source walk, not one per
-        file), because every ``_evaluate_file`` call asks the same question of
-        the same graph.
-
-        Inferred, and it over-claims: a call edge says control *can* reach the
-        file, not that a given run did. Consumers must use it only as a floor -
-        "something tests this" - never as a coverage quantity. See
-        ``analysis.test_reachability``.
-        """
-        if self._tests_reach_cache is None:
-            test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
-            index = self._execution_graph()
-            self._tests_reach_cache = files_reached_by_tests(index or CallGraphIndex(), test_files)
-        return self._tests_reach_cache
-
-    def _paired_tests(self, analyzed_paths: set[str]) -> set[str]:
-        """Analyzed files a test is paired with; see ``files_with_paired_tests``."""
-        return files_with_paired_tests(self.graph, analyzed_paths, self._all_test_files())
-
-    def _all_test_files(self) -> set[str]:
-        """Test files from this pass and the graph, so an incremental run that
-        re-parses only the changed files still sees every test."""
-        test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
-        if self.graph is not None:
-            test_files.update(
-                node
-                for node, data in self.graph.nodes(data=True)
-                if data.get("is_test") and data.get("node_type") != "symbol"
-            )
-        return test_files
-
-    def _function_tests(self) -> FunctionTests | None:
-        """Each function's nearest test functions, over the whole graph."""
-        index = self._execution_graph()
-        return None if index is None else function_test_map(index, self._all_test_files())
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -1067,7 +792,8 @@ class HealthAnalyzer:
         """
         from repowise.core.pipeline.phase_timing import timed
 
-        if "dry_violation" in run.disabled:
+        # An empty splice set: no file whose clone list a biomarker reads changed.
+        if "dry_violation" in run.disabled or changed == set():
             return DuplicationReport()
         try:
             with timed(timings, "analysis.health.duplication"):
@@ -1172,11 +898,11 @@ class HealthAnalyzer:
         # and the Extract Method detector read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
-        self._augment_perf_hits(walked, dataflow_cache, timings)
+        self.perf_stage.run(walked, dataflow_cache, timings)
         with timed(timings, "analysis.health.repo_stats"):
-            inputs = self._repo_inputs(dup_report, fn_mod_p80, dataflow_cache)
+            evaluator = self._file_evaluator(run, dup_report, fn_mod_p80, dataflow_cache)
         with timed(timings, "analysis.health.evaluate"):
-            metrics, findings, suggestions = self._evaluate_all(run, walked, inputs, on_step)
+            metrics, findings, suggestions = self._evaluate_all(evaluator, walked, on_step)
         # KPIs are repo-wide; on an incremental run they would be biased
         # by the changed-files subset. Skip them in that case — the
         # ``persist`` step recomputes KPIs from the merged DB rows.
@@ -1185,7 +911,7 @@ class HealthAnalyzer:
             execution_roles = self._mark_perf_entry_reachability(findings)
             suggestions = self._with_performance_plans(run, findings, suggestions)
         with timed(timings, "analysis.health.function_tests"):
-            function_tests = self._function_tests()
+            function_tests = self.test_index.function_tests()
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -1204,26 +930,26 @@ class HealthAnalyzer:
             ),
         )
 
-    def _repo_inputs(
+    def _file_evaluator(
         self,
+        run: _RunConfig,
         dup_report: DuplicationReport,
         fn_mod_p80: int | None,
         dataflow_cache: FileDataflowCache,
-    ) -> _RepoInputs:
-        # PageRank is optional — graph_builder.symbol_pagerank exists but
-        # is symbol-level; we use file-level in-degree as the dependents
-        # signal (cheap, deterministic, conservative).
+    ) -> FileEvaluator:
+        """The repo-wide inputs every file's evaluation reads, built once per pass."""
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
-        return _RepoInputs(
-            paired_tests=self._paired_tests(analyzed_paths),
+        return FileEvaluator(
+            self,
+            paired_tests=self.test_index.paired(analyzed_paths)
+            | (self._tested_files & analyzed_paths),
             package_roots=self._package_boundaries(analyzed_paths),
-            graph_view=ImportEdgeView(self.graph) if self.graph is not None else None,
             dup_report=dup_report,
+            run=run,
+            graph_view=ImportEdgeView(self.graph) if self.graph is not None else None,
             function_mod_p80=fn_mod_p80,
             dependents_p80=_compute_repo_dependents_p80(self.file_dependents()),
             active_contributors=_compute_repo_active_contributors(self.git_meta_map),
-            # Repo-wide SCC index (import cycles), computed once so Break
-            # Cycle never recomputes it per file.
             file_scc_index=build_file_scc_index(self.graph),
             methods_by_file=build_methods_by_file(self.graph),
             dataflow_cache=dataflow_cache,
@@ -1231,46 +957,24 @@ class HealthAnalyzer:
 
     def _evaluate_all(
         self,
-        run: _RunConfig,
+        evaluator: FileEvaluator,
         walked: list[tuple[Any, FileComplexity]],
-        inputs: _RepoInputs,
         on_step: Any | None,
     ) -> tuple[list[HealthFileMetricData], list[HealthFindingData], list[RefactoringSuggestion]]:
         metrics: list[HealthFileMetricData] = []
         findings: list[HealthFindingData] = []
         suggestions: list[RefactoringSuggestion] = []
         for pf, fcx in walked:
-            path = pf.file_info.path
-            # Side-effect: bump Symbol.complexity_estimate when we can
-            # match by enclosing line range. Symbols not matched keep
-            # their default (1).
+            # Side effect: stamp each matched symbol's complexity_estimate.
             self._populate_symbol_complexity(pf, fcx.functions)
-            file_metric, file_findings, file_suggestions = self._evaluate_file(
-                pf,
-                fcx,
-                inputs.paired_tests,
-                inputs.package_roots,
-                disabled=run.file_disabled(path),
-                dup_report=inputs.dup_report,
-                graph_view=inputs.graph_view,
-                repo_function_mod_p80=inputs.function_mod_p80,
-                repo_dependents_p80=inputs.dependents_p80,
-                repo_active_contributors_90d=inputs.active_contributors,
-                severity_overrides=run.file_severity_overrides(path),
-                disabled_refactorings=run.disabled_refactorings,
-                refactoring_enabled=run.refactoring_enabled,
-                refactoring_min_confidence=run.refactoring_min_confidence,
-                file_scc_index=inputs.file_scc_index,
-                methods_by_file=inputs.methods_by_file,
-                dataflow_cache=inputs.dataflow_cache,
-            )
+            file_metric, file_findings, file_suggestions = evaluator.evaluate(pf, fcx)
             # Every dataflow consumer has read this file by now.
-            inputs.dataflow_cache.release(pf.file_info.abs_path)
+            evaluator.dataflow_cache.release(pf.file_info.abs_path)
             metrics.append(file_metric)
             findings.extend(file_findings)
             suggestions.extend(file_suggestions)
             if on_step:
-                on_step(path)
+                on_step(pf.file_info.path)
         return metrics, findings, suggestions
 
     def _kpis(
@@ -1337,67 +1041,6 @@ class HealthAnalyzer:
                     fcx.cross_file_oracles = resolved
         except Exception as exc:
             log.debug("health_cross_file_oracles_failed", error=str(exc))
-            return
-
-    def _augment_perf_hits(
-        self,
-        walked: list[tuple[Any, FileComplexity]],
-        dataflow: FileDataflowCache,
-        timings: Any | None,
-    ) -> None:
-        """Every post-walk perf pass, shared by ``analyze`` and ``analyze_async`` so
-        the two paths cannot drift apart again. Promotions read the crossfn hits,
-        so crossfn runs first."""
-        from repowise.core.pipeline.phase_timing import timed
-
-        with timed(timings, "analysis.health.crossfn"):
-            self._apply_crossfn_perf(walked)
-        with timed(timings, "analysis.health.promotions"):
-            apply_perf_promotions(walked, dataflow=dataflow)
-        with timed(timings, "analysis.health.unbounded_reduction"):
-            collect_unbounded_reductions(walked, read_source=self.read_source)
-        with timed(timings, "analysis.health.lazy_load"):
-            collect_lazy_loads(walked, self.parsed_files, read_source=self.read_source)
-
-    def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
-        """Run the graph-dependent perf passes over the walked files, in place.
-
-        Four sources of extra ``perf_hits``, all sharing one
-        :class:`CallGraphIndex` (built once over reliable execution edges):
-
-          1. cross-function ``io_in_loop`` / N+1 (PR4);
-          2. cross-function ``blocking_io_under_lock`` (Phase 7b) — the lock→I/O
-             reachability case;
-          3. the centrality-gated ``nested_loop_quadratic`` / ``hot_path_sync_io``
-             markers (Phase 7b), generated from the walker's per-function facts
-             ONLY for a hot function, via the :class:`PerfRanker`.
-
-        Each is appended onto the matching file's ``perf_hits`` in place so the
-        biomarkers handle every case through one path. Failure-isolated and never
-        blocks the report. The cross-function passes are a no-op without a graph;
-        the centrality-gated pass ALWAYS runs — without a graph nothing is
-        hot, so it emits nothing (precision-first: we never ship a
-        centrality-gated marker we cannot establish centrality for).
-        """
-        try:
-            index = self._execution_graph()
-            by_file: dict[str, list] = {}
-            if self.graph is not None and index is not None:
-                for src in (
-                    collect_crossfn_io_in_loop(walked, self.graph, index=index),
-                    collect_blocking_io_under_lock(walked, self.graph, index=index),
-                ):
-                    for path, hits in src.items():
-                        by_file.setdefault(path, []).extend(hits)
-            ranker = PerfRanker(index)
-            for path, hits in collect_centrality_gated(walked, ranker, self._origins).items():
-                by_file.setdefault(path, []).extend(hits)
-            for _pf, fcx in walked:
-                extra = by_file.get(_pf.file_info.path)
-                if extra:
-                    fcx.perf_hits = [*fcx.perf_hits, *extra]
-        except Exception as exc:
-            log.debug("health_crossfn_perf_failed", error=str(exc))
             return
 
     def _mark_perf_entry_reachability(
@@ -1579,28 +1222,6 @@ class HealthAnalyzer:
                 misses=self._walk_cache.misses,
             )
 
-    def _extract_method_analyses(
-        self,
-        pf: Any,
-        findings: list[HealthFindingData],
-        dataflow_cache: FileDataflowCache | None = None,
-    ) -> list[Any]:
-        """Dataflow analyses for the Extract Method detector, gated to files
-        that already carry a method-level smell.
-
-        Building a CFG + def/use + reaching definitions is only useful where a
-        ``large_method`` / ``brain_method`` / ``complex_method`` finding fired,
-        so the dataflow pass runs for that small subset of files only --
-        everything else pays nothing. The shared *dataflow_cache* means a file
-        the promotion pass already analyzed is not parsed again here. Degrades
-        to ``[]`` on any read or analysis failure; the detector then yields no
-        suggestion.
-        """
-        if not any(getattr(f, "biomarker_type", "") in _EXTRACT_METHOD_SOURCES for f in findings):
-            return []
-        cache = dataflow_cache if dataflow_cache is not None else FileDataflowCache(self.read_source)
-        return cache.get(pf.file_info.abs_path, pf.file_info.language).flagged_analyses()
-
     def _populate_symbol_complexity(self, pf: Any, fc_list: list[FunctionComplexity]) -> None:
         if not fc_list:
             return
@@ -1613,188 +1234,6 @@ class HealthAnalyzer:
                 continue
             # Cap at the ORM Integer; CCN beyond ~10k is implausible.
             sym.complexity_estimate = int(min(fc.ccn, 9999))
-
-    def _evaluate_file(
-        self,
-        pf: Any,
-        fcx: FileComplexity,
-        paired_tests: set[str],
-        package_roots: set[str],
-        *,
-        disabled: list[str],
-        dup_report: DuplicationReport,
-        graph_view: HasEdge | None = None,
-        repo_function_mod_p80: int | None = None,
-        repo_dependents_p80: int | None = None,
-        repo_active_contributors_90d: int | None = None,
-        severity_overrides: dict[str, Severity] | None = None,
-        disabled_refactorings: list[str] | None = None,
-        refactoring_enabled: bool = True,
-        refactoring_min_confidence: str | None = None,
-        file_scc_index: dict[str, tuple[str, ...]] | None = None,
-        methods_by_file: dict[str, tuple[str, ...]] | None = None,
-        dataflow_cache: FileDataflowCache | None = None,
-    ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
-        file_path = pf.file_info.path
-
-        fc_list = fcx.functions
-        fns = walked_functions(fc_list, pf.file_info.language)
-        max_ccn = max((fc.ccn for fc in fc_list), default=1)
-        max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
-        nloc = fcx.file_nloc
-
-        dependents_count = self._dependents(file_path)
-
-        cov = self.coverage_map.get(file_path)
-        if cov is None:
-            cov = self.coverage_map.get(file_path.replace("\\", "/"))
-        line_cov = cov.get("line_coverage_pct") if cov else None
-        branch_cov = cov.get("branch_coverage_pct") if cov else None
-        covered_lines: set[int] = set(cov.get("covered_lines") or ()) if cov else set()
-        total_coverable_lines = int(cov.get("total_coverable_lines", 0)) if cov else 0
-
-        clones, dup_pct = self._without_kit_clones(
-            file_path,
-            dup_report.pairs_by_file.get(file_path, []),
-            dup_report.duplication_pct.get(file_path),
-        )
-        # Read only for clone-bearing files, keeping the read proportional.
-        source_lines = (
-            _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
-        )
-        clone_sources = (
-            _clone_sources(file_path, source_lines, clones, self._repo_lines)
-            if source_lines is not None and pf.file_info.is_test
-            else {}
-        )
-
-        # The enclosing package root, falling back to the top-level directory
-        # when the repo has no nested packages.
-        module = _module_for(file_path, package_roots)
-
-        file_git_meta = self.git_meta_map.get(file_path, {}) or {}
-        blame_idx_obj = file_git_meta.get("blame_index")
-        blame_index = blame_idx_obj if isinstance(blame_idx_obj, BlameIndex) else None
-
-        ctx = FileContext(
-            file_path=file_path,
-            language=pf.file_info.language,
-            nloc=nloc,
-            # ``pf.file_info.is_test`` is the decision ingestion already made
-            # for this file, with its language and pytest config in hand; read
-            # it rather than re-derive from the path string (#1103).
-            has_test_file=file_path in paired_tests
-            or pf.file_info.is_test
-            or fcx.has_inline_tests,
-            is_test=bool(pf.file_info.is_test),
-            # Kept separate from ``has_test_file`` on purpose. That flag means
-            # "a test imports this file, or is named for it"; this one means "the
-            # call graph records a test reaching this file". They disagree
-            # often, and collapsing them would leave no way to say which signal
-            # answered, or that one of them over-claims.
-            reached_by_tests=file_path in self._files_reached_by_tests(),
-            module=module,
-            all_functions=fns,
-            class_metrics=fcx.classes,
-            git_meta=file_git_meta,
-            dependents_count=dependents_count,
-            repo_dependents_p80=repo_dependents_p80,
-            pagerank_score=0.0,
-            line_coverage_pct=line_cov,
-            branch_coverage_pct=branch_cov,
-            covered_lines=covered_lines,
-            total_coverable_lines=total_coverable_lines,
-            clones=list(clones),
-            duplication_pct=dup_pct,
-            clone_sources=clone_sources,
-            graph_view=graph_view,
-            blame_index=blame_index,
-            repo_function_mod_p80=repo_function_mod_p80,
-            repo_active_contributors_90d=repo_active_contributors_90d,
-            error_handling_hits=fcx.error_handling_hits,
-            perf_hits=fcx.perf_hits,
-            io_boundary_names=set(fcx.io_boundary_names),
-            cross_file_oracle_lines=frozenset(getattr(fcx, "cross_file_oracles", ())),
-        )
-
-        biomarker_results = detect_all(ctx, disabled=disabled)
-        if blame_index is None:
-            for stored in self.stored_blame_findings.get(file_path, ()):
-                replayed = as_biomarker_result(stored)
-                if replayed.biomarker_type in BLAME_MARKERS and replayed.biomarker_type not in disabled:
-                    biomarker_results.append(replayed)
-        biomarker_results = remap_severities(biomarker_results, severity_overrides)
-        scores, deductions = score_file(biomarker_results)
-        findings = attach_impacts(biomarker_results, deductions)
-        for f in findings:
-            f.file_path = file_path
-        _mark_function_facts(findings, fc_list)
-        _stamp_symbol_lines(findings, fcx)
-        _mark_deepest_block(findings, fc_list)
-
-        # The overall surfaced score stays == the defect dimension (no blend
-        # yet); the per-dimension scores ride alongside it, additively. A
-        # language with no dialect stores none of them, and no complexity
-        # figures either: nothing walked the file.
-        analysed = has_health_dialect(pf.file_info.language)
-        metric = HealthFileMetricData(
-            file_path=file_path,
-            max_ccn=max_ccn if analysed else None,
-            max_nesting=max_nesting if analysed else None,
-            nloc=nloc,
-            # The stored field answers "does something test this file" - that is
-            # how the MCP payload documents it and how every UI renders it
-            # ("has tests" / "untested"). So it carries the union, not just the
-            # naming convention. Keeping it filename-only left the file table
-            # labelling a file untested while ``untested_hotspot`` stayed
-            # silent about it, which is the same disagreement issue #1740 is
-            # about, one layer further out. The two inputs stay separable on
-            # ``FileContext`` and in the biomarker's ``details``.
-            has_test_file=ctx.has_test_file or ctx.reached_by_tests,
-            module=module,
-            line_coverage_pct=line_cov,
-            branch_coverage_pct=branch_cov,
-            duplication_pct=dup_pct,
-            **file_score_fields(analysed, scores, findings),
-            is_test=bool(pf.file_info.is_test),
-            code_origin=self._origins.get(file_path) or self._origin(pf),
-        )
-
-        # Refactoring layer: reuse the data just computed (class cohesion
-        # components + this file's findings) to emit structured suggestions.
-        # Fault-isolated per detector; degrades to [] on any missing signal.
-        # Disabled outright from config => skip the whole pass (and its
-        # dataflow build) for this file.
-        if not refactoring_enabled:
-            return metric, findings, []
-        rctx = RefactoringContext(
-            file_path=file_path,
-            language=pf.file_info.language,
-            nloc=nloc,
-            classes=fcx.classes,
-            findings=findings,
-            dependents_count=dependents_count,
-            clones=list(clones),
-            community_label_map=self.community_label_map,
-            graph=self.graph,
-            file_scc=(file_scc_index or {}).get(file_path),
-            file_methods=(
-                methods_by_file.get(file_path, ()) if methods_by_file is not None else None
-            ),
-            function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
-            # Stored sets when no blame index, so a re-score matches the index.
-            commit_spans=commit_spans(fcx.functions, _commit_entries(fcx, file_git_meta)),
-            # The Extract Helper snippet; ``None`` unless the file carries clones.
-            source_lines=source_lines,
-            # Clone partners' lines, read only when one site may be a whole function.
-            read_lines=self._repo_lines,
-        )
-        suggestions = detect_refactorings(
-            rctx,
-            disabled=disabled_refactorings or (),
-            min_confidence=refactoring_min_confidence,
-        )
-        return metric, findings, suggestions
 
     def _read_repo_lines(self, path: str) -> list[str] | None:
         """*path*'s lines: the parsed file's own path, else under the repo root

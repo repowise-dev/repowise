@@ -17,10 +17,15 @@ import pytest
 
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import Extraction, analyze_file
+from repowise.core.analysis.health.dataflow.slice import _unwrap_container
 from repowise.core.analysis.health.dataflow.stages import (
     STAGE_MAX_CCN,
     STAGE_MAX_NLOC,
+    _Blocks,
     _composes,
+    _Cutter,
+    _descent,
+    _FunctionFacts,
     find_stages,
 )
 from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
@@ -866,6 +871,45 @@ def _ts_section(n: int) -> str:
       skip{n}(item);
     }}
 """
+
+
+def test_a_stage_ending_in_a_constant_keeps_its_carried_output():
+    # The trailing-constant check must see the carried outputs merged in, not
+    # liveness alone: this loop-body stage ends in ``flag = False`` (flag is
+    # read after the loop) and also advances the loop-carried ``total`` the
+    # ``while`` header reads, so its signature is (flag, total) — a real
+    # split, not a constant-returning helper.
+    src = """
+def run(items, limit):
+    total = 0
+    n = 0
+    flag = True
+    while total < limit:
+        x = items[n]
+        if x > limit:
+            total += x
+        else:
+            total -= x
+        if total > 1000:
+            total = 1000
+        flag = False
+        n += 1
+    return flag
+"""
+    (fn,) = _functions(src)
+    lmap = get_language_map("python")
+    blocks = _Blocks(fn, lmap, None, {})
+    facts = _FunctionFacts(fn, lmap)
+    body = fn.fn_node.child_by_field_name("body")
+    looped = [(b, loops) for b, loops in _descent(_unwrap_container(body, lmap.block_kinds), blocks, lmap) if loops]
+    assert looped, "expected the cut to descend into the loop body"
+    block, loops = looped[0]
+    code, pre = blocks.code(block)
+    cutter = _Cutter(facts, lmap, None, block, code, pre, 3, loops)
+    j = next(k for k, st in enumerate(code) if "flag = False" in (st.text or b"").decode())
+    stage = cutter._stage(0, j)
+    assert stage is not None
+    assert set(stage.returns) == {"flag", "total"}
 
 
 @pytest.mark.parametrize("shape", ["labelled", "do_while"])

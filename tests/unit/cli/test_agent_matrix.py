@@ -251,8 +251,6 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     ),
     ("docs/start/USER_GUIDE.md", "single_repo", "**{W} tools, task-shaped.**"),
     ("docs/architecture/pluggable-storage.md", "single_repo", "{w} MCP tools still expose"),
-    ("website/mcp-server.md", "total", "It registers {n} tools:"),
-    ("website/mcp-server.md", "single_repo", "a curated {n}-tool default surface"),
     ("packages/server/README.md", "total", "registers {n} MCP tools"),
     ("packages/server/README.md", "single_repo", "advertises **{n} by default**"),
     (".claude-plugin/marketplace.json", "single_repo", "{w} task-shaped MCP tools"),

@@ -140,42 +140,126 @@ def test_fragile_week_horizon_only_for_top_five_touched_this_week() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _recent(path: str, symbol: str | None = "fn", severity: str = "high", sha: str = "c1") -> RecentFinding:
+def _recent(
+    path: str,
+    symbol: str | None = "fn",
+    severity: str = "high",
+    sha: str = "c1",
+    kind: str = "coverage",
+) -> RecentFinding:
     return RecentFinding(
         sha=sha,
         subject="feat: thing",
         committed_at=ANCHOR - timedelta(days=1),
         file_path=path,
         symbol=symbol,
-        biomarker="complex_method",
+        biomarker={"shape": "complex_method", "performance": "io_in_loop"}.get(kind, "coverage_gap"),
         severity=severity,
         change_kind="introduced",
         line=10,
+        kind=kind,
     )
 
 
 def test_regressions_up_to_three_files_are_per_file() -> None:
-    found = (_recent("src/a.py", "build"), _recent("src/b.py", "x"), _recent("src/b.py", "y"))
+    found = (
+        _recent("src/a.py", "build", kind="performance"),
+        _recent("src/b.py", "x"),
+        _recent("src/b.py", "y"),
+    )
     out = _run(code.fresh_regressions, _facts(recent_findings=found))
     assert {a.target_path for a in out.actions} == {"src/a.py", "src/b.py"}
     a = next(a for a in out.actions if a.target_path == "src/a.py")
     assert a.tier == "act_now"
     assert a.horizons == ("week",)
     assert a.target_kind == "symbol"
-    assert a.title == "Simplify `build` in `src/a.py` while the change is fresh"
+    assert a.title == "Fix the performance regression in `build` in `src/a.py`"
+    b = next(a for a in out.actions if a.target_path == "src/b.py")
+    assert b.title == "Restore the test coverage this week's changes lost in `src/b.py`"
+    assert "2 coverage drops" in b.impact
 
 
 def test_regressions_over_three_files_roll_up() -> None:
     found = (
         *(_recent(f"src/f{i}.py") for i in range(4)),
-        _recent("src/worst.py", severity="critical"),
+        _recent("src/worst.py", kind="performance"),
     )
     out = _run(code.fresh_regressions, _facts(recent_findings=found))
     (a,) = out.actions
     assert a.target_kind == "repo"
-    assert a.severity == "critical"
+    assert a.tier == "act_now"
+    assert a.severity == "high"
     assert a.includes[0] == "src/worst.py"
     assert set(a.includes) == {"src/worst.py", *(f"src/f{i}.py" for i in range(4))}
+    assert a.title == (
+        "Fix what this week's commits added: 1 performance regression and 4 coverage drops in 5 files"
+    )
+
+
+def test_code_shape_from_the_week_is_one_maintainability_item_to_plan() -> None:
+    """heyputer/everything: 132 detector-critical code-shape findings in a week
+    of feature work read as a CRITICAL action, every week. They are one item to
+    plan, below anything defect-class."""
+    found = tuple(
+        _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}", kind="shape") for i in range(40)
+    )
+    for subset in (found, found[:1]):
+        (a,) = _run(code.fresh_regressions, _facts(recent_findings=subset)).actions
+        assert (a.tier, a.severity, a.effective_value) == ("plan", "medium", SEVERITY_VALUE["medium"])
+        assert a.horizons == ("week",)
+        assert dict((w.label, w.value) for w in a.why)["code-shape findings"] == str(len(subset))
+    (single,) = _run(code.fresh_regressions, _facts(recent_findings=found[:1])).actions
+    assert single.target_path == "src/f0.py"
+    assert single.title == "Tidy the code shape this week's commits left: 1 finding in `src/f0.py`"
+
+
+def test_shape_and_defects_in_one_week_are_separate_actions() -> None:
+    found = (
+        _recent("src/a.py", kind="shape"),
+        _recent("src/a.py", kind="performance"),
+        *(_recent(f"src/s{i}.py", kind="shape") for i in range(5)),
+    )
+    out = _run(code.fresh_regressions, _facts(recent_findings=found))
+    by_tier = {a.tier: a for a in out.actions}
+    assert set(by_tier) == {"act_now", "plan"}
+    assert by_tier["act_now"].evidence_total == 1
+    assert by_tier["plan"].evidence_total == 6
+    assert by_tier["act_now"].action_id != by_tier["plan"].action_id
+
+
+def test_a_proven_performance_regression_outranks_lost_coverage() -> None:
+    perf = _run(
+        code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py", kind="performance"),))
+    ).actions[0]
+    cov = _run(code.fresh_regressions, _facts(recent_findings=(_recent("src/a.py"),))).actions[0]
+    assert perf.effective_value == SEVERITY_VALUE["critical"]
+    assert cov.effective_value == SEVERITY_VALUE["high"]
+    assert perf.effective_priority > cov.effective_priority
+    assert perf.severity == cov.severity == "high"
+
+
+def test_only_a_live_credential_is_critical() -> None:
+    """Every rule over facts that would push it hardest: the one critical
+    action is the credential in the working tree."""
+    hot = _file(
+        "src/hot.py", commits_90d=80, fix_commits_90d=40, dependents=50, lead=_LEAD,
+        last_commit_at=ANCHOR - timedelta(days=1), line_coverage_pct=10.0,
+    )
+    facts = _facts(
+        [hot],
+        recent_findings=tuple(
+            _recent(f"src/f{i}.py", severity="critical", sha=f"s{i}", kind=kind)
+            for i in range(10)
+            for kind in ("performance", "shape")
+        ),
+        secrets=(SecretFacts("src/config.py", "hardcoded_secret", 4, 'API_KEY = "sk_live_abc1"'),),
+        fix_first=_fix_items(),
+    )
+    view = compose_actions(facts, now=NOW)
+    week = view["horizons"]["week"]["actions"]
+    assert [a["rule"] for a in week if a["severity"] == "critical"] == ["live_secret"]
+    # The secret still leads, and the week's regressions follow it in the same tier.
+    assert [a["rule"] for a in week[:2]] == ["live_secret", "fresh_regressions"]
 
 
 def test_regressions_unavailable_store() -> None:
@@ -281,7 +365,7 @@ def _fix_items():
     from repowise.core.analysis.health.fix_first import build_fix_first
     from tests.unit.health import fix_first_rows as rows
 
-    return build_fix_first(
+    items = build_fix_first(
         metrics=rows.METRICS,
         findings=rows.FINDINGS,
         refactoring=rows.REFACTORING,
@@ -289,6 +373,8 @@ def _fix_items():
         plans=rows.PLANS,
         limit=3,
     ).items
+    # The rules read the tier as given: the perf item stands in for a next one.
+    return (replace(items[0], tier="next"), *items[1:])
 
 
 def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
@@ -306,6 +392,17 @@ def test_fix_first_emits_now_and_next_and_leaves_later() -> None:
     assert actions[0].surface == "performance"
     assert actions[1].commands[0].mcp == f'get_health(fix_id="{items[1].id}")'
     assert len({a.action_id for a in actions}) == 2
+
+
+def test_fix_first_leaves_a_cause_the_week_added_to_fresh_regressions() -> None:
+    perf = _fix_items()[0]
+    assert perf.kind == "perf_fix" and perf.target.symbol
+    path, symbol = perf.target.file_path, perf.target.symbol.rsplit(".", 1)[-1]
+    same = _recent(path, symbol, kind="performance")
+    other = _recent(path, "elsewhere", kind="performance")
+    for found, listed in (((same,), False), ((other,), True)):
+        actions = _run(code.fix_first, _facts(fix_first=_fix_items(), recent_findings=found)).actions
+        assert (perf.title in [a.title for a in actions]) is listed
 
 
 def test_fix_first_unavailable_is_named() -> None:
@@ -697,7 +794,7 @@ def test_secret_ignores_a_dummy_word_value() -> None:
 def test_rollup_carries_evidence_starting_with_the_worst_file_and_commands() -> None:
     found = (
         *(_recent(f"src/f{i}.py", sha=f"s{i}") for i in range(4)),
-        _recent("src/worst.py", severity="critical", sha="w1"),
+        _recent("src/worst.py", sha="w1", kind="performance"),
     )
     (a,) = _run(code.fresh_regressions, _facts(recent_findings=found)).actions
     assert a.details[0].path == "src/worst.py" == a.includes[0]

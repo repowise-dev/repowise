@@ -691,6 +691,26 @@ class TestScanFile:
             ("a.py", 'key = hashlib.sha1(f"({a})".encode(), usedforsecurity=False)\n', False),
             ("a.py", 'key = hashlib.sha1(b"usedforsecurity=False")\n', True),
             ("a.py", "key = hashlib.sha1(\n    text.encode()\n)\nok = sha256(b, usedforsecurity=False)\n", True),
+            # Cut to a few characters where it is computed, or kept as a key: an id.
+            ("a.py", "short = hashlib.md5(name.encode()).hexdigest()[:8]\n", False),
+            ("a.py", "short = hashlib.sha1(name.encode()).hexdigest()[0:12]\n", False),
+            ("a.js", 'const id = crypto.createHash("md5").update(s).digest("hex").slice(0, 8);\n', False),
+            ("a.py", "etag = hashlib.md5(body).hexdigest()\n", False),
+            ("a.py", "cache_key = hashlib.sha1(url.encode()).hexdigest()\n", False),
+            ("a.ts", 'const cacheKey = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'slug = title + "-" + md5(title.encode()).hexdigest()\n', False),
+            # A credential stays a finding, truncated or named as a key.
+            ("a.py", "pw = hashlib.md5(password.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "cache_key = hashlib.md5(token).hexdigest()\n", True),
+            ("a.py", "digest = hashlib.md5(data).hexdigest()[8:]\n", True),
+            ("a.py", "full = hashlib.md5(data).digest()\n", True),
+            ("a.py", "pw = hashlib.md5(p.encode()).hexdigest()[:8]\n", True),
+            ("a.py", "whole = hashlib.md5(data).hexdigest()[:32]\n", True),
+            ("a.py", "mac = hmac.new(k, m, hashlib.md5).hexdigest()[:8]\n", True),
+            ("a.py", "if cache_key in seen: h = hashlib.md5(data).hexdigest()\n", True),
+            ("a.ts", 'const cacheKey: string = createHash("md5").update(url).digest("hex");\n', False),
+            ("a.py", 'row = {"etag": hashlib.md5(body).hexdigest()}\n', False),
+            ("a.py", "author_slug = hashlib.md5(name.encode()).hexdigest()\n", False),
         ],
     )
     def test_weak_hash_is_an_algorithm_in_use(self, path: str, source: str, expected: bool) -> None:
@@ -1171,6 +1191,28 @@ class TestVendorShapeEdges:
     def test_key_names_and_templates_are_not_secrets(self, source: str) -> None:
         assert "hardcoded_secret" not in self._kinds(source)
 
+    @pytest.mark.parametrize(
+        "value",
+        ["COMFY_CLOUD_API_KEY", "NO_REPLY", "HEARTBEAT_OK", "AWS_V2_API_KEY", "TOKEN_123_KEY", "_PRIVATE_KEY"],
+    )
+    @pytest.mark.parametrize("path", ["config.py", "config.ts", ".env"])
+    def test_uppercase_identifiers_are_not_secrets(self, value: str, path: str) -> None:
+        assert "hardcoded_secret" not in self._kinds(f'API_KEY = "{value}"\n', path)
+
+    @pytest.mark.parametrize(
+        "value",
+        ["ABCD_1234_EFGH", "ABCD_1234567890_EFGH", "ABCD_eFGH_12", "ABCD-EFGH-1234"],
+    )
+    def test_credential_shaped_values_still_fire(self, value: str) -> None:
+        assert "hardcoded_secret" in self._kinds(f'API_KEY = "{value}"\n')
+
+    def test_uppercase_password_is_not_exempted(self) -> None:
+        assert "hardcoded_password" in self._kinds('password = "SECRET_PHRASE"\n')
+
+    def test_vendor_key_is_not_exempted_by_uppercase_identifier(self) -> None:
+        key = "AKIA" + "BCDEFGHIJKLMNOPQ"
+        assert "aws_access_key" in self._kinds(f'API_KEY = "{key}"\n')
+
     def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
         source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]
@@ -1576,6 +1618,27 @@ class TestNoAlarmOnCodeThatDoesNotShip:
     def test_other_scanners_allow_markers_silence_a_secret(self, path: str, marker: str) -> None:
         source = f'key = "{self.KEY}"  {marker}\n'
         assert self._found(path, source) == []
+
+    @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("README.md", "key {key} pragma: allowlist secret\n"),
+            ("README.md", "key {key} <!-- nosec -->\n"),
+            ("README.md", "key {key} # pragma: allowlist secret\n"),
+            ("docs/guide.rst", "key {key} nosec\n"),
+            ("README.md", "pragma: allowlist nextline secret\nkey {key}\n"),
+        ],
+    )
+    def test_prose_allow_markers_need_no_comment_opener(self, path: str, source: str) -> None:
+        assert self._found(path, source.format(key=self.KEY)) == []
+
+    def test_a_word_containing_a_marker_does_not_silence_prose(self) -> None:
+        source = f"key {self.KEY} nosecurity\n"
+        assert self._found("README.md", source) == [("aws_access_key", "high")]
+
+    def test_a_bare_marker_outside_a_comment_still_fires_in_code(self) -> None:
+        source = f'key = "{self.KEY}"  nosec\n'
+        assert self._found("src/settings.py", source) == [("aws_access_key", "high")]
 
     @pytest.mark.parametrize(
         "source",

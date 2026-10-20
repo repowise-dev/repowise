@@ -36,7 +36,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
 - **bumps** — count of branches at the same nesting depth as their
-  sibling branches. Feeds `bumpy_road`.
+  sibling branches. Feeds `repeated_nesting`.
 - **param_count** — formal parameter count. Feeds `primitive_obsession`.
 - **nloc** — non-comment lines of code per function.
 - **assertion_blocks** — runs of ≥ 2 consecutive assertion statements,
@@ -161,13 +161,16 @@ fields on its `LanguageNodeMap` (all default to empty = opt-out):
   field reads and method calls).
 
 The receiver and member-name children are extracted by a generic
-field-name probe (`class_analysis._self_member_name`), which tries the
-`object`/`value`/`argument`/`expression` (receiver) and
-`property`/`attribute`/`field`/`name` (member) fields and then falls back
-to positional children — so most tree-sitter grammars need only the
-node-type names above. Get one wrong and the safety valve degrades the
-class to "no signal" rather than emitting a false positive, so it's cheap
-to add a language speculatively and refine later.
+field-name probe (`ast_utils.self_member_name`, built on `member_object`
+and `member_name`). `member_object` tries the
+`object`/`value`/`argument`/`operand`/`expression` fields and falls back
+to the first named child. `member_name` tries the
+`property`/`attribute`/`field`/`name` fields, then Swift's nested
+`suffix`, then the last named `*identifier` child — so most tree-sitter
+grammars need only the node-type names above. Get one wrong and the
+safety valve degrades the class to "no signal" rather than emitting a
+false positive, so it's cheap to add a language speculatively and refine
+later.
 
 For **assertion-block** detection (test-quality smells), set two more
 opt-in fields:

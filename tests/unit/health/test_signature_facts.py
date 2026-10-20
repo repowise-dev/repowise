@@ -6,6 +6,9 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.analysis.health.complexity import walk_file
+from repowise.core.analysis.health.complexity.ast_utils import _count_parameters, _parameter_list
+from repowise.core.analysis.health.complexity.languages import get_language_map
+from repowise.core.analysis.health.complexity.signature import typed_param_counts
 
 FIVE = "a: int, b: int, c: int, d: int, e: int"
 
@@ -181,3 +184,106 @@ def test_optional_scalars_count_as_scalars():
 def test_dart_num_is_a_scalar():
     fns = _fns("a.dart", "dart", "void f(num a, int b, String c, Foo d) {}\n")
     assert (fns["f"].typed_param_count, fns["f"].primitive_param_count) == (4, 3)
+
+
+@pytest.mark.parametrize(
+    ("language", "path", "source", "expected"),
+    [
+        (
+            "java", "A.java",
+            "class A {\n  A(String a, // String b,\n"
+            "    String c, /* String d, */ String e) {}\n}\n",
+            3,
+        ),
+        (
+            "rust", "a.rs",
+            "fn f(a: i32, // b: i32,\n     c: i32, /* d: i32, */ e: i32) {}\n",
+            3,
+        ),
+        (
+            "csharp", "A.cs",
+            "class A {\n  void F(int a, // int b,\n"
+            "    int c, /* int d, */ int e) {}\n}\n",
+            3,
+        ),
+        (
+            "c", "a.c",
+            "int f(int a, int b, int c, int d, int e, int g, int h)\n{\n    return a;\n}\n",
+            7,
+        ),
+        (
+            "cpp", "a.cpp",
+            "int f(int a, int b, int c, int d, int e, int g, int h)\n{\n    return a;\n}\n",
+            7,
+        ),
+        (
+            "kotlin", "A.kt",
+            "fun f(a: Int, b: Int, c: Int, d: Int, e: Int, g: Int, h: Int): Int {\n"
+            "    return a\n}\n",
+            7,
+        ),
+    ],
+    ids=["java-comments", "rust-comments", "csharp-comments", "c", "cpp", "kotlin"],
+)
+def test_reported_parameter_counts(language: str, path: str, source: str, expected: int):
+    (fn,) = walk_file(path, language, source.encode()).functions
+    assert (fn.param_count, fn.typed_param_count, fn.primitive_param_count) == (expected,) * 3
+
+
+@pytest.mark.parametrize(
+    ("language", "source", "expected"),
+    [
+        ("c", "int f(void) { return 0; }", (0, 0, 0)),
+        ("c", "int f(void /* no parameters */) { return 0; }", (0, 0, 0)),
+        ("c", "int f(void *p) { return 0; }", (1, 1, 0)),
+        ("cpp", "int A::f(int a, int b) { return a; }", (2, 2, 2)),
+        ("c", "char *f(int a, int b) { return 0; }", (2, 2, 2)),
+        ("cpp", "int &f(int a, int b) { return a; }", (2, 2, 2)),
+        ("cpp", "int f(int a, ...) { return a; }", (2, 1, 1)),
+        ("cpp", "int f(...) { return 0; }", (1, 0, 0)),
+        (
+            "c", "int f(void (*cb)(int a, int b, int c), int x) { return x; }",
+            (2, 2, 1),
+        ),
+        ("c", "int (*f(int a, int b))(int c) { return 0; }", (2, 2, 2)),
+    ],
+    ids=[
+        "void", "commented-void", "void-pointer", "out-of-line", "pointer-return",
+        "reference-return", "variadic", "only-variadic", "callback", "callback-return",
+    ],
+)
+def test_c_declarator_parameter_counts(language: str, source: str, expected: tuple[int, int, int]):
+    (fn,) = walk_file(f"a.{language}", language, source.encode()).functions
+    assert (fn.param_count, fn.typed_param_count, fn.primitive_param_count) == expected
+
+
+def test_rust_comment_before_receiver():
+    fns = _fns("a.rs", "rust", "impl A { fn f(/* receiver */ &self, a: i32) {} }")
+    fn = fns["f"]
+    assert (fn.param_count, fn.typed_param_count, fn.primitive_param_count) == (1, 1, 1)
+
+
+def test_kotlin_defaults_and_modifiers_are_not_parameters():
+    fns = _fns(
+        "A.kt", "kotlin",
+        'fun f(a: Int = 3, b: String = "x", vararg c: Int) {}\n',
+    )
+    fn = fns["f"]
+    assert (fn.param_count, fn.typed_param_count, fn.primitive_param_count) == (3, 3, 3)
+
+
+def test_kotlin_constructor_parameter_list():
+    from tree_sitter import Parser
+
+    from repowise.core.ingestion.parser import _get_language
+
+    # Constructors are not standalone walker units in Kotlin yet. Exercise
+    # the shared signature helpers on the secondary constructor's actual AST.
+    source = b'class A {\n    constructor(a: Int, b: String = "x") {}\n}\n'
+    tree = Parser(_get_language("kotlin")).parse(source)
+    assert not tree.root_node.has_error
+    cls = tree.root_node.named_children[0]
+    body = next(c for c in cls.named_children if c.type == "class_body")
+    ctor = next(c for c in body.named_children if c.type == "secondary_constructor")
+    assert _count_parameters(ctor) == 2
+    assert typed_param_counts(_parameter_list(ctor), get_language_map("kotlin")) == (2, 2)

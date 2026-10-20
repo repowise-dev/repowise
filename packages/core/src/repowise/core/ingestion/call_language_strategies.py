@@ -21,7 +21,12 @@ from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.receiver_types import dart_named_constructors
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
-from .resolvers.jvm_gradle import declaration_rank, source_set_dir
+from .resolvers.jvm_gradle import (
+    SourceSetGraph,
+    build_source_set_graph,
+    declaration_rank,
+    source_set_dir,
+)
 from .symbol_identity import outer_scope
 from .type_names import bare_type_name
 
@@ -39,7 +44,9 @@ class _LanguageCallStrategies:
     Strategies are named rather than bound so a probe can substitute one.
 
     ``member_bare_fallback`` lets a member or chained call nothing claimed fall
-    back to the bare-name tiers. ``inherited_typed_receiver`` lets a typed
+    back to the bare-name tiers; ``chain_bare_fallback`` withholds that from a
+    call chained on another call (``a.b().c()``) alone, which is resolved by
+    its inner call's return type or not at all. ``inherited_typed_receiver`` lets a typed
     receiver whose type lacks the method answer with the one ancestor that
     declares it.
     """
@@ -49,6 +56,7 @@ class _LanguageCallStrategies:
     member: tuple[str, ...] = ()
     member_fallback: tuple[str, ...] = ()
     member_bare_fallback: bool = True
+    chain_bare_fallback: bool = True
     inherited_typed_receiver: bool = False
 
 
@@ -59,10 +67,8 @@ _BUILD_ROOT_LANGUAGES = frozenset({"dart", "java", "kotlin", "scala", "swift"})
 
 _TYPED_RECEIVER = ("_resolve_typed_receiver",)
 
-# Kotlin Multiplatform's common declaration, and a rank worse than any
-# ``declaration_rank`` returns.
+# Kotlin Multiplatform's common declaration.
 _EXPECT = "expect"
-_NO_RANK = 3
 
 
 def _gradle_script_receiver(path: str) -> str | None:
@@ -110,7 +116,11 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member_bare_fallback=False,
         inherited_typed_receiver=True,
     ),
-    "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
+    # A chained call keeps no bare-name fallback: ``.send()`` on a result the
+    # return type does not type is not the repo's ``send``.
+    "kotlin": replace(
+        _JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+    ),
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     # Swift and Dart register the fallback: neither has a package tier of its
@@ -151,6 +161,9 @@ class LanguageStrategiesMixin:
 
         # Whether any symbol is a Kotlin Multiplatform ``expect``; None until asked.
         self._has_expect: bool | None = None
+
+        # Kotlin Multiplatform source-set dependencies; None until asked.
+        self._source_set_graph: SourceSetGraph | None = None
 
         # {Dart class id: the named constructors its body declares}
         self._dart_constructors: dict[str, frozenset[str]] = {}
@@ -453,19 +466,33 @@ class LanguageStrategiesMixin:
         A Kotlin Multiplatform name has one declaration per source set; see
         ``declaration_rank``. *found* is read lazily: the first declaration
         answers when no rank can tell them apart, and one in the caller's own
-        source set ends the search.
+        source set ends the search. A declaration in a source set the caller
+        cannot see is skipped.
         """
         if source_set_dir(file_path) is None and not self._repo_declares_expect():
             return next(found, (None, None))[1]
+        graph = self._get_source_set_graph()
         best: str | None = None
-        best_rank = _NO_RANK
+        best_rank: int | None = None
         for path, sym_id in found:
-            rank = declaration_rank(file_path, path, self._is_expect(sym_id))
+            rank = declaration_rank(file_path, path, self._is_expect(sym_id), graph)
+            if rank is None:
+                continue
             if rank == 0:
                 return sym_id
-            if rank < best_rank:
+            if best_rank is None or rank < best_rank:
                 best, best_rank = sym_id, rank
         return best
+
+    def _get_source_set_graph(self) -> SourceSetGraph:
+        """The repository's Kotlin Multiplatform source-set dependencies. Built once."""
+        if self._source_set_graph is None:
+            from pathlib import Path
+
+            self._source_set_graph = build_source_set_graph(
+                self._parsed_files, Path(self._repo_path) if self._repo_path else None
+            )
+        return self._source_set_graph
 
     def _is_expect(self, sym_id: str) -> bool:
         """Is *sym_id* an ``expect`` declaration, or a member of an ``expect`` type?"""

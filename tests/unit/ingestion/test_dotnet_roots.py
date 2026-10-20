@@ -91,3 +91,57 @@ def test_directives_after_a_leading_comment_still_count(tmp_path: Path) -> None:
 def test_preprocessor_lines_are_not_app_directives(tmp_path: Path) -> None:
     text = "#pragma warning disable CS1591\n#region R\nSystem.Console.WriteLine(1);\n#endregion\n"
     assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "using System.Management.Automation;\nnamespace App;\n"
+        '[Cmdlet(VerbsCommon.Get, "Thing")]\npublic class GetThing : PSCmdlet { }\n',
+        "using Microsoft.CodeAnalysis;\nnamespace App;\n"
+        "[Generator]\npublic class Gen : IIncrementalGenerator { }\n",
+        "using Microsoft.CodeAnalysis;\nnamespace App;\n"
+        "[GeneratorAttribute(LanguageNames.CSharp)]\npublic class Gen : ISourceGenerator { }\n",
+        "namespace App;\n"
+        '[System.Management.Automation.CmdletAttribute("Get", "Thing")]\n'
+        "public class GetThing { }\n",
+        "using BenchmarkDotNet.Attributes;\nnamespace App;\n[MemoryDiagnoser]\n"
+        "public class SortBench\n{\n    [Benchmark(Baseline = true)]\n"
+        "    public void Sort() { }\n}\n",
+    ],
+    ids=["cmdlet", "generator", "generator-attribute", "qualified-cmdlet", "benchmark"],
+)
+def test_class_a_host_loads_by_reflection_is_a_root(tmp_path: Path, text: str) -> None:
+    assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+def test_benchmark_attributes_without_a_benchmark_method_are_not_a_root(
+    tmp_path: Path,
+) -> None:
+    text = (
+        "using BenchmarkDotNet.Attributes;\nnamespace App;\n[MemoryDiagnoser]\n"
+        "public class NotABench\n{\n    public void Sort() { }\n}\n"
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+def test_cmdlet_next_to_an_unused_class_keeps_the_file_judged(tmp_path: Path) -> None:
+    text = (
+        "using System.Management.Automation;\nnamespace App;\n"
+        '[Cmdlet(VerbsCommon.Get, "Thing")]\npublic class GetThing : PSCmdlet { }\n'
+        "public class DeadSibling { }\n"
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+def test_benchmark_in_a_same_named_class_of_another_namespace_does_not_count(
+    tmp_path: Path,
+) -> None:
+    text = (
+        "using BenchmarkDotNet.Attributes;\n"
+        "namespace A\n{\n    public class Bench\n    {\n"
+        "        [Benchmark]\n        public void Sort() { }\n    }\n}\n"
+        "namespace B\n{\n    public class Bench\n    {\n"
+        "        public void Sort() { }\n    }\n}\n"
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == set()

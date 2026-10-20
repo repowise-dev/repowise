@@ -16,6 +16,7 @@ from repowise.core.ingestion.traverser import (
     _detect_language,
     _is_generated,
     _scan_package_dir,
+    in_blocked_dir,
 )
 
 
@@ -179,6 +180,10 @@ class TestFileTraverser:
         assert not any("__pycache__" in p for p in paths)
 
     def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "ProjectSettings").mkdir()
+        (tmp_path / "ProjectSettings" / "ProjectVersion.txt").write_text(
+            "m_EditorVersion: 6000.0.0f1\n"
+        )
         (tmp_path / "Assets" / "Scripts").mkdir(parents=True)
         (tmp_path / "Assets" / "Scripts" / "Game.cs").write_text("class Game {}")
         (tmp_path / "Library" / "PackageCache").mkdir(parents=True)
@@ -190,6 +195,39 @@ class TestFileTraverser:
         assert "Assets/Scripts/Game.cs" in paths
         assert not any(p.startswith("Library/") for p in paths)
         assert not any(p.startswith("Temp/") for p in paths)
+
+    def test_unity_dir_names_outside_unity_projects_are_indexed(self, tmp_path: Path) -> None:
+        files = {
+            "MediaBrowser.Controller/Library/ILibraryManager.cs": "interface ILibraryManager {}",
+            "MediaBrowser.Controller/Entities/Folder.cs": "class Folder {}",
+            "Tools/Builds/BuildInfo.cs": "class BuildInfo {}",
+            "Server/Logs/LogFileTask.cs": "class LogFileTask {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert paths == set(files)
+        assert not in_blocked_dir("Tools/Builds/BuildInfo.cs", tmp_path)
+
+    def test_skips_unity_generated_dirs_in_a_nested_unity_project(self, tmp_path: Path) -> None:
+        files = {
+            "game/ProjectSettings/ProjectVersion.txt": "m_EditorVersion: 6000.0.0f1\n",
+            "game/Assets/Player.cs": "class Player {}",
+            "game/Library/x.cs": "class X {}",
+            "src/Library/y.cs": "class Y {}",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+        assert "game/Assets/Player.cs" in paths
+        assert "src/Library/y.cs" in paths
+        assert "game/Library/x.cs" not in paths
+        assert in_blocked_dir("game/Library/x.cs", tmp_path)
+        assert not in_blocked_dir("src/Library/y.cs", tmp_path)
 
     def test_source_packages_named_like_output_dirs_are_indexed(self, tmp_path: Path) -> None:
         files = {
@@ -529,6 +567,53 @@ class TestFileTraverser:
         assert files["demo/test_selection.py"] is False
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
+
+    def test_a_test_named_php_class_outside_phpunit_testsuites_is_production(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+            "tools/HelperTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+        # A nested config governs its own directory.
+        (tmp_path / "tools" / "phpunit.xml").write_text(
+            '<phpunit><testsuites><testsuite name="Tools">'
+            '<directory>tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["src/Testing/Attributes/UnitTest.php"] is False
+        assert files["tests/RouterTest.php"] is True
+        assert files["tools/HelperTest.php"] is False
+
+    def test_malformed_primary_phpunit_config_does_not_fall_back_to_dist(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "phpunit.xml").write_text("not valid xml <")
+        (tmp_path / "phpunit.xml.dist").write_text(
+            '<phpunit><testsuites><testsuite name="Suite">'
+            '<directory suffix="Test.php">./tests</directory>'
+            '</testsuite></testsuites></phpunit>'
+        )
+        for rel in (
+            "src/Testing/Attributes/UnitTest.php",
+            "tests/RouterTest.php",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("<?php\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        # Fails closed: unreadable primary does not fall back, so test-named class stays True
+        assert files["src/Testing/Attributes/UnitTest.php"] is True
+        assert files["tests/RouterTest.php"] is True
 
     def test_csharp_test_project_classifies_files_as_tests(self, tmp_path: Path) -> None:
         (tmp_path / "acceptance" / "Acme.Acceptance.csproj").parent.mkdir(parents=True, exist_ok=True)

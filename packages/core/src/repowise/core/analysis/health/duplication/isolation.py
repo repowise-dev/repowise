@@ -55,6 +55,9 @@ def _worker(
 ) -> None:
     """Run in a fresh interpreter and return only the compact report."""
     try:
+        from repowise.core.worker_logging import quiet_worker_logs
+
+        quiet_worker_logs()
         parsed_files = [_ParsedFile(_FileInfo(*file_info)) for file_info in files]
         report = detect_clones(
             parsed_files,

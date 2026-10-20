@@ -68,6 +68,21 @@ def test_blocking_finding_requires_review():
     assert directive.evidence_state == "available"
 
 
+def test_the_headline_states_the_changed_codes_health_on_both_sides():
+    from repowise.core.analysis.change_health.file_scores import FileScoreDelta
+
+    def row(path, base, head):
+        return FileScoreDelta(path, base, head, 10 - base, 10 - head, 100, 100)
+
+    delta = _delta([_finding(severity="critical")])
+    delta.files = [row("app/a.py", 8.0, 7.0), row("app/b.py", 9.5, 9.5)]
+    assert review_directive(delta).headline.endswith(
+        "Health of the changed code: 8.75 to 8.25 (-0.50)."
+    )
+    delta.files = [row("app/b.py", 9.5, 9.5)]
+    assert review_directive(delta).headline.endswith("Health of the changed code holds at 9.50.")
+
+
 def test_low_severity_only_recommends_review():
     directive = review_directive(_delta([_finding(severity="low")]))
     assert directive.status == "review_recommended"
@@ -158,6 +173,21 @@ def test_each_finding_produces_an_inspect_action_with_its_id():
     assert len(actions) == 2
     assert all(a.targets and a.evidence_basis == "symbol_overlap" for a in actions)
     assert [a.priority for a in actions] == [0, 1]
+
+
+def test_the_finding_the_headline_names_leads_the_reasons_and_actions():
+    mediums = [_finding(severity="medium", path=f"app/m{i}.py") for i in range(3)]
+    high = _finding(severity="high", path="app/h.py", biomarker="large_method")
+    directive = review_directive(_delta([*mediums, high]))
+    assert directive.headline == (
+        "1 of 4 new findings needs review, starting with large_method in app/h.py."
+    )
+    assert directive.reasons[0].startswith("high defect: large_method")
+    assert directive.actions[0].targets == (high.change_finding_id,)
+    # The rest keep the order the delta gave them.
+    assert [a.targets[0] for a in directive.actions[1:4]] == [
+        f.change_finding_id for f in mediums
+    ]
 
 
 def test_measured_tests_become_a_run_action_with_every_target():

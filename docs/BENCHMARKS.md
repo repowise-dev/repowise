@@ -19,7 +19,7 @@ another tool leads, that row is here too. The research behind each method is in
 | [Work saved in an agent loop](#2-what-changes-in-a-real-agent-loop) | **31.6% less** agent output than no tool, 3.8 tool calls against 7.2 | 43 django questions on Codex, p < 0.0001 |
 | [Health score against CodeScene](#5-code-health-predicts-defects) | **2.3x** the later-defective files inside a 20% review budget | 2,770 files, 21 repositories, p = 0.003 |
 | [Which tests cover a file, with no coverage run](#test-intelligence) | **95.7%** precision on what reaches a file, **97.5%** on the tests to run | 46 claims and 47 targets, checked against per-test coverage |
-| [Largest repository indexed](#scale) | **58,924 files** (dotnet/runtime) in 120 minutes at 11.7 GiB peak | one keyless run on a laptop |
+| [Largest repository indexed](#scale) | **About 15M lines of code, 58,924 files** (dotnet/runtime) in 120 minutes at 11.7 GiB peak | one keyless run on a laptop |
 | [Memory to build the call graph](#what-it-costs-to-run) | **75 MB** median against 757 MB for CodeGraph, lowest on **35 of 35** repositories | 35 repositories, 5 tools |
 
 ### One index, the work of several tools
@@ -408,14 +408,19 @@ Large public repositories, indexed end to end on one Windows laptop (31 GB RAM),
 keyless (`repowise init --no-prose`), limited to 8 CPUs and 2 parse workers.
 October 2026.
 
-| Repository | Tracked files | First index | Peak memory | Index on disk |
-|---|---:|---:|---:|---:|
-| dotnet/aspnetcore v8.0.31 | 15,510 | 20 min | 4.0 GiB | 1.4 GiB |
-| elastic/elasticsearch v8.19.22 | 34,315 | 52 min | 7.8 GiB | 4.2 GiB |
-| dotnet/runtime v8.0.31 | **58,924** | **120 min** | **11.7 GiB** | 7.7 GiB |
+| Repository | Tracked files | Lines of code | First index | Peak memory | Index on disk |
+|---|---:|---:|---:|---:|---:|
+| dotnet/aspnetcore v8.0.31 | 15,510 | 1.5M | 20 min | 4.0 GiB | 1.4 GiB |
+| elastic/elasticsearch v8.19.22 | 34,315 | 4.0M | 52 min | 7.8 GiB | 4.2 GiB |
+| dotnet/runtime v8.0.31 | **58,924** | **15.0M** | **120 min** | **11.7 GiB** | 7.7 GiB |
 
-Peak memory is the whole process tree, one run per repository. On aspnetcore,
-an update with no changes takes about 4 seconds.
+Lines of code are non-blank lines in tracked source files (C#, IL, C, C++, Java,
+TypeScript, JavaScript, Python, shell, assembly and similar), with data, markup and
+docs left out. Peak memory is the whole process tree, one run per repository.
+
+The first index is a one-time cost: it builds the call graph, git history, health,
+tests, dead code and docs together. After that, each update re-analyses only what
+changed. On aspnetcore, an update with no changes takes about 4 seconds.
 
 ---
 
@@ -424,8 +429,8 @@ an update with no changes takes about 4 seconds.
 ## Test intelligence
 
 Repowise links tests to the code they exercise from the call graph, with no
-coverage run needed. We checked those inferred links against a real
-`coverage run --contexts=test` on this repository, over a slice with complete
+coverage run needed. We checked those inferred links against real per-test
+coverage on this repository, over a slice with complete
 per-test attribution (37 test files, 159 production files).
 
 | Question | Precision | Sample |

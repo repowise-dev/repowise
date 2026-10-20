@@ -1,9 +1,8 @@
 """Per-language parser configuration data.
 
 ``LanguageConfig`` plus the declarative ``LANGUAGE_CONFIGS`` table that
-drives :class:`~repowise.core.ingestion.parser.ASTParser`. Extracted from
-``parser.py`` so the parser module holds behaviour and this module holds
-the per-language data. The parser keeps re-exporting both names, so
+drives :class:`~repowise.core.ingestion.parser.ASTParser`: the parser holds
+behaviour, this module the per-language data. The parser keeps re-exporting both names, so
 ``from ...parser import LANGUAGE_CONFIGS, LanguageConfig`` still works.
 """
 
@@ -18,6 +17,21 @@ from .extractors.cobol import (
     cobol_symbol_end_line,
     normalize_cobol_call_target,
     normalize_cobol_symbol_name,
+)
+from .extractors.imports import (
+    DART_IMPORTS,
+    ELIXIR_IMPORTS,
+    FSHARP_IMPORTS,
+    GENERIC_IMPORTS,
+    JVM_IMPORTS,
+    PASCAL_IMPORTS,
+    PHP_IMPORTS,
+    PYTHON_IMPORTS,
+    RUST_IMPORTS,
+    SCALA_IMPORTS,
+    SWIFT_IMPORTS,
+    TS_JS_IMPORTS,
+    ImportExtractor,
 )
 from .extractors.visibility import (
     csharp_visibility,
@@ -98,9 +112,14 @@ class LanguageConfig:
     # ``modifier``, Kotlin ``modifiers``), read into ``Symbol.modifiers``.
     modifier_node_types: frozenset[str] = field(default_factory=frozenset)
 
+    # How this language's import matches become ``Import`` records; see
+    # ``extractors.imports``.
+    import_extractor: ImportExtractor = GENERIC_IMPORTS
+
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
+        import_extractor=PYTHON_IMPORTS,
         symbol_node_types={
             "function_definition": "function",
             "class_definition": "class",
@@ -115,6 +134,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset({"class_definition"}),
     ),
     "typescript": LanguageConfig(
+        import_extractor=TS_JS_IMPORTS,
         symbol_node_types={
             "function_declaration": "function",
             "generator_function_declaration": "function",
@@ -148,6 +168,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         declaration_node_types=frozenset({"function_signature", "method_signature"}),
     ),
     "javascript": LanguageConfig(
+        import_extractor=TS_JS_IMPORTS,
         symbol_node_types={
             "function_declaration": "function",
             "generator_function_declaration": "function",
@@ -167,6 +188,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         symbol_node_types={
             "function_declaration": "function",
             "method_declaration": "method",
+            "method_elem": "method",  # interface method spec; bodiless
             "type_spec": "struct",  # refined in post-processing
             "const_spec": "variable",  # const MaxRetries = 3
             "var_spec": "variable",  # var ErrNotFound = errors.New(...)
@@ -176,8 +198,12 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=go_visibility,
         parent_extraction="receiver",
         parent_class_types=frozenset(),
+        # An interface method spec promises a body it does not carry; keep it
+        # out of the definition indexes, as Rust trait signatures are.
+        declaration_node_types=frozenset({"method_elem"}),
     ),
     "rust": LanguageConfig(
+        import_extractor=RUST_IMPORTS,
         symbol_node_types={
             "function_item": "function",
             "function_signature_item": "function",
@@ -212,6 +238,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         reference_call_node_types=frozenset({"macro_invocation"}),
     ),
     "java": LanguageConfig(
+        import_extractor=JVM_IMPORTS,
         symbol_node_types={
             "class_declaration": "class",
             "interface_declaration": "interface",
@@ -280,6 +307,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         declaration_node_types=frozenset({"declaration"}),
     ),
     "kotlin": LanguageConfig(
+        import_extractor=JVM_IMPORTS,
         symbol_node_types={
             "function_declaration": "function",
             "class_declaration": "class",
@@ -374,6 +402,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         ),
     ),
     "swift": LanguageConfig(
+        import_extractor=SWIFT_IMPORTS,
         symbol_node_types={
             "class_declaration": "class",
             "protocol_declaration": "interface",
@@ -390,6 +419,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset({"class_declaration", "protocol_declaration"}),
     ),
     "dart": LanguageConfig(
+        import_extractor=DART_IMPORTS,
         symbol_node_types={
             "class_definition": "class",
             "mixin_declaration": "class",
@@ -419,6 +449,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         ),
     ),
     "scala": LanguageConfig(
+        import_extractor=SCALA_IMPORTS,
         symbol_node_types={
             "class_definition": "class",
             "trait_definition": "trait",
@@ -438,6 +469,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset({"class_definition", "trait_definition", "object_definition"}),
     ),
     "php": LanguageConfig(
+        import_extractor=PHP_IMPORTS,
         symbol_node_types={
             "class_declaration": "class",
             "interface_declaration": "interface",
@@ -457,6 +489,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         ),
     ),
     "elixir": LanguageConfig(
+        import_extractor=ELIXIR_IMPORTS,
         symbol_node_types={
             # Elixir's one node kind for every definition. "module" is a
             # placeholder, refined per keyword in refine_elixir_call_kind --
@@ -478,6 +511,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(),
     ),
     "fsharp": LanguageConfig(
+        import_extractor=FSHARP_IMPORTS,
         symbol_node_types={
             # `module Foo.Bar` / `namespace Foo.Bar` head the file;
             # `module X =` nests inside one.
@@ -487,7 +521,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # The captured node is the binding's left-hand side, not the
             # enclosing function_or_value_defn: that one node holds every
             # clause of a `let rec f ... and g ...` group, so capturing it
-            # would give every clause the same span. parser.py extends each
+            # would give every clause the same span. the parser extends each
             # symbol over its own clause and filters the nested ones.
             "function_declaration_left": "function",
             "value_declaration_left": "variable",
@@ -516,7 +550,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_extraction="nesting",
         # Deliberately empty: no F# type node carries a `name` field, so the
         # generic walk in _find_parent would match an ancestor and then read
-        # nothing off it. The parent walk is language-gated in parser.py --
+        # nothing off it. The parent walk is language-gated in the parser --
         # see _fsharp_parent_name.
         parent_class_types=frozenset(),
     ),
@@ -567,12 +601,13 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         ),
     ),
     "pascal": LanguageConfig(
+        import_extractor=PASCAL_IMPORTS,
         symbol_node_types={
             # declType wraps class/record/interface/helper/enum/set/array/alias
             # in one node shape (see spec docstring) -- "class" is the closest
             # single bucket, same tradeoff Go makes for `type_spec`: "struct".
             # A real kind refinement (peek at the `type` field to distinguish
-            # class/struct/interface/enum) would need a hook parser.py doesn't
+            # class/struct/interface/enum) would need a hook the parser doesn't
             # currently expose per-language the way it does for Go/Kotlin --
             # flagged as a follow-up, not attempted here.
             "declType": "class",
@@ -597,7 +632,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         # NOT {"declClass", "declIntf", "declHelper"} -- see the spec docstring.
-        # ASTParser._find_parent walks ancestors checking `ancestor.type in
+        # parser.symbols._find_parent walks ancestors checking `ancestor.type in
         # parent_class_types` then reads `ancestor.child_by_field_name("name")`;
         # only declType carries a name field, so pointing this at the inner
         # class/interface/helper node would silently return no parent for every
@@ -694,6 +729,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
 # copying keeps them from drifting apart.
 LANGUAGE_CONFIGS["svelte"] = LANGUAGE_CONFIGS["typescript"]
 LANGUAGE_CONFIGS["vue"] = LANGUAGE_CONFIGS["typescript"]
+LANGUAGE_CONFIGS["astro"] = LANGUAGE_CONFIGS["typescript"]
 # Razor projects its C# regions (``@code`` / ``@{ }`` blocks) into a C#
 # buffer through the same sfc_source seam, so the C# config applies verbatim.
 LANGUAGE_CONFIGS["razor"] = LANGUAGE_CONFIGS["csharp"]

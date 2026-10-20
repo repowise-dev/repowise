@@ -117,6 +117,8 @@ _GENERATED_SENTENCE_RE = re.compile(
 # lines. Only the whole line counts: "Do not modify by hand without ..." or
 # "Generated code: see docs" in a hand-written file says something else.
 _GENERATED_BANNER_LINE_RE = re.compile(r"^GENERATED CODE - DO NOT MODIFY BY HAND\s*$")
+# Visual Studio rewrites resource headers, but ingestion must keep their include edges.
+_VISUAL_CPP_BANNER_LINE_RE = re.compile(r"^MICROSOFT VISUAL C\+\+ GENERATED INCLUDE FILE\.?\s*$")
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
 
@@ -188,7 +190,11 @@ def _leading_generated_sentence(header: str) -> bool:
 
 
 def _says_generated(text: str) -> bool:
-    return bool(_GENERATED_SENTENCE_RE.search(text) or _GENERATED_BANNER_LINE_RE.search(text))
+    return bool(
+        _GENERATED_SENTENCE_RE.search(text)
+        or _GENERATED_BANNER_LINE_RE.search(text)
+        or _VISUAL_CPP_BANNER_LINE_RE.search(text)
+    )
 
 
 def _above_import(lines: list[str], i: int) -> bool:
@@ -297,6 +303,9 @@ _VENDORED_DIR_TOKENS = frozenset(
         "node_modules",
         "bower_components",
         "site-packages",
+        # The Dart SDK's embedding headers that Flutter FFI plugins keep a copy
+        # of (``src/dart-sdk/include/dart_api_dl.h``).
+        "dart-sdk",
     }
 )
 # Matched as the first segment, or as a native tree's library shelf
@@ -463,10 +472,12 @@ _BUILD_SUFFIXES = (
     ".cake",
     ".rockspec",
 )
-# Bundler configs and gulp files, any extension a JS tool's config takes.
+# Bundler configs, gulp files, any extension a JS tool's config takes, and
+# SwiftPM version-specific manifests (``Package@swift-6.0.swift``).
 _BUILD_NAME_RE = re.compile(
     r"^(?:gulpfile|(?:webpack|vite|rollup|rolldown|rspack|esbuild|tsup)\.config(?:\.[\w-]+)*)"
     r"\.[cm]?[jt]s$"
+    r"|^package@swift-\d+(?:\.\d+){0,2}\.swift$"
 )
 # Names a build tool reads only at the root: a nested ``setup.py`` is as often
 # a module (``homeassistant/setup.py`` sets up integrations).
@@ -512,14 +523,13 @@ def is_build_file(path: str) -> bool:
 # Docs, examples, tooling
 # --------------------------------------------------------------------------
 
-# Docs roots count at any depth. Docs are the plural and FastAPI's ``docs_src``
-# only: a singular ``doc/`` is as often a shipped package (cobra's ``doc``
-# generates man pages) as a documentation tree.
+# Plural only: a singular ``doc/`` is as often a shipped package. Where they
+# count is :func:`_is_docs_example`'s rule.
 _DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # Examples as ``support_paths`` reads them, less the benchmark harnesses, which
 # run the system (tooling below). Unlike ``support_paths`` these count only as
-# the first segment or directly under a docs root: ``src/pkg/examples/`` is
-# as often shipped code (an example registry, a runner) as a sample.
+# the first segment or under a docs root: ``src/pkg/examples/`` is as often
+# shipped code (an example registry, a runner) as a sample.
 _EXAMPLE_TOKENS = EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}
 _TUTORIAL_PREFIX = "tutorial"
 
@@ -604,20 +614,28 @@ def _is_docs_site(folder: str, paired: bool) -> bool:
 def _is_docs_example(
     normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
 ) -> bool:
-    # Anything under a docs root already counts, examples beneath it included.
+    """A docs root or example folder as the first segment, a build tool's example
+    target, or a docs folder deeper beside a docs-site generator's config. A
+    nested ``app/docs/`` with no such config is the product's own docs route."""
     if (
-        any(d in _DOCS_ROOT_TOKENS for d in dirs)
-        or bool(dirs and _is_example_dir(dirs[0]))
+        bool(dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0])))
         or _is_tool_example(normalized, dirs)
     ):
         return True
     if repo_root is None:
         return False
     parts = normalized.split("/")
+    root = os.fspath(repo_root)
+
+    def site(i: int, paired: bool) -> bool:
+        return _is_docs_site(os.path.join(root, *parts[:i]), paired)
+
     return any(
-        (d in _DOCS_SITE_NAMES or _DOCS_SITE_SUFFIXED_RE.match(d))
-        and _is_docs_site(
-            os.path.join(os.fspath(repo_root), *parts[: i + 1]), d in _DOCS_SITE_NAMES
+        # A nested docs root beside its site's config, read from its parent.
+        (d in _DOCS_ROOT_TOKENS and site(i, False))
+        or (
+            (d in _DOCS_SITE_NAMES or _DOCS_SITE_SUFFIXED_RE.match(d))
+            and site(i + 1, d in _DOCS_SITE_NAMES)
         )
         for i, d in enumerate(dirs)
     )

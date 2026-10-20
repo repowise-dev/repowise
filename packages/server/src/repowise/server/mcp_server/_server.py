@@ -25,6 +25,7 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.server import __version__
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
@@ -701,11 +702,15 @@ mcp = _RepowiseMCP(
         "In workspace mode, get_architecture and get_blast_radius are also "
         "available. If the tools "
         "report that the repo has no index, tell the user to run "
-        "'repowise init --yes' in the repo root; it needs no API key. Suggest it, "
+        "'repowise init --yes --no-prose' in the repo root; it needs no API key "
+        "and makes no model calls. Suggest it, "
         "do not run it yourself."
     ),
     lifespan=_lifespan,
 )
+# FastMCP takes no version argument, and without one the handshake's
+# serverInfo.version reports the installed ``mcp`` SDK's version.
+mcp._mcp_server.version = __version__
 
 
 # ---------------------------------------------------------------------------

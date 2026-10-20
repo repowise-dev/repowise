@@ -11,10 +11,12 @@ repowise init        # seeds from the base checkout, then runs an incremental up
 repowise update      # same: an unindexed worktree seeds itself first, then updates
 ```
 
-repowise detects that the directory is a linked worktree, derives the base checkout from git's own metadata (no path needed from you), copies the base's `.repowise/` index, and delegates to the incremental update so only the files that differ on your branch are re-processed. You'll see a one-line notice:
+repowise detects that the directory is a linked worktree, derives the base checkout from git's own metadata (no path needed from you), copies the base's `.repowise/` index, and delegates to the incremental update so only the files that differ on your branch are re-processed. init says so before it hands over:
 
 ```
-[worktree] Linked worktree of /path/to/base detected; seeding its index.
+This is a linked worktree of /path/to/base, which is already indexed. init copies that index
+and catches it up with repowise update instead of indexing from scratch.
+Pass --no-seed for a full init here.
 ```
 
 Agents and git hooks benefit without any setup: a post-commit hook or a coding agent running `repowise update` inside an unindexed worktree gets the seed-then-update path instead of an error.

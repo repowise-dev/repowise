@@ -8,8 +8,10 @@ the architecture layers get_overview lists, in stack order.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any
 
+from repowise.core.analysis.health.rows import field
 from repowise.server.chat_datasets import (
     ARROW,
     SUMS,
@@ -40,18 +42,31 @@ async def load_dependencies(ctx: LoadContext) -> list[dict[str, Any]]:
     containers, relations = await container_dependencies(
         ctx.session, ctx.repository.id, exclude_spec=_get_exclude_spec(ctx.repo_path)
     )
-    path_of = {c.id: c.path or "." for c in containers}
-    return [
-        {
-            "edge": f"{path_of[r.source_id]} {ARROW} {path_of[r.target_id]}",
-            "from_package": path_of[r.source_id],
-            "to_package": path_of[r.target_id],
-            "weight": r.edge_count,
-            "coupling": r.coupling,
-        }
-        for r in relations
-        if r.source_id in path_of and r.target_id in path_of
-    ]
+    return dependencies_rows(containers, relations)
+
+
+def dependencies_rows(containers: Iterable[Any], relations: Iterable[Any]) -> list[dict[str, Any]]:
+    """The ``dependencies`` dataset's rows over the container view's boxes and edges.
+
+    *containers* hold ``id`` and ``path``; *relations* hold ``source_id``,
+    ``target_id``, ``edge_count`` and ``coupling``. An edge to a box not in
+    *containers* is left out.
+    """
+    path_of = {field(c, "id"): field(c, "path") or "." for c in containers}
+    rows = []
+    for r in relations:
+        source, target = field(r, "source_id"), field(r, "target_id")
+        if source in path_of and target in path_of:
+            rows.append(
+                {
+                    "edge": f"{path_of[source]} {ARROW} {path_of[target]}",
+                    "from_package": path_of[source],
+                    "to_package": path_of[target],
+                    "weight": field(r, "edge_count"),
+                    "coupling": field(r, "coupling"),
+                }
+            )
+    return rows
 
 
 @register_dataset(
@@ -67,19 +82,28 @@ async def load_dependencies(ctx: LoadContext) -> list[dict[str, Any]]:
     noun="layers",
 )
 async def load_layers(ctx: LoadContext) -> list[dict[str, Any]]:
-    from repowise.core.generation.layers import is_adjacent_layer
     from repowise.core.persistence.crud.knowledge_graph import get_kg_layers
 
-    layers = [
-        layer
-        for layer in await get_kg_layers(ctx.session, ctx.repository.id)
-        if not is_adjacent_layer(layer.layer_id)
-    ]
-    return [
-        {
-            "layer": layer.name,
-            "files": len(json.loads(layer.node_ids_json) if layer.node_ids_json else []),
-            "order": i + 1,
-        }
-        for i, layer in enumerate(layers)
-    ]
+    return layers_rows(await get_kg_layers(ctx.session, ctx.repository.id))
+
+
+def layers_rows(layers: Iterable[Any]) -> list[dict[str, Any]]:
+    """The ``layers`` dataset's rows over knowledge-graph layers, in the order given.
+
+    Each record holds ``layer_id``, ``name`` and ``node_ids_json``; adjacent
+    layers (outside the stack) are left out.
+    """
+    from repowise.core.generation.layers import is_adjacent_layer
+
+    stack = [layer for layer in layers if not is_adjacent_layer(field(layer, "layer_id"))]
+    rows = []
+    for i, layer in enumerate(stack):
+        node_ids = field(layer, "node_ids_json")
+        rows.append(
+            {
+                "layer": field(layer, "name"),
+                "files": len(json.loads(node_ids) if node_ids else []),
+                "order": i + 1,
+            }
+        )
+    return rows

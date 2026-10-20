@@ -47,7 +47,11 @@ export type FixExclusion =
   | "low_value_kind"
   | "kind_unaudited"
   | "terminal_flow"
-  | "moderate_quiet";
+  | "moderate_quiet"
+  | "unmeasured_cost"
+  | "cold_role"
+  | "background_unproven"
+  | "unconfirmed_cost";
 
 /** `all` keeps test files, labelled in `context`. */
 export type FixScope = "production" | "all";

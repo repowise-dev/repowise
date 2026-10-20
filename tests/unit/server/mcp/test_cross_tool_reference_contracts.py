@@ -158,7 +158,7 @@ _REFERENCE_KINDS = (
 )
 _EXPECTED_KINDS = {
     "get_answer": {"file"},
-    "get_change_risk": set(),
+    "get_change_risk": {"file"},
     "get_context": {
         "file",
         "symbol",

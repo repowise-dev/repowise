@@ -145,6 +145,14 @@
   --color-heat-3: color-mix(in srgb, var(--color-accent-primary) 50%, var(--color-bg-surface));
   --color-heat-4: var(--color-accent-primary);
   --color-heat-5: var(--color-accent-hover);
+  /* Release moment (What's new) — a deeper ground than the overlay plane and
+     a low-opacity orange-to-plum glow band behind the version heading, and
+     the card a linked highlight sits on. Solid values so ink on them is
+     checked (contrast-check.py). */
+  --color-release-ground: var(--color-bg-root);
+  --color-release-card: var(--color-bg-surface);
+  --color-release-glow-1: #f8dfc2;
+  --color-release-glow-2: #e8deef;
   /* Supporting cast beside an accent series: tertiary ink stepped into the well. */
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
@@ -516,6 +524,10 @@
   --color-heat-3: color-mix(in srgb, var(--color-accent-primary) 42%, var(--color-bg-surface));
   --color-heat-4: color-mix(in srgb, var(--color-accent-primary) 75%, var(--color-bg-surface));
   --color-heat-5: var(--color-accent-primary);
+  --color-release-ground: #111013;
+  --color-release-card: #1b191e;
+  --color-release-glow-1: #2b1c0e;
+  --color-release-glow-2: #1f1729;
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));

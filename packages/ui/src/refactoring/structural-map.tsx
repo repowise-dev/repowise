@@ -47,6 +47,7 @@
 import * as React from "react";
 
 import { formatNumber } from "../lib/format";
+import { median } from "../lib/math";
 import { typeMeta } from "./meta";
 import {
   MARK_STROKE,
@@ -109,12 +110,6 @@ function markPath(type: string, cx: number, cy: number, r: number): string | nul
 function axisCeiling(max: number): number {
   const step = max > 800 ? 400 : max > 200 ? 100 : max > 40 ? 20 : 5;
   return Math.max(step, Math.ceil(max / step) * step);
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
 export function StructuralMap({

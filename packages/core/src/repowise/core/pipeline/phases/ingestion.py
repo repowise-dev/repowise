@@ -12,12 +12,13 @@ import multiprocessing
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from repowise.core.pipeline.progress import ProgressCallback, emit_warning
+from repowise.core.pipeline.progress import ProgressCallback, emit_item, emit_warning
 
 from ._common import _phase_done
 
@@ -85,37 +86,42 @@ def _report_query_compilation_failures(stats: Any, progress: ProgressCallback | 
         return
 
 
-async def _timed_step(
-    label: str,
-    fn: Any,
+async def _run_concurrent_steps(
+    phase: str,
+    steps: list[tuple[str, Any]],
     progress: ProgressCallback | None,
-) -> Any:
-    """Run *fn* in a worker thread and emit a per-step completion line.
+) -> None:
+    """Run each ``(label, fn)`` in a worker thread at once, as one counted phase.
 
-    Used to make ``asyncio.gather`` of multiple graph-algorithm calls
-    legible: without this, four concurrent thread-bound computations
-    (e.g. PageRank + betweenness + symbol PageRank + symbol betweenness)
-    appear in the CLI as one opaque several-minute spinner, so the user
-    has no signal as to which step is the bottleneck. With it, each algo
-    prints `  ↳ <label> ✓ (Xs)` as it finishes — completion order
-    surfaces the relative cost without changing the underlying execution.
+    The running row's count advances as each finishes and its current item
+    names the ones still running, so a long kernel (symbol betweenness on a
+    big repo) is visibly the one holding the step. Per-step times go to the
+    log rather than the screen: one done row per phase, no extra lines.
     """
-    t0 = time.monotonic()
-    try:
-        result = await asyncio.to_thread(fn)
-    except Exception as exc:
-        if progress is not None:
-            progress.on_message(
-                "warning",
-                f"  ↳ {label} failed after {time.monotonic() - t0:.1f}s: {exc}",
-            )
-        raise
-    if progress is not None:
-        progress.on_message(
-            "info",
-            f"  ↳ {label} ✓ ({time.monotonic() - t0:.1f}s)",
-        )
-    return result
+    running = [label for label, _ in steps]
+    if progress:
+        progress.on_phase_start(phase, len(steps))
+    emit_item(progress, phase, ", ".join(running))
+
+    async def _one(label: str, fn: Any) -> None:
+        t0 = time.monotonic()
+        try:
+            await asyncio.to_thread(fn)
+        except Exception as exc:
+            if progress is not None:
+                progress.on_message(
+                    "warning",
+                    f"  {label} failed after {time.monotonic() - t0:.1f}s: {exc}",
+                )
+            raise
+        logger.info("graph_step_done", step=label, seconds=round(time.monotonic() - t0, 1))
+        running.remove(label)
+        if progress:
+            progress.on_item_done(phase)
+        emit_item(progress, phase, ", ".join(running))
+
+    await asyncio.gather(*(_one(label, fn) for label, fn in steps))
+    _phase_done(progress, phase)
 
 
 # Traversal skip counters, in report order: (stat attribute, how to describe it).
@@ -133,6 +139,7 @@ _SKIP_REASONS: tuple[tuple[str, str], ...] = (
     ("skipped_submodule", "submodule dirs"),
     ("skipped_nested_repo", "nested git repos"),
     ("skipped_unknown_language", "unknown type"),
+    ("skipped_repowise_output", "written by repowise"),
 )
 
 _TOP_LANGUAGES_SHOWN = 6
@@ -318,6 +325,9 @@ def _parse_one(path_and_fi_and_bytes: tuple) -> Any:
     try:
         if _WORKER_PARSER is None:
             from repowise.core.ingestion import ASTParser
+            from repowise.core.worker_logging import quiet_worker_logs
+
+            quiet_worker_logs()
 
             _WORKER_PARSER = ASTParser()
         return _WORKER_PARSER.parse_file(fi, source)
@@ -404,46 +414,39 @@ def _read_sources(
     return [r for r in results if r is not None]
 
 
-async def _run_ingestion(
-    repo_path: Path,
-    *,
-    exclude_patterns: list[str] | None,
-    include_submodules: bool = False,
-    include_nested_repos: bool = False,
-    skip_tests: bool,
-    skip_infra: bool,
-    progress: ProgressCallback | None,
-    derive_environment_facts: bool = False,
-) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any]:
-    """Traverse, parse, and build the dependency graph.
+# Languages ``skip_infra`` drops from the parse set.
+_INFRA_LANGUAGES = ("dockerfile", "makefile", "terraform", "shell")
 
-    Returns (parsed_files, file_infos, repo_structure, source_map,
-    graph_builder, traversal_stats, tech_items).
+# TS/JS-family languages whose presence wires the tsconfig path-alias resolver.
+_TS_LANGUAGES = frozenset({"typescript", "javascript", "svelte", "vue", "astro"})
+
+
+@dataclass(frozen=True)
+class _WalkOptions:
+    """What to walk and keep, shared by the full and the resume ingestion."""
+
+    exclude_patterns: list[str] | None
+    include_submodules: bool
+    include_nested_repos: bool
+    skip_tests: bool
+    skip_infra: bool
+    derive_environment_facts: bool
+
+
+async def _build_file_infos(traverser: Any, progress: ProgressCallback | None) -> list[Any]:
+    """Walk the tree and build a FileInfo per path, in walk order.
+
+    Stat + header reads run in a thread pool; ``asyncio.wrap_future`` keeps the
+    event loop responsive while they run. Results stay in walk order, matching
+    the update path's rebuild (pipeline/incremental.py): files reach
+    GraphBuilder in this order and ambiguous reference resolution tie-breaks on
+    insertion order. Progress still ticks per completion.
     """
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
-
-    traverser = FileTraverser(
-        repo_path,
-        extra_exclude_patterns=exclude_patterns or None,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-
-    # Walk directory tree
     all_paths = list(traverser._walk())
     if progress:
-        # Use indeterminate progress (spinner) to avoid showing a misleading
-        # pre-filter total like "2132/83601".
+        # Indeterminate (spinner): a pre-filter total like "2132/83601" misleads.
         progress.on_phase_start("traverse", None)
 
-    # Parallel stat + header reads (I/O bound).
-    # Use asyncio.wrap_future so the event loop stays responsive while waiting.
-    # Results are kept in walk order, matching the update path's rebuild
-    # (pipeline/incremental.py): files are fed to GraphBuilder in this order,
-    # and ambiguous reference resolution tie-breaks on insertion order — a
-    # completion-ordered list made the init-built graph differ from the
-    # update-built one, so the first post-init update could never hit the
-    # centrality cache. Progress still ticks per completion via callbacks.
     io_pool = ThreadPoolExecutor(max_workers=8)
     try:
         aws = [
@@ -454,219 +457,284 @@ async def _run_ingestion(
             for fut in aws:
                 fut.add_done_callback(_traverse_tick)
         ordered = await asyncio.gather(*aws, return_exceptions=True)
-        file_infos: list[Any] = [
-            r for r in ordered if r is not None and not isinstance(r, BaseException)
-        ]
+        return [r for r in ordered if r is not None and not isinstance(r, BaseException)]
     finally:
-        # shutdown(wait=True) is blocking — run in a thread to keep the
-        # event loop responsive.  All submitted futures have already
-        # completed by the time we reach here (gather awaited them).
+        # shutdown(wait=True) blocks; every future is already done (gather
+        # awaited them), so this only keeps the event loop responsive.
         await asyncio.to_thread(io_pool.shutdown, wait=True)
 
+
+def _filter_file_infos(file_infos: list[Any], walk: _WalkOptions) -> list[Any]:
+    if walk.skip_tests:
+        file_infos = [fi for fi in file_infos if not fi.is_test]
+    if walk.skip_infra:
+        file_infos = [fi for fi in file_infos if fi.language not in _INFRA_LANGUAGES]
+    return file_infos
+
+
+async def _traverse_stage(
+    repo_path: Path,
+    walk: _WalkOptions,
+    progress: ProgressCallback | None,
+) -> tuple[Any, list[Any], Any]:
+    """Walk, describe the repo, record structural episodes, then filter.
+
+    Returns ``(traverser, file_infos, repo_structure)``; *file_infos* is in
+    walk order with ``skip_tests`` / ``skip_infra`` applied, while
+    *repo_structure* describes the unfiltered walk.
+    """
+    from repowise.core.ingestion import FileTraverser
+
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=walk.exclude_patterns or None,
+        include_submodules=walk.include_submodules,
+        include_nested_repos=walk.include_nested_repos,
+    )
+    file_infos = await _build_file_infos(traverser, progress)
     repo_structure = traverser.get_repo_structure(file_infos)
 
-    # Structural episodes ride the walk that just finished — nested-repo names
+    # Structural episodes ride the walk that just finished: nested-repo names
     # and console scripts are by-products of it. The one check that describes
-    # the machine rather than the repository is opt-in: this function is the
-    # *full pipeline*, not ``init``, and the workspace updater and the hosted
-    # job executor both reach it.
+    # the machine rather than the repository is opt-in, because the full
+    # pipeline is also reached by the workspace updater and hosted jobs.
     await _record_structural_episodes(
-        repo_path, traverser, allow_formatter_check=derive_environment_facts
+        repo_path, traverser, allow_formatter_check=walk.derive_environment_facts
     )
     _phase_done(progress, "traverse")
+    return traverser, _filter_file_infos(file_infos, walk), repo_structure
 
-    # Filter
-    if skip_tests:
-        file_infos = [fi for fi in file_infos if not fi.is_test]
-    if skip_infra:
-        file_infos = [
-            fi
-            for fi in file_infos
-            if fi.language not in ("dockerfile", "makefile", "terraform", "shell")
-        ]
 
-    # Report the traversal here, not at the end of the phase: the graph build,
-    # dynamic hints, PageRank and community detection all run below, and on a
-    # large repo "Scanned N files" used to land several minutes after the
-    # traverse bar had finished and the user had moved on.
-    _emit_traversal_summary(progress, traverser.stats, len(file_infos))
-
-    # ---- Parse phase: CPU-bound, run in ProcessPoolExecutor ----------------
-    # Say once, here, what each spawned worker would otherwise discover
-    # independently and log at a level no default run renders: this
-    # environment cannot parse some of the languages this repo contains.
-    # Those files still index (paths, git history, regex-tier imports) but
-    # carry no symbols, which is not something to find out from an empty
-    # symbol list weeks later.
-    _report_missing_grammars(getattr(traverser, "stats", None), progress)
-    _report_query_compilation_failures(getattr(traverser, "stats", None), progress)
-
-    if progress:
-        progress.on_phase_start("parse", len(file_infos))
-
-    # Read source bytes up front in a thread pool (I/O-bound; keeps worker
-    # args small: FileInfo + bytes, both picklable plain dataclasses/bytes).
-    fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
-
-    parsed_files: list[Any] = []
-    source_map: dict[str, bytes] = {}
-    from repowise.core.workspace.update import get_head_commit
-
-    graph_builder = GraphBuilder(
-        repo_path=repo_path,
-        exclude_patterns=exclude_patterns,
-        centrality_cache_dir=repo_path / ".repowise",
-        head_commit=get_head_commit(repo_path),
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-    graph_builder.console_scripts = traverser.console_script_names
-
+async def _parse_in_pool(
+    to_parse: list[tuple], workers: int, progress: ProgressCallback | None
+) -> list[Any]:
+    """Parse cache misses in the spawn process pool; results in *to_parse* order."""
     loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_SPAWN) as pool:
+        tasks = [loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse]
+        # Tick per finished worker: ``asyncio.gather`` alone holds every event
+        # until the last file is done, which on large repos looked like a hang
+        # at ``0/N``. Done-callbacks keep gather's ordered results intact.
+        if progress is not None:
 
-    # Content-hash parse cache: unchanged files skip the worker pool
-    # entirely (an incremental update re-ingests the whole repo for one
-    # changed file). Misses parse exactly as before.
-    parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
-    workers = parse_pool_workers(len(to_parse))
+            def _parse_tick(path: str) -> Any:
+                def _tick(_fut: Any) -> None:
+                    progress.on_item_done("parse")
+                    emit_item(progress, "parse", path)
+
+                return _tick
+
+            for fut, (_idx, (fi, _src), _h) in zip(tasks, to_parse, strict=True):
+                fut.add_done_callback(_parse_tick(fi.path))
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _parse_in_process(to_parse: list[tuple], progress: ProgressCallback | None) -> list[Any]:
+    """Sequential in-process parse, the fallback when the pool is unavailable."""
+    from repowise.core.ingestion import ASTParser
 
     parse_results: list[Any] = []
-
-    if to_parse:
+    fallback_parser = ASTParser()
+    for i, (_idx, (fi, source), _h) in enumerate(to_parse):
         try:
-            with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_SPAWN) as pool:
-                tasks = [
-                    loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse
-                ]
-                # Tick the parse-progress bar as each worker finishes —
-                # ``asyncio.gather`` would otherwise hold every event back
-                # until the last file is done, which on PowerToys-scale
-                # repos looked like a hang at ``0/N`` for many minutes.
-                # Per-task done-callbacks fire on the event loop thread and
-                # preserve gather's ordered results, so the aggregation
-                # loop below still indexes ``to_parse`` correctly.
-                if progress is not None:
-                    _parse_tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
-                    for fut in tasks:
-                        fut.add_done_callback(_parse_tick)
-                parse_results = await asyncio.gather(*tasks, return_exceptions=True)
-        except Exception as pool_exc:
-            logger.warning(
-                "process_pool_parse_failed_falling_back",
-                error=str(pool_exc),
-            )
-            # Worth saying out loud rather than only logging: the run still
-            # produces a correct index, but every file is now parsed in one
-            # process instead of up to eight, so a large repo takes several
-            # times longer for a reason nothing on screen explained.
+            parse_results.append(fallback_parser.parse_file(fi, source))
+        except Exception as exc:
+            parse_results.append((fi.abs_path, str(exc)))
+        if progress:
+            progress.on_item_done("parse")
+            emit_item(progress, "parse", fi.path)
+        if i % 50 == 49:
+            await asyncio.sleep(0)
+    return parse_results
+
+
+async def _parse_misses(
+    to_parse: list[tuple],
+    progress: ProgressCallback | None,
+    *,
+    fallback_event: str,
+    warn_on_fallback: bool,
+) -> list[Any]:
+    workers = parse_pool_workers(len(to_parse))
+    if not to_parse:
+        return []
+    try:
+        return await _parse_in_pool(to_parse, workers, progress)
+    except Exception as pool_exc:
+        logger.warning(fallback_event, error=str(pool_exc))
+        if warn_on_fallback:
+            # Said out loud, not only logged: the index is still correct, but
+            # one process instead of up to eight makes a large repo several
+            # times slower for a reason nothing on screen explained.
             emit_warning(
                 progress,
                 f"Parallel parsing unavailable ({pool_exc}); "
                 "falling back to a single process, which is much slower.",
             )
-            # Fallback: in-process sequential parse
-            parse_results = []
-            _fallback_parser = ASTParser()
-            for i, (_idx, (fi, source), _h) in enumerate(to_parse):
-                try:
-                    result = _fallback_parser.parse_file(fi, source)
-                    parse_results.append(result)
-                except Exception as exc:
-                    parse_results.append((fi.abs_path, str(exc)))
-                if progress:
-                    progress.on_item_done("parse")
-                if i % 50 == 49:
-                    await asyncio.sleep(0)
+        return await _parse_in_process(to_parse, progress)
 
-    # Merge fresh parses back into traversal order alongside cache hits.
+
+def _merge_parse_results(
+    cached_hits: dict[int, Any],
+    to_parse: list[tuple],
+    parse_results: list[Any],
+    parse_cache: Any,
+) -> dict[int, Any]:
+    """Key fresh parses by traversal position next to the cache hits."""
     merged: dict[int, Any] = dict(cached_hits)
     for (idx, _item, content_hash), result in zip(to_parse, parse_results, strict=True):
         merged[idx] = result
         if not isinstance(result, tuple | Exception):
             _cache_parsed(parse_cache, result, content_hash)
+    return merged
 
-    # Aggregate results into GraphBuilder on the main loop (not thread-safe).
-    for idx in range(len(fi_and_bytes)):
-        fi, source = fi_and_bytes[idx]
+
+def _collect_parsed(
+    fi_and_bytes: list[tuple],
+    merged: dict[int, Any],
+) -> tuple[list[Any], dict[str, bytes]]:
+    """Successful parses and their source bytes, in traversal order."""
+    parsed_files: list[Any] = []
+    source_map: dict[str, bytes] = {}
+    for idx, (fi, source) in enumerate(fi_and_bytes):
         result = merged.get(idx)
         if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], str):
-            # Error tuple: (abs_path_str, error_str)
+            # Error tuple from a worker: (abs_path_str, error_str)
             logger.debug("parse_error_in_worker", path=result[0], error=result[1])
         elif isinstance(result, Exception):
             logger.debug("parse_exception_in_worker", path=fi.abs_path, error=str(result))
         elif result is not None:
             parsed_files.append(result)
             source_map[fi.path] = source
-            graph_builder.add_file(result)
-        # Process-pool path already ticked per-file via the done-callback
-        # attached above; only the fallback path ticks here (handled in
-        # its own loop). No tick needed in aggregation.
+    return parsed_files, source_map
 
+
+async def _parse_stage(
+    repo_path: Path,
+    file_infos: list[Any],
+    progress: ProgressCallback | None,
+    *,
+    fallback_event: str,
+    warn_on_fallback: bool,
+) -> tuple[list[Any], dict[str, bytes]]:
+    """Read, cache-split and parse *file_infos*; results keep their order.
+
+    Source bytes are read up front in a thread pool so worker args stay small
+    (FileInfo + bytes). Content-hash cache hits skip the worker pool; misses
+    are parsed in the process pool. Does not mark the parse phase done.
+    """
+    if progress:
+        progress.on_phase_start("parse", len(file_infos))
+    fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
+    parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
+    parse_results = await _parse_misses(
+        to_parse, progress, fallback_event=fallback_event, warn_on_fallback=warn_on_fallback
+    )
+    merged = _merge_parse_results(cached_hits, to_parse, parse_results, parse_cache)
+    parsed_files, source_map = _collect_parsed(fi_and_bytes, merged)
     if parse_cache is not None:
         parse_cache.save()
-    # Lend the just-read bytes to the builder so the language warmups that
-    # scan file text during build() don't re-read the repo.
-    graph_builder.set_source_map(source_map)
-    graph_builder.set_pytest_roots(traverser.pytest_roots)
-    _phase_done(progress, "parse")
+    return parsed_files, source_map
 
-    # ---- tsconfig path-alias resolver (before graph build) ------------------
-    # Only runs when the repo has TS/JS files. On large TS monorepos the
-    # resolver indexes hundreds of tsconfig files up-front; without a phase
-    # label this shows up as a silent gap right after parsing.
-    _ts_langs = {"typescript", "javascript", "svelte", "vue"}
-    if any(pf.file_info.language in _ts_langs for pf in parsed_files):
-        if progress:
-            progress.on_phase_start("tsconfig", None)
-        from repowise.core.ingestion import wire_tsconfig_resolver
 
-        wire_tsconfig_resolver(
-            graph_builder,
-            repo_path,
-            include_submodules=include_submodules,
-            include_nested_repos=include_nested_repos,
-        )
-        _phase_done(progress, "tsconfig")
-
-    # ---- Graph build phase -------------------------------------------------
-    # Sub-phases (graph.imports / graph.heritage / graph.calls) are emitted
-    # from inside GraphBuilder.build(); the orchestrator drives metrics/
-    # communities/flows below so the longest-running step is no longer an
-    # opaque "graph 0/1" spinner.
-    if progress and len(file_infos) >= _SLOW_GRAPH_BUILD_FILES:
-        # Reassurance before the longest silent stretch of the run, so it is
-        # rendered warning-weight rather than another dim stat (a "notice", not
-        # a "warning": it is not a degradation and must not be persisted into
-        # state.json["degraded"]) — which is also why it is
-        # gated: on a small repo the build is over in under a second, and a
-        # yellow "this may take several minutes" there is a false alarm made
-        # louder.
-        progress.on_message(
-            "notice",
-            "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
-            "re-run 'repowise init --resume' to continue where it stopped.",
-        )
-    await asyncio.to_thread(graph_builder.build, progress)
-
-    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
-    # Two failures with two different costs, reported separately rather than as
-    # one silent pass: the stack also feeds the persisted tech list and the
-    # editor files, so losing it costs more than losing the edges. Keeping the
-    # edge call outside its try is deliberate — the handlers that read no stack
-    # (conftest, gtest, Flutter, Android) still run when detection failed.
-    tech_items: list = []
+def _detect_tech_items(
+    repo_path: Path, progress: ProgressCallback | None, *, consequence: str
+) -> list:
+    """Detect the repo's tech stack; a failure warns and yields ``[]``."""
     try:
         from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
 
-        tech_items = detect_tech_stack(repo_path)
+        return detect_tech_stack(repo_path)
     except Exception as tech_exc:
         logger.warning("tech_stack_detection_failed", error=str(tech_exc))
         emit_warning(
             progress,
             f"Tech stack detection skipped ({tech_exc}); the repo's frameworks will be "
-            "missing from the index, along with every edge that depends on them.",
+            f"missing from the index{consequence}",
         )
+        return []
 
+
+def _new_graph_builder(
+    repo_path: Path,
+    traverser: Any,
+    parsed_files: list[Any],
+    source_map: dict[str, bytes],
+    walk: _WalkOptions,
+) -> Any:
+    """A GraphBuilder fed *parsed_files* in order (insertion order breaks ties)."""
+    from repowise.core.ingestion import GraphBuilder
+    from repowise.core.workspace.update import get_head_commit
+
+    graph_builder = GraphBuilder(
+        repo_path=repo_path,
+        exclude_patterns=walk.exclude_patterns,
+        centrality_cache_dir=repo_path / ".repowise",
+        head_commit=get_head_commit(repo_path),
+        include_submodules=walk.include_submodules,
+        include_nested_repos=walk.include_nested_repos,
+    )
+    graph_builder.console_scripts = traverser.console_script_names
+    for parsed in parsed_files:
+        graph_builder.add_file(parsed)
+    # Lend the just-read bytes so the language warmups that scan file text
+    # during build() don't re-read the repo.
+    graph_builder.set_source_map(source_map)
+    graph_builder.set_pytest_roots(traverser.pytest_roots)
+    return graph_builder
+
+
+def _wire_tsconfig(
+    graph_builder: Any,
+    repo_path: Path,
+    parsed_files: list[Any],
+    walk: _WalkOptions,
+    progress: ProgressCallback | None,
+) -> None:
+    """Wire the tsconfig path-alias resolver when the repo has TS/JS files.
+
+    Its own phase label: on large TS monorepos it indexes hundreds of tsconfig
+    files, which otherwise shows as a silent gap right after parsing.
+    """
+    if not any(pf.file_info.language in _TS_LANGUAGES for pf in parsed_files):
+        return
+    if progress:
+        progress.on_phase_start("tsconfig", None)
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=walk.include_submodules,
+        include_nested_repos=walk.include_nested_repos,
+    )
+    _phase_done(progress, "tsconfig")
+
+
+async def _build_graph(
+    graph_builder: Any, file_count: int, progress: ProgressCallback | None
+) -> None:
+    """Run ``GraphBuilder.build`` (it emits graph.imports/heritage/calls itself)."""
+    if progress and file_count >= _SLOW_GRAPH_BUILD_FILES:
+        # Reassurance before the longest silent stretch, as a "notice": not a
+        # degradation, so never persisted into state.json["degraded"]. Gated
+        # because on a small repo the build is over in under a second.
+        progress.on_message(
+            "notice",
+            "Graph build can take several minutes on a first run. Safe to Ctrl-C: "
+            "re-run 'repowise init --resume' to continue where it stopped.",
+        )
+    await asyncio.to_thread(graph_builder.build, progress)
+
+
+def _add_framework_edges(
+    graph_builder: Any, tech_items: list, progress: ProgressCallback | None
+) -> None:
+    """Framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
+
+    Runs even when stack detection failed: the handlers that read no stack
+    (conftest, gtest, Flutter, Android) still apply.
+    """
     try:
         graph_builder.add_framework_edges([item.name for item in tech_items])
     except Exception as fw_exc:
@@ -677,17 +745,25 @@ async def _run_ingestion(
             "symbols will have no callers in the graph and may read as dead.",
         )
 
-    # ---- Dynamic hints wiring (after static graph is fully built) ----------
+
+async def _add_dynamic_hints(
+    graph_builder: Any,
+    repo_path: Path,
+    file_infos: list[Any],
+    source_map: dict[str, bytes],
+    progress: ProgressCallback | None,
+) -> None:
+    """Dynamic hint edges, after the static graph is fully built."""
     if progress:
         progress.on_phase_start("dynamic_hints", None)
     try:
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
         registry = HintRegistry()
-        # Feed the traversed file list so hints query the indexed set
-        # directly instead of re-walking the tree (keeps gitignored and
-        # generated files out of hint edges, and skips a full walk).
+        # The traversed file list keeps gitignored and generated files out of
+        # hint edges and skips a second walk.
         hint_paths = [fi.path for fi in file_infos]
+        loop = asyncio.get_running_loop()
         dynamic_edges = await loop.run_in_executor(
             None,
             lambda: registry.extract_all(
@@ -708,36 +784,90 @@ async def _run_ingestion(
         )
     _phase_done(progress, "dynamic_hints")
 
-    # ---- Graph metrics: prime caches with live progress ---------------------
-    # pagerank/betweenness/community/symbol_communities/execution_flows are
-    # otherwise computed lazily during persist + generation, where they hide
-    # behind opaque progress bars. Pre-compute them here so each is its own
-    # visible sub-phase, and fan the within-phase work out via
-    # asyncio.gather so betweenness (the dominant cost) overlaps with
-    # PageRank / community detection rather than running serially.
-    #
-    # Each algorithm is wrapped in ``_timed_step`` so we emit a per-algo
-    # completion line (`  ↳ PageRank ✓ (Xs)`) as it finishes. Without these,
-    # the whole gather looks like one opaque several-minute void where
-    # betweenness centrality dominates — splitting the timing makes it
-    # obvious which step is the bottleneck on a given repo.
-    if progress:
-        progress.on_phase_start("graph.metrics", None)
-    await asyncio.gather(
-        _timed_step("PageRank", graph_builder.pagerank, progress),
-        _timed_step("betweenness centrality", graph_builder.betweenness_centrality, progress),
-        _timed_step("symbol PageRank", graph_builder.symbol_pagerank, progress),
-        _timed_step("symbol betweenness", graph_builder.symbol_betweenness_centrality, progress),
-    )
-    _phase_done(progress, "graph.metrics")
 
-    if progress:
-        progress.on_phase_start("graph.communities", None)
-    await asyncio.gather(
-        _timed_step("community detection", graph_builder.community_detection, progress),
-        _timed_step("symbol communities", graph_builder.symbol_communities, progress),
+async def _prime_graph_metrics(graph_builder: Any, progress: ProgressCallback | None) -> None:
+    """Compute centrality and communities now, each as a visible sub-phase.
+
+    Otherwise they run lazily inside persist and generation behind opaque
+    bars. Within a phase the kernels overlap via ``asyncio.gather`` so
+    betweenness (the dominant cost) runs alongside the rest, and the
+    running row names the kernels still going, so it names the bottleneck.
+    """
+    await _run_concurrent_steps(
+        "graph.metrics",
+        [
+            ("PageRank", graph_builder.pagerank),
+            ("betweenness centrality", graph_builder.betweenness_centrality),
+            ("symbol PageRank", graph_builder.symbol_pagerank),
+            ("symbol betweenness", graph_builder.symbol_betweenness_centrality),
+        ],
+        progress,
     )
-    _phase_done(progress, "graph.communities")
+    await _run_concurrent_steps(
+        "graph.communities",
+        [
+            ("community detection", graph_builder.community_detection),
+            ("symbol communities", graph_builder.symbol_communities),
+        ],
+        progress,
+    )
+
+
+async def _run_ingestion(
+    repo_path: Path,
+    *,
+    exclude_patterns: list[str] | None,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
+    skip_tests: bool,
+    skip_infra: bool,
+    progress: ProgressCallback | None,
+    derive_environment_facts: bool = False,
+) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any]:
+    """Traverse, parse, and build the dependency graph.
+
+    Returns (parsed_files, file_infos, repo_structure, source_map,
+    graph_builder, traversal_stats, tech_items).
+    """
+    walk = _WalkOptions(
+        exclude_patterns=exclude_patterns,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+        skip_tests=skip_tests,
+        skip_infra=skip_infra,
+        derive_environment_facts=derive_environment_facts,
+    )
+    traverser, file_infos, repo_structure = await _traverse_stage(repo_path, walk, progress)
+
+    # Reported now rather than at the end of the phase: the graph build and
+    # metrics below can take minutes on a large repo.
+    _emit_traversal_summary(progress, traverser.stats, len(file_infos))
+
+    # Said once here rather than by every worker at a level no default run
+    # renders: files in these languages index without symbols.
+    _report_missing_grammars(getattr(traverser, "stats", None), progress)
+    _report_query_compilation_failures(getattr(traverser, "stats", None), progress)
+
+    parsed_files, source_map = await _parse_stage(
+        repo_path,
+        file_infos,
+        progress,
+        fallback_event="process_pool_parse_failed_falling_back",
+        warn_on_fallback=True,
+    )
+    graph_builder = _new_graph_builder(repo_path, traverser, parsed_files, source_map, walk)
+    _phase_done(progress, "parse")
+
+    _wire_tsconfig(graph_builder, repo_path, parsed_files, walk, progress)
+    await _build_graph(graph_builder, len(file_infos), progress)
+    # Stack detection and framework edges fail separately: the stack also
+    # feeds the persisted tech list and the editor files.
+    tech_items = _detect_tech_items(
+        repo_path, progress, consequence=", along with every edge that depends on them."
+    )
+    _add_framework_edges(graph_builder, tech_items, progress)
+    await _add_dynamic_hints(graph_builder, repo_path, file_infos, source_map, progress)
+    await _prime_graph_metrics(graph_builder, progress)
 
     return (
         parsed_files,
@@ -775,125 +905,22 @@ async def reparse_for_resume(
     tech_items)`` — mirrors the prefix of :func:`_run_ingestion` minus the
     graph builder and traversal stats.
     """
-    from repowise.core.ingestion import ASTParser, FileTraverser
-
-    traverser = FileTraverser(
-        repo_path,
-        extra_exclude_patterns=exclude_patterns or None,
+    walk = _WalkOptions(
+        exclude_patterns=exclude_patterns,
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
+        skip_tests=skip_tests,
+        skip_infra=skip_infra,
+        derive_environment_facts=derive_environment_facts,
     )
-
-    all_paths = list(traverser._walk())
-    if progress:
-        progress.on_phase_start("traverse", None)
-
-    file_infos: list[Any] = []
-    io_pool = ThreadPoolExecutor(max_workers=8)
-    try:
-        aws = [
-            asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p)) for p in all_paths
-        ]
-        for coro in asyncio.as_completed(aws):
-            try:
-                result = await coro
-            except Exception:
-                result = None
-            if result is not None:
-                file_infos.append(result)
-            if progress:
-                progress.on_item_done("traverse")
-    finally:
-        await asyncio.to_thread(io_pool.shutdown, wait=True)
-
-    repo_structure = traverser.get_repo_structure(file_infos)
-    # A resumed run is still the same command: the interrupted one may never
-    # have reached the derivation, so it runs here too rather than leaving a
-    # resumed repo without the facts a fresh one gets.
-    await _record_structural_episodes(
-        repo_path, traverser, allow_formatter_check=derive_environment_facts
+    _traverser, file_infos, repo_structure = await _traverse_stage(repo_path, walk, progress)
+    parsed_files, source_map = await _parse_stage(
+        repo_path,
+        file_infos,
+        progress,
+        fallback_event="resume_reparse_pool_failed_falling_back",
+        warn_on_fallback=False,
     )
-    _phase_done(progress, "traverse")
-
-    if skip_tests:
-        file_infos = [fi for fi in file_infos if not fi.is_test]
-    if skip_infra:
-        file_infos = [
-            fi
-            for fi in file_infos
-            if fi.language not in ("dockerfile", "makefile", "terraform", "shell")
-        ]
-
-    if progress:
-        progress.on_phase_start("parse", len(file_infos))
-
-    fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
-
-    parsed_files: list[Any] = []
-    source_map: dict[str, bytes] = {}
-    loop = asyncio.get_running_loop()
-
-    parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
-    workers = parse_pool_workers(len(to_parse))
-    parse_results: list[Any] = []
-
-    if to_parse:
-        try:
-            with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_SPAWN) as pool:
-                tasks = [
-                    loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse
-                ]
-                if progress is not None:
-                    _tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
-                    for fut in tasks:
-                        fut.add_done_callback(_tick)
-                parse_results = await asyncio.gather(*tasks, return_exceptions=True)
-        except Exception as pool_exc:
-            logger.warning("resume_reparse_pool_failed_falling_back", error=str(pool_exc))
-            parse_results = []
-            _fallback_parser = ASTParser()
-            for i, (_idx, (fi, source), _h) in enumerate(to_parse):
-                try:
-                    parse_results.append(_fallback_parser.parse_file(fi, source))
-                except Exception as exc:
-                    parse_results.append((fi.abs_path, str(exc)))
-                if progress:
-                    progress.on_item_done("parse")
-                if i % 50 == 49:
-                    await asyncio.sleep(0)
-
-    merged: dict[int, Any] = dict(cached_hits)
-    for (idx, _item, content_hash), result in zip(to_parse, parse_results, strict=True):
-        merged[idx] = result
-        if not isinstance(result, tuple | Exception):
-            _cache_parsed(parse_cache, result, content_hash)
-
-    for idx in range(len(fi_and_bytes)):
-        fi, source = fi_and_bytes[idx]
-        result = merged.get(idx)
-        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], str):
-            logger.debug("parse_error_in_worker", path=result[0], error=result[1])
-        elif isinstance(result, Exception):
-            logger.debug("parse_exception_in_worker", path=fi.abs_path, error=str(result))
-        elif result is not None:
-            parsed_files.append(result)
-            source_map[fi.path] = source
-
-    if parse_cache is not None:
-        parse_cache.save()
     _phase_done(progress, "parse")
-
-    tech_items: list = []
-    try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
-
-        tech_items = detect_tech_stack(repo_path)
-    except Exception as tech_exc:
-        logger.warning("tech_stack_detection_failed", error=str(tech_exc))
-        emit_warning(
-            progress,
-            f"Tech stack detection skipped ({tech_exc}); the repo's frameworks will be "
-            "missing from the index.",
-        )
-
+    tech_items = _detect_tech_items(repo_path, progress, consequence=".")
     return parsed_files, file_infos, repo_structure, source_map, tech_items

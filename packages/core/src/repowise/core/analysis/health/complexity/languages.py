@@ -1366,6 +1366,26 @@ _PHP = LanguageNodeMap(
             "nullsafe_member_call_expression",
         }
     ),
+    assignment_kinds=frozenset({"assignment_expression", "reference_assignment_expression"}),
+    augmented_assign_kinds=frozenset({"augmented_assignment_expression"}),
+    local_decl_kinds=frozenset({"function_static_declaration", "static_variable_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"compound_statement"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_expression", "throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
+    yield_kinds=frozenset(
+        {
+            "yield_expression",
+            "dynamic_variable_name",
+            "global_statement",
+            "global_declaration",
+            "function_static_declaration",
+            "reference_assignment_expression",
+            "by_ref",
+        }
+    ),
 )
 
 
@@ -1377,6 +1397,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     # ingestion/sfc_source.py), so the TS node map applies verbatim.
     "svelte": _TS,
     "vue": _TS,
+    "astro": _TS,
     # Razor reaches the walker as a C# buffer (its ``@code`` / ``@{ }``
     # regions projected by the same sfc_source seam), so the C# node map
     # applies verbatim.

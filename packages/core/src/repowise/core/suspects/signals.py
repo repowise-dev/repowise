@@ -48,6 +48,32 @@ _EVIDENCE_STOPWORDS = frozenset(
 )
 
 
+#: Path segments that name a project's layout, not what its code does: as text
+#: they match nearly every change.
+_LAYOUT_SEGMENTS = frozenset(
+    {
+        "cmd", "core", "dist", "index", "init", "__init__", "internal", "java", "kotlin",
+        "lib", "libs", "main", "packages", "pkg", "pkgs", "py", "python", "scala",
+        "source", "sources", "src", "test", "tests",
+    }
+)
+
+
+def path_terms(target: str, quiet: frozenset[str] = frozenset()) -> str:
+    """A file or ``file::Symbol`` target as symptom text.
+
+    Directory names, file stem and symbol, without the extension, layout
+    segments or *quiet* words. A filler stem (``index.ts``) stays when nothing
+    else is left.
+    """
+    path, _, member = target.partition("::")
+    *dirs, name = path.replace("\\", "/").strip("/").split("/")
+    stem = name.rsplit(".", 1)[0] if "." in name.lstrip(".") else name
+    drop = _LAYOUT_SEGMENTS | quiet
+    words = [w for w in [*dirs, stem] if w and w.lower() not in drop] or [stem]
+    return " ".join([*words, member] if member else words)
+
+
 def path_mentions(text: str) -> list[str]:
     """Path-like tokens in free text, in order, deduped."""
     return list(dict.fromkeys(m.group(0).lstrip("/\\") for m in _PATH_TOKEN.finditer(text)))
@@ -88,7 +114,12 @@ class TextSignal:
         finally:
             db.close()
         wanted = list(dict.fromkeys(terms))
-        matched = {cid: [t for t in wanted if _fts_matches(t, _fts_words(body))] for cid, _, body in rows}
+        # Each body is folded and split once, not once per term.
+        matched = {
+            cid: [t for t in wanted if _fts_matches(t, words)]
+            for cid, _, body in rows
+            for words in (_fts_words(body),)
+        }
         # Evidence only (the score is BM25's): the rarest matched terms first,
         # without the repo's own name or filler words that match every row.
         df = Counter(t for ts in matched.values() for t in ts)
@@ -233,4 +264,5 @@ __all__ = [
     "TextSignal",
     "TraceSignal",
     "path_mentions",
+    "path_terms",
 ]

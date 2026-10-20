@@ -20,6 +20,8 @@ import {
   type StructuralMark,
 } from "../../src/refactoring/opportunity";
 import { StructuralMap } from "../../src/refactoring/structural-map";
+import { StartHere } from "../../src/refactoring/start-here";
+import { EFFORT_LABEL } from "../../src/health/labels";
 
 function opportunity(
   overrides: Partial<RefactoringOpportunity> = {},
@@ -142,6 +144,19 @@ describe("salience", () => {
     expect(isRecededType("split_file", order)).toBe(false);
     expect(isRecededType("break_cycle", order)).toBe(false);
     expect(isRecededType("move_method", order)).toBe(true);
+  });
+});
+
+describe("StartHere", () => {
+  it("uses the shared effort wording in ranked rows", () => {
+    const original = EFFORT_LABEL.M;
+    EFFORT_LABEL.M = "Moderate";
+    try {
+      render(<StartHere opportunities={[opportunity()]} />);
+      expect(screen.getByText(/Moderate effort/)).toBeInTheDocument();
+    } finally {
+      EFFORT_LABEL.M = original;
+    }
   });
 });
 

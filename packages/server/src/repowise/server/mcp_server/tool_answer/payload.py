@@ -720,6 +720,12 @@ async def _graded_payload(
         payload["next_action_hint"] = (
             f"call get_symbol id='{cut['continuation']}' for the rest of {cut['name']}"
         )
+    elif grade.lead_off_top:
+        payload["note"] = (
+            f"The answer names {grade.lead_off_top} first and not the top retrieval hit "
+            "the confidence was measured on. Held at medium; confirm against that file."
+        )
+        payload["next_action_hint"] = f"Read {grade.lead_off_top} to confirm the answer."
     elif grade.uncovered:
         payload["note"] = (
             f"Coverage gate: the top source does not mention {', '.join(grade.uncovered[:4])}, "

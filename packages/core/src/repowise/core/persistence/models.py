@@ -257,7 +257,10 @@ class PageVersion(Base):
     __tablename__ = "wiki_page_versions"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
-    page_id: Mapped[str] = mapped_column(Text, ForeignKey("wiki_pages.id"), nullable=False)
+    # Indexed so deleting a page does not scan every version for the FK check.
+    page_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("wiki_pages.id"), nullable=False, index=True
+    )
     repository_id: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -949,6 +952,11 @@ class GitCommitHealthDelta(Base):
     introduced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     worsened_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     resolved_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Findings that dropped a metric, and findings carried to another file with their code.
+    improved_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    moved_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     files_analyzed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     files_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     findings_stored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1005,6 +1013,9 @@ class GitCommitHealthFinding(Base):
     attribution_basis: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
     health_impact: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Set when the finding's code moved here from another file in this commit.
+    moved_from_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    moved_from_symbol: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

@@ -14,14 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from repowise.core.fts_query import meaningful_terms
 
-from .git_text import read_change_texts
+from .git_text import _git, read_change_texts
 from .rank import Candidate, SuspectContext, Symptom, prepare, rank_suspects
 
 #: The window the measurement used (prereg/suspects.md): 14 days before the symptom.
@@ -38,15 +37,13 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def repo_terms(repo_path: Path | str) -> frozenset[str]:
+    """The repo's own name as search words: they match every change."""
+    return frozenset(meaningful_terms(Path(repo_path).resolve().name.replace("-", " ")))
+
+
 def _tracked_files(repo_path: Path) -> frozenset[str]:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_path), "ls-files"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return frozenset()
-    return frozenset(out.splitlines())
+    return frozenset((_git(repo_path, "ls-files") or "").splitlines())
 
 
 async def _imports(session: Any, repo_id: str) -> dict[str, set[str]]:
@@ -99,8 +96,10 @@ async def find_suspects(
     *until* defaults to the symptom time, else now; *since* to 14 days before it.
     """
     from repowise.core.attribution import attribution_enabled
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
     from repowise.core.persistence.crud import get_co_change_partners, list_changes
     from repowise.core.persistence.crud.changes import ChangeFilter
+    from repowise.core.repo_config import load_repo_config
 
     repo_path = Path(repo_path)
     until = _aware(until or symptom.at or datetime.now(UTC))
@@ -112,8 +111,12 @@ async def find_suspects(
     rows = [r for r in rows if r.merged_at is not None]
     window = {"since": since.isoformat(), "until": until.isoformat()}
     if not rows:
-        return {"window": window, "candidates": 0, "suspects": [], "note": NOTE}
+        return {
+            "window": window, "candidates": 0, "candidates_capped": False,
+            "suspects": [], "note": NOTE,
+        }
 
+    commit_limit = int(load_repo_config(repo_path).get("commit_limit") or 0) or _DEFAULT_COMMIT_LIMIT
     files_of = {
         r.change_id: tuple(f["path"] for f in json.loads(r.files_json or "[]")) for r in rows
     }
@@ -132,7 +135,7 @@ async def find_suspects(
     named = prepared.files
     ctx = SuspectContext(
         repo_files=repo_files,
-        repo_terms=frozenset(meaningful_terms(repo_path.resolve().name.replace("-", " "))),
+        repo_terms=repo_terms(repo_path),
         imports=await _imports(session, repo_id) if named else {},
         co_change=await get_co_change_partners(session, repo_id, list(named)) if named else {},
     )
@@ -152,6 +155,7 @@ async def find_suspects(
     return {
         "window": window,
         "candidates": len(candidates),
+        "candidates_capped": len(rows) >= commit_limit,
         # Changes git could not read: ranked on their title and files alone.
         "texts_missing": sum(1 for r in rows if r.head_sha not in texts),
         "symptom_files": list(named),
@@ -160,4 +164,4 @@ async def find_suspects(
     }
 
 
-__all__ = ["DEFAULT_LIMIT", "DEFAULT_WINDOW_DAYS", "NOTE", "find_suspects"]
+__all__ = ["DEFAULT_LIMIT", "DEFAULT_WINDOW_DAYS", "NOTE", "find_suspects", "repo_terms"]

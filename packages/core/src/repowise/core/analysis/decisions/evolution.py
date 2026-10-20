@@ -3,7 +3,7 @@
 Phase 3B + 3C of the decision-layer overhaul. Two complementary mechanisms,
 both small and gated, both leaning on the Phase-2 primitives
 (:data:`decision_semantic_match.DEFAULT_DEDUP_TAU` for similarity and
-:func:`decision_gate.apply_substring_gate` for anti-hallucination):
+:func:`gate.apply_substring_gate` for anti-hallucination):
 
 **3B — semantic supersession & conflict** (:func:`detect_supersessions_and_conflicts`).
     When a freshly upserted decision is semantically *about the same topic* as

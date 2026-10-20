@@ -564,13 +564,34 @@ def scanned_implementations(
     matches nothing: a wider match only widens a rescue.
     """
     types = list(_csharp_types(graph))
+    heritage = _heritage_names(graph, parsed_files or {})
+    by_name: dict[str, set[str]] = {}
+    for (_path, name), parents in heritage.items():
+        by_name.setdefault(name, set()).update(parents)
+
+    export_attr_names = set(_EXPORT_ATTRIBUTES)
+    inherited_export_attr_names = set(_INHERITED_EXPORT_ATTRIBUTES)
+    for data in types:
+        name = data.get("name")
+        if not name or data.get("kind") not in ("class", "record"):
+            continue
+        key = _class_key(data)
+        if _reaches_base(key, heritage, by_name, _EXPORT_ATTRIBUTES):
+            export_attr_names.add(name)
+            if name.endswith("Attribute"):
+                export_attr_names.add(name[: -len("Attribute")])
+        if _reaches_base(key, heritage, by_name, _INHERITED_EXPORT_ATTRIBUTES):
+            inherited_export_attr_names.add(name)
+            if name.endswith("Attribute"):
+                inherited_export_attr_names.add(name[: -len("Attribute")])
+
     bases = _scanned_type_names(graph, source_map) | {
         data.get("name") or ""
         for data in types
-        if _attribute_bases(data) & _INHERITED_EXPORT_ATTRIBUTES
+        if _attribute_bases(data) & inherited_export_attr_names
     }
     classes = [data for data in types if _is_concrete_class(data)]
-    out = {_class_key(d) for d in classes if _attribute_bases(d) & _EXPORT_ATTRIBUTES}
+    out = {_class_key(d) for d in classes if _attribute_bases(d) & export_attr_names}
     if not bases:
         return frozenset(out)
     heritage = _heritage_names(graph, parsed_files or {})

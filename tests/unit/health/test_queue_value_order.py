@@ -66,10 +66,10 @@ PERFORMANCE = [
 
 #: (finding's function or cause's id, value band, why it sits here).
 GOLDEN = [
+    ("perf_req", "4", "request-run growing db loop: top band, and its plan is safe to start"),
     ("run_conversation", "4", "largest complexity removed (963) x reach of 32 importers"),
     ("load_gateway_config", "4", "CCN 151 x reach of 487 importers outweighs the wizard"),
     ("show_status", "4", "the wizard: band 4 on size, CCN 153 x reach of only 7 importers"),
-    ("perf_req", "4", "request-run growing db loop: top band, worth a CCN 40 x 3 call sites"),
     ("perf_unknown", "2", "the same loop with no role evidence: band 2, worth 103"),
 ]
 
@@ -123,7 +123,8 @@ def test_history_orders_within_a_band_and_never_lifts_one() -> None:
     calm = build_fix_first(metrics=quiet, findings=FINDINGS, performance=PERFORMANCE,
                            hot_cuts=_CUTS, limit=None)
     assert {_key(i): _value(i) for i in calm.items} == base
-    churn = {f.factor: f.value for f in calm.items[0].why_ranked}["changes often"]
+    giant = next(i for i in calm.items if i.target.symbol == "run_conversation")
+    churn = {f.factor: f.value for f in giant.why_ranked}["changes often"]
     assert churn == "no"
 
 

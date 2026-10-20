@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from repowise.core.analysis.health.biomarkers import FileContext
-from repowise.core.analysis.health.biomarkers.bumpy_road import BumpyRoadDetector
 from repowise.core.analysis.health.biomarkers.large_method import LargeMethodDetector
 from repowise.core.analysis.health.biomarkers.primitive_obsession import (
     PrimitiveObsessionDetector,
 )
+from repowise.core.analysis.health.biomarkers.repeated_nesting import RepeatedNestingDetector
 from repowise.core.analysis.health.complexity import FunctionComplexity, walk_file
 
 
@@ -25,25 +25,25 @@ def _ctx(fns: list[FunctionComplexity]) -> FileContext:
     )
 
 
-# ---- bumpy_road ----------------------------------------------------------
+# ---- repeated_nesting ----------------------------------------------------------
 
 
-def test_bumpy_road_flags_multi_hump_function():
+def test_repeated_nesting_flags_several_nested_blocks():
     fn = FunctionComplexity("rough", 1, 80, ccn=8, max_nesting=3, cognitive=15, nloc=50, bumps=4)
-    results = BumpyRoadDetector().detect(_ctx([fn]))
+    results = RepeatedNestingDetector().detect(_ctx([fn]))
     assert len(results) == 1
     assert results[0].details["bumps"] == 4
 
 
-def test_bumpy_road_skips_flat_function():
+def test_repeated_nesting_skips_flat_function():
     fn = FunctionComplexity("flat", 1, 10, ccn=3, max_nesting=1, cognitive=2, nloc=8, bumps=0)
-    assert BumpyRoadDetector().detect(_ctx([fn])) == []
+    assert RepeatedNestingDetector().detect(_ctx([fn])) == []
 
 
-def test_bumpy_road_requires_ccn_floor():
+def test_repeated_nesting_requires_ccn_floor():
     # Lots of bumps but very low CCN — could happen on synthetic inputs.
     fn = FunctionComplexity("toy", 1, 20, ccn=2, max_nesting=2, cognitive=2, nloc=18, bumps=4)
-    assert BumpyRoadDetector().detect(_ctx([fn])) == []
+    assert RepeatedNestingDetector().detect(_ctx([fn])) == []
 
 
 # ---- large_method --------------------------------------------------------
@@ -80,6 +80,26 @@ def test_primitive_obsession_flags_wide_signature():
     out = PrimitiveObsessionDetector().detect(_ctx([fn, _FILLER]))
     assert len(out) == 1
     assert out[0].details["param_count"] == 7
+
+
+def test_primitive_obsession_finds_cpp_scalar_signature():
+    source = (
+        "int f(int a, int b, int c, int d, int e, int g, int h) {\n"
+        + "\n".join(f"    a += {i};" for i in range(61))
+        + "\n    return a;\n}\n"
+    )
+    walked = walk_file("a.cpp", "cpp", source.encode())
+    assert walked.file_nloc > 60
+    ctx = FileContext(
+        file_path="a.cpp", language="cpp", nloc=walked.file_nloc,
+        has_test_file=False, module=None, all_functions=tuple(walked.functions),
+    )
+    (finding,) = PrimitiveObsessionDetector().detect(ctx)
+    assert finding.function_name == "f"
+    assert finding.details == {
+        "param_count": 7, "typed_param_count": 7, "primitive_param_count": 7,
+        "bound_param_count": 0,
+    }
 
 
 def test_primitive_obsession_grace_for_constructors():

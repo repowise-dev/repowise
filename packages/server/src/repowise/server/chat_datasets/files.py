@@ -10,11 +10,12 @@ columns, and the coverage report's per-file rows.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.rows import field
 from repowise.server.chat_datasets import (
     AVERAGES,
     SUMS,
@@ -143,9 +144,105 @@ def _top_level(path: str) -> str:
     return head if sep else ROOT_PACKAGE
 
 
-async def files_index(ctx: LoadContext) -> dict[str, dict[str, Any]]:
-    """The files dataset by path, for datasets that place rows by file."""
-    return {row["path"]: row for row in await ctx.rows("files")}
+def by_path(files: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    """The files dataset's rows by path, for datasets that place rows by file."""
+    return {row["path"]: row for row in files}
+
+
+# ---------------------------------------------------------------------------
+# Rows over records already read
+# ---------------------------------------------------------------------------
+
+
+def files_rows(
+    metrics: Iterable[Any],
+    git: Iterable[Any],
+    coverage: Iterable[Any],
+    languages: Mapping[str, str | None],
+) -> list[dict[str, Any]]:
+    """The ``files`` dataset's rows over records a caller already holds.
+
+    *metrics* are the per-file health metrics (``file_path``, ``score``,
+    ``nloc``, ``max_ccn``, ``module``, ``is_test``, ``code_origin``) the
+    health exclude rule kept; *git* the code files' git metadata
+    (``file_path``, ``commit_count_90d``, ``prior_defect_count``,
+    ``is_hotspot``); *coverage* the coverage report's rows (``file_path``,
+    ``line_coverage_pct``, ``total_coverable_lines``); *languages* maps a path
+    to its language. A record is a dataclass, an ORM or SQL row, or a dict.
+    """
+    from repowise.core.analysis.health.grading import band_for
+    from repowise.core.analysis.health.ranking import scope_reason
+
+    metrics = list(metrics)
+    git_of = {field(g, "file_path"): g for g in git}
+    coverage_of = {field(c, "file_path"): c for c in coverage}
+    paths = [field(m, "file_path") for m in metrics]
+    packages = {field(m, "file_path"): field(m, "module") or ROOT_PACKAGE for m in metrics}
+    dirs = directories(packages)
+    labels = unique_suffixes(paths)
+    rows = []
+    for m in metrics:
+        path = field(m, "file_path")
+        g = git_of.get(path)
+        c = coverage_of.get(path)
+        # Unrounded, so an average here is exactly the engine's; views round for display.
+        score = field(m, "score")
+        rows.append(
+            {
+                "path": path,
+                "file": labels[path],
+                "package": packages[path],
+                "directory": dirs[path],
+                "language": languages.get(path),
+                "health_score": score,
+                "health_band": band_for(score).replace("_", " ") if score is not None else None,
+                "nloc": field(m, "nloc"),
+                "max_ccn": field(m, "max_ccn"),
+                "commits_90d": field(g, "commit_count_90d") if g is not None else 0,
+                "fix_count": field(g, "prior_defect_count") if g is not None else 0,
+                "coverage_pct": round(field(c, "line_coverage_pct"), 2) if c is not None else None,
+                "coverable_lines": field(c, "total_coverable_lines") if c is not None else None,
+                "is_hotspot": bool(g is not None and field(g, "is_hotspot")),
+                "is_test": bool(field(m, "is_test")),
+                "is_production": scope_reason(m) is None,
+            }
+        )
+    return rows
+
+
+def coverage_rows(
+    report: Iterable[Any], files: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """The ``coverage`` dataset's rows over the report's per-file records.
+
+    *report* holds ``file_path``, ``line_coverage_pct``,
+    ``total_coverable_lines`` and ``covered_line_count``; *files* is the
+    ``files`` dataset's rows, which place each path in its package.
+    """
+    report = list(report)
+    placed = place([field(c, "file_path") for c in report], by_path(files))
+    labels = unique_suffixes(placed)
+    rows = []
+    for c in report:
+        path = field(c, "file_path")
+        pct = field(c, "line_coverage_pct")
+        coverable = field(c, "total_coverable_lines")
+        package, directory = placed[path]
+        covered = field(c, "covered_line_count")
+        if covered is None:
+            covered = round(pct / 100 * (coverable or 0))
+        rows.append(
+            {
+                "path": path,
+                "file": labels[path],
+                "package": package,
+                "directory": directory,
+                "coverage_pct": round(pct, 2),
+                "covered_lines": covered,
+                "coverable_lines": coverable,
+            }
+        )
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +273,6 @@ async def _coverage_rows(session: Any, repo_id: str) -> list[Any]:
     noun="files",
 )
 async def load_files(ctx: LoadContext) -> list[dict[str, Any]]:
-    from repowise.core.analysis.health.grading import band_for
-    from repowise.core.analysis.health.ranking import scope_reason
     from repowise.core.persistence.crud.analysis.health import (
         get_file_language_map,
         health_exclude_spec,
@@ -207,41 +302,10 @@ async def load_files(ctx: LoadContext) -> list[dict[str, Any]]:
         GitMetadata.prior_defect_count,
         GitMetadata.is_hotspot,
     ).where(code_file_rows(repo_id))
-    git = {g.file_path: g for g in plain_rows(await session.execute(git_q))}
-    coverage = {c.file_path: c for c in await _coverage_rows(session, repo_id)}
+    git = plain_rows(await session.execute(git_q))
+    coverage = await _coverage_rows(session, repo_id)
     languages = await get_file_language_map(session, repo_id)
-
-    paths = [m.file_path for m in metrics]
-    packages = {m.file_path: m.module or ROOT_PACKAGE for m in metrics}
-    dirs = directories(packages)
-    labels = unique_suffixes(paths)
-    rows = []
-    for m in metrics:
-        g = git.get(m.file_path)
-        c = coverage.get(m.file_path)
-        # Unrounded, so an average here is exactly the engine's; views round for display.
-        score = m.score
-        rows.append(
-            {
-                "path": m.file_path,
-                "file": labels[m.file_path],
-                "package": packages[m.file_path],
-                "directory": dirs[m.file_path],
-                "language": languages.get(m.file_path),
-                "health_score": score,
-                "health_band": band_for(score).replace("_", " ") if score is not None else None,
-                "nloc": m.nloc,
-                "max_ccn": m.max_ccn,
-                "commits_90d": g.commit_count_90d if g else 0,
-                "fix_count": g.prior_defect_count if g else 0,
-                "coverage_pct": round(c.line_coverage_pct, 2) if c else None,
-                "coverable_lines": c.total_coverable_lines if c else None,
-                "is_hotspot": bool(g and g.is_hotspot),
-                "is_test": bool(m.is_test),
-                "is_production": scope_reason(m) is None,
-            }
-        )
-    return rows
+    return files_rows(metrics, git, coverage, languages)
 
 
 @register_dataset(
@@ -255,24 +319,4 @@ async def load_files(ctx: LoadContext) -> list[dict[str, Any]]:
 )
 async def load_coverage(ctx: LoadContext) -> list[dict[str, Any]]:
     report = await _coverage_rows(ctx.session, ctx.repository.id)
-    files = await files_index(ctx)
-    placed = place([c.file_path for c in report], files)
-    labels = unique_suffixes(placed)
-    rows = []
-    for c in report:
-        package, directory = placed[c.file_path]
-        covered = c.covered_line_count
-        if covered is None:
-            covered = round(c.line_coverage_pct / 100 * (c.total_coverable_lines or 0))
-        rows.append(
-            {
-                "path": c.file_path,
-                "file": labels[c.file_path],
-                "package": package,
-                "directory": directory,
-                "coverage_pct": round(c.line_coverage_pct, 2),
-                "covered_lines": covered,
-                "coverable_lines": c.total_coverable_lines,
-            }
-        )
-    return rows
+    return coverage_rows(report, await ctx.rows("files"))

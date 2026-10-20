@@ -13,6 +13,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `distill:` block](#the-distill-block) ·
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
+[The `editor_files:` block](#the-editor_files-block) ·
 [The `decisions:` block](#the-decisions-block) ·
 [`policies.yaml`](#repowisepoliciesyaml) ·
 [The `security:` block](#the-security-block) ·
@@ -144,7 +145,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
+| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `edenai`, `claude_cli`, `codex_cli`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
 | `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
@@ -406,6 +407,25 @@ mcp:
   `get_blast_radius`, `get_conformance` and `get_architecture`. None is on by
   default. The workspace-only three are ignored if named in single-repo mode. See
   [MCP_TOOLS.md](../agent/MCP_TOOLS.md#configuring-the-tool-surface).
+
+### The `editor_files:` block
+
+Controls the generated block in `.claude/CLAUDE.md` and `AGENTS.md`. The block
+is read into the agent's context on every turn, so the default is lean.
+`sections` adjusts it with the `mcp.tools` grammar: `+name` / `-name` change
+the default set, unprefixed names replace it.
+
+```yaml
+editor_files:
+  claude_md: true
+  sections: ["+commands", "+fix_first"]
+```
+
+- Default: `architecture`, `key_modules`, `entry_points`, `hotspots`, `health`
+  (score and worst file), `decisions` (top three titles), `how_to_work` (three
+  bullets), `tools`.
+- Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
+  `commands` (build/test/lint read from manifests), `how_to_work_full`.
 
 ### The `decisions:` block
 
@@ -980,11 +1000,18 @@ The embedder is separate from the LLM provider.
 
 | Embedder | Env var | Notes |
 |----------|---------|-------|
-| `gemini` | `GEMINI_API_KEY` | Default when key is present |
+| `gemini` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | Default when key is present |
 | `openai` | `OPENAI_API_KEY` | OpenAI `text-embedding-3-small` |
 | `openrouter` | `OPENROUTER_API_KEY` | Routed through OpenRouter |
 | `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local Ollama embeddings, no API key |
+| `edenai` | `EDENAI_API_KEY` | Eden AI gateway, see [Eden AI](#eden-ai-hosted-with-an-eu-endpoint) |
 | `mock` | n/a | Dummy embeddings, no semantic search (default when no key is detected) |
+
+Which embedder a run uses, first match wins: `--embedder`, then
+`REPOWISE_EMBEDDER`, then the `embedder` pin in `.repowise/config.yaml`, then
+the first key present in the order gemini, openai, openrouter, ollama, edenai,
+then `embedder` in `~/.repowise/config.yaml`, then `mock`. `reindex` skips a
+`mock` pin when a real embedder can be found.
 
 ```bash
 repowise init --embedder openai

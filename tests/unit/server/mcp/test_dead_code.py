@@ -119,3 +119,32 @@ async def test_get_dead_code_group_by_owner(setup_mcp):
     assert len(owners) >= 1
     owner_names = [o["owner"] for o in owners]
     assert "Bob" in owner_names  # Bob owns dc2 + dc3
+
+
+class _EveryFileConsumed:
+    def has_cross_repo_consumers(self, repo_alias, file_path):
+        return [{"repo": "web"}]
+
+    def get_repos_depending_on(self, repo_alias):
+        return ["web"]
+
+
+@pytest.mark.asyncio
+async def test_cross_repo_cut_reaches_summary_and_rollups(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_dead_code, tool_dead_code
+
+    monkeypatch.setattr(tool_dead_code, "_cross_repo_lookup", lambda: _EveryFileConsumed())
+
+    result = await get_dead_code(group_by="directory", min_confidence=0.0)
+    summary = result["summary"]
+    # The safe counts agree with the tiers: a consumed finding is never safe.
+    assert summary["total_findings"] == 3
+    assert summary["safe_to_delete_count"] == 0
+    assert summary["deletable_lines"] == 0
+    assert all(d["safe_count"] == 0 for d in result["by_directory"])
+    assert not any(f["safe_to_delete"] for t in result["tiers"].values() for f in t["findings"])
+
+    # The cut empties a safe-only view, and the summary says why.
+    safe = await get_dead_code(safe_only=True)
+    assert safe["summary"]["filtered_findings"] == 0
+    assert "safe_only_note" in safe["summary"]

@@ -12,10 +12,10 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
 import { AllClearStat } from "../shared/empty-state";
-import { truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { healthBand, SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "../health/tokens";
 import { ProportionBar } from "../shared/proportion-bar";
-import { formatScore, type HealthBand } from "@repowise-dev/types/health";
+import { formatScore, type HealthBand, type PerformanceCauses } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
 
 export interface HealthOverviewPoint {
@@ -42,8 +42,9 @@ export interface HealthOverviewData {
   maintainability_average?: number | null;
   /** Co-equal performance pillar headline (1–10, static risk), null until measured. */
   performance_average?: number | null;
-  /** Open findings homing under the performance pillar — the actionable count. */
-  performance_findings?: number;
+  /** Open performance causes: worth fixing now (the default queue), in
+   *  production code, and overall. */
+  performance_causes?: PerformanceCauses | null;
   /** Snapshot history, oldest→newest, for the trend sparkline. */
   history: HealthOverviewPoint[];
   snapshot_count: number;
@@ -322,20 +323,20 @@ export function HealthOverviewCard({
 
             {/* The scores above, checked against this repo's own git history. */}
             {defectAccuracy && (
-              <AccuracyStrip data={defectAccuracy} href={`${reportHref}?tab=triage`} />
+              <AccuracyStrip data={defectAccuracy} href={`${reportHref}`} />
             )}
 
             {/* Findings + worst performer */}
             <div className="px-4 py-3.5 space-y-3">
               {severityTotal > 0 ? (
                 <FindingsLine
-                  href={`${reportHref}?tab=triage`}
+                  href={`${reportHref}`}
                   segments={severities}
                   count={data.open_findings}
                 />
               ) : (
                 <a
-                  href={`${reportHref}?tab=triage`}
+                  href={`${reportHref}`}
                   className="flex items-center gap-1.5 text-xs text-[var(--color-success)] hover:underline"
                 >
                   <ShieldAlert className="h-3 w-3" />
@@ -353,9 +354,11 @@ export function HealthOverviewCard({
                     <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] shrink-0">
                       Worst file
                     </span>
-                    <span className="truncate font-mono text-xs text-[var(--color-text-secondary)] group-hover:text-[var(--color-accent-primary)] transition-colors">
-                      {truncatePath(data.worst_performer_path, 40)}
-                    </span>
+                    <FilePath
+                      path={data.worst_performer_path}
+                      fold
+                      className="text-[var(--color-text-secondary)] transition-colors group-hover:text-[var(--color-accent-primary)]"
+                    />
                   </span>
                   <span
                     className="shrink-0 text-xs font-bold tabular-nums"
@@ -380,7 +383,7 @@ export function HealthOverviewCard({
                 <PerformancePillarStat
                   href={`${reportHref}?pillar=performance`}
                   score={data.performance_average ?? null}
-                  findings={data.performance_findings ?? 0}
+                  causes={data.performance_causes ?? null}
                 />
               </div>
             )}
@@ -433,18 +436,21 @@ function PillarStat({
   );
 }
 
-/** Performance is a risk pillar, so its cell leads with the count of open risks
- *  (the actionable read) and keeps the /10 score as a quiet secondary line. */
+/** Performance is a risk pillar, so its cell leads with the causes worth fixing
+ *  now (the default queue), then how many are open in production code, and
+ *  keeps the /10 score as a quiet secondary line. */
 function PerformancePillarStat({
   href,
   score,
-  findings,
+  causes,
 }: {
   href: string;
   score: number | null;
-  findings: number;
+  causes: PerformanceCauses | null;
 }) {
-  const clear = score != null && findings === 0;
+  const now = causes?.now ?? 0;
+  const production = causes?.production ?? 0;
+  const clear = score != null && now === 0 && production === 0;
   return (
     <a
       href={href}
@@ -461,13 +467,11 @@ function PerformancePillarStat({
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-text-primary)]">
-            {findings.toLocaleString()}
+            {now.toLocaleString()}
           </span>
-          <span className="text-xs text-[var(--color-text-secondary)]">
-            {findings === 1 ? "risk" : "risks"}
-          </span>
+          <span className="text-xs text-[var(--color-text-secondary)]">worth fixing now</span>
           <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-            · {formatScore(score)}/10
+            · {production.toLocaleString()} in production · {formatScore(score)}/10
           </span>
         </span>
       )}

@@ -13,6 +13,7 @@ import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { PromptForRowsButton } from "../health/row-prompt-action";
 import { formatDateTime, formatNumber, formatRelativeTimeOrNull } from "../lib/format";
 import { FindingIdentity, FindingConfidence, FindingRowActions } from "./finding-cells";
 import {
@@ -304,7 +305,7 @@ export function FindingsTable({
         key: "path",
         header: "File / Symbol",
         sortable: true,
-        cellClassName: "min-w-[200px] max-w-[480px]",
+        cellClassName: "min-w-[200px] max-w-[360px]",
         render: (f) => (
           <FindingIdentity
             finding={f}
@@ -388,9 +389,8 @@ export function FindingsTable({
         key: "actions",
         header: <span className="sr-only">Actions</span>,
         mobileLabel: "Actions",
-        // Two controls, not five: the cell no longer has to reserve room for a
-        // cluster that wrapped onto a second line at this width.
-        headerClassName: "w-24",
+        // The agent prompt leads, Resolve follows, the rest sit in the menu.
+        headerClassName: "w-64",
         align: "right",
         render: (f) => (
           <FindingRowActions
@@ -469,12 +469,20 @@ export function FindingsTable({
           </Button>
         )}
 
-        {onGeneratePrompt && selectedCount > 0 && (
-          <AiPromptButton
-            label={`AI prompt for ${selectedCount} selected`}
-            onClick={() => onGeneratePrompt(visibleSelected)}
-          />
-        )}
+        {/* The selection when there is one, else every row the filters show. */}
+        {onGeneratePrompt &&
+          (selectedCount > 0 ? (
+            <AiPromptButton
+              label={`Copy prompt for ${selectedCount} selected`}
+              onClick={() => onGeneratePrompt(visibleSelected)}
+              className="whitespace-nowrap"
+            />
+          ) : (
+            <PromptForRowsButton
+              count={current.length}
+              onClick={() => onGeneratePrompt(current.map((f) => f.id))}
+            />
+          ))}
       </div>
       <ConfirmDialog
         open={bulkConfirmOpen}

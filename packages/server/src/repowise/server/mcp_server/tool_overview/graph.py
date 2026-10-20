@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -105,7 +106,9 @@ def _stored_label(node: GraphNode) -> str:
         return ""
 
 
-async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:
+async def _build_architecture(
+    session: Any, repository: Any, package_roots: list[str]
+) -> dict[str, Any]:
     """KG architecture layers, in stack order, + tour availability."""
     kg_layers = [
         layer
@@ -116,17 +119,32 @@ async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:
     if not kg_layers:
         return {}
     return {
-        # Names and sizes only: the layer prose restates the overview essay.
-        "layers": [
-            {
-                "name": layer.name,
-                "file_count": len(json.loads(layer.node_ids_json) if layer.node_ids_json else []),
-            }
-            for layer in kg_layers
-        ],
+        # Names, sizes and roots only: the layer prose restates the overview essay.
+        "layers": [_layer_row(layer, package_roots) for layer in kg_layers],
         "tour_available": bool(kg_tour),
         "tour_step_count": len(kg_tour),
     }
+
+
+def _layer_row(layer: Any, package_roots: list[str]) -> dict[str, Any]:
+    ids = json.loads(layer.node_ids_json) if layer.node_ids_json else []
+    row: dict[str, Any] = {"name": layer.name, "file_count": len(ids)}
+    root = _majority_root([i.removeprefix("file:") for i in ids])
+    # A directory above two packages (``packages/``) locates nothing.
+    if root and sum(p.startswith(root + "/") for p in package_roots) < 2:
+        row["root"] = root
+    return row
+
+
+def _majority_root(paths: list[str]) -> str | None:
+    """The deepest directory holding most of *paths*, or ``None``."""
+    under: Counter = Counter()
+    for path in paths:
+        parts = path.split("/")[:-1]
+        for depth in range(1, len(parts) + 1):
+            under["/".join(parts[:depth])] += 1
+    held = [d for d, n in under.items() if 2 * n > len(paths)]
+    return max(held, key=lambda d: (d.count("/"), under[d]), default=None)
 
 
 async def _build_package_dependencies(
@@ -137,6 +155,17 @@ async def _build_package_dependencies(
     The containers and roll-up are the container view's, so test files add no
     weight in either. ``weight`` counts the file pairs behind an edge.
     """
+    cached = await _container_view(session, repository, exclude_spec)
+    # A copy: the response is shaped after this returns.
+    return copy.deepcopy(cached["dependencies"])
+
+
+async def _package_roots(session: Any, repository: Any, exclude_spec: Any = None) -> list[str]:
+    """The container view's package roots, the repository root as ``""``."""
+    return list((await _container_view(session, repository, exclude_spec))["roots"])
+
+
+async def _container_view(session: Any, repository: Any, exclude_spec: Any) -> dict[str, Any]:
     key = (repository.id, index_state_key(repository), id(exclude_spec))
     cached = _DEPENDENCY_CACHE.get(key)
     if cached is None:
@@ -144,8 +173,7 @@ async def _build_package_dependencies(
         if len(_DEPENDENCY_CACHE) >= _DEPENDENCY_CACHE_LIMIT:
             _DEPENDENCY_CACHE.clear()
         _DEPENDENCY_CACHE[key] = cached
-    # A copy: the response is shaped after this returns.
-    return copy.deepcopy(cached)
+    return cached
 
 
 async def _package_dependencies(session: Any, repo_id: str, exclude_spec: Any) -> dict[str, Any]:
@@ -163,9 +191,31 @@ async def _package_dependencies(session: Any, repo_id: str, exclude_spec: Any) -
         for r in relations[:_DEPENDENCY_EDGES]
         if r.source_id in path_of and r.target_id in path_of
     ]
-    if not edges:
-        return {}
-    block: dict[str, Any] = {"edges": edges}
-    if len(relations) > len(edges):
+    block: dict[str, Any] = {"edges": edges} if edges else {}
+    if edges and len(relations) > len(edges):
         block["edges_total"] = len(relations)
-    return block
+    return {"dependencies": block, "roots": sorted({c.path or "" for c in containers})}
+
+
+#: Packages whose commands the overview names beside the root's.
+_COMMAND_PACKAGES = 8
+
+
+def _build_commands(repo_root: Any, package_roots: list[str]) -> dict[str, dict[str, str]]:
+    """Build, test, lint, dev, format and typecheck commands read from manifests: the root's, then each
+    package's that names a task the root does not. Run those from the package."""
+    if not repo_root:
+        return {}
+    # Imported here: the editor-files package is heavy and only this reads it.
+    from repowise.core.generation.editor_files.tech_stack import detect_build_commands
+
+    base = Path(repo_root)
+    root = detect_build_commands(base)
+    out: dict[str, dict[str, str]] = {".": root} if root else {}
+    for package in package_roots:
+        if len(out) - ("." in out) >= _COMMAND_PACKAGES or not package:
+            continue
+        found = detect_build_commands(base / package)
+        if set(found) - set(root):
+            out[package] = found
+    return out

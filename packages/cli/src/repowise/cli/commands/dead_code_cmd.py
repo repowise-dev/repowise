@@ -377,7 +377,7 @@ def dead_code_command(
     )
     console.print(
         f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold]"
-        + (f" ({tiers} confidence)" if tiers else "")
+        + (f" · findings by confidence: {tiers}" if tiers else "")
     )
     if report.hidden_below_threshold:
         console.print(

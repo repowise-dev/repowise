@@ -147,6 +147,8 @@ LIGHT = {
     # at 10/26/50%, then accent-primary and accent-hover.
     "heat-1": "#F6EFE8", "heat-2": "#E7D6C2", "heat-3": "#D0B08A",
     "heat-4": "#A16215", "heat-5": "#824F10",
+    # Release moment ground and glow band (What's new dialog).
+    "release-ground": "#FBF6F1", "release-card": "#FFFFFF", "release-glow-1": "#F8DFC2", "release-glow-2": "#E8DEEF",
 }
 
 DARK = {
@@ -196,6 +198,7 @@ DARK = {
     # 12/26/42/75%, then accent-primary.
     "heat-1": "#2F2317", "heat-2": "#4E3619", "heat-3": "#724A1A",
     "heat-4": "#BD751E", "heat-5": "#F59520",
+    "release-ground": "#111013", "release-card": "#1B191E", "release-glow-1": "#2B1C0E", "release-glow-2": "#1F1729",
 }
 
 # (fg, bg, floor, label)  — floor is the WCAG ratio the pair must meet.
@@ -243,6 +246,20 @@ CHECKS = [
     # Heatmap cells print their value: ink on the light steps, card colour on the dark.
     *[("text-primary", f"heat-{n}", 4.5, f"Value on heat step {n}") for n in (1, 2, 3)],
     *[("bg-surface", f"heat-{n}", 4.5, f"Value on heat step {n}") for n in (4, 5)],
+    # What's new: ink on the ground and both glow stops (the band carries the
+    # heading only, so links sit on the ground), and the series accents
+    # beside the release figures.
+    *[
+        (fg, bg, floor, f"{fg} on {bg}")
+        for bg in ("release-ground", "release-glow-1", "release-glow-2")
+        for fg, floor in (("text-primary", 7.0), ("text-secondary", 4.5))
+    ],
+    ("accent-primary", "release-ground", 4.5, "accent-primary on release-ground"),
+    *[
+        (fg, "release-card", floor, f"{fg} on release-card")
+        for fg, floor in (("text-primary", 7.0), ("text-secondary", 4.5), ("accent-primary", 4.5))
+    ],
+    *[(f"series-{n}", "release-ground", 3.0, f"Series {n} on release ground") for n in range(1, 6)],
 ]
 
 
