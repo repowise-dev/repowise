@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -139,7 +140,8 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
     """The repos *names* pick, in the order named.
 
     A name matches a repo's alias, its directory name, or its path relative to
-    *root* (the column the picker shows), case-insensitively. A name two repos
+    *root* (the column the picker shows), case-insensitively. A filesystem path
+    (``./api`` or absolute) that resolves to a repo's folder matches it too. A name two repos
     share is ambiguous: the path tells them apart. Raises ``ValueError`` with a
     message that names every bad name and what would work instead.
     """
@@ -154,6 +156,9 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
             if name in (r.alias.casefold(), r.name.casefold(), display_path(r, root).casefold())
         ]
         if not hits:
+            target = _resolved(Path(raw).expanduser())
+            hits = [r for r in repos if target is not None and _resolved(r.path) == target]
+        if not hits:
             unknown.append(raw)
         elif len(hits) > 1:
             paths = ", ".join(display_path(r, root) for r in hits)
@@ -165,6 +170,13 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
         available = ", ".join(display_path(r, root) for r in repos)
         raise ValueError(f"Unknown repo: {', '.join(unknown)}. Available: {available}.")
     return picked
+
+
+def _resolved(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
 
 
 def interactive_primary_select(

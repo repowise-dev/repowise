@@ -28,8 +28,11 @@ def split_repo_names(raw: str | None) -> list[str]:
 
 def check_repos_flag(repos: str | None, *, init_all: bool, is_workspace: bool) -> None:
     """Reject ``--repos`` where it cannot apply, before any indexing starts."""
-    if not repos:
+    if repos is None:
         return
+    # An empty value would otherwise fall through to indexing every repo.
+    if not split_repo_names(repos):
+        raise click.UsageError("--repos needs at least one repo name.")
     if init_all:
         raise click.UsageError("--repos and --all contradict each other. Pass one.")
     if not is_workspace:
