@@ -28,7 +28,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.theme import Theme
 
-from repowise.cli.ui.glyphs import for_terminal, glyph
+from repowise.cli.ui.glyphs import ascii_only, for_terminal, glyph
 
 # ---------------------------------------------------------------------------
 # Brand / theme
@@ -78,29 +78,21 @@ THEME = Theme(
 # Banner  —  owl mascot + wordmark (art lives in ui/mascot.py)
 # ---------------------------------------------------------------------------
 
-# Breathing room required beyond the rendered banner width before we pick the
-# long tagline; below that we use the short one.
-_BANNER_WIDTH_MARGIN = 4
+# Breathing room beyond the banner's own width (53 columns) before it is drawn,
+# so it needs 60; below that the one-line header stands in.
+_BANNER_WIDTH_MARGIN = 7
 
 
 def print_banner(console: Console, repo_name: str | None = None) -> None:
-    """Print the repowise owl banner, tagline, and optional repo name."""
+    """Print the owl banner, or the one-line header when the art cannot show, then the repo."""
     from repowise.cli import __version__
     from repowise.cli.ui import mascot
 
-    narrow = console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN
     console.print()
-    console.print(mascot.banner_text())
-    console.print()
-    if narrow:
-        console.print(
-            f" [{DIM}]codebase intelligence {glyph('sep')} v{__version__}[/]", highlight=False
-        )
+    if ascii_only() or console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN:
+        console.print(mascot.header_text(__version__, console.width), highlight=False)
     else:
-        console.print(
-            f" [{DIM}]codebase intelligence for developers and AI {glyph('sep')} v{__version__}[/]",
-            highlight=False,
-        )
+        console.print(mascot.banner_text(__version__), highlight=False)
     if repo_name:
         console.print()
         console.print(f" Repository: [bold]{escape(repo_name)}[/bold]", highlight=False)

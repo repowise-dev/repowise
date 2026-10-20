@@ -41,8 +41,8 @@ def test_a_cp1252_stdout_gets_the_ascii_forms(monkeypatch: pytest.MonkeyPatch) -
     assert stream.encoding == "utf-8"
     assert glyphs.ascii_only()
     assert glyphs.glyph("ok") == "+"
-    assert mascot.mini(mascot.IDLE) == "(o,o)"
-    assert mascot.banner_text().plain.isascii()
+    assert mascot.mini(mascot.IDLE) == "{o,o}"
+    assert mascot.header_text("1.2.3").plain.isascii()
 
     console = _CliConsole(theme=THEME, width=80, force_terminal=False)
     console.print(build_completion_panel("repowise init complete", [("Files", "3 files")]))
@@ -50,7 +50,7 @@ def test_a_cp1252_stdout_gets_the_ascii_forms(monkeypatch: pytest.MonkeyPatch) -
     stream.flush()
     out = stream.buffer.getvalue().decode("utf-8")
     assert out.isascii(), out
-    assert "(^,^)  repowise init complete" in out
+    assert "{^,^}  repowise init complete" in out
     assert "+ Resolving imports - 3 files" in out
 
 
@@ -58,7 +58,7 @@ def test_a_utf8_stdout_gets_the_unicode_forms(terminal_encoding) -> None:
     terminal_encoding("utf-8")
     assert not glyphs.ascii_only()
     assert glyphs.glyph("ok") == "✓"
-    assert mascot.mini(mascot.IDLE) == "(◉,◉)"
+    assert mascot.mini(mascot.IDLE) == "{◉,◉}"
     assert checklist.running_label("  ↳ Resolving imports") == "  ↳ Resolving imports"
 
 
@@ -71,13 +71,13 @@ def test_every_glyph_has_a_one_line_ascii_form() -> None:
 @pytest.mark.parametrize(
     ("state", "unicode", "ascii_form"),
     [
-        (mascot.IDLE, "(◉,◉)", "(o,o)"),
-        (mascot.BLINK, "(◒,◒)", "(o,o)"),
-        (mascot.SHUT, "(─,─)", "(o,o)"),
-        (mascot.DONE, "(^,^)", "(^,^)"),
-        (mascot.INTERRUPTED, "(─,─)", "(-,-)"),
-        (mascot.WARNED, "(•,•)", "(o,o)"),
-        (mascot.FAILED, "(×,×)", "(x,x)"),
+        (mascot.IDLE, "{◉,◉}", "{o,o}"),
+        (mascot.BLINK, "{◒,◒}", "{o,o}"),
+        (mascot.SHUT, "{─,─}", "{o,o}"),
+        (mascot.DONE, "{^,^}", "{^,^}"),
+        (mascot.INTERRUPTED, "{─,─}", "{-,-}"),
+        (mascot.WARNED, "{•,•}", "{.,.}"),
+        (mascot.FAILED, "{×,×}", "{x,x}"),
     ],
 )
 def test_owl_states(terminal_encoding, state: str, unicode: str, ascii_form: str) -> None:
@@ -112,7 +112,7 @@ def test_the_panel_title_carries_the_owl_state(terminal_encoding) -> None:
     terminal_encoding("utf-8")
     console = Console(file=io.StringIO(), width=80, theme=THEME)
     console.print(build_completion_panel("repowise init complete", [], owl=mascot.FAILED))
-    assert "(×,×)  repowise init complete" in console.file.getvalue()
+    assert "{×,×}  repowise init complete" in console.file.getvalue()
 
 
 def test_the_theme_is_registered_on_the_cli_consoles() -> None:
@@ -138,7 +138,7 @@ def test_no_color_drops_colour_and_keeps_the_glyph(
     assert not _COLOUR_SGR.search(out), repr(out)
     plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
     assert "✓ done" in plain
-    assert "(•,•)" in plain
+    assert "{•,•}" in plain
 
 
 # The init path names theme styles; the theme module is the one place a colour lives.
