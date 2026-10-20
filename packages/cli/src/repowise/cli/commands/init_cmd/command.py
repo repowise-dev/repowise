@@ -368,7 +368,8 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     help=(
         "In a folder with several repos, index only these, with no picker. "
         "Comma-separated names (alias, directory name, or path relative to the "
-        "folder when two repos share a name). The first one listed is primary."
+        "folder when two repos share a name). In a new workspace the first one "
+        "listed is primary; an existing workspace keeps its primary."
     ),
 )
 @click.option(

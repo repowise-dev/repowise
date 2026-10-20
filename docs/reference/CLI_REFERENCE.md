@@ -191,7 +191,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--dry-run` | Show the generation plan and cost estimate. Writes no wiki |
 | `--test-run` | Write docs with the model for only the top 10 files (by PageRank). Not with `--no-prose` or `--mode fast` |
 | `--all` | In a folder with several repos, index every detected repo without prompting. `--yes` and a piped stdin do the same and print which repos they took |
-| `--repos` | In a folder with several repos, index only these, with no picker: `--repos api,web`. Each name is a repo's alias, directory name, or its path relative to the folder when two repos share a name. The first one listed is primary. An unknown name stops the run and lists the available ones |
+| `--repos` | In a folder with several repos, index only these, with no picker: `--repos api,web`. Each name is a repo's alias, directory name, or its path relative to the folder when two repos share a name. In a new workspace the first one listed is primary; an existing workspace keeps its primary. An unknown name stops the run and lists the available ones |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
 
 **Examples:**
