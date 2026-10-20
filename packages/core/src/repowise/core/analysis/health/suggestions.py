@@ -76,6 +76,11 @@ _TEMPLATES: dict[str, str] = {
         "tests for the current behavior first, then refactor with "
         "confidence."
     ),
+    "untested_complexity": (
+        "Test this function's branches first: it is complex and little of it "
+        "runs under test. When its complexity is 30 or more, split it instead, "
+        "since no amount of coverage brings its score under the bar."
+    ),
     "coverage_gap": (
         "Cover the uncovered branches. Start with the highest-impact "
         "uncovered code paths (errors, edge cases, security-sensitive "

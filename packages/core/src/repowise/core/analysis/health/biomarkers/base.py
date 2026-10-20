@@ -70,6 +70,9 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # The lines the report calls executable, hit or not. Empty when the report
+    # did not say, which leaves per-function coverage unmeasured.
+    coverable_lines: set[int] = field(default_factory=set)
     # Only a docstring, imports and export lists: no code for coverage to measure.
     reexport_only: bool = False
     # Duplication signals (populated when the engine ran the
@@ -129,6 +132,9 @@ class FileContext:
     # a file's same-named functions, which is the collision #2408 removed.
     # Empty without a call graph, which leaves the marker as it was.
     cross_file_oracle_lines: frozenset[int] = frozenset()
+    # Start line of each function a test reaches on the call graph, to the call
+    # hops of the nearest such test (1: a test calls it). Empty without a graph.
+    function_test_hops: dict[int, int] = field(default_factory=dict)
 
     @property
     def is_test_material(self) -> bool:

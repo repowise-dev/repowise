@@ -27,6 +27,7 @@ from .scoring import attach_impacts, file_score_fields, remap_severities, score_
 from .source_reader import SourceReader
 
 if TYPE_CHECKING:
+    from ..function_test_map import FunctionTests
     from .engine import HealthAnalyzer
 
 #: Function facts a finding inside the function carries in its details.
@@ -221,6 +222,7 @@ class FileEvaluator:
     file_scc_index: dict[str, tuple[str, ...]] | None = None
     methods_by_file: dict[str, tuple[str, ...]] | None = None
     dataflow_cache: FileDataflowCache | None = None
+    function_tests: FunctionTests | None = None
 
     def evaluate(
         self, pf: Any, fcx: FileComplexity
@@ -287,6 +289,7 @@ class FileEvaluator:
             branch_coverage_pct=cov.get("branch_coverage_pct") if cov else None,
             covered_lines=set(cov.get("covered_lines") or ()) if cov else set(),
             total_coverable_lines=int(cov.get("total_coverable_lines", 0)) if cov else 0,
+            coverable_lines=set(cov.get("coverable_lines") or ()) if cov else set(),
             reexport_only=bool(cov)
             and is_reexport_only(pf, bool(fcx.functions), analyzer.read_source),
             clones=list(clones),
@@ -300,7 +303,24 @@ class FileEvaluator:
             perf_hits=fcx.perf_hits,
             io_boundary_names=set(fcx.io_boundary_names),
             cross_file_oracle_lines=frozenset(getattr(fcx, "cross_file_oracles", ())),
+            function_test_hops=self._function_test_hops(pf, fcx),
         )
+
+    def _function_test_hops(self, pf: Any, fcx: FileComplexity) -> dict[int, int]:
+        """Each function's start line to the hops of the nearest test that reaches it."""
+        if not self.function_tests or pf.file_info.is_test:
+            return {}
+        index = self.analyzer._execution_graph()
+        if index is None:
+            return {}
+        path = pf.file_info.path
+        out: dict[int, int] = {}
+        for fc in fcx.functions:
+            symbol = index.resolve_function(path, fc.start_line, func_end=fc.end_line)
+            tests = self.function_tests.get(symbol) if symbol is not None else None
+            if tests:
+                out[fc.start_line] = tests[0].hops
+        return out
 
     def _findings(
         self, ctx: FileContext, fcx: FileComplexity

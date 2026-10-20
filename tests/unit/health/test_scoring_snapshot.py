@@ -97,6 +97,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "dry_violation": "duplication",
     "untested_hotspot": "test_coverage",
     "coverage_gap": "test_coverage",
+    "untested_complexity": "test_coverage",
     "coverage_gradient": "test_coverage_gradient",
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
