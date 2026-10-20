@@ -7,7 +7,6 @@
   "compilerOptions": {
     "noEmit": false,
     "outDir": "out-test",
-    "rootDir": "src",
     "module": "CommonJS",
     "moduleResolution": "Node10"
   },
