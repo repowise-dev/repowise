@@ -133,7 +133,7 @@ export async function CommitsView({
         </OverviewSection>
       )}
 
-      {trend && trend.enabled && trend.agent_commits > 0 && <AgentTrendStrip trend={trend} />}
+      {trend && <AgentTrendStrip trend={trend} />}
 
       <OverviewSection
         title={t("scoreBehaviourTitle")}
