@@ -47,6 +47,21 @@ _PLAN_COMPANIONS = frozenset(
     {"refactoring_plans_status", "refactoring_plans_opportunities_total"}
 )
 
+_ONLY_SUFFIXES = (
+    "_total",
+    "_emitted",
+    "_reduced_reason",
+    "_scope",
+    "_hidden",
+    "_counts",
+)
+
+_NON_ONLY_KEYS = (
+    _ALWAYS_KEPT
+    | _PLAN_COMPANIONS
+    | {"_meta", "scope", "counts", "unscored_files", "counts_not_applied_to"}
+)
+
 
 def _name_rejected_controls(
     result: dict[str, Any], req: HealthRequest, reported_scope: str, reported_counts: str
@@ -88,6 +103,24 @@ def _name_uncounted_blocks(result: dict[str, Any], reported_counts: str) -> None
         result["counts_not_applied_to"] = unprojected
 
 
+def _unknown_only_hint(result: dict[str, Any]) -> str:
+    """In targeted mode the unprojected result is complete, so name the keys
+    this call can actually keep; dashboard blocks are built lazily."""
+    if result.get("mode") != "targets":
+        return _UNKNOWN_ONLY_HINT
+    # ``trends`` is gated on ``wants("trends")`` at load time, so include it
+    # beside whatever blocks this targeted result built.
+    keys = [
+        k
+        for k in dict.fromkeys((*result, "trends"))
+        if k not in _NON_ONLY_KEYS and not k.endswith(_ONLY_SUFFIXES)
+    ]
+    return (
+        f"`only` names response keys, such as {', '.join(keys)}; a dimension "
+        "such as performance is an `include` value. See docs/agent/MCP_TOOLS.md."
+    )
+
+
 def _project(
     result: dict[str, Any], req: HealthRequest, reported_scope: str, reported_counts: str
 ) -> dict[str, Any]:
@@ -103,18 +136,7 @@ def _project(
     keep = (
         set(req.only_list)
         | _ALWAYS_KEPT
-        | {
-            suffix
-            for k in req.only_list
-            for suffix in (
-                f"{k}_total",
-                f"{k}_emitted",
-                f"{k}_reduced_reason",
-                f"{k}_scope",
-                f"{k}_hidden",
-                f"{k}_counts",
-            )
-        }
+        | {f"{k}{suffix}" for k in req.only_list for suffix in _ONLY_SUFFIXES}
     )
     # Which reading the numbers are on, only when it is not the default.
     if reported_scope != DEFAULT_SCOPE:
@@ -128,9 +150,10 @@ def _project(
     unknown = sorted(
         raw for raw, resolved in zip(req.only, req.only_list, strict=True) if resolved not in result
     )
+    hint = _unknown_only_hint(result)
     result = {k: v for k, v in result.items() if k in keep}
     if unknown:
         result["unknown_only_keys"] = unknown
         _stamp_collection(result, "unknown_only_keys", total=len(unknown))
-        result["unknown_only_keys_hint"] = _UNKNOWN_ONLY_HINT
+        result["unknown_only_keys_hint"] = hint
     return result
