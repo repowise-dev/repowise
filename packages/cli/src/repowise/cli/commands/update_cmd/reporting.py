@@ -20,7 +20,12 @@ from repowise.cli.ui import (
     build_completion_panel,
     format_elapsed,
 )
-from repowise.cli.ui.mode_names import TITLE_INDEX_UPDATED, TITLE_UPDATED_BUILT_FROM_CODE, pages
+from repowise.cli.ui.mode_names import (
+    TITLE_INDEX_UPDATED,
+    TITLE_UPDATED_BUILT_FROM_CODE,
+    pages,
+    provider_model,
+)
 from repowise.cli.ui.result_panels import serve_step
 
 # Status -> display color, shared by the changed-file summary.
@@ -300,7 +305,7 @@ def show_full_completion(
     if tokens:
         metrics.append(("Total tokens", f"{tokens:,}"))
     if provider is not None:
-        metrics.append(("Provider", f"{provider.provider_name} / {provider.model_name}"))
+        metrics.append(("Provider", provider_model(provider.provider_name, provider.model_name)))
     if cost:
         metrics.append(("Cost", f"${cost:.3f}"))
     metrics.append(("Elapsed", format_elapsed(elapsed)))

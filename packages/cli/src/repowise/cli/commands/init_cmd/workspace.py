@@ -293,6 +293,8 @@ class _WorkspaceCtx:
     embedder_was_requested: bool
     resolved_commit_limit: int
     run_mode: str = "standard"
+    #: No workspace config existed before this run, so the MCP entry is new.
+    first_index: bool = True
     #: Mirrors the single-repo flag. A workspace writes project files per repo,
     #: so --no-editor-setup has to reach every one of them, not just the
     #: primary's client registration.
@@ -463,9 +465,9 @@ def _generate_repo_docs(repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex) -> _Re
         )
         docs.skip_reason = "dry run"
     elif ctx.run_mode == "fast":
-        # Fast mode is a graph-and-git index by design, as in single-repo init.
+        # Fast mode is a graph-and-git index by design, as in single-repo init;
+        # the panel names it Index only rather than calling it skipped.
         console.print()
-        docs.skip_reason = "fast mode"
     elif not ctx.index_only and ctx.provider is not None:
         _generate_repo_with_model(repo, ctx, index, docs)
     else:
@@ -742,7 +744,6 @@ class _WorkspaceTotals:
 
     total_files: int = 0
     total_symbols: int = 0
-    total_pages: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
     #: alias -> (generated_count, skip_reason | None), shown in the completion
     #: panel so the user never has to guess why a repo has no pages.
@@ -847,6 +848,9 @@ def _workspace_init(
     provider, resolved_reasoning = _resolve_workspace_provider(
         answers, primary_repo, yes=yes, save_key=save_key
     )
+    from repowise.core.workspace.config import WORKSPACE_CONFIG_FILENAME
+
+    first_index = not (root / WORKSPACE_CONFIG_FILENAME).exists()
     ws_config = _workspace_config(pick, ask=sys.stdin.isatty() and not yes, dry_run=dry_run)
     if repo_names:
         console.print(repos_primary_line(ws_config.default_repo, pick))
@@ -879,6 +883,7 @@ def _workspace_init(
         embedder_was_requested=embedder_was_requested,
         resolved_commit_limit=max(1, min(answers.commit_limit or _DEFAULT_COMMIT_LIMIT, 10000)),
         run_mode=run_mode,
+        first_index=first_index,
     )
     totals = _index_workspace_repos(selected, ctx)
 
@@ -894,19 +899,6 @@ def _workspace_init(
             global_consent=plan.global_consent if plan is not None else None,
         )
 
-    show_workspace_completion(
-        selected=selected,
-        errors=totals.errors,
-        total_files=totals.total_files,
-        total_symbols=totals.total_symbols,
-        total_pages=totals.total_pages,
-        primary_alias=primary_alias,
-        elapsed=time.monotonic() - start,
-        index_only=answers.index_only,
-        provider=provider,
-        docs_outcomes=totals.docs_outcomes,
-        run_mode=run_mode,
-    )
     if not dry_run:
         _offer_workspace_hooks(
             selected,
@@ -916,8 +908,37 @@ def _workspace_init(
             yes=yes,
             editor_setup=editor_setup,
         )
+
+    # Last, so Connected and Auto-sync read what the hook offers left behind.
+    show_workspace_completion(
+        selected=selected,
+        errors=totals.errors,
+        total_files=totals.total_files,
+        total_symbols=totals.total_symbols,
+        primary_alias=primary_alias,
+        elapsed=time.monotonic() - start,
+        index_only=answers.index_only,
+        provider=provider,
+        docs_outcomes=totals.docs_outcomes,
+        dry_run=dry_run,
+        setup=_workspace_setup(primary_repo.path, ctx),
+    )
     console.print()
     exit_on_gaps(_workspace_gaps(ctx, totals))
+
+
+def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx) -> Any:
+    """What editor setup left for the primary repo; None on a dry run, which set nothing up."""
+    if ctx.dry_run:
+        return None
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    return detect_editor_setup_outcome(
+        primary_path,
+        interactive=sys.stdin.isatty() and not ctx.yes,
+        first_index=ctx.first_index,
+        no_editor_setup=not ctx.editor_setup,
+    )
 
 
 def _settle_repos(
@@ -1105,7 +1126,6 @@ def _index_workspace_repos(selected: list[Any], ctx: _WorkspaceCtx) -> _Workspac
             continue
         totals.total_files += outcome.file_count
         totals.total_symbols += outcome.symbol_count
-        totals.total_pages += outcome.pages_generated
         totals.docs_outcomes[repo.alias] = outcome.docs_outcome
         if outcome.embed_failed_pages:
             totals.embed_failures[repo.alias] = outcome.embed_failed_pages

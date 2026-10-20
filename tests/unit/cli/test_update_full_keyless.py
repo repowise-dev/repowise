@@ -214,22 +214,21 @@ def test_update_panel_on_an_index_only_repo_names_update_full(monkeypatch) -> No
 
 
 def test_workspace_init_on_fast_repos_names_update_full(monkeypatch) -> None:
-    from repowise.cli.commands.init_cmd import reporting
-
-    out = _plain(monkeypatch, reporting)
-    reporting.show_workspace_completion(
-        selected=[object(), object()],
-        errors=[],
-        total_files=2,
-        total_symbols=2,
-        total_pages=0,
-        primary_alias="api",
-        elapsed=1.0,
-        index_only=True,
-        provider=None,
-        docs_outcomes={"api": (0, "fast mode"), "web": (0, "fast mode")},
-        run_mode="fast",
+    from repowise.cli.ui.workspace_finish import (
+        RepoOutcome,
+        WorkspaceFacts,
+        build_workspace_finish_panel,
     )
+
+    facts = WorkspaceFacts(
+        repos=[RepoOutcome("api", skipped="fast mode"), RepoOutcome("web", skipped="fast mode")],
+        files=2,
+        symbols=2,
+        primary="api",
+        elapsed="1s",
+    )
+    out = io.StringIO()
+    Console(file=out, width=200).print(build_workspace_finish_panel(facts))
     printed = out.getvalue()
     assert "repowise update --repo api --full" in printed
     assert "repowise generate" not in printed

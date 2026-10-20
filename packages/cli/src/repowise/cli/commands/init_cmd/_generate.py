@@ -11,7 +11,7 @@ from rich.table import Table
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.helpers import console, load_config, warn
 from repowise.cli.ui import BRAND, VALUE, print_stage
-from repowise.cli.ui.mode_names import INDEX_ONLY
+from repowise.cli.ui.mode_names import INDEX_ONLY, provider_model
 from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._exit import COST_UNCONFIRMED_BUILT, COST_UNCONFIRMED_KEPT
@@ -264,7 +264,7 @@ def _run_generation_phase(
         console,
         "generation",
         total_phases,
-        f"Writing documentation with {provider.provider_name} / {provider.model_name}",
+        f"Writing documentation with {provider_model(provider.provider_name, provider.model_name)}",
     )
 
     gen_config = GenerationConfig.from_repo_config(

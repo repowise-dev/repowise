@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from repowise.cli.ui.mode_names import model_name
 from repowise.cli.ui.repo_scanner import (
     RepoScanInfo,
     estimated_model_minutes,
@@ -26,7 +27,7 @@ class ModelPrice:
     @property
     def model_label(self) -> str:
         """The model id without a repeated ``<provider>/`` prefix."""
-        return self.model.removeprefix(f"{self.provider}/")
+        return model_name(self.provider, self.model) or self.model
 
 
 @dataclass(frozen=True)
@@ -135,8 +136,11 @@ def _found_phrase(provider: str, how: str) -> str:
     if agent is not None:
         label = agent.display_name.removesuffix(" CLI")
         return f"{label} is logged in" if agent.login_check else f"{label} is installed"
-    if provider == "ollama":
-        return f"Ollama is running at {how}"
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider)
+    if spec is not None and spec.local:
+        return f"{spec.label.removesuffix(' (Local)')} is running at {how}"
     return f"{how} found" if how else f"{provider} is set up"
 
 

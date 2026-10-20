@@ -160,8 +160,9 @@ def plan_scopes(
     reading the checkout.
     """
     from ..test_paths import is_test_related_path
-    from .fixture_readers import with_fixture_readers
+    from .fixture_readers import with_data_file_readers, with_fixture_readers
     from .selection_scopes import (
+        is_fixture_data,
         is_manifest,
         keeps_full_run,
         needs_namers,
@@ -184,6 +185,13 @@ def plan_scopes(
             if is_code_file(p):
                 (test_code if is_test_related_path(p) else other).append(p)
         namers = with_fixture_readers(namers, test_code, other, checkout.read, checkout.holding)
+        # A fixture data file runs the test code reading it; one no test code is
+        # known to read, or that production code names, keeps its full run.
+        if fixtures := [p for p in asked if is_fixture_data(p, config)]:
+            readers = with_data_file_readers(
+                fixtures, namers, test_code, other, checkout.read, checkout.holding
+            )
+            namers = {**{f: n for f, n in namers.items() if f not in fixtures}, **readers}
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes)

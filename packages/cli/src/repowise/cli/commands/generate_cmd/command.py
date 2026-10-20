@@ -33,6 +33,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.providers import model_run_embedder
 from repowise.cli.ui import load_dotenv
+from repowise.cli.ui.mode_names import provider_model
 from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
@@ -296,7 +297,7 @@ def generate_command(
     console.print(f"[bold]repowise generate[/bold] {repo_path}")
     if provider is not None:
         console.print(
-            f"Provider: [cyan]{provider.provider_name}[/cyan] / [cyan]{provider.model_name}[/cyan]"
+            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}[/cyan]"
         )
 
     from repowise.core.generation import GenerationConfig
