@@ -21,6 +21,7 @@ from repowise.cli.ui import (
     format_elapsed,
 )
 from repowise.cli.ui.mode_names import TITLE_INDEX_UPDATED, TITLE_UPDATED_BUILT_FROM_CODE, pages
+from repowise.cli.ui.result_panels import serve_step
 
 # Status -> display color, shared by the changed-file summary.
 _STATUS_COLOR = {"added": "green", "deleted": "red", "modified": "yellow", "renamed": "blue"}
@@ -305,7 +306,7 @@ def show_full_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
-        ("repowise serve", "browse the updated documentation at localhost:3000"),
+        serve_step("updated documentation"),
         ("repowise search <query>", "search the documentation"),
     ]
     console.print()
@@ -351,7 +352,7 @@ def show_index_only_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
-        ("repowise serve", "browse the index at localhost:3000"),
+        serve_step(),
     ]
     if template_wiki:
         # The scoped, cost-gated upgrade path — a coverage, a directory or one
@@ -404,8 +405,8 @@ def show_workspace_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
+        serve_step("workspace dashboard"),
         ("repowise status --workspace", "show workspace status"),
-        ("repowise serve", "browse a repo's documentation at localhost:3000"),
     ]
     console.print()
     console.print(
