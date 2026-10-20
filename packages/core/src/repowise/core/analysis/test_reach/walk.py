@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Collection, Mapping
+from dataclasses import replace
 from pathlib import PurePosixPath
+from typing import TypeVar
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.execution_graph import file_of_symbol
@@ -22,6 +24,7 @@ from .maps import Need, Walk, WalkMaps, run
 from .model import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
+    MAX_TESTS_PER_TARGET,
     TRANSITIVE_HOPS,
     ReachDistance,
     ReachedBy,
@@ -39,6 +42,8 @@ CLOSURE_DEPTH = sys.maxsize
 # than this are walked in batches of it. Ceiling: the batches repeat the walk
 # over shared ancestors; a seed bitset per node is the upgrade path.
 CLOSURE_SEED_CAP = 200
+
+_V = TypeVar("_V")
 
 
 def call_walk(
@@ -384,17 +389,22 @@ def states_walk(
     *,
     changed_tests: Collection[str] = frozenset(),
     contents: Mapping[str, str | bytes] | None = None,
+    masks: Mapping[str, Collection[str]] | None = None,
 ) -> Walk[dict[str, ReachRow]]:
     """A :class:`~.model.ReachRow` per path, the negative claim made only when it holds.
 
     In order: ``type_only`` (from *contents*); ``reached`` by a test the change
-    adds or edits (*changed_tests*) that is named for the path or imports it,
-    then by the path's own inline tests; ``new`` for a path the index lacks;
-    ``no_signal`` when the index holds no test; ``reached`` by the call walk,
+    adds or edits (*changed_tests*) that is named for the path or imports it
+    and does not replace it, then by the path's own inline tests; ``new`` for
+    a path the index lacks; ``no_signal`` when the index holds no test; ``reached`` by the call walk,
     the import walk or the helper and barrel hop; ``reached`` through the whole
-    import closure; else ``unreached``.
+    import closure; ``mocked_only`` when every test those found replaces the
+    path (*masks*, ``{test: files it replaces}``, :func:`~.mocks.replaced_files`);
+    else ``unreached``. A path whose walked tiers find only replacing tests
+    goes on to the import closure, so a test that runs it is still found.
     """
     contents = contents or {}
+    mocked: dict[str, set[str]] = {}
     rows: dict[str, ReachRow] = {}
     rest: list[str] = []
     # Grouped once by directory, so each Go file scans only its own folder's tests.
@@ -417,6 +427,10 @@ def states_walk(
             rows[path] = ReachRow("type_only")
             continue
         named = [t for t in touched if t in imported_by.get(path, ()) or names_test_for(t, path)]
+        replacing = [t for t in named if masks and path in masks.get(t, ())]
+        if replacing:
+            mocked.setdefault(path, set()).update(replacing)
+            named = [t for t in named if t not in replacing]
         if named:
             rows[path] = ReachRow("reached", capped(path, named, "changed-test", changed=named))
             continue
@@ -432,13 +446,52 @@ def states_walk(
         elif not test_files:
             rows[path] = ReachRow("no_signal")
     rest = [p for p in rest if p not in rows]
-    found = yield from tier_walk(rest, test_files, helpers=True)
+    found = _unmasked((yield from tier_walk(rest, test_files, helpers=True)), masks, mocked)
     left = [p for p in rest if p not in found]
-    found |= yield from closure_walk(left, test_files)
+    found |= _unmasked((yield from closure_walk(left, test_files)), masks, mocked)
     for path in rest:
         hit = found.get(path)
-        rows[path] = ReachRow("reached", hit) if hit else ReachRow("unreached")
+        if hit:
+            rows[path] = ReachRow("reached", hit)
+        elif path in mocked:
+            rows[path] = ReachRow("mocked_only", mocked_by=tuple(sorted(mocked[path])))
+        else:
+            rows[path] = ReachRow("unreached")
     return {path: rows[path] for path in dict.fromkeys(paths)}
+
+
+def _unmasked(
+    found: dict[str, ReachedBy],
+    masks: Mapping[str, Collection[str]] | None,
+    mocked: dict[str, set[str]],
+) -> dict[str, ReachedBy]:
+    """*found* without the tests that replace each target; *mocked* gains the ones dropped.
+
+    A target every test of which replaces it is left out. The rest keep their
+    rank order, so the cap still keeps the closest tests.
+    """
+    if not masks:
+        return found
+    out: dict[str, ReachedBy] = {}
+    for target, by in found.items():
+        tests = by.all_tests if by.all_tests is not None else tuple(by.tests)
+        replaced = [t for t in tests if target in masks.get(t, ())]
+        if not replaced:
+            out[target] = by
+            continue
+        mocked.setdefault(target, set()).update(replaced)
+        kept = tuple(t for t in tests if t not in replaced)
+        if kept:
+            out[target] = replace(
+                by,
+                tests=list(kept[:MAX_TESTS_PER_TARGET]),
+                total=len(kept),
+                all_tests=kept,
+                reach=_only(by.reach, kept),
+                entries=_only(by.entries, kept),
+                transitive=by.transitive - set(replaced),
+            )
+    return out
 
 
 def _touched_imports(paths: list[str], touched: list[str]) -> Walk[dict[str, set[str]]]:
@@ -453,22 +506,32 @@ def _touched_imports(paths: list[str], touched: list[str]) -> Walk[dict[str, set
     return out
 
 
+def _only(by_test: Mapping[str, _V] | None, tests: Collection[str]) -> dict[str, _V] | None:
+    return None if by_test is None else {t: v for t, v in by_test.items() if t in tests}
+
+
 def reach_states(
     maps: WalkMaps,
     paths: Collection[str],
     *,
     changed_tests: Collection[str] = frozenset(),
     contents: Mapping[str, str | bytes] | None = None,
+    masks: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachRow]:
     """:func:`states_walk` over *maps*: whether tests reach each path, as a typed claim.
 
     *changed_tests* are test files the change adds or edits, indexed or not.
     *contents* maps a path to its bytes, for the type-only and Rust inline
-    checks; a path without them skips both.
+    checks; a path without them skips both. *masks* maps a test to the files
+    it replaces outright (:func:`~.mocks.replaced_files`).
     """
     return run(
         states_walk(
-            list(paths), maps.test_files, changed_tests=changed_tests, contents=contents
+            list(paths),
+            maps.test_files,
+            changed_tests=changed_tests,
+            contents=contents,
+            masks=masks,
         ),
         maps,
     )

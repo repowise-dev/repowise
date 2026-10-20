@@ -160,6 +160,7 @@ from .db import (
     cached_files_reached_by_tests,
     cached_hub_files,
     cached_test_files,
+    cached_test_masks,
     call_graph_from_db,
     clear_test_map_cache,
     dependency_path,
@@ -185,6 +186,7 @@ from .forward import (
 from .hubs import call_hub_files, hub_files
 from .inline import go_inline_tests, inline_tests, rust_has_inline_tests
 from .maps import ImportGraph, WalkMaps, build_walk_maps
+from .mocks import replaced_files, replaced_modules
 from .model import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
@@ -223,6 +225,7 @@ __all__ = [
     "cached_files_reached_by_tests",
     "cached_hub_files",
     "cached_test_files",
+    "cached_test_masks",
     "call_graph_from_db",
     "call_graph_from_graph",
     "call_hub_files",
@@ -246,6 +249,8 @@ __all__ = [
     "reach_states",
     "reach_states_from_db",
     "reaching_by_tier",
+    "replaced_files",
+    "replaced_modules",
     "rust_has_inline_tests",
     "tests_matching_by_name",
     "tests_reaching",

@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from ..context import HISTORY_TOO_SHORT, RepoContext
-from ..facts import FileFacts, RepoFacts
+from ..facts import MOCKED_ONLY_VIA, FileFacts, RepoFacts
 from ..model import (
     SEVERITY_VALUE,
     Action,
@@ -327,6 +327,8 @@ def _coverage_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
 
 
 def _reach_fact(f: FileFacts) -> WhyFact:
+    if f.tests_reaching_via == MOCKED_ONLY_VIA:
+        return WhyFact("tests that reach it", "Only tests that replace it reach it", "inferred")
     if not f.tests_reaching:
         return WhyFact("tests that reach it", "None in the code graph", "inferred")
     via = (f.tests_reaching_via or "code graph").replace("-", " ")

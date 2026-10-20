@@ -133,11 +133,19 @@ per run, and caches it. The per-change walk reads the same edge table
 The reverse walks are written once and run over the stored graph or over a
 graph held in memory (`build_walk_maps` on the NetworkX graph or its node-link
 JSON), and both return the same rows. `reach_states` gives each file a typed
-state: `reached`, `unreached`, `new`, `no_signal` or `type_only`. A file is
+state: `reached`, `unreached`, `new`, `no_signal`, `type_only` or
+`mocked_only`. A file is
 `unreached` only when the call walk, the helper and barrel hop and the whole
 import closure all miss it, and a test the change adds or edits that is named
 for the file or imports it, or the file's own inline tests (Rust
 `#[cfg(test)]`, a Go `_test.go` beside it), count as reaching it.
+
+A Python test that swaps a module object out (`patch("pkg.helpers")`,
+`patch.object(pkg, "helpers")`, `monkeypatch.setattr`, a `sys.modules` entry)
+does not reach that module through the swap. A file only such tests reach is
+`mocked_only`, read from the test files' text at walk time, never stored.
+Patching a name inside a module, a run-time target, or a patch with `wraps`,
+`side_effect` or `autospec` keeps the reach.
 
 ## Measured map internals
 

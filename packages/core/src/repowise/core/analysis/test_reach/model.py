@@ -45,8 +45,10 @@ ReachedVia = Literal["call-graph", "import-graph", "name-match", "changed-test",
 #                closure all miss it, so "no test reaches this" is a claim;
 # ``new``        the index has never seen the file;
 # ``no_signal``  the index holds no tests, so silence proves nothing;
-# ``type_only``  it declares only types: there is nothing for a test to run.
-ReachState = Literal["reached", "unreached", "new", "no_signal", "type_only"]
+# ``type_only``  it declares only types: there is nothing for a test to run;
+# ``mocked_only`` every test that reaches it replaces it with a double, so
+#                none is shown to run it, and nothing says none could.
+ReachState = Literal["reached", "unreached", "new", "no_signal", "type_only", "mocked_only"]
 
 
 class ReachDistance(NamedTuple):
@@ -87,10 +89,12 @@ class ReachedBy:
 
 @dataclass(frozen=True)
 class ReachRow:
-    """One file's :data:`ReachState`, with the evidence when it is ``reached``."""
+    """One file's :data:`ReachState`, with the evidence when it is ``reached`` or ``mocked_only``."""
 
     state: ReachState
     reached: ReachedBy | None = None
+    # ``mocked_only``: the tests that reach the file and replace it.
+    mocked_by: tuple[str, ...] = ()
 
 
 def capped(

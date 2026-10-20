@@ -52,7 +52,8 @@ Row shapes (the field names are the SQL columns):
     ``partial``.
 ``test_map``
     One mapping of path to ``total`` (test files that reach it in the code
-    graph) and ``via`` (the walk), for :func:`reach_paths`; see
+    graph) and ``via`` (the walk, or ``mocked-only`` with a total of 0 when
+    only tests replacing the file reach it), for :func:`reach_paths`; see
     ``repowise.core.analysis.test_reachability.any_tests_reaching``.
 """
 

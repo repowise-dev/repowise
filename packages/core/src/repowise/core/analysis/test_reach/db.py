@@ -8,9 +8,10 @@ rows.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Collection, Mapping
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
 from sqlalchemy import select, text
@@ -20,11 +21,12 @@ from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.index_cache import IndexStampCache
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.models import GraphNode, Repository
 
 from .forward import CallGraphView, files_reached_by_tests
 from .hubs import call_hub_files
 from .maps import LEGACY_CONFTEST_HINT, ImportGraph, Need, Walk
+from .mocks import replaced_files
 from .model import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
@@ -180,13 +182,55 @@ async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> 
     return _cache.remember(key, frozenset(files_reached_by_tests(view, test_files)))
 
 
+async def cached_test_masks(session: AsyncSession, repo_id: str) -> dict[str, frozenset[str]]:
+    """:func:`~.mocks.replaced_files` for the stored test files, read from the checkout.
+
+    Read once per index state, like the graph it pairs with. No checkout on
+    disk means no masks, so every test keeps its reach.
+    """
+    key = await _cache.key(session, repo_id, "masks")
+    if key in _cache:
+        return _cache.get(key)
+    root = (
+        await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
+    ).scalar_one_or_none()
+    tests = [t for t in await cached_test_files(session, repo_id) if t.endswith(".py")]
+    texts = await asyncio.to_thread(_read_texts, root, tests) if root else {}
+    files = await _file_paths(session, repo_id) if texts else set()
+    return _cache.remember(key, replaced_files(texts, files))
+
+
+def _read_texts(root: str, paths: list[str]) -> dict[str, str]:
+    """``{path: text}`` for the files under *root* that read; none when *root* is gone."""
+    base = Path(root)
+    if not base.is_dir():
+        return {}
+    out: dict[str, str] = {}
+    for path in paths:
+        try:
+            out[path] = (base / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return out
+
+
+async def _file_paths(session: AsyncSession, repo_id: str) -> set[str]:
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
+        )
+    )
+    return {row[0] for row in res.all()}
+
+
 async def any_tests_reaching(
     session: AsyncSession, repo_id: str, targets: Collection[str]
-) -> dict[str, ReachedBy]:
-    """The targets some test reaches, and how; a target it leaves out is unreached.
+) -> dict[str, ReachRow]:
+    """The targets some test reaches, or only tests replacing them reach; others are unreached.
 
-    The ``reached`` rows of :func:`reach_states_from_db`: the call and import
-    tiers :func:`tests_reaching_by_tier` runs at its defaults (so the two never
+    The ``reached`` and ``mocked_only`` rows of :func:`reach_states_from_db`,
+    masked by :func:`cached_test_masks`: the call and import tiers
+    :func:`tests_reaching_by_tier` runs at its defaults (so the two never
     disagree about a file it answers), the helper and barrel hop, then the
     whole import closure, so absence is a claim. Cached per index state.
     """
@@ -195,8 +239,9 @@ async def any_tests_reaching(
     if key in _cache:
         return _cache.get(key)
     test_files = set(await cached_test_files(session, repo_id))
-    rows = await drive(states_walk(list(seeds), test_files), session, repo_id)
-    found = {path: row.reached for path, row in rows.items() if row.reached is not None}
+    masks = await cached_test_masks(session, repo_id)
+    rows = await drive(states_walk(list(seeds), test_files, masks=masks), session, repo_id)
+    found = {path: row for path, row in rows.items() if row.state in ("reached", "mocked_only")}
     return _cache.remember(key, found)
 
 
@@ -207,10 +252,13 @@ async def reach_states_from_db(
     *,
     changed_tests: Collection[str] = frozenset(),
     contents: Mapping[str, str | bytes] | None = None,
+    masks: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachRow]:
     """:func:`~.walk.reach_states` over the stored graph."""
     test_files = set(await cached_test_files(session, repo_id))
-    walk = states_walk(list(paths), test_files, changed_tests=changed_tests, contents=contents)
+    walk = states_walk(
+        list(paths), test_files, changed_tests=changed_tests, contents=contents, masks=masks
+    )
     return await drive(walk, session, repo_id)
 
 

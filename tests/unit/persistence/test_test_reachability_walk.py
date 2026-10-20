@@ -721,11 +721,73 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     clear_test_map_cache()
 
     found = await any_tests_reaching(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
-    assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
-    assert found["src/core/Ky.ts"].via == "import-graph"
+    assert found["src/core/Ky.ts"].reached.tests == ["test/x.test.ts"]
+    assert found["src/core/Ky.ts"].reached.via == "import-graph"
     # The helper hop stops at pool.ts (source imports it too), but the import
     # closure does not: a test importing pool.ts runs retry.ts, so it is not unreached.
-    assert found["src/retry.ts"].entries == {"test/x.test.ts": frozenset({"src/pool.ts"})}
+    assert found["src/retry.ts"].reached.entries == {"test/x.test.ts": frozenset({"src/pool.ts"})}
+
+
+_SWAPPED = {
+    "app/__init__.py": "",
+    "app/core.py": "from app import util\n\ndef run():\n    return util.helper()\n",
+    "app/util.py": "def helper():\n    return 1\n",
+    "tests/test_core.py": (
+        "from unittest.mock import patch\n\nfrom app.core import run\n\n"
+        '@patch("app.util")\ndef test_run(m):\n    assert run()\n'
+    ),
+    "tests/test_util.py": "from app.util import helper\n\ndef test_helper():\n    assert helper()\n",
+}
+
+
+async def test_any_reach_reads_which_tests_replace_a_module_from_the_checkout(
+    tmp_path, async_session
+):
+    from repowise.core.analysis.test_reachability import (
+        any_tests_reaching,
+        cached_test_masks,
+        clear_test_map_cache,
+    )
+    from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
+    from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
+    from tests.unit.analysis.test_public_api_flag import build_fixture
+
+    both = tmp_path / "both"
+    both.mkdir()
+    builder = build_fixture(both, _SWAPPED)
+    repo = await insert_repo(async_session, local_path=str(both))
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    edges = [_edge_row(u, v, d) for u, v, d in builder.graph().edges(data=True)]
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+
+    assert await cached_test_masks(async_session, repo.id) == {
+        "tests/test_core.py": frozenset({"app/util.py"})
+    }
+    found = await any_tests_reaching(async_session, repo.id, ["app/core.py", "app/util.py"])
+    assert found["app/core.py"].reached.tests == ["tests/test_core.py"]
+    assert found["app/util.py"].reached.tests == ["tests/test_util.py"]
+
+    # Without the other test, util.py is reached by a replacing test alone.
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    builder = build_fixture(alone, {k: v for k, v in _SWAPPED.items() if k != "tests/test_util.py"})
+    repo = await insert_repo(async_session, name="swapped-only", local_path=str(alone))
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    edges = [_edge_row(u, v, d) for u, v, d in builder.graph().edges(data=True)]
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+    found = await any_tests_reaching(async_session, repo.id, ["app/util.py"])
+    assert found["app/util.py"].state == "mocked_only"
+    assert found["app/util.py"].mocked_by == ("tests/test_core.py",)
+
+    # No checkout on disk: no masks, so the test keeps its reach.
+    repo = await insert_repo(async_session, name="elsewhere", local_path=str(tmp_path / "gone"))
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+    found = await any_tests_reaching(async_session, repo.id, ["app/util.py"])
+    assert found["app/util.py"].state == "reached"
 
 
 async def test_reached_files_are_walked_once_per_index_state(async_session, monkeypatch):
@@ -894,6 +956,7 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
         reach_states,
         reach_states_from_db,
         reaching_by_tier,
+        replaced_files,
     )
     from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
     from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
@@ -922,6 +985,17 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
     assert in_memory["app/lonely.py"].reached.via == "changed-test"
     assert in_memory["app/types.py"].state == "type_only"
     assert {in_memory[p].state for p in in_memory} >= {"reached", "unreached", "new"}
+
+    # Both tests swap ``app.util`` out, so only replacing tests reach it.
+    swap = 'from unittest.mock import patch\n\n@patch("app.util")\ndef test_swapped(m): ...\n'
+    masks = replaced_files(dict.fromkeys(["tests/test_core.py", "tests/test_pkg.py"], swap), _PARITY)
+    assert masks == {t: {"app/util.py"} for t in ("tests/test_core.py", "tests/test_pkg.py")}
+    in_memory = reach_states(maps, asked, masks=masks, **evidence)
+    assert await reach_states_from_db(async_session, repo.id, asked, masks=masks, **evidence) == (
+        in_memory
+    )
+    assert in_memory["app/util.py"].state == "mocked_only"
+    assert in_memory["app/core.py"].state == "reached"
 
 
 async def test_stored_call_hubs_match_the_in_memory_ones(async_session):

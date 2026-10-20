@@ -71,6 +71,16 @@ class MockDialect:
     #: Over-inclusive costs time; under-inclusive counts nothing at all.
     file_markers: frozenset[str] = frozenset()
 
+    #: Callee -> how it names the binding it replaces: ``dotted`` as one
+    #: ``"pkg.mod.name"`` string, ``object`` as ``(obj, "name")``,
+    #: ``dotted_or_object`` either way, ``modules`` as ``sys.modules`` keys.
+    #: Callees are spelled with any :attr:`guard_roots` prefix dropped.
+    binding_patches: dict[str, str] = field(default_factory=dict)
+
+    #: Keywords that leave the original reachable through the double, or may:
+    #: a patch carrying one never counts as replacing the binding.
+    passthrough_keywords: frozenset[str] = frozenset()
+
 
 _PYTHON = MockDialect(
     # ``unittest.mock`` members with no mock token in their names.
@@ -85,6 +95,14 @@ _PYTHON = MockDialect(
     config_attributes=frozenset({"return_value", "side_effect"}),
     test_name_prefixes=("test",),
     file_markers=frozenset({"patch"}),
+    binding_patches={
+        "patch": "dotted",
+        "patch.object": "object",
+        "patch.dict": "modules",
+        "monkeypatch.setattr": "dotted_or_object",
+        "monkeypatch.setitem": "modules",
+    },
+    passthrough_keywords=frozenset({"wraps", "side_effect", "autospec"}),
 )
 
 

@@ -838,6 +838,14 @@ def test_fragile_no_test_reaches_says_add_tests() -> None:
     assert (reach.value, reach.basis) == ("None in the code graph", "inferred")
 
 
+def test_fragile_reached_only_by_replacing_tests_gives_that_reason_not_none() -> None:
+    f = _file("src/a.py", tests_reaching=0, tests_reaching_via="mocked-only")
+    (a,) = _run(code.fragile_file, _facts([f])).actions
+    assert a.title.startswith("Add tests around `src/a.py`")
+    reach = next(w for w in a.why if w.label == "tests that reach it")
+    assert (reach.value, reach.basis) == ("Only tests that replace it reach it", "inferred")
+
+
 def test_fragile_unknown_reach_is_not_zero() -> None:
     """A failed test-map walk claims neither "add tests" nor "tests reach it"."""
     lead = LeadFinding("complex_method", "high", "run", 10, "")
