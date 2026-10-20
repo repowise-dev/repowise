@@ -463,3 +463,38 @@ def test_coverage_add_withholds_a_partial_per_test_map(
     assert result.exit_code == 1, result.output
     assert mapped == []
     assert "More than half the per-test map did not map" in " ".join(result.output.split())
+
+
+def test_coverage_add_maps_a_package_per_test_lcov_like_its_aggregate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    keys = {
+        "packages/web/src/a.py",
+        "packages/api/src/a.py",
+        "packages/web/src/b.py",
+        "packages/api/src/b.py",
+    }
+    stored = _fake_ingest(monkeypatch, tmp_path, keys)
+    mapped: list = []
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        mapped.extend(records)
+        return len(records)
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    report = tmp_path / "packages" / "web" / "coverage" / "lcov.info"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        "".join(
+            f"TN:tests/test_{n}.py::test_one|run\nSF:src/{n}.py\nDA:1,1\nend_of_record\n"
+            for n in "ab"
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "packages/web/coverage/lcov.info"])
+
+    assert result.exit_code == 0, result.output
+    expected = ["packages/web/src/a.py", "packages/web/src/b.py"]
+    assert sorted(f.file_path for f in stored) == expected
+    assert sorted(r.file_path for r in mapped) == expected

@@ -155,6 +155,7 @@ def coverage_add(
         expand_report_args,
         parse_contexts_file,
         prefix_hint,
+        report_origin_dir,
         resolve_test_reports,
         suggest_prefixes,
     )
@@ -273,6 +274,7 @@ def coverage_add(
                         )
                     continue
                 map_readable = True
+                creport.origin_dir = report_origin_dir(report_path, repo_path)
                 rtc = resolve_test_reports(
                     creport,
                     repo_keys,

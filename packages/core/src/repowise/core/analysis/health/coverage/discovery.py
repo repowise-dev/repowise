@@ -812,15 +812,19 @@ def _is_absolute(raw: str) -> bool:
 
 def _resolve_path(
     raw: str,
-    report: CoverageReport,
     repo_keys: set[str],
     suffix_index: dict[str, list[str]],
     *,
     strip_prefix: str | None,
     path_prefix: str | None,
+    origin_dir: str | None = None,
+    source_roots: Sequence[str] = (),
     go_modules: Sequence[tuple[str, str]] = (),
 ) -> tuple[str | None, bool, bool]:
-    """``(key, ambiguous, exact)`` for one report path.
+    """``(key, ambiguous, exact)`` for one report path, aggregate or per-test.
+
+    *origin_dir* is the report file's repo-relative directory and
+    *source_roots* the report's own roots, as the report records them.
 
     Tried in order: the path joined to each Cobertura ``<source>`` root, the
     report's own statement of where its paths live (roots that disagree are
@@ -841,11 +845,11 @@ def _resolve_path(
         if in_module is not None:
             raw, located = in_module, True
     norm = normalize_report_path(raw, strip_prefix=strip_prefix, path_prefix=path_prefix)
-    origin = report.origin_dir
+    origin = origin_dir
     relative = not _is_absolute(raw)
-    if relative and report.source_roots:
+    if relative and source_roots:
         found: dict[str, bool] = {}  # key -> matched a path exactly
-        for root in report.source_roots:
+        for root in source_roots:
             joined = normalize_report_path(
                 f"{root.rstrip('/')}/{raw}", strip_prefix=strip_prefix, path_prefix=path_prefix
             )
@@ -1023,11 +1027,12 @@ def resolve_reports(
             report_file_count += 1
             key, ambiguous, exact = _resolve_path(
                 fc.file_path,
-                report,
                 repo_keys,
                 suffix_index,
                 strip_prefix=strip_prefix,
                 path_prefix=prefix,
+                origin_dir=report.origin_dir,
+                source_roots=report.source_roots,
                 go_modules=modules,
             )
             # An entry that resolves is ignored by its key; one that does not,
@@ -1192,22 +1197,28 @@ def resolve_test_reports(
 ) -> ResolvedTestCoverage:
     """Resolve per-test records against the indexed tree.
 
-    Reuses the aggregate path resolver (:func:`normalize_report_path` +
-    :func:`_match_key`) for *both* the source path and the test's own file,
-    so no second resolver is introduced. Records whose source path does not
-    map to the tree are dropped and counted in ``unmatched`` / ``ambiguous``;
-    records whose source *ignore* matches (as in :func:`resolve_reports`) are
-    dropped and counted in ``ignored``.
+    Uses the aggregate resolver (:func:`_resolve_path`, with the report's own
+    directory, ``report.origin_dir``) for *both* the source path and the
+    test's own file, so a per-test record maps wherever the same path in an
+    aggregate report would. Records whose source path does not map to the
+    tree are dropped and counted in ``unmatched`` / ``ambiguous``; records
+    whose source *ignore* matches (as in :func:`resolve_reports`) are dropped
+    and counted in ``ignored``.
     """
     suffix_index = _build_suffix_index(repo_keys)
     ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
     out = ResolvedTestCoverage(source_format=report.source_format, has_contexts=report.has_contexts)
+    resolve_kw = {
+        "strip_prefix": strip_prefix,
+        "path_prefix": path_prefix,
+        "origin_dir": report.origin_dir,
+    }
     for rec in report.records:
-        norm = normalize_report_path(
+        key, ambiguous, exact = _resolve_path(rec.file_path, repo_keys, suffix_index, **resolve_kw)
+        named = key or normalize_report_path(
             rec.file_path, strip_prefix=strip_prefix, path_prefix=path_prefix
         )
-        key, ambiguous = _match_key(norm, repo_keys, suffix_index)
-        if ignore_spec.match_file(key or norm):
+        if ignore_spec.match_file(named):
             out.ignored += 1
             continue
         if key is None:
@@ -1216,7 +1227,7 @@ def resolve_test_reports(
             else:
                 out.unmatched.append(rec.file_path)
             continue
-        if norm == key:
+        if exact:
             out.matched_exact += 1
         else:
             out.matched_suffix += 1
@@ -1224,8 +1235,7 @@ def resolve_test_reports(
         test_key: str | None = None
         head = _extract_test_file(rec.test_id)
         if head:
-            tnorm = normalize_report_path(head, strip_prefix=strip_prefix, path_prefix=path_prefix)
-            tkey, _ = _match_key(tnorm, repo_keys, suffix_index)
+            tkey, _, _ = _resolve_path(head, repo_keys, suffix_index, **resolve_kw)
             if tkey is not None:
                 test_key = tkey
                 out.test_files_resolved += 1
@@ -1288,7 +1298,7 @@ def build_coverage_map(
         if not report.files:
             errors.append((path, f"no coverage entries (detected={report.source_format})"))
             continue
-        report.origin_dir = _repo_relative_dir(path, repo_root)
+        report.origin_dir = report_origin_dir(path, repo_root)
         report.path_prefix = prefixes.get(path)
         parsed.append(report)
     resolved = resolve_reports(
@@ -1309,7 +1319,7 @@ def build_coverage_map(
     return resolved, errors
 
 
-def _repo_relative_dir(path: Path, repo_root: Path) -> str | None:
+def report_origin_dir(path: Path, repo_root: Path) -> str | None:
     """*path*'s directory relative to *repo_root* (POSIX), ``None`` outside it or at its root."""
     try:
         rel = path.resolve().parent.relative_to(repo_root.resolve()).as_posix()

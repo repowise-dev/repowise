@@ -168,3 +168,5 @@ class ContextCoverageReport:
     source_format: str
     records: list[TestCoverage] = field(default_factory=list)
     has_contexts: bool = False
+    # Repo-relative directory of the report file, as on ``CoverageReport``.
+    origin_dir: str | None = None
