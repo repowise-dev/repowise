@@ -28,7 +28,7 @@ from repowise.cli.helpers import (
     resolve_max_file_pages,
     resolve_reasoning,
 )
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import resolve_embedder_choice
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.ui import WARN, load_dotenv
 from repowise.core.docs_mode import resolve_docs_mode
@@ -153,7 +153,7 @@ def _resolve_settings(run: InitRun) -> None:
     if opts.follow_renames:
         config["follow_renames"] = True
 
-    run.embedder_name_resolved = resolve_embedder(opts.embedder_name)
+    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(opts.embedder_name)
     run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
 
 
@@ -188,17 +188,19 @@ def _confirm_wiki_overwrite(run: InitRun) -> bool:
     if not opts.index_only or run.prior_docs_mode != "llm" or opts.force or opts.yes:
         return True
     console.print(
-        f"\n[{WARN}]This repo already has a model-written wiki.[/] "
-        "Indexing without a model\nrewrites every page from templates; the "
+        f"\n[{WARN}]This repo already has documentation written by a model.[/] "
+        "Indexing without a model\nrebuilds every page from code; the "
         "written versions stay in page history."
     )
     if not sys.stdin.isatty():
         raise reasoned_error(
-            "Refusing to replace a model-written wiki with template pages. "
-            "Re-run with --yes to confirm, or drop --index-only.",
+            "Refusing to replace documentation written by a model with pages built "
+            "from code. Re-run with --yes to confirm, or drop --no-prose.",
             reason="wiki_overwrite_unconfirmed",
         )
-    if not click.confirm("  Replace the written wiki with template pages?", default=False):
+    if not click.confirm(
+        "  Replace the written documentation with pages built from code?", default=False
+    ):
         console.print("[dim]Nothing changed.[/dim]")
         return False
     return True

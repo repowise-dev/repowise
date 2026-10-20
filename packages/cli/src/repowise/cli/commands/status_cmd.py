@@ -23,6 +23,13 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.cli.ui.brand import format_bytes
+from repowise.cli.ui.mode_names import (
+    INDEX_ONLY,
+    commit_cap_label,
+    mode_label,
+    pages,
+    scope_line,
+)
 from repowise.cli.ui.result_panels import keyless_upgrade_note
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.index_scope import resolve_index_scope
@@ -544,7 +551,7 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
     table.add_column("Repo", style="cyan", min_width=16)
     table.add_column("Files", justify="right")
     table.add_column("Symbols", justify="right")
-    table.add_column("Docs", justify="right")
+    table.add_column("Documentation", justify="right")
     table.add_column("Storage", justify="right")
     table.add_column("Indexed", style="dim")
     table.add_column("HEAD", style="dim")
@@ -565,16 +572,15 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
         page_count = row["pages"]
         docs_mode = row["docs_mode"]
 
-        # One axis in the Docs column: every wiki is complete, and the only
-        # question is whether the subsystem pages carry written prose or are
-        # still stubs. `repowise generate` writes the stubs.
+        # One axis: who wrote the subsystem pages. `repowise generate` has a
+        # model write the ones built from code.
         if page_count > 0:
-            if docs_mode == "deterministic":
-                docs_cell = f"[cyan]{page_count} · stubs[/cyan]"
-            else:
-                docs_cell = f"[green]{page_count} · prose[/green]"
+            colour = "cyan" if docs_mode == "deterministic" else "green"
+            docs_cell = (
+                f"[{colour}]{pages(page_count)} · {mode_label(row['index_scope'])}[/{colour}]"
+            )
         elif docs_mode == "none":
-            docs_cell = "[yellow]None[/yellow]"
+            docs_cell = f"[yellow]{INDEX_ONLY}[/yellow]"
             no_docs.append(row["alias"])
         else:
             docs_cell = "[yellow]0[/yellow]"
@@ -617,13 +623,13 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
     if no_docs:
         console.print()
         console.print(
-            f"[yellow]Note:[/yellow] {len(no_docs)} repo(s) have no generated docs: "
+            f"[yellow]Note:[/yellow] {len(no_docs)} repo(s) have no documentation: "
             f"[cyan]{', '.join(no_docs)}[/cyan]"
         )
         first = no_docs[0]
         console.print(
             f"  Run [bold]repowise update --repo {first} --docs[/bold] "
-            "to generate them (requires an LLM provider)."
+            "to have a model write it (requires an LLM provider)."
         )
 
 
@@ -741,18 +747,16 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     state_table.add_row("Model", state.get("model", "—") or "—")
     state_table.add_row("Total tokens", f"{total_tokens:,}")
     state_table.add_row("Index storage", format_bytes(storage_bytes))
-    state_table.add_row(
-        "Scope",
-        f"{scope['run_mode']} · {scope['content_provenance']} · git {scope['git_tier']}",
-    )
+    state_table.add_row("Scope", scope_line(scope))
     coverage = scope["git_history_coverage"]
     if coverage:
         measured = coverage.get(
             "files_with_history", coverage.get("files_measured", coverage.get("files_indexed", "?"))
         )
         eligible = coverage.get("files_eligible", coverage.get("eligible_files", "?"))
+        cap = commit_cap_label(scope["git_commit_cap"])
         state_table.add_row(
-            "Git coverage", f"{measured}/{eligible} files (cap {scope['git_commit_cap']})"
+            "Git coverage", f"{measured}/{eligible} files" + (f" ({cap})" if cap else "")
         )
     fp = scope["file_pages"]
     if fp["eligible"] is not None:

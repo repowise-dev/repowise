@@ -25,7 +25,8 @@ _INPUT_TOO_LONG_RETRIES = 4
     "--embedder",
     type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
     default="auto",
-    help="Embedder to use. 'auto' detects from env vars / config.",
+    help="Embedder to use. 'auto' keeps the repo's embedder, or detects one from env keys "
+    "when the repo has none or only the keyless mock.",
 )
 @click.option(
     "--batch-size",
@@ -57,40 +58,10 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
     from repowise.core.persistence.database import create_engine, init_db
     from repowise.core.persistence.models import Page
-    from repowise.core.providers.embedding.base import MockEmbedder
 
-    # --- Resolve embedder ---
-    if embedder_name == "auto":
-        # Resolve through the repo, not the environment. `_resolve_embedder(None)`
-        # reads REPOWISE_EMBEDDER and API keys only, so `auto` never saw the
-        # `embedder` pin in config.yaml despite this flag's help text promising
-        # "env vars / config". A repo pinned to a keyless embedder therefore
-        # aborted with "No real embedder available", and a repo pinned to one
-        # embedder in a shell exporting a different provider's key had its table
-        # REWRITTEN by that other provider — the exact writer/reader split
-        # `resolve_embedder_for_repo` was added to prevent, and one this command
-        # is on the writing side of.
-        embedder_name = resolve_embedder_for_repo(repo_path)
-
-    embedder_impl = build_embedder(embedder_name, repo_path)
-    # Guard on the RESOLVED name, not the flag. `mock` reached here two ways:
-    # asked for, or fallen back to because nothing else was configured. Only the
-    # second is an error. Now that `auto` reads the pin, `embedder: mock` in
-    # config.yaml is a third way, and it is as deliberate as passing the flag —
-    # comparing against `requested_embedder` would abort a repo that is pinned
-    # to mock on purpose.
-    if isinstance(embedder_impl, MockEmbedder) and embedder_name != "mock":
-        console.print(
-            "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
-        )
-        raise click.Abort()
-    if embedder_name == "mock":
-        console.print("[yellow]Using mock embedder (deterministic test vectors)[/yellow]")
-    else:
-        console.print(f"[green]Using {embedder_name} embedder[/green]")
+    embedder_name, embedder_impl = _embedder_for(repo_path, embedder_name)
 
     # --- Create LanceDB vector store ---
     lance_dir = Path(repo_path) / ".repowise" / "lancedb"
@@ -326,6 +297,48 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     # failure is visible in the exit status, not just in the printed count.
     if indexed == 0 and failed > 0:
         raise click.Abort()
+
+
+def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:
+    """Resolve, build and announce the embedder; exit when auto finds none."""
+    from repowise.cli.providers.embedders import build_embedder, semantic_search_setup_hint
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.resolve import (
+        embedder_reason,
+        resolve_reindex_embedder,
+    )
+
+    reason = "--embedder"
+    if embedder_name == "auto":
+        # Through the repo, not only the environment: the pin names the backend
+        # that wrote the table, so a key for another provider must not rewrite
+        # it. A mock pin is the exception (see resolve_reindex_embedder).
+        embedder_name, source = resolve_reindex_embedder(repo_path)
+        reason = embedder_reason(embedder_name, source, repo_path=repo_path)
+        # Mock vectors carry no meaning, so rebuilding them adds nothing. Only
+        # an explicit REPOWISE_EMBEDDER=mock (or the flag) still means mock.
+        if embedder_name == "mock" and source in ("config.yaml", "default"):
+            console.print(
+                "[yellow]No embedder found, so semantic search stays off.[/yellow] "
+                f"{semantic_search_setup_hint()}"
+            )
+            raise click.exceptions.Exit(1)
+
+    embedder_impl = build_embedder(embedder_name, repo_path)
+    # A named backend that could not be built fell back to mock: an error, not
+    # a run to finish with test vectors.
+    if isinstance(embedder_impl, MockEmbedder) and embedder_name != "mock":
+        console.print(
+            "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
+        )
+        raise click.Abort()
+    if embedder_name == "mock":
+        console.print(
+            f"Embedder: [yellow]mock[/yellow] ({reason}). Test vectors, no semantic search."
+        )
+    else:
+        console.print(f"Embedder: [green]{embedder_name}[/green] ({reason}).")
+    return embedder_name, embedder_impl
 
 
 def _batch_recovery_plan(

@@ -86,6 +86,8 @@ class InitRun:
     resolved_commit_limit: int = 0
     resolved_follow_renames: bool = False
     embedder_name_resolved: str = ""
+    # Why that embedder: the flag, pin or env key behind it, for the run to state.
+    embedder_reason: str = ""
     embedder_was_requested: bool = False
     prior_docs_mode: str | None = None
     first_index: bool = False
@@ -102,6 +104,8 @@ class InitRun:
     # Embedder of the template wiki, None when none was rendered.
     index_only_embedder: str | None = None
     cost_declined: bool = False
+    # Asked-for work a stage could not do; any entry makes init exit degraded.
+    gaps: list[str] = field(default_factory=list)
     effective_index_only: bool = False
     phase_timings: dict[str, float] = field(default_factory=dict)
     scope_embedder: str | None = None
@@ -119,8 +123,8 @@ def resolve_structural_flags(opts: InitOptions) -> InitOptions:
     if opts.index_only or opts.docs_opt is not None:
         console.print(
             "[dim]--index-only and --docs are deprecated; use --no-prose "
-            "(structural, no key) or --prose (model-written). They still work "
-            "this release.[/dim]"
+            "(built from code, no key) or --prose (written by a model). They still "
+            "work this release.[/dim]"
         )
     # Each of the three sources votes for "structural" (True) or "prose" (False).
     # --index-only always means structural; --docs maps deterministic->structural,

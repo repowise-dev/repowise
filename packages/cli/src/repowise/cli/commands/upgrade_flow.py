@@ -60,8 +60,11 @@ def _gate_cost(
     repo_path: Path,
     *,
     yes: bool,
+    embedder: str = "mock",
 ) -> None:
-    """Print the estimated spend and confirm past the gate. Raises on decline.
+    """Print the estimated spend, embedding included, and confirm past the gate.
+
+    Raises on decline.
 
     Best-effort on the estimate itself: a failure there prints the reason and
     lets the run proceed rather than blocking an upgrade on a number that is
@@ -71,14 +74,23 @@ def _gate_cost(
         from repowise.cli.commands.init_cmd.generation import (
             COST_GATE_USD,
             cost_gate_declined,
+            embedding_note,
             format_cost,
             structural_page_summary,
         )
         from repowise.cli.cost_gate import spend_phrase
+        from repowise.cli.providers.embedders import resolve_embedding_model
         from repowise.core.cost_estimator import build_generation_plan, estimate_cost
 
         plans = build_generation_plan(parsed_files, graph_builder, config)
-        est = estimate_cost(plans, provider.provider_name, provider.model_name, repo_path=repo_path)
+        est = estimate_cost(
+            plans,
+            provider.provider_name,
+            provider.model_name,
+            repo_path=repo_path,
+            embedder=embedder,
+            embedding_model=resolve_embedding_model(embedder),
+        )
     except Exception as exc:
         console.print(f"[yellow]Cost estimate unavailable ({exc}); continuing.[/yellow]")
         return
@@ -88,6 +100,9 @@ def _gate_cost(
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"  [dim]{structural}[/dim]")
+    embedding = embedding_note(est)
+    if embedding:
+        console.print(f"  [dim]{embedding}[/dim]")
 
     # Nothing to ask on a run that cannot be asked. Without this the confirm
     # reads EOF, raises, and the caller reports a successful run that generated
@@ -297,7 +312,15 @@ async def _run_upgrade(
 
     # Show the bill before running it, as init does: the user reaching for
     # `--full` has never been shown a cost for this repo.
-    _gate_cost(parsed_files, graph_builder, config, provider, repo_path, yes=yes)
+    _gate_cost(
+        parsed_files,
+        graph_builder,
+        config,
+        provider,
+        repo_path,
+        yes=yes,
+        embedder=embedder_name or "mock",
+    )
 
     # 5. Generate the docs the fast index skipped, embedding as we go.
     cost_tracker = _upgrade_cost_tracker(sf, repo_id)
@@ -349,8 +372,12 @@ async def _run_upgrade(
     total_pages = await _repository_page_count(sf, repo_id, fallback=len(generated_pages))
 
     await engine.dispose()
+    from repowise.cli.providers import semantic_search_command
     from repowise.core.generation.selection import count_documentable_files
+    from repowise.core.providers.embedding.base import MockEmbedder
 
+    # Mock vectors are hashes: a store built on them is no semantic search.
+    semantic_on = vector_store is not None and not isinstance(embedder, MockEmbedder)
     return (
         generated_pages,
         total_pages,
@@ -369,8 +396,10 @@ async def _run_upgrade(
             },
             "search": {
                 "full_text": "available",
-                "semantic": "available" if vector_store is not None else "unavailable",
-                "next_command": "repowise reindex" if vector_store is None else None,
+                "semantic": "available" if semantic_on else "unavailable",
+                "next_command": (
+                    None if semantic_on else semantic_search_command(repo_path, embedder_name)
+                ),
             },
             "embedding_error": embedding_error,
             "stub_fallbacks": stub_fallbacks,
@@ -841,14 +870,10 @@ def _upgrade_embedder_name(cfg: dict[str, Any]) -> str | None:
     paying a model here, and the mock would leave the written wiki invisible to
     semantic search, so re-resolve; the answer is recorded for later updates.
     """
-    embedder_name = cfg.get("embedder")
-    if not embedder_name or embedder_name == "mock":
-        from repowise.cli.providers import resolve_embedder
+    from repowise.cli.providers import model_run_embedder
 
-        resolved = resolve_embedder(None)
-        if resolved != (embedder_name or "mock"):
-            console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
-            embedder_name = resolved
+    embedder_name, stated, _replaced = model_run_embedder(cfg.get("embedder"))
+    console.print(f"Embedder: [cyan]{stated}[/cyan].")
     return embedder_name
 
 
@@ -1004,6 +1029,7 @@ def _report_upgrade(elapsed: float, generated_pages: list[Any], outcome: dict[st
     _report_placeholders(outcome.get("stub_fallbacks", 0), outcome.get("stub_reasons", []))
     if outcome["search"]["semantic"] != "available":
         console.print(
-            "[yellow]Semantic search is unavailable.[/yellow] Set an embedder key and run "
-            "[bold]repowise reindex[/bold] (embedding calls only; no model calls)."
+            "[yellow]Semantic search is off.[/yellow] Run "
+            f"[bold]{outcome['search']['next_command'] or 'repowise reindex'}[/bold] to turn it on "
+            "(embedding calls only, no model calls)."
         )
