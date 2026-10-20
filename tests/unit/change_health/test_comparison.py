@@ -376,6 +376,31 @@ def test_a_performance_finding_outside_pytest_testpaths_is_reported(make_repo):
     assert any(f.path == "pkg/test_paths.py" for f in perf_findings)
 
 
+def test_nested_pytest_config_collects_nearest_first(make_repo):
+    """A nested pytest config governs its subdirectory, restricting collection nearest-first."""
+    repo = make_repo()
+    nested_pytest_ini = "[pytest]\ntestpaths = tests\n"
+    repo.commit(
+        "seed",
+        {
+            "sub/pytest.ini": nested_pytest_ini,
+            "sub/pkg/test_paths.py": python_io_in_loop(in_loop=False),
+        },
+    )
+    repo.commit(
+        "loop",
+        {
+            "sub/pytest.ini": nested_pytest_ini,
+            "sub/pkg/test_paths.py": python_io_in_loop(in_loop=True),
+        },
+    )
+
+    delta = compare(repo)
+
+    perf_findings = [f for f in delta.findings if f.dimension == "performance"]
+    assert any(f.path == "sub/pkg/test_paths.py" for f in perf_findings)
+
+
 def test_test_file_findings_sort_below_source_findings(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n", "tests/test_app.py": "y = 1\n"})

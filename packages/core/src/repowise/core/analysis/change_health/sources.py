@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+from ...pytest_roots import PYTEST_CONFIG_NAMES
 from ..changed_lines import FileDiff, is_shallow_root, parse_unified_diff, untracked_diffs
 from ..git_cat_file import cat_file_batch
 from ..git_cli import path_filter, run_git, split_revspec, untracked_paths
@@ -125,6 +126,16 @@ class RevisionSource(Protocol):
 
     def read_working_tree(self, paths: list[str]) -> dict[str, bytes]:
         """Bulk-read *paths* from the uncommitted tree."""
+        ...
+
+    def config_paths(
+        self,
+        sha: str | None = None,
+        *,
+        working_tree: bool = False,
+        names: frozenset[str] = PYTEST_CONFIG_NAMES,
+    ) -> list[str]:
+        """Collect paths of configuration files matching *names* at *sha* or in the working tree."""
         ...
 
 
@@ -267,6 +278,29 @@ class GitRevisionSource:
                 continue
         return out
 
+    def config_paths(
+        self,
+        sha: str | None = None,
+        *,
+        working_tree: bool = False,
+        names: frozenset[str] = PYTEST_CONFIG_NAMES,
+    ) -> list[str]:
+        if working_tree:
+            out = _git(
+                ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                self.repo_path,
+                check=False,
+            )
+            return sorted(p for p in out.split("\0") if p and PurePosixPath(p).name in names)
+        if sha:
+            out = _git(
+                ["ls-tree", "-r", "-z", "--name-only", f"{sha}^{{tree}}"],
+                self.repo_path,
+                check=False,
+            )
+            return sorted(p for p in out.split("\0") if p and PurePosixPath(p).name in names)
+        return []
+
 
 class MappingRevisionSource:
     """A :class:`RevisionSource` over content the caller already holds.
@@ -334,6 +368,19 @@ class MappingRevisionSource:
                 "This revision pair compares two commits; it has no working tree to read."
             )
         return {path: self._head[path] for path in paths if path in self._head}
+
+    def config_paths(
+        self,
+        sha: str | None = None,
+        *,
+        working_tree: bool = False,
+        names: frozenset[str] = PYTEST_CONFIG_NAMES,
+    ) -> list[str]:
+        if working_tree or (sha is not None and sha == self.pair.head_sha):
+            return sorted(p for p in self._head if PurePosixPath(p).name in names)
+        if sha is not None and sha == self.pair.base_sha:
+            return sorted(p for p in self._base if PurePosixPath(p).name in names)
+        return []
 
 
 def filter_changes(

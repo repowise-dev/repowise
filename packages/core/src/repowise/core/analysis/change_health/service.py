@@ -316,8 +316,20 @@ class ChangeHealthDeltaService:
         """
         head_paths = [c.head_path for c in eligible if c.head_path]
         base_paths = [c.base_path for c in eligible + departed if c.base_path]
-        config_candidates = [name for name in sorted(PYTEST_CONFIG_NAMES) if name not in head_paths]
-        base_config_candidates = [name for name in sorted(PYTEST_CONFIG_NAMES) if name not in base_paths]
+        if hasattr(self.source, "config_paths"):
+            config_candidates = [
+                p
+                for p in self.source.config_paths(pair.head_sha, working_tree=pair.working_tree)
+                if p not in head_paths
+            ]
+            base_config_candidates = [
+                p
+                for p in self.source.config_paths(pair.base_sha, working_tree=False)
+                if p not in base_paths
+            ]
+        else:
+            config_candidates = [name for name in sorted(PYTEST_CONFIG_NAMES) if name not in head_paths]
+            base_config_candidates = [name for name in sorted(PYTEST_CONFIG_NAMES) if name not in base_paths]
         head_sources = (
             self.source.read_working_tree(head_paths + config_candidates)
             if pair.working_tree

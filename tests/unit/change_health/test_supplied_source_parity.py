@@ -27,11 +27,13 @@ def _mirror(git_source: GitRevisionSource, revspec: str | None) -> MappingRevisi
     pair = git_source.resolve(revspec)
     base_paths = [c.base_path for c in pair.changes if c.base_path]
     head_paths = [c.head_path for c in pair.changes if c.head_path]
-    base = git_source.read(pair.base_sha, base_paths)
+    base_configs = git_source.config_paths(pair.base_sha, working_tree=False)
+    head_configs = git_source.config_paths(pair.head_sha, working_tree=pair.working_tree)
+    base = git_source.read(pair.base_sha, sorted(set(base_paths + base_configs)))
     head = (
-        git_source.read_working_tree(head_paths)
+        git_source.read_working_tree(sorted(set(head_paths + head_configs)))
         if pair.working_tree
-        else git_source.read(pair.head_sha, head_paths)
+        else git_source.read(pair.head_sha, sorted(set(head_paths + head_configs)))
     )
     return MappingRevisionSource(pair, base, head)
 
