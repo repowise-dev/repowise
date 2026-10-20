@@ -134,7 +134,7 @@ class TestWorkspaceInitIndexOnly:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "workspace init complete" in result.output
+        assert "Workspace ready" in result.output
         # Each sub-repo got its own index + state, and a workspace config exists.
         for name in ("alpha", "beta"):
             assert (workspace_root / name / ".repowise" / "wiki.db").exists()
@@ -207,7 +207,7 @@ class TestInitDryRun:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "No wiki written" in result.output
+        assert "No documentation written" in result.output
         assert "Generation Plan" not in result.output
         assert not (work_repo / ".repowise" / "wiki.db").exists()
 
@@ -263,7 +263,7 @@ class TestInitFullMock:
         assert result.exit_code == 0, result.output
         assert (work_repo / ".repowise" / "wiki.db").exists()
         assert (work_repo / ".repowise" / "state.json").exists()
-        assert "init complete" in result.output
+        assert "Repowise is ready" in result.output
 
 
 class TestInitIndexOnly:
@@ -277,7 +277,7 @@ class TestInitIndexOnly:
         db_path = work_repo / ".repowise" / "wiki.db"
         assert db_path.exists()
         assert (work_repo / ".repowise" / "state.json").exists()
-        assert "index complete" in result.output
+        assert "Index ready, documentation built from code" in result.output
 
         import json
 
@@ -750,7 +750,7 @@ class TestUpdateIndexOnly:
             cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
         )
         assert r1.exit_code == 0, r1.output
-        assert "index-only update complete" in r1.output
+        assert "Index updated" in r1.output
 
         state1 = json.loads(
             (git_work_repo / ".repowise" / "state.json").read_text(encoding="utf-8")
@@ -1082,7 +1082,7 @@ class TestUpdateConfigChangeDetection:
         assert r1.exit_code == 0, r1.output
         assert "Config files changed" not in r1.output
         assert "Pages to regenerate" not in r1.output
-        assert "Re-rendered" not in r1.output
+        assert "Rebuilt" not in r1.output
         assert not (git_work_repo / ".vscode").exists()
 
         r2 = runner.invoke(cli, args, catch_exceptions=False)
@@ -1752,7 +1752,7 @@ class TestWorktreeInitForce:
             flat = " ".join(r1.output.split())
             assert upgrade_calls == []
             assert "No provider configured" not in flat
-            assert "Building the wiki from structure" in flat
+            assert "Building documentation from code" in flat
             assert "no model, no spend" in flat
 
             state = json.loads(

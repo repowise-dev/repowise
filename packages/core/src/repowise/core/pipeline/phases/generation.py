@@ -160,7 +160,7 @@ async def run_generation(
     if test_run:
         parsed_files = limit_to_top_pagerank(parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT)
         if progress:
-            progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
+            progress.on_message("notice", f"Test run: limiting to {len(parsed_files)} files")
 
     # Resolve embedder and vector store
     embedder_impl = embedder if embedder is not None else KeylessEmbedder()

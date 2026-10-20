@@ -230,41 +230,34 @@ class TestProseFlag:
         assert result.exit_code == 0, result.output
 
     @pytest.mark.parametrize(
-        "flags", [["--no-prose"], ["--index-only"], ["--docs", "deterministic"]]
+        "flags",
+        [
+            ["--no-prose"],
+            ["--no-prose", "--provider", "openai"],
+            ["--index-only"],
+            ["--docs", "deterministic"],
+        ],
     )
-    def test_scripted_structural_init_does_not_auto_detect_a_decision_provider(
+    def test_no_prose_never_builds_a_provider_with_keys_set(
         self, runner, tmp_path, keyless_env, monkeypatch, flags
     ):
+        """`--no-prose` means zero model calls, whatever keys or flags are present."""
         from unittest.mock import Mock
 
-        resolver = Mock(return_value=None)
-        monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd._prepare.resolve_provider", resolver
-        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-dummy-openai")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+        factory = Mock(side_effect=AssertionError("a --no-prose run built an LLM provider"))
+        for module in (
+            "repowise.core.providers",
+            "repowise.core.providers.llm",
+            "repowise.core.providers.llm.registry",
+        ):
+            monkeypatch.setattr(f"{module}.get_provider", factory)
         result = runner.invoke(cli, ["init", str(tmp_path), *flags, "--yes"])
         assert result.exit_code == 0, result.output
-        resolver.assert_not_called()
-
-    @pytest.mark.parametrize("opt_in", ["provider", "key"])
-    def test_structural_init_preserves_explicit_decision_provider_opt_in(
-        self, runner, tmp_path, keyless_env, monkeypatch, opt_in
-    ):
-        from unittest.mock import Mock
-
-        resolver = Mock(return_value=None)
-        monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd._prepare.resolve_provider", resolver
-        )
-        flags = ["--provider", "openai"] if opt_in == "provider" else []
-        if opt_in == "key":
-            monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        result = runner.invoke(
-            cli, ["init", str(tmp_path), "--no-prose", "--yes", *flags]
-        )
-        assert result.exit_code == 0, result.output
-        resolver.assert_called_once_with(
-            "openai" if opt_in == "provider" else None, None, tmp_path
-        )
+        factory.assert_not_called()
+        assert "No LLM provider is configured" not in result.output
+        assert "this run builds from code" in result.output
 
     def test_index_only_prints_deprecation(self, runner, tmp_path, keyless_env):
         """The deprecated alias still works and says so."""

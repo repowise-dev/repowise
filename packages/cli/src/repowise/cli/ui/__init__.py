@@ -58,6 +58,7 @@ _LAZY: dict[str, str] = {
     "load_dotenv": "env_persistence",
     "make_progress": "progress_display",
     "mini": "mascot",
+    "model_call_count": "subscription",
     "print_banner": "brand",
     "print_files_written": "result_panels",
     "print_index_only_intro": "mode_selection",
@@ -68,6 +69,7 @@ _LAZY: dict[str, str] = {
     "prompt_file_page_volume": "mode_selection",
     "prompt_wiki_style": "mode_selection",
     "quick_repo_scan": "repo_scanner",
+    "ready_agent_providers": "subscription",
     "should_offer_fast_mode": "mode_selection",
 }
 
