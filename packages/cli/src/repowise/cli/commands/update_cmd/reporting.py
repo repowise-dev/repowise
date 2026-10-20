@@ -327,6 +327,7 @@ def show_index_only_completion(
     pages_rendered: int = 0,
     template_wiki: bool = False,
     changed_paths: list[str] | None = None,
+    upgrade_command: str | None = None,
 ) -> None:
     """Render the completion panel for an index-only update (no LLM regen).
 
@@ -357,6 +358,11 @@ def show_index_only_completion(
         # page at a time — not the all-or-nothing `update --full`.
         next_steps.append(
             ("repowise generate", "write the documentation with a model (needs a key)")
+        )
+    elif upgrade_command:
+        # Index only: there are no docs to regenerate.
+        next_steps.append(
+            (upgrade_command, "build documentation from code and the full git history (no key)")
         )
     else:
         next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))

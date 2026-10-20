@@ -120,7 +120,11 @@ def build_contextual_next_steps(
         steps.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
     elif fast_mode:
         # Fast index: graph + essential git, no docs. Point at the full result.
-        steps.append(("repowise init", "add full git history and documentation"))
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
+        steps.append(
+            (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
+        )
     elif index_only:
         # `generate` is the scoped, cost-gated upgrade path — a coverage, a
         # directory or one page at a time, each behind an estimate — not the

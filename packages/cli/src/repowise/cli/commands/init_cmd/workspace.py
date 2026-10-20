@@ -72,6 +72,7 @@ from repowise.core.ci.markdown import plural
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
+from repowise.core.index_scope import fast_to_full_command
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
@@ -518,8 +519,8 @@ def _generate_repo_with_model(
             ctx.gaps.append(f"{repo.alias}: {COST_UNCONFIRMED_BUILT}")
         console.print(
             "    [dim]Building this repo's documentation from code instead. Run "
-            "[bold]repowise update --repo "
-            f"{repo.alias} --full[/bold] to write it with a model later.[/dim]"
+            f"[bold]{fast_to_full_command(repo.alias)}[/bold] to write it with a model "
+            "later.[/dim]"
         )
         _render_repo_from_templates(repo, ctx, index, docs)
     except Exception as gen_exc:
@@ -913,6 +914,7 @@ def _workspace_init(
         index_only=answers.index_only,
         provider=provider,
         docs_outcomes=totals.docs_outcomes,
+        run_mode=run_mode,
     )
     if not dry_run:
         _offer_workspace_hooks(

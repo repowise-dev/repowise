@@ -33,7 +33,7 @@ from repowise.cli.ui.mode_names import (
 from repowise.cli.ui.result_panels import keyless_upgrade_note
 from repowise.core.decision_lanes import lanes_label, pending_decision_lanes
 from repowise.core.docs_mode import resolve_docs_mode
-from repowise.core.index_scope import resolve_index_scope
+from repowise.core.index_scope import fast_to_full_command, resolve_index_scope, upgrade_command
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -629,8 +629,8 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
         )
         first = no_docs[0]
         console.print(
-            f"  Run [bold]repowise update --repo {first} --docs[/bold] "
-            "to have a model write it (requires an LLM provider)."
+            f"  Run [bold]{fast_to_full_command(first)}[/bold] "
+            "to build them (no key needed; a configured model writes them)."
         )
 
 
@@ -718,6 +718,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
+                "upgrade_command": upgrade_command(scope),
                 "decision_lanes_pending": list(pending_lanes),
             }
         )
@@ -798,6 +799,11 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
             scope["search"]["semantic"] == "available", scope["search"]["next_command"]
         )
         console.print(f"[dim]{note}[/dim]")
+    elif upgrade_command(scope):
+        console.print(
+            f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "
+            "code and fills in the full git history (no key needed).[/dim]"
+        )
 
     if not has_db:
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")

@@ -80,17 +80,22 @@ def note_subscription_cli(run: InitRun) -> None:
     with --provider. Interactive runs got the picker instead, and a configured
     provider is already a choice.
     """
-    if run.is_interactive or run.opts.provider_name or run.config.get("provider"):
-        return
-    if not (run.opts.index_only or run.no_provider):
+    if not _wants_subscription_note(run):
         return
     from repowise.cli.ui.subscription import logged_in_agent_providers, subscription_note
 
     offered = {n: auth for n, auth in logged_in_agent_providers().items() if auth.offer}
-    first = next(iter(offered), None)
-    note = subscription_note(tuple(offered), offered[first]) if first else None
+    if not offered:
+        return
+    note = subscription_note(tuple(offered), next(iter(offered.values())))
     if note:
         console.print(f"  [dim]{note}[/dim]")
+
+
+def _wants_subscription_note(run: InitRun) -> bool:
+    """A scripted run nobody picked a provider for, and no model writes."""
+    chosen = run.is_interactive or run.opts.provider_name or run.config.get("provider")
+    return not chosen and bool(run.opts.index_only or run.no_provider)
 
 
 def _print_provider_summary(run: InitRun) -> None:

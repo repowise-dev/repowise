@@ -731,6 +731,8 @@ def _persist_index_only_update(
     stamp_file_page_scope(repo_path, new_state, parsed_files, graph_builder, git_meta_map)
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
+    from repowise.core.index_scope import upgrade_command
+
     from .reporting import show_index_only_completion
 
     show_index_only_completion(
@@ -743,6 +745,7 @@ def _persist_index_only_update(
         pages_rendered=pages_rendered,
         template_wiki=template_wiki,
         changed_paths=changed_paths,
+        upgrade_command=upgrade_command(new_state.get("index_scope")),
     )
 
 

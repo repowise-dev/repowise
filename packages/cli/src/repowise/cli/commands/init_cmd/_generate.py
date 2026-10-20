@@ -434,11 +434,12 @@ def _generate(run: InitRun) -> bool:
 
     # Fast mode is a graph-and-git index only.
     if opts.index_only and opts.run_mode == "fast":
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
         console.print(
             f"  [dim]{INDEX_ONLY}: fast mode skips documentation. Run "
-            "[bold]repowise init[/bold] without [bold]--mode fast[/bold] to "
-            "build it from code, or [bold]repowise update --full[/bold] "
-            "to write it with a model.[/dim]"
+            f"[bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from code (no key "
+            "needed), or have a model write it when one is configured.[/dim]"
         )
         return False
     if opts.index_only or run.no_provider:
