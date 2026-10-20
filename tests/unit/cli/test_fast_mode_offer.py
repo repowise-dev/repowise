@@ -49,7 +49,7 @@ def test_next_steps_fast_mode_second_row_is_full_upgrade():
     descs = " ".join(d for _, d in steps).lower()
     # After serve, fast mode points at the full result.
     assert cmds[1] == "repowise init"
-    assert "full" in descs and "wiki" in descs
+    assert "full" in descs and "documentation" in descs
 
 
 def test_next_steps_index_only_upgrades_via_generate_not_update_full():

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli._setup import setup_logging_silence
+from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.editor_integrations.defaults import (
     get_default_disabled_project_files,
     get_default_integration_overrides,
@@ -43,7 +44,11 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
-from repowise.cli.providers import resolve_embedder, semantic_search_status
+from repowise.cli.providers import (
+    resolve_embedder,
+    semantic_search_command,
+    semantic_search_status,
+)
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
@@ -62,20 +67,30 @@ from repowise.cli.ui import (
     print_banner,
 )
 from repowise.cli.ui.glyphs import glyph
+from repowise.cli.ui.mode_names import pages
+from repowise.core.ci.markdown import plural
+from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 
+from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
+from ._ingest import structural_generation_config
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._workspace_config import WorkspacePick, build_workspace_config
 from .generation import (
     CostGateDeclined,
     concept_page_count,
     cost_gate_declined,
+    embedding_note,
     estimate_generation,
-    format_cost,
     run_repo_generation,
     structural_page_summary,
 )
-from .persistence import apply_git_history_coverage_state, persist_result
+from .persistence import (
+    apply_git_history_coverage_state,
+    keep_prior_documentation,
+    persist_result,
+)
 from .reporting import show_workspace_completion
 
 
@@ -124,6 +139,7 @@ def _run_workspace_generation(
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
+        embedder=embedder_name_resolved,
     )
 
     # Same decision and same stakes as the single-repo flow, so the count and
@@ -131,11 +147,14 @@ def _run_workspace_generation(
     # a dozen times, which makes plain text easier to miss, not harder.
     console.print(
         f"    Writing [bold]{concept_page_count(plans):,}[/bold] subsystem pages with "
-        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. {spend_phrase(est, concurrency)}."
     )
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"    [dim]{structural}[/dim]")
+    embedding = embedding_note(est)
+    if embedding:
+        console.print(f"    [dim]{embedding}[/dim]")
 
     # Declines rather than raises when it cannot ask (see the note in init's
     # _run_generation_phase): a raise would land in the caller's generic error
@@ -146,8 +165,8 @@ def _run_workspace_generation(
     ):
         console.print(
             f"    [{WARN}]Skipped.[/] "
-            "[dim]Index will be saved without docs; "
-            "future `repowise update` runs default to index-only.[/dim]"
+            "[dim]Documentation will be built from code; "
+            "future `repowise update` runs stay built from code.[/dim]"
         )
         # Sentinel: caller treats this exactly like an index-only run so the
         # persisted docs mode is not "llm" and the post-commit hook doesn't
@@ -285,6 +304,8 @@ class _WorkspaceCtx:
     #: Same reasoning for key persistence: each workspace repo gets its own
     #: .repowise/, so each needs its own credential to be MCP-answerable.
     save_key: bool = True
+    #: Asked-for work a repo did not get; any entry makes init exit degraded.
+    gaps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -429,6 +450,7 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 progress=callback,
                 existing_kg_fingerprint=_prev_kg_fp,
                 derive_environment_facts=True,
+                generation_config=structural_generation_config(ctx.index_only),
             )
         )
     console.print(f"    [{OK}]{glyph('ok')}[/] {result.file_count:,} files, {result.symbol_count:,} symbols")
@@ -440,7 +462,7 @@ def _generate_repo_docs(repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex) -> _Re
     docs = _RepoDocs()
     if ctx.dry_run:
         console.print(
-            f"    [{WARN}]Dry run — `.repowise/` created; "
+            f"    [{WARN}]Dry run: `.repowise/` created; "
             "no DB, state, or pages written for this repo.[/]\n"
         )
         docs.skip_reason = "dry run"
@@ -488,12 +510,14 @@ def _generate_repo_with_model(
 
         docs.pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
         docs.docs_mode = "llm"
-        console.print(f"    [{OK}]{glyph('ok')}[/] Generated {docs.pages_generated} pages\n")
+        console.print(f"    [{OK}]{glyph('ok')}[/] Wrote {pages(docs.pages_generated)} with the model\n")
     except CostGateDeclined:
         # Declining only meant "not at that price": fall back to the free
         # template renderer rather than leave the repo with no wiki.
+        if not sys.stdin.isatty():
+            ctx.gaps.append(f"{repo.alias}: {COST_UNCONFIRMED_BUILT}")
         console.print(
-            "    [dim]Building this repo's wiki from structure instead. Run "
+            "    [dim]Building this repo's documentation from code instead. Run "
             "[bold]repowise update --repo "
             f"{repo.alias} --full[/bold] to write it with a model later.[/dim]"
         )
@@ -501,6 +525,7 @@ def _generate_repo_with_model(
     except Exception as gen_exc:
         console.print(f"    [{ERR}]{glyph('fail')} Generation failed: {gen_exc}[/]\n")
         docs.skip_reason = f"generation error: {gen_exc}"
+        ctx.gaps.append(f"{repo.alias}: documentation not written ({gen_exc})")
         result.generated_pages = []
 
 
@@ -524,7 +549,7 @@ def _render_repo_from_templates(
     docs.pages_generated = len(generated_pages)
     docs.docs_mode = "deterministic"
     console.print(
-        f"    [{OK}]{glyph('ok')}[/] Rendered {len(generated_pages)} pages from structure (no model)\n"
+        f"    [{OK}]{glyph('ok')}[/] Built {pages(len(generated_pages))} from code (no model)\n"
     )
 
 
@@ -579,6 +604,7 @@ def _repo_state(
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
     _stamp_repo_scope(state, repo_path, ctx, index, docs)
+    keep_prior_documentation(state, load_state(repo_path), ctx.run_mode)
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
@@ -598,8 +624,14 @@ def _stamp_repo_scope(
     scope_config = load_config(repo_path)
     configured_cap = resolve_max_file_pages(config=scope_config)
     scope_embedder = _scope_embedder(ctx, docs)
+    semantic = (
+        semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
+        if result.generated_pages
+        else "unavailable"
+    )
     state["run_mode"] = ctx.run_mode
     state["git_tier"] = "essential" if ctx.run_mode == "fast" else "full"
+    record_decision_lanes(state, repo_path, ran_with_model=repo_provider is not None)
     unavailable = [] if getattr(result, "health_report", None) is not None else ["health"]
     stamp_index_scope(
         state,
@@ -609,6 +641,7 @@ def _stamp_repo_scope(
         git_tier=state["git_tier"],
         git_commit_cap=ctx.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
+        test_run=ctx.test_run and docs_mode == "llm",
         file_pages={"configured_cap": configured_cap, **_file_page_fields(result, configured_cap)},
         analysis={
             "unavailable": unavailable,
@@ -623,12 +656,12 @@ def _stamp_repo_scope(
         },
         search={
             "full_text": "available" if result.generated_pages else "unavailable",
-            "semantic": (
-                semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
-                if result.generated_pages
-                else "unavailable"
+            "semantic": semantic,
+            "next_command": (
+                semantic_search_command(repo_path, scope_embedder)
+                if result.generated_pages and semantic == "unavailable"
+                else None
             ),
-            "next_command": "repowise reindex" if result.generated_pages else None,
         },
         upgrade={
             "status": "pending" if docs_mode != "llm" else "not_applicable",
@@ -794,10 +827,10 @@ def _workspace_init(
     # --yes, --all or a non-terminal stdin take every detected repo (and the
     # first as primary) without prompting: asking a pipe would end the run with
     # an EOFError before anything was done, and "every repo" is what --all means.
-    picked = _select_workspace_repos(scan, select_all=init_all or yes or not sys.stdin.isatty())
-    if picked is None:
+    pick = _select_workspace_repos(scan, select_all=init_all or yes or not sys.stdin.isatty())
+    if pick is None:
         return
-    selected, primary_alias, primary_repo = picked
+    selected, primary_alias, primary_repo = pick.selected, pick.primary_alias, pick.primary_repo
     load_dotenv(primary_repo.path)
 
     # --yes suppresses every prompt, so it means non-interactive.
@@ -830,7 +863,7 @@ def _workspace_init(
     provider, resolved_reasoning = _resolve_workspace_provider(
         answers, primary_repo, embedder_name, yes=yes, save_key=save_key
     )
-    ws_config = _workspace_config(selected, root, primary_alias, dry_run=dry_run)
+    ws_config = _workspace_config(pick, ask=sys.stdin.isatty() and not yes, dry_run=dry_run)
 
     from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
@@ -865,7 +898,9 @@ def _workspace_init(
 
     # A dry run writes nothing for any repo, so nothing at the workspace level.
     if not dry_run:
-        _save_workspace(ws_config, root, selected, totals.errors, editor_setup=editor_setup)
+        _save_workspace(
+            ws_config, root, selected, totals.errors, editor_setup=editor_setup, yes=yes
+        )
 
     show_workspace_completion(
         selected=selected,
@@ -889,11 +924,11 @@ def _workspace_init(
             editor_setup=editor_setup,
         )
     console.print()
-    _raise_on_embed_failures(totals.embed_failures)
+    exit_on_gaps(_workspace_gaps(ctx, totals))
 
 
-def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], str, Any] | None:
-    """The repos to index, the primary alias and repo; None when none were selected."""
+def _select_workspace_repos(scan: Any, *, select_all: bool) -> WorkspacePick | None:
+    """The repos to index and the primary; None when none were selected."""
     root = scan.root
     selected = (
         list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
@@ -905,11 +940,19 @@ def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], 
         selected[0].alias if select_all else interactive_primary_select(console, selected)
     )
     primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
-    return selected, primary_alias, primary_repo
+    # interactive_primary_select asks only when there is more than one to choose from.
+    primary_picked = not select_all and len(selected) > 1
+    return WorkspacePick(selected, root, primary_alias, primary_repo, primary_picked)
 
 
 def _save_workspace(
-    ws_config: Any, root: Path, selected: list[Any], errors: list, *, editor_setup: bool
+    ws_config: Any,
+    root: Path,
+    selected: list[Any],
+    errors: list,
+    *,
+    editor_setup: bool,
+    yes: bool,
 ) -> None:
     """Save the indexed timestamps, run cross-repo analysis, register the primary."""
     ws_config.save(root)
@@ -917,7 +960,10 @@ def _save_workspace(
     primary_entry = ws_config.get_primary()
     if primary_entry:
         primary_path = (root / primary_entry.path).resolve()
-        register_editor_clients(console, primary_path, no_editor_setup=not editor_setup)
+        from repowise.cli.editor_integrations.global_mcp import confirm_global_mcp
+
+        if confirm_global_mcp(console, primary_path, yes=yes, no_editor_setup=not editor_setup):
+            register_editor_clients(console, primary_path)
 
 
 def _ask_workspace_mode(
@@ -931,7 +977,7 @@ def _ask_workspace_mode(
     """The mode menu, then the provider (and advanced config) it calls for."""
     mode = interactive_mode_select(
         console,
-        title=f"How much should repowise write for these {len(selected)} repos?",
+        title=f"How much should repowise write for {plural(len(selected), 'repo')}?",
     )
     if mode == "index_only":
         answers.index_only = True
@@ -1021,40 +1067,30 @@ def _resolve_workspace_provider(
             if answers.provider_name is not None:
                 raise
             console.print(
-                f"  [{WARN}]Provider setup failed ({exc}); falling back to index-only.[/]"
+                f"  [{WARN}]Provider setup failed ({exc}); building documentation from code.[/]"
             )
             answers.index_only = True
             provider = None
     return provider, resolved_reasoning
 
 
-def _workspace_config(selected: list[Any], root: Path, primary_alias: str, *, dry_run: bool) -> Any:
+def _workspace_config(pick: WorkspacePick, *, ask: bool, dry_run: bool) -> Any:
     """The workspace config for the selected repos, saved unless this is a dry run."""
-    from repowise.core.workspace import RepoEntry, WorkspaceConfig
+    from repowise.core.workspace import WORKSPACE_CONFIG_FILENAME
 
-    entries = [
-        RepoEntry(
-            path=repo.path.relative_to(root).as_posix(),
-            alias=repo.alias,
-            is_primary=(repo.alias == primary_alias),
-        )
-        for repo in selected
-    ]
-    ws_config = WorkspaceConfig(
-        version=1,
-        repos=entries,
-        default_repo=primary_alias,
-    )
+    root = pick.root
+    verb = "Updated" if (root / WORKSPACE_CONFIG_FILENAME).is_file() else "Created"
+    ws_config = build_workspace_config(pick, console=console, ask=ask)
     if dry_run:
         # `.repowise/` is still created per repo, so a later distill-hook
         # decline can gate every selected path; nothing is written into it.
         console.print(
-            f"  [{WARN}]Dry run — `.repowise/` directories are created, "
+            f"  [{WARN}]Dry run: `.repowise/` directories are created, "
             "but no config, index, or pages are written.[/]"
         )
     else:
         config_path = ws_config.save(root)
-        console.print(f"  [{OK}]{glyph('ok')}[/] Created {config_path.name}")
+        console.print(f"  [{OK}]{glyph('ok')}[/] {verb} {config_path.name}")
     console.print()
     return ws_config
 
@@ -1128,17 +1164,17 @@ def _offer_workspace_hooks(
     )
 
 
-def _raise_on_embed_failures(embed_failures: dict[str, int]) -> None:
-    """Fail a scripted run whose semantic indexes were not built.
-
-    Raised after every repo is persisted, as single-repo init does.
-    """
-    if embed_failures:
-        import click
-
-        listed = ", ".join(f"{alias} ({n} page(s))" for alias, n in embed_failures.items())
-        raise click.ClickException(
+def _workspace_gaps(ctx: _WorkspaceCtx, totals: _WorkspaceTotals) -> list[str]:
+    """Every repo's gaps, raised after each one is persisted, as single-repo init does."""
+    gaps = list(ctx.gaps)
+    if totals.errors:
+        failed = ", ".join(alias for alias, _ in totals.errors)
+        gaps.append(f"{len(totals.errors):,} repo(s) failed to index ({failed})")
+    if totals.embed_failures:
+        listed = ", ".join(f"{alias} ({n:,} page(s))" for alias, n in totals.embed_failures.items())
+        gaps.append(
             f"Embedding failed for {listed}, so semantic search is unavailable there "
             "(full-text search still works). Fix the cause in the warnings above, "
-            "then run: repowise reindex in each."
+            "then run: repowise reindex in each"
         )
+    return gaps

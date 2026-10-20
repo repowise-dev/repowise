@@ -21,6 +21,7 @@ from repowise.cli.ui.brand import (
     print_section,
 )
 from repowise.cli.ui.glyphs import glyph
+from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, written_by
 from repowise.cli.ui.repo_scanner import (
     RepoScanInfo,
     estimated_documentable_files,
@@ -67,14 +68,14 @@ def interactive_fast_mode_offer(
     """
     n = scan.total_files if scan else 0
     body = Text()
-    body.append("  Large repository detected — ", style="bold")
+    body.append("  Large repository detected: ", style="bold")
     body.append(f"{n:,} files.\n\n", style=BRAND_STYLE)
-    body.append("  Fast mode runs a quick first index:\n", style="bold")
+    body.append(f"  Fast mode runs a quick first index ({INDEX_ONLY.lower()}):\n", style="bold")
     bullet = glyph("bullet")
     body.append(f"    {bullet} dependency graph + essential git history\n")
     body.append(f"    {bullet} graph metrics materialized to SQL\n")
-    body.append(f"    {bullet} no per-file blame, no co-change walk, no LLM docs\n\n")
-    body.append("  You can backfill full git history and generate docs later.\n", style="dim")
+    body.append(f"    {bullet} no per-file blame, no co-change walk, no documentation\n\n")
+    body.append("  You can add full git history and documentation later.\n", style="dim")
     console.print(
         Panel(
             body,
@@ -98,10 +99,10 @@ def interactive_mode_select(console: Console, *, title: str | None = None) -> st
     """
     body = Text()
     body.append("  [1]", style=BRAND_STYLE)
-    body.append("  Everything  ", style="bold")
+    body.append(f"  {written_by()}  ", style="bold")
     body.append("(recommended, needs an API key)\n", style="dim")
-    body.append("       Everything repowise can build: dependency graph, git history,\n")
-    body.append("       code health, architectural decisions, a model-written wiki,\n")
+    body.append("       Dependency graph, git history, code health, architectural\n")
+    body.append("       decisions, and documentation a model writes, with\n")
     body.append("       architecture diagrams and API docs.\n")
     body.append(
         "       Costs a few cents to a few dollars; you see the estimate\n"
@@ -110,15 +111,15 @@ def interactive_mode_select(console: Console, *, title: str | None = None) -> st
     )
 
     body.append("  [2]", style=BRAND_STYLE)
-    body.append("  No prose  ", style="bold")
+    body.append(f"  {BUILT_FROM_CODE}  ", style="bold")
     body.append("(no key, no spend)\n", style="dim")
-    body.append("       Every page type still gets built, straight from the code.\n")
-    body.append("       Only the subsystem pages come out as outlines instead of prose;\n")
-    body.append("       add a key later and run repowise generate to fill them in.\n\n")
+    body.append("       The same index, with every documentation page built from the code.\n")
+    body.append("       Subsystem pages come out as outlines; add a key later and run\n")
+    body.append("       repowise generate to have a model write them.\n\n")
 
     body.append("  [3]", style=BRAND_STYLE)
     body.append("  Advanced\n", style="bold")
-    body.append("       Full control — turn AI docs on or off, then tune indexing\n")
+    body.append("       Full control: choose who writes the documentation, then tune indexing\n")
     body.append("       and generation (commit limit, exclude patterns, concurrency, ...)")
 
     console.print(
@@ -148,10 +149,10 @@ def interactive_generate_docs_toggle(console: Console) -> bool:
     """
     console.print()
     console.print(
-        "  [dim]Model-written docs call the LLM (has a cost). Say no and you still "
-        "get a wiki,\n  rendered from the code's structure, for free.[/dim]"
+        "  [dim]Documentation written by a model calls the LLM (has a cost). Say no and "
+        "you still\n  get documentation, built from code, for free.[/dim]"
     )
-    return click.confirm("  Generate model-written wiki docs?", default=True)
+    return click.confirm("  Have a model write the documentation?", default=True)
 
 
 def interactive_customize_offer(console: Console, *, generate_docs: bool) -> bool:
@@ -175,7 +176,7 @@ def prompt_wiki_style(console: Console) -> str:
     console.print("\n[bold]Documentation style[/bold]")
     for idx, spec in enumerate(styles, 1):
         marker = " [dim](default)[/dim]" if spec.name == DEFAULT_STYLE else ""
-        console.print(f"  {idx}. [{VALUE}]{spec.name}[/]{marker} — {spec.description}")
+        console.print(f"  {idx}. [{VALUE}]{spec.name}[/]{marker}: {spec.description}")
     default_idx = next((i for i, s in enumerate(styles, 1) if s.name == DEFAULT_STYLE), 1)
     choice = click.prompt(
         "  Choose a style",
@@ -275,9 +276,9 @@ def prompt_file_page_volume(
         console,
         "Page volume",
         f"About [bold]{estimate:,}[/bold] files here would each get a file page "
-        f"({_format_mb(estimate)} of wiki).\n"
-        "  File pages are rendered from structure, so they cost no model tokens — what\n"
-        "  the tail costs is wiki size, one embedding call each, and search results\n"
+        f"({_format_mb(estimate)} of documentation).\n"
+        "  File pages are built from code, so they cost no model tokens. What\n"
+        "  the tail costs is documentation size, one embedding call each, and search results\n"
         "  that restate what a subsystem page already says.",
     )
     if would_be_capped_anyway:
@@ -287,12 +288,12 @@ def prompt_file_page_volume(
         )
     console.print()
     console.print(
-        f"  [{BRAND}][1][/] Top [bold]{recommended:,}[/bold] by importance  [dim](recommended) — "
+        f"  [{BRAND}][1][/] Top [bold]{recommended:,}[/bold] by importance  [dim](recommended), "
         f"~{recommended:,} pages, {_format_mb(recommended)}[/dim]"
     )
     render_min, render_max = estimated_wiki_render_minutes(estimate)
     console.print(
-        f"  [{BRAND}][2][/] Every eligible file  [dim]— ~{estimate:,} pages, "
+        f"  [{BRAND}][2][/] Every eligible file  [dim]~{estimate:,} pages, "
         f"{_format_mb(estimate)}, roughly {render_min:,}-{render_max:,} min "
         "longer to render and embed[/dim]"
     )
@@ -302,7 +303,7 @@ def prompt_file_page_volume(
         # isatty() lied about being answerable (Windows Git Bash `< /dev/null`,
         # pty wrappers, `docker run -t` without -i). Take the recommendation and
         # keep going: an agent or CI job must never hang here.
-        console.print("  [dim]No answer available — taking the recommendation.[/dim]")
+        console.print("  [dim]No answer available, taking the recommendation.[/dim]")
         return recommended
     if choice == "1":
         return recommended
@@ -327,7 +328,7 @@ def _prompt_run_mode(
         print_section(
             console,
             "Run mode",
-            "standard = full depth · fast = quick graph + essential git, no LLM docs",
+            f"standard = full depth · fast = {INDEX_ONLY.lower()}, quick graph + essential git",
         )
         result["run_mode"] = click.prompt(
             "  Run mode",
@@ -496,7 +497,7 @@ def _summary_rows(
         summary.append((label, value))
 
     # ── Indexing (always) ──────────────────────────────────────────────────
-    add("Generate docs", "yes" if generate_docs else "no (index only)")
+    add("Documentation", written_by() if generate_docs else BUILT_FROM_CODE)
     add("Skip tests", "yes" if result["skip_tests"] else "no")
     add("Skip infra", "yes" if result["skip_infra"] else "no")
     if result["include_submodules"]:
@@ -528,7 +529,7 @@ def _summary_rows(
             add("Reasoning", result["reasoning"])
         add("Embedder", result["embedder"])
         if result.get("wiki_style"):
-            add("Wiki style", result["wiki_style"])
+            add("Documentation style", result["wiki_style"])
         if result.get("language") and result["language"] != "en":
             add(
                 "Language",
@@ -667,13 +668,14 @@ def _resolve_embedder_from_env() -> str:
     return global_config_embedder() or "mock"
 
 
-def print_index_only_intro(console: Console, has_provider: bool = False) -> None:
+def print_index_only_intro(console: Console, *, fast: bool = False) -> None:
     """Show what index-only mode will do before starting.
 
     A forecast, so no border — nothing here is a thing to act on, and it used to
     carry the same box as the question two screens earlier.
     """
-    print_section(console, "Index only", "No LLM calls. No API key. No cost.")
+    title = INDEX_ONLY if fast else BUILT_FROM_CODE
+    print_section(console, title, "No LLM calls. No API key. No cost.")
     console.print()
     # Bullets, not checkmarks: every green ✓ elsewhere in a run means "already
     # done", and this is a forecast.
@@ -683,19 +685,22 @@ def print_index_only_intro(console: Console, has_provider: bool = False) -> None
         f"{bullet} Build dependency graph (PageRank, communities)",
         f"{bullet} Index git history (hotspots, ownership, co-changes)",
         f"{bullet} Detect dead code",
-        f"{bullet} Extract architectural decisions",
-        f"{bullet} Render the wiki from structure: file, module, layer and",
-        "    cycle pages, the architecture diagram, the repo overview, API and",
-        "    infra pages, and the onboarding collection",
+        f"{bullet} Extract architectural decisions without a model",
         f"{bullet} Set up MCP server for AI assistants",
     ]
-    if has_provider:
-        lines.append(f"{bullet} [{DIM}]Decision extraction enhanced (provider key detected)[/]")
+    if not fast:
+        lines[5:5] = [
+            f"{bullet} Build documentation from code: file, module, layer and",
+            "    cycle pages, the architecture diagram, the repo overview, API and",
+            "    infra pages, and the onboarding collection",
+        ]
     for line in lines:
         console.print(line)
     console.print()
-    console.print(
-        "  [dim]The subsystem pages read as stubs. Add a key and run "
-        "[bold]repowise generate[/bold] to write them as prose.[/dim]"
-    )
-    console.print()
+    if not fast:
+        console.print(
+            "  [dim]The subsystem pages read as outlines, and decisions from PRs, commit "
+            "history and comments wait for a model. Add a key and run "
+            "[bold]repowise generate[/bold] to add both.[/dim]"
+        )
+        console.print()

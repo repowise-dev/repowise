@@ -15,6 +15,7 @@ from repowise.cli.ui import (
     interactive_generate_docs_toggle,
     interactive_mode_select,
     interactive_provider_config_select,
+    model_call_count,
     print_banner,
     print_scan_summary,
     prompt_wiki_style,
@@ -23,6 +24,7 @@ from repowise.cli.ui import (
 )
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mascot import owl_status
+from repowise.cli.ui.subscription import SubscriptionContext
 
 from ._options import InitRun
 
@@ -66,20 +68,28 @@ def _ask_mode(run: InitRun) -> None:
         run.opts = replace(run.opts, index_only=not run.generate_docs)
 
 
-def _ask_provider(run: InitRun) -> None:
+def _ask_provider(run: InitRun, scan_info: Any = None) -> None:
     """Provider selection, only when docs will be generated.
 
-    Index-only runs auto-detect a decision-extraction provider later without
-    prompting.
+    The scan's file count sizes the estimate shown beside a subscription CLI,
+    from the same pre-index plan the server quotes.
     """
+    from repowise.core.cost_estimator import approximate_generation_plan
+
     opts = run.opts
+    files = getattr(scan_info, "total_files", 0)
+    plans = approximate_generation_plan(files, onboarding=opts.onboarding) if files else []
     selection = interactive_provider_config_select(
         console,
         opts.model,
         opts.reasoning,
         repo_path=run.repo_path,
         save_key=opts.save_key,
-        prefer=agent_providers_set_up(run.repo_path),
+        subscription=SubscriptionContext(
+            prefer=agent_providers_set_up(run.repo_path),
+            model_calls=model_call_count(plans),
+            concurrency=opts.concurrency,
+        ),
     )
     run.opts = replace(
         opts,
@@ -154,7 +164,7 @@ def _ask_questions(run: InitRun) -> None:
     # ``is_interactive`` can have been cleared by an unanswerable menu, in
     # which case every remaining question here is unanswerable too.
     if run.generate_docs and run.is_interactive:
-        _ask_provider(run)
+        _ask_provider(run, scan_info)
 
     if run.customize:
         adv = interactive_advanced_config(

@@ -98,6 +98,7 @@ def _run(*, embed_failed: int = 0, warnings: tuple[str, ...] = ()) -> SimpleName
         scope_embedder="openai",
         result=SimpleNamespace(embed_failed_pages=embed_failed),
         run_warnings=list(warnings),
+        gaps=[],
     )
 
 
