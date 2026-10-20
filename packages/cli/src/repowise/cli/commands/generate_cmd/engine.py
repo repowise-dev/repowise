@@ -45,6 +45,44 @@ def _narrow_to_model_written(plan: ScopePlan) -> ScopePlan:
     return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
 
 
+NO_DOCUMENTATION_MESSAGE = (
+    "[yellow]This repo has no documentation yet.[/yellow] "
+    "Run `repowise init --no-prose` or `repowise update --full` first."
+)
+
+
+async def has_documentation(repo_path: Path) -> bool:
+    """Whether the index holds any page, checked before a provider is resolved.
+
+    A repo with nothing to write against should hear that, not a missing-key
+    error. Unreadable stores answer True so the full run reports the real error.
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.cli.helpers import db_configured, get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import Page
+
+    if not (repo_path / ".repowise" / "wiki.db").exists() and not db_configured():
+        return False
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return False
+            count = await session.execute(
+                select(func.count()).select_from(Page).where(Page.repository_id == repo.id)
+            )
+            return bool(count.scalar_one())
+    except (OSError, SQLAlchemyError):
+        return True
+    finally:
+        await engine.dispose()
+
+
 @dataclass
 class GenerateOutcome:
     """What a generate run produced, for the command's state write + report."""
@@ -133,10 +171,7 @@ async def run_scoped_generation(
             include_nested_repos=bool(state.get("include_nested_repos", False)),
         )
         if rehydrated is None:
-            console.print(
-                "[yellow]This repo has no wiki pages yet.[/yellow] "
-                "Run `repowise init --no-prose` or `repowise update --full` first."
-            )
+            console.print(NO_DOCUMENTATION_MESSAGE)
             return None
 
         console.print(
