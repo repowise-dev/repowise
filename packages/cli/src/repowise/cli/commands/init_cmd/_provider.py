@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from typing import Any
 
@@ -16,28 +15,12 @@ from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, written_by
 
 from ._options import InitRun
 
-# Keys whose presence lets an index-only run pick a decision-extraction
-# provider without a --provider flag.
-_DECISION_KEY_VARS = (
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-)
-
-
-def decision_key_in_env() -> bool:
-    """Whether the environment holds a key a decision provider can use."""
-    return any(os.environ.get(k) for k in _DECISION_KEY_VARS)
-
 
 def announce_index_only(run: InitRun) -> None:
     """Tell the user what a run without a model builds."""
     fast = run.opts.run_mode == "fast"
     if run.is_interactive:
-        print_index_only_intro(
-            console, has_provider=run.decision_provider is not None, fast=fast
-        )
+        print_index_only_intro(console, fast=fast)
         return
     mode = INDEX_ONLY if fast else BUILT_FROM_CODE
     console.print(f"[bold]repowise init[/bold] · {mode} · {run.repo_path}")
@@ -45,10 +28,6 @@ def announce_index_only(run: InitRun) -> None:
         console.print("Indexing the graph and git history [dim](no documentation, no spend).[/dim]")
     else:
         console.print("Building documentation from code [dim](no model, no spend).[/dim]")
-    if run.decision_provider:
-        console.print(
-            f"Decision extraction provider: [{VALUE}]{run.decision_provider.provider_name}[/]"
-        )
 
 
 def _resolve_or_fall_back(run: InitRun) -> None:

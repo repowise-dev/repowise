@@ -129,6 +129,25 @@ async def test_a_source_that_never_ran_is_not_an_honest_zero(_patched):
     assert "git history" in not_run
     assert "No LLM provider" in not_run
 
+
+async def test_a_structural_run_says_why_instead_of_no_provider(_patched):
+    """A run that chose no model must not claim none is configured."""
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        _patched,
+        llm_client=None,
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+        no_model_reason="this run builds from code",
+    )
+
+    not_run = next(t for lvl, t in progress.messages if lvl == "info" and "Not run" in t)
+    assert "pull requests (this run builds from code)" in not_run
+    assert "No LLM provider" not in not_run
+
     nothing = [t for lvl, t in progress.messages if lvl == "info" and "Nothing found" in t]
     for line in nothing:
         assert "pull requests" not in line
