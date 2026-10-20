@@ -329,23 +329,25 @@ def coverage_add(
                         f"repo tree[/yellow] (e.g. {escape(sample)})."
                     )
             if map_records:
-                written = await save_test_coverage(
+                saved = await save_test_coverage(
                     session,
                     repo_row.id,
                     map_records,
                     source_format=map_format or "coverage.py",
                     ingested_commit_sha=head_sha,
                 )
-                dropped = len(map_records) - written
-                extra = (
-                    f" [yellow]({dropped} dropped: duplicate or over cap)[/yellow]"
-                    if dropped
-                    else ""
-                )
+                extra = f" ({saved.merged} repeated record(s) merged)" if saved.merged else ""
                 console.print(
-                    f"[green]Built the test-to-code map: {written} test->file "
+                    f"[green]Built the test-to-code map: {saved.written} test->file "
                     f"record(s).[/green]{extra}"
                 )
+                if saved.truncated:
+                    sample = ", ".join(saved.dropped_sample)
+                    console.print(
+                        f"[yellow]The map is at its row cap: {len(saved.dropped_tests)} "
+                        f"test(s) left out whole (e.g. {escape(sample)}). Test selection "
+                        "runs every test while the map is truncated.[/yellow]"
+                    )
             if partial:
                 console.print(
                     "[yellow]Stored a fragment (--allow-partial): more than half the "

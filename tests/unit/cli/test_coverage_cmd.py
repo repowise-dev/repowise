@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from repowise.cli.commands import coverage_cmd
 from repowise.cli.main import cli
+from repowise.core.persistence.crud.analysis.coverage_map import TestMapWrite
 
 
 @pytest.mark.parametrize(
@@ -371,7 +372,7 @@ def test_coverage_add_dot_coverage_builds_the_map_and_says_why_no_per_file(
 
     async def _save_map(session, repository_id, records, **kwargs):
         mapped.extend(records)
-        return len(records)
+        return TestMapWrite(written=len(records))
 
     monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
     _coverage_data(tmp_path / ".coverage", "tests/test_a.py::test_one|run", tmp_path / "src" / "a.py")
@@ -449,7 +450,7 @@ def test_coverage_add_withholds_a_partial_per_test_map(
 
     async def _save_map(session, repository_id, records, **kwargs):
         mapped.extend(records)
-        return len(records)
+        return TestMapWrite(written=len(records))
 
     monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
     coverage = pytest.importorskip("coverage")
@@ -479,7 +480,7 @@ def test_coverage_add_maps_a_package_per_test_lcov_like_its_aggregate(
 
     async def _save_map(session, repository_id, records, **kwargs):
         mapped.extend(records)
-        return len(records)
+        return TestMapWrite(written=len(records))
 
     monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
     report = tmp_path / "packages" / "web" / "coverage" / "lcov.info"
