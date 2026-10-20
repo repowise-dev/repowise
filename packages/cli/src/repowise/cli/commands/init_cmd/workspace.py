@@ -897,8 +897,6 @@ def _workspace_init(
         )
 
     # Last, so Connected and Auto-sync read what the hook offers left behind.
-    from repowise.cli.editor_setup import detect_editor_setup_outcome
-
     show_workspace_completion(
         selected=selected,
         errors=totals.errors,
@@ -910,16 +908,31 @@ def _workspace_init(
         provider=provider,
         docs_outcomes=totals.docs_outcomes,
         dry_run=dry_run,
-        setup=None
-        if dry_run
-        else detect_editor_setup_outcome(
+        setup=_workspace_setup(
             primary_repo.path,
-            interactive=sys.stdin.isatty() and not yes,
+            dry_run=dry_run,
+            yes=yes,
             first_index=first_index,
-            no_editor_setup=not editor_setup,
+            editor_setup=editor_setup,
         ),
     )
     _raise_on_embed_failures(totals.embed_failures)
+
+
+def _workspace_setup(
+    primary_path: Path, *, dry_run: bool, yes: bool, first_index: bool, editor_setup: bool
+) -> Any:
+    """What editor setup left for the primary repo; None on a dry run, which set nothing up."""
+    if dry_run:
+        return None
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    return detect_editor_setup_outcome(
+        primary_path,
+        interactive=sys.stdin.isatty() and not yes,
+        first_index=first_index,
+        no_editor_setup=not editor_setup,
+    )
 
 
 def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], str, Any] | None:
