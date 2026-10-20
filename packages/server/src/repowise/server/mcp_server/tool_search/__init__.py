@@ -135,6 +135,7 @@ from repowise.server.mcp_server.tool_search.serve import (
     _apply_freshness_boost,
     _assign_confidence,
     _attach_paths,
+    _drop_derivable_confidence,
     _drop_derivable_page_ids,
     _drop_internal_ranking_fields,
     _grep_hint_for,

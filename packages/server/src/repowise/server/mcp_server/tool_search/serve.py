@@ -93,6 +93,23 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
     return results
 
 
+def _drop_derivable_confidence(rows: list[dict]) -> list[dict]:
+    """Drop confidence_score where the caller can rebuild it, in place."""
+    top = max((row.get("relevance_score") or 0 for row in rows), default=0)
+    if top <= 0:
+        return rows
+
+    for row in rows:
+        if "relation" in row:
+            continue
+        if row.get("confidence_score") == round(
+            (row.get("relevance_score") or 0) / top, 2
+        ):
+            row.pop("confidence_score", None)
+
+    return rows
+
+
 def _page_language(ctx) -> str:
     """The language *ctx*'s structural page titles were generated in."""
     try:

@@ -22,7 +22,12 @@ from repowise.server.mcp_server.tool_answer.answer import (
     _trim_served_payload,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import _CANDIDATE_LIMIT
-from repowise.server.mcp_server.tool_search import _drop_derivable_page_ids, _slim_served_rows
+from repowise.server.mcp_server.tool_search import (
+    _assign_confidence,
+    _drop_derivable_confidence,
+    _drop_derivable_page_ids,
+    _slim_served_rows,
+)
 
 # ---------------------------------------------------------------------------
 # search_codebase.results[].page_id — derivable from two of its own siblings
@@ -342,3 +347,42 @@ def test_sources_dropped_only_when_fts_only_and_keyless(monkeypatch):
         _keyless(monkeypatch, state)
         (kept,) = _slim_served_rows([_row("file_page", "d.py", "D", sources=["fts"])])
         assert kept["sources"] == ["fts"]
+
+
+# -- confidence_score -------------------------------------------------------
+
+
+def _scored(*scores: float) -> list[dict]:
+    rows = [{"relevance_score": score} for score in scores]
+    _assign_confidence(rows, "relevance_score", "confidence_score")
+    return rows
+
+
+def test_a_confidence_that_is_relevance_over_top_is_dropped() -> None:
+    rows = _drop_derivable_confidence(_scored(18.08, 14.75, 0.43))
+    assert all("confidence_score" not in row for row in rows)
+    assert [row["relevance_score"] for row in rows] == [18.08, 14.75, 0.43]
+
+
+def test_a_capped_row_keeps_its_confidence() -> None:
+    capped, plain = _scored(0.45, 0.3)
+    capped["relation"] = "related, not the named symbol"
+    capped["confidence_score"] = 0.45
+    _drop_derivable_confidence([capped, plain])
+    assert capped["confidence_score"] == 0.45
+    assert "confidence_score" not in plain
+
+
+def test_a_confidence_that_differs_from_the_derivation_is_kept() -> None:
+    rows = _scored(10.0, 5.0)
+    rows[1]["confidence_score"] = 0.9
+    _drop_derivable_confidence(rows)
+    assert rows[1]["confidence_score"] == 0.9
+    assert "confidence_score" not in rows[0]
+
+
+def test_nothing_is_dropped_when_there_is_no_positive_top_score() -> None:
+    rows = _scored(0, 0)
+    _drop_derivable_confidence(rows)
+    assert [row["confidence_score"] for row in rows] == [0.0, 0.0]
+    assert _drop_derivable_confidence([]) == []

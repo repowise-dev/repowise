@@ -55,6 +55,7 @@ from .serve import (
     _apply_freshness_boost,
     _assign_confidence,
     _attach_paths,
+    _drop_derivable_confidence,
     _drop_internal_ranking_fields,
     _grep_hint_for,
     _load_page_info,
@@ -278,5 +279,6 @@ async def search_codebase(
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     _slim_served_rows(response["results"], {None: _page_language(ctx)})
+    _drop_derivable_confidence(response["results"])
     _serve_snippets(response["results"])
     return response

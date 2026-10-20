@@ -1,36 +1,36 @@
 {
   "metrics": {
     "answer": {
-      "cov@1": 0.7708,
-      "cov@5": 0.9479,
-      "cov_all": 0.9583,
+      "cov@1": 0.8542,
+      "cov@5": 0.9792,
+      "cov_all": 0.9792,
       "files": 5.0,
-      "precision": 0.2669,
-      "tokens": 705.0
+      "precision": 0.278,
+      "tokens": 686.0
     },
     "answer_synth": {
-      "cov@1": 0.7917,
-      "cov@5": 0.9479,
-      "cov_all": 0.9479,
+      "cov@1": 0.8958,
+      "cov@5": 0.9583,
+      "cov_all": 0.9583,
       "files": 4.0,
-      "precision": 0.2966,
-      "tokens": 351.0
+      "precision": 0.3076,
+      "tokens": 285.0
     },
     "search": {
-      "cov@1": 0.8333,
+      "cov@1": 0.8125,
       "cov@5": 0.9306,
       "cov_all": 0.9306,
       "files": 4.0,
-      "precision": 0.5399,
-      "tokens": 531.5
+      "precision": 0.5378,
+      "tokens": 507.0
     },
     "search_limit10": {
       "cov@1": 0.8333,
-      "cov@5": 0.9097,
+      "cov@5": 0.9201,
       "cov_all": 0.9514,
       "files": 4.5,
-      "precision": 0.4751,
-      "tokens": 910.5
+      "precision": 0.4748,
+      "tokens": 884.5
     }
   }
 }
