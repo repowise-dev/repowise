@@ -161,16 +161,21 @@ class ChangeHealthDeltaService:
 
     # -- entry point --------------------------------------------------------
 
-    def compare(self, request: DeltaRequest) -> ChangeHealthDelta:
+    def compare(
+        self, request: DeltaRequest, *, pair: RevisionPair | None = None
+    ) -> ChangeHealthDelta:
         """Compare *request*, serving an identical in-flight call one result.
 
         The revision is resolved once and threaded through, so neither the
         cache key nor a cache hit re-reads the change shape from the source.
+        A caller that already resolved ``request.revspec`` on :attr:`source`
+        passes that *pair*, so the change is not diffed twice.
         """
-        try:
-            pair = self.source.resolve(request.revspec)
-        except ValueError as exc:
-            return _unavailable("unsupported_range", str(exc))
+        if pair is None:
+            try:
+                pair = self.source.resolve(request.revspec)
+            except ValueError as exc:
+                return _unavailable("unsupported_range", str(exc))
         key = self._cache_key(request, pair)
         # One wait, then one retry at becoming the leader. A caller that still
         # finds work in flight does it rather than blocking a thread again.

@@ -196,3 +196,20 @@ def test_a_bad_diff_risk_level_is_a_usage_error(repo):
     result = check(repo, "--diff-risk", "added-suppression=loud")
     assert result.exit_code == 2
     assert "--diff-risk" in result.stderr
+
+
+def test_the_change_is_resolved_once(repo, monkeypatch):
+    from repowise.core.analysis.change_health.sources import GitRevisionSource
+
+    calls = []
+    resolve = GitRevisionSource.resolve
+
+    def counted(self, revspec):
+        calls.append(revspec)
+        return resolve(self, revspec)
+
+    monkeypatch.setattr(GitRevisionSource, "resolve", counted)
+    repo.commit("silence", {"app.py": SIMPLE + "import os  # noqa: F401\n"})
+    result = check(repo, "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert calls == ["main...HEAD"]
