@@ -358,12 +358,12 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     is_flag=True,
     default=False,
     help=(
-        "Upgrade an index with a model: backfill the git tier ESSENTIAL -> "
-        "FULL if it was built with `--mode fast`, and write the subsystem pages "
-        "with a provider on a wiki that has none yet. Incremental: reuses the "
-        "persisted graph, records resumable stage progress, reuses persisted "
-        "provider/embedder choices, and previews model cost before generation. "
-        "Single-repo only."
+        "Take an Index only (`--mode fast`) repo to a full index: backfill the "
+        "full git history and build the documentation. Works without a key: with "
+        "no model configured the documentation is built from code (no model calls, "
+        "no spend); with one, the model writes it after a cost preview. Reuses the "
+        "persisted graph and resumes from the last completed stage. One repo at a "
+        "time (in a workspace, pass --repo <alias>)."
     ),
 )
 @click.option(
@@ -506,8 +506,9 @@ def _render_full_upgrade_dry_run(
         f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
     )
     console.print(
-        "  The whole-repository documentation would be written after an explicit cost preview; "
-        "completed stages are resumable. No changes made."
+        "  Documentation for the whole repository: written by the model after a cost "
+        "preview, or built from code when no model is configured. Completed stages "
+        "are resumable. No changes made."
     )
 
 
@@ -691,10 +692,14 @@ def _resolve_target(opts: UpdateOptions):
 
 
 def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> UpdateOutcome:
+    if opts.full and opts.repo_alias:
+        entry = target.ws_config.get_repo(opts.repo_alias)
+        run.repo_path = (target.ws_root / entry.path).resolve()
+        return _full_upgrade(opts, run)
     if opts.full:
         raise click.ClickException(
-            "--full is single-repo only. Run it inside a specific repo "
-            "(or pass --no-workspace / --repo <alias>)."
+            "--full upgrades one repo at a time. Run it inside that repo, or pass "
+            "--repo <alias>."
         )
     with _errors_reported(run):
         _workspace_update(

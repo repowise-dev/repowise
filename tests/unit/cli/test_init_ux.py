@@ -99,9 +99,10 @@ def test_stage_header_keys_match_the_core_stage_constants() -> None:
     """progress.py spells the keys out rather than importing them, to keep the
     pipeline package off the CLI's import path. This is what stops that from
     becoming a silent drift."""
-    from repowise.cli.ui.progress import _STAGE_HEADERS
+    from repowise.cli.ui.progress import _STAGES, stage_order
 
-    assert set(_STAGE_HEADERS) == {STAGE_INGESTION, STAGE_ANALYSIS}
+    assert stage_order(4)[:2] == [STAGE_INGESTION, STAGE_ANALYSIS]
+    assert set(_STAGES) == set(stage_order(4))
 
 
 def test_the_progress_module_does_not_drag_in_the_pipeline_package() -> None:

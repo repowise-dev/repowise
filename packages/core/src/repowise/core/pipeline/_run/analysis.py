@@ -230,6 +230,7 @@ def _build_kg_skeleton(run: PipelineRun, build_skeleton: Any, new_fingerprint: s
         repo_path=run.repo_path,
     )
     run.knowledge_graph_result.fingerprint = new_fingerprint
+    _phase_done(progress, "knowledge_graph.skeleton")
     if progress:
         kg = run.knowledge_graph_result
         progress.on_message(

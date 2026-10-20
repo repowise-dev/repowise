@@ -15,14 +15,14 @@ from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
     OK,
     WARN,
-    build_completion_panel,
     build_contextual_next_steps,
     format_elapsed,
-    print_analysis_summary,
+    print_completion_panel,
 )
-from repowise.cli.ui.finish_panel import FinishFacts, build_finish_panel
+from repowise.cli.ui.finish_panel import FinishFacts, print_finish_panel
 from repowise.cli.ui.mode_names import TITLE_WORKSPACE, pages
 from repowise.cli.ui.result_panels import serve_step
+from repowise.core.index_scope import fast_to_full_command
 
 
 def _dead_counts(result: Any) -> tuple[int, int]:
@@ -45,41 +45,6 @@ def _lang_summary(result: Any) -> str:
 def _hotspots(result: Any) -> int:
     summary = result.git_summary
     return summary.hotspots if summary and hasattr(summary, "hotspots") else 0
-
-
-def show_analysis_summary(result: Any) -> None:
-    """Render the analysis-complete interstitial shown before generation."""
-    _graph = result.graph_builder.graph()
-    _dc_unreachable_pre, _dc_unused_pre = _dead_counts(result)
-    _dc_lines_pre = result.dead_code_report.deletable_lines if result.dead_code_report else 0
-    _n_decisions_pre = (
-        sum(result.decision_report.by_source.values()) if result.decision_report else 0
-    )
-
-    # Community count (best-effort)
-    _community_count = 0
-    try:
-        if hasattr(result.graph_builder, "communities"):
-            _community_count = len(result.graph_builder.communities())
-    except Exception:
-        pass
-
-    console.print()
-    print_analysis_summary(
-        console,
-        file_count=result.file_count,
-        symbol_count=result.symbol_count,
-        graph_nodes=_graph.number_of_nodes(),
-        graph_edges=_graph.number_of_edges(),
-        dead_unreachable=_dc_unreachable_pre,
-        dead_unused=_dc_unused_pre,
-        dead_lines=_dc_lines_pre,
-        decision_count=_n_decisions_pre,
-        git_files=result.git_summary.files_indexed if result.git_summary else 0,
-        hotspot_count=_hotspots(result),
-        community_count=_community_count,
-        lang_summary=_lang_summary(result),
-    )
 
 
 def _render_defect_accuracy(result: Any) -> None:
@@ -143,8 +108,8 @@ def show_completion(
     setup: Any = None,
     files_written: list[Path] | None = None,
     verbose: bool = False,
-) -> None:
-    """Render the one finish panel; the generation checks only under ``-v``.
+) -> list[tuple[str, str]]:
+    """Render the one finish panel and return its next steps; generation checks only under ``-v``.
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot and *files_written* what editor setup put in the working tree,
@@ -190,14 +155,13 @@ def show_completion(
         setup=setup,
     )
     console.print()
-    console.print(
-        build_finish_panel(
-            facts,
-            steps=steps,
-            setup=setup,
-            repo_path=Path(repo_path),
-            files_written=files_written,
-        )
+    print_finish_panel(
+        console,
+        facts,
+        steps=steps,
+        setup=setup,
+        repo_path=Path(repo_path),
+        files_written=files_written,
     )
     console.print()
     _render_defect_accuracy(result)
@@ -210,6 +174,7 @@ def show_completion(
 
     if verbose:
         _show_generation_checks(result)
+    return steps
 
 
 def _top_hotspot(result: Any) -> str:
@@ -256,6 +221,33 @@ def _show_generation_checks(result: Any) -> None:
         console.print(f"  [dim]Generation checks were skipped ({type(exc).__name__}: {exc}).[/dim]")
 
 
+def _workspace_next_steps(run_mode: str, keyless: bool) -> list[tuple[str, str]]:
+    """Dashboard and status, then the one upgrade that fits how the repos were indexed."""
+    if run_mode == "fast":
+        upgrade = (
+            fast_to_full_command("<repo>"),
+            "build a repo's documentation from code and its full git history (no key)",
+        )
+    elif keyless:
+        upgrade = ("repowise generate <repo>", "write a repo's documentation with a model")
+    else:
+        upgrade = ("repowise search <query>", "search across all indexed repos")
+    return [
+        serve_step("workspace dashboard"),
+        ("repowise status --workspace", "show workspace status"),
+        upgrade,
+    ]
+
+
+def _upgradable_skips(docs_outcomes: dict[str, tuple[int, str | None]]) -> list[tuple[str, str]]:
+    """Repos that skipped documentation; a dry run wrote nothing, so it has nothing to upgrade."""
+    return [
+        (alias, reason)
+        for alias, (_count, reason) in docs_outcomes.items()
+        if reason and reason != "dry run"
+    ]
+
+
 def show_workspace_completion(
     *,
     selected: list[Any],
@@ -268,6 +260,7 @@ def show_workspace_completion(
     index_only: bool,
     provider: Any,
     docs_outcomes: dict[str, tuple[int, str | None]],
+    run_mode: str = "standard",
 ) -> None:
     """Render the workspace completion panel + per-repo docs status."""
     metrics: list[tuple[str, str]] = [
@@ -283,29 +276,16 @@ def show_workspace_completion(
     if errors:
         metrics.append(("Errors", f"{len(errors)} repos failed"))
 
-    if index_only or provider is None:
-        next_steps = [
-            serve_step("workspace dashboard"),
-            ("repowise status --workspace", "show workspace status"),
-            ("repowise generate <repo>", "write a repo's documentation with a model"),
-        ]
-    else:
-        next_steps = [
-            serve_step("workspace dashboard"),
-            ("repowise status --workspace", "show workspace status"),
-            ("repowise search <query>", "search across all indexed repos"),
-        ]
+    next_steps = _workspace_next_steps(run_mode, index_only or provider is None)
 
     console.print()
-    console.print(
-        build_completion_panel(TITLE_WORKSPACE, metrics, next_steps=next_steps)
-    )
+    print_completion_panel(console, TITLE_WORKSPACE, metrics, next_steps)
     console.print()
 
     # Honest docs status — print a per-repo summary listing exactly which
     # repos generated pages and which were skipped, so the user never has
     # to discover empty Docs/Overview in the web UI on their own.
-    docs_skipped = [(alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason]
+    docs_skipped = _upgradable_skips(docs_outcomes)
     if docs_outcomes:
         console.print("[bold]Documentation[/bold]")
         for alias, (count, reason) in docs_outcomes.items():
@@ -319,7 +299,7 @@ def show_workspace_completion(
             first = docs_skipped[0][0]
             console.print()
             console.print(
-                f"  Run [bold]repowise update --repo {first} --docs[/bold] "
+                f"  Run [bold]{fast_to_full_command(first)}[/bold] "
                 "to build documentation for a skipped repo."
             )
         console.print()
