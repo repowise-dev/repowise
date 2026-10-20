@@ -303,15 +303,37 @@ def basis_of(selection: Selection) -> str:
     return "measured" if "coverage" in selection.basis.values() else "inferred"
 
 
-def split_broadcast(selection: Selection) -> tuple[list[str], list[str]]:
-    """``(the tests the change reaches, the broadcast ones)``, each in run order.
+def split_apart(selection: Selection) -> tuple[list[str], list[str], list[str]]:
+    """``(the tests the change reaches, the broadcast ones, the import-closure ones)``,
+    each in run order. All of them run; the last two are counted apart.
 
-    A full run has no broadcast: every test runs for the run-all reasons.
+    A full run counts nothing apart: every test runs for the run-all reasons.
     """
-    if selection.run_all or not selection.broadcast:
-        return list(selection.tests), []
+    if selection.run_all:
+        return list(selection.tests), [], []
     spread = [t for t in selection.tests if t.split("::", 1)[0] in selection.broadcast]
-    return selection.reached_tests(), spread
+    closure = [t for t in selection.tests if t.split("::", 1)[0] in selection.import_closure]
+    return selection.reached_tests(), spread, closure
+
+
+def apart_sentence(broadcast: int, closure: int, keys: tuple[str, str]) -> str:
+    """The tests counted apart from the headline, which must still run; ``""`` for none."""
+    parts = []
+    if broadcast:
+        parts.append(
+            f"{broadcast} more test(s) must still run because a conftest on a route keeps "
+            f"every test under it ({keys[0]})."
+        )
+    if closure:
+        parts.append(
+            f"{closure} more test(s) must still run because they import the change through "
+            f"other files, with no call path to it ({keys[1]})."
+        )
+    return "".join(f" {p}" for p in parts)
+
+
+#: The counts of selected tests kept out of ``tests_to_run`` (they still run).
+APART_KEYS = ("broadcast_total", "import_closure_total")
 
 
 def selection_block(
@@ -331,14 +353,16 @@ def selection_block(
     index predates files outside the change and the selection holds over half
     the suite: the list stands and ``summary`` says why. The tail of a list
     holding most of the suite is not stored when every test is to run anyway.
-    ``total`` and ``tests_to_run`` leave out the broadcast (:func:`split_broadcast`),
-    counted in ``broadcast_total`` when there is one and stored apart.
+    ``total`` and ``tests_to_run`` leave out the tests counted apart
+    (:func:`split_apart`), counted in ``broadcast_total`` and
+    ``import_closure_total`` when there are any and stored for recovery.
     *detail* adds ``why`` and ``basis_by_file``.
     """
-    # In run order (``test_ranking``); the broadcast is counted apart.
-    run_list, broadcast = split_broadcast(selection)
-    if broadcast:
-        collector.add(f"{label}.broadcast_tests ({len(broadcast)})", broadcast)
+    # In run order (``test_ranking``).
+    run_list, broadcast, closure = split_apart(selection)
+    for key, tests in zip(APART_KEYS, (broadcast, closure), strict=True):
+        if tests:
+            collector.add(f"{label}.{key.removesuffix('_total')}_tests ({len(tests)})", tests)
     shown = run_list[:limit]
     known = set(selection.known_tests)
     held = len(known & set(selection.test_files))
@@ -377,11 +401,12 @@ def selection_block(
             f"{len(known)} test files were selected; run the whole suite, or "
             "`repowise update` to narrow it."
             if degraded
-            else _summary(selection, len(run_list), always, limit, len(broadcast))
+            else _summary(selection, len(run_list), always, limit, len(broadcast), len(closure))
         ),
     }
-    if broadcast:
-        block["broadcast_total"] = len(broadcast)
+    for key, tests in zip(APART_KEYS, (broadcast, closure), strict=True):
+        if tests:
+            block[key] = len(tests)
     if not detail:
         return block
     block["why"] = {
@@ -404,24 +429,24 @@ NO_TESTS = "No test needs to run for this change."
 
 
 def _summary(
-    selection: Selection, total: int, always: int, limit: int, broadcast: int = 0
+    selection: Selection,
+    total: int,
+    always: int,
+    limit: int,
+    broadcast: int = 0,
+    closure: int = 0,
 ) -> str:
     shown = f"; showing first {limit}" if total > limit else ""
     if selection.run_all:
         lead = selection.reasons[0] if selection.reasons else "the selection could not vouch"
         named = f" Run these {total} first{shown}." if total else ""
         return f"Run every test: {lead}{named}"
-    spread = (
-        f" {broadcast} more test(s) must still run because a conftest on a route keeps "
-        "every test under it (broadcast_total; the reasons say why)."
-        if broadcast
-        else ""
-    )
+    spread = apart_sentence(broadcast, closure, APART_KEYS)
     if not total:
         return f"No test the change reaches directly.{spread}" if spread else NO_TESTS
     # The share of the suite, so a selection holding most of it never reads as targeted.
     known = set(selection.known_tests)
-    held = len(known & (set(selection.test_files) - set(selection.broadcast)))
+    held = len(known & {f for f in selection.test_files if not selection.counted_apart(f)})
     share = f" ({held} of {len(known)} test files)" if known else ""
     rule = f", {always} of them because they run with every subset" if always else ""
     if known and held == len(known):

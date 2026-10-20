@@ -14,7 +14,10 @@ from repowise.core.analysis.next_call import ActionCommand
 from repowise.core.analysis.risk_semantics import structural_impact_band
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import filter_path_list, is_excluded
-from repowise.server.mcp_server._test_selection import run_kind
+from repowise.server.mcp_server._test_selection import APART_KEYS, apart_sentence, run_kind
+
+#: :data:`APART_KEYS` as the directive names them.
+APART_FIELDS = tuple(f"tests_{key}" for key in APART_KEYS)
 
 _WORKSPACE_FAMILIES = (
     "will_break_consumers",
@@ -128,11 +131,7 @@ def tests_summary(
 ) -> str:
     """Summary sentences for the run list and, on request, the typed recommendations."""
     suffix = f" {run_total} test(s) to run, {basis}." if run_total else ""
-    if spread := tests_fields.get("tests_broadcast_total"):
-        suffix += (
-            f" {spread} more must still run because a conftest on a route keeps every test "
-            "under it (tests_broadcast_total)."
-        )
+    suffix += apart_sentence(*(tests_fields.get(k, 0) for k in APART_FIELDS), APART_FIELDS)
     if tests_fields.get("tests_run_all"):
         suffix += " Every test must run (tests_run_all_reasons)."
     recommendations_total = len(test_impact.get("recommendations") or [])

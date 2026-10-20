@@ -1125,7 +1125,10 @@ or `none` (no index), and a per-test `selected.why`: the first changed file and
 evidence that selected it, or why it runs with every subset. `selected.broadcast`
 maps each selected test file that runs only because a conftest or test-package
 `__init__.py` on a route keeps every test under it to that file; agent views
-count these apart from the tests the change reaches. When it runs everything:
+count these apart from the tests the change reaches. `selected.import_closure`
+maps each selected test file the change reaches only through imports, more than
+one file away and with no call path, to its distance; these are counted apart
+too. When it runs everything:
 [CI](../start/CI.md#selecting-the-tests-a-change-needs).
 
 **Run order.** `--format args` and `json` list the selected tests likeliest to fail

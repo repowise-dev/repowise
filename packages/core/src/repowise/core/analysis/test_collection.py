@@ -657,7 +657,8 @@ def _test_hops(
     0 for a changed test, else the fewer of the call walk's hops (*calls*, per
     target) and the file-dependency hops (*imports*, :meth:`ImportGraph.hops`
     from *sources*), so 1 is a direct edge. A scope or gap route is not a
-    source. Ordering only: no test is selected for it. A test neither
+    source. Ordering and the headline count only (``test_selection``'s
+    ``IMPORT_CLOSURE_HOPS``): no test is selected or dropped for it. A test neither
     measures (a filename guess, one reached only through a route) is absent.
     """
     best: dict[str, int] = {}

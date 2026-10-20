@@ -777,6 +777,56 @@ def test_a_full_run_or_a_plain_subset_has_no_broadcast() -> None:
     assert not _select(["uv.lock"], known_tests=_KNOWN).broadcast
 
 
+def test_a_test_reached_only_by_a_long_import_chain_is_counted_apart_but_runs() -> None:
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_far.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_near.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_called.py", "call-graph"),
+            _inferred("src/a.py", "tests/test_a.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_unmeasured.py", "import-graph"),
+            _inferred("src/b.py", "tests/test_both.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_both.py", "call-graph"),
+        ]
+    )
+    tiers["test_hops"] = {
+        "tests/test_far.py": 3,
+        "tests/test_near.py": 1,
+        "tests/test_called.py": 4,
+        "tests/test_a.py": 3,
+        "tests/test_both.py": 5,
+    }
+    sel = _select(["src/a.py", "src/b.py"], tiers)
+    assert not sel.run_all, sel.reasons
+    # Every test still runs; only the long import-only one leaves the headline.
+    assert len(sel.test_files) == 6
+    assert sel.import_closure == {"tests/test_far.py": 3}
+    assert "tests/test_far.py" not in sel.reached_tests()
+    assert "import-closure: 3 hops away" in sel.why["tests/test_far.py"]
+    # A direct importer, a call path (from any changed file), the paired name
+    # and a test with no measured distance all stay in the headline.
+    assert len(sel.reached_tests()) == 5
+
+
+def test_a_test_importing_a_deleted_file_is_never_counted_apart() -> None:
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/gone.py", "tests/test_x.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_x.py", "import-graph"),
+        ]
+    )
+    tiers["test_hops"] = {"tests/test_x.py": 4}
+    sel = _select(["src/a.py"], tiers, deleted=["src/gone.py"])
+    assert "tests/test_x.py" in sel.test_files and not sel.import_closure
+
+
+def test_a_covered_test_is_never_counted_apart() -> None:
+    covered = {"tests/test_x.py::t": {"test_file": "tests/test_x.py", "source_files": ["src/a.py"]}}
+    tiers = _tiers(covered=covered, inferred=[_inferred("src/a.py", "tests/test_x.py", "import-graph")])
+    tiers["test_hops"] = {"tests/test_x.py": 4}
+    assert not _select(["src/a.py"], tiers).import_closure
+
+
 def test_a_route_through_an_imported_helper_selects_its_importers() -> None:
     tiers = _tiers(
         inferred=[

@@ -41,8 +41,9 @@ every test under its directory, unless :mod:`.conftest_routes` narrows a
 conftest the change reaches only through its imports to the tests it can
 break. The tests only a scope file on a route stands for are the selection's
 ``broadcast``: they run, and are counted apart from the tests the change
-reaches. A helper module tests import stands for the
-tests that import it, directly or through other helpers (basis
+reaches. So are the tests it reaches only through imports, more than
+:data:`IMPORT_CLOSURE_HOPS` files away (``import_closure``). A helper module
+tests import stands for the tests that import it, directly or through other helpers (basis
 ``helper-importers``), which are the files that run it: Python runs the
 package file for each module in it, and pytest loads a conftest for each test
 at or below it. Only documentation (``docs/`` and the root README, CHANGELOG,
@@ -75,7 +76,12 @@ import pathspec
 from ..phpunit_roots import PhpunitRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
-from ..test_paths import is_test_path, is_test_related_path, is_test_support_path
+from ..test_paths import (
+    is_test_path,
+    is_test_related_path,
+    is_test_support_path,
+    paired_test_names,
+)
 
 if TYPE_CHECKING:
     from .selection_scopes import Scope
@@ -287,7 +293,8 @@ class Selection:
     file that runs only because a ``conftest.py`` or test-package
     ``__init__.py`` on a route to a changed file stands for every test under
     it to that file: they run, but a count of what the change reaches leaves
-    them out.
+    them out. ``import_closure`` does the same for each test the change reaches
+    only through imports, mapped to its hops (:data:`IMPORT_CLOSURE_HOPS`).
     """
 
     run_all: bool
@@ -301,10 +308,16 @@ class Selection:
     why: Mapping[str, str] = field(default_factory=dict)
     known_tests: tuple[str, ...] = ()
     broadcast: Mapping[str, str] = field(default_factory=dict)
+    import_closure: Mapping[str, int] = field(default_factory=dict)
 
     def reached_tests(self) -> list[str]:
-        """:attr:`tests` without the :attr:`broadcast` ones, in order."""
-        return [t for t in self.tests if t.split("::", 1)[0] not in self.broadcast]
+        """:attr:`tests` without those counted apart, in order."""
+        return [t for t in self.tests if not self.counted_apart(t)]
+
+    def counted_apart(self, test: str) -> bool:
+        """Whether *test* (a file or node id) is in :attr:`broadcast` or :attr:`import_closure`."""
+        path = test.split("::", 1)[0]
+        return path in self.broadcast or path in self.import_closure
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -318,6 +331,7 @@ class Selection:
             "basis": dict(self.basis),
             "why": dict(self.why),
             "broadcast": dict(self.broadcast),
+            "import_closure": dict(self.import_closure),
         }
 
 
@@ -623,12 +637,20 @@ def select_tests(inp: SelectionInput) -> Selection:
         ]
     )
     notes = _notes(inp, triage.skipped, always, traced)
-    broadcast = _broadcast(evidence, test_files, {f for _, f in in_scope} | set(always))
+    besides = {f for _, f in in_scope} | set(always)
+    broadcast = _broadcast(evidence, test_files, besides)
+    # A route through a file changed since the index was built may be shorter
+    # than the index shows, so those tests stay in the headline.
+    apart = besides | set(broadcast) | {f for _, f in gap_tests}
+    closure = _import_closure(evidence, inp.tiers.get("test_hops") or {}, test_files, apart, paths)
     why = {**scope_why, **gap_why, **_why(triage.code, per_file, evidence), **always}
     why.update(
         (t, f"{path} changed ({scope} is on its route and stands for every test under it)")
         for t, (path, scope) in broadcast.items()
     )
+    for t, hops in closure.items():
+        if t in why:
+            why[t] += f"; {IMPORT_CLOSURE_VIA}: {hops} hops away, no call path to it"
     return Selection(
         run_all=bool(run_all),
         reasons=tuple(run_all + evidence.notes + scope_notes + notes),
@@ -641,7 +663,44 @@ def select_tests(inp: SelectionInput) -> Selection:
         why=why,
         known_tests=tuple(inp.known_tests),
         broadcast={t: scope for t, (_, scope) in broadcast.items()},
+        import_closure=closure,
     )
+
+
+def _import_closure(
+    ev: _Evidence,
+    hops: Mapping[str, int],
+    selected: Collection[str],
+    also: Collection[str],
+    changed: Collection[str],
+) -> dict[str, int]:
+    """``{test file: hops}`` for each selected test the change reaches only by a long
+    import chain: no coverage, call path, changed test or name pairing, and more
+    than :data:`IMPORT_CLOSURE_HOPS` file-dependency hops from a changed file.
+
+    *hops* are the collection's fewest hops per test (call or import); a test
+    it did not measure stays in the headline. *also* are tests already counted
+    apart or selected by a rule.
+    """
+    vias: dict[str, set[str]] = {}
+    for rows in ev.inferred.values():
+        for test, via in rows:
+            vias.setdefault(test, set()).add(via)
+    covered = {f for refs in ev.covered.values() for _, f in refs}
+    # A test importing a deleted file breaks on that import, however far the
+    # graph puts it from the files still present.
+    covered |= {t for p in ev.deleted for t, _ in ev.inferred.get(p, ())}
+    paired = {name for p in changed for name in paired_test_names(p)}
+    return {
+        t: hops[t]
+        for t in selected
+        if hops.get(t, 0) > IMPORT_CLOSURE_HOPS
+        and vias.get(t, {"none"}) <= _IMPORT_ONLY
+        and t not in covered
+        and t not in also
+        and t not in changed
+        and PurePosixPath(t).name not in paired
+    }
 
 
 def _broadcast(
@@ -700,6 +759,20 @@ def _why(
 #: The via of a test that runs only because a conftest on the route keeps every
 #: test under it (``conftest_routes``): selected, not reached by the change.
 BROADCAST_VIA = "conftest-broadcast"
+
+# Past this many hops, a test the change reaches only through imports is counted
+# apart from the headline; it still runs (an import error breaks it, though
+# nothing it calls runs the change). 1 keeps direct importers in the headline.
+# Measured on this repository (headline without the conftest broadcast, at
+# N=1 / 2 / 3 / off): a hub module 308 / 500 / 1586 / 1600; four leaf changes
+# 53-63 / 59-74 / 123-191 / 130-1574. Most of the suite sits 3 hops from a
+# hub, so 3 barely narrows it. Ceiling: a call path deeper than the call walk reads as
+# imports only; a per-test coverage map is the upgrade.
+IMPORT_CLOSURE_HOPS = 1
+#: How :attr:`Selection.why` names a test counted apart by :data:`IMPORT_CLOSURE_HOPS`.
+IMPORT_CLOSURE_VIA = "import-closure"
+# The vias that put a test in by imports alone (a conftest broadcast included).
+_IMPORT_ONLY = frozenset({"import-graph", BROADCAST_VIA})
 
 # The vias a conftest route adds (``conftest_routes``), spelled out.
 _VIA_WHY = {

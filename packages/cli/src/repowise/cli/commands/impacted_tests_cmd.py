@@ -312,10 +312,21 @@ def _args_header(selection, args: list[str], resolved: str, prioritize: bool) ->
         )
     if selection.run_all:
         return "Run every test:"
-    if spread := len(selection.broadcast):
+    apart = []
+    if selection.broadcast:
+        apart.append(
+            f"{len(selection.broadcast)} only because a conftest on a route keeps every "
+            "test under it"
+        )
+    if selection.import_closure:
+        apart.append(
+            f"{len(selection.import_closure)} only through imports, with no call path to "
+            "the change"
+        )
+    if apart:
         return (
-            f"{len(args)} argument(s) for {resolved}; {spread} selected test file(s) run "
-            "only because a conftest on a route keeps every test under it."
+            f"{len(args)} argument(s) for {resolved}; selected test files that must still run "
+            f"but are counted apart: {'; '.join(apart)}."
         )
     return f"{len(args)} argument(s) for {resolved}."
 
