@@ -614,6 +614,29 @@ def test_coverage_dynamic_context_non_python_bare_label_stays_none() -> None:
     assert res.test_files_resolved == 0
 
 
+def test_coverage_dynamic_context_does_not_fall_back_to_single_part_source_file() -> None:
+    from repowise.core.analysis.health.coverage import resolve_test_reports
+    from repowise.core.analysis.health.coverage.model import (
+        ContextCoverageReport,
+        TestCoverage,
+    )
+
+    report = ContextCoverageReport(
+        source_format="coverage.py",
+        has_contexts=True,
+        records=[
+            TestCoverage("pkg.calc.test_add", "pkg/feature.py", [1]),
+        ],
+    )
+    # Repo contains pkg.py (a source file), but no pkg/calc.py.
+    # Candidate search must stop at k >= 2 and not fall back to pkg.py.
+    keys = {"pkg/feature.py", "pkg.py"}
+    res = resolve_test_reports(report, keys)
+    assert res.records[0].test_file is None
+    assert res.test_files_resolved == 0
+
+
+
 def _go_repo(tmp_path: Path) -> Path:
     backend = tmp_path / "backend"
     (backend / "pkg").mkdir(parents=True)

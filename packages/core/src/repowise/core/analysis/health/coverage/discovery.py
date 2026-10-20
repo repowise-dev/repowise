@@ -1105,7 +1105,7 @@ def resolve_test_reports(
             raw_id = rec.test_id.split("|", 1)[0].strip()
             parts = [p for p in raw_id.split(".") if p]
             if len(parts) >= 2 and all(p.isidentifier() for p in parts):
-                for k in range(len(parts), 0, -1):
+                for k in range(len(parts), 1, -1):
                     candidate = "/".join(parts[:k]) + ".py"
                     tnorm = normalize_report_path(
                         candidate, strip_prefix=strip_prefix, path_prefix=path_prefix
