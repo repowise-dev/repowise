@@ -13,7 +13,8 @@ import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from ...support_paths import TEMPLATE_EXTENSIONS, is_doc_or_config_path
 from ...test_paths import is_test_related_path
@@ -22,7 +23,13 @@ from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.biomarker_labels import biomarker_label
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
-from .analyzer import RevisionAnalysis, RevisionHealthAnalyzer, language_for, language_of
+from .analyzer import (
+    AnalysisCaches,
+    RevisionAnalysis,
+    RevisionHealthAnalyzer,
+    language_for,
+    language_of,
+)
 from .attribution import FindingAttributor, changed_symbols_for
 from .file_scores import file_score_deltas
 from .identity import change_finding_id, finding_key, severity_rank
@@ -59,6 +66,10 @@ _NOT_CODE_LANGUAGES = frozenset({"json", "yaml", "toml", "markdown"})
 #: counts; any other ``.scm`` stays a gap.
 _QUERY_SUFFIX = ".scm"
 _QUERY_DIR = "queries"
+
+#: Where a checkout with a ``.repowise`` directory keeps parses and walks
+#: between comparisons, apart from the index's own caches.
+_CACHE_SUBDIR = "change_health"
 
 #: Comparisons kept in the process cache.
 _CACHE_CAPACITY = 32
@@ -98,6 +109,12 @@ class ChangeHealthDeltaService:
     Without a checkout, pass a ``MappingRevisionSource`` (diff hunks plus raw
     bytes at both SHAs). Both sides are re-scored from those bytes, so custom
     health rules need ``RevisionHealthAnalyzer(config=...)`` to match the index.
+
+    *cache_dir* keeps per-file parses and walks between comparisons (see
+    :class:`AnalysisCaches`). It defaults to ``.repowise/change_health`` when
+    *repo_path* holds a ``.repowise`` directory (and no *analyzer* is
+    supplied) and to no cache otherwise; pass ``False`` to turn it off.
+    Results are the same either way.
     """
 
     def __init__(
@@ -107,6 +124,7 @@ class ChangeHealthDeltaService:
         repo_path: str | None = None,
         analyzer: RevisionHealthAnalyzer | None = None,
         rules_fingerprint: str = "",
+        cache_dir: str | Path | Literal[False] | None = None,
     ) -> None:
         if source is None:
             if repo_path is None:
@@ -117,6 +135,11 @@ class ChangeHealthDeltaService:
         self._custom_analyzer = analyzer is not None
         self.analyzer = analyzer or RevisionHealthAnalyzer(repo_root=repo_path)
         self.rules_fingerprint = rules_fingerprint
+        # A supplied analyzer may predate the ``caches`` argument: it caches
+        # only when the caller names a directory.
+        if analyzer is not None and cache_dir is None:
+            cache_dir = False
+        self.cache_dir = _resolve_cache_dir(cache_dir, repo_path)
         self._cache: OrderedDict[str, ChangeHealthDelta] = OrderedDict()
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
@@ -322,12 +345,20 @@ class ChangeHealthDeltaService:
         base_sources = self.source.read(pair.base_sha, base_paths)
         rename = pair.rename_map()
         analyzer = self._analyzer_for([*head_paths, *base_paths])
-        head_run = analyzer.analyze(head_sources, subject_paths=set(head_paths), dependents=index)
+        caches = AnalysisCaches.open(self.cache_dir) if self.cache_dir is not None else None
+        # Only when there is one, so an analyzer written before caches still fits.
+        cached = {"caches": caches} if caches is not None else {}
+        head_run = analyzer.analyze(
+            head_sources, subject_paths=set(head_paths), dependents=index, **cached
+        )
         base_run = analyzer.analyze(
             base_sources,
             subject_paths=set(base_paths),
             dependents=index if index is not None else _on_base(head_run, rename),
+            **cached,
         )
+        if caches is not None:
+            caches.save()
         return _Sides(head_paths, head_sources, base_sources, head_run, base_run, rename)
 
     def _analyzer_for(self, paths: list[str]) -> RevisionHealthAnalyzer:
@@ -747,6 +778,19 @@ def _unavailable(
         fingerprint=fingerprint,
         scope=scope or ScopeCounts(),
     )
+
+
+def _resolve_cache_dir(
+    cache_dir: str | Path | Literal[False] | None, repo_path: str | None
+) -> Path | None:
+    if cache_dir is False:
+        return None
+    if cache_dir is not None:
+        return Path(cache_dir)
+    if repo_path is None:
+        return None
+    index_dir = Path(repo_path) / ".repowise"
+    return index_dir / _CACHE_SUBDIR if index_dir.is_dir() else None
 
 
 def _analyzer_config(repo_path: str, paths: list[str]) -> dict[str, object] | None:
