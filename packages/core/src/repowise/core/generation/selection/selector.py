@@ -283,6 +283,51 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     return sum(1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p))
 
 
+def file_page_eligible(parsed: Any, *, is_hotspot: bool) -> bool:
+    """Whether *parsed* clears every per-file gate of file-page selection.
+
+    Repo-wide gates (cap, near-clone dedupe) are not asked: an update rendering
+    the file alone would still give it a page.
+    """
+    return (
+        _is_code_file(parsed)
+        and _passes_importance_floor(parsed)
+        # Graph metrics only add to a positive score.
+        and score_file(
+            parsed,
+            pagerank=0.0,
+            betweenness=0.0,
+            max_pagerank=0.0,
+            max_betweenness=0.0,
+            is_hotspot=is_hotspot,
+        )
+        > 0.0
+    )
+
+
+def eligible_file_page_paths(
+    parsed_files: list[Any],
+    pagerank: dict[str, float],
+    *,
+    hotspots: set[str],
+    dedupe_near_clones: bool = True,
+) -> set[str]:
+    """The files selection would consider for a page: every gate but the cap."""
+    from ..page_generator.helpers import _select_clone_representatives
+
+    drop = (
+        _select_clone_representatives([p for p in parsed_files if _is_code_file(p)], pagerank)
+        if dedupe_near_clones
+        else set()
+    )
+    return {
+        p.file_info.path
+        for p in parsed_files
+        if p.file_info.path not in drop
+        and file_page_eligible(p, is_hotspot=p.file_info.path in hotspots)
+    }
+
+
 def _passes_importance_floor(parsed: Any) -> bool:
     """Whether *parsed* is worth a file page at all.
 
@@ -365,6 +410,14 @@ def _build_symbol_candidates(
     inputs: SelectionInputs,
 ) -> list[tuple[float, tuple[str, str]]]:
     """Return ``[(score, (file_path, symbol_name)), ...]`` descending."""
+    ranked, keep = rank_symbol_candidates(inputs)
+    return ranked[:keep]
+
+
+def rank_symbol_candidates(
+    inputs: SelectionInputs,
+) -> tuple[list[tuple[float, tuple[str, str]]], int]:
+    """Every production spotlight candidate in rank order, and how many selection keeps."""
     max_pr = max(inputs.pagerank.values(), default=0.0)
     test_paths = {p.file_info.path for p in inputs.parsed_files if p.file_info.is_test}
     scored: list[tuple[float, tuple[str, str]]] = []
@@ -400,13 +453,13 @@ def _build_symbol_candidates(
     # predating the field must not silently select a wider slice than the
     # declared default.
     pct = getattr(inputs.config, "top_symbol_percentile", 0.10) or 0.0
-    if pct <= 0:
-        return []
     # At least one, so a repo with few public symbols still gets a spotlight.
     keep = len(deduped) if pct >= 1.0 else max(1, int(len(deduped) * pct))
+    if pct <= 0:
+        keep = 0
     # Sized on the whole pool so production never loses a slot it had; tests only
     # hand theirs to the next production symbol.
-    return [c for c in deduped if c[1][0] not in test_paths][:keep]
+    return [c for c in deduped if c[1][0] not in test_paths], keep
 
 
 def _layer_map_from_kg(

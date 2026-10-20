@@ -141,3 +141,15 @@ def test_sync_state_totals_match_the_pages_table(tmp_path: Path, monkeypatch) ->
     sync = result.output.split("Pages by Type")[0]
     assert "│ 10 " in sync and "│ 12 " not in sync
     assert "4,321" in sync
+
+
+def test_health_line_leads_performance_with_the_causes_worth_fixing_now(monkeypatch) -> None:
+    causes = {"now": 4, "production": 415, "all": 926, "per_10k_loc": 9.03}
+    monkeypatch.setattr(
+        status_cmd,
+        "_query_health",
+        lambda _path: _health(performance_average=9.76, performance_causes=causes),
+    )
+    line = status_cmd._query_health_line(Path("."))
+    assert line is not None
+    assert " · 4 of 415 production perf causes worth fixing now (9.7)" in line

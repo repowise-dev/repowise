@@ -904,8 +904,31 @@ async def test_get_health_dimension_filter_leaves_kpis_and_ranking_alone(setup_m
     filtered = await get_health(
         include=["biomarkers", "maintainability"], only=["kpis", "worst_files"]
     )
-    assert filtered["kpis"]["performance_findings"] == full["kpis"]["performance_findings"]
+    assert filtered["kpis"]["performance_causes"] == full["kpis"]["performance_causes"]
     assert filtered["worst_files"] == full["worst_files"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_kpis_print_the_one_performance_headline(setup_mcp, health_data):
+    """The kpis carry the core headline every surface prints, never a raw finding count."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud import performance_headline
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import _session_factory, get_health
+
+    result = await get_health(only=["kpis"])
+    kpis = result["kpis"]
+    assert "performance_findings" not in kpis
+    async with _session_factory() as session:
+        repo = (await session.execute(select(Repository))).scalars().first()
+        causes = await performance_headline(session, repo.id, covered_nloc=1)
+    assert set(kpis["performance_causes"]) == {"now", "production", "all", "per_10k_loc"}
+    assert (
+        kpis["performance_causes"]["now"],
+        kpis["performance_causes"]["production"],
+        kpis["performance_causes"]["all"],
+    ) == (causes.now, causes.production, causes.all)
 
 
 @pytest.fixture
@@ -2868,8 +2891,8 @@ async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, hea
     repo = SimpleNamespace(id=health_data)
     full = await _build_code_health(session, repo)
     assert full["band"] is not None
-    assert "unanalysed_file_count" not in full
-    assert "analysed_share" not in full
+    assert full["code_files"] == 2
+    assert "files_scored" not in full
 
     for i in range(3):
         session.add(
@@ -2884,9 +2907,8 @@ async def test_overview_states_both_counts_and_withholds_the_band(setup_mcp, hea
     await session.flush()
 
     partial = await _build_code_health(session, repo)
-    assert partial["file_count"] == 2
-    assert partial["unanalysed_file_count"] == 3
-    assert partial["analysed_share"] == 0.4
+    assert partial["code_files"] == 5
+    assert partial["files_scored"] == 2
     assert partial["band"] is None
 
 
@@ -2947,3 +2969,30 @@ async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, popul
     # on 200 of the headline's 500 nloc; the only hotspot carries all of it.
     assert top["gain"] == {"file": 2.5, "average": 1.0, "hotspot": 2.5}
     assert row["fix_all_structure"]["file"] == 4.5
+
+
+def test_kpis_name_production_code_beside_the_all_files_average() -> None:
+    """``production_average`` rides beside ``average_health`` while tests are in
+    it, and is left out once the reading holds no tests."""
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_health.summary import _compute_kpis
+
+    def row(path: str, score: float, *, test: bool) -> HealthFileMetric:
+        return HealthFileMetric(file_path=path, score=score, nloc=100, is_test=test)
+
+    prod, test = row("src/a.py", 6.0, test=False), row("tests/test_a.py", 10.0, test=True)
+    mixed = _compute_kpis([prod, test], deductions={})
+    assert (mixed["average_health"], mixed["production_average"]) == (8.0, 6.0)
+    assert "production_average" not in _compute_kpis([prod], deductions={})
+
+
+@pytest.mark.asyncio
+async def test_workspace_rows_count_the_files_the_overview_counts(setup_mcp, health_data, session):
+    """repo="all" and the single-repo overview state one file count."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_overview.health import _build_code_health
+    from repowise.server.mcp_server.tool_overview.workspace import _code_files
+
+    overview = await _build_code_health(session, SimpleNamespace(id=health_data))
+    assert await _code_files(session, health_data) == overview["code_files"]

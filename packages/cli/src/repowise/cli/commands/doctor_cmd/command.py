@@ -83,8 +83,8 @@ def doctor_command(
             if fmt != "table":
                 payload = {"ok": all_ok, "checks": [c._asdict() for c in checks]}
                 click.echo(json.dumps(payload, indent=2))
-                if not all_ok:
-                    raise SystemExit(1)
+            if not all_ok:
+                raise SystemExit(1)
             return
 
         # Workspace mode — iterate over every entry, run workspace-level
@@ -154,3 +154,4 @@ def doctor_command(
             console.print("[bold yellow]All indexed repos healthy; some repos unindexed.[/bold yellow]")
         else:
             console.print("[bold yellow]Some checks failed across the workspace.[/bold yellow]")
+            raise SystemExit(1)

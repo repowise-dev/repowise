@@ -98,6 +98,11 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
+# v41 (also): a loop that grows only by reading tables that do not grow with
+# the repository is bounded (``perf.table_scale``), so its causes leave the queue.
+# v41 (also): ``docs`` / ``docs_src`` count as a docs root only at the
+# repository root or beside a docs-site generator's config, so a product's
+# ``app/docs/`` route is production and stored ``code_origin`` is re-read.
 # v41: ``brain_method`` is advisory, so every stored score that carried one
 # moves. Parameter counts exclude every comment kind and discover C/C++
 # declarators and Kotlin lists; cached walks refresh the total, typed and scalar
@@ -544,6 +549,8 @@ class HealthAnalyzer:
         stored_blame_findings: dict[str, list[Any]] | None = None,
         file_dependents: dict[str, int] | None = None,
         tested_files: set[str] | frozenset[str] | None = None,
+        walk_cache: HealthWalkCache | None = None,
+        package_roots: set[str] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -569,7 +576,10 @@ class HealthAnalyzer:
         # The walk result for a file is a function of its bytes, its language
         # and the walker's version, so it is kept beside the index like the
         # parse trees and the clone windows are. Absent without a cache dir.
-        self._walk_cache: HealthWalkCache | None = (
+        # A *walk_cache* passed in is the caller's: it loads and saves it, so
+        # several passes (both sides of a comparison) share one file.
+        self._owns_walk_cache = walk_cache is None
+        self._walk_cache: HealthWalkCache | None = walk_cache or (
             HealthWalkCache(duplication_cache_dir, HEALTH_ANALYZER_VERSION)
             if duplication_cache_dir is not None
             else None
@@ -597,7 +607,8 @@ class HealthAnalyzer:
         self._file_dependents_override = file_dependents
         # Files the index records as tested (paired or reached), for a pass holding no tests.
         self._tested_files = frozenset(tested_files or ())
-        self._package_roots_cache: set[str] | None = None
+        # Supplied by a caller that already knows the roots its files sit under.
+        self._package_roots_cache: set[str] | None = package_roots
         self._execution_graph_cache: CallGraphIndex | None = None
         self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
         self.perf_stage = CrossFunctionPerfStage(
@@ -787,7 +798,8 @@ class HealthAnalyzer:
         """
         from repowise.core.pipeline.phase_timing import timed
 
-        if "dry_violation" in run.disabled:
+        # An empty splice set: no file whose clone list a biomarker reads changed.
+        if "dry_violation" in run.disabled or changed == set():
             return DuplicationReport()
         try:
             with timed(timings, "analysis.health.duplication"):
@@ -1203,12 +1215,12 @@ class HealthAnalyzer:
         return kept, _pct_of_kept(file_path, clones, kept, dup_pct)
 
     def _load_walk_cache(self) -> None:
-        if self._walk_cache is not None:
+        if self._walk_cache is not None and self._owns_walk_cache:
             self._walk_cache.load()
 
     def _save_walk_cache(self) -> None:
         """Persist the walk entries this pass used or produced, if any."""
-        if self._walk_cache is not None:
+        if self._walk_cache is not None and self._owns_walk_cache:
             self._walk_cache.save()
             log.debug(
                 "health_walk_cache",

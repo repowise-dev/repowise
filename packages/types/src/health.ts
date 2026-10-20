@@ -297,10 +297,8 @@ export interface HealthFileMetric {
    */
   code_origin?: string | null;
   /**
-   * Open performance-risk findings on this file. The performance lens on the
-   * code-health map colors by this count (+ `performance_analyzed`), not by the
-   * [9,10]-compressed `performance_score`, so a file with 40 N+1s reads
-   * differently from one with 1. Absent on payloads predating the perf pass.
+   * @deprecated Open performance findings on this file, as payloads from the
+   * previous release carry them. Read `performance_opportunities` instead.
    */
   performance_findings?: number | null;
   /**
@@ -436,6 +434,13 @@ export interface PerformanceWhyRanked {
 export type PerformanceLoopMagnitude = "grows_with_data" | "bounded" | "unknown" | "n/a";
 
 /**
+ * Which member loop shows the cost grows: `loop` one outside a registry and a
+ * cold path, `registry` only loops over a registry or configuration table,
+ * `cold_path` only migration, startup or recovery loops, `none` no loop grows.
+ */
+export type PerformanceGrowthSource = "loop" | "registry" | "cold_path" | "none" | "n/a";
+
+/**
  * The facets that are not published anywhere else on the row.
  * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
  * so no value appears twice.
@@ -448,6 +453,8 @@ export interface PerformanceOpportunityFacets {
   change_risk: string;
   /** Absent on rows stored before the fact existed. */
   loop_magnitude?: PerformanceLoopMagnitude;
+  /** Absent on rows stored before the fact existed. */
+  growth_source?: PerformanceGrowthSource;
   /** Absent on rows stored before the fact existed. */
   execution_role?: PerformanceExecutionRole;
 }
@@ -539,6 +546,8 @@ export interface PerformanceOpportunity {
   actionability_reason: string;
   prerequisites: string[];
   rank_score: number;
+  /** 0-based place in the ranked list that served the row; another sort or a
+   *  lookup by id gives its rank among every cause in the repository. */
   rank_position: number;
   rank_factors: Record<string, number>;
   why_ranked: PerformanceWhyRanked[];
@@ -794,6 +803,19 @@ export interface BiomarkerBreakdownRow {
  * Overview
  * ------------------------------------------------------------------ */
 
+/**
+ * The performance headline every surface prints, in the Performance view's
+ * three scopes: `now` (the default queue, worth fixing now) leads, and
+ * `production` and `all` open causes give it context.
+ */
+export interface PerformanceCauses {
+  now: number;
+  production: number;
+  all: number;
+  /** Every open cause per 10K lines a performance detector ran on. */
+  per_10k_loc: number | null;
+}
+
 export interface HealthOverviewSummary {
   file_count: number;
   /** `null` when no file is scored: every file is in a language health has no
@@ -839,9 +861,15 @@ export interface HealthOverviewSummary {
    */
   performance_average?: number | null;
   performance_hotspot?: number | null;
-  /** Open findings homing under the maintainability / performance pillars — the
-   *  per-pillar actionable counts. Absent on payloads predating the split. */
+  /** Open findings homing under the maintainability pillar. Absent on payloads
+   *  predating the split. */
   maintainability_findings?: number;
+  /** Open performance causes, as every surface counts them; `null` with no files. */
+  performance_causes?: PerformanceCauses | null;
+  /**
+   * @deprecated Every open performance finding, as payloads from the previous
+   * release carry it. The lede shows it only when `performance_causes` is absent.
+   */
   performance_findings?: number;
   /** Lowest-scoring file by performance risk, surfaced only when score < 10
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */

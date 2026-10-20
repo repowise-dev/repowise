@@ -603,12 +603,6 @@
       "path": "docs/keys.md",
       "findings": [
         {
-          "kind": "aws_access_key",
-          "severity": "high",
-          "snippet": "key AKIA**** gitleaks:allow",
-          "line": 1
-        },
-        {
           "kind": "github_token",
           "severity": "high",
           "snippet": "key ghp_****",

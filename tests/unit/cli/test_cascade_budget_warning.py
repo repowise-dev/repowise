@@ -43,7 +43,7 @@ def test_warning_points_model_pages_at_generate_stale() -> None:
     out = _render(50, 2752, (122, 1235))
     assert "Cascade budget of 50 pages was reached. 2752 dependent files were skipped" in out
     assert "1235 structural pages (file / cycle) refresh on the next repowise update" in out
-    assert "122 model-written pages: run repowise generate --stale" in out
+    assert "122 pages written by a model: run repowise generate --stale" in out
     assert "or pass `--cascade-budget 2802` to regenerate everything in this run." in out
 
 

@@ -747,7 +747,9 @@ def test_serve_refresh_ui_skips_local_and_cache(serve) -> None:
 
 def test_serve_no_assets_runs_api_only(serve) -> None:
     result = _invoke()
-    assert "not available" in result.output
+    assert "Could not get the web UI" in result.output
+    assert "repowise serve --refresh-ui" in result.output
+    assert "future release" not in result.output
     names = _names(serve["events"])
     assert names[4:] == ["find_local", "cached", "download", "uvicorn"]
     assert serve["lock"]["ui_port"] is None
@@ -757,7 +759,7 @@ def test_serve_frontend_that_fails_to_start(serve) -> None:
     serve["cached"] = True
     serve["proc"] = False
     result = _invoke()
-    assert "Could not start web UI" in result.output
+    assert "Could not start the web UI" in result.output
     assert serve["lock"]["ui_port"] is None
     assert "terminate" not in _names(serve["events"])
 

@@ -35,8 +35,8 @@ export interface OwnerProfileViewProps {
   owner: OwnerProfile;
   /** `/repos/{id}` — the prefix for every drill-in on this page. */
   base: string;
-  /** "What depends on them": the host's single-person off-boarding view. */
-  dependsOn: React.ReactNode;
+  /** "What depends on them": the host's single-person off-boarding view. Absent hides the section. */
+  dependsOn?: React.ReactNode;
   credit?: OwnerCredit | undefined;
   hrefForFile?: ((filePath: string) => string) | undefined;
   hrefForModule?: ((modulePath: string) => string) | undefined;
@@ -65,18 +65,20 @@ export function OwnerProfileView({
     <div className="flex flex-col gap-6 sm:gap-8">
       <OwnerIdentity owner={owner} labels={labels} />
 
-      <OverviewSection
-        flush
-        title={labels.dependsTitle}
-        description={labels.dependsDescription}
-        action={
-          <SectionLink href={`${base}/owners`} LinkComponent={LinkComponent}>
-            {labels.ownershipLink}
-          </SectionLink>
-        }
-      >
-        {dependsOn}
-      </OverviewSection>
+      {dependsOn !== undefined && (
+        <OverviewSection
+          flush
+          title={labels.dependsTitle}
+          description={labels.dependsDescription}
+          action={
+            <SectionLink href={`${base}/owners`} LinkComponent={LinkComponent}>
+              {labels.ownershipLink}
+            </SectionLink>
+          }
+        >
+          {dependsOn}
+        </OverviewSection>
+      )}
 
       <OwnerFootprint
         modules={owner.modules}

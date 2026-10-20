@@ -237,7 +237,7 @@ export interface AgentTrendBucket extends AttributionShareFields {
 }
 
 export interface AgentTrend extends AttributionShareFields {
-  enabled: boolean;
+  enabled?: boolean;
   coverage_floor_pct: number;
   buckets: AgentTrendBucket[];
   agent_names: { name: string; count: number }[];

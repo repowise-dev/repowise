@@ -13,6 +13,11 @@ any namer does: a helper through the tests importing it, a conftest through
 the tests under it, and a helper no test imports runs everything. The file
 stays the namer, and so keeps the full run, when no test code names its tree
 or code outside test trees names the tree's path.
+
+A changed data file in a fixtures directory is resolved the same way
+(:func:`with_data_file_readers`): the test code naming the file, or the tree it
+sits in, reads it. It keeps the full run when code outside the test trees names
+the file or the tree, or when no test code does (a glob or a computed path).
 """
 
 from __future__ import annotations
@@ -22,6 +27,8 @@ import re
 import tokenize
 from collections.abc import Callable, Collection, Mapping
 from pathlib import PurePosixPath
+
+from ..test_paths import is_test_related_path
 
 # Directories holding test data, as named in ``test_paths``' support tokens.
 FIXTURE_DIRS = frozenset({"fixtures", "__fixtures__", "testdata"})
@@ -65,6 +72,40 @@ def with_fixture_readers(
     return out
 
 
+def with_data_file_readers(
+    files: Collection[str],
+    namers: Mapping[str, list[str]],
+    test_code: Collection[str],
+    other_code: Collection[str],
+    read: Callable[[str], str | None],
+    holding: Callable[[Collection[str]], Collection[str] | None] | None = None,
+) -> dict[str, list[str]]:
+    """``{changed fixture data file: the test code reading it}``.
+
+    *namers* are the code files naming each of *files* by file name
+    (:func:`~.test_selection.file_namers`). A file inside a fixture tree is also
+    read by the test code naming the tree. A file is absent, and so keeps its
+    full run, when code outside the test trees names it or its tree, or when no
+    test code does: a fixture read through a glob or a computed path is the
+    case that fallback protects.
+    """
+    trees = {f: r for f in files if (r := fixture_root(f))}
+    texts = _texts(set(trees.values()), test_code, other_code, read, holding) if trees else {}
+    out: dict[str, list[str]] = {}
+    for f in files:
+        readers = [n for n in namers.get(f, ()) if n != f]
+        if not all(is_test_related_path(n) for n in readers):
+            continue  # production code names the file: not only tests read it
+        if root := trees.get(f):
+            tree = _tree_readers(root, texts, test_code, other_code)
+            if tree is None:
+                continue
+            readers += [r for r in tree if r not in readers]
+        if readers:
+            out[f] = readers
+    return out
+
+
 def _stand_ins(namer: str, readers: Mapping[str, list[str]]) -> list[str]:
     root = fixture_root(namer)
     return readers.get(root, [namer]) if root else [namer]
@@ -78,26 +119,46 @@ def _root_readers(
     holding: Callable[[Collection[str]], Collection[str] | None] | None,
 ) -> dict[str, list[str]]:
     """``{fixture root: test code reading it}``; a root that must keep its full run is absent."""
+    texts = _texts(roots, test_code, other_code, read, holding)
+    out: dict[str, list[str]] = {}
+    for root in roots:
+        if found := _tree_readers(root, texts, test_code, other_code):
+            out[root] = found
+    return out
+
+
+def _texts(
+    roots: Collection[str],
+    test_code: Collection[str],
+    other_code: Collection[str],
+    read: Callable[[str], str | None],
+    holding: Callable[[Collection[str]], Collection[str] | None] | None,
+) -> dict[str, str]:
+    """The lowercased code text of each file that may name one of *roots*' trees."""
     names = {n for r in roots for n in _dir_names(r)}
     held = holding(names) if holding else None
-    texts = {
+    return {
         p: code_text(p, read(p) or "").lower()
         for p in sorted({*test_code, *other_code})
         if held is None or p in held
     }
-    out: dict[str, list[str]] = {}
-    for root in roots:
-        leaf, parent = _dir_names(root)
-        if any(root.lower() in texts[p] for p in other_code if p in texts):
-            continue  # code outside the test trees names the tree: not only tests read it
-        found = [
-            p
-            for p in test_code
-            if p in texts and fixture_root(p) is None and _names_either(texts[p], leaf, parent)
-        ]
-        if found:
-            out[root] = found
-    return out
+
+
+def _tree_readers(
+    root: str,
+    texts: Mapping[str, str],
+    test_code: Collection[str],
+    other_code: Collection[str],
+) -> list[str] | None:
+    """The test code naming *root*'s tree, or ``None`` when code outside the test trees names it."""
+    leaf, parent = _dir_names(root)
+    if any(root.lower() in texts[p] for p in other_code if p in texts):
+        return None  # code outside the test trees names the tree: not only tests read it
+    return [
+        p
+        for p in test_code
+        if p in texts and fixture_root(p) is None and _names_either(texts[p], leaf, parent)
+    ]
 
 
 def _dir_names(root: str) -> tuple[str, str]:

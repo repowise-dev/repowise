@@ -18,7 +18,7 @@ const overview = {
     maintainability_average: 8.0,
     hotspot_health: 4.5,
     performance_average: 9.7,
-    performance_findings: 942,
+    performance_causes: { now: 4, production: 415, all: 926, per_10k_loc: 9.03 },
     file_count: 3787,
     open_findings: 14755,
   },

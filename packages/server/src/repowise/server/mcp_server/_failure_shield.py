@@ -47,12 +47,12 @@ def _shape_not_indexed() -> dict[str, Any]:
     return {
         "error": "This repository has no repowise index yet.",
         "remedy": (
-            "The user can build one by running 'repowise init --yes' in the "
-            "repo root. No API key is required: without one it renders the "
-            "whole wiki from the code's structure. Suggest --no-editor-setup "
+            "The user can build one by running 'repowise init --yes --no-prose' "
+            "in the repo root. It needs no API key and makes no model calls: "
+            "the documentation is built from code. Suggest --no-editor-setup "
             "too if this is a scratch clone, fixture, or worktree, so init "
             "leaves their global MCP config pointed where it is. Indexing is "
-            "the user's decision — suggest it once, do not run it yourself."
+            "the user's decision: suggest it once, do not run it yourself."
         ),
         "guidance": (
             "Until an index exists, every repowise tool will return this "

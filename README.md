@@ -105,14 +105,15 @@ index, and asks you before anything costs money. Prefer to do it yourself:
 ```bash
 uv tool install repowise          # or: pipx install repowise / pip install repowise
 cd /path/to/your/repo
-repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
-repowise serve                    # local dashboard + MCP server
+repowise init --yes --no-prose    # graph, git, health, dead code, documentation. No key, no spend.
+repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
 ```
 
-`init` wires Claude Code automatically. Then ask your agent *"Use Repowise
-`get_overview` to summarize this repository"* or *"What breaks if I change
-`src/auth.py`?"*
-[Full setup, every agent, optional model-written docs →](docs/start/QUICKSTART.md)
+`init` wires Claude Code for this repo and points the global repowise MCP entry
+here (on the interactive plan screen, `s` keeps it where it is). Restart Claude Code or run `/mcp`, then ask
+*"Use Repowise `get_overview` to summarize this repository"* or *"What breaks if I
+change `src/auth.py`?"*
+[Full setup, every agent, documentation written by a model →](docs/start/QUICKSTART.md)
 
 ---
 
@@ -327,7 +328,7 @@ repowise impacted-tests main..HEAD   # only the tests this diff exercises
 repowise health                      # untested hotspots, graph-aware
 ```
 
-<sub>Checked against a real <code>coverage run --contexts=test</code> on this repository:
+<sub>Checked against real per-test coverage on this repository:
 <strong>95.7% precision</strong> on what reaches a file and <strong>97.5% on the run
 list</strong>. Every row is stamped <code>basis: "measured"</code> or
 <code>"inferred"</code>, measured wins where both can answer, and an empty answer means
@@ -457,8 +458,8 @@ Guides: **[code health](docs/layers/CODE_HEALTH.md)** ·
 
 ## See all of it
 
-`repowise serve` starts the full web dashboard next to the MCP server. No separate
-setup, all local.
+`repowise serve` starts the full web dashboard next to the MCP server, all local. It
+needs Node.js 20+, and the first run downloads the UI.
 
 <table>
 <tr>
@@ -948,7 +949,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 ## CLI
 
 ```bash
-repowise init [PATH]      # index a codebase (asks; --yes --no-prose needs no key)
+repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
 repowise generate [PATH]  # write wiki pages with a model, on demand
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (--workspace for every repo)

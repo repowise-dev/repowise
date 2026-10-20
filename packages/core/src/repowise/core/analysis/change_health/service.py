@@ -13,21 +13,30 @@ import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Literal
 
 from ...support_paths import TEMPLATE_EXTENSIONS, is_doc_or_config_path
 from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types, gate_for, is_served, language_label
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.biomarker_labels import biomarker_label
+from ..health.finding_identity import finding_public_id
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
-from .analyzer import RevisionAnalysis, RevisionHealthAnalyzer, language_for, language_of
+from .analyzer import (
+    AnalysisCaches,
+    RevisionAnalysis,
+    RevisionHealthAnalyzer,
+    language_for,
+    language_of,
+)
 from .attribution import FindingAttributor, changed_symbols_for
 from .file_scores import file_score_deltas
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding, MatchResult
 from .models import (
+    INCIDENTAL_BASES,
     NO_CODE_GAP,
     NOT_ANALYZABLE_DATA,
     NOT_CODE,
@@ -47,6 +56,9 @@ from .sources import (
     filter_changes,
 )
 
+if TYPE_CHECKING:
+    from ..health.config import HealthConfig
+
 #: Changed files above this count are refused rather than analysed twice.
 MAX_CHANGED_FILES = 300
 
@@ -59,6 +71,10 @@ _NOT_CODE_LANGUAGES = frozenset({"json", "yaml", "toml", "markdown"})
 #: counts; any other ``.scm`` stays a gap.
 _QUERY_SUFFIX = ".scm"
 _QUERY_DIR = "queries"
+
+#: Where a checkout with a ``.repowise`` directory keeps parses and walks
+#: between comparisons, apart from the index's own caches.
+_CACHE_SUBDIR = "change_health"
 
 #: Comparisons kept in the process cache.
 _CACHE_CAPACITY = 32
@@ -73,9 +89,6 @@ _CLAIM_ATTEMPTS = 2
 _DIMENSION_ORDER = {"defect": 0, "maintainability": 1, "performance": 2, ADVISORY_DIMENSION: 3}
 
 _BASIS = "both_sides_analyzed"
-
-#: Bases that place a finding away from the lines the change wrote.
-_INCIDENTAL_BASES = {"file_change", "context_change", "unknown"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +111,15 @@ class ChangeHealthDeltaService:
     Without a checkout, pass a ``MappingRevisionSource`` (diff hunks plus raw
     bytes at both SHAs). Both sides are re-scored from those bytes, so custom
     health rules need ``RevisionHealthAnalyzer(config=...)`` to match the index.
+
+    *cache_dir* keeps per-file parses and walks between comparisons (see
+    :class:`AnalysisCaches`). It defaults to ``.repowise/change_health`` when
+    *repo_path* holds a ``.repowise`` directory (and no *analyzer* is
+    supplied) and to no cache otherwise; pass ``False`` to turn it off.
+    Results are the same either way.
+
+    *health_config* is the rule set both sides are analysed under; without it
+    the rules are read from *repo_path*'s ``.repowise/health-rules.json``.
     """
 
     def __init__(
@@ -107,6 +129,8 @@ class ChangeHealthDeltaService:
         repo_path: str | None = None,
         analyzer: RevisionHealthAnalyzer | None = None,
         rules_fingerprint: str = "",
+        cache_dir: str | Path | Literal[False] | None = None,
+        health_config: HealthConfig | None = None,
     ) -> None:
         if source is None:
             if repo_path is None:
@@ -114,8 +138,15 @@ class ChangeHealthDeltaService:
             source = GitRevisionSource(repo_path)
         self.source = source
         self.repo_path = repo_path
-        self.analyzer = analyzer or RevisionHealthAnalyzer()
+        self._custom_analyzer = analyzer is not None
+        self.analyzer = analyzer or RevisionHealthAnalyzer(repo_root=repo_path)
         self.rules_fingerprint = rules_fingerprint
+        self.health_config = health_config
+        # A supplied analyzer may predate the ``caches`` argument: it caches
+        # only when the caller names a directory.
+        if analyzer is not None and cache_dir is None:
+            cache_dir = False
+        self.cache_dir = _resolve_cache_dir(cache_dir, repo_path)
         self._cache: OrderedDict[str, ChangeHealthDelta] = OrderedDict()
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
@@ -130,16 +161,21 @@ class ChangeHealthDeltaService:
 
     # -- entry point --------------------------------------------------------
 
-    def compare(self, request: DeltaRequest) -> ChangeHealthDelta:
+    def compare(
+        self, request: DeltaRequest, *, pair: RevisionPair | None = None
+    ) -> ChangeHealthDelta:
         """Compare *request*, serving an identical in-flight call one result.
 
         The revision is resolved once and threaded through, so neither the
         cache key nor a cache hit re-reads the change shape from the source.
+        A caller that already resolved ``request.revspec`` on :attr:`source`
+        passes that *pair*, so the change is not diffed twice.
         """
-        try:
-            pair = self.source.resolve(request.revspec)
-        except ValueError as exc:
-            return _unavailable("unsupported_range", str(exc))
+        if pair is None:
+            try:
+                pair = self.source.resolve(request.revspec)
+            except ValueError as exc:
+                return _unavailable("unsupported_range", str(exc))
         key = self._cache_key(request, pair)
         # One wait, then one retry at becoming the leader. A caller that still
         # finds work in flight does it rather than blocking a thread again.
@@ -320,15 +356,38 @@ class ChangeHealthDeltaService:
         )
         base_sources = self.source.read(pair.base_sha, base_paths)
         rename = pair.rename_map()
-        head_run = self.analyzer.analyze(
-            head_sources, subject_paths=set(head_paths), dependents=index
+        analyzer = self._analyzer_for([*head_paths, *base_paths])
+        caches = AnalysisCaches.open(self.cache_dir) if self.cache_dir is not None else None
+        # Only when there is one, so an analyzer written before caches still fits.
+        cached = {"caches": caches} if caches is not None else {}
+        head_run = analyzer.analyze(
+            head_sources, subject_paths=set(head_paths), dependents=index, **cached
         )
-        base_run = self.analyzer.analyze(
+        base_run = analyzer.analyze(
             base_sources,
             subject_paths=set(base_paths),
             dependents=index if index is not None else _on_base(head_run, rename),
+            **cached,
         )
+        if caches is not None:
+            caches.save()
         return _Sides(head_paths, head_sources, base_sources, head_run, base_run, rename)
+
+    def _analyzer_for(self, paths: list[str]) -> RevisionHealthAnalyzer:
+        if self._custom_analyzer:
+            return self.analyzer
+        cfg = self.health_config
+        if cfg is None:
+            if self.repo_path is None:
+                return self.analyzer
+            from ..health.config import HealthConfig
+
+            cfg = HealthConfig.load(self.repo_path)
+        if not cfg.has_overrides():
+            return self.analyzer
+        return RevisionHealthAnalyzer(
+            repo_root=self.repo_path, config=cfg.to_analyzer_config(paths)
+        )
 
     def _surface(
         self,
@@ -396,6 +455,7 @@ class ChangeHealthDeltaService:
             opportunity_rank=perf.rank_score if perf else None,
             evidence=_evidence(head, perf),
             moved_from={"path": moved_from[0], "symbol": moved_from[1]} if moved_from else None,
+            finding_id=finding_public_id(head),
         )
 
 
@@ -502,8 +562,7 @@ def _nothing_compared(changes: list[FileChange], skipped: dict[str, str]) -> str
         )
     if all(r in NO_CODE_GAP for r in skipped.values()):
         return (
-            "Only query, template or other data files changed; "
-            "health analysis does not cover them."
+            "Only query, template or other data files changed; health analysis does not cover them."
         )
     return "No changed file is health-analyzable, so nothing was compared."
 
@@ -655,7 +714,7 @@ def _authorship(finding: ChangeFinding) -> tuple[bool, bool, bool]:
     scaffolding sorts last because it is the change's own noise.
     """
     return (
-        finding.attribution_basis in _INCIDENTAL_BASES,
+        finding.attribution_basis in INCIDENTAL_BASES,
         is_test_related_path(finding.path),
         finding.change_kind != "introduced",
     )
@@ -690,6 +749,8 @@ _EXPECTED_TEXT: dict[str | None, str] = {
     "gated_off": "Nothing to change while a constant-False flag switches this function off.",
     "cold_path": "Runs once per deploy, boot or incident; not worth scheduling.",
     "bounded_loop": "Nothing to change: the loop runs a fixed number of times.",
+    "small_table": "Nothing to change: the loop walks a table that does not grow with the "
+    "repository.",
     None: _INHERENT,
 }
 
@@ -738,3 +799,16 @@ def _unavailable(
         fingerprint=fingerprint,
         scope=scope or ScopeCounts(),
     )
+
+
+def _resolve_cache_dir(
+    cache_dir: str | Path | Literal[False] | None, repo_path: str | None
+) -> Path | None:
+    if cache_dir is False:
+        return None
+    if cache_dir is not None:
+        return Path(cache_dir)
+    if repo_path is None:
+        return None
+    index_dir = Path(repo_path) / ".repowise"
+    return index_dir / _CACHE_SUBDIR if index_dir.is_dir() else None

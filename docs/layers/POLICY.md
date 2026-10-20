@@ -28,7 +28,7 @@ rules:
 A rule selects [components](COMPONENTS.md) by name, tag or criticality, then tests
 conditions over the change's [evidence checklist](CHANGES.md): provenance, reaching
 tests, contract breaks, decisions crossed and bus factor. A rule can also wrap an
-existing gate (`security`, `coverage` or `doc_drift`), which then runs exactly as the
+existing gate (`security`, `coverage`, `doc_drift` or `health`), which then runs exactly as the
 command does on its own. There is no risk-score condition: rules rest on evidence you
 can check.
 

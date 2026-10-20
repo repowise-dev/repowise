@@ -374,6 +374,11 @@ export function biomarkerInfo(name: string): BiomarkerInfo {
   );
 }
 
+/** Whether the glossary describes *name*, a renamed marker's old id included. */
+export function isKnownBiomarker(name: string): boolean {
+  return Object.hasOwn(BIOMARKER_GLOSSARY, canonicalBiomarker(name));
+}
+
 export function biomarkerLabel(name: string): string {
   return biomarkerInfo(name).label;
 }

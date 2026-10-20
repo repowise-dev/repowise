@@ -594,7 +594,7 @@ async def test_a_hub_plan_lists_only_tests_reaching_the_changed_symbol(async_ses
     assert lonely.tests == []
     assert lonely.commands == []
     assert lonely.prerequisite == (
-        "No test reaches this; add a characterization test for `lonely` before the edit."
+        "No test reaches `lonely`; add a characterization test before the edit."
     )
 
 

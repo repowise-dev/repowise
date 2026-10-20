@@ -27,7 +27,12 @@ from repowise.core.persistence import (
     init_db,
     upsert_repository,
 )
-from repowise.core.persistence.crud import get_commit_health, upsert_git_commits_bulk
+from repowise.core.persistence.crud import (
+    delete_commit_health,
+    get_commit_health,
+    upsert_commit_health_bulk,
+    upsert_git_commits_bulk,
+)
 from repowise.core.pipeline.commit_health import (
     DEFAULT_BUDGET_SECONDS,
     UPDATE_BUDGET_SECONDS,
@@ -226,6 +231,37 @@ async def test_update_budget_is_smaller_than_the_full_index(repo, monkeypatch) -
             UPDATE_BUDGET_SECONDS,
             DEFAULT_BUDGET_SECONDS,
             7.0,
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def test_rows_from_an_older_analyzer_get_the_full_budget(repo, monkeypatch) -> None:
+    """A re-pended backlog drains at the full index's pace; new commits keep the short one."""
+    engine = create_engine(f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    try:
+        async with get_session(sf) as session:
+            repo_id = (await insert_repo(session)).id
+            await upsert_git_commits_bulk(session, repo_id, _commit_rows())
+            stale = {**_delta_row(_SHAS[0], str(repo)), "analyzer_version": 0}
+            await upsert_commit_health_bulk(session, repo_id, [stale], [])
+        seen: list = []
+        monkeypatch.setattr(scan_mod, "scan_commits", _scanner(str(repo), 0, seen))
+
+        await refresh_commit_health_after_update(sf, repo_id, str(repo))
+        monkeypatch.setenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", "7")
+        await refresh_commit_health_after_update(sf, repo_id, str(repo))
+        async with get_session(sf) as session:
+            await delete_commit_health(session, repo_id)
+        monkeypatch.delenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS")
+        await refresh_commit_health_after_update(sf, repo_id, str(repo))
+
+        assert [budget for _shas, budget in seen] == [
+            DEFAULT_BUDGET_SECONDS,
+            7.0,
+            UPDATE_BUDGET_SECONDS,
         ]
     finally:
         await engine.dispose()

@@ -8,7 +8,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .....analysis.finding_registry import excluded_types
@@ -116,6 +116,11 @@ async def _fold_into_triaged(
     kept.updated_at = now
 
 
+async def _delete_open(session: AsyncSession, scope: list[Any]) -> None:
+    """Delete the open rows in *scope* in one statement; triaged rows stay."""
+    await session.execute(delete(HealthFinding).where(*scope, HealthFinding.status == "open"))
+
+
 async def _insert_keeping_triage(
     session: AsyncSession,
     repository_id: str,
@@ -160,13 +165,7 @@ async def save_health_findings(
     dataclasses or plain dicts.
     """
     scope = [HealthFinding.repository_id == repository_id]
-    existing = await session.execute(
-        select(HealthFinding).where(*scope, HealthFinding.status == "open")
-    )
-    for row in existing.scalars().all():
-        await session.delete(row)
-    await session.flush()
-
+    await _delete_open(session, scope)
     await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
@@ -202,13 +201,7 @@ async def replace_governance_findings(
         HealthFinding.repository_id == repository_id,
         HealthFinding.biomarker_type.in_(list(GOVERNANCE_BIOMARKERS)),
     ]
-    existing = await session.execute(
-        select(HealthFinding).where(*scope, HealthFinding.status == "open")
-    )
-    for row in existing.scalars().all():
-        await session.delete(row)
-    await session.flush()
-
+    await _delete_open(session, scope)
     await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
@@ -233,12 +226,7 @@ async def upsert_health_findings(
     ]
     if dimension is not None:
         predicates.append(HealthFinding.dimension == dimension)
-    existing = await session.execute(
-        select(HealthFinding).where(*predicates, HealthFinding.status == "open")
-    )
-    for row in existing.scalars().all():
-        await session.delete(row)
-    await session.flush()
+    await _delete_open(session, predicates)
 
     allowed = set(file_paths)
     scoped = [

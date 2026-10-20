@@ -93,3 +93,45 @@ def test_estimate_cost_zero_for_mock():
     plans = [PageTypePlan("module_page", 5, 4)]
     est = estimate_cost(plans, "mock", "mock")
     assert est.estimated_cost_usd == 0.0
+
+
+def test_embedding_is_part_of_the_estimate():
+    """Every page is embedded, structural ones included, so all are priced."""
+    from repowise.core.cost_estimator.pricing import lookup_embedding_cost
+    from repowise.core.persistence.vector_store._base import EMBED_TEXT_MAX_CHARS
+
+    plans = [PageTypePlan("file_page", 1000, 2)]
+    est = estimate_cost(plans, "gemini", "gemini-3.1-flash-lite-preview", embedder="openai")
+    tokens = 1000 * (EMBED_TEXT_MAX_CHARS // 4)
+    assert est.estimated_embedding_tokens == tokens
+    assert est.embedding_cost_usd == pytest.approx(tokens / 1000 * 0.00002)
+    assert est.estimated_cost_usd == pytest.approx(est.embedding_cost_usd)
+    assert est.cost_range.high > est.embedding_cost_usd
+
+    assert lookup_embedding_cost("gemini") == 0.00015
+    assert lookup_embedding_cost("openai", "text-embedding-3-large") == 0.00013
+    assert lookup_embedding_cost("ollama", "anything") == 0.0
+    assert lookup_embedding_cost("mock") == 0.0
+
+
+def test_local_and_unpriced_embedding_adds_nothing():
+    plans = [PageTypePlan("file_page", 10, 2)]
+    for embedder in ("ollama", "mock", None):
+        est = estimate_cost(plans, "mock", "mock", embedder=embedder)
+        assert est.embedding_cost_usd == 0.0
+        assert est.estimated_cost_usd == 0.0
+
+
+def test_the_embedding_note_names_the_share():
+    from repowise.cli.cost_gate import embedding_note
+
+    plans = [PageTypePlan("file_page", 1000, 2)]
+    note = embedding_note(estimate_cost(plans, "mock", "mock", embedder="gemini"))
+    assert note == "Includes about $0.60 USD to embed 1,000 pages with gemini."
+    few = [PageTypePlan("file_page", 3, 2)]
+    tiny = embedding_note(estimate_cost(few, "mock", "mock", embedder="openai"))
+    assert tiny == "Includes under $0.01 USD to embed 3 pages with openai."
+    free = embedding_note(estimate_cost(plans, "mock", "mock", embedder="ollama"))
+    assert free == "Embedding 1,000 pages with ollama adds no cost."
+    assert embedding_note(estimate_cost(plans, "mock", "mock", embedder="mock")) is None
+    assert embedding_note(estimate_cost(plans, "mock", "mock")) is None

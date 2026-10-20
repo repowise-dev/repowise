@@ -26,6 +26,7 @@ from repowise.core.analysis.test_selection import (
     select_tests,
     with_rewired,
 )
+from repowise.core.phpunit_roots import read_phpunit_roots
 from repowise.core.pytest_roots import read_pytest_roots
 
 _NONE = TestSelectionConfig()
@@ -941,6 +942,21 @@ def test_a_jvm_main_source_set_file_is_not_runnable() -> None:
     assert is_runnable_test("engine/src/test/kotlin/io/x/EngineTest.kt", roots)
     # Without config the name decides
     assert is_runnable_test("engine/src/commonMain/kotlin/io/x/core/DynamicRootTest.kt")
+
+
+def test_a_test_named_php_class_phpunit_does_not_collect_is_not_runnable() -> None:
+    """``src/Testing/Attributes/UnitTest.php`` is test-shaped, but PHPUnit never collects it."""
+    config = (
+        '<phpunit><testsuites><testsuite name="Suite">'
+        '<directory suffix="Test.php">./tests</directory>'
+        '</testsuite></testsuites></phpunit>'
+    )
+    roots = read_phpunit_roots([("phpunit.xml.dist", config)])
+    assert not is_runnable_test("src/Testing/Attributes/UnitTest.php", phpunit_roots=roots)
+    assert is_runnable_test("tests/RouterTest.php", phpunit_roots=roots)
+    assert is_runnable_test("tests/sub/DeepTest.php", phpunit_roots=roots)
+    # With no config the name decides.
+    assert is_runnable_test("src/Testing/Attributes/UnitTest.php")
 
 
 def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> None:

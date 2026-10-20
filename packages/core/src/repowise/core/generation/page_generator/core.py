@@ -257,6 +257,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         timings: Any | None = None,
         on_warning: Callable[[str], None] | None = None,
         persisted_page_ids: set[str] | None = None,
+        on_embed: Callable[[int, bool], None] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -285,6 +286,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         ``timings`` is the run's shared ``PhaseTimings`` table. Generation
         records its per-level and checkpoint spans into it so they report
         beside the top-level phases; None disables those spans.
+
+        ``on_embed(count, finished)`` brackets each batched embed of ``count``
+        pages, so a display can show embedding as its own step.
         """
         from .orchestrate import run_generate_all
 
@@ -323,6 +327,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             timings=timings,
             on_warning=on_warning,
             persisted_page_ids=persisted_page_ids,
+            on_embed=on_embed,
         )
 
     # ------------------------------------------------------------------

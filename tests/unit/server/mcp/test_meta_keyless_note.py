@@ -31,8 +31,9 @@ async def _payload(reason: str) -> dict:
 
 def test_first_no_llm_provider_response_carries_the_note() -> None:
     first = _meta.keyless_note_meta()
-    assert "repowise generate" in first["keyless_note"]
-    assert "--provider ollama" in first["keyless_note"]
+    # Synthesis comes from a provider the server can build, not from generate.
+    assert "repowise generate" not in first["keyless_note"]
+    assert "restart the MCP server" in first["keyless_note"]
 
 
 def test_second_response_in_the_same_process_says_nothing() -> None:
@@ -42,7 +43,7 @@ def test_second_response_in_the_same_process_says_nothing() -> None:
 
 async def test_degraded_payload_carries_the_note_for_no_llm_provider() -> None:
     payload = await _payload("no-llm-provider")
-    assert "repowise generate" in payload["_meta"]["keyless_note"]
+    assert "provider" in payload["_meta"]["keyless_note"]
     assert _state._keyless_note_announced is True
 
 

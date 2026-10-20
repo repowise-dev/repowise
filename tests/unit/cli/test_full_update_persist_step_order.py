@@ -47,6 +47,7 @@ HAPPY_ORDER = [
     "sweep_retired_pages",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
+    "sweep_deselected_pages",
     # Swept embeddings leave before the SQL session commits.
     "vectors.delete_many",
     "tombstone_candidates",
@@ -377,6 +378,7 @@ SHARED_STEPS = [
     "sweep_retired_pages",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
+    "sweep_deselected_pages",
     "tombstone_candidates",
     "mark_tombstone_pages",
     "rebuild_page_tree",

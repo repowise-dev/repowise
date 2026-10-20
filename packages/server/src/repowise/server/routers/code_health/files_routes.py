@@ -100,17 +100,13 @@ async def list_health_files(
     total = len(filtered)
     page = filtered[offset : offset + limit]
     summary = fields == "summary"
-    # Two reads, and ``summary`` needs only the narrow one. The full row's
-    # dominant-cause lead is reduced from *every* open finding (this repo: 10,740
-    # rows, 1.66 MB of ``details_json`` hydrated to reach four attributes), while
-    # the performance lens needs only the perf dimension (697 rows). A caller
-    # that does not print the lead should not pay for the wide read to compute
-    # it — the map is exactly that caller, and it is the biggest request the
-    # page makes.
+    # The full row's dominant-cause lead is reduced from *every* open finding
+    # (this repo: 10,740 rows, 1.66 MB of ``details_json`` hydrated to reach four
+    # attributes). A caller that does not print the lead should not pay for the
+    # wide read to compute it — the map is exactly that caller, and it is the
+    # biggest request the page makes.
     leads: dict[str, dict] = {}
-    if summary:
-        findings = await crud.get_health_findings(session, repo_id, dimension="performance")
-    else:
+    if not summary:
         # History markers kept: a file's lead names what its score counted, so a
         # history-only file scoring below 10 still has one.
         findings = await crud.get_health_findings(session, repo_id, hold_history=False)
@@ -118,13 +114,10 @@ async def list_health_files(
         # and the magnitude tiebreak without loading every finding for every row.
         page_paths = {m.file_path for m in page}
         leads = _leads_by_file([f for f in findings if f.file_path in page_paths])
-    # Per-file performance signal for the map's performance lens: open perf-
-    # finding counts + whether a perf detector ran on the file's language. Colors
-    # the lens by findings/coverage instead of the narrow-band [8,10] score.
-    perf_counts: dict[str, int] = {}
-    for fnd in findings:
-        if (getattr(fnd, "dimension", None) or "defect") == "performance":
-            perf_counts[fnd.file_path] = perf_counts.get(fnd.file_path, 0) + 1
+    # Per-file performance signal for the map's performance lens: causes in the
+    # default queue (what the performance headline leads with) + whether a perf
+    # detector ran on the file's language, instead of the narrow-band score.
+    queued = {r.file_path: r.queued for r in await crud.performance_file_rollups(session, repo_id)}
     lang_by_path = await crud.get_file_language_map(session, repo_id)
     perf_langs = supported_perf_languages()
     return {
@@ -136,7 +129,7 @@ async def list_health_files(
                 _metric_to_dict(
                     m,
                     leads.get(m.file_path),
-                    perf_findings=perf_counts.get(m.file_path, 0),
+                    perf_opportunities=queued.get(m.file_path, 0),
                     perf_analyzed=lang_by_path.get(m.file_path) in perf_langs,
                     summary=summary,
                 ),

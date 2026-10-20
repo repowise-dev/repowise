@@ -10,8 +10,8 @@
  * place in the ribbon, beside the other cuts of the same scoring.
  *
  * Every figure carries an explainer. A number a reader cannot define is a
- * number they cannot act on, and "Performance risk 942" beside "Hotspot health
- * 4.5" reads as two scores when one is a count that only goes up.
+ * number they cannot act on, and "Performance, fix now 4" beside "Hotspot health
+ * 4.5" reads as two scores when one is a count.
  *
  * The prose is not decoration. "329 risks" reads as alarming on its own;
  * "329 static performance risks, scored separately and never blended into the
@@ -27,6 +27,7 @@ import {
   type DefectAccuracy,
   type HealthDistribution,
   type HealthOverviewSummary,
+  type PerformanceCauses,
 } from "@repowise-dev/types/health";
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
@@ -62,9 +63,24 @@ const MAINTAINABILITY_HINT =
   "how hard the code is to work with rather than for bug risk. It counts no " +
   "tests and no change history, so it is the figure a refactor moves.";
 
-const PERFORMANCE_HINT =
-  "A count of open performance risks, not a score — it counts up as the analyzer " +
-  "finds more and falls only when they are fixed. Each one is a database, " +
+/** The performance stat's explainer, with the counts that give "now" its context. */
+function performanceHint(causes: PerformanceCauses | null | undefined): string {
+  const context = causes
+    ? ` Of ${formatNumber(causes.production)} open in production code, ` +
+      `${formatNumber(causes.all)} overall.`
+    : "";
+  return (
+    "Performance causes worth fixing now, a count rather than a score: the " +
+    "Performance view's default queue, where a database, network, filesystem or " +
+    "subprocess call inside a loop has a cost we can show." +
+    context +
+    " Never blended into the health score."
+  );
+}
+
+/** For a summary that predates `performance_causes` and carries only the raw count. */
+const OPEN_PERFORMANCE_HINT =
+  "A count of open performance risks, not a score. Each one is a database, " +
   "network, filesystem or subprocess call inside a loop, traced across function " +
   "boundaries. Never blended into the health score.";
 
@@ -144,7 +160,10 @@ export function CodeHealthLede({
   if (health == null) return <UnanalysedLede action={action} />;
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
-  const perfFindings = summary.performance_findings ?? 0;
+  const perfCauses = summary.performance_causes;
+  // An older summary carries only the raw open count; show it under its own
+  // label rather than a "fix now" zero.
+  const perfOpen = perfCauses == null ? (summary.performance_findings ?? null) : null;
   const hotspot = summary.hotspot_health;
   const worstTestPath = summary.worst_test_path;
   const worstTestScore = summary.worst_test_score;
@@ -191,11 +210,17 @@ export function CodeHealthLede({
       // the page was describing something else.
       highlighted: pillar === "maintainability",
     },
-    {
-      label: "Performance risk",
-      value: perf == null ? "" : formatNumber(perfFindings),
-      hint: PERFORMANCE_HINT,
-    },
+    perfOpen != null
+      ? {
+          label: "Performance risk",
+          value: perf == null ? "" : formatNumber(perfOpen),
+          hint: OPEN_PERFORMANCE_HINT,
+        }
+      : {
+          label: "Performance, fix now",
+          value: perf == null ? "" : formatNumber(perfCauses?.now ?? 0),
+          hint: performanceHint(perfCauses),
+        },
     {
       label: "Hotspot health",
       value: hotspot == null ? "" : formatScore(hotspot),

@@ -9,6 +9,8 @@ source file that should be documented.  It respects:
   4. Binary file detection
   5. File-size limit
   6. Generated-file detection (header markers + filename suffixes)
+  7. Repowise's own output (``owned_paths``), so a re-run never indexes what
+     init and its editor setup wrote
 
 It also detects monorepo structure and returns a RepoStructure.
 """
@@ -39,6 +41,14 @@ from ..jvm_source_sets import (
     JvmSourceSets,
     jvm_build_options,
     jvm_source_sets,
+)
+from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
+from ..phpunit_roots import (
+    PHPUNIT_CONFIG_NAMES,
+    PhpunitConfigUnreadableError,
+    PhpunitRoots,
+    parse_phpunit_options,
+    phpunit_roots,
 )
 from ..pytest_roots import (
     PYTEST_CONFIG_NAMES,
@@ -128,6 +138,7 @@ class TraversalStats:
     skipped_blocked_pattern: int = 0
     skipped_unknown_language: int = 0
     skipped_dir_ignore: int = 0
+    skipped_repowise_output: int = 0
     skipped_submodule: int = 0
     skipped_nested_repo: int = 0
     lang_counts: dict[str, int] = field(default_factory=dict)
@@ -299,6 +310,10 @@ _BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
     "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
 )
 
+#: Paths repowise writes whole, and the shared files it writes into.
+_OWNED_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines("gitwildmatch", OWNED_PATTERNS)
+_MANAGED_FILES: frozenset[str] = frozenset(MANAGED_FILES)
+
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Package-root manifests for monorepo detection, from the language registry.
@@ -454,6 +469,9 @@ class FileTraverser:
         self._count_lock = threading.Lock()
         self._console_scripts_lock = threading.Lock()
         self._dir_ignore_lock = threading.Lock()
+        # Repo-relative dir -> whether it holds a package manifest; asked only
+        # about test-helper-named dirs (see :meth:`_is_package_root_dir`).
+        self._package_root_cache: dict[str, bool] = {}
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -498,6 +516,11 @@ class FileTraverser:
     def jvm_roots(self) -> JvmSourceSets:
         """Where a JVM build collects tests, which decides JVM main source sets."""
         return self._console_script_tables().jvm_roots
+
+    @property
+    def phpunit_roots(self) -> PhpunitRoots:
+        """Where PHPUnit collects, from the configs the console-script pass read."""
+        return self._console_script_tables().phpunit_roots
 
     @property
     def dotnet_test_projects(self) -> DotnetTestProjects:
@@ -789,6 +812,8 @@ class FileTraverser:
             return "skipped_dir_ignore"
         if self._blocked_patterns.match_file(rel_str):
             return "skipped_blocked_pattern"
+        if _is_repowise_output(abs_path, rel_str):
+            return "skipped_repowise_output"
         return None
 
     def _root_gitignored(self, rel_str: str) -> bool:
@@ -876,13 +901,15 @@ class FileTraverser:
             _is_console_script_target(rel_str, self._console_script_modules)
             or rel_str in self._distribution_inits
         )
-        scripts = self._console_script_tables()
+        tables = self._console_script_tables()
         is_test = is_test_related_path(
             rel_str,
             language,
-            roots=scripts.pytest_roots,
-            dotnet_projects=scripts.dotnet_test_projects,
-            jvm_roots=scripts.jvm_roots,
+            roots=tables.pytest_roots,
+            dotnet_projects=tables.dotnet_test_projects,
+            jvm_roots=tables.jvm_roots,
+            phpunit_roots=tables.phpunit_roots,
+            package_root=self._is_package_root_dir,
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
@@ -900,6 +927,21 @@ class FileTraverser:
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
         )
+
+    def _is_package_root_dir(self, rel_dir: str) -> bool:
+        """Whether *rel_dir* holds a package manifest, so it ships as a package.
+
+        :mod:`..test_paths` asks this only about a ``test-utils/``-style
+        directory, so it is a few stats per such directory rather than the full
+        :meth:`package_manifests` scan. Racing workers compute the same answer,
+        so the cache needs no lock.
+        """
+        cached = self._package_root_cache.get(rel_dir)
+        if cached is None:
+            base = self.repo_root / rel_dir
+            cached = any((base / name).is_file() for name in _MANIFEST_FILES)
+            self._package_root_cache[rel_dir] = cached
+        return cached
 
     # ------------------------------------------------------------------
     # Internal: monorepo detection
@@ -1232,6 +1274,8 @@ class ConsoleScriptTables(NamedTuple):
     """Where a bare pytest run collects tests, which decides a test-named module."""
     jvm_roots: JvmSourceSets = JvmSourceSets()
     """Where a JVM build collects tests, which decides JVM main source sets."""
+    phpunit_roots: PhpunitRoots = PhpunitRoots()
+    """Where PHPUnit collects tests, which decides a test-named PHP class."""
     dotnet_test_projects: DotnetTestProjects = DotnetTestProjects()
     """.NET test projects, which govern .cs files beneath them."""
 
@@ -1247,8 +1291,9 @@ def _collect_console_scripts(
     before the colon is the module it imports; ``[project].name`` is the
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
-    ``pyproject.toml``) and JVM build files (``pom.xml``, ``build.gradle``,
-    ``build.gradle.kts``, ``build.sbt``) come off this one walk.
+    ``pyproject.toml``), JVM build files (``pom.xml``, ``build.gradle``,
+    ``build.gradle.kts``, ``build.sbt``) and PHPUnit configs (``phpunit.xml``,
+    ``phpunit.dist.xml``, ``phpunit.xml.dist``) come off this one walk.
     """
     from repowise.core.fs_walk import iter_glob
 
@@ -1260,8 +1305,15 @@ def _collect_console_scripts(
     unreadable: list[str] = []
     jvm_configs: list[tuple[str, Any]] = []
     jvm_unreadable: list[str] = []
+    phpunit_configs: list[tuple[str, Any]] = []
+    phpunit_unreadable: list[str] = []
     csproj_files: list[tuple[str, str]] = []
-    manifest_patterns = (*PYTEST_CONFIG_NAMES, *JVM_BUILD_FILE_NAMES, "*.csproj")
+    manifest_patterns = (
+        *PYTEST_CONFIG_NAMES,
+        *PHPUNIT_CONFIG_NAMES,
+        *JVM_BUILD_FILE_NAMES,
+        "*.csproj",
+    )
     try:
         config_files = list(
             iter_glob(repo_root, manifest_patterns, prune_nested_git=prune_nested_git)
@@ -1287,6 +1339,16 @@ def _collect_console_scripts(
                     jvm_configs.append((rel, rule))
             except (OSError, UnicodeDecodeError, JvmBuildUnreadableError):
                 jvm_unreadable.append(rel)
+        if name in PHPUNIT_CONFIG_NAMES:
+            try:
+                text = config_file.read_text(encoding="utf-8")
+                options = parse_phpunit_options(text)
+                if options is not None:
+                    phpunit_configs.append((rel, options))
+                else:
+                    phpunit_unreadable.append(rel)
+            except (OSError, UnicodeDecodeError, PhpunitConfigUnreadableError):
+                phpunit_unreadable.append(rel)
         if name in PYTEST_CONFIG_NAMES:
             project, options, parsed = _read_python_config(config_file)
             if options is not None:
@@ -1308,6 +1370,7 @@ def _collect_console_scripts(
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
         jvm_source_sets(jvm_configs, jvm_unreadable),
+        phpunit_roots(phpunit_configs, phpunit_unreadable),
         read_dotnet_test_projects(csproj_files),
     )
 
@@ -1712,6 +1775,23 @@ def in_blocked_dir(
         )
         for depth, part in enumerate(dirs, 1)
     )
+
+
+def _is_repowise_output(abs_path: Path, rel_str: str) -> bool:
+    """Whether repowise wrote the whole file: an owned path, or a shared one holding only its part.
+
+    A shared file (``CLAUDE.md``, ``.mcp.json``) with anything the user wrote
+    stays indexed, repowise's block included, since the user's part is theirs.
+    """
+    if _OWNED_SPEC.match_file(rel_str):
+        return True
+    if rel_str not in _MANAGED_FILES:
+        return False
+    try:
+        text = abs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return only_repowise_differs(rel_str, "", text)
 
 
 def is_candidate_source_path(

@@ -90,7 +90,7 @@ def _workspace_update(
         # but guard against misuse so the error message is clear.
         raise click.ClickException("_workspace_update called without a workspace target.")
 
-    console.print(f"[bold]repowise update[/bold] \u2014 workspace: {ws_root.name}")
+    console.print(f"[bold]repowise update[/bold]: workspace {ws_root.name}")
     console.print()
 
     # Staleness reads the workspace config, and an "up to date" repo has its DB
@@ -122,9 +122,7 @@ def _workspace_update(
         return
 
     if dry_run:
-        console.print(
-            f"[yellow]Dry run \u2014 {scan.stale_count} repo(s) would be updated.[/yellow]"
-        )
+        console.print(f"[yellow]Dry run: {scan.stale_count} repo(s) would be updated.[/yellow]")
         return
 
     # Repos that want docs take the full single-repo docs path; an all

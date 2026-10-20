@@ -49,25 +49,41 @@ def meets_structural_floor(fc) -> bool:
     return fc.ccn >= _CCN_FLOOR or fc.max_nesting >= _NESTING_FLOOR
 
 
-def refresh_replayed(replayed: BiomarkerResult, functions) -> bool:
+def refresh_replayed(
+    replayed: BiomarkerResult, functions, claimed: set[int] | None = None
+) -> bool:
     """Bring a replayed hotspot's complexity up to date; False if it no longer qualifies.
 
     A re-score with no blame index replays the stored row, whose complexity
     figures an older walker wrote. Churn cannot be re-measured there, but
     complexity can, so a function that no longer clears the floor is dropped.
+    Two same-named functions in one file are told apart by the stored
+    ``line_start``; the nearest start covers a function that has since moved.
+    *claimed* holds start lines already matched, so each function is matched once.
     """
-    for fc in functions:
-        if fc.name == replayed.function_name and meets_structural_floor(fc):
-            replayed.details = {**replayed.details, "ccn": fc.ccn, "max_nesting": fc.max_nesting}
-            mods, p80 = replayed.details.get("modification_count"), replayed.details.get("repo_p80")
-            if isinstance(mods, int) and isinstance(p80, int):
-                replayed.severity = _severity_for(mods, max(p80, _MIN_CHANGES), fc.ccn)
-                replayed.reason = (
-                    f"{fc.name} has been modified across {mods} commits (repo p80={p80}) "
-                    f"and carries CCN={fc.ccn} / nesting={fc.max_nesting}"
-                )
-            return True
-    return False
+    claimed = set() if claimed is None else claimed
+    named = [
+        fc
+        for fc in functions
+        if fc.name == replayed.function_name and fc.start_line not in claimed
+    ]
+    if not named:
+        return False
+    anchor = replayed.line_start or 0
+    fc = min(named, key=lambda f: abs(f.start_line - anchor))
+    claimed.add(fc.start_line)
+    if not meets_structural_floor(fc):
+        return False
+    replayed.line_start, replayed.line_end = fc.start_line, fc.end_line
+    replayed.details = {**replayed.details, "ccn": fc.ccn, "max_nesting": fc.max_nesting}
+    mods, p80 = replayed.details.get("modification_count"), replayed.details.get("repo_p80")
+    if isinstance(mods, int) and isinstance(p80, int):
+        replayed.severity = _severity_for(mods, max(p80, _MIN_CHANGES), fc.ccn)
+        replayed.reason = (
+            f"{fc.name} has been modified across {mods} commits (repo p80={p80}) "
+            f"and carries CCN={fc.ccn} / nesting={fc.max_nesting}"
+        )
+    return True
 
 
 def _severity_for(mod_count: int, bar: int, ccn: int) -> Severity:

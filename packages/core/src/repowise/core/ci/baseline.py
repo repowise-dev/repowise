@@ -9,6 +9,10 @@ Each feature supplies its entries (a ``fingerprint`` plus whatever a reader
 needs to recognise the finding) and their order; this module owns the envelope.
 One entry per fingerprint, sorted, deterministic bytes, so rewriting an
 unchanged baseline is a no-op diff.
+
+A baseline only shrinks: :func:`baseline_growth` names what a change added
+over the same file at its base, so a gate can refuse a re-saved baseline that
+hides new findings.
 """
 
 from __future__ import annotations
@@ -52,6 +56,36 @@ def read_entries(path: Path | str) -> list[dict]:
         text = Path(path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise BaselineError(f"cannot read baseline {path}: {exc}") from exc
+    return _parse_entries(text, path)
+
+
+def baseline_growth(
+    base: bytes | None, head: bytes | None, *, name: str = "baseline"
+) -> list[dict]:
+    """The entries the *head* baseline adds over the *base* one, each given as file bytes.
+
+    ``None`` is a side without the file: a baseline new at the head adds
+    nothing, since adopting one is a change reviewed on its own, and a deleted
+    one adds nothing either. Removed entries are never growth. Raises
+    :class:`BaselineError` when a side is unusable. Reads no files, so a caller
+    may take the bytes from a checkout, git or a forge API.
+    """
+    if base is None or head is None:
+        return []
+    known = {entry["fingerprint"] for entry in _parse_bytes(base, f"{name} at base")}
+    return [entry for entry in _parse_bytes(head, name) if entry["fingerprint"] not in known]
+
+
+def _parse_bytes(data: bytes, name: str) -> list[dict]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BaselineError(f"cannot read baseline {name}: {exc}") from exc
+    return _parse_entries(text, name)
+
+
+def _parse_entries(text: str, path: Path | str) -> list[dict]:
+    """The entries of a baseline document read from *path*; raises :class:`BaselineError`."""
     try:
         doc = json.loads(text)
     except json.JSONDecodeError as exc:

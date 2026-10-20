@@ -95,7 +95,11 @@ async def health_overview(
         files=files,
     )
     summary = await crud.get_health_summary(
-        session, repo_id, metrics=metrics, findings=kpi_findings
+        session,
+        repo_id,
+        metrics=metrics,
+        findings=kpi_findings,
+        include_unverified=include_unverified,
     )
 
     # Recomputed from the metrics already loaded rather than read off the latest

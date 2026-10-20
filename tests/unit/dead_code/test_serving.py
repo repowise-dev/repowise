@@ -20,6 +20,7 @@ from repowise.core.analysis.dead_code.serving import (
     build_summary,
     build_tiers,
     compute_impact,
+    cross_repo_withdraws,
     dead_code_finding_id,
     excluded_kinds,
     last_meaningful_change,
@@ -237,21 +238,45 @@ class _Lookup:
 
 
 def test_adjust_cross_repo_lowers_consumed_findings() -> None:
-    tiers = build_tiers([serialize_finding(r) for r in _ROWS], 25, "high")
-    adjust_cross_repo(tiers, _Lookup(), "api")
-    by_path = {f["file_path"]: f for f in tiers["high"]["findings"]}
+    findings = [serialize_finding(r) for r in _ROWS]
+    adjust_cross_repo(findings, _Lookup(), "api")
+    by_path = {f["file_path"]: f for f in findings}
     assert by_path["src/a/one.py"]["confidence"] == 0.45
     assert "1 cross-repo consumer(s) in web" in by_path["src/a/one.py"]["cross_repo_note"]
     assert by_path["src/b/five.py"]["confidence"] == 0.27
     assert "mobile" in by_path["src/b/five.py"]["cross_repo_note"]
+    # A finding another repo may consume is never safe to delete.
+    assert not by_path["src/a/one.py"]["safe_to_delete"]
+    assert not by_path["src/b/five.py"]["safe_to_delete"]
+
+
+def test_adjusted_findings_are_tiered_by_their_lowered_confidence() -> None:
+    findings = [serialize_finding(r) for r in _ROWS]
+    adjust_cross_repo(findings, _Lookup(), "api")
+    tiers = build_tiers(findings, 25, None)
+    for name, block in tiers.items():
+        for f in block["findings"]:
+            assert f["confidence"] >= TIER_FLOORS[name]
+    assert "src/a/one.py" not in {f["file_path"] for f in tiers["high"]["findings"]}
 
 
 def test_adjust_cross_repo_without_data_or_alias_is_a_no_op() -> None:
-    tiers = build_tiers([serialize_finding(r) for r in _ROWS], 25, None)
-    before = json.dumps(tiers, default=str)
-    adjust_cross_repo(tiers, None, "api")
-    adjust_cross_repo(tiers, _Lookup(), None)
-    assert json.dumps(tiers, default=str) == before
+    findings = [serialize_finding(r) for r in _ROWS]
+    before = json.dumps(findings, default=str)
+    adjust_cross_repo(findings, None, "api")
+    adjust_cross_repo(findings, _Lookup(), None)
+    assert json.dumps(findings, default=str) == before
+
+
+def test_recommendation_never_points_at_an_empty_tier() -> None:
+    def advice(rows: list[dict], tier: str | None = None) -> str:
+        tiers = build_tiers([serialize_finding(r) for r in rows], 25, tier)
+        return compute_impact(tiers)["recommendation"]
+
+    assert advice(_ROWS).startswith("Start with the 'high' tier")
+    assert advice(_ROWS, "medium").startswith("Review the 'medium' tier")
+    assert advice([_row("src/x.py", 0.5)]).startswith("Review the 'medium' tier")
+    assert advice([_row("src/x.py", 0.1)]).startswith("Only 'low' tier findings")
 
 
 def test_merged_per_repo_counts_equal_counting_everything_at_once() -> None:
@@ -260,3 +285,20 @@ def test_merged_per_repo_counts_equal_counting_everything_at_once() -> None:
     whole = summary_counts(_ROWS)
     assert merged == whole
     assert list(merged["by_kind"]) == list(whole["by_kind"])
+
+
+def test_summary_safe_counts_drop_what_the_cross_repo_cut_withdraws() -> None:
+    lookup = _Lookup()
+
+    def withdrawn(f) -> bool:
+        return cross_repo_withdraws(lookup, "api", f["file_path"], f["kind"])
+
+    plain = summary_counts(_ROWS)
+    cut = summary_counts(_ROWS, withdrawn)
+    adjusted = [serialize_finding(r) for r in _ROWS]
+    adjust_cross_repo(adjusted, lookup, "api")
+    assert cut["safe_to_delete_count"] == sum(f["safe_to_delete"] for f in adjusted)
+    assert cut["safe_to_delete_count"] <= plain["safe_to_delete_count"]
+    assert cut["total_findings"] == plain["total_findings"]
+    assert not cross_repo_withdraws(None, "api", "src/a/one.py", "unused_export")
+    assert not cross_repo_withdraws(lookup, None, "src/a/one.py", "unused_export")

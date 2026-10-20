@@ -50,8 +50,8 @@ function Action({
 function omittedText(scope: MapScope): string {
   const causes = scope.omitted.performanceFiles;
   if (causes == null) return `${scope.omitted.files.toLocaleString()} not drawn`;
-  if (causes === 0) return "every file with an open cause is drawn";
-  return `${causes.toLocaleString()} ${plural(causes, "file", "files")} with open causes not drawn`;
+  if (causes === 0) return "every file with a cause worth fixing now is drawn";
+  return `${causes.toLocaleString()} ${plural(causes, "file", "files")} with causes worth fixing now not drawn`;
 }
 
 function HeldToggle({

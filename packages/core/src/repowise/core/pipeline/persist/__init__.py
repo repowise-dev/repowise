@@ -84,6 +84,7 @@ from .sweeps import (
     _symbol_names_by_file,
     sweep_absent_cycle_pages,
     sweep_absent_symbol_spotlights,
+    sweep_deselected_pages,
     sweep_retired_pages,
     sweep_superseded_generated_pages,
 )

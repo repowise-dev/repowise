@@ -699,9 +699,10 @@ reason. These reasons and the performance default queue's are decided in one pla
 
 | Reason | What it leaves out |
 |---|---|
-| `test`, `tooling`, `generated`, `vendored`, `docs_example` | Path-role classification. Tooling includes build files by type wherever they sit (Gradle, CMake, Makefiles, Bazel, MSBuild props/targets, root `setup.py`, `noxfile.py`, crate-root `build.rs`, bundler configs) |
+| `test`, `tooling`, `generated`, `vendored`, `docs_example` | Path-role classification. Tooling includes build files by type wherever they sit (Gradle, CMake, Makefiles, Bazel, MSBuild props/targets, root `setup.py`, `noxfile.py`, crate-root `build.rs`, bundler configs). Docs means a root `docs/` or `docs_src/` tree, or one beside a docs-site config; a product's own `app/docs/` route is production |
 | `unknown`, `expected`, `no_strategy`, `no_plan` | Performance causes with no classified context, expected repetition, no supported strategy, or no stored safe plan |
-| `below_min_worth` | A refactoring recovering under `MIN_WORTH` (0.5) or with no steps; a loop-built string that is bounded or not in production |
+| `below_min_worth` | A refactoring recovering under `MIN_WORTH` (0.5) or with no steps |
+| `unmeasured_cost`, `cold_role`, `background_unproven`, `unconfirmed_cost` | Performance causes the default queue drops, and queued causes `perf_confident_verdict` does not confirm: growth only a registry or cold-path loop shows, or no known role and no entry point reaching it |
 | `history_only` | Only git-history findings |
 | `deprecated` | Deprecated functions |
 | `gated_off` | Functions a same-file constant-false flag switches off (`complexity/gating.py`): the body opens with `if not FLAG: return` or is one `if FLAG:` block. For performance this is the opportunity state `expected` with reason `gated_off`, and the default queue counts it under `gated_off`. `totals.dormant` counts the distinct functions |
@@ -777,7 +778,10 @@ The default queue holds production `plan_ready` and `advisory` with
 `cost_proof = proven`, ranked by `rank_score`; actionability only breaks ties.
 Excluded reasons are counted in `default_queue`. A cause whose loop size nothing
 measured is stored as `cost_proof = unproven`: it never leads, and the `proof`
-filter and facet expose it.
+filter and facet expose it. Fix first, Do next and the queue's lead take only the
+queued `plan_ready` causes `queue.eligibility.perf_confident_verdict` confirms
+(facet `growth_source = loop`); advisory causes measured 0 true of 14 on three
+repositories, so they stay in the queue.
 
 **Plans.** Proven means the transformation, not the runtime: parallelizing awaits
 against a DB or network client is advisory with a `bounded_concurrency`
@@ -1072,7 +1076,7 @@ Defined in `tool_health/tool.py`, which dispatches to one module per mode and bl
   2 markers (each with a `suggestion` string), a coverage block, and a
   null-dropped `signals` block (process/people/topology, see §8).
 - `get_overview()`: adds a `code_health` block: avg, repo `band`, hotspot,
-  worst performer, open finding count, and the NLOC-weighted `distribution`.
+  worst performer, open finding count, and the file count per band.
 
 Every response carries the standard `_meta` envelope via `build_meta()`.
 
@@ -1151,7 +1155,7 @@ filter rules in `core/generation/editor_files/data.py`:
 
 Everything else is filtered out so the CLAUDE.md doesn't drown a fresh
 agent in noise. The Jinja stanza lives in
-`core/generation/templates/claude_md.j2`.
+`core/generation/templates/_editor_block.j2`.
 
 ---
 

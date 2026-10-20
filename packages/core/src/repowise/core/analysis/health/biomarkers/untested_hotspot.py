@@ -7,8 +7,7 @@ Fires when a file is **all three** of:
 - under-tested (``line_coverage_pct`` < 40 when coverage is available,
   OR, when it isn't, neither a paired test file nor a test reaching it
   through the call graph)
-- centrally depended on (``dependents_count`` ≥ 4 OR temporal_hotspot
-  in the top decile)
+- centrally depended on (``dependents_count`` ≥ 4)
 
 Severity grades on how bad the coverage is and how many dependents the
 file has.

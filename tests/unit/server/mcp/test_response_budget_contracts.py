@@ -528,6 +528,22 @@ def _resolve_shed_path(shape: dict[str, Any], key: str) -> str | None:
     on arguments the recording did not pass. A block whose *parent* is present
     while the leaf is not is a typo, and a silent no-op in ``fit_to_budget``.
     """
+    if key.count("[].") > 1:
+        return "only one list level ([].) is supported"
+    if "[]." in key:
+        rows_path, _, row_key = key.partition("[].")
+        rows: Any = shape
+        for part in rows_path.split("."):
+            if not isinstance(rows, dict) or part not in rows:
+                return None
+            rows = rows[part]
+        if not isinstance(rows, list):
+            return f"{rows_path} is not a list of rows"
+        row = next((r for r in rows if isinstance(r, dict)), None)
+        if row is None:
+            return None
+        # A row that is present must carry the field, top-level or not.
+        return _resolve_shed_path({"row": row}, f"row.{row_key}")
     leaf, tail = (key[:-2], True) if key.endswith("[]") else (key, False)
     *parents, name = leaf.split(".")
     node: Any = shape
@@ -771,3 +787,58 @@ def test_an_untrimmed_last_page_names_no_next_call(setup_mcp: str) -> None:
     result = _enforce_health(payload, only=["fix_first"], limit=25)
     assert len(result["fix_first"]["items"]) == 25
     assert "fix_first" not in (result.get("recovery") or {})
+
+
+def _evidence_row(kind: str, details: int) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "label": kind.replace("_", " "),
+        "status": "ok",
+        "basis": "measured",
+        "value": 1,
+        "details": [{"path": f"src/{kind}/file_{i}.py", "note": "x" * 400} for i in range(details)],
+    }
+
+
+def test_a_row_shed_path_is_checked_inside_its_rows() -> None:
+    shape = {"evidence": {"items": [{"kind": "owners", "details": []}]}}
+
+    assert _resolve_shed_path(shape, "evidence.items[].details[]") is None
+    assert _resolve_shed_path(shape, "evidence.items[].detials") is not None
+    assert _resolve_shed_path(shape, "evidence[].items[].details") is not None
+
+
+def test_requested_evidence_is_trimmed_not_dropped(setup_mcp: str) -> None:
+    rows = [_evidence_row("reaching_tests", 60), _evidence_row("owners", 20)]
+    rows += [_evidence_row(f"small_{i}", 1) for i in range(9)]
+    payload = {
+        "directive": {"status": "review", "action": "Read the evidence."},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    items = result["evidence"]["items"]
+    assert [row["kind"] for row in items] == [row["kind"] for row in rows]
+    assert all({"kind", "label", "status", "basis", "value"} <= set(row) for row in items)
+    # The heaviest row lost its tail first; the light rows kept every detail.
+    assert items[0]["details_omitted"] > 0 and items[0]["details"]
+    assert all(len(row["details"]) == 1 for row in items[2:])
+    assert result["truncated"] is True and "repowise#" in json.dumps(result)
+    budget = result["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"] == EXPANDED_RESPONSE_CHARS
+
+
+def test_a_small_requested_evidence_block_is_untouched(setup_mcp: str) -> None:
+    rows = [_evidence_row("owners", 2), _evidence_row("decisions_crossed", 1)]
+    payload = {
+        "directive": {"status": "ok"},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    assert result["evidence"]["items"] == rows
+    assert "truncated" not in result

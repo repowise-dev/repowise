@@ -186,11 +186,17 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     default=False,
     help="Add structure, imports and docstrings to each card.",
 )
+@click.option(
+    "--symptom",
+    default=None,
+    help="Issue text, an error or a stack trace for --include suspects to rank against.",
+)
 @_ta.target_options
 def context_command(
     targets: tuple[str, ...],
     include: tuple[str, ...],
     no_compact: bool,
+    symptom: str | None,
     path: str | None,
     repo_alias: str | None,
     no_workspace: bool,
@@ -220,6 +226,7 @@ def context_command(
             targets=list(targets),
             include=list(include) or None,
             compact=not no_compact,
+            symptom=symptom,
         )
 
     payload = _ta.run(repo_path, _factory, "get_context")

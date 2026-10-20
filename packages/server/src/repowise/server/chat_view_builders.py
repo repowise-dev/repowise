@@ -302,14 +302,19 @@ _HEALTH_BANDS = ("at_risk", "needs_work", "fair", "good", "excellent")
 )
 def health_bands_view(artifact: ViewArtifact, options: Mapping[str, Any]) -> dict[str, Any]:
     data = artifact.data
-    distribution = data.get("distribution") or (data.get("code_health") or {}).get("distribution")
+    distribution = data.get("distribution")
     bands = distribution.get("bands") if isinstance(distribution, Mapping) else None
-    if not isinstance(bands, Mapping):
+    if isinstance(bands, Mapping):
+        files = {b: v.get("files") for b, v in bands.items() if isinstance(v, Mapping)}
+    else:
+        # The overview carries the per-band file counts alone.
+        files = (data.get("code_health") or {}).get("files_by_band")
+    if not isinstance(files, Mapping):
         raise ViewError("this result has no health distribution; call get_health with no targets")
     rows = [
-        {"band": band.replace("_", " "), "files": bands[band]["files"]}
+        {"band": band.replace("_", " "), "files": files[band]}
         for band in _HEALTH_BANDS
-        if isinstance(bands.get(band), Mapping) and isinstance(bands[band].get("files"), int)
+        if isinstance(files.get(band), int)
     ]
     total = sum(row["files"] for row in rows)
     return _chart(

@@ -709,6 +709,8 @@ class _Grade(NamedTuple):
     withheld_implicated: list[str]
     lookup_body_truncated: bool
     named_body_cut: dict | None
+    #: The file the answer leads with when it cites files but not the top hit.
+    lead_off_top: str | None = None
 
 
 @dataclass
@@ -734,6 +736,7 @@ class _GradeState:
     lookup_body_truncated: bool = False
     named_body_cut: dict | None = None
     gap: list[str] = field(default_factory=list)
+    lead_off_top: str | None = None
 
 
 def _earned_high(
@@ -808,6 +811,15 @@ def _citation_gate(s: _GradeState) -> None:
         return
     cited = set(s.citations)
     if not any(h.get("symbols") for h in s.hits if h.get("target_path") in cited):
+        s.confidence = "medium"
+
+
+def _named_file_gate(s: _GradeState) -> None:
+    """The answer cites files but not the top hit dominance was measured on.
+    Kept only when it demotes, so the note never blames it for another gate's grade."""
+    if s.confidence != "high":
+        s.lead_off_top = None
+    elif s.lead_off_top:
         s.confidence = "medium"
 
 
@@ -894,6 +906,7 @@ _GRADE_GATES = (
     _identifier_gate,
     _value_gate,
     _citation_gate,
+    _named_file_gate,
     _claim_gate,
     _exclusivity_gate,
     _withheld_gate,
@@ -914,6 +927,7 @@ def _grade_answer(
     served_named_body: bool,
     dominance: str | None,
     uncovered: list[str] | None = None,
+    lead_off_top: str | None = None,
 ) -> _Grade:
     """Grade the synthesised answer through the gate cascade, in order.
 
@@ -924,6 +938,7 @@ def _grade_answer(
     ``dominance`` is :func:`dominance_reason`'s verdict, computed once by the
     caller and used for the starting grade, the ceiling, and the note's reason.
     ``uncovered`` is :func:`uncovered_terms`, when the caller already has it.
+    ``lead_off_top`` is ``AnswerFiles.drops_top_hit``.
     """
     dominant = dominance is not None
     top_score = _confidence_score(hits[0]) if hits else 0.0
@@ -947,6 +962,7 @@ def _grade_answer(
         earn_high=earn_high,
         uncovered=uncovered,
         confidence=start,
+        lead_off_top=lead_off_top,
     )
     for gate in _GRADE_GATES:
         gate(s)
@@ -969,4 +985,5 @@ def _grade_answer(
         withheld_implicated=s.withheld_implicated,
         lookup_body_truncated=s.lookup_body_truncated,
         named_body_cut=s.named_body_cut,
+        lead_off_top=s.lead_off_top,
     )

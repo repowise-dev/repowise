@@ -448,6 +448,7 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
         create_session_factory,
         get_session,
         init_db,
+        refresh_planner_stats,
         upsert_repository,
     )
     from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
@@ -487,6 +488,8 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
 
         with timed(timings, "persist.commit_health"):
             await refresh_commit_health_after_update(sf, ctx.repo_id, str(ctx.repo_path))
+        with timed(timings, "persist.planner_stats"):
+            await refresh_planner_stats(ctx.engine)
         return ctx.total_pages
     finally:
         await ctx.engine.dispose()

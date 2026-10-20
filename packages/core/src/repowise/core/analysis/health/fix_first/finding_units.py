@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from repowise.core.analysis.health.rows import detail_map, field
-from repowise.core.analysis.health.scoring import biomarker_dimension
+from repowise.core.analysis.health.scoring import biomarker_dimension, ranked_severity
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.worth import (
     SIZE_MARKERS,
@@ -97,7 +97,7 @@ def _finding_unit(lead: Any, files: _Files, first: FixStep, validate: Validate |
                 [
                     FixFact("finding", text.marker_label(marker)),
                     *_size_facts(rank.shape),
-                    FixFact("severity", _severity(field(lead, "severity"), rank.low)),
+                    FixFact("severity", _severity(marker, field(lead, "severity"), rank.low)),
                     *files.common_facts(path, function=function is not None),
                 ][:MAX_FACTS]
             ),
@@ -210,7 +210,8 @@ def _file_findings_call(path: str) -> ActionCommand:
     )
 
 
-def _severity(severity: str | None, low: str | None) -> str:
-    """The detector's severity; on a later item it says the tier overrides it."""
-    severity = severity or "unknown"
-    return severity if low is None else f"{severity} by the detector; lower priority by shape"
+def _severity(marker: str, severity: str | None, low: str | None) -> str:
+    """The severity as work is ranked (a code-shape marker tops out at high);
+    on a later item it says the tier overrides it."""
+    severity = ranked_severity(marker, severity) or "unknown"
+    return severity if low is None else f"{severity}; lower priority by shape"

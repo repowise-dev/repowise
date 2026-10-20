@@ -9,8 +9,8 @@ small file can hold the worst cause in the tree.
 So the feed admits files in a fixed order - the caller's pinned paths first,
 then a small floor per module so a little module never vanishes behind a big
 one, then everything else by origin tier (production, tooling and build, test,
-docs examples), and inside a tier the files carrying open performance
-opportunities in rank order before a health-debt rank that puts unhealthy, large
+docs examples), and inside a tier the files carrying a performance cause in
+the default queue, in rank order, before a health-debt rank that puts unhealthy, large
 files ahead of clean ones. Vendored and generated files are held out unless the
 caller asks for them, because they are not the reader's to change. The response
 states exactly what the cap and the hold pushed out. One response carries both
@@ -207,8 +207,9 @@ class HealthMapService:
         eligible_paths = {m.file_path for m in eligible}
         burden = {r.file_path: r for r in rollups}
 
-        # A file whose only causes are ``expected`` has nothing to do; it earns no priority slot.
-        open_rollups = [r for r in rollups if r.opportunities > r.expected]
+        # A file earns a priority slot with a cause in the default queue, the
+        # count the performance headline leads with; the rest wait in the queue view.
+        open_rollups = [r for r in rollups if r.queued]
         perf_position = {
             r.file_path: i for i, r in enumerate(open_rollups) if r.file_path in eligible_paths
         }
@@ -277,7 +278,7 @@ class HealthMapService:
         omitted = {
             "files": len(eligible) - len(chosen),
             "performance_files": len(undrawn_perf),
-            "opportunities": sum(r.opportunities - r.expected for r in undrawn_perf),
+            "opportunities": sum(r.queued for r in undrawn_perf),
             "observations": sum(r.observations for r in undrawn_perf),
             # Drawable, and left out by the vendored/generated hold, not the cap.
             "held": held_out,
@@ -364,8 +365,9 @@ class HealthMapService:
             "has_test_file": metric.has_test_file,
             "maintainability_score": metric.maintainability_score,
             "performance_analyzed": languages.get(metric.file_path) in perf_languages,
-            # What the default queue shows: ``expected`` causes have nothing to do.
-            "performance_opportunities": rollup.opportunities - rollup.expected if rollup else 0,
+            # What the default queue shows, so the lens and the headline agree.
+            # Observations stay every open one on the file: evidence, not a count to act on.
+            "performance_opportunities": rollup.queued if rollup else 0,
             "performance_observations": rollup.observations if rollup else 0,
             "code_origin": metric.code_origin,
             "is_hotspot": metric.file_path in hotspots,
@@ -400,7 +402,7 @@ class HealthMapService:
             file_burden = burden.get(metric.file_path)
             if file_burden is None:
                 continue
-            row["opportunities"] += file_burden.opportunities
+            row["opportunities"] += file_burden.queued
             row["observations"] += file_burden.observations
             row["plan_ready"] += file_burden.plan_ready
             best = row["best_rank"]
@@ -424,7 +426,8 @@ class HealthMapService:
 
         ``None`` means this index has never materialized the read model, which
         is a different answer from "analyzed and nothing surfaced" and the lens
-        must not render the two the same way.
+        must not render the two the same way. Its totals are the repository's
+        whole inventory, every context and state; the nodes count the queue.
         """
         if summary is None and not rollups:
             return None
@@ -476,9 +479,11 @@ def _leading_actionability(rollup: Any) -> str | None:
     """The best thing a reader could do about this file, or nothing.
 
     Best rather than most common: a file with one stored plan and nine
-    investigations is a file with a stored plan.
+    investigations is a file with a stored plan. Read over the queued causes,
+    the ones the lens counts.
     """
     if rollup is None:
         return None
     # ``expected`` is never a lead: it has nothing to do.
-    return next((s for s in ACTIONABILITY_ORDER if s != "expected" and getattr(rollup, s)), None)
+    states = rollup.queued_states
+    return next((s for s in ACTIONABILITY_ORDER if s != "expected" and s in states), None)

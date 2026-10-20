@@ -897,6 +897,9 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Module",
     "Provides",
     "Binds",
+    # Glide: its annotation processor generates ``GeneratedAppGlideModule``,
+    # which instantiates the annotated class. Nothing in source names it.
+    "GlideModule",
     # Compose previews, rendered by the IDE (prefix match covers
     # ``PreviewLightDark``, ``PreviewScreenSizes`` and the other presets).
     "Preview",

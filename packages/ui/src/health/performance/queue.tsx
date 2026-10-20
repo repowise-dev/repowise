@@ -7,13 +7,17 @@ import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
 import { Button } from "../../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
+import { FilePath } from "../../shared/file-path";
+import { InfoTip } from "../../shared/info-tip";
 import { CLICKABLE_ROW_CLS, clickableRowProps } from "../../shared/responsive-table";
-import { AGENT_PROMPT_LABEL } from "../ai-prompt-action";
-import { AiPromptButton } from "../ai-prompt-button";
+import { RowPromptAction } from "../row-prompt-action";
+import { MICRO } from "../tokens";
+import { ActionabilityMark } from "./actionability-mark";
 import type { PerformanceViewAdapter } from "./adapter";
 import {
   affectedSummary,
   agentHandoffCall,
+  causeStandingText,
   effortLabel,
   FIX_SAFETY_LABEL,
   fixStrategyLabel,
@@ -53,7 +57,7 @@ export function OpportunityList({
   return (
     <ul
       aria-label={label}
-      className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]"
+      className="divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)]"
     >
       {items.map((opportunity) => (
         <OpportunityRow
@@ -70,9 +74,8 @@ export function OpportunityList({
   );
 }
 
-/** The fix in one line: strategy, gain, effort and safety, each only when known. */
-function FixLine({ opportunity }: { opportunity: PerformanceOpportunity }) {
-  const effort = effortLabel(opportunity);
+/** The change to make, and what it buys, in secondary ink. */
+function ActionLine({ opportunity }: { opportunity: PerformanceOpportunity }) {
   const { fix, gain_text: gain } = opportunity;
   if (!fix) {
     return (
@@ -82,22 +85,45 @@ function FixLine({ opportunity }: { opportunity: PerformanceOpportunity }) {
     );
   }
   return (
-    <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-text-secondary)]">
-      <span className="font-medium text-[var(--color-text-primary)]">
-        {fixStrategyLabel(fix.strategy)}
-      </span>
-      {gain ? <span>saves {gain}</span> : null}
-      {effort ? (
-        <span className="rounded border border-[var(--color-border-default)] px-1.5 font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-          {effort} effort
-        </span>
-      ) : null}
-      <span className="inline-flex items-center gap-1 text-[var(--color-text-tertiary)]">
+    <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+      <span className={`${MICRO} mr-1.5`}>Action</span>{" "}
+      <span>{fixStrategyLabel(fix.strategy)}</span>
+      {gain ? <span>, saves {gain}</span> : null}
+    </p>
+  );
+}
+
+/**
+ * The deciding facts on one quiet mono line: effort, safety and reach, each
+ * only when known. Why it sits in its state, the plan's standing and how well
+ * the path resolved inform a reader but do not decide the row, so they sit
+ * behind the tip.
+ */
+function MetaLine({ opportunity }: { opportunity: PerformanceOpportunity }) {
+  const effort = effortLabel(opportunity);
+  const { fix } = opportunity;
+  const parts: React.ReactNode[] = [];
+  if (effort) parts.push(<span key="effort">{effort} effort</span>);
+  if (fix) {
+    parts.push(
+      <span key="safety" className="inline-flex items-center gap-1">
         {fix.safety === "proven" ? (
           <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)]" />
         ) : null}
         {FIX_SAFETY_LABEL[fix.safety]}
-      </span>
+      </span>,
+    );
+  }
+  parts.push(<span key="reach">{affectedSummary(opportunity)}</span>);
+  return (
+    <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+      {parts.flatMap((part, index) =>
+        index === 0 ? [part] : [<span key={`sep-${index}`} aria-hidden>·</span>, part],
+      )}
+      <InfoTip
+        label="Why this cause sits here"
+        content={causeStandingText(opportunity)}
+      />
     </p>
   );
 }
@@ -135,6 +161,7 @@ const OpportunityRow = memo(function OpportunityRow({
     <li
       data-performance-opportunity={opportunity.opportunity_id}
       aria-current={selected ? "true" : undefined}
+      data-selected={selected || undefined}
       aria-label={`Inspect ${title}`}
       className={`${CLICKABLE_ROW_CLS} group/row flex flex-col gap-3 px-1 py-4 sm:flex-row sm:items-start sm:gap-4 ${
         selected ? "bg-[var(--color-bg-elevated)]" : "hover:bg-[var(--color-bg-elevated)]"
@@ -148,17 +175,19 @@ const OpportunityRow = memo(function OpportunityRow({
           {(opportunity.rank_position + 1).toLocaleString()}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
+          <ActionabilityMark state={opportunity.actionability_state} />
+          <p className="mt-1 text-sm font-medium leading-snug text-[var(--color-text-primary)]">
             {opportunityCause(opportunity)} in{" "}
-            <code className="font-mono text-[0.85em] [overflow-wrap:anywhere]">
+            <code className="font-mono text-[0.9em] [overflow-wrap:anywhere]">
               {opportunitySubject(opportunity)}
             </code>
           </p>
-          <FixLine opportunity={opportunity} />
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            <span className="break-all font-mono">{opportunity.file_path}</span> ·{" "}
-            <span className="tabular-nums">{affectedSummary(opportunity)}</span>
+          {/* The path once, name first, the package prefix folded. */}
+          <p className="mt-0.5 flex min-w-0 font-mono text-xs text-[var(--color-text-secondary)]">
+            <FilePath path={opportunity.file_path} fold className="text-xs" />
           </p>
+          <ActionLine opportunity={opportunity} />
+          <MetaLine opportunity={opportunity} />
           <OpportunityTags opportunity={opportunity} />
           {planHref ? (
             <p className="mt-2 text-xs">
@@ -175,17 +204,10 @@ const OpportunityRow = memo(function OpportunityRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-1 pl-10 sm:pl-0">
-        {/* Quiet per row: a ghost button shown on hover, focus and the
-            selected row, always in the tab order; the filled prompt lives on
-            the area header and in the drawer. Interim styling until the
-            shared row-action component (L-nav) lands, then swap to it. */}
-        <AiPromptButton
-          label={AGENT_PROMPT_LABEL}
-          onClick={() => onPrompt(opportunity)}
-          className={`border-transparent bg-transparent transition-opacity focus-visible:opacity-100 sm:group-hover/row:opacity-100 sm:group-focus-within/row:opacity-100 ${
-            selected ? "" : "sm:opacity-0"
-          }`}
-        />
+        {/* The shared quiet row action: shown on hover, focus and the
+            selected row, always in the tab order. The drawer holds the
+            filled prompt. */}
+        <RowPromptAction onClick={() => onPrompt(opportunity)} subject={title} />
         <RowOverflow
           opportunity={opportunity}
           title={title}
