@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
     from .dotnet_test_projects import DotnetTestProjects
+    from .jvm_source_sets import JvmSourceSets
     from .phpunit_roots import PhpunitRoots
     from .pytest_roots import PytestRoots
 
@@ -475,6 +476,7 @@ def _classify(
     language: str | None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    jvm_roots: JvmSourceSets | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> str:
@@ -512,10 +514,12 @@ def _classify(
         return "test" if named_test else ""
 
     # A test name outside a test directory still needs pytest to collect it,
+    # JVM build configuration not to mark it as a main source set,
     # or PHPUnit config not to keep it out of collection.
     needs_test_dir = (
         not named_test
         or _pytest_skips(path, filename, roots)
+        or _jvm_skips(path, filename, jvm_roots)
         or _phpunit_skips(path, filename, phpunit_roots)
     )
     if (
@@ -530,6 +534,18 @@ def _classify(
     if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
         return "support"
     return "test"
+
+
+_JVM_EXTENSIONS = frozenset({".java", ".kt", ".scala"})
+
+
+def _jvm_skips(path: str, filename: str, jvm_roots: JvmSourceSets | None) -> bool:
+    """Whether JVM build configuration marks *path* as a main source set."""
+    return (
+        jvm_roots is not None
+        and PurePosixPath(filename).suffix.lower() in _JVM_EXTENSIONS
+        and jvm_roots.collects(path.replace("\\", "/")) is False
+    )
 
 
 def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool:
@@ -566,6 +582,7 @@ def is_test_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    jvm_roots: JvmSourceSets | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> bool:
@@ -577,10 +594,11 @@ def is_test_path(
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
     *roots* to let pytest's config overrule a test-shaped Python name, pass
-    *dotnet_projects* to recognize C# files governed by a test project, and
-    pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
+    *dotnet_projects* to recognize C# files governed by a test project,
+    pass *jvm_roots* to let JVM build configuration overrule a test-shaped JVM class,
+    and pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "test"
+    return _classify(path, language, roots, dotnet_projects, jvm_roots, phpunit_roots, package_root) == "test"
 
 
 def is_test_support_path(
@@ -588,6 +606,7 @@ def is_test_support_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    jvm_roots: JvmSourceSets | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> bool:
@@ -597,7 +616,7 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "support"
+    return _classify(path, language, roots, dotnet_projects, jvm_roots, phpunit_roots, package_root) == "support"
 
 
 def is_test_related_path(
@@ -605,6 +624,7 @@ def is_test_related_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    jvm_roots: JvmSourceSets | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> bool:
@@ -617,7 +637,7 @@ def is_test_related_path(
     *package_root*, which answers whether a repo-relative directory holds a
     package manifest, keeps a shipped ``test-utils/`` package production.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) != ""
+    return _classify(path, language, roots, dotnet_projects, jvm_roots, phpunit_roots, package_root) != ""
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:

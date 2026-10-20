@@ -68,6 +68,7 @@ from typing import TYPE_CHECKING, Any
 
 import pathspec
 
+from ..jvm_source_sets import JvmSourceSets
 from ..phpunit_roots import PhpunitRoots
 from ..pytest_roots import PYTEST_CONFIG_NAMES, PytestRoots
 from ..support_paths import DOC_EXTENSIONS
@@ -466,18 +467,27 @@ def is_test_helper(path: str) -> bool:
 
 def is_runnable_test(
     path: str,
-    roots: PytestRoots | None = None,
+    roots: PytestRoots | JvmSourceSets | PhpunitRoots | None = None,
+    jvm_roots: JvmSourceSets | None = None,
     phpunit_roots: PhpunitRoots | None = None,
 ) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
 
-    With *roots*, a Python file pytest's config leaves out of collection
-    (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
+    With *roots*, a Python file pytest leaves out of collection is not runnable.
+    With *jvm_roots*, a JVM file in a main source set is not runnable.
     With *phpunit_roots*, a PHP file PHPUnit leaves out of collection is not runnable.
     """
+    if isinstance(roots, JvmSourceSets) and jvm_roots is None:
+        jvm_roots = roots
+        roots = None
+    elif isinstance(roots, PhpunitRoots) and phpunit_roots is None:
+        phpunit_roots = roots
+        roots = None
+
     return (
         _runnable_name(path)
         and (roots is None or is_test_path(path, roots=roots))
+        and (jvm_roots is None or is_test_path(path, jvm_roots=jvm_roots))
         and (phpunit_roots is None or is_test_path(path, phpunit_roots=phpunit_roots))
     )
 

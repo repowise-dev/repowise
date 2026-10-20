@@ -568,6 +568,22 @@ class TestFileTraverser:
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
 
+    def test_jvm_main_source_set_files_are_production(self, tmp_path: Path) -> None:
+        (tmp_path / "engine" / "build.gradle.kts").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "engine" / "build.gradle.kts").write_text(
+            "plugins { id('org.jetbrains.kotlin.multiplatform') }\n"
+        )
+        for rel in (
+            "engine/src/commonMain/kotlin/io/x/core/DynamicRootTest.kt",
+            "engine/src/test/kotlin/io/x/core/EngineTest.kt",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("class Test\n")
+
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["engine/src/commonMain/kotlin/io/x/core/DynamicRootTest.kt"] is False
+        assert files["engine/src/test/kotlin/io/x/core/EngineTest.kt"] is True
+
     def test_test_helper_directories_are_test_material(self, tmp_path: Path) -> None:
         """#3244: helper dirs only tests import are not production code, unless
         the directory is a package root of its own (preact's ``test-utils/``)."""

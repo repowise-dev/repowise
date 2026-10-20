@@ -35,6 +35,13 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 from ..code_origin import is_generated_header
 from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..jvm_source_sets import (
+    JVM_BUILD_FILE_NAMES,
+    JvmBuildUnreadableError,
+    JvmSourceSets,
+    jvm_build_options,
+    jvm_source_sets,
+)
 from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
 from ..phpunit_roots import (
     PHPUNIT_CONFIG_NAMES,
@@ -506,6 +513,11 @@ class FileTraverser:
         return self._console_script_tables().pytest_roots
 
     @property
+    def jvm_roots(self) -> JvmSourceSets:
+        """Where a JVM build collects tests, which decides JVM main source sets."""
+        return self._console_script_tables().jvm_roots
+
+    @property
     def phpunit_roots(self) -> PhpunitRoots:
         """Where PHPUnit collects, from the configs the console-script pass read."""
         return self._console_script_tables().phpunit_roots
@@ -895,6 +907,7 @@ class FileTraverser:
             language,
             roots=tables.pytest_roots,
             dotnet_projects=tables.dotnet_test_projects,
+            jvm_roots=tables.jvm_roots,
             phpunit_roots=tables.phpunit_roots,
             package_root=self._is_package_root_dir,
         )
@@ -1259,6 +1272,8 @@ class ConsoleScriptTables(NamedTuple):
     """Repo-relative ``__init__.py`` of each distribution's own import package."""
     pytest_roots: PytestRoots = PytestRoots()
     """Where a bare pytest run collects tests, which decides a test-named module."""
+    jvm_roots: JvmSourceSets = JvmSourceSets()
+    """Where a JVM build collects tests, which decides JVM main source sets."""
     phpunit_roots: PhpunitRoots = PhpunitRoots()
     """Where PHPUnit collects tests, which decides a test-named PHP class."""
     dotnet_test_projects: DotnetTestProjects = DotnetTestProjects()
@@ -1276,7 +1291,8 @@ def _collect_console_scripts(
     before the colon is the module it imports; ``[project].name`` is the
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
-    ``pyproject.toml``) and PHPUnit configs (``phpunit.xml``,
+    ``pyproject.toml``), JVM build files (``pom.xml``, ``build.gradle``,
+    ``build.gradle.kts``, ``build.sbt``) and PHPUnit configs (``phpunit.xml``,
     ``phpunit.dist.xml``, ``phpunit.xml.dist``) come off this one walk.
     """
     from repowise.core.fs_walk import iter_glob
@@ -1287,10 +1303,17 @@ def _collect_console_scripts(
     inits: set[str] = set()
     pytest_configs: list[tuple[str, dict]] = []
     unreadable: list[str] = []
+    jvm_configs: list[tuple[str, Any]] = []
+    jvm_unreadable: list[str] = []
     phpunit_configs: list[tuple[str, Any]] = []
     phpunit_unreadable: list[str] = []
     csproj_files: list[tuple[str, str]] = []
-    manifest_patterns = (*PYTEST_CONFIG_NAMES, *PHPUNIT_CONFIG_NAMES, "*.csproj")
+    manifest_patterns = (
+        *PYTEST_CONFIG_NAMES,
+        *PHPUNIT_CONFIG_NAMES,
+        *JVM_BUILD_FILE_NAMES,
+        "*.csproj",
+    )
     try:
         config_files = list(
             iter_glob(repo_root, manifest_patterns, prune_nested_git=prune_nested_git)
@@ -1308,6 +1331,14 @@ def _collect_console_scripts(
                 csproj_files.append((rel, ""))
             continue
         rel = config_file.relative_to(repo_root).as_posix()
+        if name in JVM_BUILD_FILE_NAMES:
+            try:
+                text = config_file.read_text(encoding="utf-8")
+                rule = jvm_build_options(name, text)
+                if rule is not None:
+                    jvm_configs.append((rel, rule))
+            except (OSError, UnicodeDecodeError, JvmBuildUnreadableError):
+                jvm_unreadable.append(rel)
         if name in PHPUNIT_CONFIG_NAMES:
             try:
                 text = config_file.read_text(encoding="utf-8")
@@ -1338,6 +1369,7 @@ def _collect_console_scripts(
         frozenset(distributions),
         frozenset(inits),
         pytest_roots(pytest_configs, unreadable),
+        jvm_source_sets(jvm_configs, jvm_unreadable),
         phpunit_roots(phpunit_configs, phpunit_unreadable),
         read_dotnet_test_projects(csproj_files),
     )
