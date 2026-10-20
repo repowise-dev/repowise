@@ -232,3 +232,40 @@ class TestInitTestRun:
         run = SimpleNamespace(repo_path=tmp_path, opts=SimpleNamespace(test_run=test_run))
         _finish._stamp_test_run(run)
         assert resolve_index_scope(load_state(tmp_path))["test_run"] is test_run
+
+
+class TestRescorePending:
+    """An upgrade that changed the analyzer or scanner is named before ``update`` runs."""
+
+    def _stamps(self, health_version) -> dict:
+        from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
+        return {
+            "last_sync_commit": "abc",
+            "health_analyzer_version": health_version,
+            "security_scanner_version": SECURITY_SCANNER_VERSION,
+        }
+
+    def test_an_older_analyzer_is_named(self, tmp_path, monkeypatch) -> None:
+        out = _status(tmp_path, monkeypatch, self._stamps(1))
+        assert "Health was scored by an older analyzer" in out
+        assert "repowise update re-scores it" in out
+
+    def test_current_stamps_print_nothing(self, tmp_path, monkeypatch) -> None:
+        from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+        out = _status(tmp_path, monkeypatch, self._stamps(HEALTH_ANALYZER_VERSION))
+        assert "older" not in out
+        (tmp_path / "j").mkdir()
+        data = json.loads(
+            _status(tmp_path / "j", monkeypatch, self._stamps(HEALTH_ANALYZER_VERSION), fmt="json")
+        )
+        assert data["rescore_pending"] == []
+
+    def test_both_combine_into_one_line_and_json(self, tmp_path, monkeypatch) -> None:
+        state = {"last_sync_commit": "abc", "health_analyzer_version": 1}
+        out = _status(tmp_path, monkeypatch, state)
+        assert "Health and security findings came from an older analyzer" in out
+        (tmp_path / "j").mkdir()
+        data = json.loads(_status(tmp_path / "j", monkeypatch, state, fmt="json"))
+        assert data["rescore_pending"] == ["health", "security"]

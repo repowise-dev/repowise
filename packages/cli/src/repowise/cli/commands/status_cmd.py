@@ -334,6 +334,29 @@ def _query_health_line(repo_path: Path) -> str | None:
     )
 
 
+def _rescore_pending(state: dict) -> list[str]:
+    """Which stored results the next ``repowise update`` redoes for a newer analyzer."""
+    from repowise.cli.commands.update_cmd.persistence import (
+        health_analyzer_changed,
+        security_scanner_changed,
+    )
+
+    pending = ["health"] if health_analyzer_changed(state) else []
+    return pending + (["security"] if security_scanner_changed(state) else [])
+
+
+_RESCORE_LINES = {
+    ("health",): "Health was scored by an older analyzer; the next repowise update re-scores it.",
+    ("security",): (
+        "Security findings came from an older scanner; the next repowise update rescans them."
+    ),
+    ("health", "security"): (
+        "Health and security findings came from an older analyzer; "
+        "the next repowise update redoes both."
+    ),
+}
+
+
 #: The resume command an interrupted ``init`` leaves for the user.
 _RESUME_COMMAND = "repowise init --resume"
 
@@ -692,6 +715,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     has_db = db_path.exists() or db_configured()
     incomplete = _incomplete_index(repo_path, state)
     pending_lanes = pending_decision_lanes(state, repo_path)
+    # An unfinished init has no stamps yet; the resume line covers it.
+    rescore = _rescore_pending(state) if incomplete is None else []
 
     if fmt == "json":
         counts, total_db_tokens = (
@@ -720,6 +745,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
                 "decision_lanes_pending": list(pending_lanes),
+                "rescore_pending": rescore,
             }
         )
         return
@@ -826,6 +852,10 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     if health_line:
         console.print()
         console.print(health_line)
+    if rescore:
+        if not health_line:
+            console.print()
+        console.print(f"[dim]{_RESCORE_LINES[tuple(rescore)]}[/dim]")
 
     if incomplete is not None:
         next_lines = [_incomplete_line(incomplete)]
