@@ -116,6 +116,79 @@ def change_set(root: str, revspec: str | None, *, staged: bool = False) -> Any:
         return read_change_set(root, revspec, staged=staged)
 
 
+def baseline_growth(root: Path, path: Path, revspec: str | None) -> list[dict]:
+    """The entries the baseline at *path* adds over the same file at the change's base.
+
+    The base is the commit *revspec*'s diff starts from, or ``HEAD`` for staged
+    changes (``None``). This reads both sides from the checkout and git; the
+    comparison is :func:`repowise.core.ci.baseline.baseline_growth`.
+    """
+    import subprocess
+
+    from repowise.core import git_refs
+    from repowise.core.analysis.git_cat_file import cat_file_batch
+    from repowise.core.ci.baseline import BaselineError
+    from repowise.core.ci.baseline import baseline_growth as growth_between
+
+    try:
+        relative = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        raise CannotEvaluateError(
+            "baseline_outside_repository",
+            f"Baseline growth is read from git history, and {path} is outside the "
+            f"repository at {root}.",
+        ) from None
+    if revspec is None:
+        base = git_refs.resolve(str(root), "HEAD")
+    else:
+        base = git_refs.change_base(str(root), revspec)
+    if not base:
+        raise CannotEvaluateError(
+            "base_not_found",
+            f"Could not find the base of {revspec or 'the staged changes'} to compare "
+            f"the baseline with. {SHALLOW_CLONE_HINT}",
+        )
+    try:
+        # A resolved commit, so a miss is the file the base lacks, not an unknown rev.
+        read = cat_file_batch(str(root), [f"{base}:{relative}"], check=True)
+        head = path.read_bytes()
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise CannotEvaluateError("git_failed", f"Could not read the baseline: {exc}") from exc
+    try:
+        return growth_between(read[0][1] if read else None, head, name=str(path))
+    except BaselineError as exc:
+        raise CannotEvaluateError("baseline_unreadable", str(exc)) from exc
+
+
+def report_baseline_growth(fmt: str, path: Path, added: list[dict]) -> None:
+    """Say which entries *path* gained; the caller exits :data:`EXIT_GATE_FAILED`.
+
+    ``json`` carries them in its own document; ``github`` adds an ``::error::``.
+    """
+    from rich.markup import escape
+
+    from repowise.core.ci.github import error
+
+    if fmt == "json":
+        return
+    noun = "entry" if len(added) == 1 else "entries"
+    header = (
+        f"Baseline grew: {path} lists {len(added)} {noun} its base does not. A baseline "
+        "only shrinks; fix the new findings instead of accepting them."
+    )
+    rows = [
+        " ".join(str(e[k]) for k in ("file_path", "kind", "target") if e.get(k))
+        or e["fingerprint"]
+        for e in added
+    ]
+    if fmt == "github":
+        click.echo(error(f"{header} Added: {'; '.join(rows)}"))
+    notices = ci_notices(fmt)
+    notices.print(f"[red]{escape(header)}[/red]")
+    for row in rows:
+        notices.print(f"  {escape(row)}")
+
+
 @contextlib.contextmanager
 def _reading_change(what: str, *, shallow_hint: bool = True) -> Iterator[None]:
     """Turn a failed diff of *what* into :class:`CannotEvaluateError`."""

@@ -25,8 +25,11 @@ for name in $names; do
 done
 
 # Coverage, security and risk diff the change, so they need its history and
-# the target branch; risk also ranks it against recent commits.
-if wants coverage || wants security || wants risk; then
+# the target branch; risk also ranks it against recent commits. Baseline growth
+# reads the doc-drift baseline at the change's base.
+growth=()
+[[ "$FAIL_ON_BASELINE_GROWTH" == "true" ]] && growth=(--fail-on-baseline-growth)
+if wants coverage || wants security || wants risk   || { wants doc-drift && [[ -n "$DOC_DRIFT_BASELINE" && ${#growth[@]} -gt 0 ]]; }; then
   here=${0//\\//}
   source "${here%/*}/fetch-base.sh"
 fi
@@ -70,9 +73,9 @@ if wants coverage; then
 fi
 
 drift=(doc-drift --check)
-[[ -n "$DOC_DRIFT_BASELINE" ]] && drift+=(--baseline "$DOC_DRIFT_BASELINE")
+[[ -n "$DOC_DRIFT_BASELINE" ]] && drift+=(--baseline "$DOC_DRIFT_BASELINE" ${growth[@]+"${growth[@]}"})
 security=(security check ${base[@]+"${base[@]}"} --fail-on "$SECURITY_FAIL_ON")
-[[ -n "$SECURITY_BASELINE" ]] && security+=(--baseline "$SECURITY_BASELINE")
+[[ -n "$SECURITY_BASELINE" ]] && security+=(--baseline "$SECURITY_BASELINE" ${growth[@]+"${growth[@]}"})
 
 wants doc-drift && run doc-drift repowise "${drift[@]}" --format github
 wants security && run security repowise "${security[@]}" --format github

@@ -258,6 +258,7 @@ def _run(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[int, str, str]:
         "DOC_DRIFT_BASELINE": "",
         "SECURITY_FAIL_ON": "high",
         "SECURITY_BASELINE": "",
+        "FAIL_ON_BASELINE_GROWTH": "false",
         "RISK_FAIL_ABOVE_PERCENTILE": "",
         "SARIF": "false",
         "SARIF_DIR": str(tmp_path / "sarif"),
@@ -306,6 +307,23 @@ def test_inputs_reach_the_commands(tmp_path, fake_repowise) -> None:
         "security check origin/main...HEAD --fail-on high "
         "--baseline .security-baseline.json --format github"
     )
+
+
+def test_baseline_growth_reaches_each_gate_with_a_baseline(tmp_path, fake_repowise) -> None:
+    code, _, calls = _run(
+        tmp_path,
+        fake_repowise,
+        CHECKS="doc-drift,security",
+        DOC_DRIFT_BASELINE=".doc-drift-baseline.json",
+        FAIL_ON_BASELINE_GROWTH="true",
+    )
+    assert code == 0
+    drift, security = calls.splitlines()
+    assert drift == (
+        "doc-drift --check --baseline .doc-drift-baseline.json "
+        "--fail-on-baseline-growth --format github"
+    )
+    assert "growth" not in security
 
 
 def test_base_report_inputs_reach_the_coverage_command(tmp_path, fake_repowise) -> None:

@@ -397,3 +397,50 @@ def test_kind_symbol_with_an_index_reports_a_renamed_symbol(monkeypatch, tmp_pat
     assert finding["suggested_line"] == "Call `parse_conf()`."
     assert finding["suggestion_columns"] == [[7, 21]]
     assert finding["defined_in"] == ["src/app.py"]
+
+
+def _git(cwd, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _baseline_on_main(tmp_path, findings):
+    """A repository whose ``main`` commits the baseline for *findings*, on a branch off it."""
+    from repowise.core.analysis.doc_drift.baseline import write_baseline
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    for key, value in (("user.email", "t@t.co"), ("user.name", "t"), ("core.autocrlf", "false")):
+        _git(tmp_path, "config", key, value)
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, findings)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "baseline")
+    _git(tmp_path, "switch", "-qc", "feature")
+    return baseline
+
+
+def test_a_baseline_that_grew_over_the_base_fails(monkeypatch, tmp_path):
+    from repowise.core.analysis.doc_drift.baseline import write_baseline
+
+    baseline = _baseline_on_main(tmp_path, [_finding()])
+    findings = [_finding(), _finding(target="src/other.py")]
+    write_baseline(baseline, findings)
+    args = ["--baseline", str(baseline), "--since", "main", "--fail-on-baseline-growth"]
+    result = _invoke(monkeypatch, tmp_path, findings, args)
+    assert result.exit_code == 1
+    assert "docs/a.md path src/other.py" in result.output
+
+    doc = json.loads(_invoke(monkeypatch, tmp_path, findings, [*args, "--format", "json"]).stdout)
+    assert [e["target"] for e in doc["baseline_growth"]] == ["src/other.py"]
+
+
+def test_a_baseline_that_did_not_grow_passes(monkeypatch, tmp_path):
+    baseline = _baseline_on_main(tmp_path, [_finding()])
+    args = ["--baseline", str(baseline), "--since", "main", "--fail-on-baseline-growth"]
+    result = _invoke(monkeypatch, tmp_path, [_finding()], args)
+    assert result.exit_code == 0, result.output
+
+
+def test_baseline_growth_without_a_baseline_is_refused(monkeypatch, tmp_path):
+    result = _invoke(monkeypatch, tmp_path, [], ["--fail-on-baseline-growth"])
+    assert result.exit_code == 2
+    assert "needs --baseline" in result.output

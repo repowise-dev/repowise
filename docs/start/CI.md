@@ -88,6 +88,11 @@ Security has a baseline too, for accepting a finding a change adds on purpose
 from then on. A `repowise-security-ignore` comment silences one false positive
 ([details](../layers/SECURITY.md#silencing-one-finding-repowise-security-ignore)).
 
+`--fail-on-baseline-growth` (the action's `fail-on-baseline-growth` input) keeps a
+baseline shrink-only: it fails either gate when the baseline lists a finding the
+same file at the change's base does not, so a change cannot hide new findings by
+re-saving it. A baseline the change adds for the first time passes.
+
 ## GitHub Actions
 
 The repository is itself an action. It installs Repowise, runs the gates you
@@ -134,6 +139,7 @@ release the action installs.
 | `doc-drift-baseline` | none | Committed baseline file. |
 | `security-fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low`. |
 | `security-baseline` | none | Committed baseline file. |
+| `fail-on-baseline-growth` | `false` | Fail doc drift and security when their baseline gains an entry over the change's base. |
 | `risk-fail-above-percentile` | none | With `risk` in `checks`, fail when the change ranks above this percentile of recent commits. Empty reports the rank without gating. |
 | `upload-sarif` | `false` | Upload doc drift and security findings to code scanning. |
 | `impacted-tests` | `false` | Select the tests the change needs (needs a cached `.repowise` index); see [below](#selecting-the-tests-a-change-needs). |

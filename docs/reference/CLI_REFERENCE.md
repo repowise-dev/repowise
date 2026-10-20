@@ -823,6 +823,7 @@ to check, never applied.
 | `--fail-on-confidence` | With `--check`, fail on findings at or above this confidence (default: 0.7) |
 | `--baseline` | With `--check`, accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | With `--check`, record the current findings to this file and exit 0 |
+| `--fail-on-baseline-growth` | With `--baseline`, exit 1 when the file lists a finding the same file at the change's base does not (the `--since` base, else the CI target branch). A baseline the base lacks is new and passes |
 | `--since` | With `--check`, gate only drift this change is answerable for: documents it edits, documents naming files it deletes or renames, anchors into documents it edits, commands whose manifest it edits, and symbols whose defining file it edits or removes. A bare ref means `REF...HEAD` plus uncommitted changes; `auto` reads the target branch from CI |
 | `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
@@ -1030,6 +1031,7 @@ default branch.
 | `--fail-on` | Exit 1 on a finding of this severity or above: `high` (default), `med`, `low`. A secret under a test, fixture, spec, mock or example path is `low` |
 | `--baseline` | Accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | Add this change's findings to this file, keeping its entries and those of `--baseline`, and exit 0 |
+| `--fail-on-baseline-growth` | With `--baseline`, exit 1 when the file lists a finding the same file at the change's base does not, so a re-saved baseline cannot hide new findings. A baseline the base lacks is new and passes |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--staged` | Check the staged lines, read from the index, for a pre-commit hook: no history scan, no REVSPEC; `security.patterns` still comes from the working tree |
 | `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
