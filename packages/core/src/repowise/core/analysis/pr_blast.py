@@ -78,13 +78,17 @@ async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) 
        also tried with a dispatch-role prefix stripped), an honest "unknown",
        never asserted as untested.
 
-    Test files, and files that are not code (a manifest, a workflow), are never
-    gaps: they need no test of their own.
+    Test files, files that are not code (a manifest, a workflow), and files
+    that declare only types (:func:`~repowise.core.analysis.test_reach.is_type_only`,
+    read from the repository's checkout) are never gaps: they need no test of
+    their own.
     """
     from repowise.core.analysis.test_reachability import (
         load_test_files,
+        read_under,
         tests_matching_by_name,
         tests_reaching,
+        type_only_files,
     )
     from repowise.core.analysis.test_selection import is_code_file
     from repowise.core.persistence.crud import covered_source_files
@@ -105,7 +109,14 @@ async def untested_files(session: AsyncSession, repo_id: str, paths: list[str]) 
     rest = [p for p in candidates if p not in covered and p not in reached]
     subjects = {p: _subject_names(p) for p in rest}
     named = tests_matching_by_name(sorted({n for ns in subjects.values() for n in ns}), test_files)
-    return [p for p in rest if not any(n in named for n in subjects[p])]
+    gaps = [p for p in rest if not any(n in named for n in subjects[p])]
+    if not gaps:
+        return []
+    root = (
+        await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
+    ).scalar_one_or_none()
+    types = type_only_files(gaps, read_under(root))
+    return [p for p in gaps if p not in types]
 
 
 class PRBlastRadiusAnalyzer:

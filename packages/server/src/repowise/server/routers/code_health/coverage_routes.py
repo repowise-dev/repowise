@@ -24,7 +24,9 @@ from repowise.core.analysis.test_reachability import (
     cached_files_reached_by_tests,
     cached_hub_files,
     cached_test_files,
+    read_under,
     tests_reaching_by_tier,
+    type_only_files,
 )
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import Repository
@@ -259,6 +261,15 @@ async def _inferred_coverage(
             }
         # Walked once per index state: the edge read is the cost of this tab.
         reached = await cached_files_reached_by_tests(session, repo_id)
+        # A file of only types has nothing a test could run: not a gap.
+        repo = await session.get(Repository, repo_id)
+        # Reads and parses files: off the event loop.
+        types = await asyncio.to_thread(
+            type_only_files,
+            [m.file_path for m in rows if m.file_path not in reached],
+            read_under(repo.local_path if repo else None),
+        )
+        rows = [m for m in rows if m.file_path not in types]
     except Exception:
         return {
             "basis": "none",

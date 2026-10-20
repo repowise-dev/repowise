@@ -432,3 +432,35 @@ def test_a_path_level_transitive_entry_ranks_a_test_id_last() -> None:
         "tests/test_b.py::t",
         "tests/test_a.py::t",
     ]
+
+
+def test_type_only_files_reads_only_what_it_must(tmp_path) -> None:
+    from repowise.core.analysis.test_reach import read_under, type_only_files
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "t.ts").write_text("export interface A { a: string }\n", encoding="utf-8")
+    (tmp_path / "src" / "c.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    asked: list[str] = []
+    read = read_under(tmp_path)
+
+    def counting(path: str):
+        asked.append(path)
+        return read(path)
+
+    paths = ["src/t.ts", "src/c.ts", "src/api.d.ts", "src/gone.py", "src/x.go", "tests/a.d.ts"]
+    assert type_only_files(paths, counting) == {"src/t.ts", "src/api.d.ts"}
+    assert asked == ["src/t.ts", "src/c.ts", "src/gone.py"]
+    assert read_under(None)("src/t.ts") is None
+
+
+def test_read_under_stays_inside_the_checkout(tmp_path) -> None:
+    from repowise.core.analysis.test_reach import read_under
+
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "repo" / "a.ts").write_text("export type A = string;\n", encoding="utf-8")
+    (tmp_path / "secret.ts").write_text("export type S = string;\n", encoding="utf-8")
+    read = read_under(tmp_path / "repo")
+    assert read("a.ts") is not None
+    assert read("../secret.ts") is None
+    assert read(str(tmp_path / "secret.ts").replace("\\", "/")) is None
+    assert read("missing.ts") is None

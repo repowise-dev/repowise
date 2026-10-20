@@ -602,3 +602,30 @@ async def test_the_file_endpoint_404s_for_an_unknown_repo(client):
         "/api/repos/nope/health/tests-reaching", params={"file_path": "src/a.py"}
     )
     assert resp.status_code == 404
+
+
+async def test_a_file_of_only_types_is_not_a_row_nothing_reaches(client, session, tmp_path):
+    """A ``.d.ts`` or a module of ``TypedDict`` classes has nothing a test could run."""
+    repo = await create_test_repo(client, tmp_path)
+    root = tmp_path / "test-repo" / "src"
+    root.mkdir()
+    (root / "types.py").write_text(
+        "from typing import TypedDict\n\nclass Row(TypedDict):\n    a: int\n", encoding="utf-8"
+    )
+    (root / "c.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    paths = ["src/a.py", "src/c.py", "src/types.py", "src/api.d.ts"]
+    await save_health_metrics(session, repo["id"], [_metric(p) for p in paths])
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={"tests/test_a.py": True, **{p: False for p in paths}},
+        edges=_calls("tests/test_a.py", "src/a.py"),
+    )
+    await session.commit()
+
+    body = await _get(client, repo["id"])
+
+    reached = {f["file_path"]: f["reached"] for f in body["inferred"]["files"]}
+    assert reached == {"src/a.py": True, "src/c.py": False}
+    assert body["inferred"]["files_total"] == 2
+    assert body["inferred"]["files_not_reached"] == 1

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ...ingestion.git_indexer.function_blame import BlameIndex
 from ...ingestion.package_roots import module_for as _module_for
 from ..graph_view import HasEdge
+from ..test_reach.type_only import is_type_only, may_be_type_only
 from .asserts.lexicon import AssertVocabulary
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import BiomarkerResult
@@ -292,6 +293,8 @@ class FileEvaluator:
             coverable_lines=set(cov.get("coverable_lines") or ()) if cov else set(),
             reexport_only=bool(cov)
             and is_reexport_only(pf, bool(fcx.functions), analyzer.read_source),
+            type_only=bool(file_git_meta.get("is_hotspot"))
+            and _declares_only_types(file_path, pf, analyzer.read_source),
             clones=list(clones),
             duplication_pct=dup_pct,
             clone_sources=clone_sources,
@@ -432,3 +435,13 @@ class FileEvaluator:
             else FileDataflowCache(self.analyzer.read_source)
         )
         return cache.get(pf.file_info.abs_path, pf.file_info.language).flagged_analyses()
+
+
+def _declares_only_types(file_path: str, pf: Any, read_source: SourceReader) -> bool:
+    """:func:`is_type_only` over the file's bytes, read only when its name allows it."""
+    if not may_be_type_only(file_path):
+        return False
+    source = read_source(pf.file_info.abs_path)
+    return source is not None and is_type_only(
+        file_path, source, is_test=bool(pf.file_info.is_test)
+    )

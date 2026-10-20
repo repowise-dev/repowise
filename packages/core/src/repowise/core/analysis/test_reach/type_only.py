@@ -9,7 +9,8 @@ and says nothing.
 from __future__ import annotations
 
 import ast
-from pathlib import PurePosixPath
+from collections.abc import Callable, Iterable
+from pathlib import Path, PurePosixPath
 
 from repowise.core.test_paths import is_test_related_path
 
@@ -47,6 +48,62 @@ def is_type_only(path: str, content: str | bytes, *, is_test: bool | None = None
     if suffix in (".py", ".pyi"):
         return _python_type_only(data)
     return False
+
+
+def may_be_type_only(path: str) -> bool:
+    """Whether *path*'s name allows :func:`is_type_only`: worth reading its bytes."""
+    lowered = path.lower()
+    return lowered.endswith(_DECLARATION_SUFFIXES) or PurePosixPath(lowered).suffix in (
+        _TS_SUFFIXES | {".py", ".pyi"}
+    )
+
+
+def type_only_files(
+    paths: Iterable[str], read: Callable[[str], str | bytes | None]
+) -> set[str]:
+    """The *paths* that declare only types. *read* returns a file's bytes, or ``None``.
+
+    A declaration file is judged by its name, so it needs no read. Any other
+    file *read* cannot open, or that fails to parse, is judged code, so it
+    stays a candidate gap: without the checkout only declaration files leave.
+    """
+    out: set[str] = set()
+    for path in paths:
+        if not may_be_type_only(path):
+            continue
+        # A declaration file's verdict does not depend on its bytes.
+        content = b"" if path.lower().endswith(_DECLARATION_SUFFIXES) else read(path)
+        try:
+            if content is not None and is_type_only(path, content):
+                out.add(path)
+        except Exception:  # a parser failure keeps the file a gap, never drops it
+            continue
+    return out
+
+
+# A file of only types is small; past this a read is not worth it.
+_MAX_READ_BYTES = 512 * 1024
+
+
+def read_under(root: str | Path | None) -> Callable[[str], bytes | None]:
+    """A reader of repository-relative paths under *root*; with no root, it reads nothing.
+
+    A path that is absolute or climbs out with ``..`` reads nothing.
+    """
+
+    def read(path: str) -> bytes | None:
+        parts = PurePosixPath(path.replace("\\", "/")).parts
+        if root is None or not parts or parts[0] == "/" or ".." in parts or ":" in parts[0]:
+            return None
+        try:
+            file = Path(root).joinpath(*parts)
+            if file.stat().st_size > _MAX_READ_BYTES:
+                return None
+            return file.read_bytes()
+        except (OSError, ValueError):
+            return None
+
+    return read
 
 
 def _ts_type_only(source: bytes, *, tsx: bool) -> bool:

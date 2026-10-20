@@ -75,6 +75,9 @@ class FileContext:
     coverable_lines: set[int] = field(default_factory=set)
     # Only a docstring, imports and export lists: no code for coverage to measure.
     reexport_only: bool = False
+    # Declares only types (``test_reach.is_type_only``): nothing for a test to run.
+    # Read only for a hotspot, the one file a missing test is claimed for.
+    type_only: bool = False
     # Duplication signals (populated when the engine ran the
     # duplication detector for this analyze() call). ``clones`` is the
     # list of clone pairs this file participates in; ``duplication_pct``
