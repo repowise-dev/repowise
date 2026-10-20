@@ -53,30 +53,37 @@ def build_workspace_config(
     if existing is None:
         return _finish(WorkspaceConfig(version=1), list(picked.values()), primary_alias)
 
-    picked_aliases = {e.alias for e in picked.values()}
     left_out = [e for k, e in previous.items() if k not in picked]
-    # A folder that no longer exists has nothing to keep.
-    gone = [e for e in left_out if not (root / e.path).is_dir()]
-    left_out = [e for e in left_out if e not in gone]
-    replace = bool(left_out) and ask and _confirm_replace(console, left_out, len(picked))
-    # Shortcut: a kept repo whose alias a picked repo now uses is dropped
-    # rather than renamed, since other tools address repos by alias. The line
-    # below names it; renaming would need the user to pick a new alias.
-    kept = [] if replace else [e for e in left_out if e.alias not in picked_aliases]
-    clashed = [] if replace else [e for e in left_out if e.alias in picked_aliases]
-    _report_kept(console, kept, clashed, gone)
+    replace, kept, clashed = _settle_left_out(root, left_out, picked, console=console, ask=ask)
 
     keep_keys = {_key(root, e.path) for e in kept}
     repos = [picked.get(k, e) for k, e in previous.items() if k in picked or k in keep_keys]
     repos += [e for k, e in picked.items() if k not in previous]
 
     primary = primary_alias
-    kept_aliases = {e.alias for e in kept} | {
-        e.alias for k, e in previous.items() if k in picked
-    }
-    if not replace and not primary_picked and existing.default_repo in kept_aliases:
+    # A clashed alias now names a different repo, so it is not the old primary.
+    still_there = {e.alias for e in repos} - {e.alias for e in clashed}
+    if not replace and not primary_picked and existing.default_repo in still_there:
         primary = existing.default_repo
     return _finish(existing, repos, primary)
+
+
+def _settle_left_out(
+    root: Path, left_out: list[Any], picked: dict[str, Any], *, console: Console, ask: bool
+) -> tuple[bool, list[Any], list[Any]]:
+    """Whether to replace the workspace, and the left-out repos kept and clashed."""
+    # A folder that no longer exists has nothing to keep.
+    gone = [e for e in left_out if not (root / e.path).is_dir()]
+    left_out = [e for e in left_out if e not in gone]
+    replace = bool(left_out) and ask and _confirm_replace(console, left_out, len(picked))
+    picked_aliases = {e.alias for e in picked.values()}
+    # Shortcut: a kept repo whose alias a picked repo now uses is dropped
+    # rather than renamed, since other tools address repos by alias. The line
+    # below names it; renaming would need the user to pick a new alias.
+    kept = [] if replace else [e for e in left_out if e.alias not in picked_aliases]
+    clashed = [] if replace else [e for e in left_out if e.alias in picked_aliases]
+    _report_kept(console, kept, clashed, gone)
+    return replace, kept, clashed
 
 
 def _finish(config: Any, repos: list[Any], primary: str) -> Any:
