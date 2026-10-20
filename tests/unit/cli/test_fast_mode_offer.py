@@ -234,3 +234,19 @@ def test_keyless_upgrade_note_falls_back_without_a_next_command():
     note = keyless_upgrade_note(semantic_available=False, reindex_command=None)
     assert "repowise reindex adds semantic search" in note
     assert "..." not in note
+
+
+def test_declining_the_cost_names_generate_for_the_pages_built_from_code(monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from repowise.cli.commands.init_cmd import _generate
+
+    buf = io.StringIO()
+    monkeypatch.setattr(_generate, "console", Console(file=buf, width=200))
+    monkeypatch.setattr(_generate, "_render_template_wiki", lambda *_a, **_k: None)
+    run = SimpleNamespace(prior_docs_mode=None, gaps=[], cost_declined=False)
+    _generate._after_cost_declined(run)
+    assert "Run repowise generate to write it with a model later." in buf.getvalue()

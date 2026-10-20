@@ -157,9 +157,9 @@ def build_contextual_next_steps(
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
         candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
-    if fast_mode:
-        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+    from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
 
+    if fast_mode:
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
         )
@@ -167,7 +167,7 @@ def build_contextual_next_steps(
         # `generate` is the scoped, cost-gated upgrade: a coverage, a directory
         # or one page at a time, each behind an estimate.
         candidates.append(
-            ("repowise generate", "write the documentation with a model (needs a key)")
+            (MODEL_COMMAND, "write the documentation with a model (needs a key)")
         )
     dead = dead_unreachable + dead_unused
     if dead > 0:
@@ -200,8 +200,10 @@ def keyless_upgrade_note(semantic_available: bool, reindex_command: str | None =
     the stamped scope use that exact command instead of the generic default,
     so the note cannot name a flag combination the run did not actually need.
     """
+    from repowise.core.index_scope import MODEL_COMMAND
+
     prose = (
-        "repowise generate writes the subsystem pages with a model "
+        f"{MODEL_COMMAND} writes the subsystem pages with a model "
         "(needs a key, or --provider ollama for a local model)"
     )
     if semantic_available:

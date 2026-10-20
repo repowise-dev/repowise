@@ -64,4 +64,14 @@ describe("HealthOverviewCard performance", () => {
     );
     expect(waiting.container.textContent).toContain("0worth fixing now");
   });
+
+  it("shows an older payload's open count rather than all clear", () => {
+    const { container } = render(
+      <HealthOverviewCard data={data({ ...perf, performance_findings: 942 })} repoId="r" />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("942open");
+    expect(text).not.toContain("worth fixing now");
+    expect(text).not.toContain("in production");
+  });
 });

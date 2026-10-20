@@ -125,7 +125,8 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, kimi, ollama, litellm, codex_cli, claude_cli, opencode, "
+        "deepseek, kimi, ollama, litellm, codex_cli, copilot_cli, claude_cli, "
+        "opencode, "
         "edenai, mock). "
         "In a terminal, a missing key is prompted for; openai also asks for "
         "an optional OpenAI-compatible Base URL."

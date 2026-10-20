@@ -63,11 +63,14 @@ from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
     from .dotnet_test_projects import DotnetTestProjects
     from .phpunit_roots import PhpunitRoots
     from .pytest_roots import PytestRoots
+
+    # Whether a repo-relative directory holds a package manifest.
+    PackageRootProbe = Callable[[str], bool]
 
 # Directory segments that mark every file beneath them as test material,
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
@@ -176,6 +179,25 @@ _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
     {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
 )
 
+# Helper directories named for tests, matched on the segment's words run
+# together like ``testdata`` above: ``test-helpers/``, ``test_utils/``,
+# ``testutil/`` (Go), ``test-support/``. They hold the mocks, render rigs and
+# fixtures only tests import, so they count wherever they sit, where the bare
+# ``helpers``/``support`` words above need a test tree around them.
+#
+# Unlike golden data, a helper directory can ship: preact's ``test-utils/`` is a
+# package of its own published as ``preact/test-utils``. So one that is a
+# package root (holds a registry package manifest) stays production. Path-only
+# callers can see that only when the manifest is the path itself
+# (``test-utils/package.json``); ingestion passes ``package_root`` so every file
+# beneath one reads as production too. Known miss: react-dom's
+# ``src/test-utils/`` is re-exported as the public ``react-dom/test-utils`` from
+# a manifest one level up, and reads as support. ``testing`` stays out: it names
+# shipped packages (Laravel's ``Illuminate/Testing``, Go helper libraries).
+_SUPPORT_DIR_WORDS_UNLESS_PACKAGE: frozenset[str] = frozenset(
+    {"testhelpers", "testhelper", "testutils", "testutil", "testsupport"}
+)
+
 
 # A source file whose name ends in "test" and a scaffolding word is the support
 # for some module's tests: ``bot.test-harness.ts``, ``card-test-helpers.ts``,
@@ -205,6 +227,7 @@ class _Conventions:
     dir_suffixes: tuple[str, ...]
     unambiguous_dir_suffixes: tuple[str, ...]
     lang_dir_tokens: dict[str, frozenset[str]]
+    manifest_names: frozenset[str]
 
 
 @cache
@@ -247,6 +270,7 @@ def _conventions() -> _Conventions:
             if s.lstrip(".").lower() not in _AMBIGUOUS_TEST_DIR_TOKENS
         ),
         lang_dir_tokens=REGISTRY.test_dir_tokens_by_language(),
+        manifest_names=REGISTRY.package_manifest_filenames(),
     )
 
 
@@ -271,6 +295,33 @@ def _is_support_anywhere_dir(segment: str) -> bool:
         segment in _SUPPORT_DIR_TOKENS_ANYWHERE
         or "".join(_words(segment)) in _SUPPORT_DIR_TOKENS_ANYWHERE
     )
+
+
+def _in_support_anywhere_dir(
+    segments: list[str], original: list[str], filename: str, package_root: PackageRootProbe | None
+) -> bool:
+    """Whether a directory that needs no test tree around it holds this file."""
+    for i, seg in enumerate(segments):
+        if _is_support_anywhere_dir(seg):
+            return True
+        if "".join(_words(seg)) in _SUPPORT_DIR_WORDS_UNLESS_PACKAGE and not _is_package_root(
+            original[: i + 1], filename if i == len(segments) - 1 else "", package_root
+        ):
+            return True
+    return False
+
+
+def _is_package_root(
+    dir_parts: list[str], filename: str, package_root: PackageRootProbe | None
+) -> bool:
+    """Whether the directory *dir_parts* names is a package (see above).
+
+    *filename* is the file being classified when it sits directly in that
+    directory: a manifest there proves it without asking anyone.
+    """
+    if filename in _conventions().manifest_names:
+        return True
+    return package_root is not None and package_root("/".join(dir_parts))
 
 
 def _is_test_name(filename: str) -> bool:
@@ -425,6 +476,7 @@ def _classify(
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
@@ -447,7 +499,9 @@ def _classify(
     # A scaffolding directory that needs no test tree around it settles the
     # question before the tree rules run, ``.github/`` included. A test-shaped
     # filename still wins, so ``testdata/build_test.go`` stays a test.
-    if not named_test and any(_is_support_anywhere_dir(seg) for seg in segments):
+    if not named_test and _in_support_anywhere_dir(
+        segments, original_segments, filename, package_root
+    ):
         return "support"
 
     # ``.github/`` holds CI workflows, actions, issue templates and agent
@@ -513,6 +567,7 @@ def is_test_path(
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is a test.
 
@@ -525,7 +580,7 @@ def is_test_path(
     *dotnet_projects* to recognize C# files governed by a test project, and
     pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots) == "test"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "test"
 
 
 def is_test_support_path(
@@ -534,6 +589,7 @@ def is_test_support_path(
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
@@ -541,7 +597,7 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots) == "support"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "support"
 
 
 def is_test_related_path(
@@ -550,6 +606,7 @@ def is_test_related_path(
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
     phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
 
@@ -557,8 +614,10 @@ def is_test_related_path(
     should use when they mean "not production code" - a refactoring detector
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
+    *package_root*, which answers whether a repo-relative directory holds a
+    package manifest, keeps a shipped ``test-utils/`` package production.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots) != ""
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) != ""
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:

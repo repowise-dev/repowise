@@ -31,6 +31,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 
 **Health and risk**
 [`health`](#repowise-health-path) ·
+[`health check`](#repowise-health-check-revspec) ·
 [`risk`](#repowise-risk-revspec) ·
 [`overlap`](#repowise-overlap) ·
 [`dead-code`](#repowise-dead-code-path) ·
@@ -823,6 +824,7 @@ to check, never applied.
 | `--fail-on-confidence` | With `--check`, fail on findings at or above this confidence (default: 0.7) |
 | `--baseline` | With `--check`, accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | With `--check`, record the current findings to this file and exit 0 |
+| `--fail-on-baseline-growth` | With `--baseline`, exit 1 when the file lists a finding the same file at the change's base does not (the `--since` base, else the CI target branch). A baseline the base lacks is new and passes |
 | `--since` | With `--check`, gate only drift this change is answerable for: documents it edits, documents naming files it deletes or renames, anchors into documents it edits, commands whose manifest it edits, and symbols whose defining file it edits or removes. A bare ref means `REF...HEAD` plus uncommitted changes; `auto` reads the target branch from CI |
 | `--format` | Output: `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
@@ -1030,6 +1032,7 @@ default branch.
 | `--fail-on` | Exit 1 on a finding of this severity or above: `high` (default), `med`, `low`. A secret under a test, fixture, spec, mock or example path is `low` |
 | `--baseline` | Accept the findings recorded in this file; only new ones fail |
 | `--write-baseline` | Add this change's findings to this file, keeping its entries and those of `--baseline`, and exit 0 |
+| `--fail-on-baseline-growth` | With `--baseline`, exit 1 when the file lists a finding the same file at the change's base does not, so a re-saved baseline cannot hide new findings. A baseline the base lacks is new and passes |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--staged` | Check the staged lines, read from the index, for a pre-commit hook: no history scan, no REVSPEC; `security.patterns` still comes from the working tree |
 | `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
@@ -1182,6 +1185,37 @@ repowise health --format json | jq .kpis              # machine-readable
 no separate command needed. `repowise status` shows a one-line summary
 (`Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`).
 Health automatically folds in whatever coverage was already ingested via `repowise coverage add`, no flag needed.
+
+#### `repowise health check [REVSPEC]`
+
+Gate a change on the code-health findings it introduces. Built for CI: it needs git and nothing else (no index, no database, no API key). It analyses the changed files at the change's base and head and compares their findings by file, marker and symbol, never by line.
+
+| Finding | Default | With `--fail-on worsened` |
+|---------|---------|---------------------------|
+| Introduced on lines the change wrote, at `--fail-at` severity or above | fails | fails |
+| Made worse by the change, at `--fail-at` severity or above | warns | fails |
+| Either of those below `--fail-at`, or in a test file | warns | warns |
+| Moved or renamed with its code, away from the changed lines, or not code shape (performance, history, coverage) | context only | context only |
+
+| Flag | Description |
+|------|-------------|
+| `--fail-on` | `introduced` (default) or `worsened` |
+| `--fail-at` | Lowest severity that can fail: `medium`, `high` (default), `critical` |
+| `--diff-risk` | Level of the diff-risk rules: `warn` (default), `error` or `off`. `LEVEL` sets all three, `RULE=LEVEL` one; repeatable |
+| `--path` | A path inside the repository (defaults to cwd) |
+| `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
+
+Three diff-risk rules read the changed text in any supported language and warn by default: `added-suppression` (a new lint, type-check, coverage or repowise suppression comment or attribute, or a biomarker newly disabled in `.repowise/health-rules.json`), `weakened-tests` (a new unconditional skip or focus marker, fewer test cases or assertions, a loosened coverage threshold) and `test-only-branch` (a new test-environment check in production code). A marker that moved to another file with its code does not count.
+
+REVSPEC is the change, resolved as for [`security check`](#repowise-security-check-revspec). Rules in `.repowise/health-rules.json` are read as the change's base has them and apply to both sides, so a change cannot loosen its own gate; an invalid file there exits `2`. A changed code file left unread (unparsable, or over 1.5 MB) warns; a change touching no file health reads passes with a note.
+
+```bash
+repowise health check origin/main...HEAD
+repowise health check --format github
+repowise health check --format sarif > health.sarif
+```
+
+Exit codes: `0` passed (warnings included), `1` gate failed, `2` could not evaluate (not a git repository, unknown revision, no merge-base in a shallow clone, an invalid `health-rules.json` at the base, more than 300 changed code files, no changed code file could be read, an unexpected internal error).
 
 ---
 

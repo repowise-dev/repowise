@@ -20,6 +20,7 @@ from repowise.core.providers.llm.agent_cli import AgentCliProvider
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError
 from repowise.core.providers.llm.claude_cli import ClaudeCliProvider
 from repowise.core.providers.llm.codex_cli import CodexCliProvider
+from repowise.core.providers.llm.copilot_cli import CopilotCliProvider
 from repowise.core.providers.llm.opencode import OpenCodeProvider
 from repowise.core.providers.llm.registry import _BUILTIN_PROVIDERS
 
@@ -74,6 +75,26 @@ def _opencode_stdout(text: str) -> str:
     )
 
 
+def _copilot_stdout(text: str) -> str:
+    return _jsonl(
+        {
+            "type": "assistant.message",
+            "data": {"content": text, "toolRequests": []},
+        },
+        {
+            "type": "session.usage_checkpoint",
+            "data": {
+                "accountingSnapshot": {
+                    "lastCallInputTokens": 120,
+                    "lastCallOutputTokens": 40,
+                    "totalPremiumRequestCost": 1,
+                    "tokenDetails": {"cache_read": {"tokenCount": 30}},
+                }
+            },
+        },
+    )
+
+
 BACKENDS = [
     Backend(
         ClaudeCliProvider,
@@ -104,6 +125,15 @@ BACKENDS = [
         repo_flag=None,
         env={"OPENCODE_DISABLE_PROJECT_CONFIG": "true"},
         repo_cwd=True,
+    ),
+    Backend(
+        CopilotCliProvider,
+        "gpt-5.5",
+        _copilot_stdout,
+        tokens=(120, 40, 30),
+        books_cost=False,
+        repo_flag="-C",
+        env=None,
     ),
 ]
 

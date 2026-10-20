@@ -11,7 +11,8 @@ export interface OwnerListEntry {
   key: string;
   name: string;
   email: string | null;
-  kind: IdentityKind;
+  /** Absent on payloads from before identities were classified: unknown, not "human". */
+  kind?: IdentityKind;
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;
@@ -63,8 +64,10 @@ export interface OwnerProfile {
   key: string;
   name: string;
   email: string | null;
-  kind: IdentityKind;
-  aliases: OwnerAliases;
+  /** Absent on payloads from before identities were classified: unknown, not "human". */
+  kind?: IdentityKind;
+  /** Absent on payloads from before aliases were folded in. */
+  aliases?: OwnerAliases;
   files_owned: number;
   hotspots_owned: number;
   silo_modules: number;

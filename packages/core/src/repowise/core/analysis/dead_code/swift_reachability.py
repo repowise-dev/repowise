@@ -19,7 +19,7 @@ an entry, has an importer, is a test, or was itself reached) does one of:
 * for an extension of a type the repository declares, is the type's file; for
   an extension of a platform type (``extension Color``), uses one of the
   extension's members, by an edge or by ``.member`` / ``member(`` written
-  elsewhere, when no other file declares that member name.
+  elsewhere.
 
 Uses are counted from live files only and the answer is a fixpoint, so two dead
 files that name each other stay dead. Comments and string literals are
@@ -54,8 +54,8 @@ _NAME = r"[^\W\d]\w*"
 _TYPE_USE = re.compile(
     rf"(?:[:<\[(,]|->|\bas[?!]?|\bis)\s*(?:{_NAME}\s*\.\s*)*({_NAME})|\b({_NAME})\s*[(.]"
 )
-#: A member written as ``.member`` or called as ``member(``.
-_MEMBER_USE = re.compile(rf"\.\s*({_NAME})|\b({_NAME})\s*\(")
+#: A member written as ``.member`` or called as ``member(``, not declared by ``func``/``subscript``.
+_MEMBER_USE = re.compile(rf"\.\s*({_NAME})|(?<!\bfunc\s)\b(?!subscript\b)({_NAME})\s*\(")
 
 
 def _line_comment_end(text: str, i: int) -> int:
@@ -165,7 +165,6 @@ class _SwiftFacts:
         self.declared: dict[str, set[str]] = {}  # file -> type names it declares
         self.extends: dict[str, set[str]] = {}  # file -> extended type names
         self.members: dict[str, set[str]] = {}  # file -> its extensions' member names
-        self.member_files: dict[str, set[str]] = {}  # any symbol name -> declaring files
         self.own: dict[str, set[str]] = {}  # file -> names it declares or extends
         self.type_users: dict[str, set[str]] = {}  # name -> files writing it as a type
         self.member_users: dict[str, set[str]] = {}  # name -> files writing it as a member
@@ -189,7 +188,6 @@ class _SwiftFacts:
             name = (data.get("name") or "").strip("`")  # ``func `if`()``
             if not name:
                 continue
-            self.member_files.setdefault(name, set()).add(path)
             # Nested types too: ``StatusEditor.EditorStore`` is declared
             # inside an extension of ``StatusEditor``.
             if data.get("kind") in _TYPE_KINDS:
@@ -263,11 +261,9 @@ class _Reach:
         return False
 
     def _member_used(self, path: str) -> bool:
-        """A live file writes a member of *path*'s extensions no other file declares."""
+        """A live file writes a member of *path*'s extensions."""
         facts = self.facts
         for member in facts.members.get(path, ()):
-            if facts.member_files.get(member, set()) != {path}:
-                continue
             if any(u != path and self._live(u) for u in facts.member_users.get(member, ())):
                 return True
         return False

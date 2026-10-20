@@ -133,3 +133,48 @@ def test_repos_with_all_is_a_usage_error(tmp_path):
     result = CliRunner().invoke(init_command, [str(tmp_path), "--repos", "x", "--all"])
     assert result.exit_code == 2
     assert "--repos and --all contradict each other" in result.output
+
+
+@pytest.mark.parametrize("value", ["", ",", " , "])
+def test_repos_with_no_names_is_a_usage_error(tmp_path, value):
+    from click.testing import CliRunner
+
+    from repowise.cli.commands.init_cmd import init_command
+
+    for name in ("repo-a", "repo-b"):
+        (tmp_path / name / ".git").mkdir(parents=True)
+    result = CliRunner().invoke(
+        init_command, [str(tmp_path), "--yes", "--no-editor-setup", "--repos", value]
+    )
+    assert result.exit_code == 2
+    assert "--repos needs at least one repo name" in result.output
+
+
+def test_a_path_to_a_repo_folder_matches_it(tmp_path, monkeypatch):
+    repos = [SimpleNamespace(path=tmp_path / n, name=n, alias=n) for n in ("repo-a", "repo-b")]
+    monkeypatch.chdir(tmp_path)
+    assert match_repo_names(repos, ["./repo-b"], tmp_path) == [repos[1]]
+    assert match_repo_names(repos, [str(tmp_path / "repo-a")], tmp_path) == [repos[0]]
+    with pytest.raises(ValueError, match=r"Unknown repo: \./nope"):
+        match_repo_names(repos, ["./nope"], tmp_path)
+
+
+def test_a_relative_path_is_read_from_the_workspace_root(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    repos = [SimpleNamespace(path=root / n, name=n, alias=n) for n in ("repo-a", "repo-b")]
+    for repo in repos:
+        repo.path.mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert match_repo_names(repos, ["./repo-b"], root) == [repos[1]]
+
+
+def test_a_path_that_cannot_be_resolved_matches_nothing(tmp_path, monkeypatch):
+    from repowise.cli.ui import workspace_selection
+
+    def _fail(self, *a, **k):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(workspace_selection.Path, "resolve", _fail)
+    assert workspace_selection._resolved(tmp_path) is None

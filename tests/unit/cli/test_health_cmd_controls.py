@@ -192,10 +192,21 @@ def test_the_headline_names_production_code_while_tests_are_in_it() -> None:
         return console.file.getvalue()
 
     base = {"average_health": 8.0, "production_average": 6.0, "file_count": 2}
-    assert "Production code: 6.0/10 · Hotspot: ?/10" in headline(**base, production_file_count=1)
+    assert "Production code: 6.0/10 · Worst:" in headline(**base, production_file_count=1)
     # Narrowed to production, the two figures are one.
     narrowed = headline(**base, production_file_count=2)
-    assert "Production code" not in narrowed and "Hotspot: ?/10" in narrowed
+    assert "Production code" not in narrowed and "[Good] · Worst:" in narrowed
+
+
+def test_the_headline_names_hotspot_health_only_when_there_is_one() -> None:
+    def headline(**kpis) -> str:
+        console = Console(file=io.StringIO(), width=400, force_terminal=False)
+        with patch.object(health_module, "console", console):
+            health_module._render_headline(kpis, False, 0)
+        return console.file.getvalue()
+
+    assert "Hotspot: 6.5/10 · Worst:" in headline(average_health=8.0, hotspot_health=6.5)
+    assert "Hotspot" not in headline(average_health=8.0, hotspot_health=None)
 
 
 def test_the_performance_line_leads_with_the_causes_worth_fixing_now() -> None:

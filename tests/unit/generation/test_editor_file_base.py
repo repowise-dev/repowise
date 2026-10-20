@@ -147,8 +147,8 @@ def test_keyless_index_gets_keyless_steering(any_gen):
     assert _KEYLESS_BULLET in result
     # Template pages store confidence 1.0, so the figure would read as 100%.
     assert "Confidence:" not in result
-    assert "(commit a1b2c3d).\nScope: no model (template prose, full-text search)." in result
-    # `--full` needs a key; offering it to a keyless index is a dead end.
+    assert "(commit a1b2c3d).\nScope: Built from code (no model, full-text search)." in result
+    # A built-from-code index is already full: `--full` has nothing to add.
     assert "repowise update --full" not in result
     assert "[fts]` only has no semantic agreement" not in result
     assert 'Cite `confidence: "high"`' not in result
@@ -159,6 +159,7 @@ def test_keyless_index_gets_keyless_steering(any_gen):
 def test_index_only_keyless_names_the_fast_to_full_command(any_gen):
     result = any_gen.render(_scoped({**_KEYLESS_SCOPE, "content_provenance": "none"}))
     assert "provider key and `repowise update --full`" in result
+    assert "Scope: Index only (no documentation, full-text search)." in result
 
 
 def test_keyed_index_keeps_model_guidance(any_gen):

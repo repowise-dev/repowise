@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rich.markup import escape
+
 from repowise.cli._setup import setup_logging_silence
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.editor_integrations.defaults import (
@@ -65,7 +67,7 @@ from repowise.cli.ui.mode_names import pages
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
-from repowise.core.index_scope import fast_to_full_command
+from repowise.core.index_scope import MODEL_COMMAND
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
@@ -86,6 +88,7 @@ from .persistence import (
     apply_git_history_coverage_state,
     keep_prior_documentation,
     persist_result,
+    stamp_fresh_index,
 )
 from .reporting import show_workspace_completion
 
@@ -403,6 +406,10 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         no_editor_setup=not ctx.editor_setup,
     )
     _save_repo_config(repo.path, ctx, docs)
+    # After the config writes, which the config fingerprint reads. Unstamped,
+    # the first update re-renders and re-scores every repo init just built.
+    stamp_fresh_index(state, repo.path, result)
+    save_state(repo.path, state, full_index=True)
 
     from repowise.cli.providers import embed_failure_message
 
@@ -516,7 +523,7 @@ def _generate_repo_with_model(
             ctx.gaps.append(f"{repo.alias}: {COST_UNCONFIRMED_BUILT}")
         console.print(
             "    [dim]Building this repo's documentation from code instead. Run "
-            f"[bold]{fast_to_full_command(repo.alias)}[/bold] to write it with a model "
+            f"[bold]{MODEL_COMMAND} {escape(str(repo.path))}[/bold] to write it with a model "
             "later.[/dim]"
         )
         _render_repo_from_templates(repo, ctx, index, docs)
@@ -619,6 +626,8 @@ def _stamp_repo_scope(
     from repowise.core.index_scope import dropped_files_scope, stamp_index_scope
 
     result, repo_provider, docs_mode = index.result, index.provider, docs.docs_mode
+    # A model can write the docs without mining decisions (workspace add).
+    scope_provider = ctx.provider if repo_provider is None and docs_mode == "llm" else repo_provider
     scope_config = load_config(repo_path)
     configured_cap = resolve_max_file_pages(config=scope_config)
     scope_embedder = _scope_embedder(ctx, docs)
@@ -646,8 +655,8 @@ def _stamp_repo_scope(
             "skipped": ["generation"] if ctx.run_mode == "fast" else [],
         },
         provider={
-            "name": repo_provider.provider_name if repo_provider is not None else None,
-            "model": repo_provider.model_name if repo_provider is not None else None,
+            "name": scope_provider.provider_name if scope_provider is not None else None,
+            "model": scope_provider.model_name if scope_provider is not None else None,
             "embedder": scope_embedder,
             "reused": False,
             "model_cost_possible": docs_mode == "llm",

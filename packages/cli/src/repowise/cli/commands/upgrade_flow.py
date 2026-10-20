@@ -310,8 +310,17 @@ async def _run_upgrade(
     # 3. Rehydrate the graph from SQL — no parse, no resolution, no recompute.
     from repowise.core.persistence import get_session
 
-    async with get_session(sf) as session:
-        graph_builder = await rehydrate_graph_builder(session, repo_id, repo_path)
+    try:
+        async with get_session(sf) as session:
+            graph_builder = await rehydrate_graph_builder(session, repo_id, repo_path)
+    except ValueError as exc:
+        # Only the empty-graph case; any other ValueError is a real fault.
+        if "No persisted graph nodes" not in str(exc):
+            raise
+        await engine.dispose()
+        raise click.ClickException(
+            f"The index at {repo_path} has no code graph. Run `repowise init` to rebuild it."
+        ) from None
 
     # 4. Re-parse for ASTs + source (the only unavoidable re-work). The graph
     # is NOT rebuilt — generation traverses the rehydrated SQL graph.
@@ -456,21 +465,38 @@ async def _open_repository(repo_path: Path) -> tuple[Any, Any, Any]:
 
     The row comes FIRST: pipeline_jobs.repository_id is an FK to repositories.id,
     so it must exist before the backfill creates its checkpoint job.
+
+    A repo-local store copied from another path keeps the old ``local_path``.
+    Its single row is rebound here, as ``repo_index_session`` reads it, so the
+    upsert reuses the indexed row instead of adding an empty one.
     """
+    from sqlalchemy import select
+
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
+        get_configured_db_url,
+        get_repository_by_path,
         get_session,
         init_db,
         upsert_repository,
     )
+    from repowise.core.persistence.models import Repository
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
     await init_db(engine)
     sf = create_session_factory(engine)
     async with get_session(sf) as session:
+        if (
+            get_configured_db_url() is None
+            and await get_repository_by_path(session, str(repo_path)) is None
+        ):
+            repos = (await session.scalars(select(Repository).limit(2))).all()
+            if len(repos) == 1:
+                repos[0].local_path = str(repo_path)
+                await session.flush()
         repo = await upsert_repository(
             session, name=repo_path.name, local_path=str(repo_path), stamp_head=True
         )

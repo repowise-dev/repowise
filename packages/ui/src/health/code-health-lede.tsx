@@ -78,6 +78,12 @@ function performanceHint(causes: PerformanceCauses | null | undefined): string {
   );
 }
 
+/** For a summary that predates `performance_causes` and carries only the raw count. */
+const OPEN_PERFORMANCE_HINT =
+  "A count of open performance risks, not a score. Each one is a database, " +
+  "network, filesystem or subprocess call inside a loop, traced across function " +
+  "boundaries. Never blended into the health score.";
+
 const HOTSPOT_HINT =
   "Code health averaged over the repo's churn hotspots — the files you change " +
   "most often. Lower than the overall figure on most repos, because " +
@@ -155,6 +161,9 @@ export function CodeHealthLede({
   const maint = summary.maintainability_average;
   const perf = summary.performance_average;
   const perfCauses = summary.performance_causes;
+  // An older summary carries only the raw open count; show it under its own
+  // label rather than a "fix now" zero.
+  const perfOpen = perfCauses == null ? (summary.performance_findings ?? null) : null;
   const hotspot = summary.hotspot_health;
   const worstTestPath = summary.worst_test_path;
   const worstTestScore = summary.worst_test_score;
@@ -201,11 +210,17 @@ export function CodeHealthLede({
       // the page was describing something else.
       highlighted: pillar === "maintainability",
     },
-    {
-      label: "Performance, fix now",
-      value: perf == null ? "" : formatNumber(perfCauses?.now ?? 0),
-      hint: performanceHint(perfCauses),
-    },
+    perfOpen != null
+      ? {
+          label: "Performance risk",
+          value: perf == null ? "" : formatNumber(perfOpen),
+          hint: OPEN_PERFORMANCE_HINT,
+        }
+      : {
+          label: "Performance, fix now",
+          value: perf == null ? "" : formatNumber(perfCauses?.now ?? 0),
+          hint: performanceHint(perfCauses),
+        },
     {
       label: "Hotspot health",
       value: hotspot == null ? "" : formatScore(hotspot),

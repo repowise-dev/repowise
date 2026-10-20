@@ -79,7 +79,9 @@ async def _add_graph_node(session, repo_id, node_id, *, is_entry_point=False, pa
     return node
 
 
-async def _add_page(session, repo_id, page_id, page_type, target_path, content):
+async def _add_page(
+    session, repo_id, page_id, page_type, target_path, content, *, provider_name="mock"
+):
     page = Page(
         id=page_id,
         repository_id=repo_id,
@@ -89,7 +91,7 @@ async def _add_page(session, repo_id, page_id, page_type, target_path, content):
         target_path=target_path,
         source_hash="abc",
         model_name="mock",
-        provider_name="mock",
+        provider_name=provider_name,
         generation_level=0,
         confidence=0.9,
         freshness_status="fresh",
@@ -698,3 +700,68 @@ async def test_the_default_health_line_skips_the_detail_queries(session, repo, t
     assert data.code_health.worst_path == "src/a.py"
     assert data.code_health.maintainability_average is None
     assert data.code_health.fix_first == []
+
+
+async def test_structure_only_module_purpose_has_no_metadata_and_no_newline(
+    session, repo, tmp_path
+):
+    content = (
+        "# billing\n\n`billing`\n\n"
+        "**Language:** python | **Files:** 6 | **Public symbols:** 5 / 5\n\n"
+        "Covers the 6 source files in billing.\n\n"
+        "## Overview\n\n"
+        "billing covers 6 python files, exposing 5 public symbols.\n"
+    )
+    await _add_page(
+        session, repo.id, "module_page:billing", "module_page", "billing",
+        content, provider_name="template",
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    (module,) = data.key_modules
+    assert "**Language:**" not in module.purpose
+    assert "Covers the" not in module.purpose
+    assert "\n" not in module.purpose
+    assert module.purpose == "billing covers 6 python files, exposing 5 public symbols"
+
+
+async def test_structure_only_overview_skips_the_preamble(session, repo, tmp_path):
+    content = (
+        "# Repository Overview: fx2\n\n"
+        "**Files:** 19 | **Lines:** 43\n\n"
+        "Covers the whole repository.\n\n"
+        "## Project Summary\n\n"
+        "`fx2` is a python codebase of 19 files. Execution starts at `main.py`.\n"
+    )
+    await _add_page(
+        session,
+        repo.id,
+        "repo_overview:.",
+        "repo_overview",
+        ".",
+        content,
+        provider_name="template",
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.architecture_summary.startswith("fx2 is a python codebase of 19 files.")
+    assert "Covers the whole" not in data.architecture_summary
+    assert "\n" not in data.architecture_summary
+
+
+async def test_model_written_module_keeps_its_opening_sentence(session, repo, tmp_path):
+    content = (
+        "# billing\n\n"
+        "billing covers 6 python files, exposing 5 public symbols.\n\n"
+        "## Overview\n\nMore detail.\n"
+    )
+    await _add_page(session, repo.id, "module_page:billing", "module_page", "billing", content)
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.key_modules[0].purpose == "billing covers 6 python files, exposing 5 public symbols"

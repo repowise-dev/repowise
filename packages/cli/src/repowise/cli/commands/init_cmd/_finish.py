@@ -9,10 +9,8 @@ from typing import Any
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.editor_setup import register_editor_clients, write_editor_project_files
 from repowise.cli.helpers import (
-    config_fingerprint,
     console,
     get_head_commit,
-    head_commit_ts,
     load_config,
     load_state,
     run_async,
@@ -22,12 +20,9 @@ from repowise.cli.helpers import (
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import OK, mascot, print_stage, progress_steps
 from repowise.cli.ui.glyphs import glyph
-from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
-from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
-from repowise.core.repo_config import config_dependency_fingerprints
 
 from ._ingest import decision_llm_client
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
@@ -38,6 +33,7 @@ from .persistence import (
     keep_prior_documentation,
     persist_result,
     save_full_state_and_config,
+    stamp_fresh_index,
 )
 from .reporting import show_completion
 
@@ -283,21 +279,8 @@ def _save_index_only_state(run: InitRun, base_state: dict[str, Any]) -> None:
         embedder=embedder,
         embedding_model=resolve_embedding_model(embedder) if embedder else None,
     )
-    # Fingerprint after config writes so the first update doesn't false-positive.
-    base_state["config_fingerprint"] = config_fingerprint(repo_path)
-    base_state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo_path)
-    # Without these stamps the version triggers never fire for keyless installs.
-    base_state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
-    base_state["security_scanner_version"] = SECURITY_SCANNER_VERSION
-    # Unstamped, the first update would re-render the whole wiki.
-    from repowise.cli.commands.update_cmd.command import _current_renderer_fingerprint
-
-    base_state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
-    # Start the re-score cadence only when a health report was persisted;
-    # otherwise the first update's re-score must still run.
-    _head_ts = head_commit_ts(repo_path) if getattr(run.result, "health_report", None) else None
-    if _head_ts is not None:
-        base_state["last_full_rescore_at"] = _head_ts
+    # After the config writes, so the first update doesn't false-positive.
+    stamp_fresh_index(base_state, repo_path, run.result)
     save_state(repo_path, base_state, full_index=True)
 
 

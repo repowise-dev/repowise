@@ -14,6 +14,7 @@ from repowise.cli.ui import MODEL, OK, VALUE, WARN
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mascot import owl_status
 from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, model_name, written_by
+from repowise.core.index_scope import MODEL_COMMAND
 
 from ._options import InitRun
 
@@ -67,8 +68,8 @@ def _resolve_or_fall_back(run: InitRun) -> None:
         console.print(
             f"[{WARN}]No model configured.[/] Building documentation from "
             "code instead (no key, no spend).\n"
-            "[dim]Set a key (or pass --provider) and run [bold]repowise "
-            "update --full[/bold] to have a model write it.[/dim]"
+            f"[dim]Set a key (or pass --provider) and run [bold]{MODEL_COMMAND}"
+            "[/bold] to have a model write it.[/dim]"
         )
         # A provider that was configured but could not be built is a different
         # problem from none being configured, and the message above would send

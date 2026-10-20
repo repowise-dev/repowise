@@ -568,6 +568,27 @@ class TestFileTraverser:
         assert files["tests/test_demo.py"] is True
         assert files["tools/test_cli.py"] is True
 
+    def test_test_helper_directories_are_test_material(self, tmp_path: Path) -> None:
+        """#3244: helper dirs only tests import are not production code, unless
+        the directory is a package root of its own (preact's ``test-utils/``)."""
+        files_on_disk = {
+            "ui/src/test-helpers/load-styles.ts": "export function loadStyles(): void {}\n",
+            "ui/src/ui/app.test.ts": (
+                'import { loadStyles } from "../test-helpers/load-styles";\nloadStyles();\n'
+            ),
+            "src/test-utils/async.ts": "export const tick = () => Promise.resolve();\n",
+            "test-utils/package.json": '{"name": "test-utils"}\n',
+            "test-utils/src/index.js": "export function act() {}\n",
+        }
+        for rel, text in files_on_disk.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text)
+        files = {f.path: f.is_test for f in FileTraverser(tmp_path).traverse()}
+        assert files["ui/src/test-helpers/load-styles.ts"] is True
+        assert files["src/test-utils/async.ts"] is True
+        assert files["ui/src/ui/app.test.ts"] is True
+        assert files["test-utils/src/index.js"] is False
+
     def test_a_test_named_php_class_outside_phpunit_testsuites_is_production(
         self, tmp_path: Path
     ) -> None:

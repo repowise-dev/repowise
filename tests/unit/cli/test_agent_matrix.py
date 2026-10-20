@@ -200,6 +200,13 @@ def test_the_indexing_column_matches_the_identities() -> None:
         assert GEN._cell(row, "indexing_provider") == expected, row["id"]
 
 
+def test_the_attribution_column_matches_the_supported_agents() -> None:
+    """Attribution is derived from each target's capture adapter."""
+    for row in GEN.agent_rows():
+        expected = "Yes" if row["capture_adapter"] else "No"
+        assert GEN._cell(row, "capture_adapter") == expected, row["id"]
+
+
 def test_the_hooks_column_cannot_lie() -> None:
     """A target's declared HOOKS capability agrees with its hook adapter.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path as _DoctorPath
 
 from repowise.cli.helpers import db_configured, load_state, run_async
@@ -115,11 +116,38 @@ def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
     return _check("Events config", False, "; ".join(errors) + " (defaults used)")
 
 
+def _env_repo_covers(repo_path: _DoctorPath) -> bool:
+    """Whether the repo ``GIT_DIR`` / ``GIT_WORK_TREE`` name holds ``repo_path`` (#1931).
+
+    A linked worktree or container can have a ``.git`` file the explicit-path
+    constructor cannot follow. Without those variables ``Repo()`` searches up
+    from the cwd, which says nothing about ``repo_path``.
+    """
+    if not (os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE")):
+        return False
+    from repowise.core.git_repo import Repo
+
+    found = Repo()
+    try:
+        work_tree = found.working_tree_dir
+    finally:
+        found.close()
+    if work_tree is None:
+        return False
+    return _DoctorPath(repo_path).resolve().is_relative_to(_DoctorPath(work_tree).resolve())
+
+
 def _git_check(repo_path: _DoctorPath) -> DoctorCheck:
     try:
+        from git import InvalidGitRepositoryError, NoSuchPathError
+
         from repowise.core.git_repo import Repo
 
-        Repo(repo_path, search_parent_directories=True).close()
+        try:
+            Repo(repo_path, search_parent_directories=True).close()
+        except (InvalidGitRepositoryError, NoSuchPathError):
+            if not _env_repo_covers(repo_path):
+                raise
         return _check("Git repository", True, str(repo_path))
     except Exception:
         return _check("Git repository", False, "Not a git repo")

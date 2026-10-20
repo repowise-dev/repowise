@@ -1,7 +1,7 @@
 name: Repowise CI gates
 description: >-
   Gate a pull request on patch coverage, documentation drift, new security
-  findings and change risk, and select the tests it needs. The gates need git
+  findings, new code-health findings and change risk, and select the tests it needs. The gates need git
   and nothing else (no index, no API key); test selection reads a cached index.
 author: repowise-dev
 branding:
@@ -11,11 +11,12 @@ branding:
 inputs:
   checks:
     description: >-
-      Comma-separated gates to run: coverage, doc-drift, security, risk.
-      Coverage needs a report, so it is not on by default. Doc drift checks the
-      whole tree; on a repository that already has drift, commit a baseline
-      first. Risk is opt-in too, and gates only when risk-fail-above-percentile
-      is set.
+      Comma-separated gates to run: coverage, doc-drift, security, health,
+      risk. Coverage needs a report, so it is not on by default. Doc drift
+      checks the whole tree; on a repository that already has drift, commit a
+      baseline first. Health is opt-in: it fails on code-shape findings the
+      change introduces. Risk is opt-in too, and gates only when
+      risk-fail-above-percentile is set.
     default: doc-drift,security
   version:
     description: Repowise version to install from PyPI. Empty installs the latest.
@@ -28,7 +29,7 @@ inputs:
     default: "."
   base:
     description: >-
-      Revision range for coverage, security and risk, e.g. origin/main...HEAD.
+      Revision range for coverage, security, health and risk, e.g. origin/main...HEAD.
       Empty reads the pull request's target branch, else the default branch.
     default: ""
   coverage-report:
@@ -88,6 +89,22 @@ inputs:
   security-baseline:
     description: Committed security baseline file; only findings it does not list fail.
     default: ""
+  fail-on-baseline-growth:
+    description: >-
+      "true" fails doc-drift and security when their baseline lists a finding
+      the same file at the change's base does not, so a change cannot hide new
+      findings by re-saving the baseline. A baseline new in the change passes.
+    default: "false"
+  health-fail-on:
+    description: >-
+      What fails the health gate: introduced (findings the change wrote) or
+      worsened (those, plus findings it made worse). Below it they warn.
+    default: introduced
+  health-fail-at:
+    description: >-
+      Lowest severity that fails the health gate (medium, high or critical);
+      findings below it warn.
+    default: high
   risk-fail-above-percentile:
     description: >-
       Fail when the change ranks above this percentile of the repository's
@@ -96,7 +113,7 @@ inputs:
     default: ""
   upload-sarif:
     description: >-
-      "true" uploads doc-drift and security findings to GitHub code scanning.
+      "true" uploads doc-drift, security and health findings to GitHub code scanning.
       The workflow needs the security-events write permission.
     default: "false"
   impacted-tests:
@@ -121,6 +138,9 @@ outputs:
   security:
     description: Exit code of the security gate, empty when not run.
     value: ${{ steps.gates.outputs.security }}
+  health:
+    description: Exit code of the health gate, empty when not run.
+    value: ${{ steps.gates.outputs.health }}
   risk:
     description: Exit code of the change-risk gate, empty when not run.
     value: ${{ steps.gates.outputs.risk }}
@@ -180,6 +200,9 @@ runs:
         DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}
         SECURITY_FAIL_ON: ${{ inputs.security-fail-on }}
         SECURITY_BASELINE: ${{ inputs.security-baseline }}
+        FAIL_ON_BASELINE_GROWTH: ${{ inputs.fail-on-baseline-growth }}
+        HEALTH_FAIL_ON: ${{ inputs.health-fail-on }}
+        HEALTH_FAIL_AT: ${{ inputs.health-fail-at }}
         RISK_FAIL_ABOVE_PERCENTILE: ${{ inputs.risk-fail-above-percentile }}
         SARIF: ${{ inputs.upload-sarif }}
         SARIF_DIR: ${{ runner.temp }}/repowise-sarif

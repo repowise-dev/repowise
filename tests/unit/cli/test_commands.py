@@ -160,6 +160,10 @@ class TestErrorCases:
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "No model configured" in result.output
+        # Built from code: `generate` is the model step, not the fast-to-full one.
+        out = " ".join(result.output.split())
+        assert "run repowise generate to have a model write it" in out
+        assert "update --full" not in out
 
     def test_init_explicit_provider_still_errors(self, runner, tmp_path, monkeypatch):
         """A named --provider that cannot resolve is a real error, not a fallback.

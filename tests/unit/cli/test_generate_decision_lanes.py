@@ -128,6 +128,16 @@ def test_status_names_pending_lanes_and_the_command_that_runs_them(monkeypatch, 
     assert "PRs, history and comments not read yet (needs a model): repowise generate" in out
 
 
+def test_status_names_the_fast_to_full_command_for_lanes_on_an_index_only_repo(
+    monkeypatch, tmp_path
+) -> None:
+    # `generate` refuses a repo with no documentation.
+    state = {PENDING_DECISION_LANES_KEY: list(LANES), "docs_mode": "none", "run_mode": "fast"}
+    out, _ = _status(monkeypatch, tmp_path, state)
+    assert "(needs a model): repowise update --full" in out
+    assert "repowise generate" not in out
+
+
 def test_status_is_quiet_once_the_lanes_ran(monkeypatch, tmp_path) -> None:
     out, _ = _status(monkeypatch, tmp_path, {"docs_mode": "llm"})
     assert "not read yet" not in out
@@ -140,6 +150,16 @@ def test_status_json_carries_the_pending_lanes(monkeypatch, tmp_path) -> None:
         monkeypatch, tmp_path, {PENDING_DECISION_LANES_KEY: ["pr"]}, "--format", "json"
     )
     assert json.loads(raw)["decision_lanes_pending"] == ["pr"]
+
+
+def test_status_json_names_generate_for_a_repo_built_from_code(monkeypatch, tmp_path) -> None:
+    import json
+
+    _, raw = _status(monkeypatch, tmp_path, {"docs_mode": "deterministic"}, "--format", "json")
+    payload = json.loads(raw)
+    # `upgrade_command` stays the Index only signal; the model step is named per mode.
+    assert payload["upgrade_command"] is None
+    assert payload["model_command"] == "repowise generate"
 
 
 def test_keyless_init_records_the_lanes_a_model_init_does_not(tmp_path: Path) -> None:

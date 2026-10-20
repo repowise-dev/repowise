@@ -16,7 +16,7 @@ from repowise.core.pipeline.phases._common import (
     _phase_done,
     limit_to_top_pagerank,
 )
-from repowise.core.pipeline.phases.analysis import STRUCTURAL_RUN_REASON
+from repowise.core.pipeline.phases.analysis import INDEX_ONLY_RUN_REASON, STRUCTURAL_RUN_REASON
 from repowise.core.pipeline.progress import STAGE_ANALYSIS, emit_stage
 from repowise.core.pipeline.resume import ResumePhase
 
@@ -75,7 +75,10 @@ async def _rehydrate_analysis(run: PipelineRun) -> bool:
 def _no_model_reason(run: PipelineRun) -> str | None:
     """Why a deterministic run has no model, for its skipped decision sources."""
     config = run.generation_config
-    return STRUCTURAL_RUN_REASON if config is not None and config.deterministic else None
+    if config is None or not config.deterministic:
+        return None
+    # Only a fast run indexes git at the essential tier.
+    return INDEX_ONLY_RUN_REASON if run.git_tier == "essential" else STRUCTURAL_RUN_REASON
 
 
 async def _backfill_decisions(run: PipelineRun) -> None:

@@ -582,6 +582,16 @@ def save_full_state_and_config(
     )
 
     # Re-save state with the fingerprint now that config.yaml is written.
+    stamp_fresh_index(state, repo_path, result)
+    save_state(repo_path, state, full_index=True)
+
+
+def stamp_fresh_index(state: dict[str, Any], repo_path: Path, result: Any) -> None:
+    """Stamp what a just-finished init built, so the first update finds nothing to redo.
+
+    Every init path calls this after its config.yaml writes, since the config
+    fingerprint reads them.
+    """
     state["config_fingerprint"] = config_fingerprint(repo_path)
     state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo_path)
     # This index's health rows were written by the current analyzer, so start
@@ -611,4 +621,3 @@ def save_full_state_and_config(
     _head_ts = head_commit_ts(repo_path) if getattr(result, "health_report", None) else None
     if _head_ts is not None:
         state["last_full_rescore_at"] = _head_ts
-    save_state(repo_path, state, full_index=True)
