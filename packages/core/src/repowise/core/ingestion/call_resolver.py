@@ -220,11 +220,15 @@ def _overload_return_types(
     parsed_files: dict[str, ParsedFile],
 ) -> dict[tuple[str, str | None, str | None, str, int | None], set[str]]:
     """``{(path, parent, extension receiver, name, parameter count): normalised return types}``."""
-    found: dict[tuple[str, str | None, str | None, str, int | None], set[str]] = defaultdict(set)
+    found: dict[tuple[str, str | None, str | None, str, int | None], set[str]] = defaultdict(
+        set
+    )
     for path, parsed in parsed_files.items():
         for symbol in parsed.symbols:
             raw_return = declared_return_type(symbol.signature or "")
-            normalized = normalize_return_type(raw_return, symbol.language) if raw_return else None
+            normalized = (
+                normalize_return_type(raw_return, symbol.language) if raw_return else None
+            )
             if normalized is None:
                 continue
             key = (
@@ -236,9 +240,6 @@ def _overload_return_types(
             )
             found[key].add(normalized)
     return found
-
-
-
 
 
 def _admitted_cpp_chain(type_name: str, method_name: str) -> bool:
@@ -268,7 +269,10 @@ def _same_translation_unit(decl_file: str, def_file: str) -> bool:
     include relation would be the better test, but a C++ include binds to the
     path as written and usually is not a file key.
     """
-    return decl_file == def_file or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
+    return (
+        decl_file == def_file
+        or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
+    )
 
 
 class CallResolver(
@@ -358,7 +362,9 @@ class CallResolver(
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
         self._symbol_paths_by_id = {
-            symbol.id: path for path, parsed in parsed_files.items() for symbol in parsed.symbols
+            symbol.id: path
+            for path, parsed in parsed_files.items()
+            for symbol in parsed.symbols
         }
         self._overload_return_types = _overload_return_types(parsed_files)
         self._known_type_names = frozenset(
@@ -741,7 +747,8 @@ class CallResolver(
         return {
             imp.resolved_file
             for imp in parsed.imports
-            if imp.resolved_file in targets and list(imp.imported_names) == _WILDCARD_IMPORTED_NAMES
+            if imp.resolved_file in targets
+            and list(imp.imported_names) == _WILDCARD_IMPORTED_NAMES
         }
 
     def _merged_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
@@ -805,7 +812,8 @@ class CallResolver(
         # A language with an `external_return_types` table reaches the tier for
         # that table alone; only the constant above admits the full lane.
         if receiver_call is not None and (
-            language in self._return_type_chain_languages or get_external_return_types(language)
+            language in self._return_type_chain_languages
+            or get_external_return_types(language)
         ):
             handled, resolved = self._resolve_return_typed_chain(
                 file_path, call, caller_id, language
@@ -1527,7 +1535,9 @@ class CallResolver(
             if self._reachable_by_name(file_path, sym_id)
         ]
         if len(candidates) == 1 and candidates[0] != caller_id:
-            return self._global_unique_match(file_path, call, caller_id, target_name, candidates[0])
+            return self._global_unique_match(
+                file_path, call, caller_id, target_name, candidates[0]
+            )
 
         # An overload set is several declarations under one id, not an ambiguity.
         collapsed = self._collapse_declarations(candidates)
@@ -1914,7 +1924,9 @@ class CallResolver(
         bind to it. The narrower tiers are grounded in the caller's own file or
         its imports and are left alone.
         """
-        if receiver_name not in get_external_receiver_types(self._language_of(file_path) or ""):
+        if receiver_name not in get_external_receiver_types(
+            self._language_of(file_path) or ""
+        ):
             return False
         return receiver_name not in self._names_rebound_from_a_repo_package(file_path)
 

@@ -503,7 +503,9 @@ class OverloadSelectionMixin:
                 return None
             type_name = found[0]
             if "::" in type_name:
-                return erased_type(bare_type_name(type_name))
+                if language == "java":
+                    return erased_type(bare_type_name(type_name))
+                return None
             return erased_type(external_type_name(type_name) or type_name)
         return self._argument_type(file_path, caller_id, name)
 
@@ -528,7 +530,9 @@ class OverloadSelectionMixin:
         if type_name is None:
             return None
         if "::" in type_name:
-            return erased_type(bare_type_name(type_name))
+            if language == "java":
+                return erased_type(bare_type_name(type_name))
+            return None
         return erased_type(external_type_name(type_name) or type_name)
 
     def _overload_sibling_call(self, call: CallSite) -> ResolvedCall | None:
