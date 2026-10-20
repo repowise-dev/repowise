@@ -27,6 +27,19 @@ TITLE_UPDATED_BUILT_FROM_CODE = "Index updated, documentation built from code"
 _PROVENANCE_BY_DOCS_MODE = {"none": "none", "deterministic": "template", "llm": "model"}
 
 
+def model_name(provider: str | None, model: str | None) -> str | None:
+    """The model id without a repeated ``<provider>/`` prefix (agent CLIs store one)."""
+    if model and provider:
+        return model.removeprefix(f"{provider}/") or model
+    return model
+
+
+def provider_model(provider: str, model: str | None) -> str:
+    """``claude_cli / claude-haiku-5-5``, the provider named once."""
+    shown = model_name(provider, model)
+    return f"{provider} / {shown}" if shown else provider
+
+
 def written_by(model: str | None = None) -> str:
     """``Written by <model>``, or ``Written by a model`` when none is recorded."""
     return f"Written by {model}" if model else "Written by a model"
@@ -54,7 +67,7 @@ def mode_label(scope: Mapping[str, Any]) -> str:
     if provenance == "unknown" and scope.get("run_mode") == "fast":
         provenance = "none"
     provider = scope.get("provider") if isinstance(scope.get("provider"), Mapping) else {}
-    return provenance_label(provenance, provider.get("model"))
+    return provenance_label(provenance, model_name(provider.get("name"), provider.get("model")))
 
 
 def completion_title(scope: Mapping[str, Any]) -> str:

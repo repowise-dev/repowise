@@ -92,13 +92,13 @@ def _metrics(facts: FinishFacts) -> list[tuple[str, str]]:
     return rows
 
 
-def _line(markup: str, indent: int = 2) -> Padding:
+def line(markup: str, indent: int = 2) -> Padding:
     """One wrapped line; wrapped text keeps the indent."""
     return Padding(Text.from_markup(markup), (0, 0, 0, indent))
 
 
-def _dim(markup: str) -> Padding:
-    return _line(f"[dim]{markup}[/dim]")
+def dim_line(markup: str, indent: int = 2) -> Padding:
+    return line(f"[dim]{markup}[/dim]", indent)
 
 
 def connected_lines(setup: Any) -> list[RenderableType]:
@@ -119,24 +119,24 @@ def connected_lines(setup: Any) -> list[RenderableType]:
         # has not loaded it yet.
         if getattr(setup, "first_index", True):
             lines.append(
-                _line(
+                line(
                     f"[bold {BRAND}]Restart Claude Code[/] [bold](or run /mcp) "
                     "to load the repowise tools.[/bold]"
                 )
             )
         else:
             lines.append(
-                _dim("Claude Code stays connected; restart it only if the tools are not showing.")
+                dim_line("Claude Code stays connected; restart it only if the tools are not showing.")
             )
     lines.append(
-        _dim("Cursor or Codex: run [bold]repowise mcp .[/bold] (config in .repowise/mcp.json).")
+        dim_line("Cursor or Codex: run [bold]repowise mcp .[/bold] (config in .repowise/mcp.json).")
     )
     # The interactive run offered this hook live; a --yes run skipped the offer.
     if not getattr(setup, "interactive", False) and not getattr(
         setup, "rewrite_hook_installed", False
     ):
         lines.append(
-            _dim("[bold]repowise hook rewrite install[/bold] compresses noisy command output.")
+            dim_line("[bold]repowise hook rewrite install[/bold] compresses noisy command output.")
         )
     return lines
 
@@ -151,9 +151,9 @@ def agent_questions(top_hotspot: str = "") -> list[str]:
     return ["How is this repo organised, and where should I start reading?", second]
 
 
-def _ask_lines(top_hotspot: str) -> list[RenderableType]:
-    lines: list[RenderableType] = [Text(""), _line("[bold]Try asking your agent[/bold]")]
-    lines += [_line(f'[dim]"{escape(q)}"[/dim]', indent=4) for q in agent_questions(top_hotspot)]
+def ask_lines(questions: list[str]) -> list[RenderableType]:
+    lines: list[RenderableType] = [Text(""), line("[bold]Try asking your agent[/bold]")]
+    lines += [line(f'[dim]"{escape(q)}"[/dim]', indent=4) for q in questions]
     return lines
 
 
@@ -172,7 +172,7 @@ def _search_lines(facts: FinishFacts) -> list[RenderableType]:
     search = facts.scope.get("search") or {}
     if facts.embed_failed:
         return [
-            _line(
+            line(
                 f"[{WARN}]Semantic search is unavailable:[/] embedding failed for "
                 f"{facts.embed_failed} page(s). See the warning above, then run "
                 "[bold]repowise reindex[/bold]."
@@ -182,7 +182,7 @@ def _search_lines(facts: FinishFacts) -> list[RenderableType]:
         return []
     command = search.get("next_command") or "repowise reindex"
     return [
-        _dim(f"Semantic search is off: [bold]{command}[/bold] turns it on (Ollama needs no key).")
+        dim_line(f"Semantic search is off: [bold]{command}[/bold] turns it on (Ollama needs no key).")
     ]
 
 
@@ -192,23 +192,26 @@ def _footer(
     lines = _search_lines(facts)
     if files_written:
         lines.append(
-            _dim(
+            dim_line(
                 "Files added: "
                 + escape(", ".join(_relative(repo_path, files_written)))
                 + " (not gitignored; [bold]--no-editor-setup[/bold] skips them)."
             )
         )
-    if setup is not None and not getattr(setup, "editor_setup_disabled", False):
-        if getattr(setup, "autosync_hook_installed", False):
-            lines.append(_dim("Auto-sync: on, the index updates after each commit."))
-        else:
-            lines.append(
-                _dim(
-                    "Auto-sync: off. [bold]repowise hook install[/bold] keeps the index "
-                    "synced on commit."
-                )
-            )
-    return lines
+    return lines + autosync_lines(setup)
+
+
+def autosync_lines(setup: Any) -> list[RenderableType]:
+    """Whether the post-commit hook keeps the index synced; silent without editor setup."""
+    if setup is None or getattr(setup, "editor_setup_disabled", False):
+        return []
+    if getattr(setup, "autosync_hook_installed", False):
+        return [dim_line("Auto-sync: on, the index updates after each commit.")]
+    return [
+        dim_line(
+            "Auto-sync: off. [bold]repowise hook install[/bold] keeps the index synced on commit."
+        )
+    ]
 
 
 def build_finish_panel(
@@ -225,7 +228,7 @@ def build_finish_panel(
     if connected:
         body.append(Text(""))
         body += connected
-    body += _ask_lines(facts.top_hotspot)
+    body += ask_lines(agent_questions(facts.top_hotspot))
     return build_completion_panel(
         escape(completion_title(facts.scope)),
         _metrics(facts),

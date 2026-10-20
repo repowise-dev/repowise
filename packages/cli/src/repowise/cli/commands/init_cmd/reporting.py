@@ -13,16 +13,17 @@ from typing import Any
 
 from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
-    OK,
-    WARN,
-    build_completion_panel,
     build_contextual_next_steps,
     format_elapsed,
     print_analysis_summary,
 )
 from repowise.cli.ui.finish_panel import FinishFacts, build_finish_panel
-from repowise.cli.ui.mode_names import TITLE_WORKSPACE, pages
-from repowise.cli.ui.result_panels import serve_step
+from repowise.cli.ui.mode_names import pages, provider_model
+from repowise.cli.ui.workspace_finish import (
+    RepoOutcome,
+    WorkspaceFacts,
+    build_workspace_finish_panel,
+)
 
 
 def _dead_counts(result: Any) -> tuple[int, int]:
@@ -262,64 +263,35 @@ def show_workspace_completion(
     errors: list,
     total_files: int,
     total_symbols: int,
-    total_pages: int,
     primary_alias: str,
     elapsed: float,
     index_only: bool,
     provider: Any,
     docs_outcomes: dict[str, tuple[int, str | None]],
+    setup: Any = None,
 ) -> None:
-    """Render the workspace completion panel + per-repo docs status."""
-    metrics: list[tuple[str, str]] = [
-        ("Repositories", f"{len(selected) - len(errors)} indexed"),
-        ("Total files", f"{total_files:,}"),
-        ("Total symbols", f"{total_symbols:,}"),
-        ("Primary repo", primary_alias),
-        ("Elapsed", format_elapsed(elapsed)),
-    ]
-    if not index_only and provider is not None:
-        metrics.insert(3, ("Documentation", pages(total_pages)))
-        metrics.insert(4, ("Provider", f"{provider.provider_name} / {provider.model_name}"))
-    if errors:
-        metrics.append(("Errors", f"{len(errors)} repos failed"))
+    """Render the workspace finish panel, the per-repo documentation inside it."""
+    from repowise.core.index_scope import resolve_index_scope
 
-    if index_only or provider is None:
-        next_steps = [
-            serve_step("workspace dashboard"),
-            ("repowise status --workspace", "show workspace status"),
-            ("repowise generate <repo>", "write a repo's documentation with a model"),
-        ]
-    else:
-        next_steps = [
-            serve_step("workspace dashboard"),
-            ("repowise status --workspace", "show workspace status"),
-            ("repowise search <query>", "search across all indexed repos"),
-        ]
-
-    console.print()
-    console.print(
-        build_completion_panel(TITLE_WORKSPACE, metrics, next_steps=next_steps)
+    failed = dict(errors)
+    repos = []
+    for repo in selected:
+        if repo.alias in failed:
+            repos.append(RepoOutcome(repo.alias, error=failed[repo.alias]))
+            continue
+        count, skipped = docs_outcomes.get(repo.alias, (0, None))
+        scope = resolve_index_scope(load_state(repo.path), load_config(repo.path))
+        repos.append(RepoOutcome(repo.alias, scope, pages=count, skipped=skipped))
+    facts = WorkspaceFacts(
+        repos=repos,
+        files=total_files,
+        symbols=total_symbols,
+        primary=primary_alias,
+        elapsed=format_elapsed(elapsed),
+        provider=None
+        if index_only or provider is None
+        else provider_model(provider.provider_name, provider.model_name),
     )
     console.print()
-
-    # Honest docs status — print a per-repo summary listing exactly which
-    # repos generated pages and which were skipped, so the user never has
-    # to discover empty Docs/Overview in the web UI on their own.
-    docs_skipped = [(alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason]
-    if docs_outcomes:
-        console.print("[bold]Documentation[/bold]")
-        for alias, (count, reason) in docs_outcomes.items():
-            if reason:
-                console.print(
-                    f"  [{WARN}]✗[/] {alias:<20} [{WARN}]skipped[/]  [dim]({reason})[/dim]"
-                )
-            else:
-                console.print(f"  [{OK}]✓[/] {alias:<20} [{OK}]{pages(count)}[/]")
-        if docs_skipped:
-            first = docs_skipped[0][0]
-            console.print()
-            console.print(
-                f"  Run [bold]repowise update --repo {first} --docs[/bold] "
-                "to build documentation for a skipped repo."
-            )
-        console.print()
+    console.print(build_workspace_finish_panel(facts, setup=setup))
+    console.print()

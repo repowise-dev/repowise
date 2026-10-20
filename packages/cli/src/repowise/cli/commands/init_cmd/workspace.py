@@ -751,7 +751,6 @@ class _WorkspaceTotals:
 
     total_files: int = 0
     total_symbols: int = 0
-    total_pages: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
     #: alias -> (generated_count, skip_reason | None), shown in the completion
     #: panel so the user never has to guess why a repo has no pages.
@@ -847,6 +846,9 @@ def _workspace_init(
     provider, resolved_reasoning = _resolve_workspace_provider(
         answers, primary_repo, embedder_name, yes=yes, save_key=save_key
     )
+    from repowise.core.workspace.config import WORKSPACE_CONFIG_FILENAME
+
+    first_index = not (root / WORKSPACE_CONFIG_FILENAME).exists()
     ws_config = _workspace_config(selected, root, primary_alias, dry_run=dry_run)
 
     from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
@@ -884,18 +886,6 @@ def _workspace_init(
     if not dry_run:
         _save_workspace(ws_config, root, selected, totals.errors, editor_setup=editor_setup)
 
-    show_workspace_completion(
-        selected=selected,
-        errors=totals.errors,
-        total_files=totals.total_files,
-        total_symbols=totals.total_symbols,
-        total_pages=totals.total_pages,
-        primary_alias=primary_alias,
-        elapsed=time.monotonic() - start,
-        index_only=answers.index_only,
-        provider=provider,
-        docs_outcomes=totals.docs_outcomes,
-    )
     if not dry_run:
         _offer_workspace_hooks(
             selected,
@@ -905,7 +895,29 @@ def _workspace_init(
             yes=yes,
             editor_setup=editor_setup,
         )
-    console.print()
+
+    # Last, so Connected and Auto-sync read what the hook offers left behind.
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    show_workspace_completion(
+        selected=selected,
+        errors=totals.errors,
+        total_files=totals.total_files,
+        total_symbols=totals.total_symbols,
+        primary_alias=primary_alias,
+        elapsed=time.monotonic() - start,
+        index_only=answers.index_only,
+        provider=provider,
+        docs_outcomes=totals.docs_outcomes,
+        setup=None
+        if dry_run
+        else detect_editor_setup_outcome(
+            primary_repo.path,
+            interactive=sys.stdin.isatty() and not yes,
+            first_index=first_index,
+            no_editor_setup=not editor_setup,
+        ),
+    )
     _raise_on_embed_failures(totals.embed_failures)
 
 
@@ -1107,7 +1119,6 @@ def _index_workspace_repos(selected: list[Any], ctx: _WorkspaceCtx) -> _Workspac
             continue
         totals.total_files += outcome.file_count
         totals.total_symbols += outcome.symbol_count
-        totals.total_pages += outcome.pages_generated
         totals.docs_outcomes[repo.alias] = outcome.docs_outcome
         if outcome.embed_failed_pages:
             totals.embed_failures[repo.alias] = outcome.embed_failed_pages

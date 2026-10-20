@@ -9,7 +9,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import console, load_config, warn
 from repowise.cli.ui import BRAND, VALUE, print_phase_header
-from repowise.cli.ui.mode_names import INDEX_ONLY
+from repowise.cli.ui.mode_names import INDEX_ONLY, provider_model
 from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._options import InitRun
@@ -253,7 +253,7 @@ def _run_generation_phase(
         3,
         total_phases,
         "Generation",
-        f"Writing documentation with {provider.provider_name} / {provider.model_name}",
+        f"Writing documentation with {provider_model(provider.provider_name, provider.model_name)}",
     )
 
     gen_config = GenerationConfig.from_repo_config(

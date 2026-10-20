@@ -12,7 +12,7 @@ from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console, resolve_explicit_provider_or_prompt, run_async
 from repowise.cli.providers import resolve_embedder
 from repowise.cli.ui import OK, OWL_SPINNER, VALUE, WARN, print_index_only_intro
-from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, written_by
+from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, model_name, written_by
 
 from ._options import InitRun
 
@@ -95,11 +95,14 @@ def _resolve_or_fall_back(run: InitRun) -> None:
 def _print_provider_summary(run: InitRun) -> None:
     provider = run.provider
     if not run.is_interactive and not run.no_provider:
-        mode = written_by(provider.model_name if provider is not None else None)
+        mode = written_by(
+            model_name(provider.provider_name, provider.model_name) if provider else None
+        )
         console.print(f"[bold]repowise init[/bold] · {mode} · {run.repo_path}")
     if provider is not None:
+        shown = model_name(provider.provider_name, provider.model_name)
         console.print(
-            f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"
+            f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{shown}[/]"
         )
     console.print(f"  Embedder: [{VALUE}]{run.embedder_name_resolved}[/]")
     if run.language != "en":
