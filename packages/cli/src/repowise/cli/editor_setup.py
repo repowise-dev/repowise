@@ -238,6 +238,36 @@ def _resolve_configured_project_file_optouts(
     )
 
 
+def _installable_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split agent rows into those init can write and those it cannot."""
+    installable = {integration.integration_id for integration in _resolve_integrations(None)}
+    return (
+        [row for row in rows if row["id"] in installable],
+        [row for row in rows if row["id"] not in installable],
+    )
+
+
+def _ticked(rows: list[dict], options: EditorSetupOptions) -> set[str]:
+    """Detection's default selection, with each flag override applied."""
+    from repowise.cli.agent_targets.registry import default_selection
+
+    ticked = default_selection(rows)
+    for row in rows:
+        flagged = options.integration_overrides.get(row["id"])
+        if flagged is not None:
+            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+    return ticked
+
+
+def planned_agents(repo_path: Path, options: EditorSetupOptions) -> tuple[str, ...]:
+    """Display names of the agents init connects with *options*, without asking."""
+    from repowise.cli.agent_targets.registry import describe_agents
+
+    rows, _ = _installable_rows(describe_agents(repo_path))
+    ticked = _ticked(rows, options)
+    return tuple(row["display_name"] for row in rows if row["id"] in ticked)
+
+
 def select_agents_interactively(
     console_obj: Any,
     repo_path: Path,
@@ -264,7 +294,7 @@ def select_agents_interactively(
     as ``--codex``) is shown pre-ticked to match the flag, so accepting the
     checklist re-applies what the flag already said.
     """
-    from repowise.cli.agent_targets.registry import default_selection, describe_agents
+    from repowise.cli.agent_targets.registry import describe_agents
     from repowise.cli.ui.agent_selection import AgentChoice, interactive_agent_select
 
     # Offer only what this command can act on. The checklist is built from the
@@ -276,10 +306,7 @@ def select_agents_interactively(
     #
     # ``repowise agents add --target=<id>`` is the command for those, and the
     # line below names it rather than leaving them invisible.
-    rows = describe_agents(repo_path)
-    installable = {integration.integration_id for integration in _resolve_integrations(None)}
-    deferred = [row for row in rows if row["id"] not in installable]
-    rows = [row for row in rows if row["id"] in installable]
+    rows, deferred = _installable_rows(describe_agents(repo_path))
     for row in deferred:
         if row["present"] or row["registrations"]:
             console_obj.print(
@@ -287,11 +314,7 @@ def select_agents_interactively(
                 f"[bold]repowise agents add --target={row['id']}[/bold][/dim]"
             )
 
-    ticked = default_selection(rows)
-    for row in rows:
-        flagged = options.integration_overrides.get(row["id"])
-        if flagged is not None:
-            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+    ticked = _ticked(rows, options)
 
     chosen = interactive_agent_select(
         console_obj,

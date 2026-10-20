@@ -381,7 +381,8 @@ class TestAdvancedExcludeMergesWithFlag:
         import subprocess
         from unittest import mock
 
-        from repowise.cli.commands.init_cmd import _prepare, _questions
+        from repowise.cli.commands.init_cmd import _plan, _prepare
+        from repowise.cli.ui.plan_screen import ModelOffer
 
         repo = tmp_path / "repo"
         (repo / "vendor").mkdir(parents=True)
@@ -406,10 +407,15 @@ class TestAdvancedExcludeMergesWithFlag:
 
         with (
             mock.patch.object(_prepare, "_interactive_gate", lambda **_: True),
-            mock.patch.object(_questions, "interactive_mode_select", lambda _c: "advanced"),
-            mock.patch.object(_questions, "interactive_generate_docs_toggle", lambda _c: False),
+            # e (edit plan), then Enter.
+            mock.patch.object(_plan, "read_plan_key", mock.Mock(side_effect=["edit", "start"])),
+            mock.patch.object(_plan, "build_offer", lambda *a, **k: ModelOffer()),
+            mock.patch.object(_plan, "agent_providers_set_up", lambda _r: ()),
+            mock.patch(
+                "repowise.cli.ui.provider_selection._detect_provider_status", lambda _r: {}
+            ),
             mock.patch.object(
-                _questions, "interactive_advanced_config", lambda *a, **k: dict(answers)
+                _plan, "interactive_advanced_config", lambda *a, **k: dict(answers)
             ),
             mock.patch.object(_prepare, "_confirm_wiki_overwrite", _stop_after_settings),
         ):
