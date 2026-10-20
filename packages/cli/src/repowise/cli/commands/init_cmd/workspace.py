@@ -86,6 +86,7 @@ from .persistence import (
     apply_git_history_coverage_state,
     keep_prior_documentation,
     persist_result,
+    stamp_fresh_index,
 )
 from .reporting import show_workspace_completion
 
@@ -403,6 +404,10 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         no_editor_setup=not ctx.editor_setup,
     )
     _save_repo_config(repo.path, ctx, docs)
+    # After the config writes, which the config fingerprint reads. Unstamped,
+    # the first update re-renders and re-scores every repo init just built.
+    stamp_fresh_index(state, repo.path, result)
+    save_state(repo.path, state, full_index=True)
 
     from repowise.cli.providers import embed_failure_message
 
