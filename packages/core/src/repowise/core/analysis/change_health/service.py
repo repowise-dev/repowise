@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
+from ...pytest_roots import PYTEST_CONFIG_NAMES
 from ...support_paths import TEMPLATE_EXTENSIONS, is_doc_or_config_path
 from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types, gate_for, is_served, language_label
@@ -304,7 +305,9 @@ class ChangeHealthDeltaService:
             1 for r in skipped.values() if r.removeprefix("base_") in {"parse_failed", "unreadable"}
         )
         match = _match(sides, subject, gone, FindingMatcher(sides.rename, _hunks(eligible), moves))
-        findings = self._surface(match, eligible, sides.head_run.findings_for(subject), pair)
+        findings = self._surface(
+            match, eligible, sides.head_run.findings_for(subject), pair, sides.head_run.test_paths
+        )
 
         status, explanation = _status_for(scope, skipped, findings, deleted=len(gone))
         delta = ChangeHealthDelta(
@@ -349,12 +352,26 @@ class ChangeHealthDeltaService:
         """
         head_paths = [c.head_path for c in eligible if c.head_path]
         base_paths = [c.base_path for c in eligible + departed if c.base_path]
+        if hasattr(self.source, "config_paths"):
+            config_candidates = [
+                p
+                for p in self.source.config_paths(pair.head_sha, working_tree=pair.working_tree)
+                if p not in head_paths
+            ]
+            base_config_candidates = [
+                p
+                for p in self.source.config_paths(pair.base_sha, working_tree=False)
+                if p not in base_paths
+            ]
+        else:
+            config_candidates = [name for name in sorted(PYTEST_CONFIG_NAMES) if name not in head_paths]
+            base_config_candidates = [name for name in sorted(PYTEST_CONFIG_NAMES) if name not in base_paths]
         head_sources = (
-            self.source.read_working_tree(head_paths)
+            self.source.read_working_tree(head_paths + config_candidates)
             if pair.working_tree
-            else self.source.read(pair.head_sha, head_paths)
+            else self.source.read(pair.head_sha, head_paths + config_candidates)
         )
-        base_sources = self.source.read(pair.base_sha, base_paths)
+        base_sources = self.source.read(pair.base_sha, base_paths + base_config_candidates)
         rename = pair.rename_map()
         analyzer = self._analyzer_for([*head_paths, *base_paths])
         caches = AnalysisCaches.open(self.cache_dir) if self.cache_dir is not None else None
@@ -395,6 +412,7 @@ class ChangeHealthDeltaService:
         eligible: list[FileChange],
         head_findings: list[HealthFindingData],
         pair: RevisionPair,
+        test_paths: set[str] | None = None,
     ) -> list[ChangeFinding]:
         """The introduced and worsened findings, attributed and in priority order."""
         by_file: dict[str, list[HealthFindingData]] = {}
@@ -415,7 +433,7 @@ class ChangeHealthDeltaService:
             )
             for m in surfaced
         ]
-        findings.sort(key=_priority)
+        findings.sort(key=lambda f: _priority(f, test_paths))
         return findings
 
     def _to_change_finding(
@@ -531,9 +549,12 @@ def _match(
         f
         for f in sides.base_run.findings
         if (sides.rename.get(f.file_path, f.file_path) in subject or f.file_path in gone)
-        and _comparable(f, withheld)
+        and _comparable(f, withheld, sides.base_run.test_paths)
     ]
-    head_findings = [f for f in sides.head_run.findings_for(subject) if _comparable(f, withheld)]
+    head_findings = [
+        f for f in sides.head_run.findings_for(subject)
+        if _comparable(f, withheld, sides.head_run.test_paths)
+    ]
     match = matcher.match(base_findings, head_findings)
     # A deleted file's unpaired findings may have moved somewhere this run did
     # not read (an excluded or unparsed file), so they never count as resolved.
@@ -685,27 +706,37 @@ def _hunks(changes: list[FileChange]) -> dict[str, list[tuple[int, int, int, int
     return {c.head_path: c.diff.hunks for c in changes if c.head_path and c.diff}
 
 
-def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:
+def _comparable(
+    finding: HealthFindingData,
+    withheld: frozenset[str],
+    test_paths: set[str] | None = None,
+) -> bool:
     """A finding both sides of a comparison count: not advisory, not a test's
     performance finding, and one the registry serves."""
     return (
         not is_advisory(finding.biomarker_type)
-        and not _is_test_perf(finding)
+        and not _is_test_perf(finding, test_paths=test_paths)
         and is_served("health", finding.biomarker_type, finding.file_path, withheld)
     )
 
 
-def _is_test_perf(finding: HealthFindingData) -> bool:
+def _is_test_perf(finding: HealthFindingData, test_paths: set[str] | None = None) -> bool:
     """A performance finding on test code.
 
     Performance findings are about code that serves requests, which a test file
     is not, so these are dropped from both sides rather than ranked. Other
     dimensions still report on tests; only their ordering is demoted.
     """
-    return finding.dimension == "performance" and is_test_related_path(finding.file_path)
+    if finding.dimension != "performance":
+        return False
+    if test_paths is not None:
+        return finding.file_path in test_paths
+    return is_test_related_path(finding.file_path)
 
 
-def _authorship(finding: ChangeFinding) -> tuple[bool, bool, bool]:
+def _authorship(
+    finding: ChangeFinding, test_paths: set[str] | None = None
+) -> tuple[bool, bool, bool]:
     """How much of this finding the change actually wrote.
 
     Ranked ahead of severity because a reader asked "what did I just do" and a
@@ -713,25 +744,31 @@ def _authorship(finding: ChangeFinding) -> tuple[bool, bool, bool]:
     incidental basis means the finding sits away from the changed lines; test
     scaffolding sorts last because it is the change's own noise.
     """
+    is_test = (
+        finding.path in test_paths
+        if test_paths is not None
+        else is_test_related_path(finding.path)
+    )
     return (
         finding.attribution_basis in INCIDENTAL_BASES,
-        is_test_related_path(finding.path),
+        is_test,
         finding.change_kind != "introduced",
     )
 
 
-def _priority(finding: ChangeFinding) -> tuple:
+def _priority(finding: ChangeFinding, test_paths: set[str] | None = None) -> tuple:
     """Authorship first, then severity, then dimension and reach."""
+    authorship_tuple = _authorship(finding, test_paths=test_paths)
     if finding.dimension == "performance":
         return (
-            *_authorship(finding),
+            *authorship_tuple,
             -severity_rank(finding.severity),
             -(finding.opportunity_rank or 0),
             _DIMENSION_ORDER["performance"],
             finding.path,
         )
     return (
-        *_authorship(finding),
+        *authorship_tuple,
         -severity_rank(finding.severity),
         -int((finding.health_impact or 0.0) * 1000),
         _DIMENSION_ORDER.get(finding.dimension, 9),

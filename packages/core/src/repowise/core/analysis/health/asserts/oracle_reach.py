@@ -195,7 +195,12 @@ def collect_cross_file_oracles(
     oracle_name: dict[str, str] = {}
     for pf, fcx in walked_list:
         path = pf.file_info.path
-        if not is_test_related_path(path, pf.file_info.language):
+        is_test = getattr(pf.file_info, "is_test", None)
+        if not (
+            is_test
+            if is_test is not None
+            else is_test_related_path(path, getattr(pf.file_info, "language", None))
+        ):
             continue
         for fn in fcx.functions:
             if not checks_something(fn):
@@ -324,6 +329,7 @@ def _oracles_by_file_and_name(
 
 def _candidates(pf: Any, fcx: FileComplexity) -> list[Any]:
     """Test cases in a test file that check nothing themselves."""
-    if not is_test_file(pf.file_info.path):
+    is_test = getattr(pf.file_info, "is_test", None)
+    if not (is_test if is_test is not None else is_test_file(pf.file_info.path)):
         return []
     return [fn for fn in fcx.functions if fn.is_test_case and not checks_something(fn)]

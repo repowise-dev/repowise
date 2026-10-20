@@ -185,9 +185,22 @@ async def backfill_is_test(session: AsyncSession, repository_id: str) -> int:
     ).scalars().all()
     if not rows:
         return 0
+    node_rows = (
+        await session.execute(
+            select(GraphNode.node_id, GraphNode.is_test).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "file",
+                GraphNode.node_id.in_([r.file_path for r in rows]),
+            )
+        )
+    ).all()
+    node_is_test = {node_id: is_test for node_id, is_test in node_rows}
     languages = await get_file_language_map(session, repository_id)
     for row in rows:
-        row.is_test = is_test_related_path(row.file_path, languages.get(row.file_path))
+        if row.file_path in node_is_test:
+            row.is_test = node_is_test[row.file_path]
+        else:
+            row.is_test = is_test_related_path(row.file_path, languages.get(row.file_path))
     await session.flush()
     return len(rows)
 

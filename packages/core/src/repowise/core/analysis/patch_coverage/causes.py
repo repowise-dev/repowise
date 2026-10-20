@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ...test_paths import is_test_related_path
 from .delta import CauseBasis, IndirectCause, IndirectChange
@@ -55,12 +55,15 @@ def _test_causes(
 
 
 def name_causes(
-    files: Iterable[str], changed: Collection[str], deleted: Collection[str]
+    files: Iterable[str],
+    changed: Collection[str],
+    deleted: Collection[str],
+    roots: Any | None = None,
 ) -> dict[str, tuple[IndirectCause, ...]]:
     """``{file: causes}`` from git alone: changed tests named for each file."""
     from ..test_reachability import tests_matching_by_name
 
-    tests = [p for p in changed if is_test_related_path(p)]
+    tests = [p for p in changed if is_test_related_path(p, roots=roots)]
     files = list(files)
     matched = tests_matching_by_name(files, tests)
     return {
@@ -89,6 +92,8 @@ async def read_indirect_causes(
     indirect: Iterable[IndirectChange],
     changed: Collection[str],
     deleted: Collection[str],
+    *,
+    roots: Any | None = None,
 ) -> dict[str, tuple[IndirectCause, ...]] | None:
     """``{file: causes}`` from the index, name pairing where it names no test; ``None`` on failure.
 
@@ -99,12 +104,12 @@ async def read_indirect_causes(
     if not files:
         return {}
     try:
-        found = await _read(session, repository_id, files[:MAX_TARGETS], changed, deleted)
+        found = await _read(session, repository_id, files[:MAX_TARGETS], changed, deleted, roots=roots)
     except Exception:
         # Advice never breaks the caller: any failure is logged and reads as unassessed.
         log.warning("indirect_coverage_causes_failed", exc_info=True)
         return None
-    by_name = name_causes(files, changed, deleted)
+    by_name = name_causes(files, changed, deleted, roots=roots)
     return {f: _merge(found.get(f, ()), by_name[f]) for f in files}
 
 
@@ -127,12 +132,14 @@ async def _read(
     files: list[str],
     changed: Collection[str],
     deleted: Collection[str],
+    *,
+    roots: Any | None = None,
 ) -> dict[str, tuple[IndirectCause, ...]]:
     from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 
     from ..test_reachability import direct_dependents, tests_reaching_by_tier
 
-    changed_tests = {p for p in changed if is_test_related_path(p)}
+    changed_tests = {p for p in changed if is_test_related_path(p, roots=roots)}
     changed_code = set(changed) - changed_tests
     per_test = await tests_covering_files(session, repository_id, set(files))
     reached = await tests_reaching_by_tier(session, repository_id, files)

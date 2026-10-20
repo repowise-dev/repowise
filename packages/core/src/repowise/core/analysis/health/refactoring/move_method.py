@@ -322,7 +322,7 @@ class MoveMethodDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         graph = ctx.graph
-        if graph is None or is_test_related_path(ctx.file_path, ctx.language):
+        if graph is None or _file_is_test(graph, ctx.file_path):
             return []
 
         if ctx.file_methods is not None:

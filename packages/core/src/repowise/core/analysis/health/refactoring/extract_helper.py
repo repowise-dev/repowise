@@ -342,14 +342,25 @@ def _is_generated_path(path: str) -> bool:
     return is_vendored_or_generated_path(path) or is_migration_path(path)
 
 
-def _is_skippable_occurrence(path: str, language: str | None = None) -> bool:
+def _is_skippable_occurrence(
+    path: str,
+    language: str | None = None,
+    *,
+    is_test: bool | None = None,
+    graph: Any | None = None,
+) -> bool:
     """Duplication among test fixtures is common and low value, and a migration
     must stay self-contained, so both are dropped before a suggestion is formed.
 
     Test support counts as test material here: sharing a helper out of
     ``conftest.py`` is the same bad advice as sharing one out of a test.
     """
-    return is_test_related_path(path, language) or _is_generated_path(path)
+    if is_test is None and graph is not None and path in graph:
+        node = graph.nodes[path]
+        if "is_test" in node:
+            is_test = bool(node["is_test"])
+    test_flag = is_test if is_test is not None else is_test_related_path(path, language)
+    return test_flag or _is_generated_path(path)
 
 
 class _Block:
@@ -507,7 +518,7 @@ class ExtractHelperDetector(RefactoringDetector):
             o
             for o in block.occurrences
             if same_language_family(ctx.file_path, o[0])
-            and not _is_skippable_occurrence(o[0], ctx.language)
+            and not _is_skippable_occurrence(o[0], ctx.language, graph=ctx.graph)
         ]
         occurrences = [
             o

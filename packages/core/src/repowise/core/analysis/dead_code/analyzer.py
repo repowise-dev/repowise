@@ -375,7 +375,19 @@ class DeadCodeAnalyzer:
         type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
         findings = drop_reference_assembly_api(findings, self._source_map, type_names)
         findings = clamp_named_types(findings, self._source_map, type_names)
-        findings = drop_named_modules(findings, self._source_map, self._dynamic_import_files)
+        is_test_by_path = {
+            str(n): bool(d.get("is_test", False))
+            for n, d in self.graph.nodes.items()
+            if "is_test" in d
+        }
+        pytest_roots = getattr(getattr(self.graph, "graph", None), "get", lambda *_: None)("pytest_roots")
+        findings = drop_named_modules(
+            findings,
+            self._source_map,
+            self._dynamic_import_files,
+            is_test_by_path=is_test_by_path,
+            roots=pytest_roots,
+        )
         findings = clamp_entry_shaped(
             findings, self._source_map, self._public_top_level_names(findings)
         )

@@ -687,7 +687,13 @@ def is_skippable_test_path(path: str) -> bool:
 
 
 def is_test_to_production_pair(
-    code_path: str, partner_path: str, *, code_language: str | None = None
+    code_path: str,
+    partner_path: str,
+    *,
+    code_language: str | None = None,
+    code_is_test: bool | None = None,
+    partner_is_test: bool | None = None,
+    roots: PytestRoots | None = None,
 ) -> bool:
     """Whether exactly one of the two paths is test material.
 
@@ -696,7 +702,17 @@ def is_test_to_production_pair(
     takes no language because callers reach this from a bare path recorded
     against another file, with no node to read a stored flag from.
     """
-    return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)
+    c_test = (
+        code_is_test
+        if code_is_test is not None
+        else is_test_related_path(code_path, code_language, roots=roots)
+    )
+    p_test = (
+        partner_is_test
+        if partner_is_test is not None
+        else is_test_related_path(partner_path, roots=roots)
+    )
+    return c_test ^ p_test
 
 
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})

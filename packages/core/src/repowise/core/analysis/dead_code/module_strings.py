@@ -30,9 +30,10 @@ fixture app it loads by name), never a member path (a ``mock.patch`` target).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 from ...ingestion.languages.python_modules import module_parts
 from ...ingestion.languages.python_strings import defines_top_level, is_python, live_text
@@ -76,7 +77,9 @@ def _directory(path: str) -> str:
 def drop_named_modules(
     findings: list[DeadCodeFindingData],
     source_map: dict[str, bytes],
-    runtime_importers: Iterable[str],
+    runtime_importers: Iterable[str] = (),
+    is_test_by_path: Mapping[str, bool] | None = None,
+    roots: Any | None = None,
 ) -> list[DeadCodeFindingData]:
     """Drop Python file and export findings a module-path string names.
 
@@ -87,7 +90,13 @@ def drop_named_modules(
     if not candidates or not source_map:
         return findings
     loaders = {path: _directory(path) for path in runtime_importers}
-    named, attrs = _named_by_strings(source_map, _ModuleIndex(candidates), loaders)
+    named, attrs = _named_by_strings(
+        source_map,
+        _ModuleIndex(candidates),
+        loaders,
+        is_test_by_path=is_test_by_path,
+        roots=roots,
+    )
     return [f for f in findings if not _is_named(f, named, attrs)]
 
 
@@ -108,7 +117,12 @@ def _is_named(
 
 
 def _named_by_strings(
-    source_map: dict[str, bytes], index: _ModuleIndex, loaders: dict[str, str]
+    source_map: dict[str, bytes],
+    index: _ModuleIndex,
+    loaders: dict[str, str],
+    *,
+    is_test_by_path: Mapping[str, bool] | None = None,
+    roots: Any | None = None,
 ) -> tuple[set[str], set[tuple[str, str]]]:
     """Modules a string names, and the ``(module, attr)`` pairs ``module:attr`` names."""
     named: set[str] = set()
@@ -116,7 +130,12 @@ def _named_by_strings(
     for path, blob in source_map.items():
         # A test that loads a fixture module by name (``"t.unit.proj.app"``)
         # uses it; a member path in a test is a ``mock.patch`` target, not a load.
-        members = None if is_test_related_path(path) else source_map
+        is_test = (
+            is_test_by_path[path]
+            if is_test_by_path is not None and path in is_test_by_path
+            else is_test_related_path(path, roots=roots)
+        )
+        members = None if is_test else source_map
         reader = _Reader(path, index, loaders.get(path), members)
         # Tokenize only a file whose raw text names a candidate at all.
         if next(reader.uses(blob), None) is None:

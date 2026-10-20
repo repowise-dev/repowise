@@ -408,6 +408,7 @@ def compute_patch_coverage(
     gates: Sequence[PathGate] = (),
     judge_gates: bool = True,
     stale: Collection[str] = (),
+    roots: Any | None = None,
 ) -> PatchCoverage:
     """Intersect a change with a coverage report. See the module docstring.
 
@@ -434,7 +435,7 @@ def compute_patch_coverage(
             ignored += 1
         elif path in stale:
             files.append(FilePatchCoverage(path, "stale_file", len(lines)))
-        elif (row := _changed_file(path, lines, coverage, measured_suffixes)) is None:
+        elif (row := _changed_file(path, lines, coverage, measured_suffixes, roots=roots)) is None:
             out_of_scope += 1
         else:
             files.append(row)
@@ -469,6 +470,7 @@ def patch_coverage_from_resolved(
     min_coverable_lines: int | None = None,
     ignore: Sequence[str] = (),
     gates: Sequence[PathGate] = (),
+    roots: Any | None = None,
 ) -> PatchCoverage:
     """:func:`compute_patch_coverage` over reports already resolved to repo keys."""
     unmatched = len(resolved.unmatched) + len(resolved.ambiguous)
@@ -479,6 +481,7 @@ def patch_coverage_from_resolved(
         min_coverable_lines=min_coverable_lines,
         ignore=ignore,
         gates=gates,
+        roots=roots,
         scope=PatchScope(
             label=label,
             source_formats=tuple(resolved.source_formats),
@@ -495,12 +498,17 @@ def _changed_file(
     lines: set[int],
     coverage: Mapping[str, FileCoverage],
     measured_suffixes: set[str],
+    *,
+    roots: Any | None = None,
 ) -> FilePatchCoverage | None:
     """One changed file's row, or ``None`` when it is out of the report's scope."""
     fc = coverage.get(path)
     if fc is not None:
         return _file_patch(path, lines, fc)
-    if is_test_related_path(path) or PurePosixPath(path).suffix not in measured_suffixes:
+    if (
+        is_test_related_path(path, roots=roots)
+        or PurePosixPath(path).suffix not in measured_suffixes
+    ):
         return None
     return FilePatchCoverage(path, "not_in_report", len(lines))
 

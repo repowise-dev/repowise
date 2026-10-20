@@ -1002,7 +1002,7 @@ def _report_against_ingest(ask: _ProjectAsk, row, keys):
     )
 
 
-def _with_causes(root: Path, rows, changed: set[str], deleted: set[str]):
+def _with_causes(root: Path, rows, changed: set[str], deleted: set[str], *, roots: Any | None = None):
     """*rows* with the changed files that explain each one's lost coverage (advice only).
 
     From the index when one opens, else from git by name; an index that fails
@@ -1013,15 +1013,17 @@ def _with_causes(root: Path, rows, changed: set[str], deleted: set[str]):
     causes = None
     if has_db_store(root):
         try:
-            causes = run_async(_read_causes(root, rows, changed, deleted))
+            causes = run_async(_read_causes(root, rows, changed, deleted, roots=roots))
         except Exception:
             causes = None  # advice: an index that breaks the read leaves causes unassessed
     else:
-        causes = name_causes(needs_causes(rows), changed, deleted)
+        causes = name_causes(needs_causes(rows), changed, deleted, roots=roots)
     return apply_causes(rows, causes)
 
 
-async def _read_causes(root: Path, rows, changed: set[str], deleted: set[str]):
+async def _read_causes(
+    root: Path, rows, changed: set[str], deleted: set[str], *, roots: Any | None = None
+):
     from repowise.core.analysis.patch_coverage import (
         name_causes,
         needs_causes,
@@ -1030,6 +1032,8 @@ async def _read_causes(root: Path, rows, changed: set[str], deleted: set[str]):
 
     async with repo_index_session(root) as opened:
         if opened is None:
-            return name_causes(needs_causes(rows), changed, deleted)
+            return name_causes(needs_causes(rows), changed, deleted, roots=roots)
         session, repo_id = opened
-        return await read_indirect_causes(session, repo_id, rows, changed, deleted)
+        return await read_indirect_causes(
+            session, repo_id, rows, changed, deleted, roots=roots
+        )

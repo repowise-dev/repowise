@@ -15,6 +15,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+from typing import Any
 
 from ...ingestion.languages.registry import REGISTRY
 from ...ownership.codeowners import parse_codeowners
@@ -92,13 +93,15 @@ def codeowners_gates(text: str) -> list[SuggestedGate]:
     ]
 
 
-def layout_gates(tracked: Iterable[str]) -> list[SuggestedGate]:
+def layout_gates(
+    tracked: Iterable[str], roots: Any | None = None
+) -> list[SuggestedGate]:
     """One gate per package of a monorepo, else per top-level source directory.
 
     A directory counts when git tracks a source file under it that is not a
     test. The monorepo layout wins when any of its roots holds a package.
     """
-    sources = [p for p in tracked if _is_source(p)]
+    sources = [p for p in tracked if _is_source(p, roots=roots)]
     packages = sorted(
         {
             "/".join(parts[:2])
@@ -124,7 +127,9 @@ def layout_gates(tracked: Iterable[str]) -> list[SuggestedGate]:
 
 
 def community_gates(
-    communities: Mapping[str, int], sizes: Mapping[str, int] | None = None
+    communities: Mapping[str, int],
+    sizes: Mapping[str, int] | None = None,
+    roots: Any | None = None,
 ) -> tuple[list[SuggestedGate], int]:
     """Gates from graph communities (``{file: community_id}``), and how many were not tried.
 
@@ -139,7 +144,7 @@ def community_gates(
     """
     members: dict[int, list[str]] = defaultdict(list)
     for path, community in communities.items():
-        if _is_source(path):
+        if _is_source(path, roots=roots):
             members[community].append(path)
     big = sorted(
         (sorted(files) for files in members.values() if len(files) >= MIN_COMMUNITY_FILES),
@@ -231,8 +236,10 @@ _SOURCE_TITLE = {
 }
 
 
-def _is_source(path: str) -> bool:
-    return PurePosixPath(path).suffix in _SOURCE_SUFFIXES and not is_test_related_path(path)
+def _is_source(path: str, *, roots: Any | None = None) -> bool:
+    return PurePosixPath(path).suffix in _SOURCE_SUFFIXES and not is_test_related_path(
+        path, roots=roots
+    )
 
 
 def _gate_name(owner: str) -> str:

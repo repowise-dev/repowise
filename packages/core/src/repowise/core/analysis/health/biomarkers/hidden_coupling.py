@@ -129,7 +129,10 @@ class HiddenCouplingDetector:
             # Test ↔ production pairs are expected to co-change, so they carry
             # no finding.
             if is_test_to_production_pair(
-                ctx.file_path, partner_path, code_language=ctx.language
+                ctx.file_path,
+                partner_path,
+                code_language=ctx.language,
+                code_is_test=ctx.is_test_material,
             ):
                 continue
             candidates.append((correlation, partner_path, support, total_self, partner_total))

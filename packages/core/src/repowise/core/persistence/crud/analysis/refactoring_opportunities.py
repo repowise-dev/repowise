@@ -16,6 +16,7 @@ answering and stops reading as current.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Select, func, select, update
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....test_paths import is_test_related_path
 from ...models import (
+    GraphNode,
     HealthFinding,
     RefactoringOpportunity,
     RefactoringSuggestion,
@@ -55,7 +57,11 @@ _DECIDED_STATUSES = frozenset({"resolved", "false_positive"})
 # ---------------------------------------------------------------------------
 
 
-def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
+def _diversified_order(
+    opportunities: list[OpportunityModel],
+    *,
+    is_test_by_path: Mapping[str, bool] | None = None,
+) -> list[int]:
     """Rank positions reordered so the head is not one cause in one directory.
 
     The ranked head is honestly flat: on the dogfood index eight of the top ten
@@ -90,7 +96,12 @@ def _diversified_order(opportunities: list[OpportunityModel]) -> list[int]:
         groups: dict[tuple[str, str, str], list[int]] = {}
         trailing: list[int] = []
         for position, item in enumerate(opportunities):
-            if is_test_related_path(item.file_path) is not is_test:
+            is_item_test = (
+                is_test_by_path[item.file_path]
+                if is_test_by_path is not None and item.file_path in is_test_by_path
+                else is_test_related_path(item.file_path)
+            )
+            if is_item_test is not is_test:
                 continue
             if not leads_queue(item):
                 trailing.append(position)
@@ -451,8 +462,22 @@ async def finalize_refactoring_opportunities(
     statuses = {
         item.opportunity_id: opportunity_status(item, plan_status) for item in opportunities
     }
+    opp_paths = {item.file_path for item in opportunities}
+    is_test_by_path: dict[str, bool] = {}
+    if opp_paths:
+        node_rows = (
+            await session.execute(
+                select(GraphNode.node_id, GraphNode.is_test).where(
+                    GraphNode.repository_id == repository_id,
+                    GraphNode.node_type == "file",
+                    GraphNode.node_id.in_(opp_paths),
+                )
+            )
+        ).all()
+        is_test_by_path = {node_id: is_test for node_id, is_test in node_rows}
+
+    queue_order = _diversified_order(opportunities, is_test_by_path=is_test_by_path)
     finding_ids = _finding_ids_by_file(findings)
-    queue_order = _diversified_order(opportunities)
 
     details_by_id = {
         item.opportunity_id: _details_payload(
@@ -480,7 +505,11 @@ async def finalize_refactoring_opportunities(
         (
             opportunities[rank]
             for rank in queue_order
-            if not is_test_related_path(opportunities[rank].file_path)
+            if not (
+                is_test_by_path[opportunities[rank].file_path]
+                if opportunities[rank].file_path in is_test_by_path
+                else is_test_related_path(opportunities[rank].file_path)
+            )
         ),
         None,
     )

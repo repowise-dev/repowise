@@ -45,8 +45,13 @@ def _finding(kind: DeadCodeKind, path: str, name: str | None = None) -> DeadCode
     )
 
 
-def _kept(findings, source, importers=()):
-    return {(f.file_path, f.symbol_name) for f in drop_named_modules(findings, source, importers)}
+def _kept(findings, source, importers=(), is_test_by_path=None, roots=None):
+    return {
+        (f.file_path, f.symbol_name)
+        for f in drop_named_modules(
+            findings, source, importers, is_test_by_path=is_test_by_path, roots=roots
+        )
+    }
 
 
 _CMD = "pkg/repowise/cli/commands/uninstall_cmd.py"
@@ -182,3 +187,31 @@ def test_python_that_does_not_decode_falls_back_to_the_whole_file():
     settings = b'# -*- coding: utf-8 -*-\nB = "hc.accounts.backends.EmailBackend"\nX = "\xff"\n'
     source = {"hc/settings.py": settings, _BACKENDS: _BACKENDS_SRC}
     assert _kept(_backend_findings(), source) == {(_BACKENDS, "helper")}
+
+
+def test_stored_flag_and_pytest_roots_in_drop_named_modules():
+    from repowise.core.pytest_roots import read_pytest_roots
+
+    app = "src/tools/helper.py"
+    findings = [_finding(DeadCodeKind.UNREACHABLE_FILE, app)]
+    # File name does not look like a test, but is_test_by_path marks it as a test
+    source = {"src/tools/suite.py": b"OPTS = ['-A', 'src.tools.helper']\n", app: b"app = 1\n"}
+    # Without test classification, suite.py is treated as production code and loads it
+    assert _kept(findings, source) == set()
+    # With is_test_by_path, suite.py is known to be a test and its load is recognized as a test load
+    assert _kept(findings, source, is_test_by_path={"src/tools/suite.py": True}) == set()
+
+    # And when a test-named file is outside pytest roots, roots keeps it production code:
+    prod_test_name = "src/tools/test_data.py"
+    prod_findings = [_finding(DeadCodeKind.UNUSED_EXPORT, _BACKENDS, "EmailBackend")]
+    # mock.patch in a test is ignored as member use; in production code it is NOT a test mock
+    patch_source = {
+        prod_test_name: b'@patch("hc.accounts.backends.EmailBackend")\ndef run(): ...\n',
+        _BACKENDS: _BACKENDS_SRC,
+    }
+    # Default without roots treats test_data.py as a test, so patch target is ignored
+    assert _kept(prod_findings, patch_source) == {(_BACKENDS, "EmailBackend")}
+    # Configured pytest roots only collecting tests/ means src/tools/test_data.py is NOT a test
+    roots = read_pytest_roots([("pytest.ini", "[pytest]\ntestpaths = tests\n")])
+    assert _kept(prod_findings, patch_source, roots=roots) == set()
+

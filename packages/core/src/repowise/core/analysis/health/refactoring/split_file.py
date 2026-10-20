@@ -127,15 +127,33 @@ def _is_generated_path(path: str) -> bool:
     )
 
 
-def _is_skippable_path(path: str, language: str | None = None) -> bool:
-    return is_test_related_path(path, language) or _is_generated_path(path)
+def _is_skippable_path(
+    path: str,
+    language: str | None = None,
+    *,
+    is_test: bool | None = None,
+    roots: Any | None = None,
+) -> bool:
+    test_flag = (
+        is_test
+        if is_test is not None
+        else is_test_related_path(path, language, roots=roots)
+    )
+    return test_flag or _is_generated_path(path)
 
 
-def may_split(path: str, language: str | None, line_count: int, top_level_symbols: int) -> bool:
+def may_split(
+    path: str,
+    language: str | None,
+    line_count: int,
+    top_level_symbols: int,
+    is_test: bool | None = None,
+    roots: Any | None = None,
+) -> bool:
     """A necessary condition for a plan, from what a parse knows: lets a caller
     skip work only a candidate file needs."""
     return (
-        not _is_skippable_path(path, language)
+        not _is_skippable_path(path, language, is_test=is_test, roots=roots)
         and line_count >= _MIN_FILE_NLOC
         and top_level_symbols >= _MIN_SYMBOLS
     )
@@ -614,7 +632,9 @@ class SplitFileDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         graph = ctx.graph
-        if graph is None or _is_skippable_path(ctx.file_path, ctx.language):
+        node = graph.nodes.get(ctx.file_path) if graph is not None and ctx.file_path in graph else None
+        is_test = bool(node["is_test"]) if node is not None and "is_test" in node else None
+        if graph is None or _is_skippable_path(ctx.file_path, ctx.language, is_test=is_test):
             return []
         if ctx.nloc < _MIN_FILE_NLOC:
             return []
