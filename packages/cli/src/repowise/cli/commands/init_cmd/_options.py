@@ -70,15 +70,17 @@ class InitRun:
     repo_path: Path
     start: float
     is_interactive: bool = False
-    # The two axes the interactive menu resolves: docs on or off, and whether
-    # the advanced prompts ran. They gate the editor-files question.
+    #: This run made ``.repowise/``, so quitting before indexing removes it again.
+    repowise_dir_created: bool = False
+    # Whether a model writes the documentation (the plan screen's answer).
     generate_docs: bool = True
-    customize: bool = False
     # Advanced-mode answers, None until chosen. Each loses to its flag and
     # wins over config.yaml.
     language_choice: str | None = None
     max_file_pages_choice: int | None = None
     editor_options: Any = None
+    #: The plan screen's answer to repointing the global MCP entry; None = not asked.
+    global_mcp_consent: bool | None = None
     config: dict[str, Any] = field(default_factory=dict)
     language: str = "en"
     max_file_pages: int | None = None

@@ -198,8 +198,12 @@ def test_no_editor_setup_asks_and_prints_nothing(home: Path, repo: Path, monkeyp
     assert buf.getvalue() == ""
 
 
-def _run(repo: Path, *, yes: bool) -> SimpleNamespace:
-    return SimpleNamespace(repo_path=repo, opts=SimpleNamespace(yes=yes, editor_setup=True))
+def _run(repo: Path, *, yes: bool, consent: bool | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        repo_path=repo,
+        opts=SimpleNamespace(yes=yes, editor_setup=True),
+        global_mcp_consent=consent,
+    )
 
 
 def test_decline_leaves_global_configs_byte_identical(
@@ -246,3 +250,39 @@ def test_probe_failure_never_blocks_registration(home: Path, repo: Path, monkeyp
     console, buf = _console()
     assert global_mcp.confirm_global_mcp(console, repo) is True
     assert buf.getvalue() == ""
+
+
+def test_plan_screen_this_repo_only_writes_nothing_and_asks_nothing(
+    home: Path, repo: Path, monkeypatch
+) -> None:
+    from repowise.cli.commands.init_cmd import _finish
+
+    _write(_settings(home), _entry("C:/elsewhere"))
+    before = _settings(home).read_bytes()
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+    console, buf = _console()
+    monkeypatch.setattr(_finish, "console", console)
+
+    _finish.register_clients(_run(repo, yes=False, consent=False))
+
+    assert _settings(home).read_bytes() == before
+    assert "this repo only" in buf.getvalue()
+
+
+def test_plan_screen_yes_repoints_without_asking_again(
+    home: Path, repo: Path, monkeypatch
+) -> None:
+    from repowise.cli.commands.init_cmd import _finish
+
+    _write(_settings(home), _entry("C:/elsewhere"))
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr(click, "confirm", _no_prompt)
+    console, buf = _console()
+    monkeypatch.setattr(_finish, "console", console)
+
+    _finish.register_clients(_run(repo, yes=False, consent=True))
+
+    stored = json.loads(_settings(home).read_text(encoding="utf-8"))["mcpServers"]["repowise"]
+    assert stored["args"][1] == _arg(repo)
+    assert "now points at" in buf.getvalue()

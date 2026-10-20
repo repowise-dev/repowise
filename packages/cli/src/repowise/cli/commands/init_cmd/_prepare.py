@@ -15,10 +15,7 @@ from repowise.cli.editor_integrations.defaults import (
     get_default_integration_overrides,
     get_default_project_file_overrides,
 )
-from repowise.cli.editor_setup import (
-    resolve_editor_setup_options,
-    select_agents_interactively,
-)
+from repowise.cli.editor_setup import resolve_editor_setup_options
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     console,
@@ -65,6 +62,7 @@ def _interactive_gate(
 
 def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
     """Prepare ``.repowise/``, logging and the resume mode, then open the run."""
+    dir_created = not (repo_path / ".repowise").exists()
     ensure_repowise_dir(repo_path)
     load_dotenv(repo_path)
 
@@ -98,13 +96,20 @@ def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
         start=start,
         is_interactive=is_interactive,
         generate_docs=not opts.index_only,
+        repowise_dir_created=dir_created,
     )
 
 
 def _editor_options(run: InitRun) -> Any:
-    """Which editor files and integrations this run writes."""
+    """Which editor files and integrations this run writes.
+
+    The agent checklist on the plan screen's ``e`` sets ``run.editor_options``;
+    otherwise the flags and detection decide, with no question.
+    """
+    if run.editor_options is not None:
+        return run.editor_options
     opts = run.opts
-    editor_options = resolve_editor_setup_options(
+    return resolve_editor_setup_options(
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=opts.no_claude_md,
         ),
@@ -115,13 +120,6 @@ def _editor_options(run: InitRun) -> Any:
             codex_setup=opts.codex_setup,
         ),
     )
-    # Ask which agents to wire up whenever the user is engaging interactively:
-    # either generating docs or customizing an index-only run. Not asked when
-    # editor setup is off: every answer would be discarded by
-    # `write_editor_project_files`.
-    if opts.editor_setup and run.is_interactive and (run.generate_docs or run.customize):
-        editor_options = select_agents_interactively(console, run.repo_path, editor_options)
-    return editor_options
 
 
 def _resolve_settings(run: InitRun) -> None:

@@ -35,16 +35,19 @@ SECONDS_PER_CALL = 60
 
 @dataclass(frozen=True)
 class SubscriptionContext:
-    """What the picker needs to offer an agent CLI.
+    """What the picker knows about the run that opened it.
 
     *prefer*: agent CLIs set up in this repo, the first ready one becomes the
     default (see ``agent_providers_set_up``). *model_calls* and *concurrency*
     size the quota and time estimate; no estimate is shown without calls.
+    *allow_skip*: a provider that is not set up offers to go on without a
+    model, and the picker returns ``None`` for that answer.
     """
 
     prefer: tuple[str, ...] = ()
     model_calls: int | None = None
     concurrency: int = 10
+    allow_skip: bool = False
 
 
 @dataclass(frozen=True)
@@ -204,6 +207,34 @@ def model_call_count(plans: Iterable[object]) -> int:
     )
 
 
+def _parallel(provider_name: str, concurrency: int | None) -> int:
+    limit = process_limit(provider_name)
+    return max(1, min(concurrency, limit) if concurrency else limit)
+
+
+def subscription_minutes(
+    provider_name: str, model_calls: int, concurrency: int | None = None
+) -> int:
+    """Minutes a subscription run of *model_calls* takes, at least one."""
+    parallel = _parallel(provider_name, concurrency)
+    return max(1, math.ceil(math.ceil(model_calls / parallel) * SECONDS_PER_CALL / 60))
+
+
+def subscription_quota(
+    provider_name: str,
+    model_calls: int,
+    concurrency: int | None = None,
+    billing: str | None = None,
+) -> str:
+    """``uses your Claude Code login, about 14 model calls, 4 at a time``."""
+    parallel = _parallel(provider_name, concurrency)
+    calls = "call" if model_calls == 1 else "calls"
+    return (
+        f"{billing or PROVIDER_SPECS[provider_name].note}, about {model_calls:,} model {calls}, "
+        f"{parallel} at a time"
+    )
+
+
 def subscription_estimate(
     provider_name: str,
     model_calls: int,
@@ -217,15 +248,9 @@ def subscription_estimate(
     run's ``--concurrency``; the CLI's own process limit caps it. *billing*
     (from :func:`agent_cli_auth`) replaces the generic login note.
     """
-    limit = process_limit(provider_name)
-    parallel = max(1, min(concurrency, limit) if concurrency else limit)
-    minutes = max(1, math.ceil(math.ceil(model_calls / parallel) * SECONDS_PER_CALL / 60))
-    calls = "call" if model_calls == 1 else "calls"
-    return (
-        f"{billing or PROVIDER_SPECS[provider_name].note}, "
-        f"about {model_calls:,} model {calls}, "
-        f"{parallel} at a time, about {minutes:,} min"
-    )
+    minutes = subscription_minutes(provider_name, model_calls, concurrency)
+    quota = subscription_quota(provider_name, model_calls, concurrency, billing)
+    return f"{quota}, about {minutes:,} min"
 
 
 def subscription_note(ready: tuple[str, ...], auth: CliAuth | None = None) -> str | None:
@@ -261,5 +286,7 @@ __all__ = [
     "process_limit",
     "ready_agent_providers",
     "subscription_estimate",
+    "subscription_minutes",
     "subscription_note",
+    "subscription_quota",
 ]

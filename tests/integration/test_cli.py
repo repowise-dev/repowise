@@ -1352,8 +1352,8 @@ class TestInitSeedFrom:
                 catch_exceptions=False,
             )
             assert r1.exit_code == 0, r1.output
-            assert "Worktree index seeded successfully" in r1.output
-            assert "Delegating to update..." in r1.output
+            assert "Index copied from" in r1.output
+            assert "to catch it up" in r1.output
 
             assert (worktree_dir / ".repowise" / "state.json").exists()
             assert (worktree_dir / ".repowise" / "wiki.db").exists()
@@ -1487,7 +1487,7 @@ class TestInitSeedFrom:
                 catch_exceptions=False,
             )
             assert r1.exit_code == 0, r1.output
-            assert "Delegating to update" in r1.output
+            assert "to catch it up" in r1.output
 
             # Copied config.yaml and the vector db directory (lancedb).
             assert (worktree_dir / ".repowise" / "config.yaml").exists()
@@ -1539,8 +1539,8 @@ class TestWorktreeAutoSeed:
                 cli, ["init", str(worktree_dir), "--index-only"], catch_exceptions=False
             )
             assert r1.exit_code == 0, r1.output
-            assert "[worktree]" in r1.output
-            assert "Worktree index seeded successfully" in r1.output
+            assert "This is a linked worktree of" in r1.output
+            assert "Index copied from" in r1.output
             assert (worktree_dir / ".repowise" / "state.json").exists()
             assert (worktree_dir / ".repowise" / "wiki.db").exists()
         finally:
@@ -1565,7 +1565,7 @@ class TestWorktreeAutoSeed:
                 catch_exceptions=False,
             )
             assert r1.exit_code == 0, r1.output
-            assert "[worktree]" not in r1.output
+            assert "linked worktree of" not in r1.output
             # Cold init still produces a working index.
             assert (worktree_dir / ".repowise" / "state.json").exists()
         finally:
@@ -1617,7 +1617,7 @@ class TestWorktreeAutoSeed:
                 cli, ["init", str(worktree_dir), "--index-only"], catch_exceptions=False
             )
             assert r1.exit_code == 0, r1.output
-            assert "[worktree]" not in r1.output
+            assert "linked worktree of" not in r1.output
             assert (worktree_dir / ".repowise" / "state.json").exists()
         finally:
             _remove_worktree(git_work_repo, worktree_dir)
@@ -1702,7 +1702,7 @@ class TestWorktreeInitForce:
             assert upgrade_calls == [], "init --force must not enter the paid upgrade path"
             # The seed is deliberately skipped: --force asks for the re-index
             # seeding exists to avoid, so no delegation line and no seeded index.
-            assert "Delegating to update" not in flat
+            assert "to catch it up" not in flat
             assert "--force re-indexes this checkout from scratch" in flat
 
             state = json.loads(
@@ -1833,8 +1833,8 @@ class TestWorktreeInitForce:
             )
             assert r1.exit_code == 0, r1.output
             flat = " ".join(r1.output.split())
-            assert "Worktree index seeded successfully" in flat
-            assert "Delegating to update" in flat
+            assert "Index copied from" in flat
+            assert "to catch it up" in flat
             assert seen, "the seed path should still delegate to update"
             assert all(call["full"] is False for call in seen), seen
         finally:

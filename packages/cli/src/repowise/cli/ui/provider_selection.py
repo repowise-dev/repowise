@@ -268,13 +268,15 @@ def _interactive_provider_name(
     repo_path: Path | None = None,
     save_key: bool = True,
     subscription: SubscriptionContext = _NO_SUBSCRIPTION,
-) -> str:
+) -> str | None:
     """Show provider table, handle selection + inline key entry + save.
 
     The first ready provider in *prefer* (see :func:`agent_providers_set_up`)
     becomes the default, else the one auto-detection would pick. With
     *model_calls*, a ready agent CLI is shown with its quota and time
-    estimate. Returns the chosen provider name.
+    estimate. Returns the chosen provider name, or ``None`` when
+    ``subscription.allow_skip`` is set and the user chose to go on without a
+    model.
     """
     providers = list(_PROVIDER_CHOICES)  # gemini first
     detected = _detect_provider_status(repo_path)
@@ -365,48 +367,61 @@ def _interactive_provider_name(
     has_official_openai_key = chosen == "openai" and bool(
         (os.environ.get("OPENAI_API_KEY") or "").strip()
     )
-    if chosen not in detected and not has_official_openai_key:
-        setup_lines = _LOCAL_PROVIDER_SETUP.get(chosen)
-        if setup_lines is not None:
-            # Nothing to paste: these authenticate out of band or run locally,
-            # so the fix is a command, not a key prompt.
-            console.print()
-            for line in setup_lines():
-                console.print(line)
-            return _interactive_provider_name(
-                console,
-                model_flag,
-                repo_path=repo_path,
-                save_key=save_key,
-                subscription=subscription,
-            )
-        env_var = _PROVIDER_ENV[chosen]
-        signup_url = _PICKER_SPECS[chosen].signup_url
-        console.print()
-        console.print(f"  [bold]{chosen}[/bold] requires [{VALUE}]{env_var}[/].")
-        if signup_url:
-            console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
-        console.print()
-        key = _prompt_api_key(
+    if (
+        chosen not in detected
+        and not has_official_openai_key
+        and not _set_up_inline(console, chosen, repo_path, save_key)
+    ):
+        if _go_without_model(console, subscription.allow_skip, keyed=chosen in _PROVIDER_ENV):
+            return None
+        return _interactive_provider_name(
             console,
-            chosen,
-            env_var,
+            model_flag,
             repo_path=repo_path,
             save_key=save_key,
+            subscription=subscription,
         )
-        if not key:
-            console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
-            return _interactive_provider_name(
-                console,
-                model_flag,
-                repo_path=repo_path,
-                save_key=save_key,
-                subscription=subscription,
-            )
 
     if chosen == "openai" and repo_path is not None:
         _save_key_to_dotenv(repo_path, "OPENAI_BASE_URL", _OPENAI_DEFAULT_BASE_URL)
     return chosen
+
+
+def _set_up_inline(console: Console, chosen: str, repo_path: Path | None, save_key: bool) -> bool:
+    """Set up a provider that is not ready. True when a key was entered.
+
+    Local and agent-CLI providers have nothing to paste: they authenticate out
+    of band or run locally, so the remedy is a command and this is False.
+    """
+    setup_lines = _LOCAL_PROVIDER_SETUP.get(chosen)
+    console.print()
+    if setup_lines is not None:
+        for line in setup_lines():
+            console.print(line)
+        return False
+    env_var = _PROVIDER_ENV[chosen]
+    signup_url = _PICKER_SPECS[chosen].signup_url
+    console.print(f"  [bold]{chosen}[/bold] requires [{VALUE}]{env_var}[/].")
+    if signup_url:
+        console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
+    console.print()
+    key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path, save_key=save_key)
+    return bool(key)
+
+
+def _go_without_model(console: Console, allow_skip: bool, *, keyed: bool) -> bool:
+    """After a provider that is still not set up: True to go on without a model."""
+    if not allow_skip:
+        if keyed:
+            console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
+        return False
+    if keyed:
+        console.print(f"  [{WARN}]No key entered.[/]")
+    console.print(
+        f"  [{BRAND}][1][/] Continue without a model [dim](documentation built from code)[/dim]"
+    )
+    console.print(f"  [{BRAND}][2][/] Pick another provider")
+    return Prompt.ask("  Choose", choices=["1", "2"], default="1", console=console) == "1"
 
 
 def _fallback_model_option(provider_name: str) -> ProviderModelOption:
@@ -652,11 +667,13 @@ def interactive_provider_config_select(
     repo_path: Path | None = None,
     save_key: bool = True,
     subscription: SubscriptionContext = _NO_SUBSCRIPTION,
-) -> ProviderSelection:
+) -> ProviderSelection | None:
     """Show provider/model/reasoning selection for interactive init.
 
     Returns a :class:`ProviderSelection` carrying the chosen provider name,
-    model, and reasoning mode.
+    model, and reasoning mode. With ``subscription.allow_skip``, a provider
+    that is not set up offers to go on without a model, and that answer
+    returns ``None``.
     """
     chosen = _interactive_provider_name(
         console,
@@ -665,13 +682,22 @@ def interactive_provider_config_select(
         save_key=save_key,
         subscription=subscription,
     )
+    if chosen is None:
+        return None
     if chosen == _OPENAI_COMPATIBLE_CHOICE:
-        return _interactive_openai_compatible_select(
+        gateway = _interactive_openai_compatible_select(
+            console, model_flag, reasoning_flag, repo_path=repo_path, save_key=save_key
+        )
+        if gateway is not None:
+            return gateway
+        # The user asked to go back to provider selection.
+        return interactive_provider_config_select(
             console,
             model_flag,
             reasoning_flag,
             repo_path=repo_path,
             save_key=save_key,
+            subscription=subscription,
         )
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")
 
@@ -727,6 +753,7 @@ def interactive_provider_select(
         reasoning_flag="auto",
         repo_path=repo_path,
     )
+    assert selection is not None  # allow_skip is off, so a provider was chosen
     return selection.provider_name, selection.model
 
 
@@ -844,8 +871,11 @@ def _interactive_openai_compatible_select(
     *,
     repo_path: Path | None,
     save_key: bool,
-) -> ProviderSelection:
-    """Configure, verify, and select a model from a custom OpenAI gateway."""
+) -> ProviderSelection | None:
+    """Configure, verify, and select a model from a custom OpenAI gateway.
+
+    ``None`` means the user asked to go back to provider selection.
+    """
     console.print()
     console.print("  [bold]OpenAI-compatible custom gateway[/bold]")
     console.print("  [dim]Works with 9router, vLLM, SGLang, and compatible /v1 APIs.[/dim]")
@@ -882,13 +912,7 @@ def _interactive_openai_compatible_select(
             if action == "1":
                 continue
             if action == "3":
-                return interactive_provider_config_select(
-                    console,
-                    model_flag,
-                    reasoning_flag,
-                    repo_path=repo_path,
-                    save_key=save_key,
-                )
+                return None
             selected = _prompt_exact_model(console)
             break
 

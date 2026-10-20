@@ -52,28 +52,19 @@ from ._prepare import (
     _resolve_settings,
     _start_run,
 )
-from ._questions import (
-    _apply_advanced_answers,
-    _ask_mode,
-    _ask_provider,
-    _ask_questions,
-    _offer_fast_mode,
-)
+from ._questions import _apply_advanced_answers, _ask_questions
 from ._seed import delegate_to_seeded_update
 from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
 __all__ = [
     "_apply_advanced_answers",
-    "_ask_mode",
-    "_ask_provider",
     "_ask_questions",
     "_confirm_wiki_overwrite",
     "_editor_options",
     "_generate",
     "_generate_with_model",
     "_interactive_gate",
-    "_offer_fast_mode",
     "_prepare_single_repo",
     "_print_structural_plan",
     "_render_template_wiki",
@@ -161,7 +152,25 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     # duplication caches, which are derived data.
     help="Show the generation plan and cost estimate. Writes no documentation.",
 )
-@click.option("--yes", "-y", is_flag=True, default=False, help="Skip cost confirmation prompt.")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help=(
+        "Start at once with every answer at its default. Skips the plan screen "
+        "and every question after it: documentation is written by a model only "
+        "when a provider is configured (an API key in the environment or "
+        ".repowise/.env), else built from code; a logged-in Claude Code, Codex "
+        "or OpenCode is used only with --provider; the cost confirmation is "
+        "accepted; advanced options keep their defaults (standard run mode at "
+        "any size, comprehensive style); the detected agents "
+        "are connected; the global repowise MCP entry is pointed here, with the "
+        "old and new target printed; the post-commit hook is installed and the "
+        "distill rewrite hook is not; and with --no-prose, documentation a "
+        "model wrote is replaced without asking."
+    ),
+)
 @click.option(
     "--resume",
     is_flag=True,
