@@ -645,9 +645,10 @@ spec:
 
 Where coverage reports live and how their paths map; the full block is in
 [test intelligence](../layers/TEST_INTELLIGENCE.md#configuration).
-`repowise update` re-reads the configured or discovered reports when one was
-written after the last ingest, replacing coverage added by hand from another
-report. `reingest_on_update: true` re-reads them on
+`repowise update` re-reads the reports when one in `coverage.paths`, or at a
+fixed discovery location such as `coverage/lcov.info`, was written after the
+last ingest, replacing coverage added by hand from another report. A report
+only a `**` glob finds is not watched; name it in `coverage.paths`. `reingest_on_update: true` re-reads them on
 every update, and `false` keeps the stored coverage until `repowise coverage add`.
 
 ### The `security:` block

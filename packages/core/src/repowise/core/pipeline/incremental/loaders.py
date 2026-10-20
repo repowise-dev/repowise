@@ -245,18 +245,22 @@ async def coverage_reports_to_reread(
     report written after the last ingest by default, every update or never
     when ``coverage.reingest_on_update`` says so. An empty dict is a forced
     re-read that found no report. Without ``paths`` or discovery there is
-    nothing to re-read, and the opt-out skips the discovery walk too.
+    nothing to re-read. By default only ``watched_reports`` are stat-ed; the
+    discovery walk runs only for a re-read that is due.
     """
     from repowise.core.persistence.crud.analysis import load_newest_ingest
 
     if cfg.reingest_on_update is False or not (cfg.paths or cfg.auto_discover):
         return None
-    reports = cfg.reports(repo_path)
-    last_ingest = None
-    if reports and cfg.reingest_on_update is None:
+    if cfg.reingest_on_update is None:
+        watched = cfg.watched_reports(repo_path)
+        if not watched:
+            return None
         newest = await load_newest_ingest(session, repo_id)
         last_ingest = newest.ingested_at if newest is not None else None
-    return reports if cfg.reingest(_newest_mtime(reports), last_ingest) else None
+        if not cfg.reingest(_newest_mtime(watched), last_ingest):
+            return None
+    return cfg.reports(repo_path)
 
 
 def _newest_mtime(reports: Any) -> float | None:

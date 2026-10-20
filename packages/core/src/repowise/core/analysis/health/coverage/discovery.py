@@ -232,6 +232,21 @@ class CoverageConfig:
             return dict.fromkeys(discover_artifacts(repo_root, globs=self.artifacts or None))
         return {}
 
+    def watched_reports(self, repo_root: Path) -> list[Path]:
+        """The reports whose age ``update`` checks: :meth:`reports` without a tree walk.
+
+        Explicit ``paths`` as written; else the glob-free discovery entries,
+        each a single stat. Ceiling: a report only a wildcard glob finds is not
+        watched, since the walk costs seconds on a large repository on every
+        update; name it in ``coverage.paths`` to have it watched.
+        """
+        if self.paths:
+            return list(self.reports(repo_root))
+        if not self.auto_discover:
+            return []
+        literal = [g for g in self.artifacts or DEFAULT_DISCOVERY_GLOBS if not _has_magic(g)]
+        return [repo_root / g for g in literal if (repo_root / g).is_file()]
+
 
 def configured_coverage(repo_root: Path | str) -> CoverageConfig:
     """*repo_root*'s ``coverage:`` config, the defaults when it cannot be read.

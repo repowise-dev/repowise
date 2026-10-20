@@ -405,6 +405,21 @@ def test_reingest_rereads_a_report_written_after_the_last_ingest() -> None:
     assert on.reingest(before, last) is True
 
 
+def test_watched_reports_stat_fixed_locations_without_a_walk(tmp_path: Path) -> None:
+    (tmp_path / "coverage").mkdir()
+    (tmp_path / "coverage" / "lcov.info").write_text("SF:a.py\nend_of_record\n")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "cobertura.xml").write_text("<coverage/>")
+    cfg = CoverageConfig.from_repo_config(None)
+    # The nested report needs the ``**/cobertura.xml`` walk, so only discovery finds it.
+    assert cfg.watched_reports(tmp_path) == [tmp_path / "coverage" / "lcov.info"]
+    assert len(cfg.reports(tmp_path)) == 2
+    named = CoverageConfig.from_repo_config({"coverage": {"paths": ["pkg/cobertura.xml"]}})
+    assert named.watched_reports(tmp_path) == [tmp_path / "pkg" / "cobertura.xml"]
+    off = CoverageConfig.from_repo_config({"coverage": {"auto_discover": False}})
+    assert off.watched_reports(tmp_path) == []
+
+
 def test_coverage_config_paths_take_globs_and_per_report_prefixes(tmp_path: Path) -> None:
     for rel in ("web/coverage/lcov.info", "api/coverage/lcov.info", "root.lcov"):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
