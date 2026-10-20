@@ -38,27 +38,33 @@ OWNED_PATTERNS: tuple[str, ...] = (
     ".kiro/steering/repowise.md",
 )
 
-#: Root-relative. Markdown holds the writers' exactly marked blocks: the
-#: CLAUDE.md and AGENTS.md generators, and the instruction blocks of the codex,
-#: opencode, hermes, copilot, vscode and cursor targets. The JSON and TOML
-#: files hold a ``repowise`` server entry, hook or extension recommendation
-#: from the agent targets (claude code, vscode, cursor, kiro, codex, opencode).
-MANAGED_FILES: tuple[str, ...] = (
-    ".claude/CLAUDE.md",
-    "AGENTS.md",
-    ".github/copilot-instructions.md",
-    ".cursor/rules/repowise.mdc",
-    ".mcp.json",
-    ".claude/settings.local.json",
-    ".vscode/mcp.json",
-    ".vscode/extensions.json",
-    ".cursor/mcp.json",
-    ".kiro/settings/mcp.json",
-    ".codex/config.toml",
-    ".codex/hooks.json",
-    "opencode.json",
-    "opencode.jsonc",
-)
+#: Root-relative, each with whether it is machine-specific: worth keeping out
+#: of git per clone rather than shared with the team. ``.mcp.json`` and
+#: the other agents' configs stay shared. Markdown holds the writers' exactly
+#: marked blocks: the CLAUDE.md and AGENTS.md generators, and the instruction
+#: blocks of the codex, opencode, hermes, copilot, vscode and cursor targets.
+#: The JSON and TOML files hold a ``repowise`` server entry, hook or extension
+#: recommendation from the agent targets (claude code, vscode, cursor, kiro,
+#: codex, opencode).
+_MANAGED: dict[str, bool] = {
+    ".claude/CLAUDE.md": True,
+    "AGENTS.md": False,
+    ".github/copilot-instructions.md": True,
+    ".cursor/rules/repowise.mdc": False,
+    ".mcp.json": False,
+    ".claude/settings.local.json": True,
+    ".vscode/mcp.json": True,
+    ".vscode/extensions.json": True,
+    ".cursor/mcp.json": False,
+    ".kiro/settings/mcp.json": False,
+    ".codex/config.toml": False,
+    ".codex/hooks.json": False,
+    "opencode.json": False,
+    "opencode.jsonc": False,
+}
+MANAGED_FILES: tuple[str, ...] = tuple(_MANAGED)
+#: The managed files ``init`` offers to add to ``.git/info/exclude``.
+MACHINE_SPECIFIC_FILES: tuple[str, ...] = tuple(p for p, machine in _MANAGED.items() if machine)
 
 #: The VS Code extension the vscode target recommends in ``extensions.json``.
 EXTENSION_ID = "repowise-dev.repowise"

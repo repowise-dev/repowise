@@ -14,7 +14,6 @@ import yaml
 from rich.console import Console
 
 from repowise.cli.commands.init_cmd import _workspace_repos
-from repowise.cli.commands.init_cmd import workspace as ws_mod
 from repowise.cli.commands.init_cmd._workspace_config import (
     WorkspacePick,
     build_workspace_config,
@@ -139,23 +138,6 @@ def test_picker_number_column_fits_three_digits() -> None:
         interactive_repo_select(console, repos)
     text = console.export_text()
     assert "[226]" in text and "…" not in text
-
-
-def test_mode_question_pluralizes_repo_count() -> None:
-    titles: list[str] = []
-
-    def _mode(_console: object, *, title: str) -> str:
-        titles.append(title)
-        return "index_only"
-
-    answers = SimpleNamespace(index_only=False)
-    with patch.object(ws_mod, "interactive_mode_select", side_effect=_mode):
-        ws_mod._ask_workspace_mode(answers, [object()], None, None, save_key=False)
-        ws_mod._ask_workspace_mode(answers, [object(), object()], None, None, save_key=False)
-    assert titles == [
-        "How much should repowise write for 1 repo?",
-        "How much should repowise write for 2 repos?",
-    ]
 
 
 def test_primary_moves_when_its_alias_was_taken(tmp_path: Path) -> None:

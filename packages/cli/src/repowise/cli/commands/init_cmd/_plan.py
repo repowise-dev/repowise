@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import click
@@ -44,14 +45,15 @@ class _Answers:
     selection: Any = None
     sync: bool = True
     this_repo_only: bool = False
+    git_exclude: bool = False
 
 
-def _outside_lines(run: InitRun) -> tuple[str, ...]:
+def outside_lines(repo_path: Path) -> tuple[str, ...]:
     """Old and new target of the global MCP entry, empty when it would not move."""
     from repowise.cli.editor_integrations.global_mcp import read_global_mcp_target
 
     try:
-        target = read_global_mcp_target(run.repo_path)
+        target = read_global_mcp_target(repo_path)
     # A probe failure never blocks the screen; JSONDecodeError is a ValueError.
     except (OSError, ValueError, KeyError, TypeError):
         return ()
@@ -70,6 +72,17 @@ def _embedders(run: InitRun) -> tuple[str, str]:
     return template_run_embedder(resolved, requested), resolved
 
 
+def _keep_out(run: InitRun, editor_setup: bool) -> tuple[str, ...]:
+    """Machine-specific files the run leaves visible to git, written now or by this run."""
+    from repowise.cli.editor_setup import planned_project_files
+    from repowise.cli.git_exclude import keep_out_candidates
+
+    from ._prepare import _editor_options
+
+    planned = planned_project_files(run.repo_path, _editor_options(run)) if editor_setup else ()
+    return keep_out_candidates(run.repo_path, planned)
+
+
 def _state(run: InitRun, base: PlanState, answers: _Answers) -> PlanState:
     """The screen for the run as it stands."""
     from repowise.cli.editor_setup import planned_agents
@@ -78,6 +91,7 @@ def _state(run: InitRun, base: PlanState, answers: _Answers) -> PlanState:
 
     free_embedder, model_embedder = _embedders(run)
     agents = planned_agents(run.repo_path, _editor_options(run)) if base.editor_setup else ()
+    keep_out = _keep_out(run, base.editor_setup)
     return replace(
         base,
         run_mode=run.opts.run_mode,
@@ -87,6 +101,8 @@ def _state(run: InitRun, base: PlanState, answers: _Answers) -> PlanState:
         agents=agents,
         sync=answers.sync,
         this_repo_only=answers.this_repo_only,
+        keep_out=keep_out,
+        git_exclude=answers.git_exclude and bool(keep_out),
         commit_limit=_commit_limit(run),
     )
 
@@ -121,7 +137,7 @@ def _base_state(run: InitRun, scan: Any, prefer: tuple[str, ...]) -> PlanState:
         scan=scan,
         offer=offer,
         editor_setup=editor_setup,
-        outside=_outside_lines(run) if editor_setup else (),
+        outside=outside_lines(run.repo_path) if editor_setup else (),
         large_repo=should_offer_fast_mode(scan),
     )
 
@@ -184,6 +200,12 @@ def _edit_plan(run: InitRun, scan: Any, editor_setup: bool, answers: _Answers) -
             "  Keep the index in sync after each commit (post-commit hook)?",
             default=answers.sync,
         )
+    keep_out = _keep_out(run, editor_setup)
+    if keep_out:
+        answers.git_exclude = click.confirm(
+            f"  Keep {', '.join(keep_out)} out of git (adds to .git/info/exclude)?",
+            default=answers.git_exclude,
+        )
 
 
 def _apply(run: InitRun, base: PlanState, answers: _Answers) -> None:
@@ -206,6 +228,7 @@ def _apply(run: InitRun, base: PlanState, answers: _Answers) -> None:
     run.opts = opts
     if base.can_keep_global:
         run.global_mcp_consent = not answers.this_repo_only
+    run.git_exclude = answers.git_exclude
 
 
 def _leave_repo_as_it_was(run: InitRun) -> None:
@@ -237,7 +260,18 @@ def _until_enter(
         elif action == THIS_REPO:
             answers.this_repo_only = not answers.this_repo_only
         else:
+            # What the screen showed: on only while there is something to exclude.
+            answers.git_exclude = state.git_exclude
             return
+
+
+def say_no_answer() -> None:
+    """The line a plan screen prints when stdin ends before Enter."""
+    console.print(
+        f"\n[{WARN}]No answer available on stdin[/] "
+        "[dim]- continuing with defaults. Pass --yes to skip the "
+        "questions, or --prose / --no-prose to choose directly.[/dim]"
+    )
 
 
 def run_plan_screen(run: InitRun, scan: Any) -> None:
@@ -260,10 +294,6 @@ def run_plan_screen(run: InitRun, scan: Any) -> None:
     except EOFError:
         run.opts, run.generate_docs, run.editor_options = before
         run.is_interactive = False
-        console.print(
-            f"\n[{WARN}]No answer available on stdin[/] "
-            "[dim]- continuing with defaults. Pass --yes to skip the "
-            "questions, or --prose / --no-prose to choose directly.[/dim]"
-        )
+        say_no_answer()
         return
     _apply(run, base, answers)

@@ -28,7 +28,6 @@ def test_facade_reexports_public_surface() -> None:
         "load_dotenv",
         "interactive_provider_select",
         "interactive_advanced_config",
-        "interactive_mode_select",
         "interactive_repo_select",
         "interactive_primary_select",
         "should_offer_fast_mode",

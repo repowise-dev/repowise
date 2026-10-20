@@ -81,6 +81,8 @@ class InitRun:
     editor_options: Any = None
     #: The plan screen's answer to repointing the global MCP entry; None = not asked.
     global_mcp_consent: bool | None = None
+    #: The plan screen's answer: add machine-specific files to .git/info/exclude.
+    git_exclude: bool = False
     config: dict[str, Any] = field(default_factory=dict)
     language: str = "en"
     max_file_pages: int | None = None

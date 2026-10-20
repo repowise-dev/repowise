@@ -409,6 +409,17 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
     return files_written
 
 
+def _keep_out_of_git(run: InitRun) -> None:
+    """The plan screen's exclude offer, over the machine-specific files now on disk."""
+    if not run.git_exclude:
+        return
+    from repowise.cli.git_exclude import add_to_exclude, keep_out_candidates
+
+    added = add_to_exclude(run.repo_path, keep_out_candidates(run.repo_path))
+    if added:
+        console.print(f"  [dim]Kept out of git (.git/info/exclude): {', '.join(added)}[/dim]")
+
+
 def complete_setup(run: InitRun) -> None:
     """State, read views and editor files, hook offers, then the completion panel."""
     opts = run.opts
@@ -418,6 +429,7 @@ def complete_setup(run: InitRun) -> None:
         with steps.step("state"):
             write_run_state(run)
         files_written = _write_editor_files(run, steps)
+    _keep_out_of_git(run)
     _record_init_outcome(run)
 
     offer_hook_install(

@@ -48,7 +48,6 @@ _LAZY: dict[str, str] = {
     "format_bytes": "brand",
     "format_elapsed": "brand",
     "interactive_advanced_config": "mode_selection",
-    "interactive_mode_select": "mode_selection",
     "interactive_primary_select": "workspace_selection",
     "interactive_provider_config_select": "provider_selection",
     "interactive_provider_select": "provider_selection",
