@@ -240,6 +240,39 @@ def grammar_tag_for(language: str, path: str) -> str:
     return language
 
 
+_FLOW_PARAM_ANNOTATION_RE = re.compile(
+    rb"""(?:\bfunction\b[^(]*\([^)]*:[^)]*|\([a-zA-Z_$][\w$]*\s*:\s*[a-zA-Z_$][^)]*\)\s*=>)"""
+)
+
+
+def _has_flow_signal(source: bytes) -> bool:
+    """True when *source* carries a Flow marker: leading @flow pragma or parameter type annotation."""
+    head = source[:4096]
+    in_block = False
+    for line in head.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if in_block:
+            if b"@flow" in s:
+                return True
+            if b"*/" in s:
+                in_block = False
+            continue
+        if s.startswith(b"//"):
+            if b"@flow" in s:
+                return True
+            continue
+        if s.startswith(b"/*"):
+            if b"@flow" in s:
+                return True
+            if b"*/" not in s:
+                in_block = True
+            continue
+        break
+    return bool(_FLOW_PARAM_ANNOTATION_RE.search(source))
+
+
 def _parse_tree(
     lang: str, language: Language, grammar_tag: str, source: bytes
 ) -> tuple[Node, list[str], str, Language]:
@@ -252,22 +285,14 @@ def _parse_tree(
 
     # A .ts file (or a .vue render function) holding JSX errors under the
     # TypeScript grammar; retry as TSX and keep it only when it errors less.
+    # A Flow-typed .js file holding Flow annotations similarly retries as TSX.
     # ``source`` is the markup-blanked projection, so the token test sees real JSX.
     if (
         parse_errors
         and grammar_tag != "tsx"
         and (
             (lang in ("typescript", "vue") and (b"/>" in source or b"</" in source))
-            or (
-                lang == "javascript"
-                and (
-                    b"/>" in source
-                    or b"</" in source
-                    or b"@flow" in source
-                    or b":" in source
-                    or b"<" in source
-                )
-            )
+            or (lang == "javascript" and _has_flow_signal(source))
         )
     ):
         tsx_language = _get_language("tsx")

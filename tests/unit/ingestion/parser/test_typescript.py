@@ -955,3 +955,25 @@ function helperB(wip) {
         assert helper_b.start_line == 25
         assert helper_b.end_line == 30
 
+    def test_plain_js_with_syntax_error_keeps_javascript_grammar(self) -> None:
+        from repowise.core.ingestion.parser.grammars import _get_language, _parse_tree
+
+        # A plain JS file containing object colons and comparison brackets, with a syntax error
+        src = b"""\
+const config = { timeout: 1000, retries: 3 };
+if (count < limit) {
+  function broken( {
+    return true;
+  }
+}
+"""
+        js_lang = _get_language("javascript")
+        assert js_lang is not None
+        _root, parse_errors, grammar_tag, lang_obj = _parse_tree(
+            "javascript", js_lang, "javascript", src
+        )
+        assert len(parse_errors) > 0
+        assert grammar_tag == "javascript"
+        assert lang_obj == js_lang
+
+
