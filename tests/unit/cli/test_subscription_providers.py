@@ -19,6 +19,8 @@ from repowise.core.cost_estimator import approximate_generation_plan, estimate_c
 from repowise.core.providers.llm import resolve
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
+from ._provider_picker import pick_default
+
 _KEYS = tuple(
     var for spec in PROVIDER_SPECS.values() for var in (*spec.api_key_envs, *spec.base_url_envs)
 )
@@ -33,21 +35,15 @@ def _no_keys(monkeypatch: Any, tmp_path: Path) -> None:
     resolve.clear_cache()
 
 
-def _logged_in(monkeypatch: Any, *names: str) -> None:
-    monkeypatch.setattr(subscription, "agent_cli_status", lambda name: (True, name in names))
+_PLAN = subscription.CliAuth("Claude team plan: uses your plan quota")
+
+
+def _logged_in(monkeypatch: Any, *names: str, auth: Any = _PLAN) -> None:
+    monkeypatch.setattr(subscription, "agent_cli_auth", lambda name: auth if name in names else None)
 
 
 def _default_pick(monkeypatch: Any, repo: Path | None = None, **kwargs: Any) -> tuple[str, str]:
-    seen: dict[str, str] = {}
-
-    def ask(*_a: object, default: str, **_k: object) -> str:
-        seen["default"] = default
-        return default
-
-    monkeypatch.setattr(ui.Prompt, "ask", ask)
-    buf = io.StringIO()
-    ui._interactive_provider_name(Console(file=buf, width=160), None, repo_path=repo, **kwargs)
-    return ui._PROVIDER_CHOICES[int(seen["default"]) - 1], buf.getvalue()
+    return pick_default(monkeypatch, repo_path=repo, **kwargs)
 
 
 # -- detection ----------------------------------------------------------------
@@ -105,7 +101,7 @@ def test_picker_shows_quota_and_time_for_a_logged_in_cli(monkeypatch: Any) -> No
     _chosen, out = _default_pick(
         monkeypatch, subscription=subscription.SubscriptionContext(model_calls=14, concurrency=10)
     )
-    assert "claude_cli uses your Claude Code login, about 14 model calls, 4 at a time" in out
+    assert "claude_cli: Claude team plan: uses your plan quota, about 14 model calls, 4 at a time" in out
     assert "about 4 min" in out
     assert "$0.00" not in out
 
@@ -158,7 +154,7 @@ def _note(monkeypatch: Any, run: SimpleNamespace) -> str:
 def test_yes_run_names_the_logged_in_cli_and_stays_free(monkeypatch: Any) -> None:
     _logged_in(monkeypatch, "claude_cli")
     out = _note(monkeypatch, _run())
-    assert "Claude Code is logged in" in out
+    assert "Claude Code is signed in (Claude team plan: uses your plan quota)" in out
     assert "repowise update --full --provider claude_cli" in out
 
 
@@ -187,8 +183,88 @@ def test_note_is_quiet_without_a_logged_in_cli(monkeypatch: Any) -> None:
     assert _note(monkeypatch, _run()) == ""
 
 
-def test_opencode_note_claims_no_login(monkeypatch: Any) -> None:
-    _logged_in(monkeypatch, "opencode")
-    out = _note(monkeypatch, _run())
-    assert "OpenCode is installed" in out
-    assert "logged in" not in out
+def test_claude_code_is_named_before_codex(monkeypatch: Any) -> None:
+    _logged_in(monkeypatch, "codex_cli", "claude_cli")
+    assert subscription.ready_agent_providers()[0] == "claude_cli"
+    assert "Claude Code is signed in" in _note(monkeypatch, _run())
+
+
+def test_a_cli_without_a_plan_is_listed_but_never_offered(monkeypatch: Any) -> None:
+    _logged_in(monkeypatch, "opencode", auth=subscription.CliAuth("no plan", offer=False))
+    assert subscription.ready_agent_providers() == ()
+    assert _note(monkeypatch, _run()) == ""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    chosen, out = _default_pick(
+        monkeypatch, subscription=subscription.SubscriptionContext(prefer=("opencode",))
+    )
+    assert chosen == "openai"
+    assert "opencode: no plan, not recommended" in out
+
+
+# -- what each CLI's status command says ------------------------------------------
+
+
+def _claude(**fields: Any) -> str:
+    return json.dumps({"loggedIn": True, "apiProvider": "firstParty", **fields})
+
+
+@pytest.mark.parametrize(
+    ("name", "output", "billing", "offer"),
+    [
+        ("claude_cli", _claude(authMethod="claude.ai", subscriptionType="max"),
+         "Claude max plan: uses your plan quota", True),
+        ("claude_cli", _claude(authMethod="claude.ai", subscriptionType=None),
+         "signed in without a paid Claude plan", False),
+        ("claude_cli", _claude(authMethod="api_key"), "API key: billed per token", True),
+        ("claude_cli", _claude(authMethod="claude.ai", apiProvider="bedrock"),
+         "runs through bedrock: billed to that cloud account", True),
+        ("claude_cli", "not json", "Claude Code login; it runs on whatever that login is "
+         "billed to", True),
+        ("codex_cli", "Logged in using ChatGPT",
+         "signed in with ChatGPT: uses that plan's Codex quota, if the plan is active", False),
+        ("codex_cli", "Logged in using an API key - sk-proj-***", "API key: billed per token",
+         True),
+        ("codex_cli", "Logged in somehow", "Codex CLI login; it runs on whatever that login "
+         "is billed to", True),
+        ("opencode", "\x1b[0m\u250c  Credentials\n\u2514  0 credentials",
+         "no stored credentials: runs on whatever provider its own config names", False),
+        ("opencode", "\u2514  2 credentials",
+         "runs on the provider its stored credentials name, billed there", True),
+    ],
+)
+def test_status_output_maps_to_billing(
+    monkeypatch: Any, name: str, output: str, billing: str, offer: bool
+) -> None:
+    import subprocess
+
+    from repowise.core.agents.identity import AgentIdentity
+
+    monkeypatch.setattr(AgentIdentity, "which", lambda self: self.executable)
+    monkeypatch.setattr(
+        subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 0, output, "")
+    )
+    assert subscription.agent_cli_auth(name) == subscription.CliAuth(billing, offer)
+
+
+@pytest.mark.parametrize(
+    ("name", "returncode", "output"),
+    [
+        ("claude_cli", 1, _claude(loggedIn=False)),
+        ("claude_cli", 0, json.dumps({"loggedIn": False})),
+        ("codex_cli", 1, "Not logged in"),
+    ],
+)
+def test_signed_out_cli_is_not_detected(
+    monkeypatch: Any, name: str, returncode: int, output: str
+) -> None:
+    import subprocess
+
+    from repowise.core.agents.identity import AgentIdentity
+
+    monkeypatch.setattr(AgentIdentity, "which", lambda self: self.executable)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda args, **_k: subprocess.CompletedProcess(args, returncode, output, ""),
+    )
+    assert subscription.agent_cli_auth(name) is None

@@ -88,7 +88,20 @@ def _state(run: InitRun, base: PlanState, answers: _Answers) -> PlanState:
         agents=agents,
         sync=answers.sync,
         this_repo_only=answers.this_repo_only,
+        commit_limit=_commit_limit(run),
     )
+
+
+def _commit_limit(run: InitRun) -> int:
+    """The commit cap the run will use: flag, then config.yaml, then the default."""
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+
+    limit = (
+        run.opts.commit_limit
+        or load_config(run.repo_path).get("commit_limit")
+        or _DEFAULT_COMMIT_LIMIT
+    )
+    return max(1, min(int(limit), 10000))
 
 
 def _shape(run: InitRun, scan: Any) -> RunShape:

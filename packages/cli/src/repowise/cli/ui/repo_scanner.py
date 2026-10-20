@@ -176,16 +176,19 @@ def estimated_wiki_render_minutes(documentable: int) -> tuple[int, int]:
     return max(1, round(low / 60)), max(2, round(high / 60))
 
 
-def estimated_index_seconds(scan: RepoScanInfo) -> tuple[float, float]:
-    """Rough low/high seconds to parse, graph and walk git for *scan*.
+def estimated_run_seconds(scan: RepoScanInfo, commit_limit: int) -> tuple[float, float]:
+    """Rough low/high seconds for a run without a model, start to finish.
 
-    Calibrated on measured runs: a 16-source-file repo indexes in about 6 s,
-    a 1,186-source-file one in about 100 s. Coarse on purpose; the high end
-    doubles the low one.
+    Git history dominates: file history and co-changes walk every commit up
+    to *commit_limit*. A fixed tail covers the save and persist steps.
+    Calibrated on measured runs: 16 source files and 677 commits in about
+    10 s, 90 source files and 5,555 commits in 1m 51s, 1,186 source files
+    and 7,860 commits in 1m 24s to 1m 44s. Coarse on purpose.
     """
     src_files = sum(source_file_counts(scan).values()) or scan.total_files
-    low = 5 + 0.08 * src_files
-    return low, 2 * low
+    commits = min(scan.total_commits, commit_limit)
+    low = 5 + 0.02 * commits + 0.01 * src_files
+    return low, 1.5 * low
 
 
 def estimated_model_minutes(model_calls: int) -> int:

@@ -854,8 +854,8 @@ def keyless_note_meta() -> dict[str, Any]:
     _state._keyless_note_announced = True
     return {
         "keyless_note": (
-            "repowise generate writes synthesized answers with a model "
-            "(needs a key, or --provider ollama for a local model)"
+            "no model is configured, so answers are not synthesized; set a provider "
+            "key (or a provider in .repowise/config.yaml) and restart the MCP server"
         )
     }
 

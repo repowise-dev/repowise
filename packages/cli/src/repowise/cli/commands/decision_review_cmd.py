@@ -282,7 +282,11 @@ def dedupe_command(
     and every folded id keeps resolving.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
-    from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
+    from repowise.cli.providers.embedders import (
+        build_embedder,
+        resolve_embedder_for_repo,
+        semantic_search_command,
+    )
     from repowise.cli.providers.vector_store import build_vector_store
     from repowise.core.analysis.decisions.semantic_match import DEFAULT_DEDUP_TAU
     from repowise.core.providers.embedding.base import MockEmbedder
@@ -298,7 +302,7 @@ def dedupe_command(
             "no_real_embedder",
             "Decisions can only be compared with a real embedder, not test vectors.",
             fmt,
-            remedy="Set an embedder key and run 'repowise reindex'.",
+            remedy=f"Run '{semantic_search_command(repo_path)}'.",
         )
     vector_store = build_vector_store(repo_path, embedder)
     if vector_store is None:
@@ -306,7 +310,7 @@ def dedupe_command(
             "no_vector_store",
             "This repo has no vector store to compare decisions with.",
             fmt,
-            remedy="Set an embedder key and run 'repowise reindex'.",
+            remedy=f"Run '{semantic_search_command(repo_path)}'.",
         )
 
     async def _run():

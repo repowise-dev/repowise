@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,14 +10,16 @@ from rich.table import Table
 
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.helpers import console, load_config, warn
-from repowise.cli.ui import BRAND, VALUE, print_phase_header
+from repowise.cli.ui import BRAND, VALUE, print_stage
 from repowise.cli.ui.mode_names import INDEX_ONLY
 from repowise.core.generation.styles import DEFAULT_STYLE
 
+from ._exit import COST_UNCONFIRMED_BUILT, COST_UNCONFIRMED_KEPT
 from ._options import InitRun
 from .generation import (
     concept_page_count,
     cost_gate_declined,
+    embedding_note,
     estimate_generation,
     page_type_label,
     run_repo_generation,
@@ -108,11 +111,10 @@ def _run_deterministic_generation_phase(
 
     embedder = template_run_embedder(embedder_name_resolved, embedder_was_requested)
 
-    print_phase_header(
+    print_stage(
         console,
-        3,
+        "generation",
         total_phases,
-        "Generation",
         "Building documentation from code (no model, no cost)",
     )
     # Both knobs only reach a model: templates are English and unstyled, so say
@@ -156,6 +158,7 @@ def _run_deterministic_generation_phase(
         verbose=True,
         timings=timings,
         warnings=warnings,
+        total_phases=total_phases,
     )
     return embedder
 
@@ -257,11 +260,10 @@ def _run_generation_phase(
     """
     from repowise.core.generation import GenerationConfig
 
-    print_phase_header(
+    print_stage(
         console,
-        3,
+        "generation",
         total_phases,
-        "Generation",
         f"Writing documentation with {provider.provider_name} / {provider.model_name}",
     )
 
@@ -281,6 +283,7 @@ def _run_generation_phase(
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
+        embedder=embedder_name_resolved,
     )
 
     _print_generation_plan(est, result, provider, concurrency=concurrency, onboarding=onboarding)
@@ -301,6 +304,9 @@ def _run_generation_phase(
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"  [dim]{structural}[/dim]")
+    embedding = embedding_note(est)
+    if embedding:
+        console.print(f"  [dim]{embedding}[/dim]")
     if cost_gate_declined(est, yes=yes, message="  Continue?"):
         console.print("  Skipping the model. [dim]Building documentation from code instead.[/dim]")
         console.print(
@@ -323,6 +329,7 @@ def _run_generation_phase(
         test_run=test_run,
         timings=timings,
         warnings=warnings,
+        total_phases=total_phases,
     )
     return False, False
 
@@ -374,22 +381,31 @@ def _generate_with_model(run: InitRun) -> bool:
     )
     if gen_stop:
         return True
-    if cost_declined and run.prior_docs_mode == "llm":
+    if cost_declined:
+        _after_cost_declined(run)
+    return False
+
+
+def _after_cost_declined(run: InitRun) -> None:
+    """Keep model-written pages, or build from code; a gap when nobody could say no."""
+    kept = run.prior_docs_mode == "llm"
+    if not sys.stdin.isatty():
+        run.gaps.append(COST_UNCONFIRMED_KEPT if kept else COST_UNCONFIRMED_BUILT)
+    if kept:
         # Declining new pages is no request to replace the written ones.
         console.print(
             "  [dim]Keeping the documentation this repo already has. Nothing was "
             "generated and nothing was replaced.[/dim]"
         )
-    elif cost_declined:
-        run.cost_declined = True
-        console.print(
-            "  [dim]Building documentation from code instead. Run "
-            "[bold]repowise update --full[/bold] to write it with a "
-            "model later.[/dim]"
-        )
-        # Declining the bill keeps the configured embedder.
-        _render_template_wiki(run, embedder_was_requested=True)
-    return False
+        return
+    run.cost_declined = True
+    console.print(
+        "  [dim]Building documentation from code instead. Run "
+        "[bold]repowise update --full[/bold] to write it with a "
+        "model later.[/dim]"
+    )
+    # Declining the bill keeps the configured embedder.
+    _render_template_wiki(run, embedder_was_requested=True)
 
 
 def _generate(run: InitRun) -> bool:
@@ -418,11 +434,12 @@ def _generate(run: InitRun) -> bool:
 
     # Fast mode is a graph-and-git index only.
     if opts.index_only and opts.run_mode == "fast":
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
         console.print(
             f"  [dim]{INDEX_ONLY}: fast mode skips documentation. Run "
-            "[bold]repowise init[/bold] without [bold]--mode fast[/bold] to "
-            "build it from code, or [bold]repowise update --full[/bold] "
-            "to write it with a model.[/dim]"
+            f"[bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from code (no key "
+            "needed), or have a model write it when one is configured.[/dim]"
         )
         return False
     if opts.index_only or run.no_provider:

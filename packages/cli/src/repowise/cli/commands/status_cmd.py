@@ -31,8 +31,9 @@ from repowise.cli.ui.mode_names import (
     scope_line,
 )
 from repowise.cli.ui.result_panels import keyless_upgrade_note
+from repowise.core.decision_lanes import lanes_label, pending_decision_lanes
 from repowise.core.docs_mode import resolve_docs_mode
-from repowise.core.index_scope import resolve_index_scope
+from repowise.core.index_scope import fast_to_full_command, resolve_index_scope, upgrade_command
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -333,6 +334,57 @@ def _query_health_line(repo_path: Path) -> str | None:
     )
 
 
+#: The resume command an interrupted ``init`` leaves for the user.
+_RESUME_COMMAND = "repowise init --resume"
+
+
+def _incomplete_index(repo_path: Path, state: dict) -> dict | None:
+    """Why the index is unfinished, or ``None``.
+
+    A live ``init`` holds its lock for the whole run. Without one, ``init``
+    writes state.json last, with ``index_scope`` (and ``last_sync_commit`` in a
+    git repo), so persisted graph rows without either are a run that stopped
+    before it finished.
+    """
+    from datetime import datetime
+
+    from repowise.core.update_lock import read_init_lock
+
+    lock = read_init_lock(repo_path)
+    if lock is not None:
+        started = datetime.fromtimestamp(lock["started_at"], UTC).isoformat()
+        return {"reason": "running", "started_at": started, "next_command": "repowise status"}
+    finished = state.get("last_sync_commit") or "index_scope" in state
+    if finished or not _query_repo_counts(repo_path)[0]:
+        return None
+    return {"reason": "interrupted", "next_command": _RESUME_COMMAND}
+
+
+def _incomplete_line(incomplete: dict) -> str:
+    """The "Next" line for an index that is still running or was interrupted."""
+    command = f"[bold]{incomplete['next_command']}[/bold]"
+    if incomplete["reason"] == "running":
+        started = _format_relative_time(incomplete["started_at"])
+        return (
+            f"[bold]Next:[/bold] Index in progress (started {started}). "
+            f"Wait for it to finish, then run {command}."
+        )
+    return f"[bold]Next:[/bold] Index incomplete (interrupted). Run {command}."
+
+
+def _shows_upgrade_row(scope: dict) -> bool:
+    """Whether the "Full upgrade" row says something the rest of status does not.
+
+    A finished index built from code stores ``pending`` for the optional model
+    run; the keyless note under the table already names that command, and a
+    bare "pending" reads as unfinished work.
+    """
+    status = scope["upgrade"]["status"]
+    if status in ("unknown", "not_applicable", "complete"):
+        return False
+    return not (status == "pending" and scope["content_provenance"] == "template")
+
+
 def _load_actions(repo_path: Path) -> dict | None:
     """The stored next-actions view, or ``None``; never raises (see ``next_cmd``)."""
     try:
@@ -577,8 +629,8 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
         )
         first = no_docs[0]
         console.print(
-            f"  Run [bold]repowise update --repo {first} --docs[/bold] "
-            "to have a model write it (requires an LLM provider)."
+            f"  Run [bold]{fast_to_full_command(first)}[/bold] "
+            "to build them (no key needed; a configured model writes them)."
         )
 
 
@@ -638,6 +690,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     storage_bytes = _index_storage_bytes(repowise_dir)
     db_path = repowise_dir / "wiki.db"
     has_db = db_path.exists() or db_configured()
+    incomplete = _incomplete_index(repo_path, state)
+    pending_lanes = pending_decision_lanes(state, repo_path)
 
     if fmt == "json":
         counts, total_db_tokens = (
@@ -647,12 +701,14 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
             {
                 "repo": str(repo_path),
                 "indexed": True,
+                "incomplete": incomplete,
                 "state": {
                     "last_sync_commit": state.get("last_sync_commit"),
                     "total_pages": state.get("total_pages", 0),
                     "provider": state.get("provider"),
                     "model": state.get("model"),
-                    "total_tokens": state.get("total_tokens", 0),
+                    # The live rows, as the table shows: only init stamps state's.
+                    "total_tokens": total_db_tokens if counts else state.get("total_tokens", 0),
                     "storage_bytes": storage_bytes,
                 },
                 "database_found": has_db,
@@ -662,6 +718,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
+                "upgrade_command": upgrade_command(scope),
+                "decision_lanes_pending": list(pending_lanes),
             }
         )
         return
@@ -722,8 +780,15 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         )
     if scope["analysis"]["skipped"]:
         state_table.add_row("Intentionally skipped", ", ".join(scope["analysis"]["skipped"]))
-    if scope["upgrade"]["status"] not in ("unknown", "not_applicable", "complete"):
+    if scope["test_run"]:
+        state_table.add_row("Test run", "documentation covers the top 10 files only")
+    if _shows_upgrade_row(scope):
         state_table.add_row("Full upgrade", scope["upgrade"]["status"])
+    if pending_lanes:
+        state_table.add_row(
+            "Decisions",
+            f"{lanes_label(pending_lanes)} not read yet (needs a model): repowise generate",
+        )
     console.print(state_table)
 
     # A template-only scope is a finished keyless index, not a broken one —
@@ -734,6 +799,11 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
             scope["search"]["semantic"] == "available", scope["search"]["next_command"]
         )
         console.print(f"[dim]{note}[/dim]")
+    elif upgrade_command(scope):
+        console.print(
+            f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "
+            "code and fills in the full git history (no key needed).[/dim]"
+        )
 
     if not has_db:
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")
@@ -757,7 +827,10 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         console.print()
         console.print(health_line)
 
-    next_lines = _next_actions_lines(_load_actions(repo_path))
+    if incomplete is not None:
+        next_lines = [_incomplete_line(incomplete)]
+    else:
+        next_lines = _next_actions_lines(_load_actions(repo_path))
     if next_lines:
         console.print()
         for line in next_lines:

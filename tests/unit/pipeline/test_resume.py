@@ -233,9 +233,16 @@ async def test_rehydrate_analysis_returns_empty_views_when_none_persisted(sf):
 class _RecordingProgress:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
+        self.phases: list[tuple[str, str]] = []
 
     def on_message(self, level: str, text: str) -> None:
         self.messages.append((level, text))
+
+    def on_phase_start(self, phase: str, total: int | None) -> None:
+        self.phases.append(("start", phase))
+
+    def on_phase_done(self, phase: str) -> None:
+        self.phases.append(("done", phase))
 
 
 async def test_a_failed_index_checkpoint_is_reported(sf, monkeypatch):
@@ -267,6 +274,8 @@ async def test_a_failed_index_checkpoint_is_reported(sf, monkeypatch):
     level, text = progress.messages[0]
     assert level == "warning"
     assert "database is locked" in text
+    # A failed write must not leave a done row behind.
+    assert ("done", "checkpoint.index") not in progress.phases
     # And it must not claim the index is on disk when it is not.
     assert await ctrl.can_skip(ResumePhase.INDEX) is False
 
@@ -300,7 +309,7 @@ async def test_a_successful_checkpoint_says_nothing(sf, monkeypatch):
 
 
 async def test_index_checkpoint_is_timed(sf, monkeypatch):
-    """The checkpoint write runs outside every progress phase, so it times itself."""
+    """The checkpoint write times itself and shows as its own step."""
     from repowise.core.pipeline.phase_timing import PhaseTimingRecorder
 
     repo_id = await _make_repo(sf)
@@ -320,6 +329,7 @@ async def test_index_checkpoint_is_timed(sf, monkeypatch):
     )
 
     assert "persist.checkpoint" in recorder.timings
+    assert recorder._inner.phases == [("start", "checkpoint.index"), ("done", "checkpoint.index")]
 
 
 async def test_failed_symbol_analysis_reconciliation_keeps_analysis_retryable(sf, monkeypatch):
