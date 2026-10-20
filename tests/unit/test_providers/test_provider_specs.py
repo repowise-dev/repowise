@@ -85,8 +85,10 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "core/src/repowise/core/ingestion/git_indexer/agent_provenance.py": frozenset(
         {"gemini", "opencode"}
     ),
-    # Price keys are model families (``deepseek-v4``, ``kimi-k2``, ``gemini``).
-    "core/src/repowise/core/cost_estimator/pricing.py": frozenset({"deepseek", "gemini", "kimi"}),
+    # Price keys are model families (``deepseek-v4``, ``kimi-k2``, ``gemini``),
+    # and embedding rates are keyed by embedder.
+    "core/src/repowise/core/cost_estimator/pricing.py": frozenset({"deepseek", "gemini", "kimi"})
+    | _EMBEDDERS,
     # Third-party SDK names found in a scanned repo's imports.
     "core/src/repowise/core/ingestion/external_systems/classifier.py": frozenset(
         {"anthropic", "openai"}

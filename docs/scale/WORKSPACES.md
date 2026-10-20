@@ -58,6 +58,10 @@ through provider setup, then indexes each repo, generates its docs (unless
 `--no-prose`), runs the cross-repo analysis, and registers the MCP server with
 your editors.
 
+To skip the picker, `--repos api,web` indexes only those repos (by alias,
+directory name, or relative path) and makes the first one primary. `--yes`,
+`--all` or a piped stdin take every repo and print which ones.
+
 ```bash
 repowise status --workspace           # workspace status
 repowise workspace list               # repos and index state
@@ -95,7 +99,7 @@ in the [CLI reference](../reference/CLI_REFERENCE.md#workspace-commands).
 |---------|--------------|
 | `repowise init .` | Initialize the workspace: scan for repos, select, index (`--no-prose` for a free structure-only wiki, `-x` to exclude globs) |
 | `repowise workspace list` | Repos in the workspace with their index status |
-| `repowise workspace add <path>` | Add and index a repo (`--alias`, `--no-docs`, `--no-index`) |
+| `repowise workspace add <path>` | Add and index a repo, documentation built from code (`--alias`, `--docs` for model-written, `--no-docs`, `--no-index`) |
 | `repowise workspace remove <alias>` | Remove a repo from the workspace (files are not deleted) |
 | `repowise workspace scan` | Find repos not yet added |
 | `repowise workspace set-default <alias>` | Change the default repo for MCP queries |

@@ -9,6 +9,8 @@ source file that should be documented.  It respects:
   4. Binary file detection
   5. File-size limit
   6. Generated-file detection (header markers + filename suffixes)
+  7. Repowise's own output (``owned_paths``), so a re-run never indexes what
+     init and its editor setup wrote
 
 It also detects monorepo structure and returns a RepoStructure.
 """
@@ -33,6 +35,7 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 from ..code_origin import is_generated_header
 from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
 from ..pytest_roots import (
     PYTEST_CONFIG_NAMES,
     PytestRoots,
@@ -121,6 +124,7 @@ class TraversalStats:
     skipped_blocked_pattern: int = 0
     skipped_unknown_language: int = 0
     skipped_dir_ignore: int = 0
+    skipped_repowise_output: int = 0
     skipped_submodule: int = 0
     skipped_nested_repo: int = 0
     lang_counts: dict[str, int] = field(default_factory=dict)
@@ -291,6 +295,10 @@ _BLOCKED_FILENAME_PATTERNS: list[str] = [
 _BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
     "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
 )
+
+#: Paths repowise writes whole, and the shared files it writes into.
+_OWNED_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines("gitwildmatch", OWNED_PATTERNS)
+_MANAGED_FILES: frozenset[str] = frozenset(MANAGED_FILES)
 
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
@@ -777,6 +785,8 @@ class FileTraverser:
             return "skipped_dir_ignore"
         if self._blocked_patterns.match_file(rel_str):
             return "skipped_blocked_pattern"
+        if _is_repowise_output(abs_path, rel_str):
+            return "skipped_repowise_output"
         return None
 
     def _root_gitignored(self, rel_str: str) -> bool:
@@ -1683,6 +1693,23 @@ def in_blocked_dir(
         )
         for depth, part in enumerate(dirs, 1)
     )
+
+
+def _is_repowise_output(abs_path: Path, rel_str: str) -> bool:
+    """Whether repowise wrote the whole file: an owned path, or a shared one holding only its part.
+
+    A shared file (``CLAUDE.md``, ``.mcp.json``) with anything the user wrote
+    stays indexed, repowise's block included, since the user's part is theirs.
+    """
+    if _OWNED_SPEC.match_file(rel_str):
+        return True
+    if rel_str not in _MANAGED_FILES:
+        return False
+    try:
+        text = abs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return only_repowise_differs(rel_str, "", text)
 
 
 def is_candidate_source_path(

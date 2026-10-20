@@ -14,46 +14,27 @@ from repowise.cli.helpers import (
     run_async,
     warn,
 )
-from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
+from repowise.core.docs_mode import DocsMode, docs_mode_state_fields, resolve_docs_mode
+from repowise.core.index_scope import fast_to_full_command
 
 if TYPE_CHECKING:
     from repowise.core.workspace.config import WorkspaceConfig
 
 
 def _resolve_docs_flag(
-    *,
-    run_docs: bool | None,
-    provider_name: str | None,
-    ws_root: Path,
-    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
-) -> tuple[bool, str | None]:
-    """Decide whether ``workspace add`` should generate docs by default.
+    *, run_docs: bool | None, provider_name: str | None
+) -> tuple[DocsMode, str | None]:
+    """The docs mode ``workspace add`` runs, and why there are none when off.
 
-    Priority:
-      1. Explicit ``--docs`` or ``--no-docs``.
-      2. ``--provider`` flag forces docs ON.
-      3. A provider resolves for the primary repo (its ``config.yaml``, the
-         global default, ``REPOWISE_PROVIDER``, or a detectable API key) →
-         docs ON, reusing the same provider settings.
-      4. Otherwise docs OFF, with a skip reason for the completion notice.
+    ``--no-docs`` indexes only. ``--docs`` or ``--provider`` writes the
+    documentation with a model. Otherwise it is built from code: a configured
+    provider or a key in the environment is never a reason to spend unasked.
     """
-    if run_docs is True:
-        return True, None
     if run_docs is False:
-        return False, "--no-docs flag"
-    if provider_name is not None:
-        return True, None
-
-    # The shared resolver: the primary repo's config.yaml, the global default,
-    # REPOWISE_PROVIDER, or a detectable API key.
-    from repowise.core.providers.llm.resolve import resolve_llm
-
-    primary = ws_config.get_primary()
-    primary_path = (ws_root / primary.path).resolve() if primary is not None else None
-    if resolve_llm(primary_path).provider is not None:
-        return True, None
-
-    return False, "no provider configured"
+        return "none", "--no-docs flag"
+    if run_docs or provider_name is not None:
+        return "llm", None
+    return "deterministic", None
 
 
 def _inherit_distill_verdict(repo_path: Path, primary_cfg: dict) -> None:
@@ -122,14 +103,17 @@ def _run_index_for_repo(
     ws_root: Path,
     ws_config: WorkspaceConfig,  # type: ignore[name-defined]
     *,
-    generate_docs: bool = False,
+    docs_mode: DocsMode = "none",
     provider_name: str | None = None,
     model: str | None = None,
     concurrency: int = 10,
     docs_skip_reason: str | None = None,
     save_key: bool = True,
 ) -> None:
-    """Run the ingestion pipeline on a single repo, optionally with LLM docs.
+    """Run the ingestion pipeline on a single repo, then build its documentation.
+
+    *docs_mode* ``llm`` writes it with a model, ``deterministic`` builds it
+    from code, ``none`` skips it.
 
     Updates the workspace config entry, persists results to the per-repo
     DB, writes ``.repowise/state.json`` (so ``repowise update`` knows the
@@ -147,17 +131,16 @@ def _run_index_for_repo(
     exclude_patterns = list(primary_cfg.get("exclude_patterns") or [])
     commit_limit = primary_cfg.get("commit_limit")
 
-    # ``provider`` is None exactly when docs will not run, so it doubles as
-    # the docs-on flag from here on.
+    # ``provider`` is None exactly when no model runs.
     provider = None
-    if generate_docs:
-        provider, failure = _resolve_docs_provider(
+    if docs_mode == "llm":
+        provider = _resolve_docs_provider(
             repo_path,
             provider_name or primary_cfg.get("provider"),
             model or primary_cfg.get("model"),
         )
-        if failure is not None:
-            docs_skip_reason = failure
+        if provider is None:
+            docs_mode = "deterministic"
 
     ensure_repowise_dir(repo_path)
     _inherit_distill_verdict(repo_path, primary_cfg)
@@ -169,26 +152,24 @@ def _run_index_for_repo(
         warn(f"Indexing failed for '{alias}': {exc}")
         return
 
-    # Run LLM doc generation through the existing single-repo init pathway
-    # so we get cost gating, cascading, and full parity with `repowise init`.
     generated_pages = 0
     resolved_reasoning = resolve_reasoning(config=primary_cfg)
-    if provider is not None:
-        try:
-            generated_pages = _generate_docs_for_added_repo(
-                repo_path=repo_path,
-                provider=provider,
-                embedder_name=embedder_name,
-                concurrency=concurrency,
-                reasoning=resolved_reasoning,
-                exclude_patterns=exclude_patterns,
-            )
-            console.print(f"  [green]✓[/green] Generated {generated_pages} pages")
-        except Exception as exc:
-            console.print(f"  [yellow]Doc generation failed: {exc}[/yellow]")
-            docs_skip_reason = f"generation error: {exc}"
+    if docs_mode != "none":
+        generated_pages, error = _build_added_repo_docs(
+            repo_path=repo_path,
+            provider=provider,
+            embedder_name=embedder_name,
+            concurrency=concurrency,
+            reasoning=resolved_reasoning,
+            exclude_patterns=exclude_patterns,
+        )
+        if error is not None:
+            docs_skip_reason = error
+            # A model run keeps its provider state so `update --docs` retries it.
+            if provider is None:
+                docs_mode = "none"
 
-    head, state = _save_added_repo_state(repo_path, provider, generated_pages)
+    head, state = _save_added_repo_state(repo_path, provider, generated_pages, docs_mode)
 
     # Persist provider settings into the added repo's config.yaml so future
     # `repowise update` runs don't have to re-prompt.
@@ -212,8 +193,24 @@ def _run_index_for_repo(
         reason = docs_skip_reason or "docs disabled"
         console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
         console.print(
-            f"  Run [bold]repowise update --repo {alias} --docs[/bold] to generate documentation."
+            f"  Run [bold]{fast_to_full_command(alias)}[/bold] to build its documentation."
         )
+
+
+def _build_added_repo_docs(*, provider: object | None, **kwargs: object) -> tuple[int, str | None]:
+    """Generate the added repo's documentation as ``(pages, error)``; never raises."""
+    try:
+        pages = _generate_docs_for_added_repo(provider=provider, **kwargs)  # type: ignore[arg-type]
+    except Exception as exc:
+        console.print(f"  [yellow]Documentation failed: {exc}[/yellow]")
+        return 0, f"generation error: {exc}"
+    source = (
+        "built from code"
+        if provider is None
+        else f"written by {getattr(provider, 'model_name', 'the model')}"
+    )
+    console.print(f"  [green]✓[/green] Documentation: {pages} pages, {source}")
+    return pages, None
 
 
 def _load_primary_config(
@@ -238,24 +235,26 @@ def _load_primary_config(
 
 def _resolve_docs_provider(
     repo_path: Path, provider_name: str | None, model: str | None
-) -> tuple[object | None, str | None]:
-    """Resolve the docs provider once, as ``(provider, failure_reason)``.
+) -> object | None:
+    """The model provider, or None (with a notice) when it does not resolve.
 
-    If docs were requested but provider resolution fails, fall back to
-    index-only with a loud notice instead of silently producing an empty wiki.
+    The caller then builds the documentation from code rather than leave the
+    repo with none.
     """
     from repowise.cli.helpers import resolve_provider
 
     try:
         provider = resolve_provider(provider_name, model, repo_path=repo_path)
     except Exception as exc:
-        console.print(f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]")
-        return None, f"provider failure: {exc}"
+        console.print(
+            f"  [yellow]Provider unavailable ({exc}); building documentation from code.[/yellow]"
+        )
+        return None
     console.print(
         f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
         f"Model: [cyan]{provider.model_name}[/cyan]"
     )
-    return provider, None
+    return provider
 
 
 def _index_added_repo(
@@ -283,7 +282,7 @@ def _index_added_repo(
 
 
 def _save_added_repo_state(
-    repo_path: Path, provider: object | None, generated_pages: int
+    repo_path: Path, provider: object | None, generated_pages: int, docs_mode: DocsMode
 ) -> tuple[str | None, dict]:
     """Write ``state.json`` so `repowise update` has a baseline commit.
 
@@ -296,9 +295,7 @@ def _save_added_repo_state(
     state: dict = {
         "last_sync_commit": head,
         "total_pages": generated_pages,
-        # No template fallback on this path: without a provider the added repo
-        # is indexed with no pages at all.
-        **docs_mode_state_fields("llm" if provider is not None else "none"),
+        **docs_mode_state_fields(docs_mode),
         # The full index just walked git under the current history rules.
         GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
     }
@@ -340,13 +337,15 @@ def _record_in_workspace(
 def _generate_docs_for_added_repo(
     *,
     repo_path: Path,
-    provider: object,
+    provider: object | None,
     embedder_name: str,
     concurrency: int,
     reasoning: str,
     exclude_patterns: list[str],
 ) -> int:
     """Generate wiki pages for a newly-added workspace repo.
+
+    With no *provider* the pages are built from code: templates, no model call.
 
     Lives in this module (rather than importing from init_cmd) to avoid
     circular imports — init_cmd is large and pulls in CLI UI helpers that
@@ -381,8 +380,14 @@ def _generate_docs_for_added_repo(
     from repowise.core.repo_config import load_repo_config
 
     repo_cfg = load_repo_config(repo_path)
+    deterministic = provider is None
+    if deterministic:
+        from repowise.core.providers.llm.template import TemplateProvider
+
+        provider = TemplateProvider()
     config = GenerationConfig.from_repo_config(
         repo_cfg,
+        deterministic=deterministic,
         max_concurrency=concurrency,
         reasoning=reasoning,
         wiki_style=repo_cfg.get("wiki_style", "comprehensive"),
