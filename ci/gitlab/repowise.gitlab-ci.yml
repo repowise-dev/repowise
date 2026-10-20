@@ -140,10 +140,12 @@ repowise-health:
     - |
       status=0
       repowise health check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" \
-        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}"         --fail-at "${REPOWISE_HEALTH_FAIL_AT:-high}" \
+        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}" \
+        --fail-at "${REPOWISE_HEALTH_FAIL_AT:-high}" \
         --format markdown > repowise-health.md || status=$?
       repowise health check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" \
-        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}"         --fail-at "${REPOWISE_HEALTH_FAIL_AT:-high}" \
+        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}" \
+        --fail-at "${REPOWISE_HEALTH_FAIL_AT:-high}" \
         --format gitlab > gl.tmp || true
       python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-health.json \
         || echo '[]' > gl-code-quality-health.json
