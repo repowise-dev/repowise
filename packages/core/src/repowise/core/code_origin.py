@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+from fnmatch import fnmatchcase
 from functools import cache, lru_cache
 from itertools import pairwise
 from pathlib import PurePosixPath
@@ -323,6 +324,20 @@ _DEPS_DIR = "deps"
 _DEPS_LANGUAGES = ("c", "cpp")
 _MINIFIED_SUFFIXES = (".min.js", ".min.css", ".min.mjs")
 
+# Copied single-file libraries can sit beside first-party source. Both the
+# basename and a producer signature must match; each alternative requires all
+# its markers. A generic license or a familiar filename alone proves nothing.
+_SINGLE_HEADER_LIBRARIES = {
+    "exprtk.hpp": (("c++ mathematical expression toolkit",),),
+    "json.hpp": (("json for modern c++",), ("nlohmann/json",)),
+    "stb_*.h": (("stb_", "public domain"), ("stb_", "sean barrett")),
+    "doctest.h": (("doctest",),),
+    "catch.hpp": (("catch",),),
+    "catch_amalgamated.hpp": (("catch",),),
+    "httplib.h": (("cpp-httplib",), ("cpphttplib_httplib_h", "yuji hirose")),
+    "cli11.hpp": (("cli11",),),
+}
+
 
 def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
     if any(d in _VENDORED_DIR_TOKENS for d in dirs):
@@ -386,6 +401,44 @@ def _third_party_header(header: str, project: str | None) -> bool:
     if not comments or not _LICENSE_RE.search(comments) or not banner:
         return False
     return not (project and _squash(project) in _squash(comments))
+
+
+def _library_banner_text(name: str, header: str) -> str:
+    """Leading C/C++ comments, plus httplib's first include guard when present.
+
+    Unlike generic comment prefixes, ``#`` and ``--`` are code in these files.
+    Stop at code so strings and identifiers cannot masquerade as a banner.
+    """
+    remaining = header.lstrip("\ufeff \t\r\n")
+    comments = []
+    while remaining.startswith(("//", "/*")):
+        end = "\n" if remaining.startswith("//") else "*/"
+        comment, _, remaining = remaining.partition(end)
+        comments.append(comment)
+        remaining = remaining.lstrip()
+    if name == "httplib.h" and re.match(r"#[ \t]*ifndef[ \t]+CPPHTTPLIB_HTTPLIB_H\b", remaining):
+        comments.append("CPPHTTPLIB_HTTPLIB_H")
+    return "\n".join(comments)
+
+
+def _has_library_signature(header: str, alternatives: tuple[tuple[str, ...], ...]) -> bool:
+    """Match any complete producer signature, including multi-marker ones."""
+    head = header.casefold()
+    return any(all(marker in head for marker in required) for required in alternatives)
+
+
+def _is_single_header_library(name: str, header: str, project: str | None) -> bool:
+    """Recognise a copied C/C++ library without holding its own project's code."""
+    name = name.lower()
+    if not name.endswith(_deps_suffixes()):
+        return False
+    for pattern, alternatives in _SINGLE_HEADER_LIBRARIES.items():
+        if fnmatchcase(name, pattern):
+            banner = _library_banner_text(name, header)
+            return _has_library_signature(banner, alternatives) and not (
+                project and _squash(project) in _squash(banner)
+            )
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -803,9 +856,7 @@ def code_origin(
     if _is_generated_path(name, dirs) or (header and _is_generated_content(name, dirs, header)):
         return "generated"
     if _is_vendored_path(name.lower(), dirs) or (
-        header
-        and any(d in _ASSET_DIR_TOKENS for d in dirs)
-        and _third_party_header(header, project)
+        header and _is_vendored_content(name, dirs, header, project)
     ):
         return "vendored"
     return _maintained_origin(normalized, name, dirs, is_test, repo_root)
@@ -816,6 +867,12 @@ def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
         _declares_generated(name, header)
         or _is_reference_stub(name, dirs, header)
         or _is_bundler_output(header)
+    )
+
+
+def _is_vendored_content(name: str, dirs: list[str], header: str, project: str | None) -> bool:
+    return _is_single_header_library(name, header, project) or (
+        any(d in _ASSET_DIR_TOKENS for d in dirs) and _third_party_header(header, project)
     )
 
 
