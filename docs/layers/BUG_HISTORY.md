@@ -54,10 +54,15 @@ of health (see the limits below).
 
 ### What counts as a bug fix
 
-A commit whose subject matches the fix keywords (`fix`, `bug`, `patch`,
-`resolves`, `closes #N`, `fixes #N`, and none of `docs`, `typo`, `bump`,
-`deps`, `chore`, `lint`, `format`, `style`) is a candidate. Its `-U0` diff is
-then classified, and only `code_fix` counts:
+A commit with a conventional `fix` type is a candidate, and one typed `feat`,
+`refactor`, `perf`, `test`, `docs`, `build`, `ci`, `chore`, `style` or an alias
+never is.
+An untyped subject is a candidate when it matches the fix keywords (`fix`, `bug`,
+`patch`, `resolves`, `closes #N`, `fixes #N`, and none of `docs`, `typo`, `bump`,
+`deps`, `chore`, `lint`, `format`, `style`). The Commits page `is_fix` flag uses
+the keywords alone, so its totals can differ from `fix_count` on a repo that
+writes conventional commits. A candidate's `-U0` diff is then classified, and only
+`code_fix` counts:
 
 | Shape | Counted | Example |
 |---|---|---|
@@ -70,7 +75,7 @@ then classified, and only `code_fix` counts:
 
 The comment-only rule is line level: a commit that rewords a docstring in a
 `.py` file is not a bug fix. Both the filtered count (`prior_defect_count`)
-and the raw keyword count (`prior_defect_raw_count`) are stored, so the
+and the raw candidate count (`prior_defect_raw_count`) are stored, so the
 difference stays inspectable.
 
 ### The bug magnet flag
@@ -134,7 +139,7 @@ never more. To turn hooks off, see [HOOKS.md](../agent/HOOKS.md).
 - **No inducing commit is named.** Counts and recency ship; blame for the
   commit that caused a bug does not, because its precision is below the bar
   for naming a commit and an author on screen.
-- **Recall is keyword bound.** A fix whose subject does not say so is
+- **Recall is wording bound.** A fix whose type or subject does not say so is
   invisible. The shape filter improves precision only.
 - **The window is fixed.** A file fixed heavily two years ago and quiet since
   reads as clean.

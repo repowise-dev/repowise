@@ -394,16 +394,21 @@ abandoned-but-stable files (the survivor effect) no longer fire.
 `prior_defect` (recent bug-fix history, Ostrand-Weyuker / Kim's "bug cache")
 is the other git-only process signal: the count of bug-fix commits touching a
 file in the trailing ~6-month window, read from `prior_defect_count`. The
-git indexer classifies a commit as a fix with the **same keyword rule the
-defect benchmark labels fixes with** (`_constants.is_fix_commit`), counts only
+git indexer classifies a commit as a fix by its conventional-commit type first
+(`fix_rule.is_typed_fix_commit`): `feat`, `refactor`, `perf`, `test`, `docs`,
+`build`, `ci`, `chore`, `style` and their aliases are never fixes, `fix` always is, and an
+untyped subject falls back to the defect benchmark's keyword rule
+(`_constants.is_fix_commit`). Commit rows (the Commits page `is_fix` flag) keep
+the keyword rule for benchmark parity, so on a conventional-commit repo their fix
+totals can differ from `prior_defect_count`. The indexer counts only
 non-merge commits inside the window, and anchors the window to the index's
 `as_of` reference (the indexed commit's committer date): so scoring a historical T0
 checkout measures the fixes *before* T0, never leaking the post-T0 fixes that
 form the benchmark's labels. It carries a **neutral (1.0) weight by design**:
-on the calibration corpus prior-defect history is largely redundant with the
-existing process signals (correlation ≈ +0.59 with `change_entropy`, +0.38 with
-churn; calibrated coefficient ≈ +0.02, effort-aware Popt gain within bootstrap
-noise), so it is not boosted as a predictor. It ships for its **explanatory**
+its 21-repo coefficient is positive (+0.13 on keyword labels, CI spans zero;
++0.23 on SZZ labels), but it correlates with the other process signals
+(≈ +0.59 with `change_entropy`, +0.38 with churn), so it is not boosted as a
+predictor. It ships for its **explanatory**
 value, not for a measured accuracy lift: "this file was bug-fixed N times
 recently" is immediately actionable, and it uniquely flags a few files the
 other signals miss.
@@ -438,6 +443,10 @@ of connected files (`repo_dependents_p80`, computed once per analyze) or
 clears the absolute hub bar of 8: so it no longer goes silent on
 sparse-graph languages (TS barrels, Rust) whose in-degrees are lower than
 Python's.
+
+`primitive_obsession` skips test files, fixtures and test helpers included: a
+wide signature there is a fixture builder or a fake shaped by the code under
+test.
 
 ### 5.1 Change-entropy git-layer fields
 
@@ -676,6 +685,24 @@ risk: a more conservative operating point, not a calibration flaw. Its "Code Red
 correlation of -0.58 with issue-resolution time (proprietary Jira data) did not
 replicate on open GitHub data: -0.09 (95% CI -0.19 to +0.14), and six
 queue-independent effort signals were flat.
+
+**66-repository evaluation.** A wider leakage-free run scores 17,126 files in 66
+repositories against the next six months of bug fixes.
+
+| 66 repos, 17,126 files | Health score | File size |
+|---|---:|---:|
+| ROC AUC | 0.737 | 0.764 |
+| Popt (effort-aware) | 0.554 | 0.448 |
+| AUC within each repo's size quartiles | 0.594 | 0.612 |
+
+File size ranks files slightly better on AUC (gap 0.027, 95% CI 0.002 to 0.052);
+the score leads on effort-aware ranking, which is what a fixed review budget
+spends. A rank blend of size and deduction only ties size on AUC and gives up a
+third of the Popt lead, so the headline carries no size term. History stays in the
+score: it adds 0.049 AUC over code shape alone (95% CI 0.030 to 0.070). The
+structure-linked history cap (‡ in §5) costs about 0.009 AUC against a flat 3.5
+cap and stays as a product rule, so a simple file that changes often reads as busy,
+not broken.
 
 **In-product check.** `defect_accuracy.py` ranks files by score, takes the 20
 lowest and counts those touched by a fix commit in the trailing 180 days against the

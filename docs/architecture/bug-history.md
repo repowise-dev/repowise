@@ -6,11 +6,13 @@ User-facing behaviour is in [docs/layers/BUG_HISTORY.md](../layers/BUG_HISTORY.m
 
 ## Pipeline
 
-1. **Candidate selection.** `is_fix_commit` in
-   `core/ingestion/git_indexer/_constants.py` applies the keyword include and
-   exclude rules. The same rule feeds the health `prior_defect` marker and
-   change-risk `fix_history`, so every fix count in the product counts the same
-   commits.
+1. **Candidate selection.** `is_typed_fix_commit` in
+   `core/ingestion/git_indexer/fix_rule.py` decides by the conventional-commit
+   type and falls back to the keyword rule, `is_fix_commit` in `_constants.py`,
+   for an untyped subject. It feeds `prior_defect`, the fix events below and
+   the change-risk `is_fix` flag.
+   Commit rows (`GitCommit.is_fix`) and change-risk `fix_history` keep
+   `is_fix_commit` byte-identical to the defect benchmark's labels.
 2. **Shape classification.** `classify_fix_shape` in
    `git_indexer/fix_shape.py` reads the candidate's `-U0` diff and assigns one
    of `SHAPE_KINDS` (`code_fix`, `test_only`, `doc_only`, `config_other`,
@@ -34,7 +36,8 @@ per-symbol attribution and changed-line overlap possible without re-walking
 git. A full index populates the table; `repowise update` extends it.
 
 `GitMetadata` carries the rollups: `prior_defect_count` (filtered),
-`prior_defect_raw_count` (keyword only), `bug_magnet`, `last_fix_at`, and
+`prior_defect_raw_count`
+(candidates before the shape filter), `bug_magnet`, `last_fix_at`, and
 `fix_symbol_counts_json` (`path::Name -> count`, written in descending order).
 
 ## Rollup

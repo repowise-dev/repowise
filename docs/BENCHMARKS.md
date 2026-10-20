@@ -385,7 +385,9 @@ list for a team that wants to work through it quickly, at a similar precision.
 
 **What the score adds over file size.** File size alone discriminates about as
 well (AUC 0.742). The score's advantage is effort-aware ranking, Popt +0.134
-(95% CI +0.080 to +0.198), and that it says why a file is at risk.
+(95% CI +0.080 to +0.198), and that it says why a file is at risk. On a wider
+run of 66 repositories and 17,126 files, size ranks slightly higher on AUC (0.764
+vs 0.737) and the score keeps the effort-aware lead (Popt 0.554 vs 0.448).
 
 **Weights are fitted, not hand-set:** a size-controlled logistic fit on files
 scored before their bug window, so a detector earns weight only for defect lift

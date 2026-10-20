@@ -289,6 +289,11 @@ next six months of bug fixes.
   0.173 vs 0.074 (p = 0.003), 2.3 times the defects. AUC and precision are ties.
 - Lines of code alone scores AUC 0.742, a tie. The gain is in ordering a fixed
   review budget and saying why. Within size quartiles AUC is 0.525 to 0.718.
+- On a wider run (66 repositories, 17,126 files) file size ranks slightly higher on
+  AUC (0.764 vs 0.737) and the score leads on effort-aware ranking (Popt 0.554 vs
+  0.448). Git history stays in the score because it adds 0.049 AUC over code shape alone.
+  The history cap that keeps a busy but simple file at 9.0 or above costs about
+  0.009 AUC against a flat cap, kept as a product rule.
 - On open data, the score does not track GitHub merge time.
 - `get_health(include=["accuracy"])` reports how many of your 20 lowest-scoring
   files had a bug fix in the last 180 days against the base rate. It is an association,
