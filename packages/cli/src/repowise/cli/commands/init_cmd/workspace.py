@@ -56,15 +56,14 @@ from repowise.cli.ui import (
     OK,
     VALUE,
     WARN,
-    RichProgressCallback,
     interactive_advanced_config,
     interactive_mode_select,
     interactive_primary_select,
     interactive_provider_config_select,
     interactive_repo_select,
     load_dotenv,
-    make_progress,
     print_banner,
+    progress_steps,
 )
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mode_names import pages
@@ -426,8 +425,8 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
 
-    with make_progress(console) as progress_bar:
-        callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
+    with progress_steps(console) as steps:
+        callback = PhaseTimingRecorder(steps)
 
         _prev_state = load_state(repo.path)
         _prev_kg_fp = (
@@ -558,8 +557,8 @@ def _persist_repo_index(repo_path: Path, index: _RepoIndex) -> list[str]:
     """Persist to the repo-local DB; returns the persist phase's warnings."""
     persist_warnings: list[str] = []
     callback = index.callback
-    with make_progress(console, transient=True) as persist_bar:
-        persist_callback = callback.rebind(RichProgressCallback(persist_bar, console))
+    with progress_steps(console, transient=True) as persist_steps:
+        persist_callback = callback.rebind(persist_steps)
         persist_callback.on_phase_start("persist", None)
         try:
             run_async(persist_result(index.result, repo_path, persist_callback, callback.table))

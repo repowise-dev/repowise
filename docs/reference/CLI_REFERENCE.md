@@ -192,6 +192,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--test-run` | Write docs with the model for only the top 10 files (by PageRank). Not with `--no-prose` or `--mode fast` |
 | `--all` | In multi-repo mode, index every detected repo without prompting |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
+| `--progress` | `rich` (default): a live checklist in a terminal, one short line per step (at most 100 columns) anywhere else. `json`: one JSON event per line on stdout, ending with a summary line; see below. |
 
 **Examples:**
 
@@ -222,6 +223,16 @@ documentation built from code because the cost estimate needed confirmation and
 there was no terminal, so re-run with `--yes`). `130` interrupted: run
 `repowise init --resume` to continue. Any other non-zero code is a failure; a
 usage error (a bad flag) also exits `2`, before anything runs.
+
+**Driving init from an agent or script.** `repowise init --yes --no-prose --progress json`
+writes only JSON lines to stdout; human text goes to stderr. Every line has `v`
+(schema version, `1`) and `event`: `stage`, `phase` (`state` is `start`, `done`
+or `failed`, with `completed`, `total`, `unit` and `elapsed_s`), `warning`, and
+last `summary`. The summary's `status` is `ready`, `degraded`, `interrupted` or
+`failed`, matching exit `0`, `2`, `130` or any other code, and it carries
+`mode` (`key` from the index scope, `label`, `run_mode`), `restart_required`
+(the editor needs a restart or `/mcp` to load the tools), `spend` (`tokens`,
+`usd`), `warnings`, `files_written` and `next` (commands, `repowise serve` first).
 
 With a real embedder (anything but `mock`), a run whose page vectors fail to
 write, for example because the LanceDB install is broken, keeps its pages and

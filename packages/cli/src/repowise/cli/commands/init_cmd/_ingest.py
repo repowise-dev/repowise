@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, load_state, run_async
-from repowise.cli.ui import RichProgressCallback, make_progress
+from repowise.cli.ui import progress_steps
 
 from ._options import InitRun
 from .persistence import build_resume_controller
@@ -126,11 +126,13 @@ def index_repository(run: InitRun) -> None:
     index_vector_store = _index_vector_store(run)
 
     # Cost column only when a model can be called.
-    with make_progress(
-        console, cost=llm_client is not None, resume_command=RESUME_COMMAND
-    ) as progress_bar:
-        rich_callback = RichProgressCallback(progress_bar, console, total_phases=run.total_phases)
-        callback = PhaseTimingRecorder(rich_callback)
+    with progress_steps(
+        console,
+        cost=llm_client is not None,
+        resume_command=RESUME_COMMAND,
+        total_phases=run.total_phases,
+    ) as steps:
+        callback = PhaseTimingRecorder(steps)
         # Whole-run total: phases nest and overlap, so their sum can exceed it.
         callback.table.start("run")
 
@@ -162,4 +164,4 @@ def index_repository(run: InitRun) -> None:
 
     run.result = result
     run.recorder = callback
-    run.run_warnings = list(rich_callback.warnings)
+    run.run_warnings = list(steps.warnings)

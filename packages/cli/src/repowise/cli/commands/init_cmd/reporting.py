@@ -16,12 +16,12 @@ from repowise.cli.ui import (
     ERR,
     OK,
     WARN,
-    build_completion_panel,
     build_contextual_next_steps,
     build_status_notes,
     format_elapsed,
     keyless_upgrade_note,
     mascot,
+    print_completion_panel,
     print_files_written,
 )
 from repowise.cli.ui.glyphs import glyph
@@ -96,8 +96,8 @@ def show_completion(
     setup: Any = None,
     files_written: list[Path] | None = None,
     owl: str = mascot.DONE,
-) -> None:
-    """Render the final completion panel (index-only or full mode).
+) -> list[tuple[str, str]]:
+    """Render the final completion panel (index-only or full mode); returns its next steps.
 
     *owl* is the mini owl state on the panel title: how the run finished.
 
@@ -217,11 +217,7 @@ def show_completion(
             setup=setup,
         )
         console.print()
-        console.print(
-            build_completion_panel(
-                completion_title(_scope), metrics, next_steps=next_steps, owl=owl
-            )
-        )
+        print_completion_panel(console, completion_title(_scope), metrics, next_steps, owl=owl)
         console.print()
         # Fast mode reaches this branch too, and it generates nothing, so the
         # note has to check rather than assume.
@@ -304,11 +300,7 @@ def show_completion(
         )
 
         console.print()
-        console.print(
-            build_completion_panel(
-                completion_title(_scope), metrics, next_steps=next_steps, owl=owl
-            )
-        )
+        print_completion_panel(console, completion_title(_scope), metrics, next_steps, owl=owl)
         console.print()
         _print_embed_failure(_embed_failed)
         if not _semantic_on and not _embed_failed and _scope["search"]["next_command"]:
@@ -333,6 +325,7 @@ def show_completion(
     print_files_written(console, Path(repo_path), files_written or [])
 
     _show_generation_checks(result)
+    return next_steps
 
 
 def _print_embed_failure(failed: int) -> None:
@@ -431,13 +424,12 @@ def show_workspace_completion(
     next_steps = _workspace_next_steps(run_mode, index_only or provider is None)
 
     console.print()
-    console.print(
-        build_completion_panel(
-            TITLE_WORKSPACE,
-            metrics,
-            next_steps=next_steps,
-            owl=mascot.WARNED if errors else mascot.DONE,
-        )
+    print_completion_panel(
+        console,
+        TITLE_WORKSPACE,
+        metrics,
+        next_steps,
+        owl=mascot.WARNED if errors else mascot.DONE,
     )
     console.print()
 

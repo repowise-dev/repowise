@@ -71,6 +71,28 @@ def build_completion_panel(
     )
 
 
+def print_completion_panel(
+    console: Console,
+    title: str,
+    metrics: list[tuple[str, str]],
+    next_steps: list[tuple[str, str]] | None = None,
+    *,
+    owl: str = mascot.DONE,
+) -> None:
+    """The completion panel on a terminal; off one, the same rows as plain lines.
+
+    A border in a log or an agent's transcript is only padding to strip.
+    """
+    if console.is_terminal:
+        console.print(build_completion_panel(title, metrics, next_steps=next_steps, owl=owl))
+        return
+    console.print(Text.assemble(mascot.mini_text(owl), "  ", title), highlight=False)
+    console.print(key_value_table(metrics))
+    if next_steps:
+        console.print("  What's next:")
+        console.print(key_value_table(list(next_steps), label_width=24))
+
+
 def build_contextual_next_steps(
     *,
     index_only: bool,

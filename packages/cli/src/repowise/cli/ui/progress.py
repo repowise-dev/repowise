@@ -353,3 +353,35 @@ class RichProgressCallback:
         for task_id in self._tasks.values():
             with contextlib.suppress(Exception):
                 self._progress.update(task_id, cost=total_cost)
+
+
+@contextlib.contextmanager
+def progress_steps(
+    console: Console,
+    *,
+    cost: bool = False,
+    transient: bool = False,
+    resume_command: str | None = None,
+    total_phases: int | None = None,
+    stage: str | None = None,
+) -> Iterator[Any]:
+    """The step callback a pipeline command drives: the live display, or the
+    ``--progress json`` event stream when one is open. Arguments as for
+    :func:`~repowise.cli.ui.progress_display.make_progress` and
+    :class:`RichProgressCallback`; the stream ignores the display-only ones.
+    """
+    from repowise.cli.agent_events import active
+
+    events = active()
+    if events is not None:
+        from repowise.cli.ui.progress_json import JsonProgressCallback
+
+        yield JsonProgressCallback(events, stage=stage)
+        return
+
+    from repowise.cli.ui.progress_display import make_progress
+
+    with make_progress(
+        console, cost=cost, transient=transient, resume_command=resume_command
+    ) as bar:
+        yield RichProgressCallback(bar, console, total_phases=total_phases, stage=stage)

@@ -25,6 +25,7 @@ from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
 from repowise.core.update_lock import init_in_progress
 
+from ._agent_summary import init_output
 from ._exit import exit_interrupted
 from ._finish import (
     complete_setup,
@@ -447,7 +448,13 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "--progress",
     type=click.Choice(["rich", "json"]),
     default="rich",
-    help="Progress output style.",
+    help=(
+        "Progress output. 'rich' (default) draws a live checklist in a terminal "
+        "and one short line per step anywhere else. 'json' writes one JSON event "
+        "per line to stdout (stages, steps, warnings) and ends with a summary "
+        "line: status, mode, restart_required, spend, warnings, files_written "
+        "and next commands. Human text goes to stderr."
+    ),
 )
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
@@ -460,10 +467,11 @@ def init_command(**params: Any) -> None:
     """
     from repowise.core.cancellation import PipelineCancelled
 
-    try:
-        _run_init(resolve_structural_flags(InitOptions(**params)))
-    except (PipelineCancelled, KeyboardInterrupt):
-        exit_interrupted()
+    with init_output(params.get("progress", "rich"), resolve_repo_path(params.get("path"))):
+        try:
+            _run_init(resolve_structural_flags(InitOptions(**params)))
+        except (PipelineCancelled, KeyboardInterrupt):
+            exit_interrupted()
 
 
 def _run_init(opts: InitOptions) -> None:
