@@ -27,3 +27,21 @@ def test_detect_provider_status_requires_codex_login(monkeypatch: Any) -> None:
 def test_detect_provider_status_accepts_authenticated_codex(monkeypatch: Any) -> None:
     _codex_says(monkeypatch, 0, "Logged in using ChatGPT")
     assert "codex_cli" in ui._detect_provider_status()
+
+
+def test_codex_through_chatgpt_is_picker_only(monkeypatch: Any) -> None:
+    """A lapsed ChatGPT plan stays signed in, so this login is never recommended."""
+    from repowise.cli.ui import subscription
+
+    _codex_says(monkeypatch, 0, "Logged in using ChatGPT")
+    assert "codex_cli" in ui._detect_provider_status()
+    assert "codex_cli" not in subscription.ready_agent_providers()
+    auth = subscription.agent_cli_auth("codex_cli")
+    assert auth is not None and not auth.offer
+
+
+def test_codex_with_an_api_key_is_offered(monkeypatch: Any) -> None:
+    from repowise.cli.ui import subscription
+
+    _codex_says(monkeypatch, 0, "Logged in using an API key - sk-proj-***")
+    assert subscription.ready_agent_providers() == ("codex_cli",)

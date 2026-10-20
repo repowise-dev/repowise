@@ -228,7 +228,7 @@ def _claude(**fields: Any) -> str:
         ("claude_cli", "not json", "Claude Code login; it runs on whatever that login is "
          "billed to", True),
         ("codex_cli", "Logged in using ChatGPT",
-         "signed in with ChatGPT: uses that plan's Codex quota, if the plan is active", True),
+         "signed in with ChatGPT: uses that plan's Codex quota, if the plan is active", False),
         ("codex_cli", "Logged in using an API key - sk-proj-***", "API key: billed per token",
          True),
         ("codex_cli", "Logged in somehow", "Codex CLI login; it runs on whatever that login "

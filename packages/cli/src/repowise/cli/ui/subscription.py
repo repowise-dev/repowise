@@ -90,9 +90,11 @@ def _codex_auth(out: str) -> CliAuth | None:
     if "not logged in" in text:
         return None
     if "chatgpt" in text:
-        # The CLI cannot say whether that ChatGPT plan still includes Codex.
+        # The CLI cannot say whether that ChatGPT plan still includes Codex, and
+        # a lapsed plan stays signed in, so this login is picker-only.
         return CliAuth(
-            "signed in with ChatGPT: uses that plan's Codex quota, if the plan is active"
+            "signed in with ChatGPT: uses that plan's Codex quota, if the plan is active",
+            offer=False,
         )
     if "api key" in text:
         return CliAuth("API key: billed per token")
