@@ -246,7 +246,7 @@ class TestPartialFragmentScope:
         # Polly's docs snippets: ``new FaultGenerator()`` builds the library
         # type while a sibling fragment declares a snippet method of that name.
         (tmp_path / "Chaos.Index.cs").write_text(
-            "namespace Snippets;\ninternal static partial class Chaos\n{\n"
+            "namespace Snippets;\nusing Lib;\ninternal static partial class Chaos\n{\n"
             "    public static void Use() { var g = new FaultGenerator(); }\n}\n"
         )
         (tmp_path / "Chaos.Fault.cs").write_text(
@@ -257,9 +257,45 @@ class TestPartialFragmentScope:
             "namespace Lib;\npublic sealed class FaultGenerator { }\n"
         )
         graph = _build(tmp_path)
-        assert "Chaos.Fault.cs::Chaos::FaultGenerator" not in _calls(
-            graph, "Chaos.Index.cs::Chaos::Use"
+        calls = _calls(graph, "Chaos.Index.cs::Chaos::Use")
+        assert "Chaos.Fault.cs::Chaos::FaultGenerator" not in calls
+        assert "FaultGenerator.cs::FaultGenerator" in calls
+
+    def test_same_file_construction_and_method_distinguished(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "Chaos.cs").write_text(
+            "namespace Snippets;\nusing Lib;\ninternal static class Chaos\n{\n"
+            "    public static void Use() {\n"
+            "        var g = new FaultGenerator();\n"
+            "        FaultGenerator();\n"
+            "    }\n"
+            "    public static void FaultGenerator() { }\n}\n"
         )
+        (tmp_path / "FaultGenerator.cs").write_text(
+            "namespace Lib;\npublic sealed class FaultGenerator { }\n"
+        )
+        graph = _build(tmp_path)
+        calls = _calls(graph, "Chaos.cs::Chaos::Use")
+        assert "FaultGenerator.cs::FaultGenerator" in calls
+        assert "Chaos.cs::Chaos::FaultGenerator" in calls
+
+    def test_same_file_type_and_method_distinguished(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "App.cs").write_text(
+            "namespace Snippets;\ninternal static class Chaos\n{\n"
+            "    public static void Use() {\n"
+            "        var g = new FaultGenerator();\n"
+            "        FaultGenerator();\n"
+            "    }\n"
+            "    public static void FaultGenerator() { }\n}\n"
+            "public class FaultGenerator { }\n"
+        )
+        graph = _build(tmp_path)
+        calls = _calls(graph, "App.cs::Chaos::Use")
+        assert "App.cs::FaultGenerator" in calls
+        assert "App.cs::Chaos::FaultGenerator" in calls
 
     def test_partial_method_call_reaches_a_fragment(self, tmp_path: Path) -> None:
         # A partial method is declared in one fragment and implemented in

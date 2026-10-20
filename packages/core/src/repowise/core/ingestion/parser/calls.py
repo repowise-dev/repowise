@@ -331,6 +331,7 @@ def _call_from_match(
         # Ceiling: schedulers matched by name, the task followed within its
         # own function only (see ``python_tasks``).
         spawned=language == "python" and is_fire_and_forget(site_node, src),
+        is_construction=site_node.type in config.construction_call_node_types,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
 
