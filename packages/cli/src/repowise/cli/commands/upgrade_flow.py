@@ -57,6 +57,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+from repowise.cli.providers import is_free_embedder
 from repowise.core.decision_lanes import plan_decision_lanes
 from repowise.core.index_scope import FAST_TO_FULL_COMMAND, file_page_scope
 from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
@@ -339,10 +340,7 @@ async def _run_upgrade(
     # Show the bill before running it, as init does: the user reaching for
     # `--full` has never been shown a cost for this repo. Documentation built
     # from code with a free embedder has no bill to show.
-    free_run = getattr(config, "deterministic", False) and (embedder_name or "mock") in (
-        "mock",
-        "ollama",
-    )
+    free_run = getattr(config, "deterministic", False) and is_free_embedder(embedder_name or "mock")
     if not free_run:
         _gate_cost(
             parsed_files,

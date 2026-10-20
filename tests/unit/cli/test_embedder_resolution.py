@@ -974,6 +974,15 @@ def test_template_run_embedder_downgrades_only_an_unasked_hosted_backend(
     assert providers.template_run_embedder(resolved, requested) == expected
 
 
+@pytest.mark.parametrize(
+    ("name", "free"),
+    [("mock", True), ("ollama", True), ("openai", False), ("gemini", False), ("edenai", False)],
+)
+def test_is_free_embedder_names_only_the_backends_that_cannot_bill(name: str, free: bool) -> None:
+    """``update --full`` skips its cost gate for these, so a hosted one must not slip in."""
+    assert providers.is_free_embedder(name) is free
+
+
 # --- the recorded width: the steady state never imports lancedb -------------
 
 

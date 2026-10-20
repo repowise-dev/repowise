@@ -60,6 +60,7 @@ from ._questions import (
     _offer_fast_mode,
 )
 from ._seed import delegate_to_seeded_update
+from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
 __all__ = [
@@ -91,6 +92,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     _workspace_init(
         scan=scan,
         init_all=opts.init_all,
+        repo_names=split_repo_names(opts.repos),
         exclude_patterns=list(opts.exclude),
         commit_limit=opts.commit_limit,
         follow_renames=opts.follow_renames,
@@ -350,7 +352,22 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "init_all",
     is_flag=True,
     default=False,
-    help="In multi-repo mode, index all detected repos without prompting.",
+    help=(
+        "In a folder with several repos, index every detected repo without "
+        "prompting. --yes and a piped stdin do the same; use --repos to pick some."
+    ),
+)
+@click.option(
+    "--repos",
+    "repos",
+    default=None,
+    metavar="NAMES",
+    help=(
+        "In a folder with several repos, index only these, with no picker. "
+        "Comma-separated names (alias, directory name, or path relative to the "
+        "folder when two repos share a name). In a new workspace the first one "
+        "listed is primary; an existing workspace keeps its primary."
+    ),
 )
 @click.option(
     "--onboarding/--no-onboarding",
@@ -490,9 +507,11 @@ def _run_init(opts: InitOptions) -> None:
 
     scan = scan_for_repos(repo_path, include_submodules=opts.include_submodules)
 
+    is_workspace = len(scan.repos) > 1 and not opts.no_workspace
+    check_repos_flag(opts.repos, init_all=opts.init_all, is_workspace=is_workspace)
     if delegate_to_seeded_update(opts, repo_path, scan):
         return
-    if len(scan.repos) > 1 and not opts.no_workspace:
+    if is_workspace:
         _run_workspace_init(opts, scan)
         return
 

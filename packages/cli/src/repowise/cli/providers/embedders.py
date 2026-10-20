@@ -152,6 +152,16 @@ def embedder_was_requested(embedder_flag: str | None, pinned_embedder: Any = Non
     )
 
 
+def is_free_embedder(name: str) -> bool:
+    """Whether an embedder can never put anything on the bill.
+
+    The keyless mock and the local ollama server cost nothing; every other
+    built-in calls a hosted endpoint. Runs that promise "no spend" ask this
+    instead of spelling the names, so the answer lives in one place.
+    """
+    return name in ("mock", "ollama")
+
+
 def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: bool) -> str:
     """The embedder a template-only run actually embeds with.
 
@@ -163,7 +173,7 @@ def template_run_embedder(embedder_name_resolved: str, embedder_was_requested: b
     Shared because ``init`` has to predict this answer before the pipeline, to
     build the run's vector store with the backend generation will actually use.
     """
-    hosted = embedder_name_resolved not in ("mock", "ollama")
+    hosted = not is_free_embedder(embedder_name_resolved)
     return "mock" if hosted and not embedder_was_requested else embedder_name_resolved
 
 
