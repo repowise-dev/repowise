@@ -5,6 +5,8 @@ import { ChevronRight } from "lucide-react";
 export interface BreadcrumbSegment {
   label: string;
   href?: string;
+  /** In-page navigation instead of a link, e.g. climbing a zoomable map. */
+  onSelect?: () => void;
 }
 
 interface BreadcrumbProps {
@@ -30,8 +32,19 @@ export function Breadcrumb({ segments, LinkComponent = "a" }: BreadcrumbProps) {
             {i > 0 && (
               <ChevronRight className="h-3.5 w-3.5 text-[var(--color-text-tertiary)] shrink-0" />
             )}
-            {isLast || !segment.href ? (
-              <span className="text-[var(--color-text-primary)] font-medium truncate">
+            {!isLast && segment.onSelect ? (
+              <button
+                type="button"
+                onClick={segment.onSelect}
+                className="rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              >
+                {segment.label}
+              </button>
+            ) : isLast || !segment.href ? (
+              <span
+                aria-current={isLast ? "location" : undefined}
+                className="text-[var(--color-text-primary)] font-medium truncate"
+              >
                 {segment.label}
               </span>
             ) : (

@@ -89,6 +89,7 @@ async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> N
     assert summary == {
         "file_count": 1,
         "unanalysed_file_count": 0,
+        "analysed_share": 1.0,
         "average_health": 8.5,
         "worst_performer_path": "src/app.py",
         "worst_performer_score": 8.5,
@@ -102,8 +103,7 @@ async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> N
         "structure_average": None,
         "history_average": None,
         "maintainability_findings": 0,
-        "performance_findings": 0,
-        "performance_findings_density": None,
+        "performance_causes": {"now": 0, "production": 0, "all": 0, "per_10k_loc": None},
         "performance_coverage_pct": None,
         "performance_covered_files": 0,
         "performance_analyzed_files": 0,

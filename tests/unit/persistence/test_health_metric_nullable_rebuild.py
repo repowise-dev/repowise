@@ -7,6 +7,8 @@ health has no dialect for, and the whole metrics write would fail.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import text
 
 from repowise.core.analysis.health.models import HealthFileMetricData
@@ -114,8 +116,46 @@ async def test_the_badge_says_no_data_when_no_file_is_scored(async_session):
 
     repo = await insert_repo(async_session)
     # No rows at all is no data too: a repo of only data and config files has none.
-    assert await _badge_average_health(async_session, repo.id) is None
+    assert await _badge_average_health(async_session, repo.id) == (None, None)
     await save_health_metrics(async_session, repo.id, [_row("Big.ex", None)])
-    assert await _badge_average_health(async_session, repo.id) is None
+    assert await _badge_average_health(async_session, repo.id) == (None, 0.0)
     await save_health_metrics(async_session, repo.id, [_row("Big.ex", None), _row("a.py", 8.0)])
-    assert await _badge_average_health(async_session, repo.id) == 8.0
+    assert await _badge_average_health(async_session, repo.id) == (8.0, 0.5)
+
+
+async def test_a_not_null_snapshot_store_is_rebuilt_and_keeps_its_history(
+    async_engine, async_session
+):
+    """Snapshot history survives the rebuild that lets "no hotspots" be NULL."""
+    from repowise.core.persistence.crud import list_health_snapshots, save_health_snapshot
+
+    def _snap(repo_id: str, hotspot: float | None, day: int):
+        return save_health_snapshot(
+            async_session,
+            repo_id,
+            hotspot_health=hotspot,
+            average_health=7.0,
+            worst_performer_path=None,
+            worst_performer_score=None,
+            taken_at=datetime(2026, 1, day, tzinfo=UTC),
+        )
+
+    ddl = (
+        await async_session.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = 'health_snapshots'")
+        )
+    ).scalar_one()
+    assert "\thotspot_health FLOAT," in ddl
+    ddl = ddl.replace("\thotspot_health FLOAT,", "\thotspot_health FLOAT NOT NULL,")
+    await async_session.execute(text("DROP TABLE health_snapshots"))
+    await async_session.execute(text(ddl))
+    repo = await insert_repo(async_session)
+    await _snap(repo.id, 6.5, 1)
+    await async_session.commit()
+
+    await init_db(async_engine)
+
+    await _snap(repo.id, None, 2)
+    await async_session.commit()
+    history = await list_health_snapshots(async_session, repo.id)
+    assert [s.hotspot_health for s in history] == [6.5, None]

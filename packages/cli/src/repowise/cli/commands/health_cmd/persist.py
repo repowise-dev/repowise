@@ -78,6 +78,25 @@ def _load_fix_first(repo_path: object, *, limit: int) -> tuple[Any, Any] | None:
         return None
 
 
+def _load_perf_causes(repo_path: object, covered_nloc: int) -> Any | None:
+    """The stored performance headline (``crud.performance_headline``), or
+    ``None`` when the store cannot answer."""
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import performance_headline
+
+    async def _do() -> Any:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            return await performance_headline(session, repo_id, covered_nloc=covered_nloc)
+
+    try:
+        return run_async(_do())
+    except Exception:
+        return None
+
+
 def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
     """Every queue unit's stored counts, by noun; ``None`` when the store cannot answer."""
     from repowise.cli.helpers import repo_index_session
@@ -94,6 +113,27 @@ def _load_queue_counts(repo_path: object) -> dict[str, Any] | None:
         return run_async(_do())
     except Exception:
         return None
+
+
+def _load_short_history(repo_path: object) -> set[str]:
+    """Files whose recorded history is too thin to count; empty when the store cannot answer."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud import get_short_history_paths
+
+    async def _do() -> set[str]:
+        async with repo_index_session(Path(str(repo_path))) as opened:
+            if opened is None:
+                return set()
+            session, repo_id = opened
+            return await get_short_history_paths(session, repo_id)
+
+    try:
+        return run_async(_do())
+    except (SQLAlchemyError, OSError):
+        # A marker beside the score, never a reason to fail the report.
+        return set()
 
 
 def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str]] | None:
@@ -114,6 +154,7 @@ def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.cli.helpers import repo_index_session
+    from repowise.core.analysis.health.ranking import deduction_by_path
     from repowise.core.analysis.health.scoring import compute_kpis
     from repowise.core.persistence.crud import (
         get_file_language_map,
@@ -130,10 +171,11 @@ def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str
             metrics = await get_health_metrics(session, repo_id)
             if not metrics:
                 return None
-            findings = await get_health_findings(session, repo_id)
+            # Every row the scores counted, withheld types included.
+            findings = await get_health_findings(session, repo_id, include_withheld=True)
             hotspots = await get_hotspot_file_paths(session, repo_id)
             languages = await get_file_language_map(session, repo_id)
-        kpis = compute_kpis(metrics, hotspots)
+        kpis = compute_kpis(metrics, hotspots, deductions=deduction_by_path(findings))
         return SimpleNamespace(metrics=metrics, findings=findings, kpis=kpis), hotspots, languages
 
     try:
@@ -144,7 +186,10 @@ def _load_stored_report(repo_path: object) -> tuple[Any, set[str], dict[str, str
 
 
 def _load_recommendations(
-    repo_path: Path, suggestions: Sequence[Any], metrics: Sequence[Any]
+    repo_path: Path,
+    suggestions: Sequence[Any],
+    metrics: Sequence[Any],
+    findings: Sequence[Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Canonical CLI recommendations, enriched from the local store in bulk."""
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
@@ -168,7 +213,12 @@ def _load_recommendations(
             if repo is None:
                 return []
             recommendations = await hydrate_recommendations(
-                session, repo.id, suggestions, metric_rows=metrics
+                session,
+                repo.id,
+                suggestions,
+                metric_rows=metrics,
+                findings=findings,
+                checkout=str(repo_path),
             )
             return serialize_recommendations(recommendations)
 
@@ -182,6 +232,7 @@ def _load_recommendations(
         build_recommendations(
             suggestions,
             metric_by_path={getattr(metric, "file_path", ""): metric for metric in metrics},
+            findings=findings,
         )
     )
 

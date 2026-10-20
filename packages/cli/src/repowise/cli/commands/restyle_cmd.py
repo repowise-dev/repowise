@@ -33,6 +33,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.ui import load_dotenv
+from repowise.cli.ui.mode_names import provider_model
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.styles import (
     DEFAULT_STYLE,
@@ -90,7 +91,9 @@ async def _run_restyle(
     sf = create_session_factory(engine)
 
     async with get_session(sf) as session:
-        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        repo = await upsert_repository(
+            session, name=repo_path.name, local_path=str(repo_path), stamp_head=True
+        )
         repo_id = repo.id
 
     # Rehydrate the graph + git signals from SQL — no parse, no resolve, no blame.
@@ -223,7 +226,7 @@ def restyle_command(
     console.print(
         f"[bold]repowise restyle[/bold] — {repo_path}\n"
         f"Style: [cyan]{current}[/cyan] → [cyan]{style}[/cyan]  ·  "
-        f"Provider: [cyan]{provider.provider_name}[/cyan] / [cyan]{provider.model_name}[/cyan]"
+        f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}[/cyan]"
     )
     if not yes and not click.confirm(
         "This regenerates the whole wiki (LLM calls, cost). Continue?", default=True

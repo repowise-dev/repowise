@@ -27,6 +27,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.workspace.update import get_head_commit
 
 
@@ -110,7 +111,7 @@ def coverage_add(
 
     Stores per-file line/branch coverage, and additionally the per-test
     "test-to-code" map when a report carries contexts - a coverage.py
-    ``.coverage`` written with ``coverage run --contexts=test``, or a per-test
+    ``.coverage`` recorded with ``pytest --cov --cov-context=test``, or a per-test
     lcov. The map is what answers "which tests exercise this change"; reports
     without contexts ingest per-file coverage only.
 
@@ -158,7 +159,8 @@ def coverage_add(
             console.print(
                 "[yellow]No coverage report found.[/yellow] Looked for "
                 "coverage/lcov.info, .coverage, **/cobertura.xml, and similar.\n"
-                "Generate one (e.g. [cyan]coverage run --contexts=test -m pytest[/cyan] "
+                f"Generate one (e.g. [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], "
+                "which needs pytest-cov, "
                 "or [cyan]cargo llvm-cov --lcov --output-path coverage/lcov.info[/cyan]) "
                 "then re-run, or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
@@ -284,7 +286,7 @@ def coverage_add(
                     if _is_sqlite(report_path):
                         console.print(
                             f"[yellow]{report_path.name}: no per-test contexts "
-                            f"(ran without --contexts=test); per-test map "
+                            f"(recorded without per-test contexts); per-test map "
                             f"skipped.[/yellow]"
                         )
                     continue
@@ -435,8 +437,8 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
                     "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
-                    "recorded with [cyan]--contexts=test[/cyan] also builds the "
-                    "per-test map."
+                    f"recorded with [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) "
+                    "also builds the per-test map."
                 )
                 return
 
@@ -479,7 +481,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             else:
                 console.print(
                     "[dim]No test-to-code map yet - record one with "
-                    "[cyan]coverage run --contexts=test -m pytest[/cyan], then "
+                    f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov), then "
                     "[cyan]repowise coverage add .coverage[/cyan].[/dim]"
                 )
 

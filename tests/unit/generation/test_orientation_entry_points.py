@@ -276,3 +276,26 @@ def test_deterministic_kg_tour_starts_at_the_best_entry_point():
 
     assert stops
     assert stops[0]["nodeIds"] == ["file:src/main.py"]
+
+
+def test_orientation_view_sets_tooling_aside_unless_it_is_all_there_is():
+    from repowise.core.generation.entry_points import orientation_entry_points_view
+
+    ranked = [
+        "packages/cli/main.py",
+        "packages/ui/scripts/contrast-check.py",
+        "packages/ui/scripts/ui-gates.sh",
+        "packages/vscode/src/extension.ts",
+    ]
+    assert orientation_entry_points_view(ranked) == [
+        "packages/cli/main.py",
+        "packages/vscode/src/extension.ts",
+    ]
+    assert orientation_entry_points_view(["scripts/release.py"]) == ["scripts/release.py"]
+
+
+def test_orientation_view_keeps_a_runtime_plugin_system():
+    from repowise.core.generation.entry_points import orientation_entry_points_view
+
+    ranked = ["src/plugins/main.py", "docker/entry.sh", "src/main.py"]
+    assert orientation_entry_points_view(ranked) == ["src/plugins/main.py", "src/main.py"]

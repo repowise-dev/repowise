@@ -17,9 +17,8 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal
 
-from .complexity.dispatch import DISPATCH_SHARE
-from .complexity.terminal import TERMINAL_SHARE
 from .rows import detail_map, field
+from .scoring import ranked_severity
 
 #: Problem-size cut points. Each is a multiple of the detector's own bar: CCN
 #: 20 is twice the complex_method bar and 40, 80 and 150 double on from it;
@@ -30,7 +29,7 @@ SIZE_NLOC = (100, 200, 400, 800)
 SIZE_NESTING = (5, 6, 8, 99)
 #: Findings that measure one function's size.
 SIZE_MARKERS = frozenset(
-    {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
+    {"complex_method", "nested_complexity", "brain_method", "large_method", "repeated_nesting"}
 )
 #: How far past its bars (see :func:`worth_size`) a function must sit to be
 #: worth doing first: CCN 40, 200 lines or nesting 6. The same size from which
@@ -63,6 +62,7 @@ LowPriority = Literal[
     "not_production",
     "unknown_context",
     "unreached_call",
+    "above_bar_after",
 ]
 
 #: Why an item can wait, as the tier reason a surface shows beside it.
@@ -87,6 +87,7 @@ LOW_PRIORITY_LABEL: dict[str, str] = {
     "not_production": "lower priority: it runs outside production code",
     "unknown_context": "lower priority: where this code runs is unknown",
     "unreached_call": "lower priority: no entry point is known to reach it",
+    "above_bar_after": "lower priority: the plan alone leaves a function above the break-up bar",
 }
 
 #: Findings about one expression or one error site: real, and small to fix.
@@ -120,7 +121,8 @@ def measure(
 ) -> dict[str, int]:
     """A function's largest measured CCN, size and nesting across its findings.
 
-    ``severe`` is set when any of them is critical or a brain method,
+    ``severe`` is set when any of them is critical as work is ranked
+    (``scoring.ranked_severity``: never a code-shape marker) or a brain method,
     ``deprecated`` when any sits in a function marked deprecated,
     ``gated_off`` when any sits in a :func:`dormant` function,
     ``dispatch_pct`` is the largest stored dispatch share in percent,
@@ -131,7 +133,8 @@ def measure(
     """
     shape: dict[str, int] = {}
     for f in findings:
-        if field(f, "severity") == "critical" or field(f, "biomarker_type") == "brain_method":
+        marker = field(f, "biomarker_type") or ""
+        if ranked_severity(marker, field(f, "severity")) == "critical" or marker == "brain_method":
             shape["severe"] = 1
         details = details_of(f)
         if details.get("deprecated"):
@@ -170,12 +173,16 @@ def magnitude(shape: Mapping[str, int]) -> int:
 
 def dispatch_shaped(shape: Mapping[str, int]) -> bool:
     """Most of the function's branching is one dispatch on one value."""
+    from .complexity.dispatch import DISPATCH_SHARE
+
     return shape.get("dispatch_pct", 0) >= DISPATCH_SHARE * 100
 
 
 def terminal_shaped(shape: Mapping[str, int]) -> bool:
     """The function is a print or prompt flow: a status report, a checklist,
     a setup wizard, whose branches choose what to show."""
+    from .complexity.terminal import TERMINAL_SHARE
+
     return shape.get("terminal_pct", 0) >= TERMINAL_SHARE * 100
 
 
@@ -268,6 +275,15 @@ def _size_reason(shape: Mapping[str, int]) -> LowPriority | None:
     return None
 
 
+def by_function(findings: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
+    """Findings that name a function, by ``(file_path, function_name)``."""
+    out: dict[tuple[str, str], list[Any]] = defaultdict(list)
+    for f in findings:
+        if name := field(f, "function_name"):
+            out[(field(f, "file_path"), name)].append(f)
+    return dict(out)
+
+
 def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
     """:func:`low_priority` for each finding, in order. A function's shape is
     measured over every finding on it in ``findings``; a finding that rests
@@ -275,10 +291,6 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
     from .models import split_by_origin
 
     history = {id(f) for f in split_by_origin(findings)[1]}
-    by_function: dict[tuple[str, str], list[Any]] = defaultdict(list)
-    for f in findings:
-        if field(f, "function_name"):
-            by_function[(field(f, "file_path"), field(f, "function_name"))].append(f)
     # Measured once per function, not once per finding on it, and each row's
     # details parsed once: every list tiers a repository's whole open set.
     parsed: dict[int, Mapping[str, Any]] = {}
@@ -289,7 +301,7 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
             found = parsed[id(f)] = detail_map(f)
         return found
 
-    shapes = {key: measure(rows, details_of) for key, rows in by_function.items()}
+    shapes = {key: measure(rows, details_of) for key, rows in by_function(findings).items()}
     out: list[LowPriority | None] = []
     for f in findings:
         if id(f) in history:
@@ -301,6 +313,55 @@ def finding_priorities(findings: Sequence[Any]) -> list[LowPriority | None]:
             low_priority(field(f, "biomarker_type"), shape, error_kind=details_of(f).get("kind"))
         )
     return out
+
+
+def _helpers_after(
+    plan: Mapping[str, Any], target: str, removed: int, sliced: int
+) -> list[tuple[str, int, int]]:
+    """``(name, ccn, nloc)`` of each helper a plan creates: a stage's own
+    figures, or for an unstaged plan the one span it lifts, whose CCN is at
+    most what it removes."""
+    stages = [s for s in plan.get("stages") or () if isinstance(s, Mapping)]
+    return [
+        (str(s.get("suggested_name") or target), int(s.get("ccn") or 0), int(s.get("nloc") or 0))
+        for s in stages
+    ] or [(str(plan.get("suggested_name") or target), removed, sliced)]
+
+
+def worst_after(
+    evidence: Mapping[str, Any], plan: Mapping[str, Any], target: str, shape: Mapping[str, int]
+) -> dict[str, Any] | None:
+    """The largest function an Extract Method plan leaves, by its own figures:
+    ``{"function", "ccn", "nloc"}``, or ``None`` with nothing to read.
+
+    The target keeps its measured CCN and lines (``shape``, or a staged plan's
+    ``orchestrator``) less what the plan moves out, plus one call line per
+    helper. Each helper is a stage's own ``ccn`` and ``nloc``; an unstaged
+    plan's one helper is the span it lifts. Nesting after is not estimated.
+    """
+    removed = int(evidence.get("ccn_removed") or 0)
+    sliced = int(evidence.get("slice_nloc") or 0)
+    helpers = _helpers_after(plan, target, removed, sliced)
+    before = (plan.get("orchestrator") or {}).get("ccn_before") or shape.get("ccn")
+    nloc = measured_nloc(shape)
+    candidates = list(helpers)
+    if before or nloc:
+        candidates.append(
+            (target, max(int(before or 0) - removed, 1), max(nloc - sliced + len(helpers), 0))
+        )
+    name, ccn, lines = max(
+        candidates, key=lambda c: (magnitude({"ccn": c[1], "nloc": c[2]}), c[1], c[2])
+    )
+    return {"function": name, "ccn": ccn, "nloc": lines} if ccn or lines else None
+
+
+def above_bar_after(after: Mapping[str, Any] | None) -> str | None:
+    """Why a plan leaves work at the break-up bar (:data:`WORTH_MAGNITUDE`), or
+    ``None`` when every function it leaves is under it."""
+    if not after or magnitude(after) < WORTH_MAGNITUDE:
+        return None
+    by = f"CCN {after['ccn']}" if after["ccn"] >= SIZE_CCN[1] else f"{after['nloc']} lines"
+    return f"leaves {after['function']} at {by}, still above the break-up bar; more stages needed"
 
 
 #: Performance causes that cost once per call, not once per loop iteration:
@@ -373,6 +434,8 @@ __all__ = [
     "WORTH_MAGNITUDE",
     "CostProof",
     "LowPriority",
+    "above_bar_after",
+    "by_function",
     "cost_proof",
     "dispatch_shaped",
     "dormant",
@@ -386,5 +449,6 @@ __all__ = [
     "measured_nloc",
     "perf_facets",
     "terminal_shaped",
+    "worst_after",
     "worth_size",
 ]

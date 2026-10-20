@@ -70,7 +70,7 @@ function PartnerLink({
             onPartnerSelect(path);
           }
         }}
-        className="text-[var(--color-accent-primary)] hover:underline"
+        className="text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-2 hover:decoration-current"
       >
         {inner}
       </a>
@@ -84,7 +84,7 @@ function PartnerLink({
           e.stopPropagation();
           onPartnerSelect(path);
         }}
-        className="text-[var(--color-accent-primary)] hover:underline text-left"
+        className="text-left text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-2 hover:decoration-current"
       >
         {inner}
       </button>
@@ -313,9 +313,9 @@ export function BiomarkerDetails({
           : null,
       );
       break;
-    case "bumpy_road":
+    case "repeated_nesting":
       line = joinStats(
-        num(details.bumps) != null ? `${num(details.bumps)} bumps` : null,
+        num(details.bumps) != null ? `${num(details.bumps)} nested blocks` : null,
         num(details.ccn) != null ? `CCN ${num(details.ccn)}` : null,
         num(details.max_nesting) != null ? `nest ${num(details.max_nesting)}` : null,
       );

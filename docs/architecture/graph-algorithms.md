@@ -41,6 +41,98 @@ This is the raw material. Every algorithm below operates on the file subgraph un
 
 ---
 
+## Call edges: capture, resolution and measurement
+
+The algorithms below trust the symbol-level edges they walk, so this section
+covers how a call edge is made and how its accuracy is measured. The resolver
+internals (strategy seam, origin table, receiver typing) are in
+[language-support.md](language-support.md#call-resolution).
+
+### Why every edge carries an origin
+
+For `user.save()` a tool has three options: emit nothing (a dead-code pass then
+offers to delete `save`), guess by picking one of the repo's methods named
+`save` (with `User.save`, `Draft.save` and `Session.save` that is a two in three
+chance of the wrong file), or work out what `user` is and resolve `save` on that
+type. A graph that presents a guess the same way as a certainty produces wrong
+arrows that look like answers, and a wrong arrow is worse than a missing one.
+repowise resolves by type where it can, falls back to a name match where it
+must, and labels which one happened on every edge.
+
+### Two stages that fail differently
+
+**Capture** notices that a call was written at all. It is a tree-sitter query
+per language listing the source shapes that count as a call site:
+
+```scheme
+; Go method call: obj.Method(args)
+(call_expression
+  function: (selector_expression
+    operand: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+```
+
+A shape that no query matches is absent from the graph, not low confidence or
+unresolved, and nothing downstream can recover it. Go lists a plain call, a
+method call, a package-qualified call, a chained call, and a function passed as
+an argument; the last is captured as a reference, since passing a handler is
+not invoking it.
+
+**Resolution** turns a captured name and receiver (`save` on `repo` in
+`repo.save(draft)`) into one declaration in one file. This is where the 39
+resolution origins live.
+
+A missed capture is silent, since nothing internal knows the call existed, so
+capture is measured against an outside answer key (a compiler). A bad
+resolution is visible, because the origin names the strategy that produced it,
+so a wrong class of edge is found and fixed once for every call site that
+strategy touched. At the bottom of the ladder the resolver declines to guess,
+trading recall for precision.
+
+### Why `references` and `framework_binds` are separate edge types
+
+A handler in a dispatch table is never called anywhere a parser can see.
+Counting that as "no use" would report whole registration layers as safe to
+delete, so a handle to a function is a `references` edge. `framework_binds`
+separates the opposite case: a fixture nobody calls and a collaborator nobody
+constructs are both used, by the container, but an inferred wiring hop is not
+source, and rendering it as a call would put it into an execution flow as
+though someone had written it.
+
+### How accuracy is measured
+
+- **Against a compiler, Go and TypeScript.** Seven cells over five
+  repositories, 37,853 compiler edges from the Go team's RTA call graph and
+  `tsc`'s own resolution, compared across five tools. Precision is 0.976 to
+  0.995. No tool that finds as much of the call graph gets more of it right in
+  any cell; two tools post higher precision in some cells by drawing much
+  smaller graphs. Recall leads in three of the seven cells. Most misses are
+  dynamic dispatch, which no tool in the comparison resolves without emitting
+  several wrong edges for each right one.
+- **Against compiler indexes for more languages.** Java reads 0.725 to 0.781
+  precision against javac across three repositories (0.781 on jsoup). C on git,
+  a repository held out from all tuning, reads 0.979 precision at 0.83 recall.
+  C#, C++, Rust and Python (against jedi, a static analyser) are in the same
+  table.
+- **Hand-graded across nine languages.** 280 call edges per tool, 560 in all,
+  each read with its imports and enclosing scope open: 240 of 280 correct for
+  repowise (85.7%) against 164 of 280 for CodeGraph 1.5.0 (58.6%), with
+  disjoint intervals. Errors concentrate in Rust, C++ and Java.
+
+Unused methods are not reported for any language because method-level precision
+does not hold up under this measurement, and reporting them would mean
+recommending wrong deletions. `global_unique` stays at 0.50 because a labelled
+guess serves reachability better than a missing edge.
+
+Tables, intervals and pre-registrations are in
+[BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language) and
+[repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph).
+
+---
+
 ## 1. PageRank
 
 ### What question does it answer?

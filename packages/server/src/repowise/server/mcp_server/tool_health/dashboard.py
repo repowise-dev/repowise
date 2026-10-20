@@ -9,7 +9,7 @@ from repowise.core.analysis.health.aggregation import module_rollups as _module_
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.grading import distribution as health_distribution
-from repowise.server.mcp_server.tool_health.loading import HealthData
+from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import FIX_FIRST_CAP, HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
@@ -79,15 +79,13 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
         # KPIs keep test files unless ``scope`` narrows them. Tests score better
         # than production code, so narrowing lowers the number with no new defect
         # found: a caller should ask for it knowingly.
-        "kpis": lambda: _name_listed_worst(
-            _compute_kpis(
-                all_metrics,
-                hotspot_paths=data.hotspot_paths,
-                performance_findings=data.perf_findings_count,
-                coverage=data.perf_coverage,
-                unanalysed=len(pop.unanalysed_paths),
-            ),
-            data,
+        "kpis": lambda: _compute_kpis(
+            all_metrics,
+            hotspot_paths=data.hotspot_paths,
+            performance_causes=data.perf_causes,
+            coverage=data.perf_coverage,
+            unanalysed=len(pop.unanalysed_paths),
+            deductions=data.deductions,
         ),
         "distribution": lambda: health_distribution(all_metrics),
         # Where the gap to the target concentrates: a short list of files.
@@ -146,9 +144,10 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
         if not req.pages_fix_first or item["id"] == lead_id or at >= FIX_FIRST_CAP:
             item.pop("first_step", None)
             item.pop("verify", None)
-    # Zero reasons say nothing an agent reads; ``counts.excluded`` omits them too.
-    totals = block["totals"]
-    totals["excluded"] = {reason: n for reason, n in totals["excluded"].items() if n}
+    # ``counts.excluded`` carries the same reasons without the zeros, and
+    # ``_meta.health_analysis`` the analysed commit and time; the model
+    # version is for reading a stored queue back, not for the agent.
+    del block["totals"]["excluded"], block["basis"], block["model_version"]
     block["counts"] = full.counts(shown=len(page.items)).as_dict()
     block["items_total"] = full.totals.eligible
     block["cursor"] = req.fix_first_cursor
@@ -170,20 +169,13 @@ def _finding_rows(data: HealthData, rows: list[Any]) -> list[dict[str, Any]]:
     return [_serialize_finding(f, data.reference_repository, labels.get(f.id)) for f in rows]
 
 
-def _name_listed_worst(kpis: dict[str, Any], data: HealthData) -> dict[str, Any]:
-    """The worst file and worst test the KPIs name are the heads of the lists,
-    so a script left out of ``worst_files`` is not named worst either."""
-    if not kpis.get("file_count"):
-        return kpis
-    for prefix, rows in (("worst_performer", data.metric_rows), ("worst_test", data.test_metric_rows)):
-        head = rows[0] if rows else None
-        kpis[f"{prefix}_path"] = head.file_path if head else None
-        kpis[f"{prefix}_score"] = round(head.score, 2) if head else None
-    return kpis
-
-
 def _metric_row(data: HealthData, m: Any) -> dict[str, Any]:
-    return _serialize_metric(m, data.leads.get(m.file_path), is_test=m.file_path in data.test_paths)
+    return _serialize_metric(
+        m,
+        data.leads.get(m.file_path),
+        is_test=m.file_path in data.test_paths,
+        history=history_of(data, m.file_path),
+    )
 
 
 def _high_leverage_rows(data: HealthData, gap: dict[str, Any]) -> list[dict[str, Any]]:

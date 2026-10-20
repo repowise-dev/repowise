@@ -31,13 +31,16 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import model_run_embedder
 from repowise.cli.ui import load_dotenv
+from repowise.cli.ui.mode_names import provider_model
 from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
+from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
 
-from .engine import run_scoped_generation
+from ..decision_lanes import print_lane_estimate
+from .engine import NO_DOCUMENTATION_MESSAGE, has_documentation, run_scoped_generation
 
 
 def _build_intent(
@@ -83,7 +86,26 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
         )
 
 
-def _make_gate(dry_run: bool):
+def _dry_run_provider(
+    provider_name: str | None, model: str | None, repo_path: Path, reasoning: str | None
+) -> Any | None:
+    """The configured provider for a ``--dry-run``, or ``None`` when there is none.
+
+    A dry run never prompts and never needs a key; without a provider it prints
+    the plan without a price.
+    """
+    try:
+        return resolve_provider_or_prompt(
+            provider_name, model, repo_path, reasoning=reasoning, interactive=False
+        )
+    except click.ClickException as exc:
+        # Only "nothing configured" is keyless; a broken provider is a real error.
+        if getattr(exc, "reason", None) != "no_provider_configured":
+            raise
+        return None
+
+
+def _make_gate(dry_run: bool, embedder: str | None = None):
     """Return the ``gate_cost`` callback the engine invokes before generating.
 
     Prints the estimate, stops on ``--dry-run``, and enforces the LLM-cost
@@ -91,28 +113,50 @@ def _make_gate(dry_run: bool):
     """
 
     def gate_cost(
-        cost_plans: Any, provider: Any, repo_path: Path, *, yes: bool, dry_run: bool
+        cost_plans: Any,
+        provider: Any,
+        repo_path: Path,
+        *,
+        yes: bool,
+        dry_run: bool,
+        decisions: Any = None,
     ) -> bool:
-        from repowise.cli.commands.init_cmd.generation import cost_gate_blocks, format_cost
+        from repowise.cli.commands.init_cmd.generation import cost_gate_blocks, embedding_note
+        from repowise.cli.cost_gate import spend_phrase
+        from repowise.cli.providers.embedders import resolve_embedding_model
         from repowise.core.cost_estimator import estimate_cost
+
+        from ..decision_lanes import with_lane_plan
+
+        if provider is None:
+            _print_unpriced_plan(cost_plans, decisions, repo_path)
+            console.print("[dim]Dry run, nothing generated.[/dim]")
+            return False
 
         est = None
         try:
+            # One estimate prices pages and decision calls together.
             est = estimate_cost(
-                cost_plans, provider.provider_name, provider.model_name, repo_path=repo_path
+                with_lane_plan(cost_plans, decisions),
+                provider.provider_name,
+                provider.model_name,
+                repo_path=repo_path,
+                embedder=embedder,
+                embedding_model=resolve_embedding_model(embedder) if embedder else None,
             )
         except Exception as exc:
             console.print(f"[yellow]Cost estimate unavailable ({exc}).[/yellow]")
 
         if est is not None:
-            pages = sum(p.count for p in cost_plans)
-            console.print(
-                f"Writing [bold]{pages}[/bold] pages with "
-                f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
-            )
+            _print_page_line(cost_plans, f" with [cyan]{provider.model_name}[/cyan]")
+            print_lane_estimate(decisions, provider)
+            console.print(f"{spend_phrase(est)}.")
+            embedding = embedding_note(est)
+            if embedding:
+                console.print(f"[dim]{embedding}[/dim]")
 
         if dry_run:
-            console.print("[dim]Dry run — nothing generated.[/dim]")
+            console.print("[dim]Dry run, nothing generated.[/dim]")
             return False
 
         if est is not None and cost_gate_blocks(est, yes=yes, message="  Generate at this cost?"):
@@ -227,25 +271,34 @@ def generate_command(
         page_ids=page_ids,
     )
 
-    # Provider is required since a model writes these pages. On a real terminal, a
-    # missing one drops into init's provider + key prompt and persists the choice,
-    # so a first `generate` onboards the same way init does instead of dying.
-    # Onboarding needs a terminal on both ends: a terminal stdout (so the provider
-    # table renders) and a tty stdin (so the answer can be read). The stdin check
-    # keeps a background hook / CI / agent run from hanging even when it inherits a
-    # FORCE_COLOR that makes console.is_terminal report True; those keep the clean
-    # "No provider configured" error. Unlike the bare-run default above, this fires
-    # even with explicit page flags, so a keyless `generate --all` still onboards,
-    # not just a bare `generate`.
-    can_prompt_provider = console.is_terminal and sys.stdin.isatty() and not yes
-    provider = resolve_provider_or_prompt(
-        provider_name, model, repo_path, reasoning=reasoning, interactive=can_prompt_provider
-    )
+    # Checked first: with nothing to write, a missing key is not the reason.
+    if not run_async(has_documentation(repo_path)):
+        console.print(NO_DOCUMENTATION_MESSAGE)
+        return
 
-    console.print(
-        f"[bold]repowise generate[/bold] — {repo_path}\n"
-        f"Provider: [cyan]{provider.provider_name}[/cyan] / [cyan]{provider.model_name}[/cyan]"
-    )
+    if dry_run:
+        provider = _dry_run_provider(provider_name, model, repo_path, reasoning)
+    else:
+        # Provider is required since a model writes these pages. On a real terminal, a
+        # missing one drops into init's provider + key prompt and persists the choice,
+        # so a first `generate` onboards the same way init does instead of dying.
+        # Onboarding needs a terminal on both ends: a terminal stdout (so the provider
+        # table renders) and a tty stdin (so the answer can be read). The stdin check
+        # keeps a background hook / CI / agent run from hanging even when it inherits a
+        # FORCE_COLOR that makes console.is_terminal report True; those keep the clean
+        # "No provider configured" error. Unlike the bare-run default, this fires
+        # even with explicit page flags, so a keyless `generate --all` still onboards,
+        # not just a bare `generate`.
+        can_prompt_provider = console.is_terminal and sys.stdin.isatty() and not yes
+        provider = resolve_provider_or_prompt(
+            provider_name, model, repo_path, reasoning=reasoning, interactive=can_prompt_provider
+        )
+
+    console.print(f"[bold]repowise generate[/bold] {repo_path}")
+    if provider is not None:
+        console.print(
+            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}[/cyan]"
+        )
 
     from repowise.core.generation import GenerationConfig
 
@@ -270,14 +323,8 @@ def generate_command(
     # search as useless as it was before, with nothing in the output saying so.
     # `update --full` has re-resolved here since it was written; `generate`
     # never did. Same rule, same message.
-    embedder_name = cfg.get("embedder")
-    embedder_upgraded = False
-    if not embedder_name or embedder_name == "mock":
-        resolved = resolve_embedder(None)
-        if resolved != (embedder_name or "mock"):
-            console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
-            embedder_name = resolved
-            embedder_upgraded = True
+    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"))
+    console.print(f"Embedder: [cyan]{stated}[/cyan].")
 
     start = time.monotonic()
     outcome = run_async(
@@ -291,7 +338,7 @@ def generate_command(
             embedder_name=embedder_name,
             yes=yes,
             dry_run=dry_run,
-            gate_cost=_make_gate(dry_run),
+            gate_cost=_make_gate(dry_run, embedder_name or "mock"),
             interactive=interactive,
         )
     )
@@ -299,7 +346,7 @@ def generate_command(
     if outcome is None:
         return  # nothing generated, dry run, or declined — messaging already printed
 
-    _write_state(repo_path, state, provider, outcome)
+    _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
 
     _report_outcome(outcome, time.monotonic() - start)
     if embedder_upgraded:
@@ -329,7 +376,36 @@ def _account_for_plan(
     return counts
 
 
+def _print_page_line(cost_plans: Any, detail: str) -> None:
+    """``Writing N pages <detail>.``, or nothing on a decisions-only run."""
+    pages = sum(p.count for p in cost_plans)
+    if pages:
+        console.print(f"Writing [bold]{pages}[/bold] pages{detail}.")
+
+
+def _print_unpriced_plan(cost_plans: Any, decisions: Any, repo_path: Path) -> None:
+    """The keyless dry run: token counts for pages and decision lanes, no price."""
+    from repowise.core.cost_estimator import estimate_cost
+
+    est = estimate_cost(cost_plans, "none", "", repo_path=repo_path)
+    tokens = est.estimated_input_tokens + est.estimated_output_tokens
+    _print_page_line(cost_plans, f", about [bold]{tokens:,}[/bold] tokens")
+    print_lane_estimate(decisions, None)
+    console.print(
+        "No model is configured, so there is no price; pass [cyan]--provider[/cyan] to price it."
+    )
+
+
 def _report_outcome(outcome: Any, elapsed: float) -> None:
+    """Report the pages, or only the cost on a decisions-only run."""
+    if outcome.plan.generate_ids:
+        _report_pages(outcome, elapsed)
+    else:
+        # The lane lines already said what the decisions-only run found.
+        console.print(f"Cost: [bold]${outcome.cost_usd:.3f}[/bold] ({outcome.tokens:,} tokens).")
+
+
+def _report_pages(outcome: Any, elapsed: float) -> None:
     """Print where every planned page went, the actual cost, and what is left."""
     planned = outcome.plan.generate_ids
     c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
@@ -409,19 +485,48 @@ def _reembed_after_upgrade(repo_path: Path, embedder_name: str) -> None:
         console.print(f"[yellow]Re-embedding failed:[/yellow] {exc}\n{tail}")
 
 
-def _write_state(repo_path: Path, state: dict, provider: Any, outcome: Any) -> None:
-    """Persist the post-run state: page count, provider, and docs mode.
+def _write_state(
+    repo_path: Path,
+    state: dict,
+    provider: Any,
+    outcome: Any,
+    *,
+    embedder: str | None = None,
+) -> None:
+    """Persist the post-run state: page count, provider, docs mode and scope.
 
     docs_mode flips to ``llm`` only once no template page remains — a partial
     upgrade leaves a mixed wiki, so it keeps its current mode rather than
     over-claiming that everything is written.
     """
+    from repowise.core.index_scope import stamp_index_scope
+
     head = get_head_commit(repo_path)
     if head is not None:
         state["last_sync_commit"] = head
     state["total_pages"] = outcome.total_pages
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
-    if outcome.remaining_template_pages == 0 and resolve_docs_mode(state) != "llm":
+    all_written = outcome.remaining_template_pages == 0
+    if all_written and resolve_docs_mode(state) != "llm":
         state.update(docs_mode_state_fields("llm"))
+    provider_block = {
+        "name": provider.provider_name,
+        "model": provider.model_name,
+        "model_cost_possible": True,
+    }
+    if embedder is not None:
+        provider_block["embedder"] = embedder
+    # The model upgrade this index was waiting on is what this run did; the
+    # pages still unwritten are named by the report, not by a pending upgrade.
+    stamp_index_scope(
+        state,
+        load_config(repo_path),
+        content_provenance="model" if all_written else "mixed",
+        provider=provider_block,
+        upgrade={"status": "not_applicable", "retryable": False, "next_stage": None},
+    )
+    lanes = getattr(outcome, "decision_lanes", None)
+    if lanes is not None:
+        set_pending_decision_lanes(state, lanes.still_pending)
     save_state(repo_path, state)

@@ -24,6 +24,7 @@ from typing import Any, Literal, get_args
 
 from repowise.core.code_origin import path_origin
 from repowise.core.ingestion.framework_routes import flask_routes, next_app_router_file
+from repowise.core.ingestion.models import REGISTRATION_HINT
 from repowise.core.test_paths import is_test_path
 
 from .execution_graph import ExecutionGraphIndex, file_of_symbol
@@ -51,6 +52,11 @@ user's own machine (a browser, desktop or terminal UI)."""
 
 _HOT: tuple[ExecutionRole, ...] = ("request", "event_consumer", "scheduled_job")
 _SEEDED: tuple[ExecutionRole, ...] = (*_HOT, "startup", "cli")
+
+ENTRY_ROLES = frozenset(_HOT)
+"""Roles a hot walk spreads from a handler, consumer or job seed: a function
+holding one counts as reached from an entry point, on the same evidence the
+queue ranks the role on. Startup and CLI stay out: a cold role never leads."""
 _SEEDED_LANGUAGES = frozenset({"python", "typescript", "javascript"})
 _TS_JS = frozenset({"typescript", "javascript"})
 _CALLABLE_KINDS = frozenset({"function", "method"})
@@ -206,19 +212,24 @@ def _scan(graph: Any) -> _Scan:
             path = attrs.get("file_path") or file_of_symbol(node)
             scan.symbols.setdefault(path, []).append((node, attrs))
     for source, target, data in graph.edges(data=True):
-        edge_type = (data or {}).get("edge_type")
-        if edge_type == "imports":
-            root = _import_root(target)
-            if root is not None:
-                scan.imports.setdefault(source, set()).add(root)
-        elif edge_type == "framework" and source.endswith("urls.py"):
-            scan.url_targets.add(target)
-        elif edge_type == "framework_binds":
-            scan.binds.append((source, target))
-        elif edge_type == "references":
-            scan.references.append((source, target))
-            scan.referenced.add(target)
+        _scan_edge(scan, source, target, data or {})
     return scan
+
+
+def _scan_edge(scan: _Scan, source: str, target: str, data: Mapping[str, Any]) -> None:
+    edge_type = data.get("edge_type")
+    if edge_type == "imports":
+        root = _import_root(target)
+        if root is not None:
+            scan.imports.setdefault(source, set()).add(root)
+    elif edge_type == "framework" and source.endswith("urls.py"):
+        scan.url_targets.add(target)
+    elif edge_type == "framework_binds":
+        scan.binds.append((source, target))
+    # A registry holding the function says nothing about how it runs.
+    elif edge_type == "references" and data.get("hint_source") != REGISTRATION_HINT:
+        scan.references.append((source, target))
+        scan.referenced.add(target)
 
 
 def _decorator_role(decorators: Iterable[str], language: str) -> ExecutionRole | None:
@@ -488,6 +499,7 @@ def hottest_role(roles: Iterable[str | None]) -> ExecutionRole:
 
 __all__ = [
     "COLD_ROLES",
+    "ENTRY_ROLES",
     "EXECUTION_ROLES",
     "LEADING_ROLES",
     "ExecutionRole",

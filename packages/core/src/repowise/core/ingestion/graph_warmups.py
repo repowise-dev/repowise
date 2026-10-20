@@ -66,8 +66,33 @@ def _stamp_entry(graph: Any, parsed_files: dict, path: str) -> None:
         setattr(info, flag, True)
 
 
+def _is_android_test_project(plugins: frozenset[str]) -> bool:
+    """Whether a Gradle module applies ``com.android.test``, directly or through
+    a version-catalog alias (``android.test``) or a convention plugin named for
+    it (``nowinandroid.android.test``)."""
+    return any(p == "android.test" or p.endswith(".android.test") for p in plugins)
+
+
+def _default_package_definers(graph: Any, index: Any, names: set[str]) -> set[str]:
+    """JVM files outside every package that define a top-level class in *names*."""
+    found: set[str] = set()
+    for path in list(graph.nodes()):
+        if not str(path).endswith((".java", ".kt")) or index.package_for_file(path):
+            continue
+        for succ in graph.successors(path):
+            sym = graph.nodes[succ]
+            if (
+                sym.get("node_type") == "symbol"
+                and sym.get("name") in names
+                and not sym.get("parent_name")
+                and graph.edges[path, succ].get("edge_type") == "defines"
+            ):
+                found.add(path)
+    return found
+
+
 def _warmup_jvm(ctx: ResolverContext) -> None:
-    from .resolvers.jvm_workspace import get_or_build_jvm_index
+    from .resolvers.jvm_workspace import get_or_build_jvm_index, resource_class_names
 
     index = get_or_build_jvm_index(ctx)
     graph = getattr(ctx, "graph", None)
@@ -91,12 +116,18 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
     from .resolvers.jvm_gradle import build_script_class_names
 
     entry_fqns.update(build_script_class_names(ctx))
+    # Classes a main resource file names for a framework to load (Hibernate,
+    # H2 aliases, MyBatis type handlers, P6Spy).
+    entry_fqns.update(resource_class_names(ctx))
 
-    for fqn in entry_fqns:
-        for path in index.files_for_fqn(fqn):
-            node = graph.nodes.get(path)
-            if node is not None:
-                node["is_reachability_root"] = True
+    root_paths = {path for fqn in entry_fqns for path in index.files_for_fqn(fqn)}
+    # A bare name is a default-package class, which the index does not key.
+    if bare := {n for n in entry_fqns if "." not in n}:
+        root_paths.update(_default_package_definers(graph, index, bare))
+    for path in root_paths:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_reachability_root"] = True
 
     # Stamp every JVM source file under a non-``main`` Gradle source-set
     # (``testFixtures``, ``integrationTest``, ``javaPoet``, ``jcstress``,
@@ -107,7 +138,9 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
     # beyond the hardcoded never-flag globs and picks up arbitrary
     # repo-defined names (Caffeine's ``javaPoet`` and ``jcstress`` are
     # not Gradle-builtin conventions). The check uses the workspace
-    # source-set ``src_dirs`` discovered by ``jvm_gradle.py``.
+    # source-set ``src_dirs`` discovered by ``jvm_gradle.py``. Every source
+    # set of an Android test module (benchmarks, baseline profiles) counts:
+    # the instrumentation runner runs its ``main`` too.
     try:
         from .resolvers.jvm_gradle import get_or_build_jvm_gradle_index
 
@@ -119,8 +152,9 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
         non_main_prefixes: list[str] = []
         for project in gradle_index.projects.values():
             base = project.root_dir.rstrip("/")
+            android_test = _is_android_test_project(project.plugins)
             for ss in project.source_sets.values():
-                if ss.is_main:
+                if ss.is_main and not android_test:
                     continue
                 for src_dir in ss.src_dirs:
                     prefix = f"{base}/{src_dir}/" if base else f"{src_dir}/"
@@ -134,6 +168,93 @@ def _warmup_jvm(ctx: ResolverContext) -> None:
                     nd = graph.nodes.get(node_name)
                     if nd is not None:
                         nd["is_never_flag"] = True
+
+    # Stamp qualifying JVM source files in publishing modules as package_export.
+    # A module publishes if:
+    # 1. Gradle: applies java-library or maven-publish (or java-library.*) and not application.
+    # 2. Maven: packaging is jar.
+    # If the module defines a module-info.java, only files in packages it exports qualify.
+    # Test files and pom aggregators never qualify.
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    repo_path = getattr(ctx, "repo_path", None)
+    snapshot = getattr(ctx, "walk_snapshot", None)
+    jpms_exports = getattr(index, "jpms_exports", {})
+
+    def _qualifies(path: str, mod_dir: str) -> bool:
+        pf = parsed.get(path)
+        if pf is not None and getattr(pf.file_info, "is_test", False):
+            return False
+        if path.endswith(("module-info.java", "package-info.java")):
+            return False
+        if mod_dir in jpms_exports:
+            pkg = index.package_for_file(path)
+            if not pkg or pkg not in jpms_exports[mod_dir]:
+                return False
+        return True
+
+    # 1. Gradle publishing modules
+    if gradle_index is not None:
+        from .resolvers.jvm_gradle import is_publishing_gradle_project
+
+        for project in gradle_index.projects.values():
+            if not is_publishing_gradle_project(project):
+                continue
+            base = project.root_dir.rstrip("/")
+            mod_dir = project.root_dir.strip("/")
+            if mod_dir == ".":
+                mod_dir = ""
+            main_src_dirs: list[str] = []
+            for ss in project.source_sets.values():
+                if ss.is_main:
+                    main_src_dirs.extend(ss.src_dirs)
+            if not main_src_dirs:
+                main_src_dirs = ["src/main/java", "src/main/kotlin"]
+
+            prefixes = [f"{base}/{sd}/" if base else f"{sd}/" for sd in main_src_dirs]
+            for path in parsed:
+                if (
+                    (path.endswith(".java") or path.endswith(".kt"))
+                    and any(path.startswith(p) for p in prefixes)
+                    and _qualifies(path, mod_dir)
+                ):
+                    node = graph.nodes.get(path)
+                    if node is not None:
+                        node["package_export"] = True
+
+    # 2. Maven publishing modules
+    if repo_path is not None:
+        from pathlib import PurePosixPath
+
+        from repowise.core.fs_walk import glob_via
+
+        pom_paths = [
+            p
+            for p in glob_via(
+                snapshot, repo_path, "pom.xml", prune_nested_git=ctx.prune_nested_git
+            )
+            if p.is_file()
+        ]
+        if pom_paths:
+            try:
+                from .external_systems.maven_model import load_maven_reactor
+
+                reactor = load_maven_reactor(repo_path, pom_paths)
+                for proj in reactor.projects:
+                    if proj.packaging.lower() == "jar":
+                        pom_parent = PurePosixPath(proj.manifest).parent
+                        mod_dir = "" if str(pom_parent) == "." else str(pom_parent).strip("/")
+                        prefix = f"{mod_dir}/src/main/" if mod_dir else "src/main/"
+                        for path in parsed:
+                            if (
+                                (path.endswith(".java") or path.endswith(".kt"))
+                                and path.startswith(prefix)
+                                and _qualifies(path, mod_dir)
+                            ):
+                                node = graph.nodes.get(path)
+                                if node is not None:
+                                    node["package_export"] = True
+            except Exception:
+                pass
 
 
 def _warmup_cpp(ctx: ResolverContext) -> None:
@@ -195,6 +316,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
                         break
 
     _mark_cpp_entry_point_files(parsed_files, graph, getattr(ctx, "source_map", None))
+    _stamp_cpp_build_listed(ctx, graph, index)
 
 
 # Tokens whose presence means the surrounding TU wires itself into a
@@ -296,9 +418,32 @@ def _warmup_swift(ctx: ResolverContext) -> None:
 
 
 def _warmup_dotnet(ctx: ResolverContext) -> None:
+    """Build the .NET project index, then mark every C# file of a project that
+    ships a package as published, for the per-symbol public API flag
+    (``analysis.public_api``).
+
+    The package comes from the same reader dead code uses, so the two cannot
+    disagree about what ships. A file belongs to its innermost project: a
+    sample or test project nested in a library's folder ships nothing. With no
+    readable project file nothing is stamped.
+    """
+    from ..analysis.published_packages import BuildFacts, dotnet_published, package_of
     from .resolvers.dotnet import get_or_build_index
 
-    get_or_build_index(ctx)
+    index = get_or_build_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    if index is None or graph is None:
+        return
+    roots = dotnet_published(BuildFacts(repo_root=index.repo_path, dotnet_index=index))
+    if not any(roots.values()):
+        return
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for path, pf in parsed.items():
+        if pf.file_info.language != "csharp":
+            continue
+        node = graph.nodes.get(path)
+        if node is not None and package_of(path, roots):
+            node["package_export"] = True
 
 
 def _warmup_rust(ctx: ResolverContext) -> None:
@@ -374,8 +519,13 @@ def _warmup_go(ctx: ResolverContext) -> None:
     is semantic, not filename-based — ``cmd/task/task.go`` is as much a
     binary entry as ``cmd/release/main.go``, so the traverser's stem
     heuristic alone misses real binaries.
+
+    Also stamps ``package_export`` on every file of each package a consumer
+    outside the repo can import (:func:`exported_go_files`), the way the
+    TypeScript warmup does for a ``package.json``'s published files, for the
+    per-symbol public API flag (``analysis.public_api``).
     """
-    from .resolvers.go_workspace import get_or_build_go_index
+    from .resolvers.go_workspace import exported_go_files, get_or_build_go_index
 
     index = get_or_build_go_index(ctx)
     graph = getattr(ctx, "graph", None)
@@ -383,6 +533,12 @@ def _warmup_go(ctx: ResolverContext) -> None:
     for pkg in index.packages.values():
         for path in pkg.main_files:
             _stamp_entry(graph, parsed, path)
+    if graph is None:
+        return
+    for path in exported_go_files(index):
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
 
 
 def _warmup_typescript(ctx: ResolverContext) -> None:
@@ -399,6 +555,7 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     being anywhere a reader enters.
     """
     from .resolvers.ts_workspace import (
+        find_grafana_plugin_targets,
         find_mdx_import_targets,
         find_npm_script_entry_targets,
         find_vitest_include_targets,
@@ -410,6 +567,12 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     if graph is None:
         return
     parsed = getattr(ctx, "parsed_files", None) or {}
+    # Every file a ``package.json`` publishes, subpaths included, for the
+    # per-symbol public API flag (``analysis.public_api``).
+    for path in index.exports_entry_paths | index.manifest_entry_paths:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
     for path in index.manifest_entry_paths:
         _stamp_entry(graph, parsed, path)
         pf = parsed.get(path)
@@ -423,6 +586,9 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
         entry_paths |= find_mdx_import_targets(ctx)
     with contextlib.suppress(Exception):
         entry_paths |= find_vitest_include_targets(ctx)
+    # Grafana plugin entry files (module.ts/js beside plugin.json or in src/).
+    with contextlib.suppress(Exception):
+        entry_paths |= find_grafana_plugin_targets(ctx)
     # ``package.json`` ``scripts.*`` references: benchmark / bench-runner /
     # rollup-input paths that ship as live code but are never imported
     # by the main entry graph.
@@ -628,3 +794,59 @@ def run_warmups(
             done = getattr(progress, "on_phase_done", None)
             if callable(done):
                 done(phase_name)
+
+
+def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
+    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed."""
+    import re
+
+    from repowise.core.fs_walk import glob_via
+
+    repo_path = ctx.repo_path
+    if repo_path is None:
+        return
+    root = repo_path.resolve()
+
+    # 1. CMake targets from cpp_workspace index (sources only; headers are not compiled TUs)
+    for target in getattr(index, "targets", {}).values():
+        for src in getattr(target, "sources", ()):
+            if src in graph.nodes:
+                graph.nodes[src]["build_listed"] = True
+
+    # 2. MSBuild .vcxproj files (ClCompile only; ClInclude headers are not compiled TUs)
+    item_re = re.compile(r"""<ClCompile\s+Include=["']([^"']+)["']""", re.IGNORECASE)
+    for vcxproj in glob_via(ctx.walk_snapshot, root, "*.vcxproj", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = vcxproj.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        vdir = vcxproj.parent
+        for m in item_re.finditer(content):
+            inc = m.group(1).strip()
+            if "$(" in inc or "*" in inc or "?" in inc:
+                continue
+            resolved = (vdir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass
+
+    # 3. Windows resource scripts (.rc)
+    rc_re = re.compile(r"""^[ 	]*#[ 	]*include[ 	]+["']([^"']+)["']""", re.MULTILINE)
+    for rc in glob_via(ctx.walk_snapshot, root, "*.rc", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = rc.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        rc_dir = rc.parent
+        for m in rc_re.finditer(content):
+            inc = m.group(1).strip()
+            resolved = (rc_dir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass

@@ -125,7 +125,9 @@ def split_humps(text: str) -> str:
     return re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", out)
 
 
-def content_terms(question: str, *, max_terms: int = _MAX_TERMS) -> list[str]:
+def content_terms(
+    question: str, *, max_terms: int | None = _MAX_TERMS, identifiers: bool = True
+) -> list[str]:
     """Content words of *question*, deduplicated, longest first.
 
     Deliberately inclusive: plain lowercase English words are kept, unlike the
@@ -135,11 +137,14 @@ def content_terms(question: str, *, max_terms: int = _MAX_TERMS) -> list[str]:
 
     A camelCase or snake_case token contributes its parts as well as itself, so
     someone who writes ``persist_symbols`` and someone who writes "persist
-    symbols" reach the same rows.
+    symbols" reach the same rows. With ``identifiers=False`` only the parts
+    are kept: for text written in prose, which names ``persist_symbols`` by its
+    words if at all. ``max_terms=None`` keeps every term.
     """
     seen: dict[str, None] = {}
     for raw in _WORD_RE.findall(question or ""):
-        for tok in (raw, *re.split(r"[^A-Za-z0-9]+", split_humps(raw))):
+        parts = re.split(r"[^A-Za-z0-9]+", split_humps(raw))
+        for tok in (raw, *parts) if identifiers else parts:
             t = tok.lower()
             if len(t) < _MIN_TERM_LEN or t in STOPWORDS:
                 continue

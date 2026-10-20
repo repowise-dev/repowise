@@ -24,9 +24,12 @@ from .base import (
     NO_RECEIVER,
     BaseDefUseDialect,
     Captured,
+    DeclaredTypes,
+    HandlerHead,
     Occurrence,
     Receiver,
     StatementDefUse,
+    node_text,
 )
 
 if TYPE_CHECKING:
@@ -53,6 +56,8 @@ _SCOPE_BOUNDARIES = frozenset({"lambda", "function_definition", "async_function_
 _COMPREHENSIONS = frozenset(
     {"list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression"}
 )
+# A ``match`` is one CFG statement; writes inside its arms are may-defs.
+_CONDITIONAL_KINDS = frozenset({"match_statement"})
 # A module path is not a read; an import writes only the names it binds.
 _IMPORT_KINDS = frozenset({"import_statement", "import_from_statement"})
 
@@ -61,7 +66,9 @@ class PythonDefUseDialect(BaseDefUseDialect):
     language = "python"
     member_access_kinds = frozenset({"attribute"})
     receiver_write_kinds = _ASSIGN_KINDS | _AUG_KINDS
-    type_holder_kinds = frozenset({"typed_parameter", "typed_default_parameter", "assignment"})
+    declared_types = DeclaredTypes(
+        frozenset({"typed_parameter", "typed_default_parameter", "assignment"})
+    )
     keyword_kinds = frozenset({"keyword_argument"})
 
     # A nested ``def`` is visible in the enclosing scope from its statement on.
@@ -97,6 +104,30 @@ class PythonDefUseDialect(BaseDefUseDialect):
             if name_node is not None:
                 out.append(self._occ(name_node))
         return tuple(out)
+
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """``except E as e:`` reads ``E`` and binds ``e``: the same ``value``
+        field shape as a ``with`` item. Python unbinds ``e`` when the handler
+        ends; that is not modelled, so a later read of ``e`` (an error in the
+        original too) sees this binding and a span holding it takes ``e`` in."""
+        defs: list[Occurrence] = []
+        uses: list[Occurrence] = []
+        self._with_item(handler, defs, uses)
+        return StatementDefUse(defs=tuple(defs), uses=tuple(uses))
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``except (A, b.C) as e:`` names ``A`` and ``b.C`` and binds ``e``;
+        a bare ``except:`` catches everything."""
+        value = handler.child_by_field_name("value")
+        if value is None:
+            return None, None
+        alias = None
+        if value.type == "as_pattern":
+            alias = value.child_by_field_name("alias")
+            value = value.named_children[0]
+        grouped = value.type in ("tuple", "parenthesized_expression")
+        names = value.named_children if grouped else [value]
+        return tuple(node_text(n) for n in names), node_text(alias) if alias else None
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
         """A method's first parameter when it is ``self`` / ``cls`` and the
@@ -179,6 +210,19 @@ class PythonDefUseDialect(BaseDefUseDialect):
         if t == "with_item":
             self._with_item(node, defs, uses)
             return
+        if t == "except_clause":  # a nested scope's handler, walked whole
+            self._with_item(node, defs, uses)
+            value = node.child_by_field_name("value")
+            for child in node.named_children:
+                if value is None or child.id != value.id:
+                    self._process(child, defs, uses)
+            return
+        if t in _CONDITIONAL_KINDS:
+            self._process_may_def(node, defs, uses)
+            return
+        if t == "case_pattern":
+            self._pattern(node, defs, uses)
+            return
         if t in self.member_access_kinds:
             self.collect_reads(node, uses)  # receiver is a read; member is not
             return
@@ -193,6 +237,55 @@ class PythonDefUseDialect(BaseDefUseDialect):
             return
         for child in node.named_children:
             self._process(child, defs, uses)
+
+    def _pattern(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
+        """A ``match`` pattern: a bare name captures (a def), a dotted name is a
+        value pattern (its head is a read), and a class pattern's class is a read.
+        ``_``, keyword names and literal keys bind nothing."""
+        t = node.type
+        if t == "dotted_name":
+            parts = [c for c in node.named_children if c.type in self.identifier_kinds]
+            if len(parts) == 1:
+                if node_text(parts[0]) != "_":
+                    defs.append(self._occ(parts[0]))
+            else:
+                self._value_name(node, uses)
+            return
+        if t in ("splat_pattern", "as_pattern"):
+            for child in node.named_children:
+                if child.type in self.identifier_kinds:
+                    if node_text(child) != "_":
+                        defs.append(self._occ(child))
+                else:
+                    self._pattern(child, defs, uses)
+            return
+        if t == "keyword_pattern":
+            # ``x=px``: ``x`` names the attribute, only the pattern after it binds.
+            for child in node.named_children[1:]:
+                self._pattern(child, defs, uses)
+            return
+        if t == "class_pattern":
+            cls, *args = node.named_children
+            self._value_name(cls, uses)
+            for child in args:
+                self._pattern(child, defs, uses)
+            return
+        if t == "dict_pattern":
+            # Keys are values (``Const.K: v`` reads ``Const``); the patterns bind.
+            for child in node.named_children:
+                if child.type == "dotted_name":
+                    self._value_name(child, uses)
+                else:
+                    self._pattern(child, defs, uses)
+            return
+        for child in node.named_children:
+            self._pattern(child, defs, uses)
+
+    def _value_name(self, node: Node, uses: list[Occurrence]) -> None:
+        """``Color.RED`` or ``mod.Point`` in a pattern reads its first name only."""
+        head = next((c for c in node.named_children if c.type in self.identifier_kinds), None)
+        if head is not None:
+            uses.append(self._occ(head))
 
     def _import_binds(self, node: Node, defs: list[Occurrence]) -> None:
         """``import a.b`` binds ``a``, ``... as c`` binds ``c``, ``from m
@@ -296,10 +389,13 @@ class PythonDefUseDialect(BaseDefUseDialect):
         named = node.child_by_field_name("name")
         if named is not None and named.type in self.identifier_kinds:
             return named
-        # typed_parameter / splat: first identifier descendant.
+        # typed_parameter / splat: first identifier descendant (``**kw: Any``
+        # nests the splat in the typed parameter).
         for child in node.named_children:
             if child.type in self.identifier_kinds:
                 return child
+            if child.type in _SPLAT_TARGETS:
+                return self._param_name_node(child)
         return None
 
 

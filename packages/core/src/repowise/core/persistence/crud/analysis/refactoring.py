@@ -17,21 +17,27 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Select,
+    and_,
     bindparam,
     case,
     func,
+    inspect,
     or_,
     select,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from ....analysis.finding_registry import excluded_types
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
+from .shown import gated_counts, ungated
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from .refactoring_payoff import PayoffContext
 
 # The finding-triage vocabulary, shared with health findings so Code Health has
@@ -165,6 +171,88 @@ def _scope_suggestions(
     ]
 
 
+async def _reusable_rows(
+    session: AsyncSession,
+    repository_id: str,
+    stored_rows: list[RefactoringSuggestion],
+    public_ids: list[str],
+    model_version: int,
+) -> dict[str, RefactoringSuggestion]:
+    """Stored current-model rows by public id, the scoped ones and any named elsewhere."""
+    reusable: dict[str, RefactoringSuggestion] = {}
+    for row in stored_rows:
+        if row.public_id and row.model_version == model_version:
+            reusable[row.public_id] = row
+
+    # A clone group and an import cycle are named by their members rather than
+    # by the file the row happens to be anchored at, so a scoped run can hold a
+    # plan whose stored row sits outside the scope. Look those up by id before
+    # deciding anything is new: inserting instead would duplicate the plan, and
+    # the identity is unique per repository and model.
+    outside = sorted({pid for pid in public_ids if pid not in reusable})
+    for index in range(0, len(outside), _BATCH_SIZE):
+        found = await session.execute(
+            select(RefactoringSuggestion).where(
+                RefactoringSuggestion.repository_id == repository_id,
+                RefactoringSuggestion.model_version == model_version,
+                RefactoringSuggestion.public_id.in_(outside[index : index + _BATCH_SIZE]),
+            )
+        )
+        for row in found.scalars().all():
+            reusable.setdefault(row.public_id, row)
+    return reusable
+
+
+def _refresh_detected_row(
+    row: RefactoringSuggestion,
+    suggestion: Any,
+    repository_id: str,
+    public_id: str,
+    now: datetime,
+) -> bool:
+    """Refresh a detected-again row in place. True when it reopened."""
+    values = _refactoring_row_kwargs(suggestion, repository_id, public_id=public_id)
+    for name in _REFRESHED_COLUMNS:
+        if name in values:
+            setattr(row, name, values[name])
+    # Unranked until the finalizer ranks the refreshed content; a finalize
+    # that fails then leaves no stale rank beside fresh fields.
+    row.rank_position = row.blast_size = row.rank_json = None
+    reopened = row.status == "resolved" and row.status_reason == "no_longer_detected"
+    if reopened:
+        row.status = "open"
+        row.status_reason = None
+        row.status_changed_at = now
+    row.updated_at = now
+    return reopened
+
+
+def _resolve_undetected_rows(
+    stored_rows: list[RefactoringSuggestion],
+    seen: set[str],
+    now: datetime,
+    model_version: int,
+) -> list[RefactoringSuggestion]:
+    """Resolve every open stored row this run did not detect.
+
+    Returns the current-model ones, the rows a payoff is settled for.
+    """
+    resolved: list[RefactoringSuggestion] = []
+    for row in stored_rows:
+        if row.public_id in seen and row.model_version == model_version:
+            continue
+        if row.status in ("resolved", "false_positive"):
+            continue
+        # An older model's row resolves because its id changed, not its code.
+        if row.public_id and row.model_version == model_version:
+            resolved.append(row)
+        row.status = "resolved"
+        row.status_reason = "no_longer_detected"
+        row.status_changed_at = now
+        row.updated_at = now
+    return resolved
+
+
 async def finalize_refactoring_suggestions(
     session: AsyncSession,
     repository_id: str,
@@ -227,33 +315,14 @@ async def finalize_refactoring_suggestions(
         .scalars()
         .all()
     )
-    reusable: dict[str, RefactoringSuggestion] = {}
-    for row in stored_rows:
-        if row.public_id and row.model_version == REFACTORING_MODEL_VERSION:
-            reusable[row.public_id] = row
-
-    # A clone group and an import cycle are named by their members rather than
-    # by the file the row happens to be anchored at, so a scoped run can hold a
-    # plan whose stored row sits outside the scope. Look those up by id before
-    # deciding anything is new: inserting instead would duplicate the plan, and
-    # the identity is unique per repository and model.
-    outside = sorted({pid for pid in public_ids if pid not in reusable})
-    for index in range(0, len(outside), _BATCH_SIZE):
-        found = await session.execute(
-            select(RefactoringSuggestion).where(
-                RefactoringSuggestion.repository_id == repository_id,
-                RefactoringSuggestion.model_version == REFACTORING_MODEL_VERSION,
-                RefactoringSuggestion.public_id.in_(outside[index : index + _BATCH_SIZE]),
-            )
-        )
-        for row in found.scalars().all():
-            reusable.setdefault(row.public_id, row)
+    reusable = await _reusable_rows(
+        session, repository_id, stored_rows, public_ids, REFACTORING_MODEL_VERSION
+    )
 
     now = _now_utc()
     seen: set[str] = set()
     pending: list[RefactoringSuggestion] = []
     reopened: list[str] = []
-    resolved: list[RefactoringSuggestion] = []
     for suggestion, public_id in zip(scoped, public_ids, strict=True):
         if public_id in seen:
             # Two plans reaching one id would violate the uniqueness readers rely
@@ -271,32 +340,10 @@ async def finalize_refactoring_suggestions(
             continue
         if row.status == "false_positive":
             continue
-        values = _refactoring_row_kwargs(suggestion, repository_id, public_id=public_id)
-        for name in _REFRESHED_COLUMNS:
-            if name in values:
-                setattr(row, name, values[name])
-        # Unranked until the finalizer ranks the refreshed content; a finalize
-        # that fails then leaves no stale rank beside fresh fields.
-        row.rank_position = row.blast_size = row.rank_json = None
-        if row.status == "resolved" and row.status_reason == "no_longer_detected":
-            row.status = "open"
-            row.status_reason = None
-            row.status_changed_at = now
+        if _refresh_detected_row(row, suggestion, repository_id, public_id, now):
             reopened.append(row.id)
-        row.updated_at = now
 
-    for row in stored_rows:
-        if row.public_id in seen and row.model_version == REFACTORING_MODEL_VERSION:
-            continue
-        if row.status in ("resolved", "false_positive"):
-            continue
-        # An older model's row resolves because its id changed, not its code.
-        if row.public_id and row.model_version == REFACTORING_MODEL_VERSION:
-            resolved.append(row)
-        row.status = "resolved"
-        row.status_reason = "no_longer_detected"
-        row.status_changed_at = now
-        row.updated_at = now
+    resolved = _resolve_undetected_rows(stored_rows, seen, now, REFACTORING_MODEL_VERSION)
 
     for index in range(0, len(pending), _BATCH_SIZE):
         for row in pending[index : index + _BATCH_SIZE]:
@@ -420,15 +467,51 @@ async def get_refactoring_suggestion(
     return result.scalar_one_or_none()
 
 
-def shown_plan_predicate() -> Any:
-    """Plans whose source biomarker the finding registry does not withhold.
-
-    Plans are persisted whatever the registry says; every surface that lists
-    them filters here. A plan with no source biomarker (structural) is shown.
-    """
+def _registry_shown_plan() -> Any:
     return or_(
         RefactoringSuggestion.source_biomarker.is_(None),
         RefactoringSuggestion.source_biomarker.not_in(excluded_types()),
+    )
+
+
+def shown_plan_predicate(*, include_unverified: bool = False, file_holds: bool = True) -> Any:
+    """Plans whose source biomarker the finding registry does not withhold, on
+    files of a language no gate holds refactoring back on.
+
+    Plans are persisted whatever the registry says; every surface that lists
+    them filters here. A plan with no source biomarker (structural) is shown.
+    ``include_unverified`` opts into the gated languages and the plans on test
+    files; ``file_holds=False`` keeps the test-file plans without that opt-in.
+    """
+    return and_(
+        _registry_shown_plan(),
+        ungated(
+            "refactoring",
+            RefactoringSuggestion.file_path,
+            RefactoringSuggestion.refactoring_type,
+            include_unverified=include_unverified,
+            file_holds=file_holds,
+        ),
+    )
+
+
+async def gated_plan_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    status: str = "open",
+    include_unverified: bool = False,
+) -> dict[str, dict]:
+    """The plans a language gate holds back, by language (see ``shown.gated_counts``)."""
+    return await gated_counts(
+        session,
+        "refactoring",
+        RefactoringSuggestion,
+        RefactoringSuggestion.repository_id == repository_id,
+        RefactoringSuggestion.status == status,
+        _registry_shown_plan(),
+        kind_col=RefactoringSuggestion.refactoring_type,
+        include_unverified=include_unverified,
     )
 
 
@@ -439,11 +522,12 @@ def _suggestion_filters(
     file_paths: list[str] | None,
     min_confidence: str | None,
     status: str,
+    include_unverified: bool = False,
 ) -> list[Any]:
     predicates: list[Any] = [
         RefactoringSuggestion.repository_id == repository_id,
         RefactoringSuggestion.status == status,
-        shown_plan_predicate(),
+        shown_plan_predicate(include_unverified=include_unverified),
     ]
     if refactoring_type is not None:
         predicates.append(RefactoringSuggestion.refactoring_type == refactoring_type)
@@ -467,10 +551,11 @@ async def get_refactoring_suggestions(
     status: str = "open",
     limit: int | None = None,
     offset: int | None = None,
+    include_unverified: bool = False,
 ) -> list[RefactoringSuggestion]:
     """Return refactoring suggestions, highest recovered impact first.
 
-    Plans from a registry-withheld biomarker are left out
+    Plans from a registry-withheld biomarker or a gated language are left out
     (:func:`shown_plan_predicate`). *limit* / *offset* page in SQL. Both default to ``None``, which returns the
     whole filtered set exactly as before, because the callers that still rank
     and page in memory have not been rewired yet (R4).
@@ -482,6 +567,7 @@ async def get_refactoring_suggestions(
             file_paths=file_paths,
             min_confidence=min_confidence,
             status=status,
+            include_unverified=include_unverified,
         )
     )
     # Secondary keys (file_path, target_symbol) make the read order stable for
@@ -508,6 +594,7 @@ async def count_refactoring_suggestions(
     file_paths: list[str] | None = None,
     min_confidence: str | None = None,
     status: str = "open",
+    include_unverified: bool = False,
 ) -> int:
     """The total behind a page, counted in SQL rather than by materializing it."""
     q = (
@@ -520,6 +607,7 @@ async def count_refactoring_suggestions(
                 file_paths=file_paths,
                 min_confidence=min_confidence,
                 status=status,
+                include_unverified=include_unverified,
             )
         )
     )
@@ -572,6 +660,27 @@ async def store_plan_ranks(
     )
     for index in range(0, len(values), _BATCH_SIZE):
         await session.execute(statement, values[index : index + _BATCH_SIZE])
+    _sync_loaded_ranks(session, repository_id, values)
+
+
+def _sync_loaded_ranks(
+    session: AsyncSession, repository_id: str, values: list[dict[str, Any]]
+) -> None:
+    """Give every plan this session holds the rank just written: the Core writes
+    bypass the identity map, and a later select returns a held instance as loaded."""
+    # Not an ORM bulk update by id instead: that fires ``updated_at``'s onupdate.
+    written = {item["plan_id"]: item for item in values}
+    for instance in list(session.sync_session.identity_map.values()):
+        if not isinstance(instance, RefactoringSuggestion):
+            continue
+        loaded = inspect(instance).dict
+        if loaded.get("repository_id") != repository_id:
+            continue
+        # A plan this finalize did not rank was cleared above, so it reads None.
+        item = written.get(loaded.get("id"), {})
+        set_committed_value(instance, "rank_position", item.get("position"))
+        set_committed_value(instance, "blast_size", item.get("surface"))
+        set_committed_value(instance, "rank_json", item.get("facts"))
 
 
 def _base_order(view: str, predicates: list[Any]) -> tuple[Select[Any], tuple[Any, ...]]:
@@ -606,6 +715,7 @@ async def ranked_refactoring_suggestions(
     min_confidence: str | None = None,
     filters: Mapping[str, Any] | None = None,
     view: str = "canonical",
+    include_unverified: bool = False,
 ) -> list[RefactoringSuggestion] | None:
     """The open plans in persisted rank order.
 
@@ -623,6 +733,7 @@ async def ranked_refactoring_suggestions(
         file_paths=None,
         min_confidence=min_confidence,
         status="open",
+        include_unverified=include_unverified,
     )
     unranked = await session.execute(
         select(RefactoringSuggestion.id)
@@ -641,7 +752,11 @@ async def ranked_refactoring_suggestions(
 
 
 async def summarize_open_plans(
-    session: AsyncSession, repository_id: str, *, min_confidence: str | None = None
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    min_confidence: str | None = None,
+    include_unverified: bool = False,
 ) -> dict[str, Any]:
     """The plan board's chip counts over the open plans, from narrow columns.
 
@@ -667,6 +782,7 @@ async def summarize_open_plans(
                 file_paths=None,
                 min_confidence=min_confidence,
                 status="open",
+                include_unverified=include_unverified,
             )
         )
     )

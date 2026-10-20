@@ -53,6 +53,7 @@ from repowise.cli.helpers import (
     silence_logs_for_machine_output_until_close,
 )
 from repowise.cli.output import emit_json
+from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.analysis.test_collection import plan_scopes, read_checkout, select
 from repowise.core.analysis.test_selection import RUNNERS
 
@@ -141,7 +142,7 @@ def impacted_tests_command(
         cannot_evaluate(fmt, exc.code, str(exc))
 
     explain = explain.replace("\\", "/").removeprefix("./") if explain else None
-    checkout = read_checkout(repo_path)
+    checkout = read_checkout(repo_path, change.head)
     plan = plan_scopes(change, config, checkout) if config is not None else None
     result = run_async(_collect(repo_path, change, checkout, config, explain, plan, prioritize))
     result["diff"] = change.label
@@ -200,6 +201,7 @@ async def _collect(
             plan.routes if plan else [],
             dict(checkout.pytest_texts),
             indexed_commit=repo_row.head_commit if repo_row else None,
+            read_source=checkout.read,
         )
         return await _decide(session, repo_id, out, *decide)
 
@@ -394,7 +396,8 @@ def _print_map_state(result: dict) -> None:
         console.print(
             "[yellow]No test-to-code map ingested.[/yellow] Run "
             "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
-            "[cyan]coverage run --contexts=test[/cyan] to get exact impacted tests. "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) to get exact "
+            "impacted tests. "
             "Falling back to the dependency graph and filename patterns below."
         )
     elif not result["map_current"]:

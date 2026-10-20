@@ -24,7 +24,7 @@ describe("commit table empty states", () => {
 
     expect(screen.getByText("No matches")).toBeInTheDocument();
     expect(screen.queryByText("No commits indexed")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "High priority" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "All" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "High priority" })).toBeInTheDocument();
   });
 });

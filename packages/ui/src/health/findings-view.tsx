@@ -50,6 +50,7 @@ import {
   isWatchOnlyBiomarker,
 } from "./biomarker-glossary";
 import { buildAiPrompt } from "./ai-prompt-builder";
+import { EFFORT_LABEL } from "./labels";
 import { SEVERITY_LABEL, type Severity } from "./tokens";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
@@ -71,13 +72,6 @@ const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 function lowestSeverity(picked: Severity[]): Severity {
   return SEVERITIES.filter((s) => picked.includes(s)).pop() ?? "low";
 }
-
-const EFFORT_LABEL: Record<string, string> = {
-  S: "Small (≤40 NLOC)",
-  M: "Medium (≤150 NLOC)",
-  L: "Large (≤400 NLOC)",
-  XL: "Extra large (>400 NLOC)",
-};
 
 export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
   const { cacheKey } = adapter;

@@ -29,6 +29,8 @@ from repowise.core.workspace.contract_schema import ContractSchema
 from repowise.core.workspace.signature_schema import attach_signature_schemas
 
 if TYPE_CHECKING:
+    from repowise.core.workspace.code_api import CodeSurface
+    from repowise.core.workspace.extractors.masstransit import MessageTypeIndex
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
     from repowise.core.workspace.repo_index import RepoIndex, WorkspaceIndex
 
@@ -62,7 +64,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # base, and Prisma, TypeORM, Sequelize, Drizzle and Knex tables.
 # Version 13 adds Angular HttpClient calls, with bases folded from environment
 # files and class fields.
-CONTRACTS_VERSION = 13
+# Version 14 adds MassTransit message-type topic contracts (C# and VB.NET).
+CONTRACTS_VERSION = 14
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
@@ -544,33 +547,16 @@ async def run_contract_extraction(
     seconds of extraction, so scoping it would buy nothing and risk everything.
     """
     from .code_api import CodeSurface, build_code_surface
-    from .extractors import (
-        DataExtractor,
-        GrpcExtractor,
-        HttpExtractor,
-        OpenApiExtractor,
-        SocketExtractor,
-        TopicExtractor,
-        assign_service,
-        detect_service_boundaries,
-        merge_openapi_providers,
-    )
-    from .extractors.base import iter_source_files, make_exclude_predicate
-    from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+    from .extractors import build_message_type_index
+    from .extractors.base import make_exclude_predicate
+    from .extractors.masstransit import MessageTypeIndex
     from .matching import annotate_consumer_targets, match_contracts
 
     contract_config = ws_config.contracts
     exclude = make_exclude_predicate(tuple(contract_config.exclude_globs))
 
-    # Build repo_paths — only include repos that have been indexed
-    # (have a .repowise/ directory). Non-indexed repos must not participate
-    # in contract extraction.
-    repo_paths: dict[str, Path] = {}
-    for entry in ws_config.repos:
-        resolved = (workspace_root / entry.path).resolve()
-        if resolved.is_dir() and (resolved / ".repowise").is_dir():
-            repo_paths[entry.alias] = resolved
-
+    # Only indexed repos (with a .repowise/ directory) take part.
+    repo_paths = _indexed_repo_paths(ws_config, workspace_root)
     if len(repo_paths) < 2:
         return ContractStore()
 
@@ -583,201 +569,42 @@ async def run_contract_extraction(
         else CodeSurface()
     )
 
-    # Which repos can be carried forward, and which must be re-extracted.
-    # Probing a repo's state costs a `git rev-parse` and a dirty check; the
-    # alternative is trusting changed_repos, which is exactly the trust a stale
-    # artifact would exploit. Skipped entirely when there is nothing to reuse.
-    from .update import get_head_commit
+    # A MassTransit consumer resolves its message type against every repo's
+    # contract projects, so the type index is workspace-wide too.
+    message_types = (
+        await asyncio.to_thread(
+            build_message_type_index, repo_paths, exclude, contract_config.contract_project_pattern
+        )
+        if contract_config.detect_topics
+        else MessageTypeIndex()
+    )
 
     prior = previous_store or ContractStore()
-    changed = set(changed_repos)
-    reusable: set[str] = set()
+    config_fp = _extraction_config_fingerprint(contract_config, code_surface, message_types)
     heads: dict[str, str | None] = {}
-    # Fingerprints the settings that decide what extraction even looks for. A
-    # repo extracted under `detect_data: false`, or before a `service_bases`
-    # entry existed, holds rows that answer a question no longer being asked —
-    # and its HEAD is unchanged, so nothing else here would notice.
-    # The published-package set joins it because a code consumer depends on
-    # *another* repo's manifests: adding the repo that publishes what this one
-    # imports moves no HEAD here, so nothing else would notice.
-    config_fp = hashlib.sha256(
-        json.dumps(
-            [contract_config.to_dict(), sorted(code_surface.members)], sort_keys=True
-        ).encode()
-    ).hexdigest()[:16]
-
-    # A store written before contracts carried identity holds rows that cannot
-    # be given one without re-reading the source, so its whole reuse question
-    # is moot: extract every repo once, and the next run reuses normally.
-    if previous_store is not None and prior.version >= CONTRACTS_VERSION:
-        from ..ingestion.change_detector import has_working_tree_changes
-
-        aliases = list(repo_paths)
-        probes = await asyncio.gather(
-            *[
-                asyncio.gather(
-                    asyncio.to_thread(get_head_commit, repo_paths[a]),
-                    asyncio.to_thread(has_working_tree_changes, repo_paths[a]),
-                )
-                for a in aliases
-            ]
-        )
-        for alias, (head, dirty) in zip(aliases, probes, strict=True):
-            heads[alias] = head
-            stamped = prior.repo_provenance.get(alias, {})
-            # Four independent ways to fail, all resolving toward re-extraction:
-            # upstream said it changed; HEAD is unreadable (not a git checkout,
-            # or git failed) so nothing can be proven; HEAD moved; or the config
-            # that shaped the persisted rows is not the config in force now.
-            # The dirty check is the one HEAD cannot cover: extraction reads the
-            # working tree, so uncommitted edits change the answer without
-            # moving the commit that the stamp names.
-            if (
-                alias not in changed
-                and head is not None
-                and head == stamped.get("head")
-                and stamped.get("config_fp") == config_fp
-                and not dirty
-            ):
-                reusable.add(alias)
+    reusable = await _reusable_repos(
+        repo_paths, previous_store, prior, set(changed_repos), config_fp, heads
+    )
     to_extract = {alias: path for alias, path in repo_paths.items() if alias not in reusable}
-    # Only the repos being extracted need a stamp, and only they were probed
-    # above when there was no previous store to compare against.
-    for alias in to_extract:
-        if alias not in heads:
-            heads[alias] = await asyncio.to_thread(get_head_commit, repo_paths[alias])
+    await _probe_missing_heads(to_extract, heads)
 
-    # Per-repo extraction. Returns the contracts plus the counters the
-    # extractors filled in, which are the denominator half of any coverage
-    # figure and so must survive past this function.
-    async def _extract_one_repo(
-        alias: str, repo_path: Path
-    ) -> tuple[list[Contract], dict[str, int]]:
-        contracts: list[Contract] = []
-
-        if boundaries_by_repo is not None:
-            boundaries = boundaries_by_repo.get(alias, [])
-        else:
-            boundaries = await asyncio.to_thread(detect_service_boundaries, repo_path)
-
-        # Run enabled extractors
-        extractors = []
-        if contract_config.detect_http:
-            extractors.append(HttpExtractor())
-            extractors.append(OpenApiExtractor())
-        if contract_config.detect_grpc:
-            extractors.append(GrpcExtractor())
-        if contract_config.detect_socket:
-            extractors.append(SocketExtractor())
-        if contract_config.detect_topics:
-            extractors.append(TopicExtractor())
-        if contract_config.detect_data:
-            extractors.append(DataExtractor())
-        code_rows = code_surface.for_repo(alias)
-        if not extractors and not code_rows:
-            return contracts, dict(code_surface.stats.get(alias, {}))
-
-        # One walk per repo, shared by every extractor. Each used to walk and
-        # re-read the tree itself, so a file claimed by N extractors was read N
-        # times; the union of their extensions is walked once here instead.
-        wanted: frozenset[str] = frozenset()
-        for extractor in extractors:
-            wanted |= extractor.source_extensions()
-        files = await asyncio.to_thread(
-            lambda: list(iter_source_files(repo_path, wanted, exclude))
-        )
-
-        # The symbols ingestion persisted for this repo. None means the regex
-        # dialects are the only path, which is also the answer for a repo that
-        # has never been indexed. The HTTP extractor reads it during
-        # extraction; every contract type reads it again in bind_symbol_ids.
-        repo_index = workspace_index.get(alias) if workspace_index is not None else None
-
-        # Counters the HTTP extractor fills in as it goes. The unresolved-path
-        # count is the honest half of any recall figure: it says how many real
-        # client calls were located but could not be resolved to an endpoint.
-        stats: dict[str, int] = {}
-        # Recorded per repo so a walk regression is visible in the artifact and
-        # assertable in a test, not just in a wall-clock number that varies by
-        # machine. One walk per repo is the invariant this counts.
-        stats["files_walked"] = len(files)
-        stats["walks"] = 1
-
-        for extractor in extractors:
-            if isinstance(extractor, HttpExtractor):
-                kwargs = {"repo_index": repo_index, "stats": stats}
-            elif isinstance(extractor, OpenApiExtractor):
-                kwargs = {"stats": stats}
-            else:
-                kwargs = {}
-            found = await asyncio.to_thread(
-                lambda e=extractor, kw=kwargs: e.extract(
-                    repo_path, alias, exclude, files, **kw
-                )
-            )
-            for c in found:
-                c.service = assign_service(c.file_path, boundaries)
-                c.meta.setdefault(EXTRACTION_LAYER_KEY, LAYER_REGEX)
-            contracts.extend(found)
-
-        # Before binding, so a code provider's pre-set symbol id flows into
-        # attach_signature_schemas and its parameter list becomes the schema.
-        for c in code_rows:
-            c.service = assign_service(c.file_path, boundaries)
-        contracts.extend(code_rows)
-        stats.update(code_surface.stats.get(alias, {}))
-
-        # The OpenAPI document and a framework route describe one provider.
-        # Keep the code-backed identity and enrich it with the spec's wire shape;
-        # unmatched spec operations remain first-class providers.
-        contracts = merge_openapi_providers(contracts, stats)
-
-        stats.update(bind_symbol_ids(contracts, repo_index))
-        stats.update(attach_signature_schemas(contracts, repo_index))
-
-        unresolved = stats.get("http_consumer_unresolved", 0)
-        if unresolved:
-            _log.info(
-                "%s: %d HTTP client call(s) located but their path could not be "
-                "resolved statically; counted, not extracted",
-                alias,
-                unresolved,
-            )
-        return contracts, stats
-
+    extraction = _RepoExtraction(
+        contract_config=contract_config,
+        exclude=exclude,
+        code_surface=code_surface,
+        message_types=message_types,
+        boundaries_by_repo=boundaries_by_repo,
+        workspace_index=workspace_index,
+    )
     results = await asyncio.gather(
-        *[_extract_one_repo(alias, path) for alias, path in to_extract.items()]
+        *[_extract_one_repo(extraction, alias, path) for alias, path in to_extract.items()]
     )
     fresh = dict(zip(to_extract, results, strict=True))
 
-    # Assemble the merged set by walking the CURRENT repo set. A repo that left
-    # the workspace, or lost its index, is simply never visited here — that is
-    # the deletion, and it cannot be forgotten because there is no separate
-    # prune step to forget.
-    all_contracts: list[Contract] = []
-    extraction_stats: dict[str, dict[str, int]] = {}
-    provenance: dict[str, dict[str, str]] = {}
     now_iso = datetime.now(UTC).isoformat()
-    for alias in repo_paths:
-        if alias in fresh:
-            repo_contracts, repo_stats = fresh[alias]
-            head = heads[alias]
-            provenance[alias] = {
-                "head": head or "",
-                "extracted_at": now_iso,
-                "config_fp": config_fp,
-            }
-        else:
-            # Carried forward as one unit: rows, counters and the stamp saying
-            # which commit they describe. Splitting these is what would let the
-            # coverage ratio mix a numerator and a denominator from different
-            # commits, so they are only ever read together.
-            repo_contracts = prior.rows_for_repo(alias)
-            repo_stats = prior.extraction_stats.get(alias, {})
-            provenance[alias] = dict(prior.repo_provenance.get(alias, {}))
-        all_contracts.extend(repo_contracts)
-        if repo_stats:
-            extraction_stats[alias] = repo_stats
+    all_contracts, extraction_stats, provenance = _merge_repo_results(
+        repo_paths, fresh, prior, heads, config_fp, now_iso
+    )
 
     # Resolve each consumer's target service / third-party host, then match.
     annotate_consumer_targets(all_contracts, contract_config.service_bases)
@@ -797,11 +624,9 @@ async def run_contract_extraction(
     )
 
     out_path = save_contract_store(store, workspace_root)
-    # files_walked is summed over the repos extracted THIS RUN, not over
-    # extraction_stats — that dict also holds the counters carried forward for
-    # skipped repos, so summing it would report the artifact's lifetime total
-    # under a name that reads as work just done, and an incremental run would
-    # look exactly like a full rescan.
+    # files_walked sums the repos extracted THIS RUN: extraction_stats also
+    # holds the counters carried forward for skipped repos, so summing it would
+    # make an incremental run look exactly like a full rescan.
     _log.info(
         "Contract extraction complete: %d contracts, %d links, "
         "%d repo(s) extracted, %d reused, %d file(s) walked this run → %s",
@@ -814,3 +639,254 @@ async def run_contract_extraction(
     )
 
     return store
+
+
+def _indexed_repo_paths(ws_config: WorkspaceConfig, workspace_root: Path) -> dict[str, Path]:
+    """Resolved paths of the workspace repos that have a ``.repowise/`` index."""
+    repo_paths: dict[str, Path] = {}
+    for entry in ws_config.repos:
+        resolved = (workspace_root / entry.path).resolve()
+        if resolved.is_dir() and (resolved / ".repowise").is_dir():
+            repo_paths[entry.alias] = resolved
+    return repo_paths
+
+
+def _extraction_config_fingerprint(
+    contract_config: Any, code_surface: CodeSurface, message_types: MessageTypeIndex
+) -> str:
+    """Fingerprint of everything that decides what extraction looks for.
+
+    The contract settings, plus the published-package and message-type sets:
+    both depend on *other* repos, so a change there moves no HEAD here.
+    """
+    return hashlib.sha256(
+        json.dumps(
+            [contract_config.to_dict(), sorted(code_surface.members), sorted(message_types.fqns)],
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:16]
+
+
+async def _reusable_repos(
+    repo_paths: dict[str, Path],
+    previous_store: ContractStore | None,
+    prior: ContractStore,
+    changed: set[str],
+    config_fp: str,
+    heads: dict[str, str | None],
+) -> set[str]:
+    """Aliases whose persisted rows can be carried forward; records each probed HEAD.
+
+    A store older than :data:`CONTRACTS_VERSION` holds rows without identity,
+    so nothing is reused and every repo is extracted once.
+    """
+    if previous_store is None or prior.version < CONTRACTS_VERSION:
+        return set()
+    from ..ingestion.change_detector import has_working_tree_changes
+    from .update import get_head_commit
+
+    aliases = list(repo_paths)
+    probes = await asyncio.gather(
+        *[
+            asyncio.gather(
+                asyncio.to_thread(get_head_commit, repo_paths[a]),
+                asyncio.to_thread(has_working_tree_changes, repo_paths[a]),
+            )
+            for a in aliases
+        ]
+    )
+    reusable: set[str] = set()
+    for alias, (head, dirty) in zip(aliases, probes, strict=True):
+        heads[alias] = head
+        stamped = prior.repo_provenance.get(alias, {})
+        # Upstream said it changed, HEAD is unreadable or moved, the config
+        # differs, or the tree is dirty (which HEAD cannot show): re-extract.
+        if (
+            alias not in changed
+            and head is not None
+            and head == stamped.get("head")
+            and stamped.get("config_fp") == config_fp
+            and not dirty
+        ):
+            reusable.add(alias)
+    return reusable
+
+
+async def _probe_missing_heads(to_extract: dict[str, Path], heads: dict[str, str | None]) -> None:
+    """Stamp HEAD for each repo being extracted that the reuse probe did not reach."""
+    from .update import get_head_commit
+
+    for alias in to_extract:
+        if alias not in heads:
+            heads[alias] = await asyncio.to_thread(get_head_commit, to_extract[alias])
+
+
+@dataclass(frozen=True)
+class _RepoExtraction:
+    """Workspace-wide inputs every per-repo extraction reads."""
+
+    contract_config: Any
+    exclude: Any
+    code_surface: CodeSurface
+    message_types: MessageTypeIndex
+    boundaries_by_repo: dict[str, list[ServiceBoundary]] | None
+    workspace_index: WorkspaceIndex | None
+
+
+def _enabled_extractors(contract_config: Any) -> list[Any]:
+    """The extractors the contract config turns on, in run order."""
+    from .extractors import (
+        DataExtractor,
+        GrpcExtractor,
+        HttpExtractor,
+        MassTransitExtractor,
+        OpenApiExtractor,
+        SocketExtractor,
+        TopicExtractor,
+    )
+
+    extractors: list[Any] = []
+    if contract_config.detect_http:
+        extractors.append(HttpExtractor())
+        extractors.append(OpenApiExtractor())
+    if contract_config.detect_grpc:
+        extractors.append(GrpcExtractor())
+    if contract_config.detect_socket:
+        extractors.append(SocketExtractor())
+    if contract_config.detect_topics:
+        extractors.append(TopicExtractor())
+        extractors.append(MassTransitExtractor(contract_config.contract_project_pattern))
+    if contract_config.detect_data:
+        extractors.append(DataExtractor())
+    return extractors
+
+
+def _extractor_kwargs(
+    extractor: Any, repo_index: RepoIndex | None, stats: dict[str, int], message_types: Any
+) -> dict[str, Any]:
+    """Extra keyword arguments an extractor's ``extract`` takes."""
+    from .extractors import HttpExtractor, MassTransitExtractor, OpenApiExtractor
+
+    if isinstance(extractor, HttpExtractor):
+        return {"repo_index": repo_index, "stats": stats}
+    if isinstance(extractor, OpenApiExtractor):
+        return {"stats": stats}
+    if isinstance(extractor, MassTransitExtractor):
+        return {"message_types": message_types, "stats": stats}
+    return {}
+
+
+async def _extract_one_repo(
+    extraction: _RepoExtraction, alias: str, repo_path: Path
+) -> tuple[list[Contract], dict[str, int]]:
+    """One repo's contracts plus the counters its extractors filled in.
+
+    The counters are the denominator half of any coverage figure, so they
+    travel with the contracts.
+    """
+    from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
+    from .extractors.base import iter_source_files
+    from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+
+    code_surface = extraction.code_surface
+    contracts: list[Contract] = []
+
+    if extraction.boundaries_by_repo is not None:
+        boundaries = extraction.boundaries_by_repo.get(alias, [])
+    else:
+        boundaries = await asyncio.to_thread(detect_service_boundaries, repo_path)
+
+    extractors = _enabled_extractors(extraction.contract_config)
+    code_rows = code_surface.for_repo(alias)
+    if not extractors and not code_rows:
+        return contracts, dict(code_surface.stats.get(alias, {}))
+
+    # One walk per repo over the union of the extractors' extensions, shared by all.
+    wanted: frozenset[str] = frozenset()
+    for extractor in extractors:
+        wanted |= extractor.source_extensions()
+    exclude = extraction.exclude
+    files = await asyncio.to_thread(lambda: list(iter_source_files(repo_path, wanted, exclude)))
+
+    # The symbols ingestion persisted for this repo; None leaves the regex
+    # dialects as the only path. Read again by bind_symbol_ids below.
+    workspace_index = extraction.workspace_index
+    repo_index = workspace_index.get(alias) if workspace_index is not None else None
+
+    # The HTTP extractor counts located-but-unresolved client calls here, the
+    # honest half of any recall figure. files_walked / walks keep the
+    # one-walk-per-repo invariant assertable.
+    stats: dict[str, int] = {}
+    stats["files_walked"] = len(files)
+    stats["walks"] = 1
+
+    for extractor in extractors:
+        kwargs = _extractor_kwargs(extractor, repo_index, stats, extraction.message_types)
+        found = await asyncio.to_thread(
+            lambda e=extractor, kw=kwargs: e.extract(repo_path, alias, exclude, files, **kw)
+        )
+        for c in found:
+            c.service = assign_service(c.file_path, boundaries)
+            c.meta.setdefault(EXTRACTION_LAYER_KEY, LAYER_REGEX)
+        contracts.extend(found)
+
+    # Before binding, so a code provider's pre-set symbol id flows into
+    # attach_signature_schemas and its parameter list becomes the schema.
+    for c in code_rows:
+        c.service = assign_service(c.file_path, boundaries)
+    contracts.extend(code_rows)
+    stats.update(code_surface.stats.get(alias, {}))
+
+    # The OpenAPI document and a framework route describe one provider: keep the
+    # code-backed identity, enriched with the spec's wire shape.
+    contracts = merge_openapi_providers(contracts, stats)
+
+    stats.update(bind_symbol_ids(contracts, repo_index))
+    stats.update(attach_signature_schemas(contracts, repo_index))
+
+    unresolved = stats.get("http_consumer_unresolved", 0)
+    if unresolved:
+        _log.info(
+            "%s: %d HTTP client call(s) located but their path could not be "
+            "resolved statically; counted, not extracted",
+            alias,
+            unresolved,
+        )
+    return contracts, stats
+
+
+def _merge_repo_results(
+    repo_paths: dict[str, Path],
+    fresh: dict[str, tuple[list[Contract], dict[str, int]]],
+    prior: ContractStore,
+    heads: dict[str, str | None],
+    config_fp: str,
+    now_iso: str,
+) -> tuple[list[Contract], dict[str, dict[str, int]], dict[str, dict[str, str]]]:
+    """Merge fresh and carried-forward repos into ``(contracts, stats, provenance)``.
+
+    Walks the CURRENT repo set, so a repo that left the workspace or lost its
+    index is never visited: that is the deletion, with no prune step to forget.
+    """
+    all_contracts: list[Contract] = []
+    extraction_stats: dict[str, dict[str, int]] = {}
+    provenance: dict[str, dict[str, str]] = {}
+    for alias in repo_paths:
+        if alias in fresh:
+            repo_contracts, repo_stats = fresh[alias]
+            head = heads[alias]
+            provenance[alias] = {
+                "head": head or "",
+                "extracted_at": now_iso,
+                "config_fp": config_fp,
+            }
+        else:
+            # Rows, counters and stamp move as one unit, so the coverage ratio
+            # never mixes a numerator and denominator from different commits.
+            repo_contracts = prior.rows_for_repo(alias)
+            repo_stats = prior.extraction_stats.get(alias, {})
+            provenance[alias] = dict(prior.repo_provenance.get(alias, {}))
+        all_contracts.extend(repo_contracts)
+        if repo_stats:
+            extraction_stats[alias] = repo_stats
+    return all_contracts, extraction_stats, provenance

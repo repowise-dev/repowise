@@ -22,6 +22,47 @@ class VersionResponse(BaseModel):
     reindex_recommended: bool = False
     reindex_command: str | None = None
 
+    #: Highlights of the running release, from the bundled changelog. Drives the
+    #: post-upgrade "What's new" and the "New" marks in the nav.
+    highlights: list[ChangelogHighlightModel] = []
+    #: Highlight titles of ``latest_version`` when it is newer, read from the
+    #: changelog on GitHub (cached a day). Empty when offline or unknown.
+    latest_highlights: list[str] = []
+
+
+class ChangelogHighlightModel(BaseModel):
+    id: str
+    title: str
+    blurb: str
+    #: An app route; ``:id`` stands for the current repository.
+    href: str | None = None
+
+
+class ReleaseTypeCountsModel(BaseModel):
+    fixes: int = 0
+    features: int = 0
+    perf: int = 0
+    refactors: int = 0
+    docs: int = 0
+
+
+class ReleaseStatsModel(BaseModel):
+    """A release's "By the numbers", from ``scripts/release_stats.py``."""
+
+    since: str
+    days: int
+    prs: int
+    contributors: int
+    #: ``None`` when GitHub could not be asked who was new.
+    first_time_contributors: int | None = None
+    files_changed: int
+    lines_added: int
+    lines_removed: int
+    types: ReleaseTypeCountsModel
+    test_files_touched: int
+    test_files_new: int
+    issues_closed: int
+
 
 class ChangelogSectionModel(BaseModel):
     name: str
@@ -29,8 +70,12 @@ class ChangelogSectionModel(BaseModel):
 
 
 class ChangelogEntryModel(BaseModel):
+    #: ``unreleased`` for the next release's notes in a development build.
     version: str
     label: str | None = None
+    summary: str = ""
+    highlights: list[ChangelogHighlightModel] = []
+    stats: ReleaseStatsModel | None = None
     sections: list[ChangelogSectionModel]
 
 

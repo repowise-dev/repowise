@@ -7,11 +7,15 @@ sites) may reach it along some path.
 
 Per block ``b`` with predecessors ``pred(b)``::
 
-    GEN[b]  = the last definition of each variable written in b
-    KILL[b] = every definition of any variable b writes, except GEN[b]
+    GEN[b]  = each variable's definitions in b from its last certain one on
+    KILL[b] = every definition of any variable b certainly writes, except GEN[b]
     IN[b]   = union over p in pred(b) of OUT[p]
               (IN[p] union every def in p, on a raise edge p -> b)
     OUT[b]  = GEN[b] union (IN[b] minus KILL[b])
+
+A may-def (:attr:`defuse.Definition.may`, a write inside a ``switch`` arm the
+CFG keeps as one statement) adds itself to GEN and kills nothing: the value
+from before it is still the one a read sees on the paths that skip the arm.
 
 Definition sets are integer sets keyed by :attr:`defuse.Definition.index`, so
 the lattice is finite and the worklist always converges in a bounded number of
@@ -78,13 +82,21 @@ def _block_facts(
     for block in cfg.blocks:
         bdu = fdu.block(block.id)
         block_defs = bdu.defs if bdu is not None else []
-        # GEN: the last definition of each variable written in this block.
-        last_per_var: dict[str, int] = {}
+        # GEN: each variable's definitions from its last certain one on. A
+        # may-def (``Definition.may``) adds itself and hides nothing, so a
+        # block kills a variable's other definitions only when it holds a
+        # certain write of it.
+        open_per_var: dict[str, list[int]] = {}
+        certain: set[str] = set()
         for d in block_defs:
-            last_per_var[d.var] = d.index
-        gen_b = frozenset(last_per_var.values())
+            if d.may:
+                open_per_var.setdefault(d.var, []).append(d.index)
+            else:
+                open_per_var[d.var] = [d.index]
+                certain.add(d.var)
+        gen_b = frozenset(i for indices in open_per_var.values() for i in indices)
         killed: set[int] = set()
-        for var in last_per_var:
+        for var in certain:
             killed |= defs_by_var.get(var, set())
         gen[block.id] = gen_b
         every[block.id] = frozenset(d.index for d in block_defs)
@@ -185,13 +197,19 @@ def _observe(local: list[Definition], entering: Iterable[int], line: int) -> lis
     """A read at *line* observes the latest same-block definitions (*local*)
     strictly before it or, when there is none, every definition *entering* the
     block; plus any same-block definition at *line* itself, since lines alone
-    cannot order a write and a read sharing one. Over-marking is the safe side
-    for every consumer."""
-    earlier = [d for d in local if d.line < line]
-    if earlier:
-        latest = max(d.line for d in earlier)
-        seen = [d.index for d in earlier if d.line == latest]
-    else:
-        seen = list(entering)
+    cannot order a write and a read sharing one. A may-def
+    (``Definition.may``) is observed and looked past: the read also sees what
+    came before it, back to the latest line holding a certain write. Over-marking
+    is the safe side for every consumer."""
+    seen: list[int] = []
+    settled_at: int | None = None
+    for d in sorted((d for d in local if d.line < line), key=lambda d: -d.line):
+        if settled_at is not None and d.line != settled_at:
+            break
+        seen.append(d.index)
+        if not d.may:
+            settled_at = d.line
+    if settled_at is None:
+        seen.extend(entering)
     seen.extend(d.index for d in local if d.line == line)
     return seen

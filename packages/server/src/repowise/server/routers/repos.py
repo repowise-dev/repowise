@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -23,7 +24,8 @@ from repowise.core.persistence.models import (
     Page,
     Repository,
 )
-from repowise.server.deps import get_db_session, get_fts, verify_api_key
+from repowise.server.auth import get_authorizer
+from repowise.server.deps import get_db_session, get_fts, request_principal, verify_api_key
 from repowise.server.job_executor import execute_job
 from repowise.server.routers._repo_generate import (
     GenerateRequestBody,
@@ -207,12 +209,15 @@ async def list_repos(
     # app.state, not on the Repository row.
     ws_config = getattr(app_state, "workspace_config", None)
     ws_root = getattr(app_state, "workspace_root", None)
-    if ws_config is None or ws_root is None:
-        return responses
+    if ws_config is not None and ws_root is not None:
+        ws_root_path = Path(ws_root)
+        matched = attach_workspace_metadata(responses, ws_config, ws_root_path, indexed_repo_ids)
+        responses.extend(unregistered_workspace_rows(ws_config, ws_root_path, matched))
 
-    ws_root_path = Path(ws_root)
-    matched = attach_workspace_metadata(responses, ws_config, ws_root_path, indexed_repo_ids)
-    responses.extend(unregistered_workspace_rows(ws_config, ws_root_path, matched))
+    principal = request_principal(request)
+    if principal is not None and principal.repo_scope is not None:
+        authorizer = get_authorizer()
+        responses = [r for r in responses if authorizer.can_access_repo(principal, (r.id, r.name))]
     return responses
 
 
@@ -416,6 +421,7 @@ async def get_repo_stats(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.kind == "unused_export",
             DeadCodeFinding.status == "open",
+            ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
         ),
         0,
     )

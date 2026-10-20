@@ -1,9 +1,10 @@
 """The gate that decides when `repowise update` rescans security findings
 in full (#3072), and the full rescan itself.
 
-Mirrors ``test_health_rescore_gate.py``'s ``TestHealthAnalyzerChanged``: a
-scanner version bump is the only trigger here, there is no time cadence,
-since security findings do not decay the way health scores do.
+Like ``test_health_rescore_gate.py``'s ``TestHealthAnalyzerChanged``, except
+that a missing stamp counts as a change. A scanner version bump is the only
+trigger here, there is no time cadence, since security findings do not decay
+the way health scores do.
 """
 
 from __future__ import annotations
@@ -21,9 +22,10 @@ from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 
 
 class TestSecurityScannerChanged:
-    def test_absent_stamp_is_not_a_change(self):
-        """A legacy state file must not read as drift (mirrors health's rule)."""
-        assert security_scanner_changed({}) is False
+    def test_absent_stamp_is_a_change(self):
+        """Unlike health's rule: the stamp postdates 0.55.0, so an unstamped
+        store was written by an older scanner, and only the rescan stamps it."""
+        assert security_scanner_changed({}) is True
 
     def test_matching_stamp_is_not_a_change(self):
         assert (

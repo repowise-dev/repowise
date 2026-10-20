@@ -78,6 +78,8 @@ _FLAT_BRANCH_KINDS = frozenset(
     {
         "if_clause",
         "guard",
+        # Swift ``for x in xs where c`` / ``catch E where c``.
+        "where_clause",
         "if_modifier",
         "unless_modifier",
         "while_modifier",
@@ -134,14 +136,33 @@ def _unparen(node: Node | None) -> Node | None:
     return node
 
 
+def _ternary_else_arm(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """The else-arm of a ternary: its ``alternative`` where the grammar names
+    it, else its last named child.
+
+    A positional grammar (``ternary_arms_positional``) spells the arms as the
+    node's first and last named children instead of ``consequence`` /
+    ``alternative`` fields — Python's ``X if C else Y`` orders them
+    ``X``, ``C``, ``Y``. Locating the else-arm by position lets a chain arm be
+    recognised as flat for those languages too.
+    """
+    arm = node.child_by_field_name("alternative")
+    if arm is not None:
+        return arm
+    if lmap.ternary_arms_positional and node.named_children:
+        return node.named_children[-1]
+    return None
+
+
 def _is_flat_ternary(node: Node, lmap: LanguageNodeMap, in_markup: bool) -> bool:
     """A ternary that chooses rather than nests (see ``flat_ternary_kinds``).
 
     That is one rendered inside JSX, one with a JSX branch, or an arm of a
-    chain (the ``alternative`` of a ternary of its kind). A ternary in another's
-    ``consequence`` still nests: that is a decision inside a decision. Outside
-    markup a branch must itself be JSX, so ``cond ? c2 && <A/> : x`` nests.
-    Like an ``else if``, a flat ternary costs a flat +1 cognitive.
+    chain (the else-arm, per ``_ternary_else_arm``, of a ternary of its kind).
+    A ternary in another's ``consequence`` still nests: that is a decision
+    inside a decision. Outside markup a branch must itself be JSX, so
+    ``cond ? c2 && <A/> : x`` nests. Like an ``else if``, a flat ternary costs
+    a flat +1 cognitive.
     """
     if node.type not in lmap.flat_ternary_kinds:
         return False
@@ -151,7 +172,7 @@ def _is_flat_ternary(node: Node, lmap: LanguageNodeMap, in_markup: bool) -> bool
     while parent is not None and parent.type == "parenthesized_expression":
         parent = parent.parent
     if parent is not None and parent.type == node.type:
-        alternative = _unparen(parent.child_by_field_name("alternative"))
+        alternative = _unparen(_ternary_else_arm(parent, lmap))
         if alternative is not None and alternative.id == node.id:
             return True
     return any(
@@ -160,16 +181,48 @@ def _is_flat_ternary(node: Node, lmap: LanguageNodeMap, in_markup: bool) -> bool
     )
 
 
-def _count_boolean_ops_in_condition(node: Node, lmap: LanguageNodeMap) -> int:
+_AND_TOKENS = (b"&&", b"and")
+_OR_TOKENS = (b"||", b"or")
+# A prefix ``!`` / ``not`` (Swift spells it ``bang``). A postfix one (``a!``)
+# has a sibling before it, and Python's ``is not`` / ``not in`` are unnamed
+# operator nodes: neither negates a condition.
+_NEGATION_TOKENS = frozenset({"!", "not", "bang"})
+
+
+def _operator_kind(node: Node) -> str:
+    """``"and"`` / ``"or"`` for a boolean operator node, else its node type."""
+    for tok in (node, *node.children):
+        if tok.child_count == 0 and tok.text in _AND_TOKENS:
+            return "and"
+        if tok.child_count == 0 and tok.text in _OR_TOKENS:
+            return "or"
+    # Grammars with one node type per operator (Kotlin, Dart) name the kind.
+    return node.type
+
+
+def _is_negation(node: Node) -> bool:
+    if node.type not in _NEGATION_TOKENS or node.prev_sibling is not None:
+        return False
+    return node.parent is not None and node.parent.is_named
+
+
+def _count_boolean_ops_in_condition(
+    node: Node, lmap: LanguageNodeMap
+) -> tuple[int, set[str], bool]:
     """Count ``&&`` / ``||`` / ``and`` / ``or`` operators in a condition.
+
+    Returns ``(count, operator kinds, negated)``. One kind and no negation
+    is a flat chain (``a || b || c``) that reads as a list, not a knot.
 
     Walks the subtree rooted at *node* but does not descend into nested
     function bodies (lambdas / closures used as condition values are
     rare and would skew the count).
     """
-    if node is None:
-        return 0
     count = 0
+    kinds: set[str] = set()
+    negated = False
+    if node is None:
+        return count, kinds, negated
     stack: list[Node] = [node]
     while stack:
         cur = stack.pop()
@@ -180,9 +233,12 @@ def _count_boolean_ops_in_condition(node: Node, lmap: LanguageNodeMap) -> int:
             continue
         if _is_boolean_operator(cur, lmap):
             count += 1
+            kinds.add(_operator_kind(cur))
+        elif _is_negation(cur):
+            negated = True
         for child in cur.children:
             stack.append(child)
-    return count
+    return count, kinds, negated
 
 
 def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
@@ -313,7 +369,7 @@ def _walk_function_body(
 
     ``bumps`` counts how many *direct* children of the function body
     contain nested control flow that reaches a depth of ≥ 2. A function
-    with several heavy independent branches is "bumpy".
+    with several heavy independent branches has repeated nesting.
 
     ``complex_conditions`` is an additive side-channel — collected for
     every branch/loop/case construct encountered. The CCN / cognitive
@@ -406,19 +462,27 @@ def _walk_function_body(
             # (boolean operators are still tallied independently by
             # the regular recursion below).
             op_count = 0
+            op_kinds: set[str] = set()
+            negated = False
             for sub in _condition_subtrees(node):
-                op_count += _count_boolean_ops_in_condition(sub, lmap)
+                sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
+                op_count += sub_count
+                op_kinds |= sub_kinds
+                negated = negated or sub_negated
             if op_count > 0:
                 conditions.append(
                     ConditionComplexity(
                         line=node.start_point[0] + 1,
                         operator_count=op_count,
                         enclosing_construct=_enclosing_construct(node, lmap),
+                        flat_chain=len(op_kinds) == 1 and not negated,
                     )
                 )
         elif node.is_named and node.type in lmap.try_kinds:
-            # TRY opens a nesting level but does not branch on its own.
-            nesting_increment = 1
+            # TRY neither branches nor nests: each catch opens the level for
+            # its own body, and the guarded and finally bodies stay at the
+            # try's depth (Sonar's cognitive complexity spec).
+            pass
         elif node.is_named and node.type in lmap.switch_kinds:
             # Detect flat match: all arms are simple single-expression arms.
             if _is_flat_match(node, lmap):

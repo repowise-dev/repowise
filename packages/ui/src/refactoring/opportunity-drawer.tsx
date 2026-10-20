@@ -30,12 +30,14 @@ import { Layers, Sparkles, Terminal } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { CollapsibleSection } from "../shared/collapsible-section";
-import { formatNumber } from "../lib/format";
+import { disambiguateBasenames, formatNumber } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
 import { CodeBlock } from "./plan-detail";
 import { SourceExcerpt } from "./source-excerpt";
 import { RelatedWork, type RelatedWorkSlotProps } from "../health/related-work";
+import { PreviewBadge } from "../health/preview-badge";
 import { GenerateCodePanel } from "./generate-code-panel";
 import {
   RefactoringModelToggle,
@@ -211,6 +213,10 @@ function DrawerBody({
   );
   const name = detail.file_path.split("/").pop() ?? detail.file_path;
   const others = detail.affected_files.filter((f) => f !== detail.file_path);
+  const otherLabels = React.useMemo(
+    () => disambiguateBasenames(detail.affected_files),
+    [detail.affected_files],
+  );
   // The opportunity resolved but its steps did not load. Everything else in the
   // drawer, triage included, still describes a real opportunity.
   const stepsUnavailable = detail.details_status === "unavailable";
@@ -256,13 +262,21 @@ function DrawerBody({
         <div className="text-xs text-[var(--color-text-secondary)]">
           {meta.label}
           {detail.lead_biomarker ? ` · against ${humanizeBiomarker(detail.lead_biomarker)}` : ""}
+          {detail.preview ? (
+            <span className="ml-2">
+              <PreviewBadge note={detail.preview} />
+            </span>
+          ) : null}
         </div>
         <SheetTitle className="mt-0.5 break-words font-mono text-sm font-semibold text-[var(--color-text-primary)]">
           {name}
         </SheetTitle>
-        <p className="mt-1 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
-          {detail.file_path}
-        </p>
+        <FilePath
+          path={detail.file_path}
+          mode="full"
+          copyable
+          className="mt-1 block text-[var(--color-text-tertiary)]"
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--color-border-default)] px-5 py-2.5 text-xs text-[var(--color-text-secondary)]">
@@ -462,13 +476,13 @@ function DrawerBody({
                     {href ? (
                       <a
                         href={href}
-                        className="break-all font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
+                        className="flex min-w-0 text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
                       >
-                        {f}
+                        <FilePath path={f} mode="distinguishing" labels={otherLabels} />
                       </a>
                     ) : (
-                      <span className="break-all font-mono text-xs text-[var(--color-text-secondary)]">
-                        {f}
+                      <span className="flex min-w-0 text-[var(--color-text-secondary)]">
+                        <FilePath path={f} mode="distinguishing" labels={otherLabels} />
                       </span>
                     )}
                   </li>
@@ -568,6 +582,7 @@ function StepCard({
             Moved by an earlier step
           </span>
         ) : null}
+        <PreviewBadge note={plan?.preview} />
       </div>
 
       <button
@@ -579,17 +594,13 @@ function StepCard({
         {step.target_symbol || meta.label}
       </button>
 
-      <p className="mt-0.5 break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+      <p className="mt-0.5 text-[var(--color-text-tertiary)]">
         {href ? (
           <a href={href} className="underline-offset-2 hover:underline">
-            {step.file_path}
-            {span ? `:${span}` : ""}
+            <FilePath path={step.file_path} line={span || null} mode="full" />
           </a>
         ) : (
-          <>
-            {step.file_path}
-            {span ? `:${span}` : ""}
-          </>
+          <FilePath path={step.file_path} line={span || null} mode="full" />
         )}
       </p>
 
@@ -651,9 +662,6 @@ function StepCode({
   const [open, setOpen] = React.useState(false);
   const stored = plan ? extractHelperDetail(plan) : null;
   const range = stepExcerptRange(step, plan);
-  const extraction = range?.extraction ?? null;
-  const slice = extraction?.span ?? null;
-  const stages = range?.stages ?? [];
   const canRead = Boolean(readSource && range);
   // One read per file however many stage excerpts ask for it.
   const readOnce = React.useMemo(() => {
@@ -677,61 +685,112 @@ function StepCode({
       </button>
       {open ? (
         <div className="mt-2 space-y-3">
-          {stages.length > 0 ? (
-            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
-              Lines{" "}
-              <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
-                {formatSpans(stages.map((st) => st.span))}
-              </span>{" "}
-              become {stages.length} helpers the function calls in order.
-            </p>
-          ) : null}
-          {extraction && slice ? (
-            <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
-              Lines {slice.start} to {slice.end} become{" "}
-              <code className="break-all font-mono text-[var(--color-text-primary)]">
-                {extractMethodSignature(extraction)}
-              </code>
-            </p>
-          ) : null}
-          {stored?.snippet ? (
-            <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />
-          ) : canRead && stages.length > 0 ? (
-            // Each stage on its own: one range from the first stage to the last
-            // would show the lines between them and could cut a later stage.
-            stages.map((st, i) => (
-              <div key={st.span.start} className="space-y-1">
-                <p className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
-                  {`${st.name ?? `Stage ${i + 1}`} · lines ${formatSpans([st.span])}`}
-                </p>
-                <SourceExcerpt
-                  path={step.file_path}
-                  start={st.span.start}
-                  end={st.span.end}
-                  readSource={readOnce!}
-                />
-              </div>
-            ))
-          ) : canRead ? (
-            <SourceExcerpt
-              path={step.file_path}
-              start={range!.start}
-              end={range!.end}
-              readSource={readOnce!}
-            />
-          ) : null}
-          {plan && onGenerateCode ? (
-            <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
-          ) : plan && modelSetting ? (
-            <RefactoringModelToggle {...modelSetting} />
-          ) : plan ? (
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              A diff preview is drafted by a model on request. Code generation is off here.
-            </p>
-          ) : null}
+          <StepSpans range={range} />
+          <StepExcerpt
+            step={step}
+            stored={stored}
+            range={canRead ? range : null}
+            readSource={readOnce}
+          />
+          <StepDiff plan={plan} onGenerateCode={onGenerateCode} modelSetting={modelSetting} />
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** Which lines the step lifts out, and into what. */
+function StepSpans({ range }: { range: ReturnType<typeof stepExcerptRange> }) {
+  const extraction = range?.extraction ?? null;
+  const slice = extraction?.span ?? null;
+  const stages = range?.stages ?? [];
+  return (
+    <>
+      {stages.length > 0 ? (
+        <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+          Lines{" "}
+          <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+            {formatSpans(stages.map((st) => st.span))}
+          </span>{" "}
+          become {stages.length} helpers the function calls in order.
+        </p>
+      ) : null}
+      {extraction && slice ? (
+        <p className="text-[11.5px] text-[var(--color-text-tertiary)]">
+          Lines {slice.start} to {slice.end} become{" "}
+          <code className="break-all font-mono text-[var(--color-text-primary)]">
+            {extractMethodSignature(extraction)}
+          </code>
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The excerpt itself: the stored snippet when the plan carries one, else each
+ * stage read on its own, else the step's one range. `range` is null when the
+ * file cannot be read.
+ */
+function StepExcerpt({
+  step,
+  stored,
+  range,
+  readSource,
+}: {
+  step: OpportunityStep;
+  stored: ReturnType<typeof extractHelperDetail> | null;
+  range: ReturnType<typeof stepExcerptRange>;
+  readSource: ((path: string) => Promise<string>) | undefined;
+}) {
+  if (stored?.snippet) {
+    return <CodeBlock code={stored.snippet} startLine={stored.snippetStartLine} />;
+  }
+  if (!range) return null;
+  if (range.stages.length > 0) {
+    // Each stage on its own: one range from the first stage to the last
+    // would show the lines between them and could cut a later stage.
+    return range.stages.map((st, i) => (
+      <div key={st.span.start} className="space-y-1">
+        <p className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
+          {`${st.name ?? `Stage ${i + 1}`} · lines ${formatSpans([st.span])}`}
+        </p>
+        <SourceExcerpt
+          path={step.file_path}
+          start={st.span.start}
+          end={st.span.end}
+          readSource={readSource!}
+        />
+      </div>
+    ));
+  }
+  return (
+    <SourceExcerpt
+      path={step.file_path}
+      start={range.start}
+      end={range.end}
+      readSource={readSource!}
+    />
+  );
+}
+
+/** The diff preview, the model setting that turns it on, or why it is off. */
+function StepDiff({
+  plan,
+  onGenerateCode,
+  modelSetting,
+}: {
+  plan?: RefactoringPlan | undefined;
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  modelSetting?: RefactoringModelToggleProps | undefined;
+}) {
+  if (!plan) return null;
+  if (onGenerateCode) return <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />;
+  if (modelSetting) return <RefactoringModelToggle {...modelSetting} />;
+  return (
+    <p className="text-xs text-[var(--color-text-tertiary)]">
+      A diff preview is drafted by a model on request. Code generation is off here.
+    </p>
   );
 }
 

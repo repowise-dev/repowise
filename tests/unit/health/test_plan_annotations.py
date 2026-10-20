@@ -247,3 +247,88 @@ def test_a_test_reading_the_split_function_source_is_a_risk(tmp_path: Path) -> N
     assert annotate(plan(), other, ["tests/test_flow.py::test_a"]).risks == ()
     assert annotate(plan(), facts, ["tests/test_plain.py::test_x"]).risks == ()
     assert annotate(plan("split_file"), facts, ["tests/test_flow.py::test_a"]).risks == ()
+
+
+def test_changing_an_exported_symbol_warns_about_outside_callers() -> None:
+    exported = {"svc/orders.py": {"svc/orders.py::Orders::handle": "svc/__init__.py"}}
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(plan(target_symbol="Orders.handle"), facts)
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Orders.handle` is exported from `svc/__init__.py`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+    # Only the exported symbol, never a neighbour in the same file.
+    assert not annotate_any(plan(target_symbol="_helper"), facts)
+    assert not annotate_any(plan(file_path="svc/other.py", target_symbol="handle"), facts)
+
+
+def test_changing_an_exported_jvm_symbol_warns_about_outside_callers() -> None:
+    exported = {
+        "lib/src/main/java/a/Api.java": {
+            "lib/src/main/java/a/Api.java::Api::run": "lib/src/main/java/a/Api.java"
+        }
+    }
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(
+        plan(file_path="lib/src/main/java/a/Api.java", target_symbol="Api.run"), facts
+    )
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Api.run` is exported from `lib/src/main/java/a/Api.java`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+
+
+def test_changing_an_exported_go_method_warns_about_outside_callers() -> None:
+    exported = {"lib/send.go": {"lib/send.go::Client::Send": "lib/send.go"}}
+    notes = annotate(
+        plan(file_path="lib/send.go", target_symbol="Client.Send"),
+        AnnotationFacts(exported=exported),
+    )
+    assert kinds(notes) == ["public_api"]
+    assert notes.risks[0].text.endswith("breaks consumers outside the repo.")
+
+
+def test_changing_an_exported_csharp_method_warns_about_outside_callers() -> None:
+    exported = {
+        "src/Lib/Client.cs": {"src/Lib/Client.cs::Client::Send": "src/Lib/Client.cs"},
+    }
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(plan(file_path="src/Lib/Client.cs", target_symbol="Client.Send"), facts)
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Client.Send` is exported from `src/Lib/Client.cs`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+    # Only the exported member, never a neighbour in the same file.
+    assert not annotate_any(plan(file_path="src/Lib/Client.cs", target_symbol="Retry"), facts)
+
+
+def test_a_moved_exported_method_carries_one_public_api_risk() -> None:
+    exported = {
+        "svc/orders.py": {
+            "svc/orders.py::Order::total": "svc/__init__.py",
+            "svc/orders.py::Order": "svc/__init__.py",
+            "svc/orders.py::Pricing": "svc/__init__.py",
+        }
+    }
+    moved = plan(
+        "move_method",
+        target_symbol="Order.total",
+        plan={"from_class": "Order", "to_class": "Pricing"},
+        blast_radius={"callers": 2},
+    )
+    notes = annotate(moved, AnnotationFacts(exported=exported))
+    assert kinds(notes) == ["public_api"]
+    text = notes.risks[0].text
+    # Callers inside the repo first, then every exported symbol the plan changes.
+    assert text.startswith("`Order.total` has 2 callers")
+    assert "`Order` (from `svc/__init__.py`)" in text and "`Pricing`" in text
+    assert text.endswith("are exported; changing their signatures breaks consumers outside the repo.")

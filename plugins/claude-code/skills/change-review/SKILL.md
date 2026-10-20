@@ -22,10 +22,12 @@ Two complementary risk signals, use both:
   tool; it takes a revspec and diffs server-side, so you never shell out. Lead
   with `directive` and `health_delta` — what the change actually made worse.
   Findings the change wrote sort above pre-existing ones it only touched.
-  Then `risk_percentile` (this change ranked against sampled recent commits),
-  summarized by `review_priority` and `classification`. The raw 0-10 `score`
+  Then `risk_percentile` (this change ranked against sampled recent commits by
+  diff size and spread, not a bug predictor), stated in one line by
+  `diff_shape`; `include=["scales"]` adds its `review_priority` tercile and
+  `classification` label. The raw 0-10 `score`
   ranks 0.99 against lines added, so it sits behind `include=["diagnostics"]`
-  rather than on the wire; `diff_shape` states the ranking in one line.
+  rather than on the wire.
   Omit `revspec` to score uncommitted work. This is the pre-merge gate: "how risky is this
   change overall?" The `repowise risk <revspec>` CLI is the identical scorer for
   when you are already in a terminal.

@@ -119,6 +119,7 @@ class HelperShape:
     out_written_before: bool = False
     out_rebound: bool = False
     typed_host: bool = False
+    throws_clause: str | None = None
 
 
 class Rendered(NamedTuple):
@@ -334,7 +335,8 @@ def _java_sig(s: HelperShape) -> str:
     out = _single_out(s)
     ret = _type(out, "java") if out else "void"
     static = "" if _method(s) else "static "
-    return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}) {{"
+    throws = f" {s.throws_clause}" if s.throws_clause else ""
+    return f"private {static}{ret} {_name(s)}({_type_first(s, 'java')}){throws} {{"
 
 
 def _java_call(s: HelperShape) -> str:
@@ -485,9 +487,9 @@ def render_context(
 
 #: What the renderer adds to a stored plan, served on plan detail only.
 _DETAIL_SYMBOL_KEYS = ("params", "returns", "signature_text", "return_text", "notes")
-#: Plan keys on detail only: Extract Method's call and staged plan (stages,
-#: parameter object, residual), Extract Helper's calls to an existing function.
-_DETAIL_PLAN_KEYS = ("call_site", "stages", "parameter_object", "orchestrator", "reuse")
+#: Plan keys on detail only: Extract Method's call, span anchors and staged plan
+#: (stages, parameter object, residual), Extract Helper's calls to an existing function.
+_DETAIL_PLAN_KEYS = ("call_site", "anchors", "stages", "parameter_object", "orchestrator", "reuse")
 
 
 def list_plan(plan: dict) -> dict:

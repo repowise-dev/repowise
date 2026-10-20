@@ -37,6 +37,7 @@ export function NextActionsPanel({ repoId, data }: { repoId: string; data: Actio
   return (
     <NextActions
       data={view ?? data}
+      defaultOpen={false}
       loadPrompt={loadPrompt}
       LinkComponent={Link}
       hrefFor={(action) => actionHref(action, base)}

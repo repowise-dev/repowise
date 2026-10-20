@@ -37,6 +37,7 @@ def test_the_levels_add_up_and_scope_reasons_leave_in_scope() -> None:
         "due": 2,
         "shown": 2,
         "excluded": {"test": 4, "below_min_worth": 1, "not_judged": 1},
+        "gated": 0,
     }
     excluded = {"test": 4, "below_min_worth": 1, "not_judged": 1, "tooling": 0}
     assert counts_of(5, 2, excluded, 2) == counts
@@ -118,3 +119,18 @@ def test_unaudited_steps_stay_in_the_plan_not_the_item() -> None:
     assert ("steps held back", "2 (move or extract-class, not yet audited; in the full plan)") in {
         (f.label, f.value) for f in item.facts
     }
+
+
+def test_a_gated_unit_counts_once_in_inventory_and_gated() -> None:
+    groups = [(None, "now", 2), ("test", None, 4)]
+    plain = queue_counts(groups, shown=2)
+    held = queue_counts(groups, shown=2, gated=3)
+    assert plain.gated == 0
+    assert held.inventory == plain.inventory + 3 and held.gated == 3
+    # No level below the inventory sees a gated unit.
+    assert (held.in_scope, held.eligible, held.due, held.excluded) == (
+        plain.in_scope,
+        plain.eligible,
+        plain.due,
+        plain.excluded,
+    )

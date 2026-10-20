@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.actions import (
@@ -36,6 +36,7 @@ from repowise.core.analysis.actions.build import (
     ABSENT,
     AUTHORED_BASES,
     QUARTER,
+    SERIOUS,
     WEEK,
     build_authors,
     build_coverage,
@@ -71,6 +72,7 @@ from ...models import (
     GraphMetric,
     HealthFileMetric,
     HealthFinding,
+    PerformanceOpportunity,
     SecurityFinding,
 )
 from ...read_snapshots import mark_current, read_snapshot, refresh_snapshot, snapshot_key
@@ -204,6 +206,7 @@ async def _recent(
                 GitCommitHealthFinding.line_start,
                 GitCommitHealthFinding.reason,
                 GitCommitHealthFinding.attribution_basis,
+                GitCommitHealthFinding.dimension,
                 GitCommit.subject,
                 GitCommit.committed_at,
             )
@@ -216,23 +219,64 @@ async def _recent(
                 GitCommitHealthFinding.repository_id == repo_id,
                 GitCommit.committed_at >= since,
                 GitCommitHealthFinding.change_kind.in_(("introduced", "worsened")),
-                GitCommitHealthFinding.severity.in_(("critical", "high")),
+                or_(
+                    GitCommitHealthFinding.severity.in_(SERIOUS),
+                    GitCommitHealthFinding.dimension == "performance",
+                ),
                 GitCommitHealthFinding.attribution_basis.in_(AUTHORED_BASES),
             )
         )
     ).all()
     open_findings: list[Any] = []
+    performance: list[Any] = []
     if rows:
         open_findings = (
             await session.execute(
                 select(*_HEALTH_FINDING_COLUMNS).where(
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
+                    HealthFinding.severity.in_(SERIOUS),
                     HealthFinding.file_path.in_({r.file_path for r in rows}),
                 )
             )
         ).all()
-    return build_recent(rows, week=since, open_findings=open_findings, files=files)
+        perf_paths = {r.file_path for r in rows if r.dimension == "performance"}
+        if perf_paths:
+            performance = await _proven_performance(session, repo_id, perf_paths)
+    return build_recent(
+        rows, week=since, open_findings=open_findings, files=files, performance=performance
+    )
+
+
+async def _proven_performance(session: AsyncSession, repo_id: str, paths: set[str]) -> list[Any]:
+    """The queue's open causes in ``paths``, with what ``perf_confident_verdict``
+    reads; none when the store cannot be read, which costs only the
+    performance regressions, not the week's rest."""
+    p = PerformanceOpportunity
+    try:
+        async with session.begin_nested():
+            return (
+                await session.execute(
+                    select(
+                        p.file_path,
+                        p.biomarker_type,
+                        p.status,
+                        p.queue_eligible,
+                        p.execution_context,
+                        p.actionability_state,
+                        p.execution_role,
+                        p.details_json,
+                    ).where(
+                        p.repository_id == repo_id,
+                        p.status == "open",
+                        p.queue_eligible.is_(True),
+                        p.file_path.in_(paths),
+                    )
+                )
+            ).all()
+    except Exception as exc:  # an index from before the performance store
+        logger.warning("actions: performance causes unavailable: %s", exc)
+        return []
 
 
 async def _history(session: AsyncSession, repo_id: str) -> dict[str, Any]:
@@ -506,14 +550,19 @@ async def write_actions_snapshot(session: AsyncSession, repo_id: str) -> bool:
     )
 
 
-async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
-    """Store the Fix first queue, then the actions view that quotes its head.
+async def write_read_snapshots(
+    session: AsyncSession, repo_id: str
+) -> list[tuple[str, Exception]]:
+    """Store the Fix first queue, then the actions view that quotes its head,
+    then the run's component snapshot (:mod:`repowise.core.events`).
 
     For a writer whose stores are final for this run, on the session that
     wrote them or a later one. Best-effort, each in its own savepoint: a view
-    that fails to build is built live on read instead.
+    that fails to build is built live on read instead. Returns
+    ``(snapshot, error)`` per snapshot not written, for a caller whose output
+    the core log level hides.
     """
-    written = True
+    failed: list[tuple[str, Exception]] = []
     for kind, write in (
         ("fix_first", write_fix_first_snapshot),
         (SNAPSHOT_KIND, write_actions_snapshot),
@@ -523,11 +572,29 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
                 await write(session, repo_id)
         except Exception as exc:  # a reader builds live instead
             logger.warning("read snapshot %s not written: %s", kind, exc)
-            written = False
+            failed.append((kind, exc))
+    written = not failed
     # Built after this session's own writes, so its commit may keep them; a
     # kind that failed may have left an older row, which the commit drops.
     if written:
         await mark_current(session)
+    # The run's component snapshot and its events read the same final stores.
+    try:
+        from repowise.core.events.store import record_snapshot
+
+        async with session.begin_nested():
+            await record_snapshot(session, repo_id)
+    except Exception as exc:  # history skips a run; the index is unaffected
+        logger.warning("component snapshot not written: %s", exc)
+        failed.append(("component", exc))
+        try:  # so the next snapshot is a baseline, not a diff across the gap
+            from repowise.core.events.store import record_gap
+
+            async with session.begin_nested():
+                await record_gap(session, repo_id, "failed")
+        except Exception as gap_exc:
+            logger.warning("component snapshot gap not recorded: %s", gap_exc)
+    return failed
 
 
 def _view(ruled: dict[str, Any], states: dict[str, ActionStateRecord], now: datetime) -> dict:

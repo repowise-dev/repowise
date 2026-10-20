@@ -69,11 +69,16 @@ def test_gpt56_family_ladder_drops_minimal_and_max():
     exactly these five. `minimal` is gone from 5.6 entirely, and offering it
     fails only on a real call, which is what this pins.
     """
-    for model in ("gpt-5.6-luna", "gpt-5.6-sol"):
+    for model in ("gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol"):
         assert OpenAIProvider(
             api_key="sk-test",
             model=model,
         ).supported_reasoning_modes() == ("auto", "none", "low", "medium", "high", "xhigh")
+    # gpt-6.1 also drops `none` (verified live on gpt-6.1-sol, 2026-10-15).
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-6.1-sol",
+    ).supported_reasoning_modes() == ("auto", "low", "medium", "high", "xhigh")
 
     # The generic gpt-5 branch is a prefix of gpt-5.6 and must not win.
     assert (
@@ -308,7 +313,7 @@ async def test_generate_sends_correct_messages():
     assert messages[1] == {"role": "user", "content": "user msg"}
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5-mini", "o3", "o1", "o4-mini"])
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-5.6-luna", "gpt-5-mini", "o3", "o1", "o4-mini"])
 async def test_generate_clamps_temperature_for_reasoning_models(model):
     """GPT-5+ / o-series models only accept the default temperature of 1."""
     provider = OpenAIProvider(api_key="sk-test", model=model)
@@ -443,7 +448,7 @@ async def test_generate_rejects_minimal_for_non_reasoning_model():
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-5.1", "gpt-5-pro", "gpt-5.6-luna", "gpt-5.6-sol"],
+    ["gpt-5.1", "gpt-5-pro", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-luna", "gpt-6.1-sol"],
 )
 async def test_generate_rejects_minimal_for_known_unsupported_reasoning_models(model):
     provider = OpenAIProvider(api_key="sk-test", model=model)
@@ -488,10 +493,12 @@ class _EmptyChatStream:
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "openai/gpt-5.6-sol-2026-08-01",
+        "gpt-6-luna",
+        "gpt-6-sol",
     ],
 )
 async def test_stream_chat_disables_gpt_5_6_reasoning_with_function_tools(model):
-    """Use the Chat Completions-compatible setting across the GPT-5.6 family."""
+    """Use the Chat Completions-compatible setting across the GPT-5.6 and GPT-6 families."""
     provider = OpenAIProvider(api_key="sk-test", model=model)
     captured_kwargs: list[dict] = []
 
@@ -585,3 +592,22 @@ async def test_api_status_error():
         provider._client = mock_client.return_value
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")
+
+
+async def test_stream_chat_asks_the_hosted_api_for_a_usage_chunk(monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    captured: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured.append(kwargs)
+        return _EmptyChatStream()
+
+    for base_url in (None, "http://127.0.0.1:8000/v1"):
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6", base_url=base_url)
+        provider._client = MagicMock()
+        provider._client.chat.completions.create = fake_create
+        [e async for e in provider.stream_chat(messages=[], tools=[], system_prompt="s")]
+
+    assert captured[0]["stream_options"] == {"include_usage": True}
+    # A compatible server may reject the field, so it is not asked.
+    assert "stream_options" not in captured[1]

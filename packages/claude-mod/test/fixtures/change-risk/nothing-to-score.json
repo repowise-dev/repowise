@@ -4,7 +4,7 @@
   "warning": "No counted file changes in 'HEAD' (check the revspec, extensions, or exclusion filters).",
   "scored_repo": {
     "root": "C:\\work\\requests",
-    "head": "3bb56ba566ce783ebdc4e61929522fd1648c2527"
+    "head": "3bb56ba566ce"
   },
   "_meta": {
     "contract_version": 2,

@@ -34,7 +34,7 @@ source file references it, which is real evidence and a much cruder one. A test
 importing a module pulls in every symbol the module defines while the test body
 may touch one function.
 
-Measured against a real ``coverage run --contexts=test`` on this repository,
+Measured against real per-test coverage on this repository,
 over the slice where per-test attribution is complete and both sides see the
 same 37 test files (159 production files provably executed):
 
@@ -148,13 +148,12 @@ over data already in the database.
 from __future__ import annotations
 
 import json
-from collections import OrderedDict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeAlias
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.execution_graph import (
@@ -163,7 +162,8 @@ from repowise.core.analysis.execution_graph import (
     file_of_symbol,
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
+from repowise.core.persistence.index_cache import IndexStampCache
+from repowise.core.persistence.models import GraphNode
 from repowise.core.test_paths import paired_test_names
 
 from .dead_code.file_reachability import BARREL_FILENAMES
@@ -199,6 +199,7 @@ __all__ = [
     "ReachDistance",
     "ReachedBy",
     "any_tests_reaching",
+    "cached_files_reached_by_tests",
     "cached_test_files",
     "call_graph_from_db",
     "call_graph_from_graph",
@@ -280,30 +281,30 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     walk is seeded with a change's files; this question is seeded with the
     repository, and a per-level ``IN`` list over every file is the shape it was
     explicitly not built for.
+
+    The view carries no call-site lines: reachability reads only ``declares``
+    and the forward/reverse adjacency, and ``call_lines_json`` was most of the
+    read's cost (measured on this repository, 189k edges: 8.4 s cold with the
+    column, under 2 s without it).
     """
     wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES)]
     params: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", wanted, params)
     rows = await session.execute(
         text(
-            "SELECT source_node_id, target_node_id, edge_type, resolution_origin, "
-            "call_lines_json "
+            "SELECT source_node_id, target_node_id, edge_type, resolution_origin "
             "FROM graph_edges WHERE repository_id = :repo_id "
             f"AND edge_type IN ({ets}) "
             "ORDER BY source_node_id, target_node_id, edge_type"
         ),
         params,
     )
-    edge_rows = []
-    for src, dst, edge_type, origin, call_lines_json in rows:
-        try:
-            call_lines = json.loads(call_lines_json or "[]")
-        except (TypeError, ValueError):
-            call_lines = []
-        edge_rows.append((src, dst, edge_type, origin, call_lines))
-    # No spawn lines here: test reachability reads only forward/reverse, never
-    # first-hop sites, ``spawn_only`` or roles, and a spawned callee is still reached.
-    return ExecutionGraphIndex(edge_rows=edge_rows)
+    # No call or spawn lines here: test reachability reads only forward/reverse,
+    # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
+    # still reached.
+    return ExecutionGraphIndex(
+        edge_rows=((src, dst, edge_type, origin, None) for src, dst, edge_type, origin in rows)
+    )
 
 
 def files_reached_by_tests(
@@ -433,38 +434,8 @@ async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
 # request reads the test files once whoever asks: Fix first's validation and
 # Do next both walk from them. Ceiling: Do next's per-file reach is still
 # walked once per index; persisting it at index time (the engine's
-# ``_files_reached_by_tests`` set, stored as a per-file bool) is the upgrade path.
-_CACHE_SIZE = 32
-_cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
-
-
-async def _index_stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
-    """What moves when an index run rewrites the graph: the repository row and
-    the file metrics written beside the graph rows (the stamp Fix first uses).
-    One statement, so a cached answer costs one read."""
-    repo = Repository.id == repo_id
-    metrics = HealthFileMetric.repository_id == repo_id
-    columns = (
-        select(Repository.head_commit).where(repo),
-        select(Repository.updated_at).where(repo),
-        select(Repository.graph_edges_parser_fingerprint).where(repo),
-        select(func.max(HealthFileMetric.updated_at)).where(metrics),
-        select(func.count()).select_from(HealthFileMetric).where(metrics),
-    )
-    row = (await session.execute(select(*(c.scalar_subquery() for c in columns)))).one()
-    return tuple(row)
-
-
-async def _cache_key(session: AsyncSession, repo_id: str, *parts: Any) -> tuple[Any, ...]:
-    bind = str(session.bind.url) if session.bind is not None else None
-    return (bind, repo_id, await _index_stamp(session, repo_id), *parts)
-
-
-def _remember(key: tuple[Any, ...], value: Any) -> Any:
-    _cache[key] = value
-    while len(_cache) > _CACHE_SIZE:
-        _cache.popitem(last=False)
-    return value
+# ``RepoTestIndex.reached_files`` set, stored as a per-file bool) is the upgrade path.
+_cache = IndexStampCache(32)
 
 
 def clear_test_map_cache() -> None:
@@ -473,11 +444,24 @@ def clear_test_map_cache() -> None:
 
 async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
     """:func:`load_test_files`, read once per index state; frozen because it is shared."""
-    key = await _cache_key(session, repo_id, "test_files")
+    key = await _cache.key(session, repo_id, "test_files")
     if key in _cache:
-        _cache.move_to_end(key)
-        return _cache[key]
-    return _remember(key, frozenset(await load_test_files(session, repo_id)))
+        return _cache.get(key)
+    return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
+
+
+async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """:func:`files_reached_by_tests` over the stored graph, walked once per index state.
+
+    The Tests page asks this on every load and the answer moves only when an
+    index run rewrites the graph, so the bulk edge read is paid once per index.
+    """
+    key = await _cache.key(session, repo_id, "files_reached")
+    if key in _cache:
+        return _cache.get(key)
+    test_files = set(await cached_test_files(session, repo_id))
+    view = await call_graph_from_db(session, repo_id)
+    return _cache.remember(key, frozenset(files_reached_by_tests(view, test_files)))
 
 
 async def any_tests_reaching(
@@ -490,28 +474,30 @@ async def any_tests_reaching(
     For the rest, :func:`tests_reaching_through_helpers`. Cached per index state.
     """
     seeds = tuple(sorted(set(targets)))
-    key = await _cache_key(session, repo_id, "any_reach", seeds)
+    key = await _cache.key(session, repo_id, "any_reach", seeds)
     if key in _cache:
-        _cache.move_to_end(key)
-        return _cache[key]
+        return _cache.get(key)
     test_files = set(await cached_test_files(session, repo_id))
     found = await tests_reaching_by_tier(session, repo_id, list(seeds), test_files=test_files)
     rest = [s for s in seeds if s not in found]
     if rest:
         found |= await tests_reaching_through_helpers(session, repo_id, rest, test_files)
-    return _remember(key, found)
+    return _cache.remember(key, found)
 
 
 async def tests_reaching_through_helpers(
     session: AsyncSession, repo_id: str, targets: list[str], test_files: set[str]
 ) -> dict[str, ReachedBy]:
-    """Tests that import a file only tests import, which imports the target.
+    """Tests that import a file only tests import, or a barrel, which imports the target.
 
     A second import hop, kept off hubs: a blanket second hop was measured and
     rejected (see Depth), but a module nothing outside the test suite imports
     is test support whatever its name (``attempt.spawn-workspace.test-support.ts``
     loading ``attempt.ts`` for 30-odd tests), so walking through it claims
-    nothing a hub would.
+    nothing a hub would. A barrel (``index.ts``, ``__init__.py``) passes on
+    what it imports even when source imports it too, as
+    :func:`files_with_paired_tests` already reads it: a package's tests
+    import its entry, not each module behind it.
     """
     edge_types = sorted(FILE_DEPENDENCY_EDGE_TYPES)
     middles: dict[str, set[str]] = {}
@@ -525,9 +511,10 @@ async def tests_reaching_through_helpers(
         importers.setdefault(middle, set()).add(dependent)
     reached: dict[str, set[str]] = {}
     for middle, who in importers.items():
-        if who <= test_files:
+        tests = who & test_files
+        if tests and (tests == who or PurePosixPath(middle).name in BARREL_FILENAMES):
             for target in middles[middle]:
-                reached.setdefault(target, set()).update(who)
+                reached.setdefault(target, set()).update(tests)
     out: dict[str, ReachedBy] = {}
     for target, tests in reached.items():
         ordered = tuple(rank_tests(target, tests))
@@ -768,24 +755,7 @@ async def _call_reaching(
     seeds share the walk. The file tiers keep the historical batch semantics.
     """
     # node -> seed -> call hops from the node to the seed.
-    origins: dict[str, dict[str, int]] = {}
-    # A caller that knows which symbol in the file it cares about enters there,
-    # so a test reaching an unrelated symbol in the same file does not count.
-    # An empty entry names no symbol, so that file is unseeded and keeps the
-    # ``defines`` lookup; treating it as seeded would silence the file entirely.
-    seeded = {
-        seed: symbol_seeds[seed]
-        for seed in seeds
-        if symbol_seeds and symbol_seeds.get(seed)
-    }
-    for seed, symbol_ids in seeded.items():
-        for symbol in symbol_ids:
-            origins.setdefault(symbol, {})[seed] = 0
-    unseeded = [seed for seed in seeds if seed not in seeded]
-    if unseeded:
-        declared = await _edges_from(session, repo_id, unseeded, ["defines"])
-        for seed, symbol in declared:
-            origins.setdefault(symbol, {})[seed] = 0
+    origins = await _call_origins(session, repo_id, seeds, symbol_seeds)
     if not origins:
         return {}
 
@@ -809,31 +779,15 @@ async def _call_reaching(
                 continue
             owner = file_of_symbol(caller)
             if owner in test_files:
-                for seed, distance in carried.items():
-                    hops = distance + 1
-                    by_test = found.setdefault(seed, {})
-                    best = by_test.get(owner)
-                    if best is None or hops < best[0]:
-                        by_test[owner] = (hops, {caller})
-                    elif hops == best[0]:
-                        best[1].add(caller)
+                _record_test_hit(found, owner, caller, carried)
                 # A test is a leaf. Walking through one would let "test A calls
                 # shared helper B" drag B's unrelated targets in.
                 continue
             if owner in avoid:
                 # A hub carries on only the seeds it declares itself.
                 carried = {s: d for s, d in carried.items() if s.split("::", 1)[0] == owner}
-                if not carried:
-                    continue
-            known = origins.setdefault(caller, {})
-            closer = {
-                seed: distance + 1
-                for seed, distance in carried.items()
-                if seed not in known or distance + 1 < known[seed]
-            }
-            if not closer:
+            if not _carry_closer(origins, caller, carried):
                 continue
-            known.update(closer)
             if caller not in queued:
                 queued.add(caller)
                 frontier.append(caller)
@@ -841,6 +795,67 @@ async def _call_reaching(
         seed: {test: ReachDistance(depth, len(callers)) for test, (depth, callers) in tests.items()}
         for seed, tests in found.items()
     }
+
+
+async def _call_origins(
+    session: AsyncSession,
+    repo_id: str,
+    seeds: list[str],
+    symbol_seeds: Mapping[str, Collection[str]] | None,
+) -> dict[str, dict[str, int]]:
+    """The symbols each seed enters the call walk at, each at distance 0 from its seed."""
+    origins: dict[str, dict[str, int]] = {}
+    # A caller that knows which symbol in the file it cares about enters there,
+    # so a test reaching an unrelated symbol in the same file does not count.
+    # An empty entry names no symbol, so that file is unseeded and keeps the
+    # ``defines`` lookup; treating it as seeded would silence the file entirely.
+    seeded = {
+        seed: symbol_seeds[seed]
+        for seed in seeds
+        if symbol_seeds and symbol_seeds.get(seed)
+    }
+    for seed, symbol_ids in seeded.items():
+        for symbol in symbol_ids:
+            origins.setdefault(symbol, {})[seed] = 0
+    unseeded = [seed for seed in seeds if seed not in seeded]
+    if unseeded:
+        declared = await _edges_from(session, repo_id, unseeded, ["defines"])
+        for seed, symbol in declared:
+            origins.setdefault(symbol, {})[seed] = 0
+    return origins
+
+
+def _record_test_hit(
+    found: dict[str, dict[str, tuple[int, set[str]]]],
+    test: str,
+    caller: str,
+    carried: Mapping[str, int],
+) -> None:
+    """Keep the fewest hops *test* took to each carried seed, and its callers at that depth."""
+    for seed, distance in carried.items():
+        hops = distance + 1
+        by_test = found.setdefault(seed, {})
+        best = by_test.get(test)
+        if best is None or hops < best[0]:
+            by_test[test] = (hops, {caller})
+        elif hops == best[0]:
+            best[1].add(caller)
+
+
+def _carry_closer(
+    origins: dict[str, dict[str, int]], caller: str, carried: Mapping[str, int]
+) -> bool:
+    """Record the seeds *caller* reaches closer than before; True when any did."""
+    if not carried:
+        return False
+    known = origins.setdefault(caller, {})
+    closer = {
+        seed: distance + 1
+        for seed, distance in carried.items()
+        if seed not in known or distance + 1 < known[seed]
+    }
+    known.update(closer)
+    return bool(closer)
 
 
 async def reach_into_symbols(
@@ -894,15 +909,26 @@ async def imported_names_by_test(
         elif PurePosixPath(source).name in BARREL_FILENAMES:
             barrels.setdefault(source, {})[target] = names
     if barrels:
-        for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
-            if source not in test_files:
-                continue
-            for target, exported in barrels[barrel].items():
-                # ``export *`` passes every name on; otherwise only the ones it re-exports.
-                passed = names if not exported or "*" in exported else names & exported
-                if passed or not names:
-                    _add_names(out, target, source, passed)
+        await _add_barrel_imports(session, repo_id, barrels, test_files, out)
     return out
+
+
+async def _add_barrel_imports(
+    session: AsyncSession,
+    repo_id: str,
+    barrels: dict[str, dict[str, frozenset[str]]],
+    test_files: set[str],
+    out: dict[str, dict[str, frozenset[str]]],
+) -> None:
+    """Credit each test importing a barrel with the names the barrel passes on from each file."""
+    for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
+        if source not in test_files:
+            continue
+        for target, exported in barrels[barrel].items():
+            # ``export *`` passes every name on; otherwise only the ones it re-exports.
+            passed = names if not exported or "*" in exported else names & exported
+            if passed or not names:
+                _add_names(out, target, source, passed)
 
 
 def _add_names(
@@ -916,25 +942,32 @@ async def _imported_names(
     session: AsyncSession, repo_id: str, targets: list[str]
 ) -> list[tuple[str, str, frozenset[str]]]:
     """``(importer, imported file, names)`` for every import edge into *targets*."""
-    params: dict[str, Any] = {"repo_id": repo_id}
-    tgt = _in_clause("p", targets, params)
-    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), params)
-    rows = await session.execute(
-        text(
-            "SELECT source_node_id, target_node_id, imported_names_json FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets})"
-        ),
-        params,
-    )
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), shared)
+    targets = list(dict.fromkeys(targets))
     out = []
-    for source, target, names_json in rows:
-        try:
-            names = json.loads(names_json or "[]")
-        except (TypeError, ValueError):
-            names = []
-        out.append((source, target, frozenset(n for n in names if isinstance(n, str))))
+    for start in range(0, len(targets), _IN_BATCH):
+        params = dict(shared)
+        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT source_node_id, target_node_id, imported_names_json FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets})"
+            ),
+            params,
+        )
+        out.extend((source, target, _names_of(names_json)) for source, target, names_json in rows)
     return out
+
+
+def _names_of(names_json: str | None) -> frozenset[str]:
+    """The names an import edge records; unreadable JSON records none."""
+    try:
+        names = json.loads(names_json or "[]")
+    except (TypeError, ValueError):
+        return frozenset()
+    return frozenset(n for n in names if isinstance(n, str))
 
 
 @dataclass(frozen=True)
@@ -1102,24 +1135,34 @@ def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:
     return ",".join(f":{prefix}{i}" for i in range(len(values)))
 
 
+#: Values one ``IN`` list binds. SQLite refuses a statement with more variables
+#: than SQLITE_MAX_VARIABLE_NUMBER (999 before 3.32, 32766 after), and the lists
+#: below are a change's files or every file and symbol of a repository.
+_IN_BATCH = 500
+
+
 async def _edges_from(
     session: AsyncSession, repo_id: str, sources: list[str], edge_types: list[str]
 ) -> list[tuple[str, str]]:
     """``(source, target)`` pairs leaving *sources* along *edge_types*."""
-    if not sources:
-        return []
-    params: dict[str, Any] = {"repo_id": repo_id}
-    src = _in_clause("s", sources, params)
-    ets = _in_clause("e", edge_types, params)
-    rows = await session.execute(
-        text(
-            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
-        ),
-        params,
-    )
-    return [(s, t) for s, t in rows]
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", edge_types, shared)
+    out: list[tuple[str, str]] = []
+    # Each source is in one batch only, so a pair is distinct across batches too.
+    sources = list(dict.fromkeys(sources))
+    for start in range(0, len(sources), _IN_BATCH):
+        params = dict(shared)
+        src = _in_clause("s", sources[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
+            ),
+            params,
+        )
+        out.extend((s, t) for s, t in rows)
+    return out
 
 
 async def _edges_into(
@@ -1136,27 +1179,31 @@ async def _edges_into(
     loading every row, and the two walks should not disagree about how they read
     it.
     """
-    if not targets:
-        return []
-    params: dict[str, Any] = {"repo_id": repo_id}
-    tgt = _in_clause("p", targets, params)
-    ets = _in_clause("e", edge_types, params)
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", edge_types, shared)
     origin_filter = ""
     if excluded_origins:
         # NULL means the row predates the vocabulary, not "unknown", so it has
         # to survive the filter, and a bare NOT IN would drop it.
-        bad = _in_clause("o", sorted(excluded_origins), params)
+        bad = _in_clause("o", sorted(excluded_origins), shared)
         origin_filter = f" AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad}))"
-    rows = await session.execute(
-        text(
-            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
-            f"{_LEGACY_CONFTEST_FILTER}"
-        ),
-        params,
-    )
-    return [(s, t) for s, t in rows]
+    out: list[tuple[str, str]] = []
+    # Each target is in one batch only, so a pair is distinct across batches too.
+    targets = list(dict.fromkeys(targets))
+    for start in range(0, len(targets), _IN_BATCH):
+        params = dict(shared)
+        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
+                f"{_LEGACY_CONFTEST_FILTER}"
+            ),
+            params,
+        )
+        out.extend((s, t) for s, t in rows)
+    return out
 
 
 def rank_tests(target: str, tests: Collection[str]) -> list[str]:

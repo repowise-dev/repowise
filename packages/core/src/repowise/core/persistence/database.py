@@ -17,9 +17,11 @@ import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import structlog
 from sqlalchemy import String, event, inspect, literal
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -166,6 +168,7 @@ __all__ = [
     "get_repo_db_path",
     "get_session",
     "init_db",
+    "refresh_planner_stats",
     "resolve_db_url",
     "schema_behind",
 ]
@@ -449,7 +452,11 @@ def _run_data_step(step: Callable[[object], object], connection: object) -> None
 #: additive reconciler below never does. Leaf tables only, since nothing may
 #: reference a table that is copied, dropped and renamed. Each holds derived
 #: rows, so an interrupted rebuild costs a recompute, never source data.
-_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset({"health_file_metrics"})
+#: ``health_snapshots`` is history rather than derived, but small, and an
+#: interrupted rebuild leaves its rows in the staging table.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset(
+    {"health_file_metrics", "health_snapshots"}
+)
 
 
 def _relax_not_null(connection: object, table: object) -> None:
@@ -496,8 +503,8 @@ def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: obje
 
     Only ever loosens: drops a NOT NULL the model no longer declares and widens
     a VARCHAR the model made longer or unbounded. Both are catalog-only changes
-    on PostgreSQL and match what migrations 0062, 0064, 0086 and 0094 do, so a
-    database that never ran Alembic (the Docker image's path) still accepts
+    on PostgreSQL and match what migrations 0062, 0064, 0086, 0094 and 0108 do,
+    so a database that never ran Alembic (the Docker image's path) still accepts
     what the current code writes. Tightening stays an explicit migration.
     """
     statements = []
@@ -513,6 +520,43 @@ def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: obje
         if column.nullable and not found["nullable"]:
             statements.append((what, text(f"{target} DROP NOT NULL")))
     return statements
+
+
+def _reconcile_columns(
+    connection: object,
+    inspector: Any,
+    table: Any,
+    run: Callable[[str, Callable[[], object]], None],
+    failures: list[tuple[str, Exception]],
+) -> None:
+    """Loosen and add one existing table's columns (see :func:`_reconcile_schema`)."""
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    # Render the column DDL fragment exactly as SQLAlchemy would emit
+    # it inside CREATE TABLE — preserves type, server_default, and
+    # nullability. We deliberately do NOT enforce FK constraints on
+    # back-filled columns: SQLite can't add an enforced FK after the
+    # fact, and write-time enforcement is sufficient for our purposes.
+    # The Alembic-only pgvector column triggers an unknown-type warning.
+    with warnings.catch_warnings():
+        if dialect.name == "postgresql":  # type: ignore[attr-defined]
+            warnings.filterwarnings("ignore", message="Did not recognize type 'vector'")
+        db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
+    if dialect.name == "postgresql":  # type: ignore[attr-defined]
+        for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
+            run(what, lambda statement=statement: statement)
+    for column in table.columns:
+        if column.name in db_cols:
+            continue
+        what = f"{table.name}.{column.name}"
+        run(
+            what,
+            lambda table=table, column=column: text(
+                f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
+            ),
+        )
+        data_step = _DATA_STEPS_ON_ADD.get(what)
+        if data_step is not None and not any(name == what for name, _ in failures):
+            run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
 
 
 def _reconcile_schema(connection: object) -> None:
@@ -602,33 +646,7 @@ def _reconcile_schema(connection: object) -> None:
             # reconcile a brand-new table column-by-column.
             continue
 
-        # --- Columns ---------------------------------------------------
-        # Render the column DDL fragment exactly as SQLAlchemy would emit
-        # it inside CREATE TABLE — preserves type, server_default, and
-        # nullability. We deliberately do NOT enforce FK constraints on
-        # back-filled columns: SQLite can't add an enforced FK after the
-        # fact, and write-time enforcement is sufficient for our purposes.
-        # The Alembic-only pgvector column triggers an unknown-type warning.
-        with warnings.catch_warnings():
-            if dialect.name == "postgresql":  # type: ignore[attr-defined]
-                warnings.filterwarnings("ignore", message="Did not recognize type 'vector'")
-            db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
-        if dialect.name == "postgresql":  # type: ignore[attr-defined]
-            for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
-                _run(what, lambda statement=statement: statement)
-        for column in table.columns:
-            if column.name in db_cols:
-                continue
-            what = f"{table.name}.{column.name}"
-            _run(
-                what,
-                lambda table=table, column=column: text(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
-                ),
-            )
-            data_step = _DATA_STEPS_ON_ADD.get(what)
-            if data_step is not None and not any(name == what for name, _ in failures):
-                _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+        _reconcile_columns(connection, inspector, table, _run, failures)
 
         # --- Nullability (SQLite only) -----------------------------------
         # After the columns, so the copy carries every one of them, and before
@@ -688,6 +706,67 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+
+
+# A table whose row count moved past this factor of the count ANALYZE recorded
+# has statistics too old to plan by.
+_STATS_DRIFT = 2
+
+
+def _planner_stats_stale(conn: Any) -> bool:
+    """Whether a table with rows has no statistics, or its count left the band."""
+    # ANALYZE skips virtual tables (the full-text index), so they never count.
+    names = [
+        r[0]
+        for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'"
+        )
+    ]
+    if "sqlite_stat1" not in names:
+        return True
+    recorded = dict(
+        conn.exec_driver_sql(
+            "SELECT tbl, MAX(CAST(stat AS INTEGER)) FROM sqlite_stat1 GROUP BY tbl"
+        ).all()
+    )
+    for name in names:
+        if name.startswith("sqlite_"):
+            continue
+        # One statement per table on purpose: SQLite answers a bare COUNT(*)
+        # from the b-tree, but scans the rows when the count sits inside a
+        # subquery, which made one UNION ALL about 25x slower.
+        rows = conn.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar() or 0
+        before = recorded.get(name)
+        if before is None:
+            if rows:
+                return True
+        elif not before / _STATS_DRIFT <= rows <= before * _STATS_DRIFT:
+            return True
+    return False
+
+
+async def refresh_planner_stats(engine: AsyncEngine) -> None:
+    """Refresh SQLite's planner statistics at the end of a write to the index.
+
+    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
+    a wide covering index over the selective one (a full edge-table scan in
+    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
+    index leads with ``repository_id``, which a sample (``analysis_limit``, and
+    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
+    keeps the wrong index. It runs only when the statistics are missing or a
+    table's size has drifted, since a full pass reads the whole store. Other
+    backends keep their own statistics. A failure costs only a slower plan, so
+    it never fails the write.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    try:
+        async with engine.begin() as conn:
+            if await conn.run_sync(_planner_stats_stale):
+                await conn.execute(text("ANALYZE"))
+    except DBAPIError as exc:  # a locked or read-only store
+        log.warning("sqlite.analyze_failed", error=str(exc))
 
 
 async def schema_behind(engine: AsyncEngine) -> bool:

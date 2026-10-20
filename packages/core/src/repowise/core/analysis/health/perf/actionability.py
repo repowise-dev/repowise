@@ -29,15 +29,19 @@ OpportunityConfidence = Literal["high", "medium", "low"]
 # by its nature or for a reason :func:`expected_reason` reads off the group
 # (``gated_off``: a constant-false flag switches the function off;
 # ``cold_path``: it runs once per deploy, boot or incident;
-# ``bounded_loop``: the loop runs a fixed number of times).
+# ``bounded_loop``: the loop runs a fixed number of times; ``small_table``: it
+# grows only by reading tables that do not grow with the repository).
 ActionabilityState = Literal["plan_ready", "advisory", "investigate", "expected"]
 
 #: Reasons :func:`expected_reason` gives that the default queue counts under
-#: their own name, in precedence order; ``bounded_loop`` counts as ``expected``.
+#: their own name, in precedence order; ``bounded_loop`` and ``small_table``
+#: count as ``expected``.
 EXPECTED_REASONS: tuple[str, ...] = ("gated_off", "cold_path")
 
 # Refusals that are facts about the code, not missing proofs: nothing to investigate.
-_EXPECTED_REFUSALS = frozenset({"inherent_to_boundary", "loop_already_chunked"})
+_EXPECTED_REFUSALS = frozenset(
+    {"inherent_to_boundary", "loop_already_chunked", "loop_not_batchable"}
+)
 FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
@@ -58,6 +62,14 @@ CONCURRENCY_SENSITIVE_BOUNDARIES = frozenset({"db", "network"})
 # under its lock, and a launcher spawns its process once under it. Moving that
 # I/O out of the lock reintroduces the race the lock prevents.
 LOCK_SERIALIZED_BOUNDARIES = frozenset({"filesystem", "subprocess"})
+
+#: What a boundary's call is named in prose ("a database call").
+BOUNDARY_NOUN = {
+    "db": "database",
+    "filesystem": "file system",
+    "network": "network",
+    "subprocess": "subprocess",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +248,10 @@ def assess_fix(
             # Filesystem and subprocess repetition is real, but there is no
             # batch or prefetch operation to point the caller at.
             return FixAssessment(None, (), refusal="inherent_to_boundary")
+        if details and all(detail.get("loop_not_batchable") for detail in details):
+            # The loop stops at the first call that answers, or each call needs the
+            # one before it: there is no set of keys to send at once.
+            return FixAssessment(None, (), refusal="loop_not_batchable")
         form = _shared(details, "batch_form")
         if form:
             if _shared(details, "batch_equivalent") is True:
@@ -299,8 +315,9 @@ def expected_reason(members: Sequence[Any], magnitude: str | None = None) -> str
     its own file switches off. ``cold_path``: every loop owner is named for a
     migration, startup, shutdown or crash recovery (:mod:`.cold_paths`), so it
     runs once per deploy, boot or incident. ``bounded_loop``: the group's loop
-    *magnitude* is proven bounded, so its cost does not grow. Reasons are
-    checked in precedence order.
+    *magnitude* is proven bounded, so its cost does not grow; ``small_table``
+    when a member is bounded because its loop reads only small tables
+    (:mod:`.table_scale`). Reasons are checked in precedence order.
     """
     if not members:
         return None
@@ -308,7 +325,10 @@ def expected_reason(members: Sequence[Any], magnitude: str | None = None) -> str
         return "gated_off"
     if all(is_cold_path(facts.file_path, facts.function_name) for facts in members):
         return "cold_path"
-    return "bounded_loop" if magnitude == "bounded" else None
+    if magnitude != "bounded":
+        return None
+    small = any(facts.details.get("loop_small_tables") for facts in members)
+    return "small_table" if small else "bounded_loop"
 
 
 def actionability(
@@ -359,6 +379,7 @@ def actionability(
 __all__ = [
     "BATCHABLE_BOUNDARIES",
     "BATCHABLE_MARKERS",
+    "BOUNDARY_NOUN",
     "LOCK_SERIALIZED_BOUNDARIES",
     "Actionability",
     "ActionabilityState",

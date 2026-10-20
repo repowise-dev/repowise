@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from repowise.core.analysis.finding_registry import verification_label
+from repowise.core.analysis.finding_registry import preview_label, verification_label
 from repowise.core.analysis.health.aggregation import (
     primary_and_magnitude,
     primary_and_magnitude_by_file,
@@ -21,7 +21,7 @@ def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
         details = {}
-    return {
+    row = {
         "id": f.id,
         "file_path": f.file_path,
         "biomarker_type": f.biomarker_type,
@@ -41,6 +41,10 @@ def _finding_to_dict(f: Any, lower_priority: str | None = None) -> dict:
         "verification": verification_label(f.biomarker_type),
         "lower_priority": LOW_PRIORITY_LABEL.get(lower_priority or ""),
     }
+    # The measurement label, sent only on a language the layer serves as a preview.
+    if note := preview_label("health", f.file_path, f.biomarker_type):
+        row["preview"] = note
+    return row
 
 
 def _round_opt(v: Any) -> float | None:
@@ -57,7 +61,7 @@ def _metric_to_dict(
     m: Any,
     lead: dict | None = None,
     *,
-    perf_findings: int = 0,
+    perf_opportunities: int = 0,
     perf_analyzed: bool | None = None,
     summary: bool = False,
 ) -> dict:
@@ -97,11 +101,11 @@ def _metric_to_dict(
     # ``performance_score`` is computed but not yet surfaced as its own pillar.
     out["maintainability_score"] = _round_opt(getattr(m, "maintainability_score", None))
     out["performance_score"] = _round_opt(getattr(m, "performance_score", None))
-    # Performance lens inputs for the code-health map: the open perf-finding
-    # count colors the heat, and ``perf_analyzed`` (did a detector run on this
-    # language?) separates green ("analyzed, none found") from grey ("never
+    # Performance lens inputs for the code-health map: the file's causes in the
+    # default queue color the heat, and ``perf_analyzed`` (did a detector run on
+    # this language?) separates green ("analyzed, none found") from grey ("never
     # looked"). Presentation only — the score above is untouched.
-    out["performance_findings"] = perf_findings
+    out["performance_opportunities"] = perf_opportunities
     out["performance_analyzed"] = perf_analyzed
     if not summary:
         # The headline's two halves, and the score the file would carry without
@@ -156,6 +160,7 @@ def _file_signals_to_dict(s: FileSignals) -> dict:
         "lines_deleted_90d": s.lines_deleted_90d,
         "commit_count_90d": s.commit_count_90d,
         "age_days": s.age_days,
+        "history": s.history,
         "primary_owner_name": s.primary_owner_name,
         "primary_owner_commit_pct": s.primary_owner_commit_pct,
         "recent_owner_name": s.recent_owner_name,

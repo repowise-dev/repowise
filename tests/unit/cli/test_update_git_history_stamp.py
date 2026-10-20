@@ -16,6 +16,7 @@ from repowise.cli.commands.init_cmd.persistence import apply_git_history_coverag
 from repowise.cli.helpers import load_state, save_state
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.ingestion.git_indexer import (
+    GIT_HISTORY_BACKFILL_REWALK,
     GIT_HISTORY_VERSION,
     GIT_HISTORY_VERSION_KEY,
     GitIndexer,
@@ -100,6 +101,30 @@ def test_stale_stamp_walks_once_then_updates_incrementally(
     assert len(walks) == 1
 
 
+def test_backfill_marker_walks_once_and_names_the_backfill(tmp_path, walks) -> None:
+    repo, _ = _indexed_repo(tmp_path)
+    walks.clear()
+    _current(repo, **{GIT_HISTORY_VERSION_KEY: GIT_HISTORY_BACKFILL_REWALK})
+
+    out = _invoke_update(repo)
+
+    assert "attribution backfill" in out
+    assert "Git history rules changed" not in out
+    assert len(walks) == 1
+    assert load_state(repo)[GIT_HISTORY_VERSION_KEY] == GIT_HISTORY_VERSION
+
+
+def test_backfill_leaves_a_stale_stamp_alone(tmp_path) -> None:
+    from repowise.cli.commands.attribution_cmd import _request_history_rewalk
+
+    repo, _ = _indexed_repo(tmp_path)
+    _current(repo, **{GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION - 1})
+
+    assert _request_history_rewalk(repo)
+    # The rules really did change, so the update still says that.
+    assert load_state(repo)[GIT_HISTORY_VERSION_KEY] == GIT_HISTORY_VERSION - 1
+
+
 def test_current_stamp_forces_no_walk(tmp_path, walks) -> None:
     repo, _ = _indexed_repo(tmp_path)
     walks.clear()
@@ -112,6 +137,8 @@ def test_current_stamp_forces_no_walk(tmp_path, walks) -> None:
 def test_missing_stamp_is_stale() -> None:
     assert git_history_stale({})
     assert git_history_stale({GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION - 1})
+    # v1 co-change records have no focused_frequency, so v1 must rewalk.
+    assert git_history_stale({GIT_HISTORY_VERSION_KEY: 1})
     assert not git_history_stale({GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION})
 
 

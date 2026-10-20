@@ -12,6 +12,7 @@ from repowise.core.analysis.health.refactoring.serving import evidence_block
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
 from repowise.core.persistence.crud import get_health_finding_by_public_id, get_health_findings
+from repowise.core.persistence.crud.analysis.actions import load_action
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -86,8 +87,10 @@ async def _detail_response(
 
 async def _lower_priority(session: Any, repository_id: str, finding: Any) -> str | None:
     """The finding's tier reason, measured over its file's open findings as
-    the list measured it."""
-    peers = await get_health_findings(session, repository_id, file_path=finding.file_path)
+    the list measured it: file-held rows included, as the list reads them."""
+    peers = await get_health_findings(
+        session, repository_id, file_path=finding.file_path, file_holds=False
+    )
     reasons = dict(zip((f.id for f in peers), finding_priorities(peers), strict=True))
     return LOW_PRIORITY_LABEL.get(reasons.get(finding.id) or "")
 
@@ -112,12 +115,32 @@ async def _finding_detail_response(
             targets=[match.file_path] if match else None,
         ),
     }
+    if match is None and finding_id.startswith(("fix", _ACTION_ID_PREFIX)):
+        result["hint"] = (
+            "Pass fix_first ids (fix1_...) and next_actions ids (act_...) "
+            "as fix_id, not finding_id."
+        )
     await _attach_repository_analysis_meta(session, repository, result["_meta"])
     return result
 
 
+#: Prefix of the Do next action ids ``get_overview``'s ``next_actions`` hands out.
+_ACTION_ID_PREFIX = "act_"
+
+_FIX_NOT_FOUND = (
+    "get_health() lists the current fix_first ids (fix1_...); "
+    "get_overview() lists the next_actions ids (act_...)"
+)
+
+
 async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> dict[str, Any]:
-    """One Fix-first item in full: action steps, verify, risk, context."""
+    """One Fix-first item in full: action steps, verify, risk, context.
+
+    An ``act_`` id is a Do next action, the same one the REST actions route
+    reads: its evidence rows and commands.
+    """
+    if fix_id.startswith(_ACTION_ID_PREFIX):
+        return await _action_detail_response(session, repository, fix_id)
     item = (await load_fix_first(session, repository.id, item_id=fix_id)).find(fix_id)
     result = {
         "mode": "fix_item",
@@ -129,7 +152,27 @@ async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> di
         ),
     }
     if item is None:
-        result["next_action"] = "get_health() lists the current fix_first ids"
+        result["next_action"] = _FIX_NOT_FOUND
+    await _attach_repository_analysis_meta(session, repository, result["_meta"])
+    return result
+
+
+async def _action_detail_response(
+    session: Any, repository: Any, action_id: str
+) -> dict[str, Any]:
+    """One Do next action in full, serialized as the REST actions route does."""
+    action = await load_action(session, repository.id, action_id)
+    result = {
+        "mode": "action",
+        "fix_id": action_id,
+        "action": action.as_dict() if action else None,
+        "found": action is not None,
+        "_meta": _build_meta(
+            repository=repository, targets=[action.target_path] if action and action.target_path else None
+        ),
+    }
+    if action is None:
+        result["next_action"] = _FIX_NOT_FOUND
     await _attach_repository_analysis_meta(session, repository, result["_meta"])
     return result
 

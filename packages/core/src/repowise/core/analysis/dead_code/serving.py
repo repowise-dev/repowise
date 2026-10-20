@@ -13,13 +13,17 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Protocol
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
-    effective_safe_to_delete,
     path_risk_factors,
 )
-from repowise.core.analysis.finding_registry import verification_label, withheld_summary
+from repowise.core.analysis.finding_registry import (
+    split_gated,
+    verification_label,
+    withheld_summary,
+)
 from repowise.core.analysis.health.rows import field
 from repowise.core.references import path_identity, stable_entity_id
 
@@ -101,6 +105,18 @@ class FindingFilters:
     # Kinds the finding-type registry keeps off this surface. Applied before
     # anything is counted, so no total describes a finding the caller cannot see.
     withheld_kinds: frozenset[str] = frozenset()
+    # Shows the findings a language gate holds back (``LANGUAGE_GATES``).
+    include_unverified: bool = False
+
+    def split_gated(self, findings: list) -> tuple[list, dict[str, dict]]:
+        """``(shown rows, {gated language: count/reason})``."""
+        return split_gated(
+            "dead_code",
+            findings,
+            kind="kind",
+            get=field,
+            include_unverified=self.include_unverified,
+        )
 
     def split_withheld(self, findings: list) -> tuple[list, dict[str, dict]]:
         """``(shown rows, {withheld kind: count/status/reason})``."""
@@ -162,14 +178,18 @@ def apply_filters(findings: list, filters: FindingFilters) -> list:
     return [f for f in findings if all(check(f) for check in checks)]
 
 
-def summary_counts(shown: list) -> dict[str, Any]:
+def summary_counts(
+    shown: list, withdrawn: Callable[[Any], bool] | None = None
+) -> dict[str, Any]:
     """Counts over every shown open finding; merge per-repo parts with
-    :func:`merge_summary_counts` so no caller holds every repo's rows at once."""
+    :func:`merge_summary_counts` so no caller holds every repo's rows at once.
+    *withdrawn* (see :func:`cross_repo_withdraws`) keeps safe counts in step with the tiers.
+    """
     by_kind: dict[str, int] = {}
     for f in shown:
         kind = field(f, "kind")
         by_kind[kind] = by_kind.get(kind, 0) + 1
-    safe = [f for f in shown if is_safe(f)]
+    safe = [f for f in shown if is_safe(f) and not (withdrawn and withdrawn(f))]
     return {
         "total_findings": len(shown),
         "deletable_lines": sum(field(f, "lines") or 0 for f in safe),
@@ -189,14 +209,27 @@ def merge_summary_counts(parts: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def safe_only_note(total: int, safe: int) -> str | None:
+    """Why a safe-only view is empty when findings exist but none is
+    deletion-ready; None otherwise. The MCP summary and the CLI share it."""
+    if safe or not total:
+        return None
+    return (
+        f"{total} finding(s), none deletion-ready: a finding is deletion-ready only "
+        "when missing imports are evidence for its language. Review the ranked list "
+        "without the safe-only filter."
+    )
+
+
 def build_summary(
     counts: dict[str, Any],
     filtered_count: int,
     filters: FindingFilters,
     withheld: dict[str, dict],
+    gated: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """The summary block: *counts* from :func:`summary_counts`, plus what the
-    filters kept."""
+    filters kept and what the registry held back."""
     summary: dict[str, Any] = {
         "total_findings": counts["total_findings"],
         "filtered_findings": filtered_count,
@@ -205,8 +238,14 @@ def build_summary(
         "by_kind": counts["by_kind"],
     }
     filters.summarize(summary)
+    if filters.safe_only and (
+        note := safe_only_note(counts["total_findings"], counts["safe_to_delete_count"])
+    ):
+        summary["safe_only_note"] = note
     if withheld:
         summary["withheld_types"] = withheld
+    if gated:
+        summary["gated"] = {**gated, "opt_in": {"include_unverified": True}}
     return summary
 
 
@@ -383,14 +422,29 @@ def compute_impact(tiers: dict) -> dict:
     return {
         "total_lines_reclaimable": total_lines,
         "safe_lines_reclaimable": safe_lines,
-        "recommendation": (
+        "recommendation": _recommendation(tiers),
+    }
+
+
+def _recommendation(tiers: dict) -> str:
+    """Point at the best tier that has findings, never at an empty one."""
+    if tiers.get("high", {}).get("count"):
+        return (
             "Start with the 'high' tier — these have no references in the graph and are the "
             "strongest cleanup candidates. Confirm each (runtime-loaded config/bootstrap/database "
             "files are flagged but never auto-marked safe), then review 'medium' tier with your team."
-            if total_lines > 0
-            else "No dead code found matching your filters."
-        ),
-    }
+        )
+    if tiers.get("medium", {}).get("count"):
+        return (
+            "Review the 'medium' tier with your team — likely unused but may have indirect "
+            "references. Confirm each before deleting."
+        )
+    if tiers.get("low", {}).get("count"):
+        return (
+            "Only 'low' tier findings — they may be used via dynamic imports or reflection. "
+            "Investigate before deleting."
+        )
+    return "No dead code found matching your filters."
 
 
 class CrossRepoLookup(Protocol):
@@ -401,27 +455,39 @@ class CrossRepoLookup(Protocol):
     def get_repos_depending_on(self, repo_alias: str) -> list[str]: ...
 
 
-def adjust_cross_repo(
-    tiers: dict, lookup: CrossRepoLookup | None, repo_alias: str | None = None
-) -> None:
-    """Lower confidence on served findings that other repos consume, in place.
+def cross_repo_withdraws(
+    lookup: CrossRepoLookup | None, alias: str | None, file_path: str, kind: Any
+) -> bool:
+    """Whether :func:`adjust_cross_repo` would withdraw ``safe_to_delete``."""
+    if lookup is None or not alias:
+        return False
+    if lookup.has_cross_repo_consumers(alias, file_path):
+        return True
+    return kind == "unused_export" and bool(lookup.get_repos_depending_on(alias))
 
-    A finding's own ``repo`` wins over *repo_alias*, so one call covers both a
-    single repo and the workspace-wide merge.
+
+def adjust_cross_repo(
+    findings: list[dict], lookup: CrossRepoLookup | None, repo_alias: str | None = None
+) -> None:
+    """Lower confidence on serialized findings that other repos consume, in place.
+
+    Runs before :func:`build_tiers`, so a lowered finding lands in the tier its
+    new confidence belongs to. A finding's own ``repo`` wins over *repo_alias*,
+    so one call covers both a single repo and the workspace-wide merge.
     """
     if lookup is None:
         return
-    for tier_data in tiers.values():
-        for finding in tier_data.get("findings", []):
-            alias = finding.get("repo", repo_alias)
-            if alias:
-                _adjust_one(finding, lookup, alias)
+    for finding in findings:
+        alias = finding.get("repo", repo_alias)
+        if alias:
+            _adjust_one(finding, lookup, alias)
 
 
 def _adjust_one(finding: dict, lookup: CrossRepoLookup, alias: str) -> None:
     consumers = lookup.has_cross_repo_consumers(alias, finding.get("file_path", ""))
     if consumers:
         finding["confidence"] = round(finding["confidence"] * 0.5, 2)
+        finding["safe_to_delete"] = False
         consumer_repos = sorted({c["repo"] for c in consumers})
         finding["cross_repo_note"] = (
             f"Confidence reduced: {len(consumers)} cross-repo consumer(s) "
@@ -434,6 +500,7 @@ def _adjust_one(finding: dict, lookup: CrossRepoLookup, alias: str) -> None:
     depending = lookup.get_repos_depending_on(alias)
     if depending:
         finding["confidence"] = round(finding["confidence"] * 0.3, 2)
+        finding["safe_to_delete"] = False
         finding["cross_repo_note"] = (
             f"This export may be consumed by: {', '.join(depending)}. Verify before deletion."
         )

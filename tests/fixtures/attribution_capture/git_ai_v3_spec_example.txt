@@ -1,0 +1,39 @@
+src/main.rs
+  s_c9883b05a2487d::t_9f8e7d6c5b4a32 1-10,15-20
+  s_c9883b05a2487d::t_a1b2c3d4e5f678 25,30-35
+  h_31dce776f88375 42-50
+src/lib.rs
+  s_e7f2a90b31cc48::t_deadbeef012345 1-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.5",
+  "base_commit_sha": "7734793b756b3921c88db5375a8c156e9532447b",
+  "prompts": {},
+  "humans": {
+    "h_31dce776f88375": {
+      "author": "Developer <dev@example.com>"
+    }
+  },
+  "sessions": {
+    "s_c9883b05a2487d": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "6ef2299e-a67f-432b-aa80-3d2fb4d28999",
+        "model": "claude-sonnet-4-5-20250514"
+      },
+      "human_author": "dev@example.com"
+    },
+    "s_e7f2a90b31cc48": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "conv_abc123def456",
+        "model": "claude-sonnet-4-5-20250514"
+      },
+      "human_author": "dev@example.com",
+      "custom_attributes": {
+        "team": "backend"
+      }
+    }
+  }
+}

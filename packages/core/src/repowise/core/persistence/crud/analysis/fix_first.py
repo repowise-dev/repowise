@@ -44,6 +44,7 @@ from repowise.core.analysis.health.fix_first.build import (
     hot_cut,
     hot_cut_offset,
     judge_findings,
+    symbol_key,
 )
 from repowise.core.analysis.health.queue.counts import NOT_IN_QUEUE, Judgement
 from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_STATES, MIN_WORTH
@@ -57,9 +58,11 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 )
 from repowise.core.analysis.health.rows import detail_map
 from repowise.core.analysis.health.scoring import history_biomarkers
+from repowise.core.ingestion.git_indexer.function_blame import _MIN_COMMITS_FOR_BLAME
 
 from ...models import (
     DeadCodeFinding,
+    GitFunctionBlame,
     GitMetadata,
     GraphMetric,
     GraphNode,
@@ -72,7 +75,8 @@ from ...models import (
 from ...read_snapshots import decode_or_none, read_snapshot, refresh_snapshot, snapshot_key
 from ...sql import json_text
 from .plain_rows import plain_rows, row_shape
-from .refactoring_recommendations import validation_inputs
+from .refactoring import shown_plan_predicate
+from .refactoring_recommendations import repository_checkout, validation_inputs
 
 #: Files read for plan-less finding items, by open code-shape deduction.
 #: Ceiling: a file past this rank never becomes a finding item. The queue
@@ -143,6 +147,64 @@ async def _hot_cuts(session: AsyncSession, repo_id: str) -> tuple[float, float]:
     at = hot_cut_offset(len(rows))
     churn, deps = (sorted(column) for column in zip(*rows, strict=True))
     return hot_cut(churn[at]), hot_cut(deps[at])
+
+
+async def _function_changes(
+    session: AsyncSession, repo_id: str, findings: list[Any], refactoring: list[Any]
+) -> tuple[dict[str, int] | None, set[str]]:
+    """Commits that changed each function a unit can lead with (a finding's,
+    a plan's lead step's), by ``symbol_id``, and the files among theirs the
+    blame pass skipped for size; ``None`` when the repository keeps no
+    function history at all."""
+    b = GitFunctionBlame
+    any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
+    if any_row.first() is None:
+        return None, set()
+    leads = [(f.file_path, symbol_key(f.file_path, f.function_name)) for f in findings] + [
+        (r.file_path, symbol_key(r.file_path, r.details["steps"][0].get("target_symbol")))
+        for r in refactoring
+        if r.details and r.details.get("steps")
+    ]
+    keys = {key for _path, key in leads if key}
+    if not keys:
+        return {}, set()
+    rows = await session.execute(
+        select(b.symbol_id, b.mod_count).where(b.repository_id == repo_id, b.symbol_id.in_(keys))
+    )
+    changes = dict(rows.all())
+    matched = {path for path, key in leads if key in changes}
+    unmatched = {path for path, key in leads if key} - matched
+    return changes, await _blame_skipped(session, repo_id, unmatched)
+
+
+async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -> set[str]:
+    """Of ``paths``, the files the blame pass skipped for size: enough
+    commits to pass its commit floor, yet no function in them has a row.
+
+    Ceiling: a blame that failed, or one whose every line is ignored
+    (``.git-blame-ignore-revs``), looks the same. Upgrade path: the git pass
+    records the size skip on the file's row.
+    """
+    if not paths:
+        return set()
+    floor = await session.execute(
+        select(GitMetadata.file_path).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.file_path.in_(paths),
+            GitMetadata.commit_count_total >= _MIN_COMMITS_FOR_BLAME,
+        )
+    )
+    candidates = set(floor.scalars().all())
+    if not candidates:
+        return set()
+    b = GitFunctionBlame
+    # Unindexed, but read only for the few files that pass the floor unmatched.
+    blamed = await session.execute(
+        select(b.file_path)
+        .where(b.repository_id == repo_id, b.file_path.in_(candidates))
+        .distinct()
+    )
+    return candidates - set(blamed.scalars().all())
 
 
 async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
@@ -388,9 +450,17 @@ async def _plans(
                 s.refactoring_type,
                 s.file_path,
                 s.target_symbol,
+                s.status,
                 s.evidence_json,
                 s.plan_json,
-            ).where(s.repository_id == repo_id, or_(*wanted))
+                s.rank_json,
+            ).where(
+                s.repository_id == repo_id,
+                or_(*wanted),
+                # The registry's withheld types, as on every plan list. Fix
+                # first is its own measured lens, so no language gate applies.
+                shown_plan_predicate(include_unverified=True),
+            )
         )
     )
 
@@ -459,8 +529,13 @@ async def _finding_validator(
     if not spans:
         return lambda *_: None
     suggestions = [_span_suggestion(p, f.function_name, s, e) for (p, s, e), f in spans.items()]
+    # Built once per store write, so the checkout's package.json reads are too.
     inputs = await validation_inputs(
-        session, repo_id, suggestions, sorted({s.file_path for s in suggestions})
+        session,
+        repo_id,
+        suggestions,
+        sorted({s.file_path for s in suggestions}),
+        checkout=await repository_checkout(session, repo_id),
     )
 
     def validate(path: str, function: Any, start: Any, end: Any) -> dict[str, Any] | None:
@@ -491,10 +566,17 @@ async def _stamp(session: AsyncSession, repo_id: str) -> tuple[Any, ...]:
 
     A rewrite, a triage change (``updated_at`` moves) or a deletion (the
     count moves) changes it; git and graph rows are rewritten with the
-    health rows that read them.
+    health rows that read them. Function history is counted apart: an
+    update writes it after the health rows.
     """
     stamps: list[Any] = []
-    for model in (HealthFileMetric, HealthFinding, RefactoringOpportunity, PerformanceOpportunity):
+    for model in (
+        HealthFileMetric,
+        HealthFinding,
+        RefactoringOpportunity,
+        PerformanceOpportunity,
+        GitFunctionBlame,
+    ):
         stamps.extend(
             (
                 await session.execute(
@@ -782,6 +864,7 @@ async def _build(
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
     findings = await _findings(session, repository_id, full, planned, functions)
     paths = full | planned | {r.file_path for r in history_only}
+    changes, skipped = await _function_changes(session, repository_id, findings, refactoring)
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
         findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
@@ -797,6 +880,8 @@ async def _build(
         symbol_lines=await _symbol_lines(session, repository_id, performance),
         validate=await _finding_validator(session, repository_id, findings) if verify else None,
         judged=judged,
+        function_changes=changes,
+        blame_skipped=skipped,
     )
 
 

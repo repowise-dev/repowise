@@ -43,14 +43,15 @@ or rate limit can fail individual pages while the run completes.
 `repowise init --resume` writes only the pages that are absent and makes no
 model call for the ones you have, even if you switched provider.
 
-**Doctor reports zero pages.** Even a keyless run writes pages, so an empty
-wiki means the run did not finish. Run `repowise init --resume`.
+**Doctor reports zero pages.** A keyless run writes pages too. Zero pages
+means the run did not finish (run `repowise init --resume`) or the repo is
+Index only (run `repowise update --full`).
 
 **Memory or time on a very large repository.** Options, roughly in order of
 effect:
 
 ```bash
-repowise init --yes --no-prose --mode fast   # graph and essential git only; backfill later
+repowise init --yes --no-prose --mode fast   # Index only; `repowise update --full` adds the rest later
 REPOWISE_PARSE_WORKERS=2 repowise init       # fewer parse processes, less memory
 repowise init -x vendor/ -x 'generated/**'   # exclude what you never edit
 repowise init --max-file-pages 2000          # cap file pages, highest importance first

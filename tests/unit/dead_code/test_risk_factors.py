@@ -10,10 +10,10 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
-    effective_safe_to_delete,
     path_risk_factors,
     risk_evidence,
 )

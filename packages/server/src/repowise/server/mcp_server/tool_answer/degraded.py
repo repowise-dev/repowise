@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import time
 
+from repowise.server.mcp_server._code_rationale import can_lead_answer
 from repowise.server.mcp_server._meta import _normalize_target_path
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import keyless_note_meta as _keyless_note_meta
 from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
     _gather_body_candidates,
@@ -118,16 +120,20 @@ async def _degraded_payload(
     signals. ``confidence`` is graded by :func:`_degraded_confidence` from
     ``retrieval_quality`` and whether retrieval backs the file ``answer`` leads with.
     """
-    retrieval_quality = _retrieval_quality(hits, agreement_dominant)
+    retrieval_quality = _retrieval_quality(hits, agreement_dominant, question)
     repo_root = _repo_root(ctx)
-    symbol_bodies, _served_named_body = _build_symbol_bodies(
+    # A named body that leaves out the rest of the question is served as
+    # evidence, never as the answer the payload leads with.
+    symbol_bodies, served_named_body = _build_symbol_bodies(
         _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
         repo_root,
+        question=question,
+        hits=hits,
     )
     # Inlined bodies are citations in the ordinary sense.
     citations = list(dict.fromkeys(b["path"] for b in symbol_bodies))
 
-    summary = _degraded_summary(reason, symbol_bodies, len(hits))
+    summary = _degraded_summary(reason, symbol_bodies if served_named_body else [], len(hits))
 
     best_guesses = _build_best_guesses(hits)
     # No quotes to check against here — there is no prose to quote from.
@@ -152,12 +158,12 @@ async def _degraded_payload(
                 citations.append(path)
 
     # The file ``answer`` will name first, in the projection's order.
-    if symbol_bodies:
+    if served_named_body:
         lead = symbol_bodies[0]["path"]
     elif best_guesses:
         lead = best_guesses[0]["file"]
     else:
-        lead = code_rationale[0].get("path") if code_rationale else None
+        lead = next((r.get("path") for r in code_rationale[:1] if can_lead_answer(r)), None)
     confidence = _degraded_confidence(
         reason,
         retrieval_quality,
@@ -186,6 +192,7 @@ async def _degraded_payload(
         )
     if symbol_bodies:
         payload["symbol_bodies"] = symbol_bodies
+    if served_named_body:
         payload["grounding"] = "symbol_body"
         payload["next_action_hint"] = await _degraded_next_action(
             symbol_bodies, ctx, repository, exclude_spec
@@ -208,12 +215,13 @@ async def _degraded_payload(
                 confidence,
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
-                has_bodies=bool(symbol_bodies),
+                has_bodies=served_named_body,
             ),
             repository=repository,
             targets=[*citations, *fallback_targets],
         ),
         "degraded": reason,
+        **(_keyless_note_meta() if reason == "no-llm-provider" else {}),
     }
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
 

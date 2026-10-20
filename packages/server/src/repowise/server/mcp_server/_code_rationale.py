@@ -44,7 +44,14 @@ from repowise.core.analysis.decisions.rationale_comments import (
     harvest_file_rationale,
 )
 from repowise.core.exclusion import build_exclude_spec, is_excluded
-from repowise.server.mcp_server._why_relevance import floor_ranked
+from repowise.server.mcp_server._why_relevance import (
+    clears_floor,
+    floor_ranked,
+    question_terms,
+    relevance,
+    term_idf,
+    word_set,
+)
 
 _log = logging.getLogger("repowise.mcp.code_rationale")
 
@@ -125,6 +132,11 @@ _MAX_RESULTS = 6
 # score. Relative, not absolute: scores scale with how many terms a question has.
 _RELEVANCE_FLOOR_FRACTION = 0.5
 _NEAR_LINE_WINDOW = 60
+# Added to a block's weighted coverage (0 to 1). A marker says the block is a
+# reason and ranks it over an equal-coverage description; a near line is the
+# symbol get_answer anchored.
+_MARKER_BONUS = 0.25
+_NEAR_LINE_BONUS = 0.25
 
 
 def _content_terms(query: str | None) -> set[str]:
@@ -143,7 +155,8 @@ def _content_terms(query: str | None) -> set[str]:
 # A literal number the question pins down (a cap / limit / count / version).
 # ``_content_terms`` drops it (len<3, non-alpha), but the number is often the
 # WHOLE point - "why is X capped at 40" vs "...at 600" can only be told apart by
-# the digit. So it is scored separately, and heavily.
+# the digit. So it is matched separately, as a whole token, and weighed by rarity
+# like any term: "40" on one comment decides, "3" on every "Tier 3" does not.
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?!\w)")
 
 
@@ -166,44 +179,102 @@ def _number_in_text(num: str, low: str) -> bool:
     return re.search(rf"(?<![\w.]){re.escape(num)}(?![\w.])", low) is not None
 
 
+def _number_term(num: str) -> str:
+    """A number's key among the question terms; no word can collide with it."""
+    return f"#{num}"
+
+
 def _score_block(
-    comment: str, terms: set[str], numbers: list[str]
-) -> tuple[float, list[str], list[str], bool]:
-    """Score a comment block. Returns (score, matched_terms, matched_nums, has_marker).
+    words: frozenset[str], own: frozenset[str], low: str, idf: dict[str, float]
+) -> tuple[float, list[str], bool] | None:
+    """Score a comment block, or ``None`` when it is not served.
 
-    Rationale marker = 2.0; each distinct query term present = 1.0; each literal
-    question number present = 3.0 (the strongest single signal - it identifies
-    the exact constant the question asks about, cutting through cap/limit
-    boilerplate). Uses the broad ``RATIONALE_MARKERS`` set (intent + causal)
-    shared with the index-time harvest - recall mode, so intent-only markers
-    ("never", "always") count.
+    Returns (score, matched_terms, has_marker). The score is the question's
+    weighted coverage (rarer terms weigh more, over every block scanned) plus
+    the bonuses above. Uses the broad ``RATIONALE_MARKERS`` set shared with the
+    index-time harvest, in recall mode, so intent-only markers ("never",
+    "always") count.
+
+    The gate: with question terms, a marked block needs one of their words in
+    its own text (*own*; *words* adds what an anchoring declaration lends) and
+    an unmarked block also needs the floor's share of their weight; a number
+    alone never qualifies, so "Strategy 3" does not answer "tier 3". Without
+    terms (path mode, "why is this file shaped this way") a marker is enough.
     """
-    low = comment.lower()
     has_marker = any(m in low for m in RATIONALE_MARKERS)
-    matched = sorted(t for t in terms if t in low)
-    matched_nums = [n for n in numbers if _number_in_text(n, low)]
-    score = (2.0 if has_marker else 0.0) + float(len(matched)) + 3.0 * len(matched_nums)
-    return score, matched, matched_nums, has_marker
+    if not idf:
+        return (_MARKER_BONUS, [], True) if has_marker else None
+    matched = [t for t in idf if t in words]
+    coverage = relevance(words, idf)
+    if not any(not t.startswith("#") and t in own for t in matched):
+        return None
+    if not (has_marker or clears_floor(coverage)):
+        return None
+    score = coverage + (_MARKER_BONUS if has_marker else 0.0)
+    return score, sorted(t.lstrip("#") for t in matched), has_marker
 
 
-def _keep(
-    matched: list[str],
-    matched_nums: list[str],
-    has_marker: bool,
-    has_terms: bool,
-) -> bool:
-    """Surfacing gate. A pinned question number co-occurring with a marker or
-    any content term is kept (the number disambiguates the exact constant).
-    With query terms: need a marker+term overlap, or a strong (>=2 terms)
-    overlap on its own. Without query terms (path-mode "why is this file shaped
-    this way"): a rationale marker is enough."""
-    if matched_nums and (has_marker or matched):
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _query_identifiers(query: str | None) -> set[str]:
+    """The code names in *query*, lowercased: tokens that split into parts
+    (``_narrow_overload``, ``withManagedSignal``) or lead with an underscore."""
+    return {
+        raw.lower()
+        for raw in _IDENT_RE.findall(query or "")
+        if raw.startswith("_") or len(word_set(raw)) > 1
+    }
+
+
+# A line that declares a name: a keyword declaration, or ``NAME =`` /
+# ``NAME:`` at its start. A call site naming the identifier is not one.
+_DECL_KEYWORD_RE = re.compile(
+    r"\s*(?:(?:export|public|private|protected|internal|static|async|final|pub|"
+    r"readonly|abstract|default|override|open|inline)\s+)*"
+    r"(?:def|class|fn|func|function|const|let|var|val|type|interface|struct|enum)\b"
+)
+_DECL_ASSIGN_RE = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=(?!=))")
+
+
+def _declares(line: str, idents: set[str]) -> bool:
+    """Whether *line* declares one of *idents*."""
+    m = _DECL_ASSIGN_RE.match(line)
+    if m and m.group(1).lower() in idents:
         return True
-    if not has_terms:
-        return has_marker
-    if has_marker and matched:
-        return True
-    return len(matched) >= 2
+    return bool(_DECL_KEYWORD_RE.match(line)) and bool(
+        idents & {w.lower() for w in _IDENT_RE.findall(line)}
+    )
+
+
+def _anchored_words(lines: list[str], start: int, end: int, idents: set[str]) -> frozenset[str]:
+    """Words of the declaration a block documents, when it declares a query identifier.
+
+    A docstring sits under its ``def``, a comment above its declaration, and
+    neither repeats the name, so the question's strongest term never occurs in
+    the block itself. The line before *start* or the first non-blank line after
+    *end* (1-based) declaring one of *idents* lends the block its words.
+    """
+    if not idents:
+        return frozenset()
+    near = [lines[start - 2]] if start >= 2 else []
+    near += [ln for ln in lines[end : end + 3] if ln.strip()][:1]
+    out: frozenset[str] = frozenset()
+    for ln in near:
+        if _declares(ln, idents):
+            out |= word_set(ln)
+    return out
+
+
+# A mined row may stand in for the answer only on this many distinct matches
+# (question terms or numbers). A marker plus one shared word clears `_keep`
+# ("FIXME ... unused by cobra" for a question naming cobra) but answers nothing.
+_LEAD_MIN_MATCHES = 2
+
+
+def can_lead_answer(row: dict) -> bool:
+    """Whether a mined rationale row matches enough of the question to be the answer."""
+    return len(set(row.get("matched_terms") or ())) >= _LEAD_MIN_MATCHES
 
 
 def _read_text(repo_root: Path, file_path: str) -> str | None:
@@ -227,6 +298,30 @@ def _truncate_block(comment: str) -> str:
     if len(comment) > _MAX_BLOCK_CHARS:
         return comment[: _MAX_BLOCK_CHARS - 1].rstrip() + "…"
     return comment
+
+
+def _file_blocks(
+    root: Path, path: str, idents: set[str], numbers: list[str]
+) -> list[tuple[str, int, int, str, frozenset[str], frozenset[str]]]:
+    """``(path, start, end, comment, words, own words)`` per comment block of *path*."""
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    text = _read_text(root, path)
+    if text is None or text.count("\n") > _MAX_FILE_LINES:
+        return []
+    try:
+        found = extract_comment_blocks(text, ext, include_trailing=True)
+    except Exception as exc:  # never let a tokenizer bug break a tool
+        _log.debug("comment extraction failed for %s: %s", path, exc)
+        return []
+    lines = text.splitlines()
+    out = []
+    for block in found:
+        start, end, comment = block.start_line, block.end_line, block.text
+        low = comment.lower()
+        own = word_set(comment) | {_number_term(n) for n in numbers if _number_in_text(n, low)}
+        lent = _anchored_words(lines, start, end, idents)
+        out.append((path, start, end, comment, own | lent, own))
+    return out
 
 
 def mine_rationale(
@@ -264,76 +359,53 @@ def mine_rationale(
     except Exception:
         return []
 
-    terms = _content_terms(query)
-    numbers = _salient_numbers(query)
-    has_terms = bool(terms)
+    terms = question_terms(query, prose=True) if query else []
+    numbers = _salient_numbers(query) if terms else []
+    idents = _query_identifiers(query)
     near_lines = near_lines or {}
 
     # Dedupe while preserving order; cap the file fan-out.
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for p in file_paths:
-        if p and p not in seen:
-            seen.add(p)
-            ordered.append(p)
-    ordered = ordered[:max_files]
+    ordered = list(dict.fromkeys(p for p in file_paths if p))[:max_files]
+    # Every block of every scanned file first: term rarity is taken over all of
+    # them, so a word most comments here share weighs little.
+    blocks = [b for path in ordered for b in _file_blocks(root, path, idents, numbers)]
+    terms += [_number_term(n) for n in numbers]
+    idf = term_idf(terms, [b[4] for b in blocks]) if terms else {}
 
-    scored: list[tuple[float, bool, bool, dict]] = []
-    for path in ordered:
-        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-        text = _read_text(root, path)
-        if text is None or text.count("\n") > _MAX_FILE_LINES:
+    scored: list[tuple[float, dict]] = []
+    for path, start, end, comment, words, own in blocks:
+        result = _score_block(words, own, comment.lower(), idf)
+        if result is None:
             continue
+        score, matched, _ = result
         near = near_lines.get(path)
-        try:
-            blocks = extract_comment_blocks(text, ext, include_trailing=True)
-        except Exception as exc:  # never let a tokenizer bug break a tool
-            _log.debug("comment extraction failed for %s: %s", path, exc)
-            continue
-        for block in blocks:
-            start, end, comment = block.start_line, block.end_line, block.text
-            score, matched, matched_nums, has_marker = _score_block(comment, terms, numbers)
-            if not _keep(matched, matched_nums, has_marker, has_terms):
-                continue
-            if near is not None and abs(start - near) <= _NEAR_LINE_WINDOW:
-                score += 1.5
-            # Coalesced runs longer than the cap are split at the head — the
-            # lead lines carry the rationale; tail is usually elaboration.
-            if end - start + 1 > _MAX_BLOCK_LINES:
-                end = start + _MAX_BLOCK_LINES - 1
-            scored.append(
-                (
-                    score,
-                    has_marker,
-                    bool(matched_nums),
-                    {
-                        "path": path,
-                        "lines": [start, end],
-                        "comment": _truncate_block(comment) if truncate_blocks else comment,
-                        "matched_terms": matched + matched_nums,
-                    },
-                )
+        if near is not None and abs(start - near) <= _NEAR_LINE_WINDOW:
+            score += _NEAR_LINE_BONUS
+        # Coalesced runs longer than the cap are split at the head: the
+        # lead lines carry the rationale; tail is usually elaboration.
+        if end - start + 1 > _MAX_BLOCK_LINES:
+            end = start + _MAX_BLOCK_LINES - 1
+        scored.append(
+            (
+                score,
+                {
+                    "path": path,
+                    "lines": [start, end],
+                    "comment": _truncate_block(comment) if truncate_blocks else comment,
+                    "matched_terms": matched,
+                },
             )
-
-    # Precision: a comment with an explicit rationale marker IS the "why". When
-    # any survive, drop the marker-less blocks that only cleared the >=2-term
-    # gate — on a query with generic terms (lines / source / one) those are
-    # usually plain docstrings that read as noise next to the real rationale.
-    # The term-only blocks remain the recall fallback when nothing has a marker;
-    # a block pinned by a literal question number is always kept (it identifies
-    # the exact constant, marker or not).
-    if any(m for _, m, _, _ in scored):
-        scored = [t for t in scored if t[1] or t[2]]
+        )
 
     scored.sort(key=lambda t: t[0], reverse=True)
 
     # Relevance floor, relative to the best block: below half the top score a
-    # block cleared the >=2-term gate on generic vocabulary rather than on the
+    # block cleared the gate on generic vocabulary rather than on the
     # question — an SVG edge-routing docstring on "edges"/"project"/"between".
     if scored:
         floor = scored[0][0] * _RELEVANCE_FLOOR_FRACTION
         scored = [t for t in scored if t[0] >= floor]
-    return [entry for _, _, _, entry in scored[:max_results]]
+    return [entry for _, entry in scored[:max_results]]
 
 
 # Cap / limit vocabulary: a question may say "capped" while the source comment

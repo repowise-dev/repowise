@@ -59,7 +59,7 @@ export function ReleaseNotice({
   dismissLabel,
   className,
 }: ReleaseNoticeProps) {
-  const storageKey = id ? STORAGE_PREFIX + id + (version ? `:v${version}` : "") : null;
+  const storageKey = dismissalKey(id, version);
   const hostOwned = !!onDismiss || !storageKey;
   // Start dismissed so it does not flash in before the stored answer is read.
   const [dismissed, setDismissed] = React.useState(!hostOwned);
@@ -74,12 +74,6 @@ export function ReleaseNotice({
   }, [hostOwned, storageKey]);
 
   if (dismissed) return null;
-
-  const lead = title ? (
-    <>
-      <span className="font-medium text-[var(--color-text-primary)]">{title}</span>{" "}
-    </>
-  ) : null;
 
   const dismiss = () => {
     if (onDismiss) return onDismiss();
@@ -99,24 +93,44 @@ export function ReleaseNotice({
       {...(action ? { action } : {})}
       {...(className ? { className } : {})}
     >
-      {detail ? (
-        <details className="group/release">
-          <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
-            {lead}
-            {children}{" "}
-            <span className="text-[var(--color-accent-primary)] underline-offset-2 hover:underline">
-              <span className="group-open/release:hidden">{detailLabel}</span>
-              <span className="hidden group-open/release:inline">{hideLabel}</span>
-            </span>
-          </summary>
-          <div className="mt-1.5">{detail}</div>
-        </details>
-      ) : (
-        <>
-          {lead}
-          {children}
-        </>
-      )}
+      {renderBody(title, children, detail, detailLabel, hideLabel)}
     </DismissibleNotice>
+  );
+}
+
+function dismissalKey(id: string | undefined, version: string | null | undefined): string | null {
+  return id ? STORAGE_PREFIX + id + (version ? `:v${version}` : "") : null;
+}
+
+function renderBody(
+  title: React.ReactNode,
+  children: React.ReactNode,
+  detail: React.ReactNode,
+  detailLabel: string,
+  hideLabel: string,
+) {
+  const lead = title ? (
+    <>
+      <span className="font-medium text-[var(--color-text-primary)]">{title}</span>{" "}
+    </>
+  ) : null;
+
+  return detail ? (
+    <details className="group/release">
+      <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+        {lead}
+        {children}{" "}
+        <span className="text-[var(--color-accent-primary)] underline-offset-2 hover:underline">
+          <span className="group-open/release:hidden">{detailLabel}</span>
+          <span className="hidden group-open/release:inline">{hideLabel}</span>
+        </span>
+      </summary>
+      <div className="mt-1.5">{detail}</div>
+    </details>
+  ) : (
+    <>
+      {lead}
+      {children}
+    </>
   );
 }

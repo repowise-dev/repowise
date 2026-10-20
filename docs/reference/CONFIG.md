@@ -13,8 +13,12 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `distill:` block](#the-distill-block) ·
 [The `hooks:` block](#the-hooks-block) ·
 [The `mcp:` block](#the-mcp-block) ·
+[The `editor_files:` block](#the-editor_files-block) ·
 [The `decisions:` block](#the-decisions-block) ·
+[`policies.yaml`](#repowisepoliciesyaml) ·
 [The `security:` block](#the-security-block) ·
+[The `attribution:` block](#the-attribution-block) ·
+[The `events:` block](#the-events-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
 [The `assertions:` block](#the-assertions-block)
 
@@ -72,6 +76,8 @@ repo root on first `init`.
 ├── lancedb/             # Vector search index (LanceDB)
 ├── omissions/           # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml          # Provider, model, embedder, exclude patterns, distill/mcp/refactoring blocks
+├── events.jsonl         # Typed events as CloudEvents JSON lines (the jsonl event sink)
+├── events.key           # Random key the owner digests in component snapshots are made with
 ├── health-rules.json    # Per-file code-health marker overrides
 ├── state.json           # Last sync commit, page counts, token usage
 ├── mcp.json             # MCP server configuration
@@ -103,7 +109,7 @@ embedder: mock                       # Embedding provider (mock if no key detect
 embedding_model: text-embedding-3-small  # Embedding model (provider default if omitted)
 reasoning: auto                      # auto | off | none | minimal | low | medium | high | xhigh | max
 max_tokens: 16384                    # Max output tokens for each generated documentation page
-commit_limit: 500                    # Max commits per file for git analysis (clamped 1-10000)
+commit_limit: 5000                   # Max commits per file for git analysis (clamped 1-10000)
 follow_renames: false                # Track file renames in git history
 wiki_style: comprehensive            # comprehensive | caveman | reference | tutorial | custom
 language: en                         # Output language for generated pages (en, zh, ru, hi, ...)
@@ -139,13 +145,13 @@ You can edit this file directly. Changes take effect on the next `init`,
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
+| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `edenai`, `claude_cli`, `codex_cli`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
 | `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `max_tokens` | `16384` | Maximum output tokens requested for each model-written documentation page |
-| `commit_limit` | `500` | Max commits per file walked for git analysis, clamped to 1-10000 |
+| `commit_limit` | `5000` | Newest commits walked for git analysis and stored as commit rows, clamped to 1-10000 |
 | `follow_renames` | `false` | Track file renames through git history |
 | `exclude_patterns` | `[]` | Extra gitignore-style patterns, on top of `.gitignore` |
 | `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, `custom` |
@@ -157,6 +163,12 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `mcp` | see below | MCP tool surface config |
 | `refactoring` | see below | Refactoring-intelligence config |
 | `forges.hosts` | `{}` | Maps a self-managed git host to its forge (`github`, `gitlab`, `azure`, `bitbucket`, `generic`). See [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts) |
+
+`commit_limit` sets how far back history-based signals see: churn, co-change,
+the commit list and change records. The first `repowise update` after upgrading
+re-reads the history once, with no model calls. A `commit_limit` written in
+`config.yaml` is kept as set, and when it is below the default `repowise update`
+says so once.
 
 `reasoning` controls documentation-generation calls for reasoning-capable chat
 models. `auto` preserves provider defaults. `off`/`none` disable Qwen3-style
@@ -396,6 +408,25 @@ mcp:
   default. The workspace-only three are ignored if named in single-repo mode. See
   [MCP_TOOLS.md](../agent/MCP_TOOLS.md#configuring-the-tool-surface).
 
+### The `editor_files:` block
+
+Controls the generated block in `.claude/CLAUDE.md` and `AGENTS.md`. The block
+is read into the agent's context on every turn, so the default is lean.
+`sections` adjusts it with the `mcp.tools` grammar: `+name` / `-name` change
+the default set, unprefixed names replace it.
+
+```yaml
+editor_files:
+  claude_md: true
+  sections: ["+commands", "+fix_first"]
+```
+
+- Default: `architecture`, `key_modules`, `entry_points`, `hotspots`, `health`
+  (score and worst file), `decisions` (top three titles), `how_to_work` (three
+  bullets), `tools`.
+- Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
+  `commands` (build/test/lint read from manifests), `how_to_work_full`.
+
 ### The `decisions:` block
 
 Controls decision capture: whether it runs at all, which sources it uses, and
@@ -566,6 +597,49 @@ Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 a confirmed (`active`) decision is never walked back to `proposed` by a
 re-extraction.
 
+### `.repowise/components.yaml`
+
+Components name the parts of a repository that health, hotspots, bus factor, test reach and dead code roll up to. The file is multi-document Backstage YAML (`Component`, `System` and `Group` on `backstage.io/v1alpha1`), with Repowise data in `repowise.dev/paths` (gitignore-style globs written with `/`, matched case-sensitively), `repowise.dev/criticality` (`low`, `medium`, `high`, `critical`), `repowise.dev/tags` and `repowise.dev/capability` annotations; a repo-root `catalog-info.yaml` is read the same way, so a developer portal and Repowise share one file. Without a file, components are derived from workspace services, then module pages, then top-level directories; a declared component claims the files its globs match (where two match a file, the first declared wins), and one named like a derived component replaces it and, with no paths of its own, keeps its directory. A derived component is named after its directory, skipping route parameters and groups such as `[id]` or `(group)`; where two would share a name, the shallowest keeps it and each other adds its nearest parent directory other than `src`, `lib` or `app` (`workspace-web`), so a name a catalog already uses stays the same. See [examples/components](../../examples/components/components.yaml) and `repowise components check`.
+
+### `.repowise/policies.yaml`
+
+The change policy `repowise check` evaluates. Each rule selects components (`match`, `exclude`), tests conditions over the change's evidence (`when`, all must hold) and names an action: `warn`, `require_owner_review`, `require_tests` or `fail`. A rule can instead wrap an existing gate (`security`, `coverage` or `doc_drift`) with that command's options under `with`; it runs exactly as the command does on its own, and `doc_drift` is scoped to the change (`since`) unless the rule sets it. `require_owner_review` and `require_tests` are advisory: they are reported in every format and `repowise check` still exits 0; only `fail` exits 1.
+
+```yaml
+version: 1
+rules:
+  - name: agent-pci-needs-owner
+    match:
+      components: {tags: [pci]}          # also names, criticality; each list is any-of
+    when:
+      attribution: agent                 # agent, human_attested or unknown
+      reaching_tests: missing            # a changed file in scope has no reaching test
+    action: require_owner_review
+  - name: no-new-secrets
+    gate: security
+    with: {fail_on: high, baseline: .security-baseline.json}
+    action: fail                         # the default for a gate
+```
+
+Conditions are `attribution`, `agent_tier` (1, 2 or 3), `reaching_tests` (`missing` or `present`), `contract_break`, `decision_crossed` and `bus_factor_below`; there is no risk-score condition. A condition whose evidence is not available (no index, attribution off) leaves the rule not evaluated, and it never fires. Exit 2 (`policy_invalid`, every problem listed) on an unknown key, condition or gate option, a bad action, or a duplicate rule name.
+
+### `.repowise/teams.yaml`
+
+Declared teams with the members who count as the team's activity, for `repowise components ownership` and `get_context(include=["ownership"])` on a component. Each team is a Backstage `Group` whose `spec.members` lists forge logins and whose `repowise.dev/member-emails` annotation lists git author emails; members are used only for matching commits and never appear in output. A CODEOWNERS `@org/team` (GitHub or GitLab, sections included) and a catalog `spec.owner` of `group:default/team` both resolve to the Group named `team`. Group entities in the catalog files add team names; their `spec.members` is not read.
+
+```yaml
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: payments
+  annotations:
+    repowise.dev/member-emails: "ana@acme.com, li@acme.com"
+spec:
+  type: team
+  children: []
+  members: [ana-acme, li-acme]
+```
+
 ### The `security:` block
 
 Secret shapes of your own for `repowise security check`.
@@ -582,6 +656,32 @@ security:
 - A finding is keyed on file, kind and masked line, so two matches with the same visible prefix on one line share a baseline entry.
 - Exit 2 (`config_invalid`, every problem listed) on an unknown key, a missing name or regex, a duplicate or badly shaped name, a bad severity, or a regex that does not compile, can match zero characters, or nests repetition like `(a+)+` or `(a|aa)+` (best effort).
 - At most 50 patterns of 500 characters. Lines over 4096 characters are not matched and are counted (`long_lines_skipped` in JSON); a slow regex that passes the checks stays slow.
+
+### The `attribution:` block
+
+```yaml
+attribution:
+  enabled: true      # read public AI markers: bot authors, trailers, footers, git-ai notes, Agent Trace files
+  capture: off       # off, local or notes
+  agents: []         # agent target ids, e.g. claude-code, codex
+```
+
+The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
+
+`capture: local` records the listed agents' edits as line hashes in `.repowise/attribution/`; `capture: notes` also writes git-ai notes on `refs/notes/ai`. What each level stores, and what leaves the machine, is in [ATTRIBUTION.md](../layers/ATTRIBUTION.md). The same consent lets `repowise attribution backfill --agent claude-code,codex` bind past commits from the transcripts these agents keep on this machine.
+
+### The `events:` block
+
+```yaml
+events:
+  enabled: true            # snapshot components at each index run and diff them
+  retention_days: 365      # older runs and events are dropped
+  compact_after_days: 30   # older runs keep one per ISO week
+  kinds: {new_hotspot: true}
+  sinks: [jsonl]           # jsonl (.repowise/events.jsonl), stdout, or a plugin's sink
+```
+
+An index run diffs into typed events against the run right before it when both ran under the same analyzer and parser stamp; a stamp change, or a run in between that took no snapshot, starts a new baseline. Owners are compared as keyed digests made with a random per-repository key in `.repowise/events.key`; a declared owner is named only when it is a group. `repowise doctor` names any value in this block that fell back to its default. Severity follows the component's `repowise.dev/criticality`. `new_hotspot` is off by default; every other kind is on. Read them with `repowise events` or `GET /api/repos/{id}/events`.
 
 ### The `refactoring:` block
 
@@ -699,8 +799,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 | Model | Notes |
 |-------|-------|
-| `claude-sonnet-4-6` | Best balance of quality and cost |
-| `claude-opus-4-6` | Highest quality, higher cost |
+| `claude-sonnet-5-5` | Best balance of quality and cost |
+| `claude-opus-5-5` | Highest quality, higher cost |
 | `claude-haiku-5-5` | Default, fastest, lowest cost |
 
 ```bash
@@ -778,7 +878,7 @@ Gemini is also the default embedding provider when `GEMINI_API_KEY` is set.
 
 ```bash
 export DEEPSEEK_API_KEY="..."
-repowise init --provider deepseek --model deepseek-chat
+repowise init --provider deepseek --model deepseek-flash
 ```
 
 ### Kimi
@@ -873,12 +973,24 @@ routed through Eden (e.g. `openai/gpt-5*`); other models expose only `auto`.
 
 ### Provider auto-detection
 
-If you don't pass `--provider`, repowise detects your provider by checking, in
-order:
+The CLI, `repowise serve` chat and jobs, and the MCP server resolve provider,
+model, and base URL the same way, first match wins:
 
-1. `REPOWISE_PROVIDER` environment variable
-2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
+1. `--provider` / `--model` flags, or a per-request choice in the web UI
+2. `provider`, `model`, and `<provider>: {base_url: ...}` in `.repowise/config.yaml`
+3. the global default saved from the web UI (`~/.repowise/provider_config.json`)
+4. `REPOWISE_PROVIDER` / `REPOWISE_MODEL` and the provider's `*_BASE_URL` variable
+5. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
+
+Picking a model in the web UI for a repo writes it to that repo's `config.yaml`,
+so the CLI uses it too. A local OpenAI-compatible server such as LM Studio works
+as `provider: openai` with `openai: {base_url: http://localhost:1234/v1}`.
+Because `config.yaml` may be committed, a non-local base URL there only receives a key
+that is not in the repo's `.repowise/.env` after you confirm it in Settings or with `repowise init`.
+You can set all of this from the repo's Settings page instead of editing the
+file: the model field lists the provider's live models and takes any id, and
+Test connection checks a base URL before you save it. A loopback base URL needs
+no API key.
 
 ---
 
@@ -888,11 +1000,18 @@ The embedder is separate from the LLM provider.
 
 | Embedder | Env var | Notes |
 |----------|---------|-------|
-| `gemini` | `GEMINI_API_KEY` | Default when key is present |
+| `gemini` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | Default when key is present |
 | `openai` | `OPENAI_API_KEY` | OpenAI `text-embedding-3-small` |
 | `openrouter` | `OPENROUTER_API_KEY` | Routed through OpenRouter |
 | `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local Ollama embeddings, no API key |
+| `edenai` | `EDENAI_API_KEY` | Eden AI gateway, see [Eden AI](#eden-ai-hosted-with-an-eu-endpoint) |
 | `mock` | n/a | Dummy embeddings, no semantic search (default when no key is detected) |
+
+Which embedder a run uses, first match wins: `--embedder`, then
+`REPOWISE_EMBEDDER`, then the `embedder` pin in `.repowise/config.yaml`, then
+the first key present in the order gemini, openai, openrouter, ollama, edenai,
+then `embedder` in `~/.repowise/config.yaml`, then `mock`. `reindex` skips a
+`mock` pin when a real embedder can be found.
 
 ```bash
 repowise init --embedder openai
@@ -963,8 +1082,8 @@ The `.repowise/.env` file is gitignored automatically.
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_PROVIDER` | Override provider (skips auto-detection) |
-| `REPOWISE_MODEL` | Override model |
+| `REPOWISE_PROVIDER` | Provider when neither a flag nor `config.yaml` names one (skips auto-detection) |
+| `REPOWISE_MODEL` | Model when neither a flag nor `config.yaml` names one |
 | `REPOWISE_DOC_MODEL` | Override the model used for `get_answer` synthesis specifically |
 | `REPOWISE_REASONING` | Override `reasoning` (see valid values above) |
 | `REPOWISE_ANSWER_TIMEOUT_S` | Seconds `get_answer` waits for synthesis before giving up. Defaults to a per-provider budget: 60s for the remote API providers, 120s for `ollama` and `litellm`, 180s for `codex_cli` and `opencode`. Raise it if your model is slower than its class suggests, lower it if you would rather an agent fail fast than block. Capped at 600s. Note your MCP client enforces its own tool timeout underneath this one, so setting a value above it produces a client-side error instead of repowise's diagnosable "synthesis exceeded its budget" response |
@@ -984,7 +1103,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `EDENAI_EMBEDDING_TIMEOUT` | As above, `edenai` only |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
-| `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only; raise it for long pages on slow local models |
+| `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only. With neither variable set, an Ollama request gets 30s plus 2ms per input character, so a full chunk of long pages on a CPU-only model is not cut off. Setting either variable pins the timeout to that value |
 
 ### Server and database
 

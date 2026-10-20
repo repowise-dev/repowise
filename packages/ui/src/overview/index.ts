@@ -44,15 +44,19 @@ export { actionHref } from "./action-href";
 export { NextActions, renderActionTitle } from "./next-actions";
 export type { NextActionsProps } from "./next-actions";
 export { ExploreList } from "./explore-list";
+export { ExploreCards } from "./explore-cards";
+export type { ExploreCard, ExploreCardsProps } from "./explore-cards";
 export type { ExploreEntry } from "./explore-list";
 export { LanguageBar } from "./language-bar";
 
 export { OverviewBody } from "./overview-body";
-export type { OverviewBodyProps, OverviewBodySlots } from "./overview-body";
+export { OVERVIEW_BODY_COPY } from "./overview-body";
+export type { OverviewBodyCopy, OverviewBodyProps, OverviewBodySlots } from "./overview-body";
 
 export {
   buildChangeStats,
   buildExplore,
+  buildExploreCards,
   buildLanguageDistribution,
   buildReads,
   buildRibbon,

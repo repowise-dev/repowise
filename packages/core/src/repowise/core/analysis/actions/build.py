@@ -28,11 +28,13 @@ Row shapes (the field names are the SQL columns):
 ``commit_health``
     ``sha``, ``subject``, ``committed_at`` (the commit's), ``file_path``,
     ``symbol``, ``biomarker_type``, ``severity``, ``change_kind``,
-    ``line_start``, ``reason``, ``attribution_basis``.
+    ``line_start``, ``reason``, ``attribution_basis``, ``dimension``.
 ``fix_first``
     One mapping of the Fix-first builder's own inputs (``metrics``,
     ``findings``, ``refactoring``, ``performance``, ``plans``); shapes in
-    ``repowise.core.analysis.health.fix_first.build``.
+    ``repowise.core.analysis.health.fix_first.build``. The recent findings
+    also read ``performance`` rows' ``queue_eligible`` and the fields
+    ``perf_confident_verdict`` reads.
 ``security``
     ``file_path``, ``kind``, ``line_number``, ``snippet``, ``severity``,
     ``commit_sha`` (empty for the working tree).
@@ -64,9 +66,10 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
-from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.finding_registry import excluded_types, is_served
 from repowise.core.analysis.health.fix_first import build_fix_first
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
+from repowise.core.analysis.health.queue.eligibility import perf_confident_verdict
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.author_identity import author_identity_key
@@ -206,7 +209,8 @@ def with_leads(files: Mapping[str, FileFacts], findings: Rows) -> dict[str, File
     by_path: dict[str, list] = defaultdict(list)
     for f in findings:
         path = field(f, "file_path")
-        if path in wanted and _open(f) and field(f, "biomarker_type") not in hidden:
+        biomarker = field(f, "biomarker_type")
+        if path in wanted and _open(f) and is_served("health", biomarker, path, hidden):
             by_path[path].append(f)
     out = dict(files)
     for path, found in by_path.items():
@@ -277,24 +281,45 @@ def build_authors(rows: Rows, *, since: datetime | None) -> dict[str, Any]:
     return {"author_last_commit": last, "active_authors_90d": len(active)}
 
 
+#: Markers that read a measured coverage report, so "worsened" is coverage the
+#: change lost. ``untested_hotspot`` is left out: without a report it fires on a
+#: missing test file, which no commit's lines decide.
+COVERAGE_MARKERS = frozenset({"coverage_gap", "coverage_gradient"})
+
+#: Commit-health rows a loader reads: the authored kinds, at a severity that
+#: counts, or a performance marker of any severity (its proof is the cause's
+#: place in the performance queue, not the marker's label).
+SERIOUS = ("critical", "high")
+
+
 def _authored_regression(row: Any) -> bool:
-    """The commit's own lines introduced or worsened a critical/high finding."""
+    """The commit's own lines introduced or worsened the finding."""
     return (
         field(row, "change_kind") in ("introduced", "worsened")
-        and field(row, "severity") in ("critical", "high")
         and field(row, "attribution_basis") in AUTHORED_BASES
     )
 
 
-def _shown_code_shape(biomarker: Any, hidden: frozenset[str]) -> bool:
-    """A code-shape marker, not a history one, and not one the registry hides."""
-    return biomarker_category(biomarker) != HISTORY_CATEGORY and biomarker not in hidden
+def recent_kind(row: Any, hidden: frozenset[str]) -> str | None:
+    """What a commit-health row says the commit did: ``performance`` and
+    ``coverage`` are defect-class, ``shape`` is a code-shape marker, and
+    ``None`` is a history or hidden marker, or one below the bar."""
+    biomarker = field(row, "biomarker_type")
+    path = field(row, "file_path")
+    # The row's own dimension, as the loader filters on it.
+    if field(row, "dimension") == "performance":
+        return "performance" if is_served("performance", biomarker, path, hidden) else None
+    if field(row, "severity") not in SERIOUS or not is_served("health", biomarker, path, hidden):
+        return None
+    if biomarker in COVERAGE_MARKERS:
+        return "coverage"
+    return "shape" if biomarker_category(biomarker) != HISTORY_CATEGORY else None
 
 
 def _recent_candidates(
     rows: Rows, *, week: datetime | None, files: Mapping[str, FileFacts]
-) -> list[tuple[Any, datetime]]:
-    """Authored critical/high code-shape findings from commits since ``week``."""
+) -> list[tuple[Any, datetime, str]]:
+    """Authored findings from commits since ``week``, with their :func:`recent_kind`."""
     if week is None:
         return []
     hidden = excluded_types()
@@ -305,9 +330,21 @@ def _recent_candidates(
             continue
         if _is_test(field(f, "file_path"), files):
             continue
-        if _shown_code_shape(field(f, "biomarker_type"), hidden):
-            out.append((f, at))
+        kind = recent_kind(f, hidden)
+        if kind is not None:
+            out.append((f, at, kind))
     return out
+
+
+def proven_performance(rows: Rows) -> frozenset[tuple[str, str]]:
+    """``(file, marker)`` of each open performance cause stored in the default
+    queue that is sure enough to be told to do (``perf_confident_verdict``):
+    the bar a performance regression clears."""
+    return frozenset(
+        (field(r, "file_path"), field(r, "biomarker_type"))
+        for r in rows
+        if _open(r) and field(r, "queue_eligible") is True and perf_confident_verdict(r).eligible
+    )
 
 
 def build_recent(
@@ -316,41 +353,83 @@ def build_recent(
     week: datetime | None,
     open_findings: Rows,
     files: Mapping[str, FileFacts],
+    performance: Rows = (),
 ) -> dict[str, Any]:
-    """Findings a commit in the last week wrote that are still open."""
+    """Findings a commit in the last week wrote that still count today.
+
+    A code-shape or coverage finding counts while its open finding is still
+    critical or high, and reads as that finding does today. A performance one
+    counts while its file holds an open, proven cause of the same marker in
+    the performance queue (``performance`` rows, :func:`proven_performance`).
+    """
     if week is None:
         return {}
     candidates = _recent_candidates(rows, week=week, files=files)
     if not candidates:
         return {"recent_findings": ()}
-    open_keys = {
-        (field(h, "file_path"), field(h, "biomarker_type"), field(h, "function_name"))
-        for h in open_findings
-        if _open(h)
-    }
+    serious = _serious_open(open_findings)
+    proven = proven_performance(performance)
     recent = []
     seen: set[tuple[str, str, str | None]] = set()
-    for f, at in sorted(candidates, key=lambda c: c[1], reverse=True):
-        key = (field(f, "file_path"), field(f, "biomarker_type"), field(f, "symbol"))
-        # Still open, and counted once however many commits touched it.
-        if key not in open_keys or key in seen:
+    for f, at, kind in sorted(candidates, key=lambda c: c[1], reverse=True):
+        path, biomarker = field(f, "file_path"), field(f, "biomarker_type")
+        key = (path, biomarker, field(f, "symbol"))
+        # Still counts today, and counted once however many commits touched it.
+        if key in seen:
             continue
+        if kind == "performance":
+            if (path, biomarker) not in proven:
+                continue
+            now = f
+        else:
+            now = serious.get(key)
+            if now is None:
+                continue
         seen.add(key)
         recent.append(
             RecentFinding(
                 sha=field(f, "sha"),
                 subject=field(f, "subject") or "",
                 committed_at=at,
-                file_path=field(f, "file_path"),
+                file_path=path,
                 symbol=field(f, "symbol"),
-                biomarker=field(f, "biomarker_type"),
-                severity=field(f, "severity"),
+                biomarker=biomarker,
+                severity=field(now, "severity"),
                 change_kind=field(f, "change_kind"),
-                line=field(f, "line_start"),
-                reason=field(f, "reason") or "",
+                line=field(now, "line_start"),
+                reason=field(now, "reason") or "",
+                kind=kind,
             )
         )
     return {"recent_findings": tuple(recent)}
+
+
+def _serious_open(open_findings: Rows) -> dict[tuple[str, str, str | None], Any]:
+    """The worst open critical/high finding per (file, marker, function).
+
+    A commit's row records the finding as that commit left it; the open row
+    is what is true today, so it decides whether the finding still counts and
+    what the action says about it. Ties go to the higher impact, then the
+    earlier line, then the reason, so the pick does not hang on row order.
+    """
+
+    def worse(h: Any) -> tuple:
+        return (
+            field(h, "severity") == "critical",
+            field(h, "health_impact") or 0.0,
+            -(field(h, "line_start") or 0),
+            field(h, "reason") or "",
+        )
+
+    out: dict[tuple[str, str, str | None], Any] = {}
+    for h in open_findings:
+        if not _open(h) or field(h, "severity") not in ("critical", "high"):
+            continue
+        key = (field(h, "file_path"), field(h, "biomarker_type"), field(h, "function_name"))
+        held = out.get(key)
+        if held is None or worse(h) > worse(held):
+            out[key] = h
+    return out
 
 
 def build_fix_first_store(rows: Mapping[str, Rows]) -> dict[str, Any]:
@@ -412,7 +491,7 @@ def build_dead(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             for r in rows
             if _open(r)
             and field(r, "safe_to_delete")
-            and field(r, "kind") not in skipped
+            and is_served("dead_code", field(r, "kind"), field(r, "file_path"), skipped)
             and not _is_test(field(r, "file_path"), files)
             and not _test_path(field(r, "file_path"))
         )
@@ -511,7 +590,11 @@ def build_repo_facts(
         "commit_health",
         commit_health,
         lambda rows: build_recent(
-            rows, week=week, open_findings=health_findings, files=known_files
+            rows,
+            week=week,
+            open_findings=health_findings,
+            files=known_files,
+            performance=(fix_first or {}).get("performance") or (),
         ),
     )
     build("fix_first", fix_first, build_fix_first_store)
@@ -527,8 +610,10 @@ def build_repo_facts(
 __all__ = [
     "ABSENT",
     "AUTHORED_BASES",
+    "COVERAGE_MARKERS",
     "LEAD_LOOKUP_MIN_COMMITS",
     "QUARTER",
+    "SERIOUS",
     "WEEK",
     "build_authors",
     "build_coverage",
@@ -541,7 +626,9 @@ __all__ = [
     "build_repo_facts",
     "build_secrets",
     "lead_paths",
+    "proven_performance",
     "reach_paths",
+    "recent_kind",
     "with_leads",
     "with_test_reach",
 ]

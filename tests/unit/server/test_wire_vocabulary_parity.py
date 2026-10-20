@@ -181,6 +181,12 @@ def test_refactoring_recipe_vocabularies_match_python() -> None:
     assert _union_members("RecipePreconditionKind", "refactoring.ts") == set(PRECONDITION_KINDS)
 
 
+def test_anchor_scopes_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.anchors import ANCHOR_SCOPES
+
+    assert _union_members("AnchorScope", "refactoring.ts") == set(ANCHOR_SCOPES)
+
+
 def test_refactoring_payoff_outcomes_match_python() -> None:
     from repowise.core.analysis.health.refactoring.payoff import PAYOFF_OUTCOMES
 

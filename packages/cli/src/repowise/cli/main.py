@@ -20,7 +20,7 @@ from repowise.cli._instrumented_group import InstrumentedGroup
 from repowise.core.registry import cli_registry, register_lazy_command
 
 
-@click.group(cls=InstrumentedGroup)
+@click.group(cls=InstrumentedGroup, discover_plugins=True)
 @click.version_option(version=__version__, prog_name="repowise")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
@@ -71,6 +71,13 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("overlap", "overlap_cmd:overlap_command"),
     ("decision", "decision_cmd:decision_group"),
     ("coverage", "coverage_cmd:coverage_group"),
+    ("components", "components_cmd:components_group"),
+    ("packages", "packages_cmd:packages_group"),
+    ("changes", "changes_cmd:changes_group"),
+    ("suspects", "suspects_cmd:suspects_command"),
+    ("check", "check_cmd:check_command"),
+    ("events", "events_cmd:events_command"),
+    ("report", "report_cmd:report_group"),
     ("impacted-tests", "impacted_tests_cmd:impacted_tests_command"),
     ("search", "search_cmd:search_command"),
     ("ask", "ask_cmd:ask_command"),
@@ -86,6 +93,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("export", "export_cmd:export_command"),
     ("hook", "hook_cmd:hook_group"),
     ("agents", "agents_cmd:agents_group"),
+    ("attribution", "attribution_cmd:attribution_group"),
     ("uninstall", "uninstall_cmd:uninstall_command"),
     ("status", "status_cmd:status_command"),
     ("next", "next_cmd:next_command"),
@@ -104,6 +112,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("logout", "login_cmd:logout_command"),
     ("whoami", "login_cmd:whoami_command"),
     ("workspace", "workspace_cmd:workspace_group"),
+    ("plugins", "plugins_cmd:plugins_command"),
 )
 
 # Register OSS commands through the shared registry so third-party

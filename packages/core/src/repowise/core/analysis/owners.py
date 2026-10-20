@@ -27,6 +27,7 @@ from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import json_field
 from repowise.core.author_identity import (
+    IdentityKind,
     IdentityResolver,
     build_identity_resolver,
     canonicalize_author_email,
@@ -70,13 +71,22 @@ class OwnerAccumulator:
     key: str
     name: str
     email: str | None = None
+    kind: IdentityKind = "human"
+    # Every display name and canonical email folded into this identity.
+    alias_names: list[str] = field(default_factory=list)
+    alias_emails: list[str] = field(default_factory=list)
 
     files_owned: int = 0  # files where this person is primary_owner
     hotspots_owned: int = 0
     bus_factor_risk_files: int = 0
+    # Owned files with a commit in the last 90 days (the git row's own count).
+    owned_changing_files: int = 0
     # Distinct commits in the 90 days before HEAD; None when the commit rows
     # are missing or do not reach back across the whole window.
     commit_count_90d: int | None = None
+    # When the commit rows stop inside the window: this person's commits in
+    # the part they cover, a floor of the 90-day count. None otherwise.
+    commit_count_90d_at_least: int | None = None
     lines_added_90d_est: float = 0.0
     lines_deleted_90d_est: float = 0.0
 
@@ -96,12 +106,6 @@ class OwnerAccumulator:
 
     dead_code_files: set[str] = field(default_factory=set)
     dead_code_lines: int = 0
-
-    # Agent-provenance rollup across primary-owned files.
-    owned_files_with_agents: int = 0
-    owned_agent_commits: int = 0
-    owned_attributed_commits: int = 0  # total commits on owned files with a rollup
-    owned_agent_tier_counts: Counter[str] = field(default_factory=Counter)
 
     # co-author tally: other_key -> shared file count
     coauthor_shared: Counter[str] = field(default_factory=Counter)
@@ -140,6 +144,7 @@ def aggregate_owners(
     dead_rows: Iterable[Any],
     commit_rows: Iterable[Any] | None = None,
     total_commits: int | None = None,
+    resolve: IdentityResolver | None = None,
 ) -> tuple[dict[str, OwnerAccumulator], dict[str, int]]:
     """Walk every git row once, returning per-owner accumulators and files per module.
 
@@ -149,13 +154,16 @@ def aggregate_owners(
     ``author_email``, ``committed_at``), newest non-merge commits from HEAD;
     ``total_commits`` the repo's non-merge total, which says whether a sample
     that stops inside the window is nonetheless the whole history.
+    ``resolve`` is :func:`people_resolver` over the same rows, passed by a
+    caller that reuses it; built here when absent.
     """
     rows = list(git_rows)
     commits = list(commit_rows or [])
     accs: dict[str, OwnerAccumulator] = {}
     module_totals: dict[str, int] = defaultdict(int)
 
-    resolve = people_resolver(rows, commits)
+    if resolve is None:
+        resolve = people_resolver(rows, commits)
 
     def _ensure(name: str, email: str | None) -> OwnerAccumulator:
         k = resolve(name, email)
@@ -163,7 +171,15 @@ def aggregate_owners(
             return OwnerAccumulator(key="", name=name or "(unknown)", email=email)
         acc = accs.get(k)
         if acc is None:
-            acc = OwnerAccumulator(key=k, name=resolve.display_name(k), email=email)
+            names, emails = resolve.aliases(k)
+            acc = OwnerAccumulator(
+                key=k,
+                name=resolve.display_name(k),
+                email=email,
+                kind=resolve.kind(k),
+                alias_names=names,
+                alias_emails=emails,
+            )
             accs[k] = acc
         if email and not acc.email:
             acc.email = email
@@ -230,18 +246,11 @@ def aggregate_owners(
             if row_field(m, "is_hotspot"):
                 primary.hotspots_owned += 1
                 primary.module_hotspots[module] += 1
-            if (row_field(m, "bus_factor") or 0) <= 1:
+            # Exactly 1: a bus factor of 0 means no indexed history, not risk.
+            if (row_field(m, "bus_factor") or 0) == 1:
                 primary.bus_factor_risk_files += 1
-            # agent_authored_pct is None on rows indexed before provenance
-            # existed; skip those so the agent share stays honest.
-            if row_field(m, "agent_authored_pct") is not None:
-                primary.owned_attributed_commits += row_field(m, "commit_count_total") or 0
-                agent_commits = row_field(m, "agent_commit_count") or 0
-                if agent_commits > 0:
-                    primary.owned_files_with_agents += 1
-                    primary.owned_agent_commits += agent_commits
-                    for tier, n in json_field(m, "agent_tier_counts_json", {}).items():
-                        primary.owned_agent_tier_counts[str(tier)] += int(n)
+            if (row_field(m, "commit_count_90d") or 0) > 0:
+                primary.owned_changing_files += 1
 
         # Co-author tally: each pair of distinct touchers shares this file.
         for i, a in enumerate(touchers):
@@ -290,7 +299,8 @@ def _apply_commit_activity(
     Each owner's ``last_commit_at`` is the newest of their own commits; an
     owner with no row keeps the per-file value. The count stays ``None`` when
     there are no rows, or when the rows stop short of the window start and
-    are not the whole history (a capped sample would undercount).
+    are not the whole history (a capped sample would undercount); an owner
+    with commits in such a sample gets that count as a floor instead.
     """
     stamped: list[tuple[str, str, datetime]] = []
     for c in commits:
@@ -318,8 +328,23 @@ def _apply_commit_activity(
     for key, acc in accs.items():
         if covers_window:
             acc.commit_count_90d = len(recent.get(key, ()))
+        elif recent.get(key):
+            acc.commit_count_90d_at_least = len(recent[key])
         if key in last:
             acc.last_commit_at = last[key]
+
+
+def is_active(acc: OwnerAccumulator) -> bool:
+    """Committed in the 90 days before HEAD (a floor count counts)."""
+    return bool(acc.commit_count_90d or acc.commit_count_90d_at_least)
+
+
+def is_quiet(acc: OwnerAccumulator) -> bool:
+    """Known to have made no commit in the 90 days before HEAD.
+
+    ``False`` when the commit rows do not cover the window: unknown is not quiet.
+    """
+    return acc.commit_count_90d == 0
 
 
 def silo_modules(acc: OwnerAccumulator, module_totals: dict[str, int]) -> int:
@@ -347,6 +372,8 @@ __all__ = [
     "OwnerAccumulator",
     "aggregate_owners",
     "as_utc",
+    "is_active",
+    "is_quiet",
     "module_share",
     "owner_key",
     "people_resolver",

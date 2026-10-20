@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.agent_prompts import Flavor, render_opportunity, render_plan
+from repowise.core.analysis.finding_registry import label_previews, preview_label
 from repowise.core.analysis.health.refactoring.recipe import build_recipe
 from repowise.core.analysis.health.refactoring.serving import (
     CANONICAL_ORDERS,
@@ -31,9 +32,10 @@ from repowise.core.analysis.health.refactoring.serving import (
     parse_query,
 )
 from repowise.core.persistence import crud
-from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
+from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES, gated_plan_counts
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers._local_git import local_repo_path
+from repowise.server.routers._unverified import UnverifiedQuery
 from repowise.server.schemas import (
     GenerateCodeRequest,
     GenerateCodeResponse,
@@ -85,6 +87,7 @@ async def get_refactoring_targets(
     view: Literal["canonical", "file_spread"] = Query(
         "canonical", description="Named ordering view; canonical is the product default"
     ),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringTargetsResponse:
     """Ranked refactoring plans for the repo, filterable by type, confidence,
@@ -95,7 +98,7 @@ async def get_refactoring_targets(
     honor *min_confidence* — so the summary and the plan list stay consistent
     under a confidence filter.
     """
-    body = await _service(session, repo_id).ranked_plans(
+    body = await _service(session, repo_id, include_unverified=include_unverified).ranked_plans(
         PlanListQuery(
             refactoring_type=refactoring_type,
             min_confidence=min_confidence,
@@ -103,7 +106,11 @@ async def get_refactoring_targets(
             view=view,
         )
     )
-    return RefactoringTargetsResponse(**body)
+    body["plans"] = label_previews("refactoring", body["plans"], kind="refactoring_type")
+    return RefactoringTargetsResponse(
+        **body,
+        gated=await gated_plan_counts(session, repo_id, include_unverified=include_unverified),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +120,12 @@ async def get_refactoring_targets(
 # ---------------------------------------------------------------------------
 
 
-def _service(session: AsyncSession, repo_id: str) -> RefactoringHealthService:
-    return RefactoringHealthService(session, repo_id, repo_id)
+def _service(
+    session: AsyncSession, repo_id: str, *, include_unverified: bool = False
+) -> RefactoringHealthService:
+    return RefactoringHealthService(
+        session, repo_id, repo_id, include_unverified=include_unverified
+    )
 
 
 @router.get(
@@ -154,6 +165,7 @@ async def get_refactoring_opportunities(
     ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """One page of composed opportunities, with facets and the rollup.
@@ -177,14 +189,14 @@ async def get_refactoring_opportunities(
         offset=offset,
         scope=scope,
     )
-    page = await _service(session, repo_id).page(
+    page = await _service(session, repo_id, include_unverified=include_unverified).page(
         query,
         steps_per_item=step_preview if step_preview > 0 else None,
         with_facets=True,
         with_summary=True,
     )
     body: dict[str, Any] = {
-        "items": page.items,
+        "items": label_previews("refactoring", page.items, kind="lead_refactoring_type"),
         "total": page.total,
         "offset": page.offset,
         "has_more": page.next_offset is not None,
@@ -193,6 +205,7 @@ async def get_refactoring_opportunities(
         "summary": page.summary,
         "scope": page.scope,
         "counts": page.counts,
+        "gated": page.gated,
     }
     # ``hidden`` restates ``counts.excluded`` for the board; remove once the
     # web reads ``counts`` (UI adoption).
@@ -206,10 +219,11 @@ async def get_refactoring_opportunities(
 @router.get("/{repo_id}/refactoring/summary", response_model=RefactoringRollupResponse)
 async def get_refactoring_rollup(
     repo_id: str,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """The repository rollup and its one lead, by primary key."""
-    service = _service(session, repo_id)
+    service = _service(session, repo_id, include_unverified=include_unverified)
     return {"summary": await service.summary(), "directive": await service.directive()}
 
 
@@ -237,7 +251,7 @@ async def get_refactoring_opportunity_detail(
     )
     if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
-    return detail
+    return label_previews("refactoring", [detail], kind="lead_refactoring_type")[0]
 
 
 @router.get(
@@ -258,7 +272,10 @@ async def get_refactoring_opportunity_prompt(
     if not detail.get("found"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
     text = render_opportunity(detail, flavor, repo.name)
-    return AgentPromptResponse(flavor=flavor, text=text)
+    note = preview_label(
+        "refactoring", detail.get("file_path") or "", detail.get("lead_refactoring_type")
+    )
+    return AgentPromptResponse.labelled(flavor, text, note)
 
 
 @router.patch(
@@ -353,6 +370,7 @@ async def get_refactoring_plan(
     detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
     if include == "recipe":
         detail["recipe"] = build_recipe({**detail, "id": public_id})
+    (detail,) = label_previews("refactoring", [detail], kind="refactoring_type")
     return RefactoringPlanDetailResponse(**detail)
 
 
@@ -390,7 +408,8 @@ async def get_refactoring_plan_prompt(
     repo = await _repository(session, repo_id)
     detail, public_id = await _plan_detail(session, repo_id, suggestion_id)
     text = render_plan({**detail, "id": public_id}, flavor, repo.name)
-    return AgentPromptResponse(flavor=flavor, text=text)
+    note = preview_label("refactoring", detail.get("file_path") or "", detail.get("refactoring_type"))
+    return AgentPromptResponse.labelled(flavor, text, note)
 
 
 @router.patch(

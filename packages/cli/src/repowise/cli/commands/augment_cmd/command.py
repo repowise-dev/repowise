@@ -69,6 +69,10 @@ registers it any more — see :mod:`.codex`.)
       decision, strictly capped); Codex lifecycle hooks instead get the
       index-staleness reminder below.
 
+  PostToolUse → edit tools, Cursor afterFileEdit
+    * Opt-in edit capture (``attribution.capture``): the lines the agent
+      wrote, as hashes, in a local sidecar. Silent; see :mod:`.edit_capture`.
+
   PostToolUse → edit tools (Codex)
     * After file edits, emit a short reminder that the indexed context may
       be stale.
@@ -100,6 +104,7 @@ import contextlib
 import json
 import sys
 from pathlib import Path
+from typing import TextIO
 
 import click
 
@@ -111,6 +116,7 @@ from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .coverage_reingest import coverage_reingest_notice
 from .decision_capture import commit_capture_notice
+from .edit_capture import capture_edit
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
@@ -131,6 +137,11 @@ from .wrong_path import _handle_tool_failure
 #: contract, and ``tests/unit/cli/test_augment_hook_perf.py`` holds that.
 _ADAPTERS: dict[str, object] = {}
 
+#: Where :func:`_emit_response` writes; ``None`` is ``sys.stdout``. The hook
+#: entry sets it and points ``sys.stdout`` at stderr, so a library that prints
+#: (structlog does by default) cannot corrupt the JSON response.
+_response_stream: TextIO | None = None
+
 
 def _adapter(client: str | None):
     """The adapter for this invocation, memoized for the process."""
@@ -144,9 +155,9 @@ def _adapter(client: str | None):
 @click.command("augment")
 @click.option(
     "--client",
-    type=click.Choice(["codex"]),
+    type=click.Choice(["codex", "cursor"]),
     default=None,
-    help="Hook client marker. Codex lifecycle hooks pass this explicitly.",
+    help="Hook client marker. Codex and Cursor hooks pass this explicitly.",
 )
 @click.option(
     "--coverage-only",
@@ -166,6 +177,11 @@ def augment_command(
 ) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     configure_cli_logging(verbose=verbose)
+    # stdout carries the hook response; logs go to stderr.
+    with contextlib.suppress(ImportError):
+        import structlog
+
+        structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
     try:
         _run_augment(client=client, coverage_only=coverage_only)
     except (SystemExit, KeyboardInterrupt):
@@ -193,6 +209,15 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
 
     if coverage_only:
         _run_coverage_only(payload, client)
+        return
+
+    # Opt-in edit capture for AI attribution. First, so a slow enrichment
+    # below cannot cost an event; it returns at once when capture is off.
+    if event == "afterFileEdit" or (
+        event == "PostToolUse" and tool_name in _adapter(client).edit_tool_names
+    ):
+        capture_edit(_adapter(client).name, payload)
+    if event == "afterFileEdit":
         return
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
@@ -332,8 +357,9 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
         payload["additionalContext"] = result.context
     if replacement:
         payload["updatedToolOutput"] = replacement
-    sys.stdout.write(json.dumps({"hookSpecificOutput": payload}))
-    sys.stdout.flush()
+    out = _response_stream or sys.stdout
+    out.write(json.dumps({"hookSpecificOutput": payload}))
+    out.flush()
 
 
 # Window within which an identical (event, context) emission is treated as a
@@ -364,7 +390,7 @@ def _claim_emission(event: str, context: str) -> bool:
     import time
 
     try:
-        key = hashlib.sha1(f"{event}\x00{context}".encode()).hexdigest()[:16]
+        key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
         marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
         now = time.time()
         try:

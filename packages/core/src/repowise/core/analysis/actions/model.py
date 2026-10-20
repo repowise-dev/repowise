@@ -15,7 +15,7 @@ from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when a rule's output changes meaning or shape; stored views built
 #: under another version are rebuilt.
-ACTIONS_MODEL_VERSION = 1
+ACTIONS_MODEL_VERSION = 2
 
 ActionRule = Literal[
     "live_secret",
@@ -149,6 +149,9 @@ class Action:
     rule: ActionRule
     tier: ActionTier
     horizons: tuple[Horizon, ...]
+    #: Critical is for work that is both urgent and certain enough to drop
+    #: other work for: a credential in the working tree. Code-health work tops
+    #: out at high however many of its findings a detector tags critical.
     severity: str
     #: Verb first. Paths and symbols are wrapped in backticks, which every
     #: renderer sets in mono: "Raise test coverage on `a/b.py` from 62%".
@@ -203,7 +206,7 @@ class Action:
     def action_id(self) -> str:
         identity = self.identity or f"{self.target_path}:{self.target_symbol or ''}"
         key = f"{self.rule}:{identity}"
-        return "act_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        return "act_" + hashlib.sha1(key.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -256,4 +259,4 @@ class RuleOutcome:
 
 def fingerprint(*parts: object) -> str:
     raw = "|".join(str(p) for p in parts)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
