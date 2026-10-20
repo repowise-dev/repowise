@@ -16,6 +16,7 @@ from repowise.cli.ui.plan_screen.state import (
     eta_seconds,
     source_and_languages,
 )
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND
 
 #: What ``e`` opens, named so the key is not a blind door.
 EDIT_PREVIEW = (
@@ -66,7 +67,7 @@ def _documentation_rows(state: PlanState) -> list[tuple[str, str]]:
     if state.run_mode == "fast":
         return [
             ("Documentation", f"{INDEX_ONLY}: none this run"),
-            ("", "[dim]repowise update --full adds it later[/dim]"),
+            ("", f"[dim]{FAST_TO_FULL_COMMAND} adds it later[/dim]"),
         ]
     if state.chosen is not None:
         return [("Documentation", written_by(escape(state.chosen.model_label)))]

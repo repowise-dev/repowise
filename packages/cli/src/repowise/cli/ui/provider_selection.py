@@ -16,6 +16,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from repowise.cli.errors import reasoned_error
+from repowise.cli.ui import subscription as subscription_module
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, VALUE, WARN
 from repowise.cli.ui.env_persistence import _save_key_to_dotenv
 from repowise.cli.ui.model_tier import is_flagship_model
@@ -29,9 +30,9 @@ from repowise.cli.ui.openai_compatible import (
     prompt_setup as _prompt_openai_compatible_setup_values,
 )
 from repowise.cli.ui.subscription import (
+    CliAuth,
     SubscriptionContext,
-    agent_cli_status,
-    ready_agent_providers,
+    logged_in_agent_providers,
     subscription_estimate,
 )
 from repowise.core.agents.identity import get_identity, identity_for_provider
@@ -162,14 +163,14 @@ def _detect_ollama_status() -> bool:
         return False
 
 
-def _detect_provider_status(repo_path: Path | None = None) -> dict[str, str]:
+def _detect_provider_status(repo_path: Path | None = None) -> dict[str, str | CliAuth]:
     """Return {provider: what makes it ready} for providers that can be used now.
 
     Ordered like auto-detection, so the first entry is what ``--yes`` would
     run: keyed providers first, read from the same process env, repo
     ``.repowise/.env`` and stored keys, then keys for providers auto-detection
-    skips, then logged-in agent CLIs, then a reachable Ollama. Only order and
-    truthiness are load-bearing; the value is for debugging.
+    skips, then logged-in agent CLIs, then a reachable Ollama. An agent CLI's
+    value is its :class:`CliAuth`, how it is billed; the rest are for debugging.
     """
     from repowise.core.providers.llm.resolve import (
         credentialed_providers,
@@ -177,7 +178,7 @@ def _detect_provider_status(repo_path: Path | None = None) -> dict[str, str]:
         resolve_api_key,
     )
 
-    status: dict[str, str] = {}
+    status: dict[str, str | CliAuth] = {}
     ollama_up = _detect_ollama_status()
     base_url = (repo_getenv(repo_path)("OPENAI_BASE_URL") or "").rstrip("/")
     keyed = credentialed_providers(repo_path)
@@ -193,8 +194,7 @@ def _detect_provider_status(repo_path: Path | None = None) -> dict[str, str]:
     for prov, spec in _PICKER_SPECS.items():
         if prov not in keyed and not spec.agent and resolve_api_key(prov, repo_path)[0]:
             status[prov] = _PROVIDER_ENV[prov]
-    for prov in ready_agent_providers():
-        status[prov] = "agent CLI"
+    status.update(logged_in_agent_providers())
     if ollama_up:
         status.setdefault("ollama", ollama_base_url())
     return status
@@ -203,7 +203,8 @@ def _detect_provider_status(repo_path: Path | None = None) -> dict[str, str]:
 def _agent_cli_setup_lines(name: str) -> list[str]:
     agent = identity_for_provider(name)
     assert agent is not None, name
-    installed, _ = agent_cli_status(name)
+    # Through the module, so one patch of the probe reaches detection and this.
+    installed, _ = subscription_module.agent_cli_status(name)
     problem = (
         f"{agent.display_name} CLI is on PATH but not logged in."
         if installed
@@ -311,14 +312,18 @@ def _interactive_provider_name(
 
     console.print()
     console.print(table)
-    # A subscription run costs quota and time, not dollars: say how much.
-    if subscription.model_calls:
-        for prov in detected:
-            if _PICKER_SPECS.get(prov) is not None and _PICKER_SPECS[prov].agent:
-                estimate = subscription_estimate(
-                    prov, subscription.model_calls, subscription.concurrency
-                )
-                console.print(f"  [dim]{prov} {estimate}.[/dim]")
+    # A subscription run costs quota and time, not dollars: say how it is
+    # billed and how much.
+    for prov, how in detected.items():
+        if not isinstance(how, CliAuth):
+            continue
+        text = how.billing
+        if subscription.model_calls:
+            text = subscription_estimate(
+                prov, subscription.model_calls, subscription.concurrency, how.billing
+            )
+        caveat = "" if how.offer else ", not recommended"
+        console.print(f"  [dim]{prov}: {text}{caveat}.[/dim]")
     console.print(
         "  [dim]mock is flag-only (writes placeholder pages): repowise init --provider mock[/dim]"
     )
@@ -327,9 +332,11 @@ def _interactive_provider_name(
     # --- selection ---
     valid_choices = [str(i) for i in range(1, len(providers) + 1)]
     # Detection order is auto-detection's, so the default is what --yes runs.
-    default_idx = str(providers.index(next(iter(detected))) + 1) if detected else "1"
+    # A CLI that reports no plan or credentials is never the default.
+    offered = [p for p, how in detected.items() if not isinstance(how, CliAuth) or how.offer]
+    default_idx = str(providers.index(offered[0]) + 1) if offered else "1"
     # The CLI of the agent set up here outranks a key: it is the user's own login.
-    recommended = next((name for name in subscription.prefer if name in detected), None)
+    recommended = next((name for name in subscription.prefer if name in offered), None)
     if recommended is not None:
         default_idx = str(providers.index(recommended) + 1)
         agent = identity_for_provider(recommended)

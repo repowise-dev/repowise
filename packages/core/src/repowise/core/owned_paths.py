@@ -1,7 +1,9 @@
 """The paths repowise writes into a repository, and how to tell its edits from a user's.
 
 One list for every reader that must not take repowise's own output for the
-user's change; change risk reads it through ``riskignore_patterns``. Two kinds:
+user's change; change risk reads it through ``riskignore_patterns`` and the
+traverser skips a file repowise wrote whole, so init never indexes its own
+output. Two kinds:
 
 * :data:`OWNED_PATTERNS` are written whole by repowise, so any change there is
   repowise's.

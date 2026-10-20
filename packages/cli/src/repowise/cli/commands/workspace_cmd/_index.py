@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
     warn,
 )
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
+from repowise.core.index_scope import fast_to_full_command
 
 if TYPE_CHECKING:
     from repowise.core.workspace.config import WorkspaceConfig
@@ -212,7 +213,7 @@ def _run_index_for_repo(
         reason = docs_skip_reason or "docs disabled"
         console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
         console.print(
-            f"  Run [bold]repowise update --repo {alias} --docs[/bold] to generate documentation."
+            f"  Run [bold]{fast_to_full_command(alias)}[/bold] to build its documentation."
         )
 
 

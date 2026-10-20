@@ -309,7 +309,7 @@ class TestInitYesFlag:
                 side_effect=_fake_prompt_wiki_style,
             ),
             patch(
-                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):
@@ -344,7 +344,7 @@ class TestInitYesFlag:
             ),
             # Stop before the real pipeline runs.
             patch(
-                "repowise.cli.commands.init_cmd._prepare.resolve_provider",
+                "repowise.cli.commands.init_cmd._prepare._resolve_provider_stage",
                 side_effect=Exception("stop early"),
             ),
         ):

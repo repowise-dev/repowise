@@ -13,6 +13,12 @@
       "file_path": "docs/architecture/language-support.md",
       "kind": "path",
       "target": "packages/core/src/repowise/core/ingestion/languages/specs/mylang.py"
+    },
+    {
+      "fingerprint": "957b0dfa42bee090f7155c9593927766",
+      "file_path": "docs/reference/COMPUTED_GLOSSARY.md",
+      "kind": "path",
+      "target": "docs/index.md"
     }
   ]
 }

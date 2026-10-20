@@ -7,10 +7,8 @@ from dataclasses import dataclass, field
 
 from repowise.cli.ui.repo_scanner import (
     RepoScanInfo,
-    estimated_documentable_files,
-    estimated_index_seconds,
     estimated_model_minutes,
-    estimated_wiki_render_seconds,
+    estimated_run_seconds,
     source_file_counts,
 )
 
@@ -65,6 +63,8 @@ class PlanState:
     #: Machine-specific files git would see, and whether Enter excludes them.
     keep_out: tuple[str, ...] = ()
     git_exclude: bool = False
+    #: Commits git history walks at most (``--commit-limit`` or config.yaml).
+    commit_limit: int = 5000
 
     @property
     def can_keep_global(self) -> bool:
@@ -155,11 +155,7 @@ def build_offer(detected: dict[str, str], prefer: tuple[str, ...], shape: RunSha
 
 def eta_seconds(state: PlanState) -> tuple[float, float]:
     """Low and high seconds for the run as planned."""
-    low, high = estimated_index_seconds(state.scan)
-    if state.run_mode == "fast":
-        return low, high
-    r_low, r_high = estimated_wiki_render_seconds(estimated_documentable_files(state.scan))
-    low, high = low + r_low, high + r_high
+    low, high = estimated_run_seconds(state.scan, state.commit_limit)
     if state.chosen is not None:
         low, high = low + state.chosen.minutes * 60, high + state.chosen.minutes * 60
     return low, high
@@ -169,7 +165,7 @@ def eta_phrase(low: float, high: float) -> str:
     """``under a minute``, ``about 1-2 min`` or ``about 3-6 min``."""
     if high < 60:
         return "under a minute"
-    lo = max(1, round(low / 60))
+    lo = max(1, math.floor(low / 60))
     hi = max(lo + 1, math.ceil(high / 60))
     return f"about {lo:,}-{hi:,} min"
 

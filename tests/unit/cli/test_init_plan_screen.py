@@ -366,22 +366,37 @@ def test_q_keeps_a_repowise_dir_that_was_there_or_holds_a_key(
 # -- ETA ----------------------------------------------------------------------
 
 
-def _scan(source: int) -> RepoScanInfo:
-    return RepoScanInfo(total_files=source, language_counts={"Python": source})
+def _scan(source: int, commits: int) -> RepoScanInfo:
+    return RepoScanInfo(
+        total_files=source, language_counts={"Python": source}, total_commits=commits
+    )
+
+
+_BUILD = "to index and build the documentation."
 
 
 @pytest.mark.parametrize(
-    ("source", "run_mode", "expected"),
+    ("source", "commits", "run_mode", "expected"),
     [
-        # Measured: 16 source files, about 10 s for the whole free run.
-        (16, "standard", "Under a minute to index and build the documentation."),
-        # Measured: 1,186 source files, 1m 41s for a fast index.
-        (1186, "fast", "About 2-4 min to index."),
+        # itsdangerous: about 10 s for the whole free run.
+        (16, 677, "standard", f"Under a minute {_BUILD}"),
+        # flask: 1m 51s, nearly all of it file history and co-changes.
+        (90, 5555, "standard", f"About 1-3 min {_BUILD}"),
+        # fastapi: 1m 41s as a fast index, 1m 24s to 1m 44s as a full free run.
+        (1186, 7860, "fast", "About 1-3 min to index."),
+        (1186, 7860, "standard", f"About 1-3 min {_BUILD}"),
     ],
 )
-def test_eta_matches_measured_runs(source: int, run_mode: str, expected: str) -> None:
-    out = _render(PlanState(repo_name="r", scan=_scan(source), run_mode=run_mode))
-    assert expected in out
+def test_eta_matches_measured_runs(
+    source: int, commits: int, run_mode: str, expected: str
+) -> None:
+    state = PlanState(repo_name="r", scan=_scan(source, commits), run_mode=run_mode)
+    assert expected in _render(state)
+
+
+def test_eta_counts_only_the_commits_the_limit_lets_git_walk() -> None:
+    state = PlanState(repo_name="r", scan=_scan(90, 5555), commit_limit=500)
+    assert f"Under a minute {_BUILD}" in _render(state)
 
 
 def test_eta_never_reads_zero_minutes() -> None:
@@ -469,3 +484,33 @@ def test_click_prompts_are_restored_after_the_screen(plan: Any, tmp_path: Path) 
     before = (click.termui.visible_prompt_func, click.termui.hidden_prompt_func)
     plan.drive(_run(tmp_path), START)
     assert (click.termui.visible_prompt_func, click.termui.hidden_prompt_func) == before
+
+
+# -- after Enter: the plan is not repeated -------------------------------------
+
+
+def _announce(run: Any, monkeypatch: Any) -> str:
+    from repowise.cli.commands.init_cmd import _provider
+
+    console = Console(record=True, width=100, color_system=None)
+    monkeypatch.setattr(_provider, "console", console)
+    _provider.announce_index_only(run)
+    return " ".join(console.export_text().split())
+
+
+def test_after_the_plan_screen_the_forecast_is_not_repeated(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    run = _run(tmp_path, index_only=True, editor_setup=False)
+    assert _announce(run, monkeypatch) == ""
+    assert "MCP" not in _announce(run, monkeypatch)
+
+
+def test_a_run_without_the_screen_still_says_what_it_builds(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    run = _run(tmp_path, index_only=True)
+    run.is_interactive = False
+    out = _announce(run, monkeypatch)
+    assert "Built from code" in out
+    assert "no model, no spend" in out

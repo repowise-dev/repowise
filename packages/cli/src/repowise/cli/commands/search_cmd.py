@@ -267,7 +267,7 @@ def search_command(
             _ta.emit_full(payload)
             return
         _ta.emit_error(payload, fmt, extra={"query": query, "mode": tool_mode})
-        _warn_if_lexical_only(payload, mode, notices)
+        _warn_if_lexical_only(payload, mode, notices, repo_path)
         projected = project(payload, query, multi=False)
         if fmt == "json":
             emit_json(projected)
@@ -290,7 +290,7 @@ def _run_search(repo_path, query: str, limit: int, tool_mode: str) -> dict:
     return _ta.run(repo_path, _factory, "search_codebase")
 
 
-def _warn_if_lexical_only(payload: dict, requested: str, notices) -> None:
+def _warn_if_lexical_only(payload: dict, requested: str, notices, repo_path=None) -> None:
     """Say when ``--mode semantic`` was answered lexically, and why.
 
     ``_meta`` carries ``semantic_search: false`` whenever the vector leg could
@@ -315,9 +315,11 @@ def _warn_if_lexical_only(payload: dict, requested: str, notices) -> None:
     why = meta.get("embedder_warning") or (
         "No embedder configured for this repo, so there is no semantic index to search."
     )
+    from repowise.cli.providers import semantic_search_command
+
     notices.print(
-        f"[yellow]{why}[/yellow]\nShowing full-text results instead. Set an embedder "
-        "key and run [cyan]repowise reindex[/cyan] for semantic search."
+        f"[yellow]{why}[/yellow]\nShowing full-text results instead. Run "
+        f"[cyan]{semantic_search_command(repo_path)}[/cyan] for semantic search."
     )
 
 
@@ -361,7 +363,7 @@ def _fan_out(
             )
             continue
         payloads.append(payload)
-        _warn_if_lexical_only(payload, mode, notices)
+        _warn_if_lexical_only(payload, mode, notices, rp)
         for rank, item in enumerate(payload.get("results") or []):
             item["repo"] = rp.name
             merged.append((rank, item))

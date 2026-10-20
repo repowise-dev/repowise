@@ -14,7 +14,7 @@ import structlog
 
 from repowise.core.cost_estimator.estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.generation.models import count_stub_fallbacks
-from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.pipeline.progress import ProgressCallback, emit_item, emit_phase_failed
 
 from ._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
 
@@ -25,6 +25,53 @@ logger = structlog.get_logger(__name__)
 # "does this page cost tokens", and a second copy here would be the thing that
 # drifts the first time a page type changes tier.
 _FREE_PAGE_TYPES = STRUCTURAL_PAGE_TYPES
+
+
+class _GenerationDisplay:
+    """What generation shows beyond its page bars: the page it is on, and embedding.
+
+    Embedding is its own step on screen, but only when the vectors carry
+    signal: the keyless embedder's would read as semantic search that is off.
+    """
+
+    def __init__(self, progress: Any, vector_store: Any, on_page_ready: Any | None) -> None:
+        from repowise.core.providers.embedding import store_has_semantic_vectors
+
+        self._progress = progress
+        self._on_page_ready = on_page_ready
+        self._show_embedding = progress is not None and store_has_semantic_vectors(vector_store)
+        self._embedded = 0
+        # Batches started minus batches finished: a failed batch never finishes.
+        self._open = 0
+        self._started = False
+
+    def on_embed(self, count: int, finished: bool) -> None:
+        if not self._show_embedding:
+            return
+        if not finished:
+            self._started = True
+            self._open += 1
+            self._progress.on_phase_start("embedding", self._embedded + count)
+            return
+        self._open -= 1
+        self._embedded += count
+        for _ in range(count):
+            self._progress.on_item_done("embedding")
+
+    def page_ready(self, page: Any) -> None:
+        if self._progress is not None:
+            phase = "generation" if page.page_type in _FREE_PAGE_TYPES else "generation.llm"
+            emit_item(self._progress, phase, page.target_path)
+        if self._on_page_ready is not None:
+            self._on_page_ready(page)
+
+    def close_embedding(self) -> None:
+        if not self._started:
+            return
+        if self._open == 0:
+            _phase_done(self._progress, "embedding")
+        else:
+            emit_phase_failed(self._progress, "embedding")
 
 
 async def run_generation(
@@ -113,7 +160,7 @@ async def run_generation(
     if test_run:
         parsed_files = limit_to_top_pagerank(parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT)
         if progress:
-            progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
+            progress.on_message("notice", f"Test run: limiting to {len(parsed_files)} files")
 
     # Resolve embedder and vector store
     embedder_impl = embedder if embedder is not None else KeylessEmbedder()
@@ -185,6 +232,8 @@ async def run_generation(
         if progress:
             progress.on_message("warning", text)
 
+    display = _GenerationDisplay(progress, vector_store, on_page_ready)
+
     generator = PageGenerator(
         llm_client,
         assembler,
@@ -214,7 +263,7 @@ async def run_generation(
         dead_code_report=dead_code_report,
         decision_report=decision_report,
         external_systems=external_systems,
-        on_page_ready=on_page_ready,
+        on_page_ready=display.page_ready,
         kg_modules=kg_modules,
         kg_data=kg_data,
         only_page_ids=only_page_ids,
@@ -222,6 +271,7 @@ async def run_generation(
         timings=getattr(progress, "table", None),
         on_warning=on_warning,
         persisted_page_ids=persisted_page_ids,
+        on_embed=display.on_embed,
     )
     if stats_out is not None:
         stats_out["embed_failed_pages"] = generator.embed_failed_pages
@@ -237,8 +287,8 @@ async def run_generation(
         )
         selection_out["omitted"] = max(0, selection_out["eligible"] - selection_out["generated"])
 
-    # Onboarding summary — count generated slots and surface which ones
-    # were gated out so the user can see the curated collection's state.
+    # Which onboarding slots were made goes to the log; the screen has the
+    # onboarding row's page count.
     onboarding_generated = [p for p in generated_pages if p.page_type == "onboarding"]
     promoted_present = {
         p.metadata.get("onboarding_slot")
@@ -246,34 +296,17 @@ async def run_generation(
         if p.metadata.get("onboarding_slot")
         and p.page_type in ("repo_overview", "architecture_diagram")
     }
-    if progress:
-        if onboarding_generated or promoted_present:
-            # Imported here, not at module scope: importing the onboarding
-            # package registers every subkind, and this module is on the CLI's
-            # import path where that cost buys nothing.
-            from repowise.core.generation.onboarding.slots import ONBOARDING_ORDER
-
-            slots_made = sorted(
-                {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
-            )
-            progress.on_message(
-                "info",
-                # Derived rather than written down: the denominator was a
-                # literal 8 and went stale the first time a slot was added.
-                f"Onboarding: {len(slots_made)}/{len(ONBOARDING_ORDER)} slots"
-                f" — {', '.join(slots_made)}",
-            )
-        # Placeholders left behind by a failed provider call are in this list
-        # like any other page, and the run reports them as failures a line
-        # later. Counting the list here made the two lines disagree.
-        progress.on_message(
-            "info",
-            f"Generated {len(generated_pages) - count_stub_fallbacks(generated_pages)} pages",
-        )
-        # Surface the FAQ-weighted budget tilt when session demand shaped it
-        # (silent on fresh repos with no history — nothing to weight yet).
+    slots_made = sorted(
+        {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
+    )
+    logger.info(
+        "generation_done",
+        pages=len(generated_pages) - count_stub_fallbacks(generated_pages),
+        onboarding_slots=slots_made,
+    )
     _phase_done(progress, "onboarding")
     _phase_done(progress, "generation.llm")
     _phase_done(progress, "generation")
+    display.close_embedding()
 
     return generated_pages

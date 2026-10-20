@@ -82,7 +82,7 @@ def test_interactive_provider_config_select_uses_model_reasoning_options(
     monkeypatch.setattr(
         provider_selection, "_detect_provider_status", lambda *_a: {"gemini": "GEMINI_API_KEY"}
     )
-    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_status", lambda _name: (False, False))
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_auth", lambda _name: None)
     monkeypatch.setattr(
         provider_selection,
         "_provider_model_options",
