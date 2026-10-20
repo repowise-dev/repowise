@@ -16,6 +16,7 @@ from rich.console import Console
 from repowise.cli.commands import upgrade_flow
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import load_state, save_state
+from repowise.cli.ui.brand import THEME
 
 _KEYS = (
     "GEMINI_API_KEY",
@@ -76,7 +77,7 @@ def keyless(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(upgrade_flow, "try_acquire_update_lock", lambda *a, **k: None)
     monkeypatch.setattr(upgrade_flow, "release_update_lock", lambda *a, **k: None)
     out = io.StringIO()
-    monkeypatch.setattr(upgrade_flow, "console", Console(file=out, width=200))
+    monkeypatch.setattr(upgrade_flow, "console", Console(file=out, width=200, theme=THEME))
     seen["out"] = out
     return seen
 
@@ -190,7 +191,7 @@ def test_reindex_on_an_index_only_repo_names_the_fast_to_full_command(tmp_path) 
 
 def _plain(monkeypatch, module) -> io.StringIO:
     out = io.StringIO()
-    monkeypatch.setattr(module, "console", Console(file=out, width=200))
+    monkeypatch.setattr(module, "console", Console(file=out, width=200, theme=THEME))
     return out
 
 
