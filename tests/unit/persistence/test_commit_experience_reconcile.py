@@ -14,6 +14,10 @@ from datetime import UTC, datetime
 import pytest
 
 from repowise.core.analysis.change_risk import change_features_from_stored, score_change
+from repowise.core.ingestion.git_indexer.commit_rows import (
+    build_commit_file_rows,
+    build_commit_rows,
+)
 from repowise.core.persistence.crud import (
     get_git_commits,
     upsert_git_commits_bulk,
@@ -46,6 +50,121 @@ def _stored(sha: str, *, ts: int, email: str = "ann@x", exp: int | None = 0, **o
     }
     base.update(over)
     return base
+
+
+def test_scoring_exclusions_rescore_persisted_commit_from_file_rows() -> None:
+    stored = [
+        _stored(
+            "a1",
+            ts=100,
+            exp=0,
+            lines_added=10_005,
+            lines_deleted=0,
+            files_changed=2,
+            dirs_changed=2,
+            subsystems_changed=2,
+            entropy=0.01,
+        )
+    ]
+
+    updates = _recompute_commit_experience(
+        stored,
+        file_changes={"a1": [("src/a.py", 5, 0), ("docs/large.md", 10_000, 0)]},
+        scoring_exclude_patterns=["docs/**"],
+    )
+    expected = score_change(
+        change_features_from_stored(
+            la=0,
+            ld=0,
+            nf=0,
+            nd=0,
+            ns=0,
+            entropy=0.0,
+            exp=0,
+            file_changes=[("src/a.py", 5, 0), ("docs/large.md", 10_000, 0)],
+            exclude_patterns=["docs/**"],
+        )
+    )
+
+    assert updates[0]["lines_added"] == 5
+    assert updates[0]["lines_deleted"] == 0
+    assert updates[0]["files_changed"] == 1
+    assert updates[0]["dirs_changed"] == 1
+    assert updates[0]["subsystems_changed"] == 1
+    assert updates[0]["entropy"] == 0.0
+    assert updates[0]["change_risk_score"] == expected.score
+    assert updates[0]["change_risk_level"] == expected.level
+
+
+def test_default_reconciliation_keeps_full_index_features_for_repeated_paths() -> None:
+    feats = change_features_from_stored(
+        la=10, ld=0, nf=2, nd=1, ns=1, entropy=0.0, exp=0
+    )
+    expected_risk = score_change(feats)
+    stored = [
+        _stored(
+            "dup",
+            ts=100,
+            lines_added=10,
+            lines_deleted=0,
+            files_changed=2,
+            dirs_changed=1,
+            subsystems_changed=1,
+            entropy=0.0,
+            change_risk_score=expected_risk.score,
+            change_risk_level=expected_risk.level,
+        )
+    ]
+
+    updates = _recompute_commit_experience(
+        stored,
+        file_changes={"dup": [("src/a.py", 10, 0)]},
+        scoring_exclude_patterns=[],
+    )
+
+    assert updates == []
+
+
+@pytest.mark.parametrize("scoring_exclude_patterns", [["docs/**"], ["never/**"]])
+def test_active_filter_scoring_matches_deduplicated_file_rows(
+    scoring_exclude_patterns: list[str],
+) -> None:
+    from repowise.core.pipeline.incremental import _recompute_commit_experience
+
+    commit = {
+        "sha": "duplicate-path",
+        "author_name": "Ann",
+        "author_email": "ann@x",
+        "ts": 100,
+        "subject": "update",
+        "changes": [
+            ("src/a.py", 10, 0),
+            ("src/a.py", 20, 0),
+            ("docs/x.md", 100, 0),
+        ],
+    }
+    commit_rows = build_commit_rows(
+        [commit], scoring_exclude_patterns=scoring_exclude_patterns
+    )
+    file_rows = build_commit_file_rows([commit])
+    file_changes = {
+        commit_rows[0]["sha"]: [
+            (row["file_path"], row["lines_added"], row["lines_deleted"])
+            for row in file_rows
+        ]
+    }
+
+    updates = _recompute_commit_experience(
+        commit_rows,
+        file_changes=file_changes,
+        scoring_exclude_patterns=scoring_exclude_patterns,
+    )
+
+    assert [(row["file_path"], row["lines_added"]) for row in file_rows] == [
+        ("src/a.py", 10),
+        ("docs/x.md", 100),
+    ]
+    assert updates == []
 
 
 def test_batch_local_experience_is_repaired_across_the_whole_history() -> None:

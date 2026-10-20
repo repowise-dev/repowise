@@ -225,6 +225,7 @@ class GitIndexer:
         follow_renames: bool = False,
         tier: GitIndexTier = GitIndexTier.FULL,
         exclude_patterns: list[str] | None = None,
+        commit_scoring_exclude_patterns: list[str] | None = None,
         record_episodes: bool = False,
         max_workers: int | None = None,
         read_only: bool = False,
@@ -250,6 +251,7 @@ class GitIndexer:
 
         self._exclude_patterns = exclude_patterns
         self._exclude = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns or [])
+        self.commit_scoring_exclude_patterns = commit_scoring_exclude_patterns or []
 
     async def index_repo(
         self,
@@ -419,7 +421,9 @@ class GitIndexer:
         # History-tier rows take none of the code signals.
         code_results = [meta for meta in results if meta["file_path"] not in history_files]
         merge_code_signals(code_results, walk, prior_defects, trace_index)
-        commit_rows, commit_file_rows = build_commit_tables(commit_sink)
+        commit_rows, commit_file_rows = build_commit_tables(
+            commit_sink, self.commit_scoring_exclude_patterns
+        )
 
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
@@ -933,7 +937,9 @@ class GitIndexer:
                 since_ts=since_ts,
                 provenance_classifier=self._provenance_classifier(),
             )
-            rows = build_commit_rows(sink)
+            rows = build_commit_rows(
+                sink, scoring_exclude_patterns=self.commit_scoring_exclude_patterns
+            )
             files = build_commit_file_rows(sink)
             # Only after both succeed: the sink is the caller's list, and a
             # partial extend would outlive the failure that caused it.

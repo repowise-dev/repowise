@@ -496,6 +496,24 @@ async def upsert_git_commit_files_bulk(
     )
 
 
+async def get_commit_file_inputs(
+    session: AsyncSession, repository_id: str
+) -> dict[str, list[tuple[str, int, int]]]:
+    """Per-commit file changes used to re-score commits under scoring exclusions."""
+    result = await session.execute(
+        select(
+            GitCommitFile.sha,
+            GitCommitFile.file_path,
+            GitCommitFile.lines_added,
+            GitCommitFile.lines_deleted,
+        ).where(GitCommitFile.repository_id == repository_id)
+    )
+    changes: dict[str, list[tuple[str, int, int]]] = {}
+    for sha, path, added, deleted in result.all():
+        changes.setdefault(sha, []).append((path, added, deleted))
+    return changes
+
+
 async def get_commit_files(
     session: AsyncSession, repository_id: str, sha: str
 ) -> list[GitCommitFile]:

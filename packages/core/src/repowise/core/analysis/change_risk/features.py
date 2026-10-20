@@ -176,6 +176,19 @@ def features_from_file_changes(
     )
 
 
+def filter_scoring_file_changes(
+    changes: Iterable[tuple[str, int, int]], exclude_patterns: Iterable[str] = ()
+) -> list[tuple[str, int, int]]:
+    """Drop gitwildmatch paths excluded from commit risk scoring."""
+    patterns = list(exclude_patterns)
+    if not patterns:
+        return list(changes)
+    from pathspec import PathSpec
+
+    spec = PathSpec.from_lines("gitwildmatch", patterns)
+    return [change for change in changes if not spec.match_file(change[0])]
+
+
 def change_features_from_stored(
     *,
     la: int,
@@ -189,6 +202,8 @@ def change_features_from_stored(
     author: str = "",
     subject: str = "",
     ref: str = "",
+    file_changes: Iterable[tuple[str, int, int]] | None = None,
+    exclude_patterns: Iterable[str] = (),
 ) -> ChangeFeatures:
     """Rebuild a feature vector from already-computed (persisted) metrics.
 
@@ -199,6 +214,16 @@ def change_features_from_stored(
     same way — a field that drifted between them would make the re-scored
     breakdown disagree with the stored score.
     """
+    if file_changes is not None:
+        return features_from_file_changes(
+            filter_scoring_file_changes(file_changes, exclude_patterns),
+            exp=exp,
+            is_fix=is_fix,
+            author=author,
+            subject=subject,
+            ref=ref,
+        )
+
     return ChangeFeatures(
         la=la or 0,
         ld=ld or 0,

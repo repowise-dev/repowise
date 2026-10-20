@@ -64,7 +64,9 @@ def author_experience_by_sha(commits: Iterable[Mapping[str, Any]]) -> dict[str, 
     return exp_by_sha
 
 
-def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
+def build_commit_rows(
+    parsed_commits: list[dict], *, scoring_exclude_patterns: list[str] | None = None
+) -> list[dict]:
     """Build ``git_commits`` row dicts from sunk commit records.
 
     *parsed_commits* is the list populated by ``load_commit_index``'s
@@ -88,11 +90,12 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
     # the full persisted history (see ``pipeline.incremental``).
     exp_by_sha = author_experience_by_sha(parsed_commits)
 
+    scoring_exclude_patterns = scoring_exclude_patterns or []
     rows: list[dict] = []
     for c in parsed_commits:
         sha = c["sha"]
         subject = (c.get("subject") or "")[:_MAX_SUBJECT_LEN]
-        changes = c.get("changes") or []
+        changes = _scoring_changes_for(c, scoring_exclude_patterns)
         exp = exp_by_sha.get(sha, 0)
         feats = features_from_file_changes(
             changes,
@@ -136,6 +139,20 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
             }
         )
     return rows
+
+
+def _scoring_changes_for(commit: dict, exclude_patterns: list[str]) -> list:
+    """Use persisted file-detail semantics only when scoring filters are active."""
+    from ...analysis.change_risk import filter_scoring_file_changes
+
+    changes = commit.get("changes") or []
+    if not exclude_patterns:
+        return changes
+    changes = [
+        (row["file_path"], row["lines_added"], row["lines_deleted"])
+        for row in _file_rows_for(commit["sha"], changes)
+    ]
+    return filter_scoring_file_changes(changes, exclude_patterns)
 
 
 def _file_rows_for(sha: str, changes: list) -> list[dict]:

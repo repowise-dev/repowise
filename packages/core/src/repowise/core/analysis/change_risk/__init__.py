@@ -18,6 +18,7 @@ from .features import (
     extract_range_features,
     extract_worktree_features,
     features_from_file_changes,
+    filter_scoring_file_changes,
     working_tree_is_dirty,
 )
 from .fix_history import (
@@ -63,6 +64,7 @@ __all__ = [
     "extract_range_features",
     "extract_worktree_features",
     "features_from_file_changes",
+    "filter_scoring_file_changes",
     "fix_density_percentile",
     "fix_pressure",
     "fixes_reachable_from",

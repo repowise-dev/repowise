@@ -238,6 +238,26 @@ def test_build_commit_rows_features_and_ordering() -> None:
     assert newer["is_fix"] is False
 
 
+def test_build_commit_rows_scoring_excludes_do_not_drop_file_detail() -> None:
+    parsed = [
+        {
+            "sha": "filtered",
+            "author_name": "Ann",
+            "author_email": "ann@x",
+            "ts": 1000,
+            "subject": "feat: add docs and code",
+            "changes": [("src/a.py", 5, 1), ("docs/large.md", 10000, 0)],
+        }
+    ]
+
+    rows = build_commit_rows(parsed, scoring_exclude_patterns=["docs/**"])
+    details = build_commit_file_rows(parsed)
+
+    assert rows[0]["lines_added"] == 5
+    assert rows[0]["files_changed"] == 1
+    assert {row["file_path"] for row in details} == {"src/a.py", "docs/large.md"}
+
+
 def test_build_commit_rows_author_experience_is_cumulative() -> None:
     """Experience = the author's prior-commit count, oldest→newest."""
     parsed = [

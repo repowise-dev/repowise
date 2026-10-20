@@ -154,6 +154,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `commit_limit` | `5000` | Newest commits walked for git analysis and stored as commit rows, clamped to 1-10000 |
 | `follow_renames` | `false` | Track file renames through git history |
 | `exclude_patterns` | `[]` | Extra gitignore-style patterns, on top of `.gitignore` |
+| `commit_scoring_exclude_patterns` | `[]` | Gitignore-style paths omitted only from per-commit change-risk scoring; files remain indexed and searchable |
 | `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, `custom` |
 | `language` | `en` | Output language for generated wiki pages: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh` |
 | `enable_onboarding` | `true` | Show first-run onboarding prompts (CLI and web) |

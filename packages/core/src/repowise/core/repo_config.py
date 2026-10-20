@@ -21,7 +21,9 @@ MANIFEST_BASENAME = "decisions.yaml"
 # are never silently folded into an unrelated health-only refresh.
 CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     "traversal": frozenset({"exclude_patterns"}),
-    "git_history": frozenset({"commit_limit", "follow_renames"}),
+    "git_history": frozenset(
+        {"commit_limit", "follow_renames", "commit_scoring_exclude_patterns"}
+    ),
     "health": frozenset({"assertions", "coverage", "refactoring"}),
     "generation": frozenset(
         {

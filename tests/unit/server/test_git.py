@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -360,6 +361,19 @@ async def test_get_commits_sorted_by_date(client: AsyncClient, app) -> None:
 async def test_get_commit_detail_has_drivers(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        stored_repo = await crud.get_repository(session, repo["id"])
+        await crud.upsert_git_commit_files_bulk(
+            session,
+            repo["id"],
+            [
+                {"sha": "bbbbbbbb22", "file_path": "src/main.py", "lines_added": 5, "lines_deleted": 0},
+                {"sha": "bbbbbbbb22", "file_path": "docs/large.md", "lines_added": 10000, "lines_deleted": 0},
+            ],
+        )
+    config = Path(stored_repo.local_path) / ".repowise" / "config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("commit_scoring_exclude_patterns:\n  - docs/**\n", encoding="utf-8")
 
     resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
     assert resp.status_code == 200
@@ -370,8 +384,9 @@ async def test_get_commit_detail_has_drivers(client: AsyncClient, app) -> None:
     assert data["change_risk_score"] == 8.5
     # The reportable drivers only: nf/nd/ns still enter the score, but their
     # fitted signs are collinearity with diff size, so they explain nothing.
-    feats = {d["feature"] for d in data["drivers"]}
-    assert feats == {"la", "ld", "entropy", "exp"}
+    feats = {d["feature"]: d["value"] for d in data["drivers"]}
+    assert set(feats) == {"la", "ld", "entropy", "exp"}
+    assert feats["la"] == 40
 
 
 @pytest.mark.asyncio

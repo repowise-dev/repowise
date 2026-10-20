@@ -73,13 +73,16 @@ async def _run_git_indexing(
     """
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.repo_config import load_repo_config
 
+        repo_config = load_repo_config(repo_path)
         git_indexer = GitIndexer(
             repo_path,
             commit_limit=commit_depth,
             follow_renames=follow_renames,
             tier=tier,
             exclude_patterns=exclude_patterns,
+            commit_scoring_exclude_patterns=repo_config.get("commit_scoring_exclude_patterns"),
             # The indexing pass proper, and the one that knows the repo's
             # excludes, so this is where a git episode may be recorded.
             record_episodes=True,

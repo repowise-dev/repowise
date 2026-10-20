@@ -11,6 +11,7 @@ import pytest
 from repowise.core.analysis.change_risk import (
     ChangeFeatures,
     ChangeRiskResult,
+    change_features_from_stored,
     change_risk_payload,
     extract_commit_features,
     extract_range_features,
@@ -143,6 +144,24 @@ def test_payload_includes_friendly_repo_relative_classification() -> None:
 # ---------------------------------------------------------------------------
 # Diff-only feature builder (no git repo — the bot's PR-API path).
 # ---------------------------------------------------------------------------
+
+
+def test_stored_features_can_be_rebuilt_from_filtered_commit_file_detail() -> None:
+    features = change_features_from_stored(
+        la=10005,
+        ld=0,
+        nf=2,
+        nd=2,
+        ns=2,
+        entropy=0.01,
+        exp=12,
+        file_changes=[("src/a.py", 5, 0), ("docs/large.md", 10000, 0)],
+        exclude_patterns=["docs/**"],
+    )
+
+    assert (features.la, features.ld, features.nf, features.nd, features.ns) == (5, 0, 1, 1, 1)
+    assert features.entropy == 0.0
+    assert features.exp == 12
 
 
 def test_features_from_file_changes_aggregates_diffusion() -> None:
