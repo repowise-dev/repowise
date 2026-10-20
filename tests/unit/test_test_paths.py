@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.dotnet_test_projects import read_dotnet_test_projects
+from repowise.core.js_test_roots import read_js_test_roots
 from repowise.core.phpunit_roots import read_phpunit_roots
 from repowise.core.pytest_roots import read_pytest_roots
 from repowise.core.test_paths import (
@@ -567,6 +568,15 @@ _DOTNET_PROJECTS = read_dotnet_test_projects(
     ]
 )
 
+_JS_ROOTS = read_js_test_roots(
+    [
+        (
+            "core/vitest.config.ts",
+            'export default defineConfig({ test: { include: ["**/*.vitest.ts"] } });\n',
+        )
+    ]
+)
+
 
 @pytest.mark.parametrize(
     ("path", "expected_with", "expected_without"),
@@ -590,3 +600,12 @@ def test_dotnet_test_project_classifies_csharp_files(
     got_without = "support" if is_test_support_path(path) else got_without
     assert got_without == expected_without
 
+
+def test_js_runner_config_promotes_custom_pattern_test_file() -> None:
+    # A custom-pattern test file is a test with roots and production without
+    assert is_test_path("core/stream/charStream.vitest.ts", js_roots=_JS_ROOTS)
+    assert not is_test_path("core/stream/charStream.vitest.ts")
+
+    # A standard .test.ts file stays a test even under a config whose include leaves it out
+    assert is_test_path("src/a.test.ts", js_roots=_JS_ROOTS)
+    assert is_test_path("src/a.test.ts")

@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
     from .dotnet_test_projects import DotnetTestProjects
+    from .js_test_roots import JsTestRoots
     from .phpunit_roots import PhpunitRoots
     from .pytest_roots import PytestRoots
 
@@ -475,6 +476,7 @@ def _classify(
     language: str | None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> str:
@@ -511,10 +513,15 @@ def _classify(
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
 
+    # Check if a governing JS config collects this file
+    js_collected = _js_collects(path, filename, js_roots)
+
     # A test name outside a test directory still needs pytest to collect it,
     # or PHPUnit config not to keep it out of collection.
+    # A JS/TS source file collected by a governing config is a test even without
+    # a test-shaped name or a test directory.
     needs_test_dir = (
-        not named_test
+        not (named_test or js_collected)
         or _pytest_skips(path, filename, roots)
         or _phpunit_skips(path, filename, phpunit_roots)
     )
@@ -525,11 +532,16 @@ def _classify(
     ):
         return ""
 
-    # Inside test material. A test-shaped filename wins; otherwise a
-    # scaffolding directory demotes it to support.
-    if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
+    # Inside test material. A test-shaped filename (or one a JS config collects)
+    # wins; otherwise a scaffolding directory demotes it to support.
+    if not (named_test or js_collected) and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
         return "support"
     return "test"
+
+
+_JS_EXTENSIONS = frozenset(
+    {".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}
+)
 
 
 def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool:
@@ -552,6 +564,15 @@ def _dotnet_project_collects(
     )
 
 
+def _js_collects(path: str, filename: str, js_roots: JsTestRoots | None) -> bool:
+    """Whether a governing Vitest or Jest config collects *path*."""
+    return (
+        js_roots is not None
+        and PurePosixPath(filename).suffix.lower() in _JS_EXTENSIONS
+        and js_roots.collects(path.replace("\\", "/")) is True
+    )
+
+
 def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
     """Whether pytest's config keeps a test-named Python file out of collection."""
     return (
@@ -566,6 +587,7 @@ def is_test_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> bool:
@@ -576,11 +598,11 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name, pass
+    *roots* or *js_roots* to consult test runner configs. Pass
     *dotnet_projects* to recognize C# files governed by a test project, and
     pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "test"
+    return _classify(path, language, roots, dotnet_projects, js_roots, phpunit_roots, package_root) == "test"
 
 
 def is_test_support_path(
@@ -588,6 +610,7 @@ def is_test_support_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> bool:
@@ -597,7 +620,7 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "support"
+    return _classify(path, language, roots, dotnet_projects, js_roots, phpunit_roots, package_root) == "support"
 
 
 def is_test_related_path(
@@ -605,6 +628,7 @@ def is_test_related_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    js_roots: JsTestRoots | None = None,
     phpunit_roots: PhpunitRoots | None = None,
     package_root: PackageRootProbe | None = None,
 ) -> bool:
@@ -617,7 +641,7 @@ def is_test_related_path(
     *package_root*, which answers whether a repo-relative directory holds a
     package manifest, keeps a shipped ``test-utils/`` package production.
     """
-    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) != ""
+    return _classify(path, language, roots, dotnet_projects, js_roots, phpunit_roots, package_root) != ""
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:

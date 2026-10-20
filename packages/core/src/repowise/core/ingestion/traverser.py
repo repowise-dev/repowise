@@ -22,10 +22,11 @@ import functools
 import os
 import re
 import threading
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 import pathspec
@@ -35,6 +36,12 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 from ..code_origin import is_generated_header
 from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..js_test_roots import (
+    JS_TEST_CONFIG_NAMES,
+    JsTestRoots,
+    js_test_options,
+    js_test_roots,
+)
 from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
 from ..phpunit_roots import (
     PHPUNIT_CONFIG_NAMES,
@@ -511,6 +518,11 @@ class FileTraverser:
         return self._console_script_tables().phpunit_roots
 
     @property
+    def js_test_roots(self) -> JsTestRoots:
+        """Where Vitest or Jest collects tests, which decides custom-pattern JS/TS tests."""
+        return self._console_script_tables().js_test_roots
+
+    @property
     def dotnet_test_projects(self) -> DotnetTestProjects:
         """The .NET test projects, from the .csproj files the config pass read."""
         return self._console_script_tables().dotnet_test_projects
@@ -535,6 +547,10 @@ class FileTraverser:
     @property
     def _distribution_inits(self) -> frozenset[str]:
         return self._console_script_tables().package_inits
+
+    def get_cached_file_content(self, rel_path: str) -> str | None:
+        """Text of any config or manifest file read during traversal discovery."""
+        return self._console_script_tables().config_texts.get(rel_path)
 
     # ------------------------------------------------------------------
     # Public API
@@ -895,6 +911,7 @@ class FileTraverser:
             language,
             roots=tables.pytest_roots,
             dotnet_projects=tables.dotnet_test_projects,
+            js_roots=tables.js_test_roots,
             phpunit_roots=tables.phpunit_roots,
             package_root=self._is_package_root_dir,
         )
@@ -1247,7 +1264,7 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
 
 
 class ConsoleScriptTables(NamedTuple):
-    """What one pass over the repo's Python and .NET project configs yields."""
+    """What one pass over the repo's project configs yields."""
 
     names: frozenset[str]
     """Launcher names an installer drops in the environment's script dir."""
@@ -1263,12 +1280,16 @@ class ConsoleScriptTables(NamedTuple):
     """Where PHPUnit collects tests, which decides a test-named PHP class."""
     dotnet_test_projects: DotnetTestProjects = DotnetTestProjects()
     """.NET test projects, which govern .cs files beneath them."""
+    js_test_roots: JsTestRoots = JsTestRoots()
+    """Where Vitest or Jest collects tests, which decides custom-pattern JS/TS tests."""
+    config_texts: Mapping[str, str] = MappingProxyType({})
+    """Cached text of project config and manifest files read during discovery."""
 
 
 def _collect_console_scripts(
     repo_root: Path, *, prune_nested_git: bool = True
 ) -> ConsoleScriptTables:
-    """Console-script names, module targets and distribution names.
+    """Console-script names, module targets, distribution names, and test runner roots.
 
     Reads ``[project.scripts]``, ``[project.gui-scripts]``, and every
     ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
@@ -1276,8 +1297,10 @@ def _collect_console_scripts(
     before the colon is the module it imports; ``[project].name`` is the
     distribution. Best-effort: unparsable files are skipped. The pytest
     configs (``pytest.ini``, ``tox.ini``, ``setup.cfg`` and the same
-    ``pyproject.toml``) and PHPUnit configs (``phpunit.xml``,
-    ``phpunit.dist.xml``, ``phpunit.xml.dist``) come off this one walk.
+    ``pyproject.toml``), Vitest/Jest configs (``vitest.config.*``,
+    ``jest.config.*``, ``package.json``, etc.) and PHPUnit configs (``phpunit.xml``,
+    ``phpunit.dist.xml``, ``phpunit.xml.dist``) come off this one walk and one
+    read each.
     """
     from repowise.core.fs_walk import iter_glob
 
@@ -1290,7 +1313,14 @@ def _collect_console_scripts(
     phpunit_configs: list[tuple[str, Any]] = []
     phpunit_unreadable: list[str] = []
     csproj_files: list[tuple[str, str]] = []
-    manifest_patterns = (*PYTEST_CONFIG_NAMES, *PHPUNIT_CONFIG_NAMES, "*.csproj")
+    js_configs: list[tuple[str, dict]] = []
+    config_texts: dict[str, str] = {}
+    manifest_patterns = (
+        *PYTEST_CONFIG_NAMES,
+        *PHPUNIT_CONFIG_NAMES,
+        *JS_TEST_CONFIG_NAMES,
+        "*.csproj",
+    )
     try:
         config_files = list(
             iter_glob(repo_root, manifest_patterns, prune_nested_git=prune_nested_git)
@@ -1299,15 +1329,15 @@ def _collect_console_scripts(
         return ConsoleScriptTables(frozenset(), frozenset(), frozenset(), frozenset())
     for config_file in config_files:
         name = config_file.name
+        rel = config_file.relative_to(repo_root).as_posix()
         if name.endswith(".csproj"):
-            rel = config_file.relative_to(repo_root).as_posix()
             try:
                 text = config_file.read_text(encoding="utf-8", errors="replace")
                 csproj_files.append((rel, text))
+                config_texts[rel] = text
             except Exception:
                 csproj_files.append((rel, ""))
             continue
-        rel = config_file.relative_to(repo_root).as_posix()
         if name in PHPUNIT_CONFIG_NAMES:
             try:
                 text = config_file.read_text(encoding="utf-8")
@@ -1319,27 +1349,45 @@ def _collect_console_scripts(
             except (OSError, UnicodeDecodeError, PhpunitConfigUnreadableError):
                 phpunit_unreadable.append(rel)
         if name in PYTEST_CONFIG_NAMES:
-            project, options, parsed = _read_python_config(config_file)
+            project, options, parsed, text = _read_python_config(config_file)
+            if parsed:
+                config_texts[rel] = text
             if options is not None:
                 pytest_configs.append((rel, options))
             if not parsed:
                 unreadable.append(rel)
-            if project is None:
-                continue
-            dist = project.get("name")
-            if isinstance(dist, str) and dist.strip():
-                distributions.add(dist.strip())
-                if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
-                    inits.add(init)
-            _add_script_targets(project, names, modules)
+            if project is not None:
+                dist = project.get("name")
+                if isinstance(dist, str) and dist.strip():
+                    distributions.add(dist.strip())
+                    if (init := _distribution_init(repo_root, config_file.parent, dist)) is not None:
+                        inits.add(init)
+                _add_script_targets(project, names, modules)
+        if name in JS_TEST_CONFIG_NAMES:
+            text = config_texts.get(rel)
+            if text is None:
+                try:
+                    text = config_file.read_text(encoding="utf-8")
+                    config_texts[rel] = text
+                except Exception:
+                    text = None
+            if text:
+                try:
+                    js_opts = js_test_options(name, text)
+                    if js_opts is not None:
+                        js_configs.append((rel, js_opts))
+                except Exception:
+                    pass
     return ConsoleScriptTables(
-        frozenset(names),
-        frozenset(modules),
-        frozenset(distributions),
-        frozenset(inits),
-        pytest_roots(pytest_configs, unreadable),
-        phpunit_roots(phpunit_configs, phpunit_unreadable),
-        read_dotnet_test_projects(csproj_files),
+        names=frozenset(names),
+        modules=frozenset(modules),
+        distributions=frozenset(distributions),
+        package_inits=frozenset(inits),
+        pytest_roots=pytest_roots(pytest_configs, unreadable),
+        phpunit_roots=phpunit_roots(phpunit_configs, phpunit_unreadable),
+        dotnet_test_projects=read_dotnet_test_projects(csproj_files),
+        js_test_roots=js_test_roots(js_configs),
+        config_texts=config_texts,
     )
 
 
@@ -1358,8 +1406,8 @@ def _distribution_init(repo_root: Path, base: Path, dist: str) -> str | None:
     return init.relative_to(repo_root).as_posix()
 
 
-def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bool]:
-    """``([project] table, pytest options, parsed)`` of one config.
+def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bool, str]:
+    """``([project] table, pytest options, parsed, text)`` of one config.
 
     The first two are None if absent or unreadable; *parsed* is False when the
     file could not be read or parsed, so what it collects is unknown.
@@ -1369,13 +1417,13 @@ def _read_python_config(config_file: Path) -> tuple[dict | None, dict | None, bo
     try:
         text = config_file.read_text(encoding="utf-8")
         if config_file.name != "pyproject.toml":
-            return None, parse_pytest_options(config_file.name, text), True
+            return None, parse_pytest_options(config_file.name, text), True, text
         data = tomllib.loads(text)
     except Exception:
-        return None, None, False
+        return None, None, False, ""
     project = data.get("project")
     options = pytest_options(config_file.name, toml=data)
-    return (project if isinstance(project, dict) else None), options, True
+    return (project if isinstance(project, dict) else None), options, True, text
 
 
 def _add_script_targets(project: dict, names: set[str], modules: set[str]) -> None:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.workspace.extractors.base import iter_source_files
 from repowise.core.workspace.extractors.service_boundary import detect_service_boundaries
 from repowise.core.workspace.extractors.topic import TopicExtractor
@@ -123,3 +125,27 @@ def test_src_layout_package_is_a_service_boundary(tmp_path):
     (pkg / "src" / "tool" / "cmds" / "run.py").write_text("x = 1\n")
 
     assert [b.service_path for b in detect_service_boundaries(tmp_path)] == ["packages/cli"]
+
+
+def test_iter_source_files_reuses_traverser_cached_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "package.json").write_text('{"name": "app"}', encoding="utf-8")
+    (tmp_path / "index.js").write_text("console.log('hi');", encoding="utf-8")
+
+    reads: dict[str, int] = {}
+    orig_read_bytes = Path.read_bytes
+
+    def counted_read_bytes(self, *args, **kwargs):
+        reads[self.name] = reads.get(self.name, 0) + 1
+        return orig_read_bytes(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+
+    files = {rel: content for rel, _suffix, content in iter_source_files(tmp_path, frozenset({".json", ".js"}))}
+    assert files["package.json"] == '{"name": "app"}'
+    assert "console.log('hi');" in files["index.js"]
+    # package.json was read during traversal config collection and served from cache;
+    # it must NOT be read again via read_bytes.
+    assert "package.json" not in reads
+    assert reads["index.js"] == 1
