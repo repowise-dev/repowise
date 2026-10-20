@@ -329,7 +329,7 @@ async def _place_tests(session, repo_id: str, out: dict) -> None:
 
 def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
     """The commit the index describes, read by the one resolver the server's freshness uses."""
-    from ..workspace.update import resolve_indexed_commit
+    from ..workspace.state import resolve_indexed_commit
 
     resolved = resolve_indexed_commit(Path(repo_path), row_commit)
     if resolved.problem:
