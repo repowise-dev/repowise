@@ -48,6 +48,16 @@ def _workspace_summary(path: Path, *, no_workspace: bool = False) -> dict[str, o
     }
 
 
+#: Transports the MCP spec has moved past, mapped to what replaces them. SSE
+#: stays selectable for one release because editor and client configs already
+#: name it in the field, and removing it outright turns a working config into a
+#: startup failure with no migration window. The MCP spec's own backwards
+#: compatibility section says a server supporting older clients should keep
+#: hosting the old endpoints alongside the new one, so the notice names the
+#: replacement rather than the transport being withdrawn.
+_DEPRECATED_TRANSPORTS = {"sse": "streamable-http"}
+
+
 def _print_network_startup(
     transport: str,
     repo_path: Path,
@@ -55,6 +65,12 @@ def _print_network_startup(
     port: int,
     workspace: dict[str, object] | None,
 ) -> None:
+    replacement = _DEPRECATED_TRANSPORTS.get(transport)
+    if replacement is not None:
+        console.print(
+            f"[yellow]--transport {transport} is deprecated and will be removed "
+            f"in a future release; use --transport {replacement}.[/yellow]"
+        )
     label = "streamable HTTP" if transport == "streamable-http" else "SSE"
     endpoint = "mcp" if transport == "streamable-http" else "sse"
     console.print(
@@ -90,7 +106,8 @@ def _print_network_startup(
     default="stdio",
     help=(
         "Transport protocol: stdio (Claude Code/Codex/Cursor), "
-        "streamable-http (HTTP clients), or sse (legacy web clients)."
+        "streamable-http (HTTP clients), or sse (deprecated, use "
+        "streamable-http)."
     ),
 )
 @click.option(
@@ -151,8 +168,8 @@ def mcp_command(
     protocol: ten by default in single-repo mode, plus one more by default
     in workspace mode. Seven more are opt-in via ``--tools`` or the
     ``mcp.tools`` config block. Supports stdio
-    (for Claude Code, Codex, Cursor), streamable HTTP, and legacy SSE
-    transports.
+    (for Claude Code, Codex, Cursor), streamable HTTP, and the deprecated
+    SSE transport.
 
     Loads ``<repo>/.repowise/.env`` into the environment before starting so
     that MCP tools (e.g. ``get_answer``) can resolve the configured LLM
