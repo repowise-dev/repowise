@@ -123,6 +123,8 @@ Keys:
 
 Output:
   --no-claude-md         Don't generate or update CLAUDE.md
+  --progress json        One JSON event per line on stdout, ending with a
+                         summary (status, mode, spend, next commands)
   -y, --yes              No questions: every answer at its default, cost
                          pre-approved. Add --no-prose to guarantee no spend.
   -v, --verbose          Show per-phase internals plus debug logs
@@ -186,8 +188,10 @@ yourself. `repowise init` picks up a provider key from the environment and
 - **Ollama** (fully local, no API key, slower): needs Ollama running
 - **LiteLLM** (100+ providers): needs LiteLLM config
 - **Claude Code, Codex or OpenCode login** (`claude_cli`, `codex_cli`,
-  `opencode`): uses the user's subscription quota and takes longer. `init`
-  detects a logged-in CLI and offers it, but uses it only with `--provider`.
+  `opencode`): uses the user's plan quota, or is billed per token when the
+  CLI is signed in with an API key, and takes longer. `init` reads each CLI's
+  auth status and uses one only with `--provider`. A Codex signed in through
+  ChatGPT is listed in the picker but not offered.
 
 The user sets a key in their own shell or in `.repowise/.env` (gitignored).
 Never ask for a key in the chat. Show the export line for their provider:
@@ -212,7 +216,8 @@ Add any exclusions as `-x` flags.
 The unattended command is `repowise init --yes --no-prose`. `--yes` answers
 every prompt with its default and pre-approves the cost; `--no-prose` makes sure
 nothing is spent. Without `--no-prose`, `--yes` uses a model whenever a key is
-set. A model run passes `--yes` only after the user approved the estimate
+set; a logged-in agent CLI only with `--provider`. In a folder that holds
+several repos, `--yes` indexes all of them; `--repos a,b` picks some. A model run passes `--yes` only after the user approved the estimate
 (`repowise init --dry-run` prints it).
 
 Show the user the exact command you're about to run. Ask for confirmation.
@@ -226,6 +231,9 @@ process to exit instead of relying on a fixed timeout, then read its exit code:
   missing and the command that adds it.
 - `130`: interrupted. `repowise init --resume` (same flags) continues it.
 - anything else: failed. Run `repowise doctor`.
+
+With `--progress json`, init writes one JSON event per line to stdout and ends
+on a summary line with the status, mode, spend and next commands.
 
 `repowise status` reports a first run as incomplete until it exits, so read it
 after the process ends. Ctrl+C is safe at any point: running `/prompts:repowise-init` again

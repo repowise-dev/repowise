@@ -52,15 +52,19 @@ cd my-workspace
 repowise init .
 ```
 
-`repowise init .` scans for git repositories up to 3 levels deep, asks which to
-index and which is the primary repo (the default for MCP queries), walks you
-through provider setup, then indexes each repo, generates its docs (unless
-`--no-prose`), runs the cross-repo analysis, and registers the MCP server with
-your editors.
+`repowise init .` scans for git repositories up to 3 levels deep (linked git
+worktrees are skipped) and opens a plan screen listing them. By default every
+repo is selected and its documentation is built from code; `r` chooses the
+repos and the primary repo (the default for MCP queries), and `m` adds a model.
+It then indexes each repo, runs the cross-repo analysis, and registers the MCP
+server with your editors.
 
-To skip the picker, `--repos api,web` indexes only those repos (by alias,
-directory name, or relative path) and makes the first one primary. `--yes`,
-`--all` or a piped stdin take every repo and print which ones.
+To skip the screen, `--repos api,web` indexes only those repos (by alias,
+directory name, or relative path). In a new workspace the first one listed is
+primary; an existing workspace keeps its primary. `--yes`, `--all` or a piped
+stdin take every repo and print which ones. Picking fewer repos on a re-run
+keeps the others in `.repowise-workspace.yaml`: an interactive run asks before
+dropping them, and `--yes` never drops them.
 
 ```bash
 repowise status --workspace           # workspace status
