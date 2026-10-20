@@ -17,6 +17,7 @@ from repowise.cli.commands.init_cmd._agent_summary import init_output
 from repowise.cli.main import cli
 from repowise.cli.output import LINE_OUTPUT_WIDTH, line_output_width
 from repowise.cli.ui.brand import print_phase_header
+from repowise.cli.ui.mode_names import TITLE_BUILT_FROM_CODE
 from repowise.cli.ui.progress_json import JsonProgressCallback
 from repowise.cli.ui.result_panels import print_completion_panel
 
@@ -196,7 +197,7 @@ def test_json_init_writes_only_events_and_ends_with_a_ready_summary(repo):
     assert summary["spend"] == {"tokens": 0, "usd": 0.0}
     assert summary["next"][0] == "repowise serve"
     # The human screen still happens, on stderr.
-    assert "repowise index complete" in result.stderr
+    assert TITLE_BUILT_FROM_CODE in result.stderr
 
 
 def test_json_init_degraded_summary_names_the_gap(repo, monkeypatch):
