@@ -7,11 +7,21 @@ from repowise.cli.ui import (
     LARGE_REPO_FILE_THRESHOLD,
     RepoScanInfo,
     build_contextual_next_steps,
-    build_status_notes,
     keyless_upgrade_note,
     should_offer_fast_mode,
 )
 from repowise.cli.ui.brand import THEME
+from repowise.cli.ui.finish_panel import connected_lines
+
+
+def build_status_notes(setup) -> list[str]:
+    """The Connected lines as plain text."""
+    from rich.console import Console
+
+    console = Console(width=200, record=True, theme=THEME)
+    for line in connected_lines(setup):
+        console.print(line)
+    return [line for line in console.export_text().splitlines() if line.strip()]
 
 
 def test_should_offer_fast_mode_none():
@@ -65,13 +75,8 @@ def test_next_steps_full_mode():
     assert any("search" in c for c in cmds)
 
 
-def test_next_steps_are_exactly_two_rows():
-    """The panel names the dashboard and one move, never a pile.
-
-    It used to assemble up to seven rows from every signal the run produced.
-    Each was individually justified and the list was not: seven next steps do
-    not tell you what to do next, they tell you the program knows seven things.
-    """
+def test_next_steps_are_serve_and_at_most_two_more():
+    """The panel names the dashboard and at most two moves, never a pile."""
     for kwargs in (
         {"index_only": True, "fast_mode": True},
         {"index_only": True, "fast_mode": False},
@@ -80,7 +85,9 @@ def test_next_steps_are_exactly_two_rows():
         {"index_only": False, "hotspot_count": 4, "top_hotspot": "a.py"},
         {"index_only": False, "decision_count": 9},
     ):
-        assert len(build_contextual_next_steps(**kwargs)) == 2
+        steps = build_contextual_next_steps(**kwargs)
+        assert steps[0][0] == "repowise serve"
+        assert 2 <= len(steps) <= 3
 
 
 def test_next_steps_findings_rank_below_finishing_the_index():
@@ -109,7 +116,7 @@ def test_next_steps_headless_run_gets_manual_mcp_row():
     cmds = [c for c, _ in build_contextual_next_steps(index_only=True, setup=setup)]
     assert "repowise mcp ." in cmds
     # It outranks the index-only upgrade row: `--no-editor-setup --index-only`
-    # is the CI shape, and `build_status_notes` is silent for a disabled run,
+    # is the CI shape, and the Connected lines carry no command for a disabled run,
     # so this row is the only place the connect instructions exist.
     assert cmds[1] == "repowise mcp ."
 
@@ -139,10 +146,10 @@ def test_next_steps_non_interactive_surfaces_missing_hooks():
         claude_code_connected=True,
     )
     notes = " ".join(build_status_notes(setup))
-    assert "repowise hook install" in notes
     assert "repowise hook rewrite install" in notes
-    # ...and they are notes, not command rows: the panel stays at two.
-    assert len(build_contextual_next_steps(index_only=True, setup=setup)) == 2
+    # ...and they are notes, not command rows.
+    cmds = [c for c, _ in build_contextual_next_steps(index_only=True, setup=setup)]
+    assert not any(c.startswith("repowise hook") for c in cmds)
 
     # Already installed → not re-suggested.
     setup_installed = EditorSetupOutcome(
@@ -177,9 +184,11 @@ def test_mcp_status_lines_restart_note_only_on_first_index():
     assert "stays connected" in rerun_text
 
 
-def test_mcp_status_lines_empty_when_headless_or_absent():
+def test_mcp_status_lines_empty_when_absent_and_say_skipped_when_headless():
     assert build_status_notes(None) == []
-    assert build_status_notes(EditorSetupOutcome(editor_setup_disabled=True)) == []
+    headless = " ".join(build_status_notes(EditorSetupOutcome(editor_setup_disabled=True)))
+    assert "editor setup was skipped" in headless
+    assert "restart" not in headless.lower()
 
 
 def test_next_steps_render_without_truncation_or_collision():

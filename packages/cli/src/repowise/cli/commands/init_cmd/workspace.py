@@ -58,9 +58,7 @@ from repowise.cli.ui import (
     WARN,
     interactive_advanced_config,
     interactive_mode_select,
-    interactive_primary_select,
     interactive_provider_config_select,
-    interactive_repo_select,
     load_dotenv,
     print_banner,
     progress_steps,
@@ -77,6 +75,7 @@ from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from ._workspace_config import WorkspacePick, build_workspace_config
+from ._workspace_repos import repos_primary_line, select_workspace_repos
 from .generation import (
     CostGateDeclined,
     concept_page_count,
@@ -779,6 +778,7 @@ def _workspace_init(
     *,
     scan: Any,
     init_all: bool,
+    repo_names: list[str],
     exclude_patterns: list[str],
     commit_limit: int | None,
     follow_renames: bool,
@@ -824,10 +824,7 @@ def _workspace_init(
     print_banner(console, repo_name=root.name, workspace=True)
     console.print(f"  Detected [bold]{len(scan.repos)}[/bold] repositories in {root}\n")
 
-    # --yes, --all or a non-terminal stdin take every detected repo (and the
-    # first as primary) without prompting: asking a pipe would end the run with
-    # an EOFError before anything was done, and "every repo" is what --all means.
-    pick = _select_workspace_repos(scan, select_all=init_all or yes or not sys.stdin.isatty())
+    pick = select_workspace_repos(scan, repo_names=repo_names, select_all=init_all or yes)
     if pick is None:
         return
     selected, primary_alias, primary_repo = pick.selected, pick.primary_alias, pick.primary_repo
@@ -864,6 +861,8 @@ def _workspace_init(
         answers, primary_repo, embedder_name, yes=yes, save_key=save_key
     )
     ws_config = _workspace_config(pick, ask=sys.stdin.isatty() and not yes, dry_run=dry_run)
+    if repo_names:
+        console.print(repos_primary_line(ws_config.default_repo, pick))
 
     from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
@@ -926,24 +925,6 @@ def _workspace_init(
         )
     console.print()
     exit_on_gaps(_workspace_gaps(ctx, totals))
-
-
-def _select_workspace_repos(scan: Any, *, select_all: bool) -> WorkspacePick | None:
-    """The repos to index and the primary; None when none were selected."""
-    root = scan.root
-    selected = (
-        list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
-    )
-    if not selected:
-        console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
-        return None
-    primary_alias = (
-        selected[0].alias if select_all else interactive_primary_select(console, selected)
-    )
-    primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
-    # interactive_primary_select asks only when there is more than one to choose from.
-    primary_picked = not select_all and len(selected) > 1
-    return WorkspacePick(selected, root, primary_alias, primary_repo, primary_picked)
 
 
 def _save_workspace(

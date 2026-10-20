@@ -13,11 +13,13 @@ from unittest.mock import patch
 import yaml
 from rich.console import Console
 
+from repowise.cli.commands.init_cmd import _workspace_repos
 from repowise.cli.commands.init_cmd import workspace as ws_mod
 from repowise.cli.commands.init_cmd._workspace_config import (
     WorkspacePick,
     build_workspace_config,
 )
+from repowise.cli.commands.init_cmd._workspace_repos import select_workspace_repos
 from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.workspace_selection import interactive_repo_select
 from repowise.core.workspace import WorkspaceConfig
@@ -182,9 +184,13 @@ def test_repo_whose_folder_is_gone_is_dropped_and_named(tmp_path: Path) -> None:
 
 def test_existing_primary_kept_on_single_pick_via_selector(tmp_path: Path) -> None:
     scan = SimpleNamespace(root=tmp_path, repos=[_repo(tmp_path, "a"), _repo(tmp_path, "b")])
-    with patch.object(ws_mod, "interactive_repo_select", return_value=scan.repos[:1]):
-        assert ws_mod._select_workspace_repos(scan, select_all=False).primary_picked is False
-    assert ws_mod._select_workspace_repos(scan, select_all=True).primary_picked is False
+    with (
+        patch.object(_workspace_repos, "interactive_repo_select", return_value=scan.repos[:1]),
+        patch("sys.stdin.isatty", return_value=True),
+    ):
+        pick = select_workspace_repos(scan, repo_names=[], select_all=False)
+        assert pick.primary_picked is False
+    assert select_workspace_repos(scan, repo_names=[], select_all=True).primary_picked is False
 
 
 def test_a_malformed_config_is_replaced_with_a_note(tmp_path: Path) -> None:

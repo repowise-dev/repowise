@@ -447,6 +447,7 @@ def complete_setup(run: InitRun) -> None:
         provider=run.provider,
         setup=setup_outcome,
         files_written=files_written,
+        verbose=opts.verbose,
         owl=_finish_owl(run),
     )
 

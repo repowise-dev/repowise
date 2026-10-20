@@ -121,9 +121,9 @@ def workspace_list(path: str | None) -> None:
     "run_docs",
     default=None,
     help=(
-        "Generate LLM documentation pages after indexing. Defaults to ON when a "
-        "provider is configured (in the primary repo's config or via env), OFF "
-        "otherwise. Skipped silently when --no-index is passed."
+        "--docs writes the documentation with a model (the primary repo's "
+        "provider, or --provider). --no-docs indexes only. Default: documentation "
+        "built from code, with no model calls and no key. Ignored with --no-index."
     ),
 )
 @click.option(
@@ -162,17 +162,13 @@ def workspace_add(
     save_key: bool,
     verbose: bool,
 ) -> None:
-    """Add a repo to the workspace and (by default) index + generate docs for it.
+    """Add a repo to the workspace, index it and build its documentation.
 
     PATH is a relative or absolute path to a git repository.
 
-    Defaults are designed so the repo immediately appears with complete
-    intelligence in the web UI and MCP server:
-      - ``--index``  (default ON) runs the full ingestion pipeline
-      - ``--docs``   (auto)        generates wiki pages when a provider is
-                                    available, otherwise skips with a notice
-    Use ``--no-index`` to only register the entry without indexing, or
-    ``--no-docs`` to index without LLM generation.
+    By default the repo is indexed and its documentation is built from code,
+    with no model calls. Pass --docs (or --provider) to have a model write it,
+    --no-docs to index only, or --no-index to only register the entry.
     """
     configure_cli_logging(verbose=verbose)
 
@@ -225,11 +221,8 @@ def workspace_add(
         return
 
     # Resolve whether docs should run.
-    resolved_docs, docs_skip_reason = _resolve_docs_flag(
-        run_docs=run_docs,
-        provider_name=provider_name,
-        ws_root=ws_root,
-        ws_config=ws_config,
+    docs_mode, docs_skip_reason = _resolve_docs_flag(
+        run_docs=run_docs, provider_name=provider_name
     )
 
     _run_index_for_repo(
@@ -237,7 +230,7 @@ def workspace_add(
         alias,
         ws_root,
         ws_config,
-        generate_docs=resolved_docs,
+        docs_mode=docs_mode,
         provider_name=provider_name,
         model=model,
         concurrency=concurrency,
