@@ -18,6 +18,23 @@ from typing import Any
 
 INDEX_SCOPE_VERSION = 1
 
+#: The one command that takes an Index only repo to full git history and
+#: documentation. It needs no key: without a model the documentation is built
+#: from code.
+FAST_TO_FULL_COMMAND = "repowise update --full"
+
+
+def fast_to_full_command(repo_alias: str | None = None) -> str:
+    """:data:`FAST_TO_FULL_COMMAND`, aimed at one workspace repo when *repo_alias* is set."""
+    return f"repowise update --repo {repo_alias} --full" if repo_alias else FAST_TO_FULL_COMMAND
+
+
+def upgrade_command(scope: Mapping[str, Any] | None) -> str | None:
+    """The fast-to-full command when *scope* is Index only (no documentation), else None."""
+    if isinstance(scope, Mapping) and scope.get("content_provenance") == "none":
+        return FAST_TO_FULL_COMMAND
+    return None
+
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and
 # re-parses config.yaml. Keyed on mtime+size so an index rebuild invalidates it.
@@ -176,6 +193,8 @@ def resolve_index_scope(
             else None
         ),
         "dropped_files": _dropped_files(scope.get("dropped_files")),
+        # ``init --test-run``: the model wrote documentation for a sample of files.
+        "test_run": scope.get("test_run") if isinstance(scope.get("test_run"), bool) else None,
         "file_pages": {
             "configured_cap": configured_cap,
             "effective_cap": _number(pages.get("effective_cap")),
@@ -407,6 +426,10 @@ def compact_index_scope(
             compact["degraded_analyses_total"] = len(unavailable)
             compact["degraded_analyses_emitted"] = len(shown)
             compact["degraded_analyses_reduced_reason"] = "compact_projection"
+    # Only an Index only repo carries it, so no other response grows.
+    command = upgrade_command(scope)
+    if command:
+        compact["upgrade_command"] = command
     return compact
 
 

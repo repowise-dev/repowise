@@ -273,8 +273,8 @@ class Selection:
     ``conftest-import-check`` (one test that loads a conftest the change reaches
     only through its imports), ``filename-pattern``, ``unknown``, ``none`` when
     nothing was asked (no index), or a scope's ``ecosystem``,
-    ``package-importers``, ``named-by`` or ``owner-package``. ``why`` says, per
-    selected test file, what put it in: the changed file and evidence that
+    ``package-importers``, ``named-by``, ``fixture-readers`` or ``owner-package``.
+    ``why`` says, per selected test file, what put it in: the changed file and evidence that
     reached it, or the reason it runs with every subset. ``known_tests`` are
     the checkout's runnable test files (empty when not read), so a selection
     can say how much of the suite it is.

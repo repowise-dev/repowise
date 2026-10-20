@@ -45,6 +45,44 @@ def _narrow_to_model_written(plan: ScopePlan) -> ScopePlan:
     return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
 
 
+NO_DOCUMENTATION_MESSAGE = (
+    "[yellow]This repo has no documentation yet.[/yellow] "
+    "Run `repowise init --no-prose` or `repowise update --full` first."
+)
+
+
+async def has_documentation(repo_path: Path) -> bool:
+    """Whether the index holds any page, checked before a provider is resolved.
+
+    A repo with nothing to write against should hear that, not a missing-key
+    error. Unreadable stores answer True so the full run reports the real error.
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.cli.helpers import db_configured, get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import Page
+
+    if not (repo_path / ".repowise" / "wiki.db").exists() and not db_configured():
+        return False
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return False
+            count = await session.execute(
+                select(func.count()).select_from(Page).where(Page.repository_id == repo.id)
+            )
+            return bool(count.scalar_one())
+    except (OSError, SQLAlchemyError):
+        return True
+    finally:
+        await engine.dispose()
+
+
 @dataclass
 class GenerateOutcome:
     """What a generate run produced, for the command's state write + report."""
@@ -59,6 +97,8 @@ class GenerateOutcome:
     tokens: int = 0
     #: Model-written pages still stale after the run.
     stale_page_ids: set[str] = field(default_factory=set)
+    #: The skipped decision lanes this run filled, when any were pending.
+    decision_lanes: Any | None = None
 
 
 async def run_scoped_generation(
@@ -88,6 +128,13 @@ async def run_scoped_generation(
         cost_tracking_disabled,
         resolve_embedder,
     )
+
+    # Deferred like every other CLI call site: ``repowise.core.pipeline.__init__``
+    # eagerly pulls in the orchestrator and the persist layer. At module scope
+    # that cost every ``repowise`` invocation 31 extra modules (20 of them the
+    # pipeline package) — ``--help`` and the post-commit hook included, neither
+    # of which generates.
+    from repowise.core.decision_lanes import plan_decision_lanes
     from repowise.core.generation.cost_tracker import CostTracker
     from repowise.core.persistence import (
         FullTextSearch,
@@ -97,16 +144,13 @@ async def run_scoped_generation(
         upsert_repository,
     )
     from repowise.core.persistence import get_session as _get_session
-
-    # Deferred like every other CLI call site: ``repowise.core.pipeline.__init__``
-    # eagerly pulls in the orchestrator and the persist layer. At module scope
-    # that cost every ``repowise`` invocation 31 extra modules (20 of them the
-    # pipeline package) — ``--help`` and the post-commit hook included, neither
-    # of which generates.
     from repowise.core.pipeline.scoped_generation import (
+        ScopedGenerationResult,
         execute_scoped_generation,
         rehydrate_repo,
     )
+
+    from ..decision_lanes import run_and_report_lanes
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
@@ -133,10 +177,7 @@ async def run_scoped_generation(
             include_nested_repos=bool(state.get("include_nested_repos", False)),
         )
         if rehydrated is None:
-            console.print(
-                "[yellow]This repo has no wiki pages yet.[/yellow] "
-                "Run `repowise init --no-prose` or `repowise update --full` first."
-            )
+            console.print(NO_DOCUMENTATION_MESSAGE)
             return None
 
         console.print(
@@ -173,14 +214,19 @@ async def run_scoped_generation(
             console.print(
                 "[yellow]No such page(s), skipped:[/yellow] " + ", ".join(plan.unknown_page_ids)
             )
+        # The decision lanes a keyless index skipped run with this model too.
+        lane_plan = plan_decision_lanes(state, repo_path, rehydrated)
         if not plan.generate_ids:
             console.print("[yellow]Nothing to generate for that selection.[/yellow]")
-            return None
-
-        _report_plan(plan, cascade_mode)
+            if lane_plan is None:
+                return None
+        else:
+            _report_plan(plan, cascade_mode)
 
         # Cost gate (and the dry-run stop) share the same estimate.
-        proceed = gate_cost(plan.cost_plans, provider, repo_path, yes=yes, dry_run=dry_run)
+        proceed = gate_cost(
+            plan.cost_plans, provider, repo_path, yes=yes, dry_run=dry_run, decisions=lane_plan
+        )
         if not proceed:
             return None
 
@@ -216,20 +262,33 @@ async def run_scoped_generation(
             console.print(f"[dim]Full-text index unavailable: {exc}[/dim]")
             fts = None
 
-        result = await execute_scoped_generation(
-            session_factory=sf,
-            repo_id=repo_id,
-            repo_path=repo_path,
-            rehydrated=rehydrated,
-            plan=plan,
+        result = ScopedGenerationResult(generated_pages=[], marked_stale=0)
+        if plan.generate_ids:
+            result = await execute_scoped_generation(
+                session_factory=sf,
+                repo_id=repo_id,
+                repo_path=repo_path,
+                rehydrated=rehydrated,
+                plan=plan,
+                provider=provider,
+                generation_config=config,
+                embedder=embedder,
+                vector_store=vector_store,
+                fts=fts,
+                progress=None,
+                cost_tracker=cost_tracker,
+                concurrency=config.max_concurrency,
+            )
+
+        lanes = await run_and_report_lanes(
+            sf,
+            repo_id,
+            repo_path,
+            lane_plan,
             provider=provider,
-            generation_config=config,
-            embedder=embedder,
+            inputs=rehydrated,
             vector_store=vector_store,
-            fts=fts,
-            progress=None,
             cost_tracker=cost_tracker,
-            concurrency=config.max_concurrency,
         )
 
         total_pages, remaining_templates, stale_ids = await _page_stats(sf, repo_id)
@@ -243,6 +302,7 @@ async def run_scoped_generation(
             cost_usd=cost_tracker.session_cost,
             tokens=cost_tracker.session_tokens,
             stale_page_ids=stale_ids,
+            decision_lanes=lanes,
         )
     finally:
         await engine.dispose()

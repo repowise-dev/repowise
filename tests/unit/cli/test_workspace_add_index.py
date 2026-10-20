@@ -1,8 +1,8 @@
 """``workspace add``'s per-repo index step, with the pipeline and LLM stubbed.
 
 Pins what ``_run_index_for_repo`` writes and prints on each path: docs off,
-docs on, a provider that fails to resolve, a generation error, and an index
-failure.
+built from code, written by a model, a provider that fails to resolve, a
+generation error, and an index failure.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def test_docs_on_records_the_provider(ws, monkeypatch, capsys):
     ws_root, cfg, calls = ws
     monkeypatch.setattr("repowise.cli.helpers.resolve_provider", lambda *a, **k: _provider())
     monkeypatch.setattr(_index, "_generate_docs_for_added_repo", lambda **_k: 5)
-    _run(ws_root, cfg, generate_docs=True, save_key=False)
+    _run(ws_root, cfg, docs_mode="llm", save_key=False)
 
     state = load_state(ws_root / "added")
     assert state["total_pages"] == 5
@@ -96,24 +96,60 @@ def test_docs_on_records_the_provider(ws, monkeypatch, capsys):
     assert args[1:3] == ("fake", "fake-1")
     assert kwargs["save_key"] is False
     out = capsys.readouterr().out
-    assert "Generated 5 pages" in out
+    assert "Documentation: 5 pages, written by fake-1" in out
     assert "indexed without docs" not in out
 
 
-def test_provider_failure_falls_back_to_index_only(ws, monkeypatch, capsys):
+def test_provider_failure_falls_back_to_built_from_code(ws, monkeypatch, capsys):
     ws_root, cfg, calls = ws
 
     def boom(*_a, **_k):
         raise RuntimeError("no key")
 
-    monkeypatch.setattr("repowise.cli.helpers.resolve_provider", boom)
-    _run(ws_root, cfg, generate_docs=True)
+    seen = {}
 
-    assert resolve_docs_mode(load_state(ws_root / "added")) == "none"
+    def fake_generate(**kwargs):
+        seen.update(kwargs)
+        return 4
+
+    monkeypatch.setattr("repowise.cli.helpers.resolve_provider", boom)
+    monkeypatch.setattr(_index, "_generate_docs_for_added_repo", fake_generate)
+    _run(ws_root, cfg, docs_mode="llm")
+
+    assert seen["provider"] is None
+    state = load_state(ws_root / "added")
+    assert resolve_docs_mode(state) == "deterministic"
+    assert "provider" not in state
     assert calls["save_config"] == []
     out = capsys.readouterr().out
-    assert "Provider unavailable (no key)" in out
-    assert "indexed without docs (provider failure: no key)" in out
+    assert "Provider unavailable (no key); building documentation from code" in out
+    assert "Documentation: 4 pages, built from code" in out
+
+
+def test_default_builds_from_code_without_a_model(ws, monkeypatch, capsys):
+    ws_root, cfg, calls = ws
+
+    def no_model(*_a, **_k):
+        raise AssertionError("built from code must not resolve a provider")
+
+    seen = {}
+
+    def fake_generate(**kwargs):
+        seen.update(kwargs)
+        return 7
+
+    monkeypatch.setattr("repowise.cli.helpers.resolve_provider", no_model)
+    monkeypatch.setattr(_index, "_generate_docs_for_added_repo", fake_generate)
+    _run(ws_root, cfg, docs_mode="deterministic")
+
+    assert seen["provider"] is None
+    state = load_state(ws_root / "added")
+    assert state["total_pages"] == 7
+    assert resolve_docs_mode(state) == "deterministic"
+    assert calls["save_config"] == []
+    out = capsys.readouterr().out
+    assert "Documentation: 7 pages, built from code" in out
+    assert "indexed without docs" not in out
 
 
 def test_generation_error_keeps_the_provider_state(ws, monkeypatch, capsys):
@@ -124,13 +160,13 @@ def test_generation_error_keeps_the_provider_state(ws, monkeypatch, capsys):
         raise RuntimeError("rate limited")
 
     monkeypatch.setattr(_index, "_generate_docs_for_added_repo", boom)
-    _run(ws_root, cfg, generate_docs=True)
+    _run(ws_root, cfg, docs_mode="llm")
 
     state = load_state(ws_root / "added")
     assert state["provider"] == "fake"
     assert state["total_pages"] == 0
     assert len(calls["save_config"]) == 1
-    assert "Doc generation failed: rate limited" in capsys.readouterr().out
+    assert "Documentation failed: rate limited" in capsys.readouterr().out
 
 
 def test_index_failure_stops_before_any_state(ws, monkeypatch):
