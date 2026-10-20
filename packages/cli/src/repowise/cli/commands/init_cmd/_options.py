@@ -91,7 +91,6 @@ class InitRun:
     prior_docs_mode: str | None = None
     first_index: bool = False
     provider: Any = None
-    decision_provider: Any = None
     # Set when a full run found no provider at all and fell back to the
     # template renderer. Treated exactly like ``--index-only`` from the
     # generation phase onward.
@@ -146,4 +145,10 @@ def resolve_structural_flags(opts: InitOptions) -> InitOptions:
     # git tier to ESSENTIAL.
     if opts.run_mode == "fast":
         index_only = True
+    # --test-run caps what a model writes; a run with no model has nothing to cap.
+    if opts.test_run and index_only:
+        raise click.UsageError(
+            "--test-run limits the model run to the top 10 files, and --no-prose "
+            "or --mode fast runs no model. Drop --test-run, or use --prose."
+        )
     return replace(opts, index_only=index_only)

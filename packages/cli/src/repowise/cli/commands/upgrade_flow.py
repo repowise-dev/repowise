@@ -987,6 +987,7 @@ def _finish_upgrade_state(
         git_commit_cap=(commit_limit if isinstance(commit_limit, int) else _DEFAULT_COMMIT_LIMIT),
         git_history_coverage=outcome["git_history_coverage"],
         file_pages=outcome["file_pages"],
+        test_run=False,
         analysis={"unavailable": [], "skipped": []},
         upgrade=state["full_upgrade"],
         provider=dict(provider_block),

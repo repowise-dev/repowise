@@ -159,7 +159,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `edenai`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `mock` (default: auto-detect) |
-| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. Fill or refill that prose later with [`repowise generate`](#repowise-generate-path). |
+| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. `--no-prose` makes no model calls even when a key is set, so decision extraction from PRs, commit history and comments waits for a model run. Fill or refill that prose, and add those decisions, later with [`repowise generate`](#repowise-generate-path). |
 | `--index-only` | Deprecated hidden alias for `--no-prose`. |
 | `--docs` | Deprecated hidden alias: `--docs llm` == `--prose`, `--docs deterministic` == `--no-prose`. Prefer `--prose` / `--no-prose`. |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only, no per-file blame/co-change, no LLM docs, for very large repos; upgrade later with `update --full`) |
@@ -189,7 +189,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--dry-run` | Show the generation plan and cost estimate. Writes no wiki |
-| `--test-run` | Generate docs for only the top 10 files (by PageRank) |
+| `--test-run` | Write docs with the model for only the top 10 files (by PageRank). Not with `--no-prose` or `--mode fast` |
 | `--all` | In a folder with several repos, index every detected repo without prompting. `--yes` and a piped stdin do the same and print which repos they took |
 | `--repos` | In a folder with several repos, index only these, with no picker: `--repos api,web`. Each name is a repo's alias, directory name, or its path relative to the folder when two repos share a name. The first one listed is primary. An unknown name stops the run and lists the available ones |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
