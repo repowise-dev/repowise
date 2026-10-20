@@ -126,7 +126,9 @@ quota, about 14 model calls, 4 at a time, about 4 min" (one minute per call
 per process). A non-interactive run (`--yes`) never switches to one: it stays
 free and prints one line naming the command that would use it, Claude Code
 first. A CLI signed in without a paid plan, or with no stored credentials, is
-still listed but never recommended.
+still listed but never recommended. Codex signed in through ChatGPT is listed
+in the picker but not offered, because its status cannot show whether the plan
+is active; Codex with an API key is offered, billed per token.
 
 ### Running from inside Claude Code
 
