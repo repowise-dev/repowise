@@ -23,9 +23,11 @@ Two jobs that make ingested coverage *actually line up* with the repo:
 
 from __future__ import annotations
 
+import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -127,9 +129,10 @@ class CoverageConfig:
     strip_prefix: str | None = None
     # Prepend this prefix to report paths before matching.
     path_prefix: str | None = None
-    # Re-discover + re-parse reports on every ``repowise update`` (default:
-    # reuse the rows already in the DB; only re-ingest if a report is found).
-    reingest_on_update: bool = False
+    # Re-read reports on ``repowise update``: ``True`` every time, ``False``
+    # never (keep the stored rows), unset when one was written after the last
+    # ingest (:meth:`reingest`).
+    reingest_on_update: bool | None = None
     # Patch-coverage gate for ``repowise coverage check`` (percent, 0-100).
     fail_under: float | None = None
     # Small-change tolerance: a change with fewer changed executable lines
@@ -172,7 +175,11 @@ class CoverageConfig:
             format=block.get("format") or None,
             strip_prefix=block.get("strip_prefix") or None,
             path_prefix=block.get("path_prefix") or None,
-            reingest_on_update=bool(block.get("reingest_on_update", False)),
+            reingest_on_update=(
+                None
+                if block.get("reingest_on_update") is None
+                else bool(block["reingest_on_update"])
+            ),
             fail_under=_percent(block.get("fail_under")),
             min_coverable_lines=_line_count(block.get("min_coverable_lines")),
             gates=gates,
@@ -181,6 +188,32 @@ class CoverageConfig:
             max_drop=_percent(block.get("max_drop")),
             fail_under_branches=_percent(block.get("fail_under_branches")),
         )
+
+    def reingest(
+        self,
+        newest_report_mtime: float | None,
+        last_ingest_at: datetime | None,
+        now: float | None = None,
+    ) -> bool:
+        """Whether ``update`` re-reads the reports instead of keeping the stored rows.
+
+        *newest_report_mtime* is the newest report's modification time (epoch
+        seconds, ``None`` with no report); *last_ingest_at* is when coverage was
+        last stored (naive means UTC, ``None`` when never); *now* defaults to
+        the clock. Unset, a report written after the last ingest, or any report
+        before a first ingest, is re-read. A time later than *now* (clock skew,
+        an unpacked artifact) proves nothing, or every update would re-read it.
+        """
+        if self.reingest_on_update is not None:
+            return self.reingest_on_update
+        if newest_report_mtime is None:
+            return False
+        if last_ingest_at is None:
+            return True
+        if last_ingest_at.tzinfo is None:
+            last_ingest_at = last_ingest_at.replace(tzinfo=UTC)
+        now = time.time() if now is None else now
+        return last_ingest_at.timestamp() < newest_report_mtime <= now
 
     def reports(self, repo_root: Path) -> dict[Path, str | None]:
         """Each report this config names, mapped to its per-report prefix (or ``None``).

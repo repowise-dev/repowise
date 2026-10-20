@@ -318,6 +318,49 @@ def _write_lcov(path: Path, *sources: str) -> None:
     path.write_text("".join(f"SF:{s}\nDA:1,1\nend_of_record\n" for s in sources), encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("setting", "report_age", "reread"),
+    [
+        (None, +60, True),  # written after the last ingest
+        (None, -60, False),  # already ingested
+        (False, +60, False),  # opted out
+    ],
+)
+def test_update_rereads_a_report_newer_than_the_last_ingest(
+    tmp_path: Path, monkeypatch, setting, report_age: int, reread: bool
+) -> None:
+    import os
+
+    from repowise.cli.commands.update_cmd import persistence
+
+    block: dict = {"paths": ["c.lcov"]}
+    if setting is not None:
+        block["reingest_on_update"] = setting
+    monkeypatch.setattr(
+        "repowise.core.repo_config.load_repo_config", lambda _path: {"coverage": block}
+    )
+    last = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+    async def _newest(_session, _repo_id):
+        return SimpleNamespace(ingested_at=last.replace(tzinfo=None))
+
+    async def _stored(_session, _repo_id):
+        return {"a.py": {"source_format": "stored"}}
+
+    monkeypatch.setattr("repowise.core.persistence.crud.analysis.load_newest_ingest", _newest)
+    monkeypatch.setattr("repowise.core.persistence.crud.load_coverage_map", _stored)
+    report = tmp_path / "c.lcov"
+    _write_lcov(report, "a.py")
+    stamp = last.timestamp() + report_age
+    os.utime(report, (stamp, stamp))
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path="a.py"))]
+
+    coverage = asyncio.run(persistence._coverage_for_rescore(object(), "repo", tmp_path, parsed))
+
+    assert coverage.authoritative is reread
+    assert coverage.source_format == ("lcov" if reread else "stored")
+
+
 # ---------------------------------------------------------------------------
 # A retirement has to reach an index nobody re-indexes
 # ---------------------------------------------------------------------------

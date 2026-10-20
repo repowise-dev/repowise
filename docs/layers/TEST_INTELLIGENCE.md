@@ -254,7 +254,7 @@ coverage:
   format: lcov                   # skip format sniffing
   strip_prefix: "/build/src/"    # trim an absolute prefix from report paths
   ignore: ["**/*_pb2.py"]        # gitignore-style globs coverage leaves out
-  reingest_on_update: false
+  reingest_on_update: false     # never re-read on update (default: when a report is newer)
   fail_under: 80                 # patch-coverage gate for `coverage check` (0-100)
   min_coverable_lines: 5         # small-change tolerance for that gate
   max_drop: 0.5                  # most project coverage may fall from the base, in points
@@ -262,10 +262,11 @@ coverage:
     - {name: api, paths: ["/services/api/"], fail_under: 85}
 ```
 
-`init` and `update` also discover and ingest coverage;
+`init` and `update` also discover and ingest coverage; `update` re-reads a report
+written after the last ingest;
 `repowise init --coverage-report <path>` takes explicit reports (repeatable).
-`--coverage-report` is test coverage; `--coverage` controls documentation breadth. Full
-block: [CONFIG.md](../reference/CONFIG.md).
+`--coverage-report` is test coverage; `--coverage` controls documentation breadth. When
+`update` re-reads reports: [CONFIG.md](../reference/CONFIG.md#the-coverage-block).
 
 ## Accuracy and limits
 

@@ -133,23 +133,23 @@ async def _coverage_for_rescore(
 ) -> RescoreCoverage:
     """Coverage to feed a health re-score, preserved across updates.
 
-    Default: reload the rows already persisted (no re-parse). When
-    ``coverage.reingest_on_update`` is set, re-discover and re-resolve a
-    fresh report instead.
+    Re-discover and re-resolve the reports when one was written after the
+    last ingest (``CoverageConfig.reingest``; ``coverage.reingest_on_update``
+    forces it on or off), else reload the rows already persisted.
     """
     from repowise.core.analysis.health.coverage import (
         CoverageConfig,
         build_coverage_map,
     )
     from repowise.core.persistence.crud import load_coverage_map
+    from repowise.core.pipeline.incremental.loaders import coverage_reports_to_reread
     from repowise.core.repo_config import load_repo_config
 
     cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
 
-    # Without paths or discovery there is nothing to re-read, so the stored
-    # rows (e.g. from `coverage add`) stay authoritative.
-    if cfg.reingest_on_update and (cfg.paths or cfg.auto_discover):
-        reports = cfg.reports(repo_path)
+    # ``None`` keeps the stored rows (e.g. from `coverage add`).
+    reports = await coverage_reports_to_reread(session, repo_id, Path(repo_path), cfg)
+    if reports is not None:
         if reports:
             repo_keys = {pf.file_info.path for pf in parsed_files}
             resolved, _errors = build_coverage_map(

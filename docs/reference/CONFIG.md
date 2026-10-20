@@ -16,6 +16,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [The `editor_files:` block](#the-editor_files-block) ·
 [The `decisions:` block](#the-decisions-block) ·
 [`policies.yaml`](#repowisepoliciesyaml) ·
+[The `coverage:` block](#the-coverage-block) ·
 [The `security:` block](#the-security-block) ·
 [The `attribution:` block](#the-attribution-block) ·
 [The `events:` block](#the-events-block) ·
@@ -639,6 +640,15 @@ spec:
   children: []
   members: [ana-acme, li-acme]
 ```
+
+### The `coverage:` block
+
+Where coverage reports live and how their paths map; the full block is in
+[test intelligence](../layers/TEST_INTELLIGENCE.md#configuration).
+`repowise update` re-reads the configured or discovered reports when one was
+written after the last ingest, replacing coverage added by hand from another
+report. `reingest_on_update: true` re-reads them on
+every update, and `false` keeps the stored coverage until `repowise coverage add`.
 
 ### The `security:` block
 
