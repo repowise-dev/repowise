@@ -135,13 +135,14 @@ def _read(file: FileTexts, is_test: TestClassifier, level: Levels) -> _Read:
     head = _view(file.head, path, language, prose)
     test = not prose and is_test(path, language)
     lens = Lens(language, prose, test, not (test or prose) and is_production(file))
-    added = set(added_line_indexes(base.lines if base else [], head.lines)) if head else set()
+    base_lines = base.lines if base else []
+    head_lines = head.lines if head else []
     hits = _FileHits(
         path,
         _tagged(base, lens, level, raw=True),
         _tagged(head, lens, level, raw=False),
-        added,
-        head.lines if head else [],
+        set(added_line_indexes(base_lines, head_lines)),
+        head_lines,
     )
     return _Read(hits, TestFile(path, base, head) if test else None)
 

@@ -88,17 +88,23 @@ def _guards_only_logs(code: list[str], index: int) -> bool:
     if not body or not m.LOG_CALL.match(body[0].strip()):
         return False
     for line in body[1:]:
-        stripped = line.strip()
-        if stripped.startswith("}") or stripped == "end" or _indent(line) <= indent:
+        if _closes(line, indent):
             return True
-        if not (m.LOG_CALL.match(stripped) or _continues(stripped)):
+        if not _logs(line.strip()):
             return False
     return False
 
 
-def _continues(stripped: str) -> bool:
-    """A continuation of a log call's arguments."""
-    return stripped.startswith((")", ",")) or stripped.endswith(",")
+def _closes(line: str, indent: int) -> bool:
+    """Whether *line* ends the block opened at *indent*."""
+    stripped = line.strip()
+    return stripped.startswith("}") or stripped == "end" or _indent(line) <= indent
+
+
+def _logs(stripped: str) -> bool:
+    """A log call, or a continuation of a log call's arguments."""
+    continues = stripped.startswith((")", ",")) or stripped.endswith(",")
+    return bool(m.LOG_CALL.match(stripped)) or continues
 
 
 def _indent(line: str) -> int:

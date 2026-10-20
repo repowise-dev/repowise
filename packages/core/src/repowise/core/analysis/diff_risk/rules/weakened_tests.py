@@ -74,10 +74,10 @@ def weakened_thresholds(path: str, spec: m.ThresholdFile, base: str, head: str) 
     """
     keyed = [(key, True) for key in spec.minimums] + [(key, False) for key in spec.maximums]
     return [
-        _threshold(path, key, before, after, line)
+        _threshold(path, key, change)
         for key, lower_is_weaker in keyed
-        for before, after, line in _paired(base, head, key)
-        if (after < before if lower_is_weaker else after > before)
+        for change in _paired(base, head, key)
+        if (change[1] < change[0] if lower_is_weaker else change[1] > change[0])
     ]
 
 
@@ -89,7 +89,8 @@ def _paired(base: str, head: str, key: str) -> list[tuple[float, float, int]]:
     return [(b, a, line) for (b, _), (a, line) in zip(olds, news, strict=True)]
 
 
-def _threshold(path: str, key: str, before: float, after: float, line: int) -> RawFinding:
+def _threshold(path: str, key: str, change: tuple[float, float, int]) -> RawFinding:
+    before, after, line = change
     evidence = f"{key}: {before:g} -> {after:g}"
     message = f"The change makes a threshold less strict ({evidence})"
     return RawFinding(RULE, "threshold", path, line, key, message, evidence)
