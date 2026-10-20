@@ -452,8 +452,9 @@ def _collect_assertion_facts(
         if run_count >= 2:
             blocks.append((run_start, run_end, run_count))
 
-    def _visit(node: Node, *, under_lambda: bool = False) -> None:
-        nonlocal raises
+    stack = [(body_node, False, False)]
+    while stack:
+        node, under_lambda, names_only = stack.pop()
         # Lambda kinds join the block kinds because an expression-bodied arrow
         # has no statement at all: ``waitFor(() => expect(x).toBe(1))`` keeps
         # its assertion directly under the arrow. Run detection below is
@@ -463,7 +464,8 @@ def _collect_assertion_facts(
             or node.type in lmap.block_kinds
             or node.type in lmap.lambda_kinds
         )
-        _scan_siblings(node, count_total=counts_here)
+        if not names_only:
+            _scan_siblings(node, count_total=counts_here)
         # ``under_lambda`` keeps the raise count on this body only. The
         # assertion counts deliberately cross a lambda, because
         # ``waitFor(() => expect(x).toBe(1))`` runs its assertion as part of
@@ -472,28 +474,25 @@ def _collect_assertion_facts(
         # reading that as this test's oracle suppresses a real finding. Nested
         # named functions are already excluded below; a lambda is the sibling
         # shape, one token apart in JS and not covered by that branch.
-        if node.type in lmap.raise_kinds and not under_lambda and _is_oracle_raise(node):
+        if (
+            not names_only
+            and node.type in lmap.raise_kinds
+            and not under_lambda
+            and _is_oracle_raise(node)
+        ):
             raises += 1
         if node.type in call_kinds:
             _record_call(node)
-        for child in node.children:
-            child_under_lambda = under_lambda or child.type in lmap.lambda_kinds
-            if child.type in lmap.function_kinds:
-                # Counts stop here: a nested function's assertions are its own,
-                # and so is a raise it makes -- a callable handed to the code
-                # under test to make it fail is not this body's oracle. Names
-                # do not stop, because nothing else collects them.
-                _visit_names_only(child)
-                continue
-            _visit(child, under_lambda=child_under_lambda)
-
-    def _visit_names_only(node: Node) -> None:
-        if node.type in call_kinds:
-            _record_call(node)
-        for child in node.children:
-            _visit_names_only(child)
-
-    _visit(body_node)
+        # A nested function switches permanently to names-only visits for its
+        # subtree. Reverse the push order to keep sibling/run encounter order.
+        stack.extend(
+            (
+                child,
+                under_lambda or child.type in lmap.lambda_kinds,
+                names_only or child.type in lmap.function_kinds,
+            )
+            for child in reversed(node.children)
+        )
     # A lambda with an expression body holds no statement: ``it("x", () =>
     # expect(a).toBe(b))`` puts the assertion where only the body node itself
     # sits, so the sibling scan above never sees it. Classified here, demoted to
