@@ -21,8 +21,8 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
+from repowise.cli.ui import mascot
 from repowise.cli.ui.brand import BRAND, DIM, VALUE, key_value_table
-from repowise.cli.ui.mascot import EYES_HAPPY, mini
 
 
 def build_completion_panel(
@@ -32,8 +32,12 @@ def build_completion_panel(
     next_steps: list[tuple[str, str]] | None = None,
     body: list[Any] | None = None,
     footer: list[Any] | None = None,
+    owl: str = mascot.DONE,
 ) -> Panel:
-    """Build the run's one bordered panel, titled with the happy owl.
+    """Build the run's one bordered panel, titled with the owl in state *owl*.
+
+    ``mascot.DONE`` for a clean run, ``mascot.WARNED`` for one that finished
+    degraded, ``mascot.FAILED`` for one that is about to exit non-zero.
 
     *metrics* is a list of ``(label, value)`` pairs. *next_steps* is at most
     three ``(command, description)`` pairs, see :func:`build_contextual_next_steps`.
@@ -66,7 +70,7 @@ def build_completion_panel(
 
     return Panel(
         Group(*parts),
-        title=f"[bold]{mini(EYES_HAPPY)}  {title}[/bold]",
+        title=Text.assemble(mascot.mini_text(owl), "  ", (title, "bold")),
         border_style=BRAND,
         padding=(1, 1),
     )
@@ -80,6 +84,7 @@ def print_completion_panel(
     *,
     body: list[Any] | None = None,
     footer: list[Any] | None = None,
+    owl: str = mascot.DONE,
 ) -> None:
     """The completion panel on a terminal; off one, the same rows as plain lines.
 
@@ -88,11 +93,11 @@ def print_completion_panel(
     if console.is_terminal:
         console.print(
             build_completion_panel(
-                title, metrics, next_steps=next_steps, body=body, footer=footer
+                title, metrics, next_steps=next_steps, body=body, footer=footer, owl=owl
             )
         )
         return
-    console.print(f"{mini(EYES_HAPPY)}  {title}", highlight=False)
+    console.print(Text.assemble(mascot.mini_text(owl), "  ", title), highlight=False)
     console.print(key_value_table(metrics))
     for line in body or []:
         console.print(line)

@@ -12,6 +12,7 @@ import pytest
 from rich.console import Console
 
 from repowise.cli.ui import workspace_selection
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.plan_screen import (
     EDIT,
     MODEL,
@@ -60,7 +61,7 @@ def _state(n: int, **plan: Any) -> WorkspacePlanState:
 
 
 def _lines(state: WorkspacePlanState) -> list[str]:
-    console = Console(record=True, width=100, color_system=None)
+    console = Console(record=True, width=100, color_system=None, theme=THEME)
     render_workspace_plan(console, state)
     return console.export_text().splitlines()
 
@@ -141,12 +142,12 @@ def test_a_long_path_is_cut_to_fit_100_columns() -> None:
 
 
 def test_r_is_offered_on_the_workspace_screen_only() -> None:
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
     plan = _state(3).plan
     assert read_plan_key(console, plan, _keys("r"), extra={"r": REPOS}) == REPOS
     assert read_plan_key(console, plan, _keys("r", ""), extra=None) == START
     assert "Press Enter to start, or m, e or q." in console.export_text()
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
     read_plan_key(console, plan, _keys("x", ""), extra={"r": REPOS})
     assert "Press Enter to start, or m, e, r or q." in console.export_text()
 
@@ -154,7 +155,7 @@ def test_r_is_offered_on_the_workspace_screen_only() -> None:
 def test_choose_repos_takes_numbers_and_ranges_then_the_primary(monkeypatch: Any) -> None:
     monkeypatch.setattr(workspace_selection.Prompt, "ask", lambda *a, **k: "2")
     state = _state(5)
-    choose_repos(Console(width=100), state, _keys("1,3-4"))
+    choose_repos(Console(width=100, theme=THEME), state, _keys("1,3-4"))
     assert state.selected == [0, 2, 3]
     assert state.primary == "service-3"
 
@@ -169,14 +170,14 @@ def test_choose_repos_keeps_the_primary_when_it_stays_picked(monkeypatch: Any) -
     monkeypatch.setattr(workspace_selection.Prompt, "ask", ask)
     state = _state(4)
     state.primary = "service-3"
-    choose_repos(Console(width=100), state, _keys("2-3"))
+    choose_repos(Console(width=100, theme=THEME), state, _keys("2-3"))
     assert state.selected == [1, 2]
     assert defaults == ["2"]
     assert state.primary == "service-3"
 
 
 def test_choose_repos_rejects_none_and_nonsense_and_enter_keeps(monkeypatch: Any) -> None:
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
     state = _state(3)
     choose_repos(console, state, _keys("none", "9", "x", "3"))
     out = console.export_text()

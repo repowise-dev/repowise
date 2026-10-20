@@ -17,6 +17,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from repowise.cli.ui import mascot
 from repowise.cli.ui.brand import ERR, OK, WARN, key_value_table
 from repowise.cli.ui.finish_panel import (
     agent_questions,
@@ -26,6 +27,7 @@ from repowise.cli.ui.finish_panel import (
     dim_line,
     line,
 )
+from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mode_names import (
     INDEX_ONLY,
     TITLE_WORKSPACE,
@@ -124,17 +126,17 @@ def _metrics(facts: WorkspaceFacts) -> list[tuple[str, str]]:
 def _repo_row(repo: RepoOutcome, *, mixed: bool) -> tuple[str, str]:
     name = escape(repo.alias)
     if repo.error:
-        return f"[{ERR}]✗[/] {name}", f"[{ERR}]failed[/] [dim]({escape(repo.error)})[/dim]"
+        return f"[{ERR}]{glyph('fail')}[/] {name}", f"[{ERR}]failed[/] [dim]({escape(repo.error)})[/dim]"
     if repo.skipped:
         return (
-            f"[{WARN}]✗[/] {name}",
+            f"[{WARN}]{glyph('fail')}[/] {name}",
             f"[{WARN}]documentation skipped[/] [dim]({escape(repo.skipped)})[/dim]",
         )
     label = mode_label(repo.scope)
     value = pages(repo.pages) if repo.pages else f"no documentation ({label})"
     if mixed and repo.pages:
         value += f" [dim]· {escape(label)}[/dim]"
-    return f"[{OK}]✓[/] {name}", value
+    return f"[{OK}]{glyph('ok')}[/] {name}", value
 
 
 def _repo_lines(facts: WorkspaceFacts) -> list[RenderableType]:
@@ -190,18 +192,26 @@ def _questions() -> list[str]:
     ]
 
 
-def build_workspace_finish_panel(facts: WorkspaceFacts, *, setup: Any = None) -> Any:
-    """The workspace completion panel: counts, repos, Connected, questions, steps."""
+def build_workspace_finish_panel(
+    facts: WorkspaceFacts, *, setup: Any = None, owl: str = mascot.DONE
+) -> Any:
+    """The workspace completion panel: counts, repos, Connected, questions, steps.
+
+    *owl* is the title owl's state: how the run finished.
+    """
     return build_completion_panel(
         TITLE_WORKSPACE,
         _metrics(facts),
         next_steps=workspace_steps(facts, setup),
         body=_body(facts, setup),
         footer=autosync_lines(setup),
+        owl=owl,
     )
 
 
-def print_workspace_finish_panel(console: Any, facts: WorkspaceFacts, *, setup: Any = None) -> None:
+def print_workspace_finish_panel(
+    console: Any, facts: WorkspaceFacts, *, setup: Any = None, owl: str = mascot.DONE
+) -> None:
     """The workspace panel on a terminal; the same rows as plain lines off one."""
     print_completion_panel(
         console,
@@ -210,6 +220,7 @@ def print_workspace_finish_panel(console: Any, facts: WorkspaceFacts, *, setup: 
         workspace_steps(facts, setup),
         body=_body(facts, setup),
         footer=autosync_lines(setup),
+        owl=owl,
     )
 
 

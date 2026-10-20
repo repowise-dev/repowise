@@ -16,6 +16,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from repowise.cli.ui import mascot
 from repowise.cli.ui.brand import BRAND, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
 from repowise.cli.ui.result_panels import build_completion_panel, print_completion_panel
@@ -240,10 +241,16 @@ def build_finish_panel(
     setup: Any = None,
     repo_path: Path | None = None,
     files_written: list[Path] | None = None,
+    owl: str = mascot.DONE,
 ) -> Any:
-    """The init completion panel: counts, Connected, questions, steps, receipt."""
+    """The init completion panel: counts, Connected, questions, steps, receipt.
+
+    *owl* is the title owl's state: how the run finished.
+    """
     title, metrics, body, footer = _panel_parts(facts, setup, repo_path, files_written)
-    return build_completion_panel(title, metrics, next_steps=steps, body=body, footer=footer)
+    return build_completion_panel(
+        title, metrics, next_steps=steps, body=body, footer=footer, owl=owl
+    )
 
 
 def print_finish_panel(
@@ -254,10 +261,11 @@ def print_finish_panel(
     setup: Any = None,
     repo_path: Path | None = None,
     files_written: list[Path] | None = None,
+    owl: str = mascot.DONE,
 ) -> None:
     """The finish panel on a terminal; the same rows as plain lines off one."""
     title, metrics, body, footer = _panel_parts(facts, setup, repo_path, files_written)
-    print_completion_panel(console, title, metrics, steps, body=body, footer=footer)
+    print_completion_panel(console, title, metrics, steps, body=body, footer=footer, owl=owl)
 
 
 def _panel_parts(

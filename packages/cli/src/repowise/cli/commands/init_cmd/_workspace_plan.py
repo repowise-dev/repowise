@@ -10,12 +10,13 @@ import click
 from repowise.cli.helpers import console, load_config
 from repowise.cli.providers import resolve_embedder
 from repowise.cli.ui import (
-    OWL_SPINNER,
     agent_providers_set_up,
     interactive_advanced_config,
     interactive_provider_config_select,
     quick_repo_scan,
 )
+from repowise.cli.ui.glyphs import glyph
+from repowise.cli.ui.mascot import owl_status
 from repowise.cli.ui.plan_screen import (
     EDIT,
     MODEL,
@@ -229,7 +230,7 @@ def run_workspace_plan_screen(
     from repowise.cli.ui.provider_selection import _detect_provider_status
 
     repos = list(scan.repos)
-    with console.status("  Scanning repositories…", spinner=OWL_SPINNER):
+    with owl_status(console, f"  Scanning repositories{glyph('ellipsis')}"):
         rows = [WorkspaceRepo(repo, quick_repo_scan(repo.path)) for repo in repos]
     with console.status("  Checking for a model…"):
         detected = _detect_provider_status(repos[0].path)

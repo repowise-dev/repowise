@@ -7,12 +7,13 @@ from rich.console import Console
 
 from repowise.cli import ui
 from repowise.cli.ui import mode_selection, provider_selection
+from repowise.cli.ui.brand import THEME
 from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.reasoning import REASONING_MODES
 
 
 def _silent_console() -> Console:
-    return Console(file=StringIO(), force_terminal=False)
+    return Console(file=StringIO(), force_terminal=False, theme=THEME)
 
 
 def test_interactive_advanced_config_uses_shared_reasoning_modes(

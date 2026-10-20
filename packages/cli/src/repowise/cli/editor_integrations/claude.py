@@ -8,6 +8,7 @@ from typing import Any
 from repowise.cli.agent_targets.targets import claude_code as claude_target
 from repowise.cli.editor_setup import EditorSetupOptions
 from repowise.cli.helpers import get_db_url_for_repo, load_config, run_async
+from repowise.cli.ui.glyphs import glyph
 
 
 class ClaudeCodeSetup:
@@ -54,16 +55,16 @@ class ClaudeCodeSetup:
         # repoint the single global "repowise" entry.
         desktop = register_with_claude_desktop(repo_path)
         if desktop:
-            console_obj.print(f"  [{OK}]✓[/] Claude Desktop MCP registered ({desktop})")
+            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Claude Desktop MCP registered ({desktop})")
 
         code = register_with_claude_code(repo_path)
         if code:
-            console_obj.print(f"  [{OK}]✓[/] Claude Code MCP registered ({code})")
+            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Claude Code MCP registered ({code})")
 
         hooks = install_claude_code_hooks()
         if hooks:
             console_obj.print(
-                f"  [{OK}]✓[/] Claude Code hooks registered (PostToolUse, SessionStart)"
+                f"  [{OK}]{glyph('ok')}[/] Claude Code hooks registered (PostToolUse, SessionStart)"
             )
 
         if _uses_lean_tool_surface(repo_path):
@@ -73,7 +74,7 @@ class ClaudeCodeSetup:
             )
         elif enable_tool_search_in_claude_code():
             console_obj.print(
-                f"  [{OK}]✓[/] Claude Code tool-search enabled (defers MCP tool schemas)"
+                f"  [{OK}]{glyph('ok')}[/] Claude Code tool-search enabled (defers MCP tool schemas)"
             )
 
     def refresh_project_files(
@@ -153,11 +154,11 @@ def maybe_generate_claude_md(
     if not _claude_md_enabled(repo_path):
         return None
 
-    from repowise.cli.ui import OWL_SPINNER
     from repowise.cli.ui.brand import OK, WARN
+    from repowise.cli.ui.mascot import owl_status
 
     try:
-        with console_obj.status("  Generating .claude/CLAUDE.md…", spinner=OWL_SPINNER):
+        with owl_status(console_obj, f"  Generating .claude/CLAUDE.md{glyph('ellipsis')}"):
             written = run_async(_write_claude_md_async(repo_path))
     except Exception as exc:
         console_obj.print(f"  [{WARN}].claude/CLAUDE.md skipped: {exc}[/]")
@@ -168,7 +169,7 @@ def maybe_generate_claude_md(
         # is how a run could print no error and produce no file.
         console_obj.print(f"  [{WARN}].claude/CLAUDE.md skipped: repo not indexed yet[/]")
         return None
-    console_obj.print(f"  [{OK}]✓[/] .claude/CLAUDE.md updated")
+    console_obj.print(f"  [{OK}]{glyph('ok')}[/] .claude/CLAUDE.md updated")
     return written
 
 

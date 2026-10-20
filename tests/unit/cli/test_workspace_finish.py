@@ -7,6 +7,7 @@ import io
 from rich.console import Console
 
 from repowise.cli.editor_setup import EditorSetupOutcome
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.mode_names import model_name, provider_model
 from repowise.cli.ui.workspace_finish import (
     MAX_REPO_ROWS,
@@ -27,7 +28,7 @@ _INDEX_ONLY = {"content_provenance": "none", "git_tier": "full", "git_commit_cap
 
 
 def _render(facts: WorkspaceFacts, setup=None) -> str:
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
     console.print(build_workspace_finish_panel(facts, setup=setup))
     return console.export_text()
 
@@ -117,7 +118,7 @@ def test_model_name_drops_a_repeated_provider_prefix():
 
 
 def test_off_a_terminal_the_workspace_panel_is_plain_lines():
-    console = Console(file=io.StringIO(), width=100, force_terminal=False)
+    console = Console(file=io.StringIO(), width=100, force_terminal=False, theme=THEME)
     print_workspace_finish_panel(console, _facts([RepoOutcome("api", _FROM_CODE, pages=3)]))
     out = console.file.getvalue()
 

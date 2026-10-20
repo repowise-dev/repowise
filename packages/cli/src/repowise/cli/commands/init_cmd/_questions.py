@@ -6,7 +6,9 @@ from dataclasses import replace
 from typing import Any
 
 from repowise.cli.helpers import console
-from repowise.cli.ui import OWL_SPINNER, print_banner, quick_repo_scan
+from repowise.cli.ui import print_banner, quick_repo_scan
+from repowise.cli.ui.glyphs import glyph
+from repowise.cli.ui.mascot import owl_status
 
 from ._options import InitRun
 
@@ -55,6 +57,6 @@ def _ask_questions(run: InitRun) -> None:
     from ._plan import run_plan_screen
 
     print_banner(console)
-    with console.status("  Scanning repository…", spinner=OWL_SPINNER):
+    with owl_status(console, f"  Scanning repository{glyph('ellipsis')}"):
         scan_info = quick_repo_scan(run.repo_path)
     run_plan_screen(run, scan_info)

@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from repowise.cli.ui import OK, WARN
+from repowise.cli.ui.glyphs import glyph
 from repowise.core.ci.markdown import plural
 
 _NAMES_SHOWN = 5
@@ -163,7 +164,7 @@ def _confirm_replace(console: Console, left_out: list[Any], picked: int) -> bool
 def _report_kept(console: Console, kept: list[Any], clashed: list[Any], gone: list[Any]) -> None:
     if kept:
         console.print(
-            f"  [{OK}]✓[/] Kept {plural(len(kept), 'existing repo')} in the workspace "
+            f"  [{OK}]{glyph('ok')}[/] Kept {plural(len(kept), 'existing repo')} in the workspace "
             f"({_names(kept)}). Remove one with `repowise workspace remove <alias>`."
         )
     if clashed:

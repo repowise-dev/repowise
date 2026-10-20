@@ -20,11 +20,13 @@ COST_UNCONFIRMED_KEPT = f"documentation kept as it was, {_NO_TERMINAL}"
 def exit_interrupted() -> NoReturn:
     """Ctrl-C at any point: one line, then the shell's interrupt code."""
     from repowise.cli.hints import maybe_hint
-    from repowise.cli.ui.mascot import EYES_SLEEPY, mini
+    from repowise.cli.ui import mascot
 
+    console.print()
     console.print(
-        f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] "
-        "Run [bold]repowise init --resume[/] to continue."
+        mascot.mini_text(mascot.INTERRUPTED),
+        f"[{WARN}]Interrupted.[/] Indexed work so far is saved. Run "
+        "[bold]repowise init --resume[/] to continue where it stopped.",
     )
     maybe_hint("interrupt")
     raise SystemExit(EXIT_INTERRUPTED)

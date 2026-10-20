@@ -15,6 +15,7 @@ from repowise.cli.commands.init_cmd import _provider
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.ui import provider_selection as ui
 from repowise.cli.ui import subscription
+from repowise.cli.ui.brand import THEME
 from repowise.core.cost_estimator import approximate_generation_plan, estimate_cost
 from repowise.core.providers.llm import resolve
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
@@ -146,7 +147,7 @@ def _run(**overrides: Any) -> SimpleNamespace:
 
 def _note(monkeypatch: Any, run: SimpleNamespace) -> str:
     buf = io.StringIO()
-    monkeypatch.setattr(_provider, "console", Console(file=buf, width=200))
+    monkeypatch.setattr(_provider, "console", Console(file=buf, width=200, theme=THEME))
     _provider.note_subscription_cli(run)
     return buf.getvalue()
 

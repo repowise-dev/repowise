@@ -16,7 +16,7 @@ from repowise.cli.commands.init_cmd import _ingest
 from repowise.cli.commands.init_cmd._agent_summary import init_output
 from repowise.cli.main import cli
 from repowise.cli.output import LINE_OUTPUT_WIDTH, line_output_width
-from repowise.cli.ui.brand import print_phase_header
+from repowise.cli.ui.brand import THEME, print_phase_header
 from repowise.cli.ui.mode_names import TITLE_BUILT_FROM_CODE
 from repowise.cli.ui.progress_json import JsonProgressCallback
 from repowise.cli.ui.result_panels import print_completion_panel
@@ -149,7 +149,7 @@ def test_status_follows_the_exit_code():
 def test_off_a_terminal_lines_are_capped_and_panels_are_plain(monkeypatch):
     monkeypatch.delenv("COLUMNS", raising=False)
     buf = io.StringIO()
-    console = Console(file=buf, width=400)
+    console = Console(file=buf, width=400, theme=THEME)
     with line_output_width(console, buf):
         assert console.width == LINE_OUTPUT_WIDTH
         print_phase_header(console, 1, 4, "Ingestion", "Walking the tree")

@@ -42,7 +42,7 @@ def test_facade_reexports_public_surface() -> None:
         # owl mascot additions (additive — everything above is the original surface)
         "banner_text",
         "mini",
-        "OWL_SPINNER",
+        "owl_status",
         "THINKING_FRAMES",
     }
     missing = {name for name in expected if not hasattr(ui, name)}

@@ -69,7 +69,7 @@ def _print_structural_plan(
     )
 
     table = Table(title="Generation Plan (dry run)", border_style=BRAND)
-    table.add_column("Pages", style="cyan")
+    table.add_column("Pages", style=VALUE)
     table.add_column("Count", justify="right")
     total = 0
     for plan in plans:
@@ -185,7 +185,7 @@ def _print_generation_plan(
     # "Written by" answers the question the price below raises: most of this
     # total is free.
     table = Table(title="Generation Plan", border_style=BRAND)
-    table.add_column("Pages", style="cyan")
+    table.add_column("Pages", style=VALUE)
     table.add_column("Count", justify="right")
     table.add_column("Written by")
     model_pages = 0

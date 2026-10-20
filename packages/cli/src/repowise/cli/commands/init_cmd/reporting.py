@@ -15,6 +15,7 @@ from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
     build_contextual_next_steps,
     format_elapsed,
+    mascot,
 )
 from repowise.cli.ui.finish_panel import FinishFacts, print_finish_panel
 from repowise.cli.ui.mode_names import pages, provider_model
@@ -108,8 +109,11 @@ def show_completion(
     setup: Any = None,
     files_written: list[Path] | None = None,
     verbose: bool = False,
+    owl: str = mascot.DONE,
 ) -> list[tuple[str, str]]:
     """Render the one finish panel and return its next steps; generation checks only under ``-v``.
+
+    *owl* is the mini owl state on the panel title: how the run finished.
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot and *files_written* what editor setup put in the working tree,
@@ -162,6 +166,7 @@ def show_completion(
         setup=setup,
         repo_path=Path(repo_path),
         files_written=files_written,
+        owl=owl,
     )
     console.print()
     _render_defect_accuracy(result)
@@ -259,5 +264,7 @@ def show_workspace_completion(
         else provider_model(provider.provider_name, provider.model_name),
     )
     console.print()
-    print_workspace_finish_panel(console, facts, setup=setup)
+    print_workspace_finish_panel(
+        console, facts, setup=setup, owl=mascot.WARNED if errors else mascot.DONE
+    )
     console.print()

@@ -13,6 +13,7 @@ from rich.console import Console
 
 from repowise.cli.main import cli
 from repowise.cli.ui import provider_selection
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.plan_screen import (
     EDIT,
     MODEL,
@@ -34,7 +35,7 @@ _OUTSIDE = ("Global repowise MCP entry (Claude Code) now points at /old, will po
 
 
 def _render(state: PlanState) -> str:
-    console = Console(record=True, width=100, color_system=None)
+    console = Console(record=True, width=100, color_system=None, theme=THEME)
     render_plan(console, state)
     # Flattened: where the console wraps at 100 columns is not the copy's business.
     return " ".join(console.export_text().split())
@@ -130,11 +131,11 @@ def _keys(*answers: str):
     [("", START), ("m", MODEL), ("E", EDIT), (" q ", QUIT)],
 )
 def test_each_key_maps_to_its_action(typed: str, action: str) -> None:
-    assert read_plan_key(Console(width=100), _state(), _keys(typed)) == action
+    assert read_plan_key(Console(width=100, theme=THEME), _state(), _keys(typed)) == action
 
 
 def test_s_needs_a_global_entry_that_would_move() -> None:
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
     assert read_plan_key(console, _state(), _keys("s", "x", "")) == START
     assert "Press Enter to start, or m, e or q." in console.export_text()
     assert read_plan_key(console, _state(outside=_OUTSIDE), _keys("s")) == THIS_REPO
@@ -145,7 +146,7 @@ def test_eof_propagates_to_the_caller() -> None:
         raise EOFError
 
     with pytest.raises(EOFError):
-        read_plan_key(Console(width=100), _state(), eof)
+        read_plan_key(Console(width=100, theme=THEME), _state(), eof)
 
 
 # -- the no-key path ----------------------------------------------------------
@@ -157,7 +158,7 @@ def test_no_key_offers_to_continue_without_a_model(monkeypatch: Any) -> None:
     gemini = str(list(provider_selection._PROVIDER_CHOICES).index("gemini") + 1)
     answers = iter([gemini, "1"])
     monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *a, **k: next(answers))
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
 
     selection = provider_selection.interactive_provider_config_select(
         console, None, subscription=SubscriptionContext(allow_skip=True)
@@ -183,7 +184,7 @@ def test_no_key_can_still_pick_another_provider(monkeypatch: Any) -> None:
     monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *a, **k: next(answers))
 
     chosen = provider_selection._interactive_provider_name(
-        Console(width=100), None, subscription=SubscriptionContext(allow_skip=True)
+        Console(width=100, theme=THEME), None, subscription=SubscriptionContext(allow_skip=True)
     )
 
     assert chosen == "openai"
@@ -436,7 +437,7 @@ def test_back_from_the_gateway_keeps_the_picker_context(monkeypatch: Any) -> Non
     context = SubscriptionContext(allow_skip=True)
 
     selection = provider_selection.interactive_provider_config_select(
-        Console(width=100), None, subscription=context
+        Console(width=100, theme=THEME), None, subscription=context
     )
 
     assert selection is None
@@ -492,7 +493,7 @@ def test_click_prompts_are_restored_after_the_screen(plan: Any, tmp_path: Path) 
 def _announce(run: Any, monkeypatch: Any) -> str:
     from repowise.cli.commands.init_cmd import _provider
 
-    console = Console(record=True, width=100, color_system=None)
+    console = Console(record=True, width=100, color_system=None, theme=THEME)
     monkeypatch.setattr(_provider, "console", console)
     _provider.announce_index_only(run)
     return " ".join(console.export_text().split())

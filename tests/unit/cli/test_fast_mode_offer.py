@@ -10,6 +10,7 @@ from repowise.cli.ui import (
     keyless_upgrade_note,
     should_offer_fast_mode,
 )
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.finish_panel import connected_lines
 
 
@@ -17,7 +18,7 @@ def build_status_notes(setup) -> list[str]:
     """The Connected lines as plain text."""
     from rich.console import Console
 
-    console = Console(width=200, record=True)
+    console = Console(width=200, record=True, theme=THEME)
     for line in connected_lines(setup):
         console.print(line)
     return [line for line in console.export_text().splitlines() if line.strip()]
@@ -200,7 +201,7 @@ def test_next_steps_render_without_truncation_or_collision():
     from repowise.cli.ui import build_completion_panel
 
     steps = [("repowise hook rewrite install", "compress noisy command output")]
-    console = Console(width=120, record=True, force_terminal=True)
+    console = Console(width=120, record=True, force_terminal=True, theme=THEME)
     console.print(build_completion_panel("done", [("Files", "1")], next_steps=steps))
     out = console.export_text()
     assert "repowise hook rewrite install" in out
