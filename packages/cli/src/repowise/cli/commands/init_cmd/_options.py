@@ -123,8 +123,8 @@ def resolve_structural_flags(opts: InitOptions) -> InitOptions:
     if opts.index_only or opts.docs_opt is not None:
         console.print(
             "[dim]--index-only and --docs are deprecated; use --no-prose "
-            "(structural, no key) or --prose (model-written). They still work "
-            "this release.[/dim]"
+            "(built from code, no key) or --prose (written by a model). They still "
+            "work this release.[/dim]"
         )
     # Each of the three sources votes for "structural" (True) or "prose" (False).
     # --index-only always means structural; --docs maps deterministic->structural,

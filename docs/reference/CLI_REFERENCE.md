@@ -142,9 +142,9 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 
 **Interactive modes.** Running a bare `repowise init` on a TTY (no `--provider`, `--prose`/`--no-prose`, or `--yes`) opens a menu:
 
-1. **Everything**, index + model-written docs. After picking a provider you can answer **"Customize?"** to tune any setting before the run.
-2. **Index only**, the same layers plus a wiki rendered from structure; no LLM, no key, no cost. Answer **"Customize indexing?"** to set exclude patterns, commit limit, skip-tests/infra, submodules, and fast mode.
-3. **Advanced**, full control. First choose **"Generate model-written wiki docs?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, tiering, only when model-written docs are on).
+1. **Written by a model**, index + documentation a model writes. After picking a provider you can answer **"Customize?"** to tune any setting before the run.
+2. **Built from code**, the same layers plus documentation built from code; no LLM, no key, no cost. Answer **"Customize indexing?"** to set exclude patterns, commit limit, skip-tests/infra, submodules, and fast mode.
+3. **Advanced**, full control. First choose **"Have a model write the documentation?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, tiering, only when model-written docs are on).
 
 **Page volume.** File pages are rendered from structure and cost no model tokens, so what bounds them buys wiki size, embedding calls and less retrieval noise, never spend. Two numbers govern it, both derived from the size distribution of real indexed repos. Above **2,000** documentable files (p95), an interactive advanced-mode run offers the top 2,000 by importance instead of one page per file, quoted in pages and megabytes; nothing is capped automatically at that size. Above **4,500** file pages (about 40 MB of file layer, near p99), every run holds the bucket to 4,500 and says so in its output, because that is where the tail is the difference between a wiki that publishes and one that does not. `--max-file-pages N` sets a cap directly and `--max-file-pages 0` refuses one; either way the answer is saved as `max_file_pages` in `config.yaml`, which `update --full` and `generate` honour. A hosted or scripted caller sets the same field with no terminal involved.
 

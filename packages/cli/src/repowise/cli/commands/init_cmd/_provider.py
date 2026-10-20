@@ -11,17 +11,23 @@ from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console, resolve_explicit_provider_or_prompt, run_async
 from repowise.cli.providers import resolve_embedder_choice, template_run_embedder
 from repowise.cli.ui import OK, OWL_SPINNER, VALUE, WARN, print_index_only_intro
+from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, written_by
 
 from ._options import InitRun
 
 
 def announce_index_only(run: InitRun) -> None:
-    """Tell the user this run builds the wiki from structure."""
+    """Tell the user what a run without a model builds."""
+    fast = run.opts.run_mode == "fast"
     if run.is_interactive:
-        print_index_only_intro(console)
+        print_index_only_intro(console, fast=fast)
         return
-    console.print(f"[bold]repowise index-only[/bold] — {run.repo_path}")
-    console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
+    mode = INDEX_ONLY if fast else BUILT_FROM_CODE
+    console.print(f"[bold]repowise init[/bold] · {mode} · {run.repo_path}")
+    if fast:
+        console.print("Indexing the graph and git history [dim](no documentation, no spend).[/dim]")
+    else:
+        console.print("Building documentation from code [dim](no model, no spend).[/dim]")
 
 
 def _resolve_or_fall_back(run: InitRun) -> None:
@@ -51,10 +57,10 @@ def _resolve_or_fall_back(run: InitRun) -> None:
             raise
         run.no_provider = True
         if not run.is_interactive:
-            console.print(f"[bold]repowise init[/bold] — {run.repo_path}")
+            console.print(f"[bold]repowise init[/bold] · {BUILT_FROM_CODE} · {run.repo_path}")
         console.print(
-            f"[{WARN}]No model configured.[/] Building the wiki from "
-            "structure instead — no key, no spend.\n"
+            f"[{WARN}]No model configured.[/] Building documentation from "
+            "code instead (no key, no spend).\n"
             "[dim]Set a key (or pass --provider) and run [bold]repowise "
             "update --full[/bold] to have a model write it.[/dim]"
         )
@@ -66,9 +72,10 @@ def _resolve_or_fall_back(run: InitRun) -> None:
 
 
 def _print_provider_summary(run: InitRun) -> None:
-    if not run.is_interactive and not run.no_provider:
-        console.print(f"[bold]repowise init[/bold] — {run.repo_path}")
     provider = run.provider
+    if not run.is_interactive and not run.no_provider:
+        mode = written_by(provider.model_name if provider is not None else None)
+        console.print(f"[bold]repowise init[/bold] · {mode} · {run.repo_path}")
     if provider is not None:
         console.print(
             f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"

@@ -172,7 +172,7 @@ def structural_page_summary(plans: list[Any]) -> str:
     if not total:
         return ""
     parts = [f"{counts[pt]} {short}" for pt, _, short in _PAGE_TYPE_LABELS if counts.get(pt)]
-    return f"{total} more pages rendered from the code itself, no model, no cost: " + ", ".join(
+    return f"{total} more pages built from code, no model, no cost: " + ", ".join(
         parts
     )
 
@@ -199,7 +199,7 @@ def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
     console.print(
         f"  [dim]File pages: keeping the top [bold]{cap:,}[/bold] of about "
         f"{documentable:,} by importance ({reason}). File pages cost no model "
-        "tokens, so this bounds wiki size and search noise, not spend. Pass "
+        "tokens, so this bounds documentation size and search noise, not spend. Pass "
         "[bold]--max-file-pages 0[/bold] for one page per file.[/dim]"
     )
 
@@ -316,7 +316,7 @@ def run_repo_generation(
 
     if verbose and not deterministic:
         console.print(
-            "  [dim](each generated page is saved as it completes — safe to Ctrl-C, "
+            "  [dim](each generated page is saved as it completes; safe to Ctrl-C, "
             "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
         )
 
@@ -433,8 +433,8 @@ def run_repo_generation(
         # because a placeholder is deliberately kept out of the record of what
         # is already done.
         placeholder_note = (
-            f"  [dim]{stub_count} of them left a placeholder page rendered from "
-            "structure alone, so the wiki has a page there but not a written "
+            f"  [dim]{stub_count} of them left a placeholder page built from "
+            "code alone, so the documentation has a page there but not a written "
             "one. The rest produced no page at all.[/dim]\n"
             if stub_count
             else ""
@@ -454,7 +454,7 @@ def run_repo_generation(
         )
         reason_note = "".join(f"  [dim]· {r[:160]}[/dim]\n" for r in reasons[:3])
         console.print(
-            f"\n  [{WARN}]The wiki is incomplete: some pages were not written.[/]\n"
+            f"\n  [{WARN}]The documentation is incomplete: some pages were not written.[/]\n"
             f"{placeholder_note}"
             f"{reason_note}"
             "  [dim]Run [bold]repowise init --resume[/bold] to generate the pages that "

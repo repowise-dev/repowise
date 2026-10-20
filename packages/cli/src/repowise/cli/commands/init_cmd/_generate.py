@@ -10,6 +10,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import console, load_config, warn
 from repowise.cli.ui import BRAND, VALUE, print_phase_header
+from repowise.cli.ui.mode_names import INDEX_ONLY
 from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._exit import COST_UNCONFIRMED_BUILT, COST_UNCONFIRMED_KEPT
@@ -77,7 +78,7 @@ def _print_structural_plan(
     table.add_section()
     table.add_row("[bold]Total[/bold]", f"[bold]{total:,}[/bold]")
     console.print(table)
-    console.print("  Dry run: every page above is rendered from structure. No wiki written.")
+    console.print("  Dry run: every page above is built from code. No documentation written.")
 
 
 def _run_deterministic_generation_phase(
@@ -115,19 +116,19 @@ def _run_deterministic_generation_phase(
         3,
         total_phases,
         "Generation",
-        "Building wiki pages from the code's structure (no model, no cost)",
+        "Building documentation from code (no model, no cost)",
     )
     # Both knobs only reach a model: templates are English and unstyled, so say
     # so rather than record a style the pages do not have.
     if language != "en":
         console.print(
-            f"  [dim]Templates are written in English, so [bold]--language "
+            f"  [dim]Documentation built from code is in English, so [bold]--language "
             f"{language}[/bold] has no effect here. Run [bold]repowise update "
-            "--full[/bold] to write the wiki with a model in that language.[/dim]"
+            "--full[/bold] to have a model write the documentation in that language.[/dim]"
         )
     if wiki_style != DEFAULT_STYLE:
         console.print(
-            f"  [dim]Wiki styles shape how a model writes, so [bold]--wiki-style "
+            f"  [dim]Documentation styles shape how a model writes, so [bold]--wiki-style "
             f"{wiki_style}[/bold] has no effect here.[/dim]"
         )
     if embedder != embedder_name_resolved:
@@ -181,13 +182,13 @@ def _print_generation_plan(
         table.add_row(
             page_type_label(plan.page_type),
             f"{plan.count:,}",
-            "model" if from_model else "[dim]structure[/dim]",
+            "model" if from_model else "[dim]code[/dim]",
         )
     table.add_section()
     table.add_row(
         "[bold]Total[/bold]",
         f"[bold]{est.total_pages:,}[/bold]",
-        f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from structure[/bold]",
+        f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from code[/bold]",
     )
     console.print(table)
 
@@ -255,7 +256,7 @@ def _run_generation_phase(
         3,
         total_phases,
         "Generation",
-        f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
+        f"Writing documentation with {provider.provider_name} / {provider.model_name}",
     )
 
     gen_config = GenerationConfig.from_repo_config(
@@ -299,11 +300,11 @@ def _run_generation_phase(
     if embedding:
         console.print(f"  [dim]{embedding}[/dim]")
     if cost_gate_declined(est, yes=yes, message="  Continue?"):
-        console.print("  Skipping the model. [dim]Building the wiki from structure instead.[/dim]")
+        console.print("  Skipping the model. [dim]Building documentation from code instead.[/dim]")
         console.print(
             "  [dim]Run [bold]repowise generate[/bold] any time to write the subsystem "
             "pages, or re-run init with [bold]--yes[/bold] to accept the cost now.\n"
-            "  Post-commit updates stay index-only, so no hook will start a model run "
+            "  Post-commit updates stay built from code, so no hook will start a model run "
             "on its own.[/dim]"
         )
         return False, True
@@ -384,13 +385,13 @@ def _after_cost_declined(run: InitRun) -> None:
     if kept:
         # Declining new pages is no request to replace the written ones.
         console.print(
-            "  [dim]Keeping the wiki this repo already has. Nothing was "
+            "  [dim]Keeping the documentation this repo already has. Nothing was "
             "generated and nothing was replaced.[/dim]"
         )
         return
     run.cost_declined = True
     console.print(
-        "  [dim]Building the wiki from structure instead. Run "
+        "  [dim]Building documentation from code instead. Run "
         "[bold]repowise update --full[/bold] to write it with a "
         "model later.[/dim]"
     )
@@ -404,7 +405,10 @@ def _generate(run: InitRun) -> bool:
     # The priced branch has its own dry-run exit.
     if opts.dry_run and (opts.index_only or run.no_provider):
         if opts.run_mode == "fast":
-            console.print("\n  Dry run: fast mode indexes graph and git only. No wiki written.")
+            console.print(
+                f"\n  Dry run: {INDEX_ONLY.lower()}, fast mode indexes graph and git. "
+                "No documentation written."
+            )
         else:
             _print_structural_plan(
                 result=run.result,
@@ -422,9 +426,9 @@ def _generate(run: InitRun) -> bool:
     # Fast mode is a graph-and-git index only.
     if opts.index_only and opts.run_mode == "fast":
         console.print(
-            "  [dim]Skipping wiki generation in fast mode. Run "
+            f"  [dim]{INDEX_ONLY}: fast mode skips documentation. Run "
             "[bold]repowise init[/bold] without [bold]--mode fast[/bold] to "
-            "render it from structure, or [bold]repowise update --full[/bold] "
+            "build it from code, or [bold]repowise update --full[/bold] "
             "to write it with a model.[/dim]"
         )
         return False

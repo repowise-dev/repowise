@@ -184,17 +184,19 @@ def _confirm_wiki_overwrite(run: InitRun) -> bool:
     if not opts.index_only or run.prior_docs_mode != "llm" or opts.force or opts.yes:
         return True
     console.print(
-        f"\n[{WARN}]This repo already has a model-written wiki.[/] "
-        "Indexing without a model\nrewrites every page from templates; the "
+        f"\n[{WARN}]This repo already has documentation written by a model.[/] "
+        "Indexing without a model\nrebuilds every page from code; the "
         "written versions stay in page history."
     )
     if not sys.stdin.isatty():
         raise reasoned_error(
-            "Refusing to replace a model-written wiki with template pages. "
-            "Re-run with --yes to confirm, or drop --no-prose.",
+            "Refusing to replace documentation written by a model with pages built "
+            "from code. Re-run with --yes to confirm, or drop --no-prose.",
             reason="wiki_overwrite_unconfirmed",
         )
-    if not click.confirm("  Replace the written wiki with template pages?", default=False):
+    if not click.confirm(
+        "  Replace the written documentation with pages built from code?", default=False
+    ):
         console.print("[dim]Nothing changed.[/dim]")
         return False
     return True

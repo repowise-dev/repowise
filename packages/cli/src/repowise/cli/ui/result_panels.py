@@ -170,12 +170,12 @@ def build_contextual_next_steps(
         steps.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
     elif fast_mode:
         # Fast index: graph + essential git, no docs. Point at the full result.
-        steps.append(("repowise init", "upgrade to full git history + a generated wiki"))
+        steps.append(("repowise init", "add full git history and documentation"))
     elif index_only:
         # `generate` is the scoped, cost-gated upgrade path — a coverage, a
         # directory or one page at a time, each behind an estimate — not the
         # all-or-nothing `update --full` this used to suggest.
-        steps.append(("repowise generate", "write the subsystem pages with a model (needs a key)"))
+        steps.append(("repowise generate", "write the documentation with a model (needs a key)"))
     elif dead_unreachable + dead_unused > 0:
         steps.append(
             ("repowise dead-code", f"explore {dead_unreachable + dead_unused} dead code findings")
@@ -185,7 +185,7 @@ def build_contextual_next_steps(
     elif decision_count > 0:
         steps.append(("repowise decision list", f"browse {decision_count} architectural decisions"))
     else:
-        steps.append(('repowise search "<query>"', "search the generated wiki"))
+        steps.append(('repowise search "<query>"', "search the documentation"))
 
     return steps
 
