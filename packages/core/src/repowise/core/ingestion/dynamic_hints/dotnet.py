@@ -19,6 +19,7 @@ dependency surface.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from ..type_names import bare_type_name
@@ -85,24 +86,60 @@ _NAMEOF_TYPE_RE = re.compile(r"\bnameof\s*\(\s*([A-Z][\w.]*)\s*\)")
 _TYPEOF_TYPE_RE = re.compile(r"\btypeof\s*\(\s*([A-Z][\w.]*)\s*\)")
 
 
+# Single-type patterns that each mean "this file loads that type", in the
+# order their edges are emitted after the DI and event-bus passes.
+_REFLECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (_ACTIVATOR_TYPEOF_RE, "activator"),
+    (_ACTIVATOR_STRING_RE, "activator_string"),
+    (_TYPE_GETTYPE_RE, "type_gettype"),
+    # DI keys, options, policies.
+    (_NAMEOF_TYPE_RE, "nameof"),
+    # JsonConverter/TypeConverter attrs, DataTemplate.DataType, manual DI.
+    (_TYPEOF_TYPE_RE, "typeof"),
+)
+
+_TYPE_DECLARATION_RE = re.compile(
+    r"\b(?:class|interface|struct|record(?:\s+(?:class|struct))?|enum)\s+([A-Z]\w*)"
+)
+
+FilesFor = Callable[[str], list[str]]
+
+
 class DotNetDynamicHints(DynamicHintExtractor):
     """Discover DI registrations, reflection, and assembly-level hints in .NET."""
 
     name = "dotnet"
 
     def extract(self, repo_root: Path) -> list[DynamicEdge]:
-        edges: list[DynamicEdge] = []
+        type_to_files, cs_files = self._index_types(repo_root)
 
-        # Build a class-name → list-of-files index in one pass so the
-        # regex hits below can resolve target file paths cheaply. A
-        # short type name can map to multiple files when projects
-        # legitimately reuse names across namespaces (e.g. eShop has
-        # ``Basket.API/Grpc/BasketService.cs`` and
-        # ``WebApp/Services/BasketService.cs``). Collisions are common
-        # in microservice repos, so we emit dynamic edges to *every*
-        # candidate rather than picking the first match — pruning false
-        # positives is the dead-code analyser's job, but missing edges
-        # cause real services to be flagged dead with high confidence.
+        def _files_for(name: str) -> list[str]:
+            return type_to_files.get(bare_type_name(name), [])
+
+        edges: list[DynamicEdge] = []
+        repo_root_resolved = repo_root.resolve()
+        for cs, text in cs_files:
+            try:
+                rel = cs.resolve().relative_to(repo_root_resolved).as_posix()
+            except ValueError:
+                continue
+            edges.extend(self._di_edges(rel, text, _files_for))
+            edges.extend(self._pattern_edges(rel, text, _files_for, ((_CONFIGURE_RE, "configure_options"),)))
+            edges.extend(self._subscribe_edges(rel, text, _files_for))
+            edges.extend(self._pattern_edges(rel, text, _files_for, _REFLECTION_PATTERNS))
+            edges.extend(self._internals_visible_edges(rel, text))
+        return edges
+
+    def _index_types(
+        self, repo_root: Path
+    ) -> tuple[dict[str, list[str]], list[tuple[Path, str]]]:
+        """``(type name -> declaring files, [(path, text)])`` over the repo's C# files.
+
+        A short type name can map to several files when projects reuse names
+        across namespaces. Edges go to *every* candidate: pruning false
+        positives is the dead-code analyser's job, while a missing edge flags a
+        real service dead.
+        """
         type_to_files: dict[str, list[str]] = {}
         cs_files: list[tuple[Path, str]] = []  # (path, text)
         repo_root_resolved = repo_root.resolve()
@@ -119,194 +156,81 @@ class DotNetDynamicHints(DynamicHintExtractor):
                 continue
             rel = rel_path.as_posix()
             cs_files.append((cs, text))
-            for match in re.finditer(
-                r"\b(?:class|interface|struct|record(?:\s+(?:class|struct))?|enum)\s+([A-Z]\w*)",
-                text,
-            ):
-                name = match.group(1)
-                bucket = type_to_files.setdefault(name, [])
+            for match in _TYPE_DECLARATION_RE.finditer(text):
+                bucket = type_to_files.setdefault(match.group(1), [])
                 if rel not in bucket:
                     bucket.append(rel)
+        return type_to_files, cs_files
 
-        def _files_for(name: str) -> list[str]:
-            return type_to_files.get(bare_type_name(name), [])
+    def _edge(self, source: str, target: str, hint: str) -> DynamicEdge:
+        return DynamicEdge(
+            source=source,
+            target=target,
+            edge_type="dynamic_uses",
+            hint_source=f"{self.name}:{hint}",
+        )
 
-        for cs, text in cs_files:
-            try:
-                rel = cs.resolve().relative_to(repo_root.resolve()).as_posix()
-            except ValueError:
-                continue
+    def _edges_to(self, rel: str, targets: list[str], hint: str) -> list[DynamicEdge]:
+        """Edges from *rel* to each target other than itself."""
+        return [self._edge(rel, target, hint) for target in targets if target != rel]
 
-            # ---- DI: AddScoped<IFoo, Foo>() ----
-            for match in _DI_GENERIC_RE.finditer(text):
-                first = match.group(1)
-                second = match.group(2) if match.group(2) else None
-                # When two type args are present, edge: registration site → impl
-                # When one type arg is present, edge: registration site → that type
-                target_name = second or first
-                for target in _files_for(target_name):
-                    if target != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=target,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:di_register",
-                            )
-                        )
-                # Also link interface → impl when both are present so the
-                # interface file is recorded as having a real implementation
-                # (helps dead-code analysis treat unused interfaces correctly).
-                if second is not None:
-                    iface_targets = _files_for(first)
-                    impl_targets = _files_for(second)
-                    for iface_target in iface_targets:
-                        for impl_target in impl_targets:
-                            if iface_target != impl_target:
-                                edges.append(
-                                    DynamicEdge(
-                                        source=iface_target,
-                                        target=impl_target,
-                                        edge_type="dynamic_uses",
-                                        hint_source=f"{self.name}:di_interface_to_impl",
-                                    )
-                                )
+    def _pairwise_edges(
+        self, sources: list[str], targets: list[str], hint: str
+    ) -> list[DynamicEdge]:
+        return [
+            self._edge(source, target, hint)
+            for source in sources
+            for target in targets
+            if source != target
+        ]
 
-            # ---- Configure<TOptions>(section) ----
-            for match in _CONFIGURE_RE.finditer(text):
-                for target in _files_for(match.group(1)):
-                    if target != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=target,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:configure_options",
-                            )
-                        )
+    def _pattern_edges(
+        self,
+        rel: str,
+        text: str,
+        files_for: FilesFor,
+        patterns: tuple[tuple[re.Pattern[str], str], ...],
+    ) -> list[DynamicEdge]:
+        edges: list[DynamicEdge] = []
+        for regex, hint in patterns:
+            for match in regex.finditer(text):
+                edges.extend(self._edges_to(rel, files_for(match.group(1)), hint))
+        return edges
 
-            # ---- eventBus.Subscribe<TEvent, THandler>() ----
-            for match in _EVENT_BUS_SUBSCRIBE_RE.finditer(text):
-                event_targets = _files_for(match.group(1))
-                handler_targets = (
-                    _files_for(match.group(2)) if match.group(2) else []
-                )
-                for tgt in event_targets:
-                    if tgt != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=tgt,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:subscribe_event",
-                            )
-                        )
-                for tgt in handler_targets:
-                    if tgt != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=tgt,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:subscribe_handler",
-                            )
-                        )
-                # Link each event type to its handler so dead-code
-                # analysis sees handler classes as reached.
-                for evt in event_targets:
-                    for hdl in handler_targets:
-                        if evt != hdl:
-                            edges.append(
-                                DynamicEdge(
-                                    source=evt,
-                                    target=hdl,
-                                    edge_type="dynamic_uses",
-                                    hint_source=f"{self.name}:event_to_handler",
-                                )
-                            )
-
-            # ---- Reflection: Activator.CreateInstance(typeof(...)) ----
-            for match in _ACTIVATOR_TYPEOF_RE.finditer(text):
-                for target in _files_for(match.group(1)):
-                    if target != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=target,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:activator",
-                            )
-                        )
-
-            # ---- Reflection: Activator.CreateInstance("Acme.Foo") ----
-            for match in _ACTIVATOR_STRING_RE.finditer(text):
-                for target in _files_for(match.group(1)):
-                    if target != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=target,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:activator_string",
-                            )
-                        )
-
-            # ---- Reflection: Type.GetType("Acme.Foo") ----
-            for match in _TYPE_GETTYPE_RE.finditer(text):
-                for target in _files_for(match.group(1)):
-                    if target != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=target,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:type_gettype",
-                            )
-                        )
-
-            # ---- nameof(TypeName) — DI keys, options, policies ----
-            for match in _NAMEOF_TYPE_RE.finditer(text):
-                for target in _files_for(match.group(1)):
-                    if target != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=target,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:nameof",
-                            )
-                        )
-
-            # ---- typeof(TypeName) — JsonConverter/TypeConverter attrs,
-            # DataTemplate.DataType, manual DI registration, etc. ----
-            for match in _TYPEOF_TYPE_RE.finditer(text):
-                for target in _files_for(match.group(1)):
-                    if target != rel:
-                        edges.append(
-                            DynamicEdge(
-                                source=rel,
-                                target=target,
-                                edge_type="dynamic_uses",
-                                hint_source=f"{self.name}:typeof",
-                            )
-                        )
-
-            # ---- [assembly: InternalsVisibleTo("Other.Tests")] ----
-            for match in _INTERNALS_VISIBLE_RE.finditer(text):
-                friend = match.group(1)
-                # Map by best-effort: AssemblyName usually equals the project's
-                # csproj filename. We can't always resolve precisely without the
-                # DotNetProjectIndex, so we record the friend as a synthetic
-                # external target. The dead-code analyser uses InternalsVisibleTo
-                # presence as a strong "type may be used" signal regardless of
-                # whether we can resolve it.
-                edges.append(
-                    DynamicEdge(
-                        source=rel,
-                        target=f"external:friend:{friend}",
-                        edge_type="dynamic_uses",
-                        hint_source=f"{self.name}:internals_visible_to",
+    def _di_edges(self, rel: str, text: str, files_for: FilesFor) -> list[DynamicEdge]:
+        """``AddScoped<IFoo, Foo>()``: site to implementation, and interface to implementation."""
+        edges: list[DynamicEdge] = []
+        for match in _DI_GENERIC_RE.finditer(text):
+            first = match.group(1)
+            second = match.group(2) if match.group(2) else None
+            # With two type args the site reaches the impl, with one the type.
+            edges.extend(self._edges_to(rel, files_for(second or first), "di_register"))
+            # The interface file is recorded as having a real implementation.
+            if second is not None:
+                edges.extend(
+                    self._pairwise_edges(
+                        files_for(first), files_for(second), "di_interface_to_impl"
                     )
                 )
-
         return edges
+
+    def _subscribe_edges(self, rel: str, text: str, files_for: FilesFor) -> list[DynamicEdge]:
+        """``eventBus.Subscribe<TEvent, THandler>()``: site to both, event to handler."""
+        edges: list[DynamicEdge] = []
+        for match in _EVENT_BUS_SUBSCRIBE_RE.finditer(text):
+            event_targets = files_for(match.group(1))
+            handler_targets = files_for(match.group(2)) if match.group(2) else []
+            edges.extend(self._edges_to(rel, event_targets, "subscribe_event"))
+            edges.extend(self._edges_to(rel, handler_targets, "subscribe_handler"))
+            edges.extend(self._pairwise_edges(event_targets, handler_targets, "event_to_handler"))
+        return edges
+
+    def _internals_visible_edges(self, rel: str, text: str) -> list[DynamicEdge]:
+        """``[assembly: InternalsVisibleTo("X")]`` as an edge to a synthetic friend.
+
+        The friend is not resolved to a project; its presence is the signal.
+        """
+        return [
+            self._edge(rel, f"external:friend:{match.group(1)}", "internals_visible_to")
+            for match in _INTERNALS_VISIBLE_RE.finditer(text)
+        ]

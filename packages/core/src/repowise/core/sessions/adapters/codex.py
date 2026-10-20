@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 
 from repowise.core.fs_walk import iter_glob
 from repowise.core.sessions.adapters.base import (
+    INTENT_EDIT_CALLS,
     INTENT_SHELL_CALLS,
     INTENT_TOOL_CALLS,
     INTENT_TURNS,
@@ -32,6 +33,18 @@ _SHELL_COMMAND_RE = re.compile(r'"command"\s*:\s*"([^"]*)"')
 _RG_MATCH_RE = re.compile(r"^(?P<path>[^:]+(?::[^:\\/]*[\\/][^:]*)?):\d+:")
 #: Lines the exec wrapper prints around a command's real output.
 _EXEC_NOISE = ("Script ", "Exit code:", "Wall time", "Output:")
+#: Codex writes ``cwd`` once, on this line, and every later event inherits it
+#: from adapter state. A gate that drops it leaves every event unscoped, so
+#: every intent admits it however narrow the rest of the gate is.
+_SESSION_META = '"type":"session_meta"'
+#: Turn id on sessions bulk-imported from another harness into the Codex
+#: store. Those turns are that harness's, and its own adapter already reads
+#: them, so mining them here counts one session twice.
+_IMPORTED_TURN_PREFIX = "external-import-turn"
+#: Lines read from the top of a transcript to recover the facts a resume
+#: starts past. Both sit in the first two on every rollout measured; the
+#: margin is for a writer that adds a preamble, not for a search.
+_HEAD_LINES = 8
 
 
 def _tool_calls_prefilter(raw: str) -> bool:
@@ -40,11 +53,20 @@ def _tool_calls_prefilter(raw: str) -> bool:
         or '"type":"custom_tool_call_output"' in raw
         or '"type":"function_call"' in raw
         or '"type":"function_call_output"' in raw
+        # Last: it matches once per file, and every other line pays the scan.
+        or _SESSION_META in raw
     )
 
 
+def _edit_calls_prefilter(raw: str) -> bool:
+    """Patch calls, direct or inside a code-mode cell, and the model each turn names."""
+    if "*** Begin Patch" in raw:
+        return '"type":"custom_tool_call"' in raw or '"type":"function_call"' in raw
+    return '"type":"turn_context"' in raw or _SESSION_META in raw
+
+
 def _turns_prefilter(raw: str) -> bool:
-    return '"type":"event_msg"' in raw or '"type":"response_item"' in raw
+    return '"type":"event_msg"' in raw or '"type":"response_item"' in raw or _SESSION_META in raw
 
 
 @register_adapter
@@ -52,11 +74,25 @@ class CodexAdapter(HarnessAdapter):
     """Normalizes Codex session JSONL into the shared Event stream."""
 
     name: ClassVar[str] = "codex"
+    #: Codex reaches a file through apply_patch or a shell command, and
+    #: _normalize_tool_name folds every one of those onto this single token,
+    #: so the set is one name rather than a family. Inert until Codex edits
+    #: carry a path: their input is the patch text under ``command``, and
+    #: nothing scrapes the ``*** Update File:`` markers out of it yet, so no
+    #: Codex edit currently reaches a consumer of this set.
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset({"edit_file"})
+    #: ``bash`` is what _normalize_tool_name folds ``exec``/``run_command``
+    #: onto; the other three are Codex's interactive shell, where one command
+    #: opens a session and its output arrives across later calls.
+    shell_tool_names: ClassVar[frozenset[str]] = frozenset(
+        {"bash", "shell_command", "exec_command", "write_stdin", "wait"}
+    )
 
     def __init__(self):
         self._tool_calls: dict[str, ToolUse] = {}
         self._current_session: str | None = None
         self._current_cwd: str | None = None
+        self._imported = False
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         """Every Codex rollout, not just this repo's.
@@ -71,6 +107,10 @@ class CodexAdapter(HarnessAdapter):
             return []
         return sorted(path for path in iter_glob(root, "*.jsonl") if path.is_file())
 
+    def discover_all(self, *, projects_root: Path | None = None) -> list[Path]:
+        """Every rollout: :meth:`discover` already reads them all."""
+        return self.discover(Path(), projects_root=projects_root)
+
     def normalize(self, raw_line: str) -> Event | None:
         try:
             entry = json.loads(raw_line)
@@ -80,6 +120,15 @@ class CodexAdapter(HarnessAdapter):
             return None
 
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        # Only an import's turns carry the marker; the messages it replays
+        # look native. The latch is armed from the head in begin_file, so it
+        # holds for a gate that admits no turn lines and for a resumed read,
+        # and this is the belt for a marker that arrives later than the head.
+        turn_id = payload.get("turn_id")
+        if isinstance(turn_id, str) and turn_id.startswith(_IMPORTED_TURN_PREFIX):
+            self._imported = True
+        if self._imported:
+            return None
         entry_kind = (
             entry.get("type") if isinstance(entry.get("type"), str) and entry.get("type") else None
         )
@@ -147,17 +196,51 @@ class CodexAdapter(HarnessAdapter):
         if intent == INTENT_TURNS:
             return _turns_prefilter
 
+        if intent == INTENT_EDIT_CALLS:
+            return _edit_calls_prefilter
+
         return None
 
     def begin_file(self, path: Path | None = None) -> None:
         self._tool_calls.clear()
         self._current_session = None
         self._current_cwd = None
+        self._imported = False
+        if path is not None:
+            self._seed_from_head(path)
+
+    def _seed_from_head(self, path: Path) -> None:
+        """Read the scoping facts off the top of the file, every pass.
+
+        Codex states ``cwd`` once and marks an import once, both within the
+        first few lines, and a cursored resume starts past them. Rebuilding
+        from the head rather than from the stream is what makes those facts
+        hold on an incremental run: without it the second pass onward carries
+        no cwd, and a blank cwd reads as "no opinion" to the miners, so one
+        repo's sessions land in another's records.
+
+        Normalizing those lines rather than re-reading their fields is the
+        point: the state they set is exactly what this needs, so there is one
+        parser to keep right. The events themselves are discarded, and the
+        correlation map with them, because the calls they pair with are
+        either behind the cursor already or still ahead of it.
+        """
+        try:
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                for _ in range(_HEAD_LINES):
+                    raw = fh.readline()
+                    if not raw or self._imported:
+                        break
+                    self.normalize(raw)
+        except OSError:
+            pass
+        self._tool_calls.clear()
 
     def end_file(self) -> None:
         self._tool_calls.clear()
         self._current_session = None
         self._current_cwd = None
+        self._imported = False
 
     def _fill_response_item(self, event: Event, payload: dict[str, Any]) -> None:
         """Handles response_item entries in Codex transcripts, and converts them to either text, tool uses or tool results
@@ -299,7 +382,7 @@ def _bind_first_file(tool: ToolUse, results: list[dict[str, str]]) -> None:
     if not isinstance(tool.input, dict) or tool.input.get("path"):
         return
     for result in results:
-        file_path = result.get("file") if isinstance(result, dict) else None
+        file_path = result.get("path") if isinstance(result, dict) else None
         if isinstance(file_path, str) and file_path:
             tool.input["path"] = file_path
             return
@@ -326,6 +409,21 @@ def _mcp_search_results(output: str) -> list[dict[str, str]]:
     return [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
 
 
+def _looks_like_a_bare_path(candidate: str) -> bool:
+    """Whether a bare (no ``:line:``) line from ``rg --files``/``rg -l`` is a path.
+
+    A real path never has whitespace in it, which stray prose like "No files
+    were searched" does. A path with no separator can still be a real,
+    root-level filename (``setup.py``), so a ``.`` after the first character
+    admits it too without opening the door to bare words like "TODO".
+    """
+    if not candidate or any(char.isspace() for char in candidate):
+        return False
+    if "/" in candidate or "\\" in candidate:
+        return True
+    return "." in candidate[1:]
+
+
 def _rewrite_search_output(output: Any) -> dict | None:
     """``rg`` output as the MCP ``search_codebase`` result shape, or None.
 
@@ -336,7 +434,11 @@ def _rewrite_search_output(output: Any) -> dict | None:
 
     Only the leading path of an ``rg`` line becomes a file. ``rg`` prints
     ``path:line:text`` for a content match, and taking the whole line would
-    hand the decision miner a "file" that does not exist.
+    hand the decision miner a "file" that does not exist. A matched path is
+    kept unconditionally, even with no separator (a root-level match like
+    ``app.py:12:``): the ``:line:`` suffix already confirms it is a path, not
+    prose. Only a bare, unmatched line needs the separator-or-extension
+    filter, since that is the only case where prose could be mistaken for one.
     """
     if not isinstance(output, list):
         return None
@@ -353,9 +455,14 @@ def _rewrite_search_output(output: Any) -> dict | None:
         if not line or line.startswith(_EXEC_NOISE):
             continue
         match = _RG_MATCH_RE.match(line)
-        candidate = match.group("path") if match else line
-        if "/" in candidate or "\\" in candidate:
-            results.append({"file": candidate.replace("\\", "/")})
+        if match:
+            path = match.group("path").replace("\\", "/")
+        elif _looks_like_a_bare_path(line):
+            path = line.replace("\\", "/")
+        else:
+            continue
+        # ``path`` alone, as search_codebase serves it now that ``file`` is gone.
+        results.append({"path": path})
 
     return {"result": {"results": results}}
 
@@ -412,9 +519,12 @@ def _event_kind(entry_kind: str | None, payload_kind: str | None, payload: dict[
                 return "assistant"
             if role == "developer":
                 return "system"
-        if payload_kind == "custom_tool_call":
-            return "assistant"
-        if payload_kind == "custom_tool_call_output":
+        if payload_kind in (
+            "custom_tool_call",
+            "custom_tool_call_output",
+            "function_call",
+            "function_call_output",
+        ):
             return "assistant"
         return payload_kind or "assistant"
     if entry_kind == "event_msg":

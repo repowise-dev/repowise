@@ -70,3 +70,29 @@ def test_unknown_floor_is_no_floor(_one_detector):
 def test_disabled_detector_emits_nothing(_one_detector):
     out = detect_refactorings(_ctx(), disabled=["fake_all_confidences"])
     assert out == []
+
+
+class _ImpactDetector(RefactoringDetector):
+    name = "fake_impact"
+
+    def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
+        s = _suggestion("high", name=self.name)
+        s.impact_delta = 0.8
+        s.source_biomarker = "complex_method"
+        return [s]
+
+
+@pytest.mark.parametrize(("history", "expected"), [(1.8, 1.6), (0.5, 0.8)])
+def test_recovered_impact_counts_the_history_the_fix_releases(monkeypatch, history, expected):
+    """History held at its cap (1.0 + 0.8) falls to the 1.0 cap once the 0.8
+    code finding goes, so the fix recovers 1.6; history under the new cap
+    releases nothing."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(registry, "_REGISTRY", [_ImpactDetector()])
+    ctx = _ctx()
+    ctx.findings = [
+        SimpleNamespace(biomarker_type="complex_method", health_impact=0.8),
+        SimpleNamespace(biomarker_type="prior_defect", health_impact=history),
+    ]
+    assert detect_refactorings(ctx)[0].impact_delta == pytest.approx(expected)

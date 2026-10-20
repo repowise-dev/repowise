@@ -398,14 +398,17 @@ def build_system_graph(
     # 3. Package-dependency edges — the dependent repo imports the dependency.
     for dep in overlay.package_deps:
         source = builder.resolve_node(dep.source_repo, dep.source_manifest)
-        target = builder.resolve_node(dep.target_repo, None)
+        target = builder.resolve_node(dep.target_repo, dep.target_manifest or None)
+        reference = ":".join(
+            part for part in (dep.kind, dep.target_package, dep.source_manifest) if part
+        )
         builder.add_edge(
             source=source,
             target=target,
             kind="package",
             match_type="exact",
             confidence=1.0,
-            ref=f"{dep.kind}:{dep.source_manifest}",
+            ref=reference,
         )
 
     # 4. Co-change edges — behavioral, undirected, lower trust.

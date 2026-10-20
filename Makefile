@@ -1,4 +1,5 @@
 .PHONY: install install-dev test test-unit test-integration test-e2e test-providers \
+        generate-types generate-types-check \
         lint format typecheck clean build-web dev-web help
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,12 @@ test-fast:  ## Run unit + provider tests (fast, no fixtures needed)
 # ---------------------------------------------------------------------------
 # Code Quality
 # ---------------------------------------------------------------------------
+
+generate-types:  ## Regenerate the TypeScript HTTP contract from the FastAPI schema
+	uv run python scripts/generate_http_types.py
+
+generate-types-check:  ## Fail if the generated HTTP contract is stale
+	uv run python scripts/generate_http_types.py --check
 
 lint:  ## Run ruff linter
 	uv run ruff check packages/ tests/

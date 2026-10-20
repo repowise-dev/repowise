@@ -21,7 +21,14 @@ from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysi
 _MCP_CORE_MEMBER_LIMIT = 25
 
 
-@mcp.tool(default=False, requires_workspace=True, surface_order=200, trust_kind="structural")
+@mcp.tool(
+    default=False,
+    requires_workspace=True,
+    surface_order=200,
+    trust_kind="structural",
+    artifact_type="workspace_architecture",
+    presentation="dependency_graph",
+)
 async def get_architecture() -> dict[str, Any]:
     """Workspace architecture metrics — coupling, core, and a 1-10 score.
 
@@ -49,6 +56,22 @@ async def get_architecture() -> dict[str, Any]:
             "_meta": _build_meta(),
         }
 
+    payload = architecture_payload(metrics)
+    payload["_meta"] = _build_meta(
+        extra=_analysis_meta(
+            metrics.get("generated_at"),
+            {
+                alias: provenance.get("head")
+                for alias, provenance in metrics.get("repo_provenance", {}).items()
+                if provenance.get("head")
+            },
+        )
+    )
+    return payload
+
+
+def architecture_payload(metrics: dict[str, Any]) -> dict[str, Any]:
+    """The ``get_architecture`` answer over computed *metrics*, without ``_meta``."""
     core_members = metrics.get("core_members", [])
     shown_core = core_members[:_MCP_CORE_MEMBER_LIMIT]
     breakdown = metrics.get("role_breakdown", {})
@@ -80,14 +103,4 @@ async def get_architecture() -> dict[str, Any]:
         "conformance_violations": metrics.get("conformance_violations", 0),
         "role_breakdown": breakdown,
         "summary": summary,
-        "_meta": _build_meta(
-            extra=_analysis_meta(
-                metrics.get("generated_at"),
-                {
-                    alias: provenance.get("head")
-                    for alias, provenance in metrics.get("repo_provenance", {}).items()
-                    if provenance.get("head")
-                },
-            )
-        ),
     }

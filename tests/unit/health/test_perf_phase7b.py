@@ -63,6 +63,7 @@ def _facts(lang: str, src: str) -> dict[str | None, PerfFnFacts]:
 _NESTED_IO_CASES = [
     (
         "python",
+        "from sqlalchemy.orm import Session\n"
         "def f(session, groups):\n"
         "    for g in groups:\n"
         "        for r in g:\n"
@@ -72,6 +73,7 @@ _NESTED_IO_CASES = [
     ),
     (
         "python",
+        "from sqlalchemy.orm import Session\n"
         "def f(session, repos):\n    for r in repos:\n        session.execute(r)\n",
         [("io_in_loop", "db")],
         "a single loop is io_in_loop only (no nesting)",
@@ -128,6 +130,42 @@ _LOCK_IO_CASES = [
         " synchronized(em.getResultList()){ Use(); } } }",
         [],
         "a sink in the lock-OBJECT expression runs before the lock is held",
+    ),
+    (
+        "java",
+        "class A{ Object m(Object g, javax.persistence.EntityManager em){"
+        " synchronized(g){ if (cache == null) { cache = em.getResultList(); } } return cache; } }",
+        [],
+        "double-checked lazy init: the I/O runs once, the lock is the memo",
+    ),
+    (
+        "java",
+        "class A{ Object m(javax.persistence.EntityManager em){"
+        " if (ref.get() == null) { synchronized(ref){ ref.set(em.getResultList()); } }"
+        " return ref.get(); } }",
+        [],
+        "a null guard around the lock that the held body fills is lazy init",
+    ),
+    (
+        "csharp",
+        "class A{ object M(AppDbContext ctx){ lock(gate){ _cached ??= ctx.SaveChanges(); "
+        "return _cached; } } }",
+        [],
+        "a ??= memo as the whole held body is lazy init",
+    ),
+    (
+        "java",
+        "class A{ void m(Object g, javax.persistence.EntityManager em){"
+        " synchronized(g){ if (q == null) { q = new X(); } else { em.getResultList(); } } } }",
+        [("blocking_io_under_lock", "db")],
+        "a null check with an else branch is a state machine, not a memo",
+    ),
+    (
+        "java",
+        "class A{ void m(Object g, javax.persistence.EntityManager em){"
+        " synchronized(g){ if (q == null || stale) { q = em.getResultList(); } } } }",
+        [("blocking_io_under_lock", "db")],
+        "a guard that is not a pure null test can rerun, so the lock still counts",
     ),
 ]
 
@@ -188,6 +226,50 @@ def test_db_materializer_is_not_a_blocking_fact():
     assert fact is None or fact.blocking_sink_kind is None
 
 
+@pytest.mark.parametrize(
+    "src, kind",
+    [
+        # Node's async launchers return a ChildProcess at once: not blocking.
+        ('import { spawn } from "child_process";\nfunction run(c) { return spawn(c); }\n', None),
+        (
+            'import * as cp from "child_process";\nfunction run(c) { return cp.execFile(c); }\n',
+            None,
+        ),
+        # Their *Sync forms wait for the child, and sync fs stays a sink.
+        (
+            'import * as cp from "child_process";\nfunction run(c) { return cp.spawnSync(c); }\n',
+            "subprocess",
+        ),
+        (
+            'import * as fs from "fs";\nfunction run(p) { return fs.readFileSync(p); }\n',
+            "filesystem",
+        ),
+    ],
+)
+def test_ts_async_child_process_is_not_a_blocking_fact(src, kind):
+    fact = _facts("typescript", src).get("run")
+    assert (fact.blocking_sink_kind if fact else None) == kind
+
+
+def test_ts_async_spawn_in_a_loop_is_still_io_in_loop():
+    src = 'import { spawn } from "child_process";\nfunction f(xs) { for (const x of xs) { spawn(x); } }\n'
+    assert ("io_in_loop", "subprocess") in _hits("typescript", src)
+
+
+@pytest.mark.parametrize(
+    "body, kind",
+    [
+        # ``exec.Command`` only builds a Cmd; no process runs.
+        ('return exec.Command("git", "status")', None),
+        ('out, _ := exec.Command("git", "status").Output()\n\t_ = out\n\treturn nil', "subprocess"),
+    ],
+)
+def test_go_exec_command_constructor_is_not_a_blocking_fact(body, kind):
+    src = f'package p\nimport "os/exec"\nfunc run() *exec.Cmd {{\n\t{body}\n}}\n'
+    fact = _facts("go", src).get("run")
+    assert (fact.blocking_sink_kind if fact else None) == kind
+
+
 # ---------------------------------------------------------------------------
 # The centrality gate — emits the two markers ONLY for a hot function
 # ---------------------------------------------------------------------------
@@ -218,25 +300,93 @@ _HOT_SRC = (
 )
 
 
-def test_centrality_gate_fires_in_a_churny_file():
+def test_centrality_gate_is_silent_on_churn_alone():
+    """Churn is not reachability, so it cannot carry these markers alone.
+
+    A git hotspot with no callers was hot on its own until the gate required
+    centrality. How often a file is edited is not how often it runs.
+    """
     walked = _walked("svc.py", _HOT_SRC)
-    # No graph, but the file is a git hotspot -> churny -> hot.
-    ranker = PerfRanker(None, {"svc.py": {"is_hotspot": True}})
-    out = collect_centrality_gated(walked, ranker)
-    kinds = sorted(h.kind for h in out.get("svc.py", []))
-    assert kinds == ["hot_path_sync_io", "nested_loop_quadratic"]
-    assert out["svc.py"][0].detail or True  # hot_path carries the boundary kind
-
-
-def test_centrality_gate_silent_without_any_hot_signal():
-    walked = _walked("cold.py", _HOT_SRC)
-    # No graph, no git metadata -> nothing is hot -> no gated markers ship.
-    ranker = PerfRanker(None, {})
+    ranker = PerfRanker(None)
     assert collect_centrality_gated(walked, ranker) == {}
 
 
+def test_centrality_gate_silent_without_a_graph():
+    walked = _walked("cold.py", _HOT_SRC)
+    # No graph -> nothing is central -> no gated markers ship.
+    ranker = PerfRanker(None)
+    assert collect_centrality_gated(walked, ranker) == {}
+
+
+def _central_graph(path: str) -> nx.MultiDiGraph:
+    """``hot`` at *path* (lines 2-6) with four distinct callers: top-quintile central."""
+    g = nx.MultiDiGraph()
+    g.add_node(
+        f"{path}::hot", node_type="symbol", name="hot", file_path=path, start_line=2, end_line=6
+    )
+    for i in range(4):
+        cid = f"c.py::caller{i}"
+        g.add_node(
+            cid,
+            node_type="symbol",
+            name=f"caller{i}",
+            file_path="c.py",
+            start_line=10 + i,
+            end_line=11 + i,
+        )
+        g.add_edge(cid, f"{path}::hot", edge_type="calls")
+    return g
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        # The surviving arm still ships both gated markers.
+        ("svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        ("pkg/svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        ("pkg/server/svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        # A CLI is product code (production origin): it still fires.
+        ("pkg/cli/svc.py", ["hot_path_sync_io", "nested_loop_quadratic"]),
+        # Code that serves no request: the blocking call is the idiom there.
+        ("tests/test_svc.py", ["nested_loop_quadratic"]),
+        ("scripts/svc.py", ["nested_loop_quadratic"]),
+        ("examples/svc.py", ["nested_loop_quadratic"]),
+        ("apps/examples/demo-app/svc.py", ["nested_loop_quadratic"]),
+    ],
+)
+def test_centrality_gate_end_to_end(path, expected):
+    ranker = PerfRanker(CallGraphIndex(_central_graph(path)))
+    out = collect_centrality_gated(_walked(path, _HOT_SRC), ranker)
+    assert sorted(h.kind for h in out.get(path, [])) == expected
+
+
+def test_centrality_gate_reads_the_stored_origin():
+    # The content-aware origin the health pass decided wins over the path.
+    path = "pkg/svc.py"
+    ranker = PerfRanker(CallGraphIndex(_central_graph(path)))
+    out = collect_centrality_gated(_walked(path, _HOT_SRC), ranker, {path: "generated"})
+    assert [h.kind for h in out[path]] == ["nested_loop_quadratic"]
+
+
+def test_hot_path_sync_io_reason_claims_centrality_not_a_request_path():
+    hit = PerfHit("hot_path_sync_io", 3, "f", "filesystem", callers=4)
+    (finding,) = HotPathSyncIoDetector().detect(_ctx([hit]))
+    assert "request" not in finding.reason
+    assert "most-called functions in this repo (4 direct callers)" in finding.reason
+    assert finding.details == {"boundary_kind": "filesystem", "callers": 4}
+
+
+def test_hot_path_sync_io_hit_carries_its_caller_count():
+    path = "pkg/svc.py"
+    ranker = PerfRanker(CallGraphIndex(_central_graph(path)))
+    out = collect_centrality_gated(_walked(path, _HOT_SRC), ranker)
+    (hot,) = [h for h in out[path] if h.kind == "hot_path_sync_io"]
+    assert hot.callers == 4
+
+
 def test_centrality_gate_fires_for_a_central_function():
-    # A symbol with top-quintile caller count is "central" even without churn.
+    # A symbol with top-quintile caller count is central; a single-caller leaf
+    # is not, which is the floor at work on a graph this small.
     g = nx.MultiDiGraph()
     g.add_node(
         "svc.py::hot", node_type="symbol", name="hot", file_path="svc.py", start_line=1, end_line=6
@@ -254,7 +404,7 @@ def test_centrality_gate_fires_for_a_central_function():
         )
         g.add_edge(cid, "svc.py::hot", edge_type="calls")
         callers.append(cid)
-    # A cold leaf with a single caller — must NOT be central.
+    # A cold leaf with a single caller: must NOT be central.
     g.add_node(
         "svc.py::cold",
         node_type="symbol",
@@ -266,7 +416,7 @@ def test_centrality_gate_fires_for_a_central_function():
     g.add_edge(callers[0], "svc.py::cold", edge_type="calls")
 
     index = CallGraphIndex(g)
-    ranker = PerfRanker(index, {})
+    ranker = PerfRanker(index)
     assert ranker.is_central("svc.py", 1) is True
     assert ranker.is_central("svc.py", 20) is False
 
@@ -385,6 +535,16 @@ def test_blocking_io_under_lock_renders_cross_function_path():
     assert finding.details["cross_function"] is True
     assert finding.details["path"] == list(hit.path)
     assert "holder -> writer" in finding.reason
+
+
+def test_blocking_io_under_lock_does_not_advise_moving_file_io_out():
+    hits = [
+        PerfHit("blocking_io_under_lock", 3, "save", "filesystem"),
+        PerfHit("blocking_io_under_lock", 4, "save", "db"),
+    ]
+    file_io, db = BlockingIoUnderLockDetector().detect(_ctx(hits))
+    assert "move the I/O" not in file_io.reason
+    assert "move the I/O" in db.reason
 
 
 def test_new_markers_score_performance_not_defect():

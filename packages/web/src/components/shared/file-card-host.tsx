@@ -8,6 +8,7 @@ import {
   filePageId,
 } from "@repowise-dev/ui/shared/entity";
 import type { FileCardData, FileCardLinks } from "@repowise-dev/ui/shared/file-card";
+import { commitsViewHref } from "@/lib/changes";
 
 /**
  * Stateful host for FileCardDialog. Pages that have a list of files (hotspots,
@@ -28,7 +29,7 @@ export function useFileCardHost(repoId?: string) {
         (repoId
           ? {
               file: fileEntityPath(`/repos/${repoId}`, next.file_path),
-              graph: `/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(next.file_path)}`,
+              graph: `/repos/${repoId}/architecture?view=files&node=${encodeURIComponent(next.file_path)}`,
               // `?file=` was read by nothing in the docs surface, so this
               // button silently opened the repo overview — a different file's
               // prose, looking exactly like the link had worked. The reader is
@@ -37,7 +38,7 @@ export function useFileCardHost(repoId?: string) {
               // reader somewhere plausible and wrong.
               docs: docsPagePath(`/repos/${repoId}`, filePageId(next.file_path)),
               symbols: `/repos/${repoId}/architecture?view=symbols&q=${encodeURIComponent(next.file_path)}`,
-              blastRadius: `/repos/${repoId}/code-health?tab=impact&file=${encodeURIComponent(next.file_path)}`,
+              blastRadius: `${commitsViewHref(repoId, "review")}&file=${encodeURIComponent(next.file_path)}`,
               deadCode: `/repos/${repoId}/code-health?tab=dead-code`,
               decisions: `/repos/${repoId}/decisions?file=${encodeURIComponent(next.file_path)}`,
             }

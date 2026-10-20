@@ -66,7 +66,7 @@ describe("label density", () => {
 });
 
 describe("EDGE_COLORS", () => {
-  const expectedTypes = ["import", "crossCommunity", "internal", "dynamic", "lowConfidence"];
+  const expectedTypes = ["crossCommunity", "internal", "dynamic", "lowConfidence"];
 
   it("has valid hex colors for all edge types in both themes", () => {
     for (const theme of ["light", "dark"] as const) {
@@ -85,10 +85,12 @@ describe("EDGE_COLORS", () => {
     expect(EDGE_COLORS).toBe(EDGE_COLORS_BY_THEME.dark);
   });
 
-  it("uses the warm semantic scheme: orange imports, plum cross-community", () => {
-    // import = brand orange in both themes
-    expect(EDGE_COLORS_BY_THEME.light.import).toBe("#f59520");
-    expect(EDGE_COLORS_BY_THEME.dark.import).toBe("#f59520");
+  it("uses the warm semantic scheme, and keys no kind that is never drawn", () => {
+    // No "import" kind. classifyEdge returned it only for an edge with an
+    // endpoint missing from the graph, and the adapter drops those before
+    // drawing, so the swatch keyed zero marks in every state.
+    expect("import" in EDGE_COLORS_BY_THEME.light).toBe(false);
+    expect("import" in EDGE_COLORS_BY_THEME.dark).toBe(false);
     // cross-community = plum (accent-secondary), different per theme
     expect(EDGE_COLORS_BY_THEME.light.crossCommunity).toBe("#58436c");
     expect(EDGE_COLORS_BY_THEME.dark.crossCommunity).toBe("#a98fc4");

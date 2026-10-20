@@ -22,11 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.generation.context_assembler import FilePageContext, SymbolSpotlightContext
-from repowise.core.generation.page_generator.structural import (
-    as_markdown,
-    oneline,
-    signature,
-)
+from repowise.core.generation.page_generator.structural import register_filters
 from repowise.core.generation.structural_labels import resolve_structural_labels
 from repowise.core.persistence.crud import upsert_page, upsert_repository
 from repowise.core.persistence.database import init_db
@@ -52,9 +48,7 @@ def jinja_env() -> jinja2.Environment:
         undefined=jinja2.StrictUndefined,
         autoescape=False,
     )
-    env.filters.setdefault("oneline", oneline)
-    env.filters.setdefault("as_markdown", as_markdown)
-    env.filters.setdefault("signature", signature)
+    register_filters(env)
     env.globals["labels"] = resolve_structural_labels(None)
     return env
 

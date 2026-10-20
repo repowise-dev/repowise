@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { FileDecisionsTab } from "../../src/files/file-decisions-tab.js";
 import { FilePage } from "../../src/files/file-page.js";
@@ -6,11 +6,6 @@ import { FilePageHeader } from "../../src/files/file-page-header.js";
 import { buildFilePanels } from "../../src/files/file-page-panels.js";
 import { fileTabsFor, type FilePageTab } from "../../src/files/file-page-tabs.js";
 import type { FileDetailResponse, GoverningDecisionRef } from "@repowise-dev/types/files";
-
-// jsdom has no scrollIntoView; `ViewTabs` keeps the active tab in view on mount.
-beforeAll(() => {
-  Element.prototype.scrollIntoView = vi.fn();
-});
 
 function makeDecision(id: string, title: string, status: string): GoverningDecisionRef {
   return { id, title, status };

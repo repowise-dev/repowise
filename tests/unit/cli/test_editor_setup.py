@@ -22,6 +22,7 @@ from repowise.cli.editor_integrations.defaults import (
     get_default_integration_overrides,
     get_default_project_file_overrides,
 )
+from repowise.cli.editor_integrations.vscode import VSCodeSetup
 from repowise.cli.editor_setup import (
     EditorSetupOptions,
     refresh_editor_project_files,
@@ -302,9 +303,7 @@ def test_no_editor_setup_turns_off_every_replacing_surface(monkeypatch, tmp_path
 
     (tmp_path / ".repowise").mkdir()
 
-    offer_distill_rewrite_hook(
-        _silent_console(), [tmp_path], False, yes=True, no_editor_setup=True
-    )
+    offer_distill_rewrite_hook(_silent_console(), [tmp_path], False, yes=True, no_editor_setup=True)
 
     assert _all_same(_hook_verdicts(tmp_path), False)
 
@@ -425,9 +424,7 @@ def _select(monkeypatch, tmp_path: Path, answer, **kwargs):
         return answer(choices) if callable(answer) else answer
 
     monkeypatch.setattr(agent_selection, "interactive_agent_select", _fake)
-    options = select_agents_interactively(
-        _silent_console(), tmp_path, EditorSetupOptions(**kwargs)
-    )
+    options = select_agents_interactively(_silent_console(), tmp_path, EditorSetupOptions(**kwargs))
     return options, seen[0]
 
 
@@ -442,9 +439,7 @@ def test_checklist_unticking_an_agent_disables_its_project_file(monkeypatch, tmp
 
 
 def test_checklist_ticking_everything_disables_nothing(monkeypatch, tmp_path) -> None:
-    options, _ = _select(
-        monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices}
-    )
+    options, _ = _select(monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices})
 
     from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
 
@@ -482,9 +477,7 @@ def test_checklist_pre_ticks_an_agent_an_explicit_flag_asked_for(monkeypatch, tm
     Otherwise accepting the checklist would silently undo the flag the user
     passed on the same command line.
     """
-    _, choices = _select(
-        monkeypatch, tmp_path, set(), integration_overrides={"codex": True}
-    )
+    _, choices = _select(monkeypatch, tmp_path, set(), integration_overrides={"codex": True})
 
     codex = next(choice for choice in choices if choice.id == "codex")
     assert codex.enabled is True
@@ -690,152 +683,129 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     assert calls == [("refresh", tmp_path, frozenset({"skip"}))]
 
 
-def _write_settings(path: Path, entry: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"mcpServers": {"repowise": entry}}), encoding="utf-8")
-
-
-def test_describe_mcp_registration_change_warns_on_repoint(
+def test_write_editor_project_files_honors_vscode_config_optout(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """A second init from another repo replaces the single 'repowise' entry.
-
-    That write is silent and only surfaces later, when the repo or binary it
-    points at is gone. The probe names both sides before the merge happens.
-    """
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    other_repo = str((tmp_path / "other-repo").resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {"command": "repowise", "args": ["mcp", other_repo, "--transport", "stdio"]},
+    """The init write path resolves an explicit VS Code opt-out centrally."""
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  vscode_mcp: false\n",
+        encoding="utf-8",
     )
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
-
-    this_repo = tmp_path / "this-repo"
-    this_repo.mkdir()
-    notice = claude_config.describe_mcp_registration_change(this_repo)
-
-    assert notice is not None
-    assert other_repo in notice
-    assert str(this_repo.resolve()).replace("\\", "/") in notice
-    assert "--no-editor-setup" in notice
-
-
-def test_describe_mcp_registration_change_silent_when_unchanged(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """Re-running init on the same repo is not a clobber and stays quiet."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    repo_arg = str(repo.resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {"command": "repowise", "args": ["mcp", repo_arg, "--transport", "stdio"]},
-    )
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
-
-    assert claude_config.describe_mcp_registration_change(repo) is None
-
-
-def test_describe_mcp_registration_change_silent_on_first_run(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """No stored entry means nothing is being replaced."""
     monkeypatch.setattr(
-        claude_config, "_claude_code_settings_path", lambda: tmp_path / "missing.json"
+        mcp_config,
+        "save_mcp_config",
+        lambda repo_path: repo_path / ".repowise" / "mcp.json",
     )
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
 
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert claude_config.describe_mcp_registration_change(repo) is None
+    written = write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        integrations=(VSCodeSetup(),),
+    )
+
+    assert written == []
+    assert not (tmp_path / ".vscode").exists()
 
 
-def test_describe_mcp_registration_change_warns_on_command_repoint(
+def test_refresh_editor_project_files_honors_vscode_config_optout(tmp_path: Path) -> None:
+    """The update refresh path applies the same explicit opt-out."""
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  vscode_mcp: false\n",
+        encoding="utf-8",
+    )
+
+    refresh_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        integrations=(VSCodeSetup(),),
+    )
+
+    assert not (tmp_path / ".vscode").exists()
+
+
+def test_explicit_project_file_override_wins_over_configured_optout(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """Same repo, different binary — the release-smoke-test case."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    repo_arg = str(repo.resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {
-            "command": "C:/Users/dev/.venv/Scripts/repowise.exe",
-            "args": ["mcp", repo_arg, "--transport", "stdio"],
-        },
+    """A per-run override wins even when a disabled set also contains the id."""
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  agents_md: false\n",
+        encoding="utf-8",
     )
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    calls: list[bool | None] = []
     monkeypatch.setattr(
-        claude_config, "resolve_repowise_command", lambda: "C:/tmp/throwaway/repowise.exe"
+        mcp_config,
+        "save_mcp_config",
+        lambda repo_path: repo_path / ".repowise" / "mcp.json",
+    )
+    monkeypatch.setattr(
+        codex_integration,
+        "maybe_generate_agents_md",
+        lambda _console, _repo_path, *, agents_md=None: calls.append(agents_md),
     )
 
-    notice = claude_config.describe_mcp_registration_change(repo)
-    assert notice is not None
-    assert "C:/Users/dev/.venv/Scripts/repowise.exe" in notice
-    assert "C:/tmp/throwaway/repowise.exe" in notice
+    write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        options=EditorSetupOptions(
+            disabled_project_files=frozenset({"agents_md"}),
+            project_file_overrides={"agents_md": True},
+        ),
+        integrations=(CodexSetup(),),
+    )
+
+    assert calls == [True]
 
 
-def test_describe_mcp_registration_change_reports_both_fields(
+def test_write_editor_project_files_honors_agents_config_optout_when_codex_enabled(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """A new repo indexed by a new install moves both fields; name both."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    other = str((tmp_path / "other").resolve()).replace("\\", "/")
-    _write_settings(
-        settings,
-        {"command": "old-repowise", "args": ["mcp", other, "--transport", "stdio"]},
+    """An AGENTS.md opt-out must not disable Codex MCP registration."""
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "config.yaml").write_text(
+        "editor_files:\n  agents_md: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_mcp_config",
+        lambda repo_path: repo_path / ".repowise" / "mcp.json",
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_mcp_config",
+        lambda repo_path: calls.append("mcp") or repo_path / ".codex" / "config.toml",
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_hooks_config",
+        lambda repo_path: calls.append("hooks") or repo_path / ".codex" / "hooks.toml",
+    )
+    monkeypatch.setattr(mcp_config, "is_codex_cli_installed", lambda: False)
+    monkeypatch.setattr(codex_integration, "maybe_generate_agents_md", lambda *args, **kwargs: None)
+
+    written = write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        options=EditorSetupOptions(integration_overrides={"codex": True}),
+        integrations=(CodexSetup(),),
     )
 
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "new-repowise")
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    notice = claude_config.describe_mcp_registration_change(repo)
-
-    assert notice is not None
-    assert "repo and command" in notice
-    assert "old-repowise" in notice and "new-repowise" in notice
-    assert other in notice
-
-
-def test_describe_mcp_registration_change_handles_truncated_entry(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """A hand-edited entry with no args must not print 'was: None'."""
-    settings = tmp_path / "home" / ".claude" / "settings.json"
-    _write_settings(settings, {"command": "repowise", "args": ["mcp"]})
-
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
-    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
-    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    notice = claude_config.describe_mcp_registration_change(repo)
-
-    assert notice is not None
-    assert "None" not in notice
-    assert "(not set)" in notice
+    assert calls == ["mcp", "hooks"]
+    assert written == [tmp_path / ".codex" / "config.toml", tmp_path / ".codex" / "hooks.toml"]
 
 
 def test_codex_project_setup_writes_project_config_hooks_and_agents(
@@ -1105,17 +1075,19 @@ def test_claude_refresh_project_files_skips_when_options_disable_file(
 
 
 def test_update_command_uses_editor_refresh_abstraction() -> None:
-    from repowise.cli.commands.update_cmd.command import _refresh_editor_stamp
+    from repowise.cli.commands.update_cmd.command import _finish_outcome, _refresh_editor_stamp
 
-    command_source = inspect.getsource(run_update)
+    command_source = inspect.getsource(inspect.getmodule(run_update))
+    finish_source = inspect.getsource(_finish_outcome)
     stamp_source = inspect.getsource(_refresh_editor_stamp)
 
-    # The command routes every editor-file write through the shared stamp
-    # helper, which in turn uses the refresh abstraction — never the raw
-    # generator/fetcher internals.
-    assert "_refresh_editor_stamp" in command_source
+    # The command routes every editor-file write through the shared exit
+    # helper and its stamp helper, which in turn uses the refresh abstraction —
+    # never the raw generator/fetcher internals.
+    assert "_finish_outcome" in command_source
+    assert "_refresh_editor_stamp" in finish_source
     assert "refresh_editor_project_files" in stamp_source
-    for source in (command_source, stamp_source):
+    for source in (command_source, finish_source, stamp_source):
         assert "ClaudeMdGenerator" not in source
         assert "EditorFileDataFetcher" not in source
         assert "claude_md" not in source
@@ -1181,9 +1153,36 @@ def test_workspace_generation_rebinds_codex_provider_to_repo(
     assert calls == [("codex_cli", "codex_cli/gpt-5.5", tmp_path)]
 
 
+def test_workspace_generation_rebinds_opencode_provider_to_repo(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """opencode also runs in the repo's cwd, so a workspace must rebind it per repo."""
+
+    class FakeProvider:
+        provider_name = "opencode"
+        model_name = "opencode/default"
+
+    rebound = object()
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_resolve_provider(provider_name: str, model: str, repo_path: Path) -> object:
+        calls.append((provider_name, model, repo_path))
+        return rebound
+
+    monkeypatch.setattr(init_cmd.workspace, "resolve_provider", fake_resolve_provider)
+
+    result = init_cmd.workspace._workspace_generation_provider_for_repo(FakeProvider(), tmp_path)
+
+    assert result is rebound
+    assert calls == [("opencode", "opencode/default", tmp_path)]
+
+
 def test_init_command_uses_editor_option_abstraction() -> None:
-    source = inspect.getsource(init_cmd.init_command.callback) + inspect.getsource(
-        init_cmd._workspace_init
+    source = (
+        inspect.getsource(init_cmd.command._editor_options)
+        + inspect.getsource(init_cmd._finish._write_editor_files)
+        + inspect.getsource(init_cmd.workspace._workspace_editor_options)
     )
 
     assert "resolve_editor_setup_options" in source

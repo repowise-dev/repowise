@@ -12,9 +12,13 @@ export function Progress({
   className?: string;
   indicatorClassName?: string;
 }) {
+  const boundedValue = value != null && Number.isFinite(value)
+    ? Math.max(0, Math.min(100, value))
+    : undefined;
+
   return (
     <ProgressPrimitive.Root
-      value={value}
+      value={boundedValue}
       className={cn(
         "relative h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-elevated)]",
         className,
@@ -25,7 +29,7 @@ export function Progress({
           "h-full w-full flex-1 bg-[var(--color-accent-primary)] transition-all duration-300",
           indicatorClassName,
         )}
-        style={{ transform: `translateX(-${100 - (value ?? 0)}%)` }}
+        style={{ transform: `translateX(${(boundedValue ?? 0) - 100}%)` }}
       />
     </ProgressPrimitive.Root>
   );

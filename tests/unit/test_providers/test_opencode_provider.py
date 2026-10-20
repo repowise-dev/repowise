@@ -161,9 +161,7 @@ def test_custom_model_is_normalized(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
 
     assert (
-        OpenCodeProvider(
-            model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path
-        ).model_name
+        OpenCodeProvider(model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path).model_name
         == "opencode/deepseek/deepseek-v4-pro"
     )
     assert (
@@ -182,7 +180,7 @@ def test_invalid_model_name_raises(monkeypatch, tmp_path):
 def test_missing_cli_raises(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
 
-    with pytest.raises(ProviderError, match="OpenCode CLI is not installed"):
+    with pytest.raises(ProviderError, match=r"OpenCode CLI not found.*opencode.ai/install"):
         OpenCodeProvider(repo_path=tmp_path)
 
 
@@ -204,9 +202,7 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
-    provider = OpenCodeProvider(
-        model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path
-    )
+    provider = OpenCodeProvider(model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path)
     result = await provider.generate("system rules", "user context")
 
     assert isinstance(result, GeneratedResponse)
@@ -216,13 +212,13 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
     assert "system rules" in prompt
     assert "user context" in prompt
     args = list(captured["args"])
-    assert args[:5] == [opencode_cmd, "run", "--format", "json", "--dir"]
+    assert args[:4] == [opencode_cmd, "run", "--format", "json"]
+    # OpenCode CLI v2 removed --dir; the repo is the subprocess cwd instead.
+    assert "--dir" not in args
     assert "--dangerously-skip-permissions" not in args
-    assert args[args.index("--dir") + 1] == str(tmp_path.resolve())
+    assert captured["kwargs"]["cwd"] == str(tmp_path.resolve())
     assert args[args.index("--model") + 1] == "deepseek/deepseek-v4-pro"
-    assert re.fullmatch(
-        r"repowise_auto_[0-9a-f]{32}", args[args.index("--title") + 1]
-    )
+    assert re.fullmatch(r"repowise_auto_[0-9a-f]{32}", args[args.index("--title") + 1])
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
     env = captured["kwargs"].get("env", {})
     assert "OPENCODE_CONFIG_CONTENT" in env
@@ -246,6 +242,34 @@ async def test_generate_default_model_omits_model_flag(monkeypatch, tmp_path):
 
     args = list(captured["args"])
     assert "--model" not in args
+
+
+def test_build_command_omits_dir_flag(monkeypatch, tmp_path):
+    """OpenCode CLI v2 rejects ``--dir`` with "Unrecognized flag" (issue #3571)."""
+    monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
+
+    cmd = OpenCodeProvider(
+        model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path
+    ).build_command("sys", "auto")
+
+    assert "--dir" not in cmd
+    assert cmd[1:3] == ["run", "--format"]
+
+
+async def test_generate_runs_in_repo_path_as_cwd(monkeypatch, tmp_path):
+    """The repo is passed as the subprocess cwd, since ``--dir`` is gone."""
+    monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
+    captured: dict[str, Any] = {}
+
+    async def fake_exec(*_args: str, **kwargs: Any) -> FakeProcess:
+        captured["kwargs"] = kwargs
+        return FakeProcess(stdout=_success_jsonl("OK"))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    await OpenCodeProvider(repo_path=tmp_path).generate("sys", "user")
+
+    assert captured["kwargs"]["cwd"] == str(tmp_path.resolve())
 
 
 async def test_generate_parses_jsonl_tokens(monkeypatch, tmp_path):
@@ -323,7 +347,7 @@ async def test_generate_raises_when_jsonl_has_no_text(monkeypatch, tmp_path):
         await OpenCodeProvider(repo_path=tmp_path).generate("sys", "user")
 
 
-async def test_generate_serializes_subprocess_calls(monkeypatch, tmp_path):
+async def _max_concurrent_generates(monkeypatch, tmp_path, calls: int) -> int:
     monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
     active = 0
     max_active = 0
@@ -341,12 +365,28 @@ async def test_generate_serializes_subprocess_calls(monkeypatch, tmp_path):
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
     provider = OpenCodeProvider(repo_path=tmp_path)
 
-    await asyncio.gather(
-        provider.generate("sys", "user 1"),
-        provider.generate("sys", "user 2"),
-    )
+    await asyncio.gather(*[provider.generate("sys", f"user {i}") for i in range(calls)])
+    return max_active
 
-    assert max_active == 1
+
+async def test_generate_fans_out_to_the_default_concurrency(monkeypatch, tmp_path):
+    monkeypatch.delenv("REPOWISE_OPENCODE_CONCURRENCY", raising=False)
+    assert await _max_concurrent_generates(monkeypatch, tmp_path, 6) == 4
+
+
+async def test_generate_respects_configured_concurrency(monkeypatch, tmp_path):
+    monkeypatch.setenv("REPOWISE_OPENCODE_CONCURRENCY", "2")
+    assert await _max_concurrent_generates(monkeypatch, tmp_path, 4) == 2
+
+
+async def test_generate_treats_zero_concurrency_as_one(monkeypatch, tmp_path):
+    monkeypatch.setenv("REPOWISE_OPENCODE_CONCURRENCY", "0")
+    assert await _max_concurrent_generates(monkeypatch, tmp_path, 3) == 1
+
+
+async def test_generate_falls_back_to_default_on_invalid_concurrency(monkeypatch, tmp_path):
+    monkeypatch.setenv("REPOWISE_OPENCODE_CONCURRENCY", "many")
+    assert await _max_concurrent_generates(monkeypatch, tmp_path, 6) == 4
 
 
 async def test_generate_times_out_and_kills_process(monkeypatch, tmp_path):
@@ -469,3 +509,21 @@ async def test_available_model_options_fallback(monkeypatch, tmp_path):
     assert options[0].model == "opencode/default"
     assert options[0].recommended is True
     assert options[0].source == "fallback"
+
+
+def test_model_catalog_probe_never_inherits_stdin(monkeypatch):
+    """Inside a stdio MCP server stdin is the JSON-RPC pipe."""
+    import subprocess
+
+    from repowise.core.providers.llm import opencode
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(_args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(_args, 1, "", "")
+
+    monkeypatch.setattr(opencode.subprocess, "run", fake_run)
+    opencode._load_opencode_model_catalog.cache_clear()
+    assert opencode._load_opencode_model_catalog("opencode-stdin-probe") is None
+    assert seen["stdin"] is subprocess.DEVNULL

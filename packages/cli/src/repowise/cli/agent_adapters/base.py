@@ -14,6 +14,50 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from pathlib import Path
 
+#: The shell dialects a :class:`RewriteRequest` can name. Constants rather
+#: than literals because the value is load-bearing twice over, across two
+#: processes: the rewrite hook decides which bailouts apply from it, and the
+#: ``repowise distill`` it writes decides which interpreter actually executes
+#: the command from it. A misspelling would not fail loudly -- it
+#: would read as "not powershell" and run the command in the wrong shell.
+SHELL_POSIX = "posix"
+SHELL_POWERSHELL = "powershell"
+
+#: Savings-ledger ``--source`` labels the rewrite hook derives from the shell
+#: dialect, rather than taking from an adapter's ``savings_source``.
+#:
+#: These two and the two dialects above are one vocabulary with two spellings,
+#: and the pair of functions below is the only place they are tied together.
+#: That matters more than it looks: ``_decide`` writes the label from the
+#: dialect and ``repowise distill`` reads the dialect back out of the label to
+#: choose an interpreter, so a rename that touched only one side would not
+#: fail — it would run a command in the wrong shell and report success.
+HOOK_SOURCE_POSIX = "hook-bash"
+HOOK_SOURCE_POWERSHELL = "hook-powershell"
+
+
+def hook_source_for(shell: str) -> str:
+    """The ledger label for a command the hook rewrote in *shell*."""
+    return HOOK_SOURCE_POWERSHELL if shell == SHELL_POWERSHELL else HOOK_SOURCE_POSIX
+
+
+def dialect_for_hook_source(source: str) -> str | None:
+    """The dialect *source* names, or None when it names none.
+
+    The inverse of :func:`hook_source_for`, and deliberately narrow. An
+    adapter that sets its own ``savings_source`` is absent on purpose:
+    ``hook-codex`` says nothing about a dialect, because Codex picks one from
+    the host (``codex.py``), and it needs no answer here either way — on
+    Windows it reports PowerShell, and everywhere else the host shell is
+    already POSIX. None means "no opinion", which every caller reads as the
+    host default, so an unknown label can never select an interpreter.
+    """
+    if source == HOOK_SOURCE_POSIX:
+        return SHELL_POSIX
+    if source == HOOK_SOURCE_POWERSHELL:
+        return SHELL_POWERSHELL
+    return None
+
 
 class RewriteRequest:
     """Agent-agnostic view of one shell command an agent is about to run."""

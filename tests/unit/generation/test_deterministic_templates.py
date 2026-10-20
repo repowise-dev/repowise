@@ -230,6 +230,28 @@ def test_as_markdown_drops_rest_directives():
     assert "Body text." in out
 
 
+def test_as_markdown_turns_a_rest_title_into_a_heading():
+    """Left as text, the underline renders and the title becomes the summary."""
+    from repowise.core.generation.page_generator.structural import as_markdown
+
+    out = as_markdown("Tagged JSON\n~~~~~~~~~~~\n\nA compact representation.\n")
+    assert out == "### Tagged JSON\n\nA compact representation."
+
+
+def test_as_markdown_drops_the_overline_of_a_rest_title():
+    from repowise.core.generation.page_generator.structural import as_markdown
+
+    out = as_markdown("=========\nBig Title\n=========\n\nSome prose.")
+    assert out == "### Big Title\n\nSome prose."
+
+
+def test_as_markdown_leaves_a_short_rule_under_prose_alone():
+    """reST requires the underline to be at least as long as the title."""
+    from repowise.core.generation.page_generator.structural import as_markdown
+
+    assert as_markdown("A longer line of prose.\n---\n") == "A longer line of prose.\n---"
+
+
 def test_as_markdown_dedents_so_the_body_is_not_a_code_block():
     """Four leading spaces would make markdown render the body as code."""
     from repowise.core.generation.page_generator.structural import as_markdown
@@ -246,23 +268,90 @@ def test_as_markdown_leaves_plain_text_alone():
     assert as_markdown(None) == ""
 
 
-def test_signature_collapses_source_whitespace():
-    """Signatures span source lines, so raw text carries runs of indentation."""
+def test_signature_reads_as_a_declaration_not_as_source():
+    """Signatures span source lines, so raw text carries the author's layout."""
     from repowise.core.generation.page_generator.structural import signature
 
     raw = "def go(\n        a: int,\n        b: str,\n    ) -> None"
-    assert signature(raw) == "def go( a: int, b: str, ) -> None"
+    assert signature(raw) == "def go(a: int, b: str) -> None"
 
 
-def test_signature_truncates_at_an_argument_boundary_not_mid_token():
+def test_signature_closes_a_capture_that_stopped_mid_expression():
+    """A constant whose value opens a bracket is stored without its tail.
+
+    Closed rather than cut back to the declaration: the page is also the index
+    entry, so ``= re.compile(`` must not take ``re`` and ``compile`` with it.
+    """
     from repowise.core.generation.page_generator.structural import signature
 
-    raw = "def go(" + ", ".join(f"argument_number_{i}: int = 0" for i in range(20)) + ") -> None"
+    assert signature("PRUNED_DIRS: frozenset[str] = frozenset(") == (
+        "PRUNED_DIRS: frozenset[str] = frozenset(…)"
+    )
+    assert signature("ReasoningMode = Literal[") == "ReasoningMode = Literal[…]"
+    assert signature("ROW_ACTIVE =") == "ROW_ACTIVE"
+    # A value that closes is the declaration's meaning, and is kept.
+    assert signature("MAX = 64") == "MAX = 64"
+
+
+def test_signature_never_rewrites_a_declaration_that_already_fits():
+    """Under the limit, the only change may be the collapsed whitespace.
+
+    Every pass reshapes source punctuation, and a signature routinely carries
+    a regex or a path in a string literal. Rewriting inside one puts a value
+    on the page that the source does not have, and the page is what the index
+    embeds. These are real declarations from this repository.
+    """
+    from repowise.core.generation.page_generator.structural import signature
+
+    for raw in (
+        'IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")',
+        'filenames: tuple[str, ...] = ("Cargo.toml",)',
+        '_SPRING_CTOR_PARAM_RE = re.compile(r"([A-Z]w*)s+w+s*[,)]")',
+        'def _doc_paths(root: Path, *, patterns: tuple[str, ...] = ("*.md",)) -> list[Path]',
+    ):
+        assert signature(raw) == raw, raw
+
+
+def test_signature_reduces_a_parameter_to_its_name_not_to_a_string_it_contained():
+    """A default value holding a comma must not split into two parameters."""
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = (
+        'def render(self, template: str, sep: str = ", ", prefix: str = "(", '
+        'suffix: str = ")", indent: int = 4, width: int = 88) -> str'
+    )
+
+    assert signature(raw) == "def render(self, template, sep, prefix, suffix, indent, width) -> str"
+
+
+def test_signature_does_not_count_a_bracket_inside_a_string_literal():
+    """A character class is not an unclosed bracket."""
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = '_META_RE = re.compile(r"[|&;<>]")'
+    assert signature(raw) == raw
+
+
+def test_signature_sheds_parameter_detail_before_it_sheds_the_return_type():
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = "def go(" + ", ".join(f"argument_number_{i}: int = 0" for i in range(3)) + ") -> None"
     out = signature(raw, limit=80)
-    assert out.endswith(" …")
-    # The visible tail must be a whole parameter, never half an identifier.
-    assert not out.rstrip(" …").rstrip(",").endswith("argument_number")
-    assert "argument_number_0: int = 0" in out
+
+    # What a function returns is the half a reader is looking for, so the
+    # annotations and defaults go first and the return type survives.
+    assert out.endswith(") -> None")
+    assert "argument_number_0" in out
+    assert "int = 0" not in out
+
+
+def test_signature_falls_back_to_an_ellipsis_when_even_the_names_are_too_long():
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = "def go(" + ", ".join(f"argument_number_{i}" for i in range(40)) + ") -> None"
+    out = signature(raw, limit=60)
+
+    assert out == "def go(…) -> None"
 
 
 def test_signature_leaves_short_signatures_untouched():
@@ -357,7 +446,7 @@ def test_module_page_leads_with_the_concept_title(generator):
     group is; the line beneath says where to go and look.
     """
     ctx = _module_ctx(generator._assembler, ["src/ingest/read.py", "src/parse/ast.py"])
-    page = generator._stub_module_page(ctx, "src/ingest", "Ingestion Pipeline", None)
+    page = generator._stub_module_page(ctx, "src/ingest", "Ingestion Pipeline")
 
     assert page.title == "Ingestion Pipeline"
     assert page.content.startswith("# Ingestion Pipeline\n")
@@ -374,7 +463,7 @@ def test_module_page_of_root_files_says_so(generator):
     top level.
     """
     ctx = _module_ctx(generator._assembler, ["setup.py", "main.py"])
-    page = generator._stub_module_page(ctx, "root", "Project Entry Points", None)
+    page = generator._stub_module_page(ctx, "root", "Project Entry Points")
 
     assert "Repository root" in page.content
     assert "`.`" not in page.content
@@ -462,13 +551,15 @@ def test_file_page_renders_german_headings_and_prose(german_generator):
         "## Öffentliche API",
         "## Abhängigkeiten",
         "## Wird verwendet von",
-        "## Nutzungshinweise",
         "## Fragen, die diese Seite beantwortet",
-        "## Im Code",
     ):
         assert heading in page.content, heading
-    assert "Sie stellt 1 öffentliches Symbol bereit" in page.content
-    assert "Importiert von 1 Datei in diesem Repository." in page.content
+    # The file vocabulary is embedded from metadata, never rendered.
+    assert "## Im Code" not in page.content
+    assert "`parser.py` definiert `parse_file`." in page.content
+    assert "Die Datei wird von `src/pipeline.py` importiert." in page.content
+    assert "Die Datei gehört zur Schicht ingestion." in page.content
+    assert "Die Datei ist ein Einstiegspunkt." in page.content
     # Identifiers are never translated, in any language.
     assert "`src/service/parser.py`" in page.content
     assert "`parse_file`" in page.content
@@ -532,6 +623,20 @@ def test_scc_page_renders_german(german_generator):
     assert "**Symbole insgesamt im Zyklus:** 2" in page.content
 
 
+def test_scc_page_starts_at_its_heading(generator):
+    """A stray newline ahead of the heading is stripped after the page was
+    already streamed to the store, so every SCC page was written twice and
+    archived a version nobody made."""
+    from repowise.core.generation.mermaid_safety import sanitize_pages
+
+    page = generator._structural_scc_page(
+        _scc_ctx(), "scc-001", structural_page_title("en", "scc_page", "scc-001")
+    )
+
+    assert page.content.startswith("# ")
+    assert sanitize_pages([page]) == 0
+
+
 def test_the_footer_is_localized_on_every_structural_page(german_generator):
     ctx = _file_ctx()
     page = german_generator._structural_page(
@@ -541,8 +646,8 @@ def test_the_footer_is_localized_on_every_structural_page(german_generator):
         template="file_page.j2",
         ctx=ctx,
     )
-    assert "Aus dem Code selbst erstellt" in page.content
-    assert "Built from the code itself" not in page.content
+    assert "Erstellt aus geparstem Code" in page.content
+    assert "Generated from parsed code" not in page.content
 
 
 def test_an_unsupported_language_renders_exactly_what_english_does(generator, klingon_generator):

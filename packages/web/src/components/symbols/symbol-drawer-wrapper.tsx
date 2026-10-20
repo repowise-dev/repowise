@@ -16,6 +16,7 @@ import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import { getCoChanges, getGitMetadata } from "@/lib/api/git";
 import { listDeadCode } from "@/lib/api/dead-code";
 import type { SymbolResponse } from "@/lib/api/types";
+import { commitsViewHref } from "@/lib/changes";
 import type { SymbolDetailData } from "@repowise-dev/types/symbols";
 
 interface Props {
@@ -127,6 +128,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
         ...calls,
         pagerank_percentile: metrics?.pagerank_percentile ?? null,
         betweenness_percentile: metrics?.betweenness_percentile ?? null,
+        betweenness_scored: metrics?.betweenness_scored ?? true,
         community_label: metrics?.community_label ?? null,
         entry_point_score: metrics?.entry_point_score ?? null,
       },
@@ -168,7 +170,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
         ? {
             onOpenBlastRadius: () =>
               router.push(
-                `/repos/${repoId}/code-health?tab=impact&file=${encodeURIComponent(filePath)}`,
+                `${commitsViewHref(repoId, "review")}&file=${encodeURIComponent(filePath)}`,
               ),
           }
         : {})}

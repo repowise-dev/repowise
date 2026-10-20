@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
     db_configured,
     get_db_url_for_repo,
     get_repowise_dir,
+    load_config,
     load_state,
     reconcile_schema_best_effort,
     resolve_command_target,
@@ -22,7 +23,17 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.cli.ui.brand import format_bytes
+from repowise.cli.ui.mode_names import (
+    INDEX_ONLY,
+    commit_cap_label,
+    mode_label,
+    pages,
+    scope_line,
+)
+from repowise.cli.ui.result_panels import keyless_upgrade_note
+from repowise.core.decision_lanes import lanes_label, pending_decision_lanes
 from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.index_scope import fast_to_full_command, resolve_index_scope, upgrade_command
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -155,7 +166,6 @@ async def _query_pages(repo_path: Path) -> tuple[dict[str, int], int]:
         create_session_factory,
         get_repository_by_path,
         get_session,
-        list_pages,
     )
 
     url = get_db_url_for_repo(repo_path)
@@ -170,10 +180,32 @@ async def _query_pages(repo_path: Path) -> tuple[dict[str, int], int]:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 return counts, total_tokens
-            pages = await list_pages(session, repo.id, include_tombstones=False, limit=10000)
-            for p in pages:
-                counts[p.page_type] = counts.get(p.page_type, 0) + 1
-                total_tokens += (p.input_tokens or 0) + (p.output_tokens or 0)
+            # Aggregated in SQL rather than by counting a fetched list. This
+            # read `list_pages(..., limit=10000)`, and `list_pages` is the
+            # paginated listing helper whose limit defaults to 100 — so the
+            # per-type table stopped at exactly 10000 pages and the token total
+            # with it, while the header above printed the true count from a
+            # different query. A wiki over the cap disagreed with itself.
+            from sqlalchemy import func, select
+
+            from repowise.core.persistence.models import Page
+
+            rows = await session.execute(
+                select(
+                    Page.page_type,
+                    func.count(),
+                    func.sum(func.coalesce(Page.input_tokens, 0)),
+                    func.sum(func.coalesce(Page.output_tokens, 0)),
+                )
+                .where(
+                    Page.repository_id == repo.id,
+                    Page.freshness_status != "tombstone",
+                )
+                .group_by(Page.page_type)
+            )
+            for page_type, count, in_tokens, out_tokens in rows.all():
+                counts[page_type] = counts.get(page_type, 0) + count
+                total_tokens += int(in_tokens or 0) + int(out_tokens or 0)
     finally:
         await engine.dispose()
     return counts, total_tokens
@@ -219,7 +251,7 @@ def _query_health(repo_path: Path) -> dict | None:
                 # the worst-first sort twice with it).
                 metrics = await get_health_metrics(session, repo.id)
                 summary = await get_health_summary(session, repo.id, metrics=metrics)
-                if summary["file_count"] == 0:
+                if summary["file_count"] == 0 and not summary.get("unanalysed_file_count"):
                     return None
                 # Hotspot health from the one owner. This used to average the
                 # top 25% of files by NLOC, which ranks size rather than churn;
@@ -247,39 +279,156 @@ def _query_health_line(repo_path: Path) -> str | None:
     data = _query_health(repo_path)
     if not data:
         return None
+    if data["average_health"] is None:
+        # Every file is in a language health has no dialect for.
+        return (
+            f"[bold]Health:[/bold] not analysed · {data['unanalysed_file_count']} files in "
+            "languages health does not support yet"
+        )
     worst_path = data["worst_performer_path"] or "n/a"
     worst_score = data["worst_performer_score"]
-    worst_repr = f"{worst_score:.1f}" if worst_score is not None else "—"
-    from repowise.core.analysis.health.grading import BAND_LABEL, band_for
+    from repowise.core.analysis.health.grading import (
+        BAND_LABEL,
+        BAND_TERMINAL_COLOR,
+        analysed_note,
+        format_score,
+        headline_band,
+    )
 
-    band = band_for(float(data["average_health"]))
-    band_color = {"healthy": "green", "warning": "yellow", "alert": "red"}[band]
+    worst_repr = format_score(worst_score) if worst_score is not None else "—"
+
+    band = headline_band(data["average_health"], data.get("analysed_share"))
+    if band is not None:
+        band_color = BAND_TERMINAL_COLOR[band]
+        band_part = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
+    else:
+        band_part = ""
+    note = analysed_note(data["file_count"], data.get("unanalysed_file_count") or 0)
+    note_part = f" · {note}" if note else ""
     # Maintainability and performance are co-surfaced pillars; show each when the
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
-    maint_part = f" · {maint:.1f} (maintainability)" if maint is not None else ""
-    # Performance leads with the finding COUNT (the honest signal); the bounded
-    # /10 average trails in parens as a summary, never as a verification claim.
+    maint_part = f" · {format_score(maint)} (maintainability)" if maint is not None else ""
+    # Performance leads with the causes worth fixing now (the honest signal);
+    # the bounded /10 average trails in parens, never as a verification claim.
     perf = data.get("performance_average")
-    perf_findings = data.get("performance_findings", 0)
+    causes = data.get("performance_causes")
     perf_part = (
-        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({perf:.1f})"
-        if perf is not None
+        f" · {causes['now']} of {causes['production']} production perf causes "
+        f"worth fixing now ({format_score(perf)})"
+        if perf is not None and causes
         else ""
     )
     # ``None`` when the repo has no hotspot files, so the segment is dropped
     # rather than printing a 10.0 that would read as "your hotspots are
     # perfect" when there are none to score.
     hotspot = data.get("hotspot_health")
-    hotspot_part = f"{hotspot:.1f} (hotspots) · " if hotspot is not None else ""
+    hotspot_part = f"{format_score(hotspot)} (hotspots) · " if hotspot is not None else ""
     return (
-        f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) "
-        f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
+        f"[bold]Health:[/bold] {format_score(data['average_health'])} (avg)"
+        f"{band_part}{note_part} · "
         f"{hotspot_part}"
         f"{worst_repr} (worst: {worst_path})"
         f"{maint_part}"
         f"{perf_part}"
     )
+
+
+#: The resume command an interrupted ``init`` leaves for the user.
+_RESUME_COMMAND = "repowise init --resume"
+
+
+def _incomplete_index(repo_path: Path, state: dict) -> dict | None:
+    """Why the index is unfinished, or ``None``.
+
+    A live ``init`` holds its lock for the whole run. Without one, ``init``
+    writes state.json last, with ``index_scope`` (and ``last_sync_commit`` in a
+    git repo), so persisted graph rows without either are a run that stopped
+    before it finished.
+    """
+    from datetime import datetime
+
+    from repowise.core.update_lock import read_init_lock
+
+    lock = read_init_lock(repo_path)
+    if lock is not None:
+        started = datetime.fromtimestamp(lock["started_at"], UTC).isoformat()
+        return {"reason": "running", "started_at": started, "next_command": "repowise status"}
+    finished = state.get("last_sync_commit") or "index_scope" in state
+    if finished or not _query_repo_counts(repo_path)[0]:
+        return None
+    return {"reason": "interrupted", "next_command": _RESUME_COMMAND}
+
+
+def _incomplete_line(incomplete: dict) -> str:
+    """The "Next" line for an index that is still running or was interrupted."""
+    command = f"[bold]{incomplete['next_command']}[/bold]"
+    if incomplete["reason"] == "running":
+        started = _format_relative_time(incomplete["started_at"])
+        return (
+            f"[bold]Next:[/bold] Index in progress (started {started}). "
+            f"Wait for it to finish, then run {command}."
+        )
+    return f"[bold]Next:[/bold] Index incomplete (interrupted). Run {command}."
+
+
+def _shows_upgrade_row(scope: dict) -> bool:
+    """Whether the "Full upgrade" row says something the rest of status does not.
+
+    A finished index built from code stores ``pending`` for the optional model
+    run; the keyless note under the table already names that command, and a
+    bare "pending" reads as unfinished work.
+    """
+    status = scope["upgrade"]["status"]
+    if status in ("unknown", "not_applicable", "complete"):
+        return False
+    return not (status == "pending" and scope["content_provenance"] == "template")
+
+
+def _load_actions(repo_path: Path) -> dict | None:
+    """The stored next-actions view, or ``None``; never raises (see ``next_cmd``)."""
+    try:
+        from repowise.cli.commands.next_cmd import load_view
+
+        return load_view(repo_path)
+    except Exception:
+        return None
+
+
+def _next_actions_summary(view: dict | None) -> dict | None:
+    """Counts only, for the json mode; ``repowise next --format json`` has the rows."""
+    if view is None:
+        return None
+    return {
+        "anchor": view.get("anchor"),
+        **{
+            name: {"total": h.get("total", 0), "by_tier": h.get("by_tier", {})}
+            for name, h in view["horizons"].items()
+        },
+        "unavailable": sorted(view.get("unavailable") or {}),
+    }
+
+
+def _next_actions_lines(view: dict | None) -> list[str]:
+    """The "Next" block: where things stand and the first thing worth doing."""
+    if view is None:
+        return []
+    from rich.markup import escape
+
+    from repowise.cli.commands.next_cmd import default_horizon, render_title, sentence
+
+    # The week's sentence names both windows when the week is quiet; the row
+    # under it comes from whichever window ``repowise next`` would open on.
+    lines = [f"[bold]Next:[/bold] {escape(sentence(view, 'week'))}"]
+    horizon = default_horizon(view)
+    top = next(
+        (a for a in view["horizons"][horizon]["actions"] if a["tier"] in ("act_now", "plan")),
+        None,
+    )
+    if top is not None:
+        lines.append(f"  {render_title(top['title'])}")
+        lines.append("  [dim]Run [bold]repowise next[/bold] for the list.[/dim]")
+    return lines
 
 
 def _format_relative_time(iso_timestamp: str | None) -> str:
@@ -337,6 +486,7 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
             "symbols": None,
             "pages": None,
             "docs_mode": None,
+            "index_scope": None,
             "storage_bytes": None,
             "head": None,
             "stale": None,
@@ -351,11 +501,13 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
         is_stale, current_head, behind = check_repo_staleness(
             abs_path, entry.last_commit_at_index
         )
+        repo_state = load_state(abs_path)
         row.update(
             files=file_count,
             symbols=symbol_count,
             pages=page_count,
-            docs_mode=resolve_docs_mode(load_state(abs_path)),
+            docs_mode=resolve_docs_mode(repo_state),
+            index_scope=resolve_index_scope(repo_state, {}),
             storage_bytes=_index_storage_bytes(repowise_dir),
             head=current_head,
             stale=is_stale,
@@ -400,7 +552,7 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
     table.add_column("Repo", style="cyan", min_width=16)
     table.add_column("Files", justify="right")
     table.add_column("Symbols", justify="right")
-    table.add_column("Docs", justify="right")
+    table.add_column("Documentation", justify="right")
     table.add_column("Storage", justify="right")
     table.add_column("Indexed", style="dim")
     table.add_column("HEAD", style="dim")
@@ -421,16 +573,15 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
         page_count = row["pages"]
         docs_mode = row["docs_mode"]
 
-        # One axis in the Docs column: every wiki is complete, and the only
-        # question is whether the subsystem pages carry written prose or are
-        # still stubs. `repowise generate` writes the stubs.
+        # One axis: who wrote the subsystem pages. `repowise generate` has a
+        # model write the ones built from code.
         if page_count > 0:
-            if docs_mode == "deterministic":
-                docs_cell = f"[cyan]{page_count} · stubs[/cyan]"
-            else:
-                docs_cell = f"[green]{page_count} · prose[/green]"
+            colour = "cyan" if docs_mode == "deterministic" else "green"
+            docs_cell = (
+                f"[{colour}]{pages(page_count)} · {mode_label(row['index_scope'])}[/{colour}]"
+            )
         elif docs_mode == "none":
-            docs_cell = "[yellow]None[/yellow]"
+            docs_cell = f"[yellow]{INDEX_ONLY}[/yellow]"
             no_docs.append(row["alias"])
         else:
             docs_cell = "[yellow]0[/yellow]"
@@ -473,13 +624,13 @@ def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
     if no_docs:
         console.print()
         console.print(
-            f"[yellow]Note:[/yellow] {len(no_docs)} repo(s) have no generated docs: "
+            f"[yellow]Note:[/yellow] {len(no_docs)} repo(s) have no documentation: "
             f"[cyan]{', '.join(no_docs)}[/cyan]"
         )
         first = no_docs[0]
         console.print(
-            f"  Run [bold]repowise update --repo {first} --docs[/bold] "
-            "to generate them (requires an LLM provider)."
+            f"  Run [bold]{fast_to_full_command(first)}[/bold] "
+            "to build them (no key needed; a configured model writes them)."
         )
 
 
@@ -535,9 +686,12 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         return
 
     state = load_state(repo_path)
+    scope = resolve_index_scope(state, load_config(repo_path))
     storage_bytes = _index_storage_bytes(repowise_dir)
     db_path = repowise_dir / "wiki.db"
     has_db = db_path.exists() or db_configured()
+    incomplete = _incomplete_index(repo_path, state)
+    pending_lanes = pending_decision_lanes(state, repo_path)
 
     if fmt == "json":
         counts, total_db_tokens = (
@@ -547,12 +701,14 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
             {
                 "repo": str(repo_path),
                 "indexed": True,
+                "incomplete": incomplete,
                 "state": {
                     "last_sync_commit": state.get("last_sync_commit"),
                     "total_pages": state.get("total_pages", 0),
                     "provider": state.get("provider"),
                     "model": state.get("model"),
-                    "total_tokens": state.get("total_tokens", 0),
+                    # The live rows, as the table shows: only init stamps state's.
+                    "total_tokens": total_db_tokens if counts else state.get("total_tokens", 0),
                     "storage_bytes": storage_bytes,
                 },
                 "database_found": has_db,
@@ -560,30 +716,101 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "page_total": sum(counts.values()),
                 "page_tokens": total_db_tokens,
                 "health": _query_health(repo_path),
+                "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
+                "index_scope": scope,
+                "upgrade_command": upgrade_command(scope),
+                "decision_lanes_pending": list(pending_lanes),
             }
         )
         return
 
-    # State table. Printed before the page query runs, not after: the query is
-    # unguarded, and on a wiki.db whose schema predates the current models it
-    # raises. Ordering it first means a reader still gets the sync state that
-    # tells them the index is old.
+    # The page query runs first so the state table can show its totals, but
+    # its error is held until the state table is printed: on a wiki.db whose
+    # schema predates the current models it raises, and a reader should still
+    # get the sync state that tells them the index is old.
+    counts: dict[str, int] = {}
+    total_db_tokens = 0
+    page_query_error: Exception | None = None
+    if has_db:
+        try:
+            counts, total_db_tokens = run_async(_query_pages(repo_path))
+        except Exception as exc:
+            page_query_error = exc
+
+    # Totals from the live rows when the query worked. state.json counts
+    # tombstoned pages too, and its token total is stamped only by init, so
+    # beside the per-type table below it disagreed with it.
+    total_pages = sum(counts.values()) if counts else state.get("total_pages", 0)
+    total_tokens = total_db_tokens if counts else state.get("total_tokens", 0)
     state_table = Table(title="Sync State")
     state_table.add_column("Key", style="cyan")
     state_table.add_column("Value")
     state_table.add_row("Last sync commit", state.get("last_sync_commit", "—") or "—")
-    state_table.add_row("Total pages", str(state.get("total_pages", 0)))
+    state_table.add_row("Total pages", str(total_pages))
     state_table.add_row("Provider", state.get("provider", "—") or "—")
     state_table.add_row("Model", state.get("model", "—") or "—")
-    state_table.add_row("Total tokens", f"{state.get('total_tokens', 0):,}")
+    state_table.add_row("Total tokens", f"{total_tokens:,}")
     state_table.add_row("Index storage", format_bytes(storage_bytes))
+    state_table.add_row("Scope", scope_line(scope))
+    coverage = scope["git_history_coverage"]
+    if coverage:
+        measured = coverage.get(
+            "files_with_history", coverage.get("files_measured", coverage.get("files_indexed", "?"))
+        )
+        eligible = coverage.get("files_eligible", coverage.get("eligible_files", "?"))
+        cap = commit_cap_label(scope["git_commit_cap"])
+        state_table.add_row(
+            "Git coverage", f"{measured}/{eligible} files" + (f" ({cap})" if cap else "")
+        )
+    fp = scope["file_pages"]
+    if fp["eligible"] is not None:
+        configured = "unlimited" if fp["configured_cap"] == 0 else fp["configured_cap"]
+        if configured is None:
+            configured = "auto"
+        effective = "unlimited" if fp["effective_cap"] is None else fp["effective_cap"]
+        state_table.add_row(
+            "File pages",
+            f"{fp['generated']}/{fp['eligible']} generated · {fp['omitted']} omitted · "
+            f"cap {effective} (configured {configured})",
+        )
+    if scope["analysis"]["unavailable"]:
+        state_table.add_row(
+            "Unavailable analysis",
+            ", ".join(scope["analysis"]["unavailable"]),
+        )
+    if scope["analysis"]["skipped"]:
+        state_table.add_row("Intentionally skipped", ", ".join(scope["analysis"]["skipped"]))
+    if scope["test_run"]:
+        state_table.add_row("Test run", "documentation covers the top 10 files only")
+    if _shows_upgrade_row(scope):
+        state_table.add_row("Full upgrade", scope["upgrade"]["status"])
+    if pending_lanes:
+        state_table.add_row(
+            "Decisions",
+            f"{lanes_label(pending_lanes)} not read yet (needs a model): repowise generate",
+        )
     console.print(state_table)
+
+    # A template-only scope is a finished keyless index, not a broken one —
+    # name the upgrade commands here too, since "Full upgrade  pending" above
+    # names no command on its own (#3105). Mirrors the init closing note.
+    if scope["content_provenance"] == "template":
+        note = keyless_upgrade_note(
+            scope["search"]["semantic"] == "available", scope["search"]["next_command"]
+        )
+        console.print(f"[dim]{note}[/dim]")
+    elif upgrade_command(scope):
+        console.print(
+            f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "
+            "code and fills in the full git history (no key needed).[/dim]"
+        )
 
     if not has_db:
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")
         return
 
-    counts, total_db_tokens = run_async(_query_pages(repo_path))
+    if page_query_error is not None:
+        raise page_query_error
     if counts:
         pages_table = Table(title="Pages by Type")
         pages_table.add_column("Page Type", style="cyan")
@@ -599,3 +826,12 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     if health_line:
         console.print()
         console.print(health_line)
+
+    if incomplete is not None:
+        next_lines = [_incomplete_line(incomplete)]
+    else:
+        next_lines = _next_actions_lines(_load_actions(repo_path))
+    if next_lines:
+        console.print()
+        for line in next_lines:
+            console.print(line)

@@ -6,10 +6,12 @@ Java's write sites are: ``local_variable_declaration`` (each nested
 are an ``assignment_expression`` -- told apart by the operator token, ``=`` vs
 ``+=``, as in Go), update expressions (``x++`` / ``--x``, read-modify-write),
 the binder of an enhanced ``for`` (``for (T v : xs)``), the C-style ``for``
-initializer, and the resource clause of try-with-resources. Field targets
-(``obj.f = ...`` / ``this.f = ...``) and array targets (``arr[i] = ...``) bind
-no *local*, so their base identifiers are reads -- the precision-first choice
-that keeps reaching definitions sound for the locals they actually track.
+initializer, the resource clause of try-with-resources, and the exception
+variable of a ``catch`` clause (``catch (IOException | RuntimeException e)``,
+a def scoped to the handler block). Field targets (``obj.f = ...`` /
+``this.f = ...``) and array targets (``arr[i] = ...``) bind no *local*, so
+their base identifiers are reads -- the precision-first choice that keeps
+reaching definitions sound for the locals they actually track.
 
 A ``method_invocation``'s ``name`` is the called method, not a variable, so
 the walk processes only its ``object`` and ``arguments``; the same for a
@@ -24,7 +26,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BaseDefUseDialect, Occurrence, StatementDefUse
+from .base import (
+    NO_RECEIVER,
+    BaseDefUseDialect,
+    DeclaredTypes,
+    HandlerHead,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    node_text,
+)
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -38,6 +49,8 @@ _UPDATE_KINDS = frozenset({"update_expression"})  # ``x++`` / ``--x``
 _DECL_KINDS = frozenset({"local_variable_declaration"})
 _DECLARATOR = "variable_declarator"
 _RESOURCE = "resource"  # ``try (var res = open())``
+_CATCH = "catch_clause"
+_CATCH_PARAM = "catch_formal_parameter"  # ``catch (IOException e)``
 _ENHANCED_FOR = "enhanced_for_statement"
 _METHOD_INVOCATION = "method_invocation"
 _METHOD_REFERENCE = "method_reference"  # ``Integer::parseInt``
@@ -51,13 +64,67 @@ _CONDITIONAL_KINDS = frozenset({"switch_expression", "switch_statement"})
 _SCOPE_BOUNDARIES = frozenset({"lambda_expression", "class_body"})
 
 
+class JavaDeclaredTypes(DeclaredTypes):
+    """Java declarations, including explicit types implied by a ``var`` initializer."""
+
+    def of(self, name: Node) -> str | None:
+        declared = super().of(name)
+        if declared is not None:
+            return declared
+        holder = name.parent
+        while holder is not None and holder.type in self.wrapper_kinds:
+            holder = holder.parent
+        if holder is None or holder.type not in self.holder_kinds:
+            return None
+        typ = holder.child_by_field_name("type")
+        if typ is None or node_text(typ) != "var":
+            return None
+        declarator = name.parent
+        value = declarator.child_by_field_name("value") if declarator is not None else None
+        if value is None:
+            return None
+        if value.type in {"object_creation_expression", "cast_expression"}:
+            created = value.child_by_field_name("type")
+            text = node_text(created) if created is not None else ""
+            return text if text and "<>" not in text else None
+        return None
+
+
 class JavaDefUseDialect(BaseDefUseDialect):
     language = "java"
     member_access_kinds = frozenset({"field_access"})
+    receiver_write_kinds = _ASSIGN_KINDS | _UPDATE_KINDS
+    declared_types = JavaDeclaredTypes(
+        frozenset({"formal_parameter", "local_variable_declaration", "enhanced_for_statement", "resource"}),
+        frozenset({"variable_declarator"}),
+    )
     keyword_kinds = frozenset()  # Java has no keyword arguments.
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
+
+    def handler_head(self, handler: Node) -> HandlerHead:
+        """``catch (A | B e)`` names ``A`` and ``B`` and binds ``e``."""
+        kids = handler.named_children
+        param = next((c for c in kids if c.type == "catch_formal_parameter"), None)
+        if param is None:
+            return (), None
+        kinds = next((c for c in param.named_children if c.type == "catch_type"), None)
+        types = tuple(node_text(t) for t in kinds.named_children) if kinds else ()
+        name = param.child_by_field_name("name")
+        return types, node_text(name) if name is not None else None
+
+    def handler_def_use(self, handler: Node) -> StatementDefUse:
+        """``catch (IOException | RuntimeException e)`` binds ``e`` for the
+        handler block only. The exception types are ``type_identifier`` nodes,
+        never variable reads, so the head reads nothing."""
+        defs: list[Occurrence] = []
+        param = next((c for c in handler.named_children if c.type == _CATCH_PARAM), None)
+        name = param.child_by_field_name("name") if param is not None else None
+        if param is not None and name is not None:
+            defs.append(self._occ(name))
+            self._declare(defs, 0, param)
+        return StatementDefUse(defs=tuple(defs), uses=())
 
     def collect_reads(self, node: Node | None, out: list[Occurrence]) -> None:
         """Like the base collector, but a ``method_invocation`` / ``method_reference``
@@ -101,6 +168,17 @@ class JavaDefUseDialect(BaseDefUseDialect):
                 out.append(self._occ(name_node))
         return tuple(out)
 
+    def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
+        """``this`` for an instance method or constructor, where a bare name
+        can also be a field; a ``static`` method has none. A lambda has none
+        of its own: it reaches the enclosing method's (``receiver``)."""
+        if fn_node.type in lmap.lambda_kinds:
+            return NO_RECEIVER
+        modifiers = next((c for c in fn_node.named_children if c.type == "modifiers"), None)
+        if modifiers is not None and any(c.type == "static" for c in modifiers.children):
+            return NO_RECEIVER
+        return self._receiver(lmap.self_identifiers, implicit=True)
+
     def _binder_identifier(self, node: Node) -> Node | None:
         named = node.child_by_field_name("name")
         if named is not None and named.type in self.identifier_kinds:
@@ -118,7 +196,9 @@ class JavaDefUseDialect(BaseDefUseDialect):
     ) -> None:
         t = node.type
         if t == _ENHANCED_FOR:  # ``for (T v : xs)``
+            start = len(defs)
             self._targets(node.child_by_field_name("name"), defs, uses)
+            self._loop_scoped(defs, start)
             self._process(node.child_by_field_name("value"), defs, uses)
         elif t in lmap.loop_kinds:  # for: init/cond/update; while / do: cond
             self._process(node.child_by_field_name("init"), defs, uses)
@@ -142,6 +222,12 @@ class JavaDefUseDialect(BaseDefUseDialect):
         if node is None:
             return
         t = node.type
+        if t == _CATCH:  # a handler walked whole (inside a lambda or a ``switch`` arm)
+            sdu = self.handler_def_use(node)
+            defs.extend(sdu.defs)
+            uses.extend(sdu.uses)
+            self._process(node.child_by_field_name("body"), defs, uses)
+            return
         if t in _ASSIGN_KINDS:
             left = node.child_by_field_name("left")
             self._targets(left, defs, uses)
@@ -159,8 +245,12 @@ class JavaDefUseDialect(BaseDefUseDialect):
             for declarator in node.named_children:
                 if declarator.type != _DECLARATOR:
                     continue
+                start = len(defs)
                 self._targets(declarator.child_by_field_name("name"), defs, uses)
-                self._process(declarator.child_by_field_name("value"), defs, uses)
+                value = declarator.child_by_field_name("value")
+                # ``List<T> xs;``: a local must be assigned before it is read.
+                self._declare(defs, start, declarator, valueless=value is None)
+                self._process(value, defs, uses)
             return
         if t == _METHOD_INVOCATION:  # the ``name`` is a method, not a variable
             self._process(node.child_by_field_name("object"), defs, uses)
@@ -181,23 +271,10 @@ class JavaDefUseDialect(BaseDefUseDialect):
             uses.append(self._occ(node))
             return
         if self._is_scope_boundary(node):
+            self.boundary_def(node, defs)
             return
         for child in node.named_children:
             self._process(child, defs, uses)
-
-    def _process_may_def(self, node: Node, defs: list[Occurrence], uses: list[Occurrence]) -> None:
-        """Process *node* whose writes execute only on some path (a switch arm).
-
-        Each def found within is recorded as a def AND a use: the may-def keeps
-        the variable in every "written in this region" set while its paired use
-        stays upward-exposed, so a downstream must-def proof can only get more
-        conservative, never less.
-        """
-        inner_defs: list[Occurrence] = []
-        for child in node.named_children:  # not the node itself: no re-dispatch
-            self._process(child, inner_defs, uses)
-        defs.extend(inner_defs)
-        uses.extend(inner_defs)
 
     # -- write-target extraction ----------------------------------------------
 

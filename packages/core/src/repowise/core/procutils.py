@@ -228,6 +228,7 @@ def _ps_field(pid: int, field: str) -> str | None:
         out = subprocess.run(
             ["ps", "-p", str(pid), "-o", f"{field}="],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=5,
         )

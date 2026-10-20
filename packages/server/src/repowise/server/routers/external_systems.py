@@ -14,14 +14,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.external_systems import build_registry
 from repowise.core.persistence.models import ExternalSystem
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._local_git import local_repo_path
 from repowise.server.schemas.external_systems import (
-    ExternalSystemEntry,
     ExternalSystemImportingFilesResponse,
     ExternalSystemRelationshipGraphResponse,
     ExternalSystemsResponse,
     ExternalSystemsSummaryResponse,
+    PackageUsageResponse,
 )
 from repowise.server.services.external_system_relationships import (
     DEFAULT_FILE_LIMIT,
@@ -60,6 +62,26 @@ async def summarize_external_systems(
     return await build_external_systems_summary(
         session, repo_id, scope=scope, limit=limit, offset=offset
     )
+
+
+@router.get(
+    "/{repo_id}/external-systems/{package_key:path}/usage",
+    response_model=PackageUsageResponse,
+)
+async def external_system_usage(
+    repo_id: str,
+    package_key: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> PackageUsageResponse:
+    """Where a package is imported; *package_key* is ``ecosystem:name`` or a bare name.
+
+    Reads the importing files from the local checkout for line numbers, so it
+    needs one (a 404 says when there is none)."""
+    from repowise.core.inventory.usage import package_usage
+
+    repo_root = await local_repo_path(session, repo_id)
+    doc = await package_usage(session, repo_id, repo_root, package_key)
+    return PackageUsageResponse.model_validate(doc)
 
 
 @router.get(
@@ -146,30 +168,4 @@ async def list_external_systems(
         .scalars()
         .all()
     )
-    category_order = {"framework": 0, "service": 1, "tool": 2, "library": 3}
-    items = sorted(
-        (
-            ExternalSystemEntry(
-                name=r.name,
-                display_name=r.display_name or r.name,
-                ecosystem=r.ecosystem,
-                category=r.category,
-                io_kind=r.io_kind,
-                version=r.version,
-                declared_in=r.declared_in,
-                is_dev_dep=bool(r.is_dev_dep),
-            )
-            for r in rows
-        ),
-        key=lambda e: (category_order.get(e.category, 9), e.name.lower(), e.declared_in),
-    )
-    ecosystems = sorted({e.ecosystem for e in items})
-    manifests = sorted({e.declared_in for e in items})
-    return ExternalSystemsResponse(
-        items=items,
-        total=len(items),
-        prod_count=sum(1 for e in items if not e.is_dev_dep),
-        dev_count=sum(1 for e in items if e.is_dev_dep),
-        ecosystems=ecosystems,
-        manifests=manifests,
-    )
+    return ExternalSystemsResponse.model_validate(build_registry(rows).as_dict())

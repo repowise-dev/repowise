@@ -40,7 +40,7 @@ def _token_hash(tok_kind: str) -> int:
     return h
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WindowHash:
     """One rolling-hash window with origin file + line span."""
 
@@ -49,6 +49,46 @@ class WindowHash:
     start_index: int  # token index of the window's first token
     start_line: int
     end_line: int
+
+
+# One window as a plain tuple: (hash_value, start_index, start_line, end_line).
+WindowRow = tuple[int, int, int, int]
+
+
+def window_rows(
+    kinds: list[str],
+    start_lines: list[int],
+    end_lines: list[int],
+    window: int,
+) -> list[WindowRow]:
+    """Rolling hashes for every window of length *window*, as plain tuples.
+
+    The parallel lists describe one token stream. Returns an empty list when
+    the stream is shorter than one window. A repository scan rolls millions
+    of windows, so the per-kind hash is computed once per distinct spelling
+    and no object is built per window.
+    """
+    n = len(kinds)
+    if n < window or window <= 0:
+        return []
+
+    base, modulus = _BASE, _MODULUS
+    base_pow = pow(base, window - 1, modulus)
+    per_kind = {kind: _token_hash(kind) for kind in set(kinds)}
+    kind_hashes = [per_kind[kind] for kind in kinds]
+
+    h = 0
+    for i in range(window):
+        h = (h * base + kind_hashes[i]) % modulus
+
+    out: list[WindowRow] = [(h, 0, start_lines[0], end_lines[window - 1])]
+    append = out.append
+    # Python's % yields a non-negative result for a positive modulus.
+    for i in range(1, n - window + 1):
+        last = i + window - 1
+        h = ((h - kind_hashes[i - 1] * base_pow) * base + kind_hashes[last]) % modulus
+        append((h, i, start_lines[i], end_lines[last]))
+    return out
 
 
 def rolling_hashes(
@@ -62,43 +102,16 @@ def rolling_hashes(
     window size — callers filter clone candidates by minimum size
     upstream so the empty-result case is well-defined.
     """
-    n = len(tokens)
-    if n < window or window <= 0:
-        return []
-
-    base_pow = pow(_BASE, window - 1, _MODULUS)
-    kind_hashes = [_token_hash(t.kind) for t in tokens]
-
-    h = 0
-    for i in range(window):
-        h = (h * _BASE + kind_hashes[i]) % _MODULUS
-
-    out: list[WindowHash] = []
-    out.append(
-        WindowHash(
-            file_path=file_path,
-            hash_value=h,
-            start_index=0,
-            start_line=tokens[0].start_line,
-            end_line=tokens[window - 1].end_line,
-        )
+    rows = window_rows(
+        [t.kind for t in tokens],
+        [t.start_line for t in tokens],
+        [t.end_line for t in tokens],
+        window,
     )
-    for i in range(1, n - window + 1):
-        h = ((h - kind_hashes[i - 1] * base_pow) * _BASE + kind_hashes[i + window - 1]) % _MODULUS
-        # Python's % already yields a non-negative result for a positive
-        # modulus, but we keep the guard for clarity.
-        if h < 0:
-            h += _MODULUS
-        out.append(
-            WindowHash(
-                file_path=file_path,
-                hash_value=h,
-                start_index=i,
-                start_line=tokens[i].start_line,
-                end_line=tokens[i + window - 1].end_line,
-            )
-        )
-    return out
+    return [
+        WindowHash(file_path=file_path, hash_value=h, start_index=si, start_line=sl, end_line=el)
+        for h, si, sl, el in rows
+    ]
 
 
 def index_by_hash(hashes: Iterable[WindowHash]) -> dict[int, list[WindowHash]]:

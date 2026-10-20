@@ -15,6 +15,7 @@ import type {
   HotFilesGraphResponse,
   ModuleGraphResponse,
   NodeSearchResult,
+  PopulationParams,
 } from "./types";
 
 export async function getGraph(
@@ -68,9 +69,11 @@ export async function getArchitectureGraph(repoId: string): Promise<GraphExportR
 export async function getArchitectureCommunityGraph(
   repoId: string,
   minMembers = 2,
+  population?: PopulationParams,
 ): Promise<ArchitectureGraphResponse> {
   return apiGet<ArchitectureGraphResponse>(`/api/graph/${repoId}/architecture`, {
     min_members: minMembers,
+    ...population,
   });
 }
 
@@ -82,8 +85,9 @@ export async function getArchitectureCommunityGraph(
 export async function getArchitecture(
   repoId: string,
   minMembers = 2,
+  population?: PopulationParams,
 ): Promise<ArchitectureGraphResponse> {
-  return getArchitectureCommunityGraph(repoId, minMembers);
+  return getArchitectureCommunityGraph(repoId, minMembers, population);
 }
 
 export async function getDeadCodeGraph(repoId: string): Promise<DeadCodeGraphResponse> {
@@ -102,14 +106,17 @@ export async function getHotFilesGraph(
 // Graph Intelligence
 // ---------------------------------------------------------------------------
 
-export async function getCommunities(repoId: string): Promise<CommunitySummaryItem[]> {
-  return apiGet<CommunitySummaryItem[]>(`/api/graph/${repoId}/communities`);
+export async function getCommunities(
+  repoId: string,
+  population?: PopulationParams,
+): Promise<CommunitySummaryItem[]> {
+  return apiGet<CommunitySummaryItem[]>(`/api/graph/${repoId}/communities`, population);
 }
 
 export async function getCommunityDetail(
   repoId: string,
   communityId: number,
-  params?: { include_members?: boolean; member_limit?: number },
+  params?: { include_members?: boolean; member_limit?: number } & PopulationParams,
 ): Promise<CommunityDetailResponse> {
   return apiGet<CommunityDetailResponse>(
     `/api/graph/${repoId}/communities/${communityId}`,
@@ -125,9 +132,11 @@ export async function getCommunityDetail(
 export async function getCommunitySlice(
   repoId: string,
   communityId: number,
+  population?: PopulationParams,
 ): Promise<CommunitySliceResponse> {
   return apiGet<CommunitySliceResponse>(
     `/api/graph/${repoId}/communities/${communityId}/slice`,
+    population,
   );
 }
 

@@ -7,6 +7,9 @@ the façade must still expose every public name, and the decomposed
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 import repowise.cli.ui as ui
@@ -25,27 +28,21 @@ def test_facade_reexports_public_surface() -> None:
         "load_dotenv",
         "interactive_provider_select",
         "interactive_advanced_config",
-        "interactive_mode_select",
-        "interactive_fast_mode_offer",
         "interactive_repo_select",
         "interactive_primary_select",
         "should_offer_fast_mode",
         "print_banner",
         "print_phase_header",
-        "print_scan_summary",
-        "print_index_only_intro",
         "quick_repo_scan",
-        "print_analysis_summary",
         "build_completion_panel",
         "build_contextual_next_steps",
-        "build_status_notes",
         "format_bytes",
         "format_elapsed",
         "LARGE_REPO_FILE_THRESHOLD",
         # owl mascot additions (additive — everything above is the original surface)
         "banner_text",
         "mini",
-        "OWL_SPINNER",
+        "owl_status",
         "THINKING_FRAMES",
     }
     missing = {name for name in expected if not hasattr(ui, name)}
@@ -109,7 +106,7 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "include_submodules": False,
         "run_mode": "standard",
         "exclude": (),
-        "commit_limit": 500,
+        "commit_limit": 5000,
         "follow_renames": False,
         # No scan, so the repo cannot be shown to be large: no cap, no question.
         "max_file_pages": None,
@@ -140,7 +137,7 @@ def test_advanced_config_index_only_omits_generation_keys(
         "include_submodules": False,
         "run_mode": "standard",
         "exclude": (),
-        "commit_limit": 500,
+        "commit_limit": 5000,
         "follow_renames": False,
         # Asked in this branch too: an index-only run renders file pages as well.
         "max_file_pages": None,
@@ -156,5 +153,32 @@ def test_advanced_config_allow_fast_small_repo(monkeypatch: pytest.MonkeyPatch) 
     result = _drive_advanced_config(monkeypatch, scan=scan, allow_fast=True)
     # Small repo: run mode defaults to standard.
     assert result["run_mode"] == "standard"
-    assert result["commit_limit"] == 1000  # <500 files -> deeper history default
+    assert result["commit_limit"] == 5000  # the default window, whatever the repo size
     assert result["concurrency"] == 12  # <200 files -> higher concurrency default
+
+
+def test_lazy_facade_imports_no_heavy_modules() -> None:
+    """Importing the façade (or a cheap submodule) must not pull core.ingestion.
+
+    Importing ``ui.brand`` used to run the package ``__init__``, which eagerly
+    imported every interactive submodule -> ``core.ingestion`` -> networkx +
+    tree-sitter (~1.1s on a cold process), the dominant startup floor for cheap
+    commands like ``status``/``coverage`` (issue #1712). The façade is now lazy,
+    so a fresh interpreter that touches the cheap surface must not load those.
+    """
+    probe = (
+        "import sys; "
+        "from repowise.cli.ui.brand import format_bytes; "
+        "print(format_bytes(1536)); "
+        "heavy = sorted(m for m in sys.modules "
+        "if m.startswith(('repowise.core.ingestion', 'networkx', 'tree_sitter', "
+        "'lancedb', 'scipy'))); "
+        "print(heavy)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    lines = out.stdout.strip().splitlines()
+    assert lines[-2] == "1.5 KB"
+    assert lines[-1] == "[]", f"facade import pulled heavy modules: {lines[-1]}"
+

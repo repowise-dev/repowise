@@ -36,7 +36,8 @@ class RepoContext:
     fts: Any  # FullTextSearch
     vector_store: Any  # LanceDB or InMemoryVectorStore
     decision_store: Any  # LanceDB or InMemoryVectorStore
-    vector_store_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # None: readiness is not tracked, so searches do not wait for it.
+    vector_store_ready: asyncio.Event | None = field(default_factory=asyncio.Event)
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
 
 
@@ -80,13 +81,19 @@ class RepoRegistry:
         workspace_root: Path,
         ws_config: Any,  # WorkspaceConfig
         embedder_factory: Callable[[], Any] | None = None,
+        on_vector_store_error: Callable[[str, BaseException], None] | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._ws_config = ws_config
         self._embedder_factory = embedder_factory
+        # Told when a repo's semantic index exists but cannot be opened, so
+        # the server can stop calling semantic search healthy.
+        self._on_vector_store_error = on_vector_store_error
         self._contexts: dict[str, RepoContext] = {}
         self._access_order: dict[str, float] = {}
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
+        # Serialises loads so concurrent callers can't overshoot the cap.
+        self._load_lock = asyncio.Lock()
         self._validate_public_identities()
 
     def _identity_key(self, value: str | Path) -> str:
@@ -190,18 +197,22 @@ class RepoRegistry:
             self._access_order[alias] = time.monotonic()
             return self._contexts[alias]
 
-        # Evict if at capacity.  The default repo is protected from eviction, so
-        # only count non-default contexts against the cap — this prevents the
-        # cap from being silently bypassed when the default is always loaded.
-        default_alias = self.get_default_alias()
-        evictable = [a for a in self._contexts if a != default_alias]
-        if len(evictable) >= self.MAX_LOADED:
-            await self._evict_lru()
+        async with self._load_lock:
+            if alias in self._contexts:
+                self._access_order[alias] = time.monotonic()
+                return self._contexts[alias]
+            # Evict if at capacity.  The default repo is protected from eviction, so
+            # only count non-default contexts against the cap — this prevents the
+            # cap from being silently bypassed when the default is always loaded.
+            default_alias = self.get_default_alias()
+            evictable = [a for a in self._contexts if a != default_alias]
+            if len(evictable) >= self.MAX_LOADED:
+                await self._evict_lru()
 
-        ctx = await self._load_context(alias)
-        self._contexts[alias] = ctx
-        self._access_order[alias] = time.monotonic()
-        return ctx
+            ctx = await self._load_context(alias)
+            self._contexts[alias] = ctx
+            self._access_order[alias] = time.monotonic()
+            return ctx
 
     async def get_default(self) -> RepoContext:
         """Shortcut for ``get(default_alias)``."""
@@ -234,7 +245,12 @@ class RepoRegistry:
         engine, session_factory = await open_repo_db(repo_path)
 
         fts = FullTextSearch(engine)
-        await fts.ensure_index()
+        try:
+            await fts.ensure_index()
+        except BaseException:
+            # A timeout cancels here; don't leak the engine.
+            await engine.dispose()
+            raise
 
         # Seed placeholder vector stores.
         # decision_store is repointed to the shared page store — decisions are
@@ -271,12 +287,18 @@ class RepoRegistry:
         embedder: Any,
     ) -> None:
         """Background task: load LanceDB vector stores for a repo."""
+        lance_dir = repo_path / ".repowise" / "lancedb"
+
+        def _report(exc: BaseException) -> None:
+            # No index on disk is a keyless repo, not a failure.
+            if lance_dir.exists() and self._on_vector_store_error is not None:
+                self._on_vector_store_error(ctx.alias, exc)
+
         try:
             try:
                 await asyncio.to_thread(__import__, "lancedb")
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                lance_dir = repo_path / ".repowise" / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()
@@ -284,13 +306,14 @@ class RepoRegistry:
                     # Decisions live under the "decision:" page-id namespace.
                     ctx.vector_store = vs
                     ctx.decision_store = vs
-            except ImportError:
-                pass
-            except Exception:
+            except ImportError as exc:
+                _report(exc)
+            except Exception as exc:
                 _log.warning(
                     "LanceDB load failed for '%s' — using InMemory fallback",
                     ctx.alias,
                 )
+                _report(exc)
         finally:
             # Only signal ready if this context is still the active one.
             # If it was evicted before we finished loading, a fresh context

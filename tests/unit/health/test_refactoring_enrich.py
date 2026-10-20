@@ -7,6 +7,7 @@ Class LCOM4 self-check, and the config gate.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 from repowise.core.analysis.health.refactoring.llm import (
@@ -21,7 +22,6 @@ from repowise.core.analysis.health.refactoring.llm.enrich import (
     _extract_diff,
     _gather_spans,
     _validate_extract_method,
-    build_enrichment_provider,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.providers.llm.base import GeneratedResponse
@@ -151,7 +151,7 @@ def test_user_prompt_split_file_carries_instruction_and_groups(tmp_path: Path) -
     _write_source(tmp_path, "pkg/big.py", "def parse_a():\n    return 1\n")
     spans = _gather_spans(_split_file_suggestion(), tmp_path)
     prompt = _build_user_prompt(_split_file_suggestion(), spans)
-    assert "SPLIT FILE" in prompt
+    assert prompt.startswith("## Split File")
     assert "parsing" in prompt and "pkg/parsing.py" in prompt
 
 
@@ -167,10 +167,47 @@ def test_user_prompt_carries_plan_and_source(tmp_path: Path) -> None:
     sug.line_end = 2
     spans = _gather_spans(sug, tmp_path)
     prompt = _build_user_prompt(sug, spans)
-    assert "EXTRACT CLASS" in prompt
-    assert "GodClass" in prompt
-    assert "Structured plan" in prompt
+    # The plan's recipe text, the one the copy-prompt and plan detail read.
+    assert prompt.startswith("## Extract Class")
+    assert "Move methods `get` and fields `x` out of `GodClass`" in prompt
+    assert "## Hard constraints" in prompt
     assert "class GodClass" in prompt
+    # The reach a class split must keep working, and no instruction to run tests.
+    assert "## Blast radius" in prompt and "dependents count: 0" in prompt
+    assert "Run these" not in prompt
+
+
+def test_user_prompt_reads_the_stored_detail_when_given(tmp_path: Path) -> None:
+    sug = _extract_class_suggestion()
+    detail = {
+        **asdict(sug),
+        "id": "refac4_x",
+        "governed_by": [],
+        "risks": [{"kind": "public_api", "text": "2 files depend on this file.", "ref": None}],
+    }
+    prompt = _build_user_prompt(sug, [], detail)
+    assert "2 files depend on this file." in prompt
+    assert "were not checked" not in prompt
+    assert "were not checked" in _build_user_prompt(sug, [])
+
+
+def test_the_cache_key_carries_the_prompt_version(monkeypatch) -> None:
+    from repowise.core.analysis.health.refactoring.llm import enrich
+
+    sug = _extract_class_suggestion()
+    before = enrich._cache_key(sug, [], "m", "p")
+    monkeypatch.setattr(enrich, "_PROMPT_VERSION", enrich._PROMPT_VERSION + 1)
+    assert enrich._cache_key(sug, [], "m", "p") != before
+
+
+def test_a_draft_cached_without_the_stored_detail_is_not_reused_with_it() -> None:
+    from repowise.core.analysis.health.refactoring.llm import enrich
+
+    sug = _extract_class_suggestion()
+    detail = {**asdict(sug), "id": "refac4_x", "governed_by": [], "risks": []}
+    bare = enrich._cache_key(sug, [], "m", _build_user_prompt(sug, []))
+    with_detail = enrich._cache_key(sug, [], "m", _build_user_prompt(sug, [], detail))
+    assert bare != with_detail
 
 
 # ---------------------------------------------------------------------------
@@ -387,41 +424,11 @@ async def test_self_check_skipped_for_non_extract_class(tmp_path: Path) -> None:
 
 def test_llm_enrichment_enabled_gate() -> None:
     assert llm_enrichment_enabled({"refactoring": {"llm": {"enabled": True}}}) is True
-    # Only an explicit false disables it; an unset key defaults on (the local
-    # serve experience works without a config trip).
+    # Off unless the repo turns it on: generation sends source to a model.
     assert llm_enrichment_enabled({"refactoring": {"llm": {"enabled": False}}}) is False
-    assert llm_enrichment_enabled({"refactoring": {}}) is True
-    assert llm_enrichment_enabled({}) is True
-
-
-def test_build_enrichment_provider_auto_detects_kimi(tmp_path, monkeypatch) -> None:
-    for key in (
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "GEMINI_API_KEY",
-        "LITELLM_API_KEY",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
-
-    captured = {}
-
-    def fake_get_provider(name, **kwargs):
-        captured["name"] = name
-        captured["kwargs"] = kwargs
-        return object()
-
-    monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
-
-    provider = build_enrichment_provider(tmp_path)
-
-    assert provider is not None
-    assert captured == {
-        "name": "kimi",
-        "kwargs": {"api_key": "sk-kimi-test"},
-    }
+    assert llm_enrichment_enabled({"refactoring": {"llm": {}}}) is False
+    assert llm_enrichment_enabled({"refactoring": {}}) is False
+    assert llm_enrichment_enabled({}) is False
 
 
 def test_validate_extract_method_detects_ccn_drop():

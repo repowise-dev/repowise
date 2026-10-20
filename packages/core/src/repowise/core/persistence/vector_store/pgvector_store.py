@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import SearchResult
-from ._base import VectorStore, iter_embed_chunks
+from ._base import VectorStore, cap_embed_text, iter_embed_chunks
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -60,7 +60,7 @@ class PgVectorStore(VectorStore):
         self._embedder = embedder
 
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
-        vectors = await self._embedder.embed([text])
+        vectors = await self._embedder.embed([cap_embed_text(page_id, text)])
         vec_str = _encode(vectors[0])
 
         from sqlalchemy.sql import text as sa_text

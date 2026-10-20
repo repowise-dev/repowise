@@ -10,6 +10,7 @@ import {
 } from "../lib/confidence";
 import { formatConfidence, formatDate } from "../lib/format";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+import { ActivityDot } from "../ui/activity-dot";
 
 interface ConfidenceBadgeProps {
   score: number;
@@ -50,14 +51,17 @@ export function ConfidenceBadge({
         className,
       )}
     >
-      <span
-        className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          status === "fresh" && "bg-[var(--color-success)]",
-          status === "stale" && "animate-pulse bg-[var(--color-warning)]",
-          status === "outdated" && "bg-[var(--color-error)]",
-        )}
-      />
+      {status === "stale" ? (
+        <ActivityDot className="h-1.5 w-1.5 bg-[var(--color-warning)]" />
+      ) : (
+        <span
+          className={cn(
+            "h-1.5 w-1.5 shrink-0 rounded-full",
+            status === "fresh" && "bg-[var(--color-success)]",
+            status === "outdated" && "bg-[var(--color-error)]",
+          )}
+        />
+      )}
       {/* Hidden visually, never from a screen reader: the colour is the signal
           on a phone, but "Fresh" is still the name of the state. */}
       <span className={cn(compact && "sr-only sm:not-sr-only")}>{label}</span>

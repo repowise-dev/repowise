@@ -1,6 +1,6 @@
 ---
 description: Scan for security signals — working-tree scanning already runs during init/update; use --history to walk full git history for leaked secrets.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise security scan:*), Read
 ---
 
 # Repowise Security
@@ -32,7 +32,7 @@ working-tree scan.)
 
 Handle `$ARGUMENTS`:
 - "history" / "full" / "scan history" → `repowise security scan --history`
-- "json" with history → `repowise security scan --history --output json`
+- "json" with history → `repowise security scan --history --format json`
 - "all" / "all-patterns" with history → `repowise security scan --history --all-patterns`
 - A path → `repowise security scan --history --path <dir>`
 - "since <rev>" / "to <rev>" → pass `--since` / `--to` accordingly
@@ -40,7 +40,7 @@ Handle `$ARGUMENTS`:
 ```
 repowise security scan --history
 repowise security scan --history --since v1.0.0 --to HEAD
-repowise security scan --history --all-patterns --output json
+repowise security scan --history --all-patterns --format json
 ```
 
 ## Notes

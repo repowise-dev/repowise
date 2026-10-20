@@ -25,7 +25,7 @@ For Extract Helper:
   "line_end": int}, ...], "suggested_site": {"directory": str | None},
   "duplicated_lines": int, "snippet": str | None,
   "snippet_start_line": int | None, "snippet_truncated": bool,
-  "suggested_name": str}`` lists every site of the duplicated block,
+  "suggested_name": None}`` lists every site of the duplicated block,
   where the shared helper should live, and the block itself: the anchor site's
   source
   text (identical across sites by definition, so stored once and capped at
@@ -36,7 +36,10 @@ For Extract Helper:
   carry a graph community label under ``module``, which named a directory the
   occurrences did not live in on every measured row. Plans stored before that
   removal still carry the key; read ``directory``, which was correct on those
-  rows too.
+  rows too. When one site already is a function the others can call, the plan
+  adds ``"reuse": {"existing_symbol", "file", "span", "reason", "sites": [{"file",
+  "span", "action": "replace_with_call" | "delete", "new_text", "replaces"}]}``
+  (``reuse.py``); plan detail serves it, list rows drop it.
 - ``evidence`` = ``{"occurrence_count": int, "duplicated_lines": int,
   "token_count": int, "co_change_count": int, "is_intra_file": bool}`` — the
   size + activity signals that justify extracting a helper.
@@ -46,12 +49,16 @@ For Extract Helper:
 For Extract Method:
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str}`` — the lines to lift, the
-  inferred signature, and a deterministic starting name (from the slice's single
-  OUT value, else the enclosing function). Always a string; it is an editable
-  starting point and is not unique within a file.
+  "returns": [str, ...], "suggested_name": str | None, "needs_async": bool}``
+  — the lines to lift, the inferred signature, a placeholder name the agent
+  applying the plan renames (``extracted_helper``, numbered when taken in the
+  helper's scope), and whether the span awaits, so the helper is async and its
+  call awaited. An
+  awaiting plan adds ``"async_host": bool``, False when the enclosing function
+  is not async. ``new_symbol`` and ``call_site`` carry the helper's typed
+  parameters, its header and its call, written out (``extract_method``).
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
-  complexity the residual method sheds.
+  complexity (code lines, decision points) the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is
   categorical rather than counted: extraction adds a private helper and changes
   no signature, so nothing outside the file moves. It replaced a hardcoded
@@ -81,7 +88,7 @@ For Break Cycle:
 For Split File:
 
 - ``plan`` = ``{"groups": [{"name": str | None, "symbols": [str, ...],
-  "suggested_file": str}], "residual": {"symbols": [...]} | None,
+  "suggested_file": str | None}], "residual": {"symbols": [...]} | None,
   "shim_required": bool}`` — the cohesive groups the file should split into
   (each with a suggested filename), the shared-utility ``core`` left behind,
   and whether a back-compat re-export shim is needed (false for same-package
@@ -99,11 +106,22 @@ For Split File:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-# Confidence buckets a detector may assign. Ordered low -> high; the surface
-# layers may filter on a ``min_confidence`` config (default: medium).
+# Confidence buckets, ordered low -> high; the surface layers filter on a
+# ``min_confidence`` config (default: medium).
+#
+# ``low`` is a floor value, not an emitted label. Censused over this repo's own
+# plan set: 835 high, 1,175 medium, **0 low** - no detector has ever produced
+# one, because a detector that cannot justify ``medium`` suppresses the plan
+# instead ("no suggestion, never a wrong one"). Both obvious fixes were
+# rejected on that evidence: emitting a real ``low`` tier would resurrect
+# exactly the spans the R1 gates suppress, and deleting the level would break
+# ``min_confidence: low``, which is the documented way to ask for no filtering
+# at all. So the level stays, and it means "no floor" rather than "a weak
+# plan". Read a detector's confidence as medium-or-high.
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
 
@@ -146,7 +164,7 @@ class RefactoringContext:
     # Populated only by the full-index path; the incremental, re-score and
     # ``repowise health`` paths leave it empty. Split File degrades to the
     # callee's file path, so the signal weakens rather than changing namespace.
-    module_map: dict[str, str] = field(default_factory=dict)
+    community_label_map: dict[str, str] = field(default_factory=dict)
     # The repo's symbol/file graph (a ``networkx.DiGraph``, typed ``Any`` to
     # avoid importing networkx into the model layer). A shared read-only
     # reference — the graph-native detectors (Move Method, Break Cycle) read
@@ -172,14 +190,13 @@ class RefactoringContext:
     # a re-parse of its own. Empty for files with no such finding -- the
     # detector then yields nothing.
     function_analyses: list[Any] = field(default_factory=list)
-    # This file's per-line blame index (``git_indexer.function_blame.BlameIndex``,
-    # typed ``Any`` to avoid importing the ingestion layer into the model). A
-    # shared read-only reference the engine already materialised for the
-    # function-level biomarkers; Split File projects each top-level symbol's line
-    # range through it for a co-change "keep-together" edge. ``None`` (or an empty
-    # index) is the documented "no signal" outcome — the detector degrades to its
+    # Each modified function's ``(start_line, end_line, commit shas)``, from the
+    # live blame index on a full index and from ``git_function_blame`` on a
+    # re-score, through the same projection so both see the same sets. Split
+    # File unions the spans inside each top-level symbol for its co-change
+    # edge. Empty is the "no signal" outcome: the detector falls back to its
     # call/import signals only.
-    blame_index: Any = None
+    commit_spans: list[tuple[int, int, frozenset[str]]] = field(default_factory=list)
     # This file's source as 1-indexed lines (``source_lines[0]`` is line 1). The
     # engine reads it only for files that carry clone pairs, so the cost stays
     # proportional to clone-bearing files rather than the whole repo. The Extract
@@ -187,6 +204,9 @@ class RefactoringContext:
     # every other detector ignores it. ``None`` when the file was not read (no
     # clones) or the read failed; the detector then omits the snippet.
     source_lines: list[str] | None = None
+    # A clone partner's lines by repo path (None: unreadable), for Extract
+    # Helper's reuse check. ``None``: not provided, no plan reuses a function.
+    read_lines: Callable[[str], list[str] | None] | None = None
 
 
 @dataclass
@@ -205,8 +225,9 @@ class RefactoringSuggestion:
     plan: dict[str, Any]
     # The signals that justify the suggestion (LCOM4, WMC, clone ranges, ...).
     evidence: dict[str, Any]
-    # Health score the refactoring would recover if applied (the deduction of
-    # the source biomarker finding). >= 0.
+    # Health score the refactoring would recover if applied: the part of the
+    # source finding's deduction that applying it removes, plus any history
+    # deduction that releases. >= 0.
     impact_delta: float
     # Effort estimate — "S" | "M" | "L" | "XL" (from the target's size).
     effort_bucket: str

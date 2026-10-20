@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  disambiguateBasenames,
   formatAgeDays,
   formatBytes,
   formatCompact,
@@ -7,7 +8,69 @@ import {
   formatDateTime,
   formatPercent,
   parseDate,
+  truncatePath,
 } from "../../src/lib/format";
+
+describe("disambiguateBasenames", () => {
+  it("keeps the bare basename when nothing collides", () => {
+    const labels = disambiguateBasenames(["src/parser.rs", "src/lexer.rs"]);
+    expect(labels.get("src/parser.rs")).toBe("parser.rs");
+    expect(labels.get("src/lexer.rs")).toBe("lexer.rs");
+  });
+
+  it("adds the parent directory to separate a collision", () => {
+    const labels = disambiguateBasenames(["src/css/mod.rs", "src/text/mod.rs"]);
+    expect(labels.get("src/css/mod.rs")).toBe("css/mod.rs");
+    expect(labels.get("src/text/mod.rs")).toBe("text/mod.rs");
+  });
+
+  it("walks past one parent when the parent collides too", () => {
+    // The case the previous single-level logic got wrong: both are `a/mod.rs`.
+    const labels = disambiguateBasenames(["x/a/mod.rs", "y/a/mod.rs"]);
+    expect(labels.get("x/a/mod.rs")).toBe("x/a/mod.rs");
+    expect(labels.get("y/a/mod.rs")).toBe("y/a/mod.rs");
+  });
+
+  it("lengthens only the paths still tied, not the whole set", () => {
+    const labels = disambiguateBasenames(["x/a/mod.rs", "y/a/mod.rs", "src/lexer.rs"]);
+    expect(labels.get("src/lexer.rs")).toBe("lexer.rs");
+    expect(labels.get("x/a/mod.rs")).toBe("x/a/mod.rs");
+  });
+
+  it("handles a bare filename with no directory", () => {
+    const labels = disambiguateBasenames(["README.md", "docs/README.md"]);
+    expect(labels.get("README.md")).toBe("README.md");
+    expect(labels.get("docs/README.md")).toBe("docs/README.md");
+  });
+
+  it("deduplicates repeated paths and tolerates an empty set", () => {
+    expect(disambiguateBasenames([]).size).toBe(0);
+    const labels = disambiguateBasenames(["src/mod.rs", "src/mod.rs"]);
+    expect(labels.size).toBe(1);
+    expect(labels.get("src/mod.rs")).toBe("mod.rs");
+  });
+});
+
+describe("truncatePath", () => {
+  it("leaves a path that fits unchanged", () => {
+    expect(truncatePath("src/lib/format.ts", 60)).toBe("src/lib/format.ts");
+  });
+
+  // Note: this returns the FEWEST trailing segments that fit, not the most, so
+  // it does not match its own docstring example. Pinning actual behaviour here;
+  // changing it would move 26 call sites and belongs in its own change.
+  it("drops leading segments until the path fits", () => {
+    expect(truncatePath("src/very/long/path/file.py", 22)).toBe("…/path/file.py");
+  });
+
+  it("falls back to the filename alone when no segment pair fits", () => {
+    expect(truncatePath("src/very/long/path/file.py", 12)).toBe("…/file.py");
+  });
+
+  it("truncates from the left when even the filename overflows", () => {
+    expect(truncatePath("src/a-very-long-filename.py", 10)).toBe("…lename.py");
+  });
+});
 
 describe("formatCompact", () => {
   it("leaves counts below one thousand unchanged", () => {

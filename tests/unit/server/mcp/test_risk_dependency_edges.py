@@ -94,7 +94,7 @@ async def test_pr_relationship_rows_are_typed_and_totals_match(setup_mcp, factor
     from repowise.server.mcp_server import get_risk
 
     await _add_doc_co_change(factory, setup_mcp)
-    result = await get_risk([_TARGET], changed_files=[_TARGET])
+    result = await get_risk([_TARGET], changed_files=[_TARGET], include=["blast"])
     blast = result["pr_blast_radius"]
 
     assert blast["transitive_affected_total"] >= len(blast["transitive_affected"])

@@ -18,30 +18,10 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repowise.core.test_paths import is_skippable_test_path
+
 if TYPE_CHECKING:
     from repowise.core.workspace.repo_index import RepoIndex
-
-# Path segments that mark a test/mock tree. A route handler or topic publisher
-# that exists only under one of these is a fixture, not a real service contract,
-# so it is excluded from contract extraction by default (configurable via the
-# workspace ``contracts.exclude_globs``). Kept to unambiguous test-only dir names:
-# singular ``test``/``spec``/``e2e`` are intentionally excluded because they
-# double as legitimate product directories (an OpenAPI ``spec/``, a ``test/``
-# feature). Test *files* under those dirs are still caught by the filename
-# patterns below.
-_TEST_DIR_SEGMENTS = frozenset({"tests", "__tests__", "__mocks__"})
-
-# Filename patterns that mark a test file regardless of directory.
-_TEST_FILE_PATTERNS = (
-    "test_*.py",
-    "*_test.py",
-    "*_test.go",
-    "*.test.*",
-    "*.spec.*",
-    "*.e2e.*",
-    "conftest.py",
-)
-
 
 # Repowise's own contract-extractor sources. Their docstrings and comments spell
 # out the syntax each dialect matches (``@app.get("/path")``, ``topic::orders``,
@@ -61,15 +41,6 @@ def line_at(content: str, offset: int) -> int:
     return content.count("\n", 0, offset) + 1
 
 
-def is_test_path(rel_path: str) -> bool:
-    """True when *rel_path* (POSIX) lives in a test tree or is a test file."""
-    parts = rel_path.split("/")
-    if any(seg in _TEST_DIR_SEGMENTS for seg in parts[:-1]):
-        return True
-    name = parts[-1]
-    return any(fnmatch(name, pat) for pat in _TEST_FILE_PATTERNS)
-
-
 def make_exclude_predicate(
     extra_globs: tuple[str, ...] = (),
     *,
@@ -77,7 +48,9 @@ def make_exclude_predicate(
 ) -> Callable[[str], bool]:
     """Build a ``rel_path -> bool`` skip predicate for contract extraction.
 
-    Skips the default test/spec trees (unless *exclude_tests* is False), the
+    Skips test material per :func:`is_skippable_test_path` (unless
+    *exclude_tests* is False): a route handler or topic publisher that exists
+    only there is a fixture, not a real service contract. Also skips the
     extractors' own source tree (see :data:`_SELF_EXCLUDE_GLOBS`), plus any
     user-supplied ``extra_globs`` (matched against the full POSIX path and the
     bare filename).
@@ -85,7 +58,7 @@ def make_exclude_predicate(
     globs = _SELF_EXCLUDE_GLOBS + tuple(extra_globs)
 
     def skip(rel_path: str) -> bool:
-        if exclude_tests and is_test_path(rel_path):
+        if exclude_tests and is_skippable_test_path(rel_path):
             return True
         name = rel_path.rsplit("/", 1)[-1]
         return any(fnmatch(rel_path, g) or fnmatch(name, g) for g in globs)
@@ -99,8 +72,9 @@ class ScanContext:
 
     ``rel_path`` is POSIX-relative to the repo root; ``suffix`` is the
     lower-cased file extension (including the dot); ``content`` is the decoded
-    file text. ``mounts`` is the repo-wide ``router-variable -> mount-prefix``
-    map a provider dialect uses to recover cross-file route prefixes (see
+    file text. ``mounts`` is the repo-wide map the HTTP dialects collect
+    before extraction: router mount prefixes, where each app serves its
+    routes, and client instances other files import (see
     :mod:`.http.mounts`); empty for single-file extraction.
 
     ``index`` is the repo's read-only symbol table, when the repo has one.
@@ -170,7 +144,8 @@ def iter_source_files(
     if not root.is_dir():
         return
 
-    traverser = FileTraverser(root)
+    # A contract format no language parses (`schema.prisma`) is still read here.
+    traverser = FileTraverser(root, keep_unparsed=extensions)
     for info in traverser.traverse():
         suffix = os.path.splitext(info.path)[1].lower()
         if suffix not in extensions:

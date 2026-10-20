@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import useSWR from "swr";
 import { useSearchParams, useRouter } from "next/navigation";
 import { BookOpen, PanelLeftClose, PanelLeft, Search } from "lucide-react";
@@ -13,8 +13,7 @@ import {
   PresentOverlay,
   buildPresentModel,
   canPresent,
-  loadPresentPages,
-  type PresentMode,
+  loadPresentSource,
 } from "@repowise-dev/ui/present";
 import {
   DEFAULT_PERSONA,
@@ -24,6 +23,7 @@ import {
 } from "@repowise-dev/ui/docs/reader-persona";
 import { DocsHeader } from "./docs-header";
 import { DocsViewer } from "./docs-viewer";
+import { AskAboutThis } from "@repowise-dev/ui/chat";
 import {
   DocsPageActions,
   ExportMenu,
@@ -31,11 +31,13 @@ import {
 } from "./docs-page-actions";
 import { PageGenerateButton } from "./page-generate-button";
 import { BulkGenerateButton } from "./bulk-generate-button";
+import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
 import { isModelWrittenType, isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
 import { getPageById, listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { useTranslations } from "next-intl";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import type { PageSummary } from "@/lib/api/types";
 
@@ -44,6 +46,8 @@ interface DocsExplorerProps {
 }
 
 export function DocsExplorer({ repoId }: DocsExplorerProps) {
+  const t = useTranslations("docs");
+  const tc = useTranslations("common");
   const { pages, isLoading, mutate } = usePages(repoId);
   // The list carries no bodies, so the reader's page is fetched on its own.
   // Only the id is state; the page itself is whatever that id resolves to,
@@ -60,18 +64,20 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     // and retrying a 404 just delays the empty state.
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
-  const [treePanelOpen, setTreePanelOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.matchMedia("(min-width: 768px)").matches;
-  });
-  // The rail defaults to whether the layout can afford it, not to `true`.
-  // Mirrors the 2xl breakpoint the reader uses to place its sections; a manual
-  // toggle wins from then on, same contract as the app sidebar's route-based
-  // collapse.
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.matchMedia("(min-width: 1536px)").matches;
-  });
+  // Both panels default to whether the layout can afford them, not to `true`:
+  // the tree from md, the rail from the 2xl breakpoint the reader uses to place
+  // its sections. A manual toggle wins from then on, same contract as the app
+  // sidebar's route-based collapse. The server cannot see the viewport, so the
+  // default is CSS until hydration: `null` renders the tree hidden below md and
+  // as a column from md (the rail is already `hidden 2xl:block`), and a phone
+  // never paints an open drawer. The layout effect then takes the breakpoint
+  // as state before paint; reading it during render failed hydration.
+  const [treePanelOpen, setTreePanelOpen] = useState<boolean | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  useLayoutEffect(() => {
+    setTreePanelOpen(window.matchMedia("(min-width: 768px)").matches);
+    setSidebarOpen(window.matchMedia("(min-width: 1536px)").matches);
+  }, []);
   const [searchOpen, setSearchOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const searchParams = useSearchParams();
@@ -148,29 +154,27 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     router.replace(`?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
 
-  // Present mode — an on-the-fly slide deck + guided walkthrough over the same
-  // loaded pages. Open state lives in ?present=deck|walkthrough so a specific
-  // mode is shareable. The model is derived, never generated or fetched.
+  // Present mode: a short deck derived from the same pages, never generated.
+  // Open state lives in ?present so a deck link is shareable; any value opens
+  // it, which keeps older ?present=deck links working.
   const presentable = useMemo(() => canPresent(pages), [pages]);
-  const presentParam = searchParams.get("present");
-  const presentMode: PresentMode | null =
-    presentParam === "walkthrough" ? "walkthrough" : presentParam === "deck" ? "deck" : null;
-  // A deck draws on a couple of dozen pages out of thousands, so their bodies
-  // are fetched when Present is opened rather than carried by the page list.
+  const presentOpen = searchParams.has("present");
+  // A deck draws on a handful of pages out of thousands, so their bodies are
+  // fetched when Present is opened, not carried by the page list.
   const { data: presentModel = null } = useSWR(
-    presentable && presentMode ? `present:${repoId}` : null,
+    presentable && presentOpen ? `present:${repoId}` : null,
     async () => {
-      const source = await loadPresentPages(pages, (id) =>
+      const source = await loadPresentSource(pages, (id) =>
         getPageById(id, repoId) as Promise<DocPage>,
       );
-      return source.length > 0 ? buildPresentModel(source) : null;
+      return source ? buildPresentModel(source) : null;
     },
     { revalidateOnFocus: false },
   );
   const setPresent = useCallback(
-    (mode: PresentMode | null, pageId?: string) => {
+    (open: boolean, pageId?: string) => {
       const params = new URLSearchParams(searchParams.toString());
-      if (mode) params.set("present", mode);
+      if (open) params.set("present", "deck");
       else params.delete("present");
       if (pageId) params.set("page", pageId);
       const qs = params.toString();
@@ -181,7 +185,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const openInReaderFromPresent = useCallback(
     (pageId: string) => {
       setSelectedPageId(pageId);
-      setPresent(null, pageId);
+      setPresent(false, pageId);
     },
     [setPresent],
   );
@@ -244,9 +248,11 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     <div
       className={cn(
         "bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0 overflow-y-auto",
-        treePanelOpen
-          ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]"
-          : "w-0 overflow-hidden",
+        treePanelOpen === null
+          ? "absolute inset-y-0 left-0 z-30 w-full hidden md:static md:block md:w-[288px]"
+          : treePanelOpen
+            ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]"
+            : "w-0 overflow-hidden",
       )}
     >
       {isLoading ? (
@@ -288,10 +294,10 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
         </div>
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            No documentation yet
+            {t("explorer.emptyTitle")}
           </h3>
           <p className="text-xs text-[var(--color-text-secondary)] max-w-sm">
-            Run a generation job to create AI-powered documentation for this codebase.
+            {t("explorer.emptyBody")}
           </p>
         </div>
       </div>
@@ -333,14 +339,23 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
 
       <button
         onClick={() => setTreePanelOpen((o) => !o)}
-        aria-label={treePanelOpen ? "Hide pages tree" : "Show pages tree"}
-        aria-expanded={treePanelOpen}
+        aria-label={treePanelOpen ? t("explorer.hideTree") : t("explorer.showTree")}
+        aria-expanded={treePanelOpen ?? undefined}
         className={cn(
           "absolute top-3.5 z-20 rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors",
-          treePanelOpen ? "hidden md:block left-[292px]" : "left-1",
+          treePanelOpen === null
+            ? "left-1 md:left-[292px]"
+            : treePanelOpen
+              ? "hidden md:block left-[292px]"
+              : "left-1",
         )}
       >
-        {treePanelOpen ? (
+        {treePanelOpen === null ? (
+          <>
+            <PanelLeft className="h-3.5 w-3.5 md:hidden" />
+            <PanelLeftClose className="hidden h-3.5 w-3.5 md:block" />
+          </>
+        ) : treePanelOpen ? (
           <PanelLeftClose className="h-3.5 w-3.5" />
         ) : (
           <PanelLeft className="h-3.5 w-3.5" />
@@ -357,6 +372,19 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
               personaHasEffect={personaHasEffect}
             />
           )}
+          {selectedPage && (
+            <AskAboutThis
+              context={{
+                kind: "documentation",
+                label: selectedPage.title,
+                target: selectedPage.id,
+                targetKind: "documentation",
+              }}
+              question={t("explorer.askQuestion", { title: selectedPage.title })}
+              label={t("explorer.askLabel", { title: selectedPage.title })}
+              className="shrink-0"
+            />
+          )}
           {selectedPage && isModelWrittenType(selectedPage.page_type) && (
             <PageGenerateButton
               page={selectedPage}
@@ -370,7 +398,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
           >
             <Search className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Search</span>
+            <span className="hidden sm:inline">{tc("search")}</span>
             <kbd className="hidden rounded border border-[var(--color-border-default)] px-1 py-0.5 text-[10px] sm:inline">
               ⌘K
             </kbd>
@@ -382,7 +410,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             page={selectedPage}
             repoId={repoId}
           />
-          {presentable && <PresentButton onClick={() => setPresent("deck")} />}
+          {presentable && <PresentButton onClick={() => setPresent(true)} />}
           {selectedPage && (
             <SidebarToggle
               open={sidebarOpen}
@@ -391,16 +419,21 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           )}
         </DocsHeader>
 
+        {/* Only while pages are still rendered from structure. */}
+        <HostedNudgeSlot
+          candidates={[hasStubs && "docs"]}
+          repoId={repoId}
+          className="mx-3 mt-2 sm:mx-6"
+        />
+
         <div className="flex-1 min-h-0">{body}</div>
       </div>
 
       {/* Present mode overlay — full-screen, escapes the dashboard chrome */}
-      {presentMode && presentModel && (
+      {presentOpen && presentModel && (
         <PresentOverlay
           model={presentModel}
-          initialMode={presentMode}
-          onClose={() => setPresent(null)}
-          onModeChange={(m) => setPresent(m)}
+          onClose={() => setPresent(false)}
           onOpenPage={openInReaderFromPresent}
         />
       )}

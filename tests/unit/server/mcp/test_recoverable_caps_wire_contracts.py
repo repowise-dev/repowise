@@ -29,6 +29,9 @@ from repowise.server.mcp_server._budget import (
     EXPANDED_RESPONSE_CHARS,
 )
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 _NOW = datetime(2026, 8, 26, tzinfo=UTC)
 
 
@@ -223,9 +226,9 @@ async def test_context_used_by_and_relations_recover_in_one_bounded_query_shape(
                 GraphEdge(
                     id=f"sealed-import-{index}",
                     repository_id=setup_mcp,
-                    source_node_id=file_id,
-                    target_node_id="src/auth/service.py",
-                    edge_type="imports",
+                    source_node_id=f"{file_id}::Use{index:03d}",
+                    target_node_id="src/auth/service.py::AuthService",
+                    edge_type="references",
                     imported_names_json='["AuthService"]',
                     created_at=_NOW,
                 ),
@@ -275,7 +278,11 @@ async def test_context_used_by_and_relations_recover_in_one_bounded_query_shape(
     relation_recovered = await _recover_one(relation_result, "Type025")
     assert "Type025" in relation_recovered
     assert "Type000" not in relation_recovered
-    assert relation_statements <= 20 and used_by_statements <= 20
+    # The first call also pays the one aggregate behind the empty-callers basis
+    # and the one layer read behind the scope hint. Both are cached per repo per
+    # index commit, so the second call pays neither. The seeded caller is a
+    # two-line forwarder, so the wrapper hop adds its fixed three reads.
+    assert relation_statements <= 25 and used_by_statements <= 20
 
 
 @pytest.mark.asyncio
@@ -341,7 +348,13 @@ async def test_risk_multi_target_graph_cards_recover_relationship_tails(
 async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
     setup_mcp: str, session: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import importlib
+
     from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+    from repowise.core.analysis.test_selection import Selection
+
+    get_risk_mod = importlib.import_module("repowise.server.mcp_server.tool_risk.get_risk")
+    from repowise.server.mcp_server.tool_risk.directives import ChangeTests
 
     _configure_omissions(tmp_path)
     for index in range(8):
@@ -366,10 +379,6 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
             *[f"tests/sealed_{i}.py" for i in range(8)],
         ]
         payload["cochange_warnings"] = [f"src/cochange_{i}.py" for i in range(8)]
-        payload["guarding_tests"] = {
-            "tests_to_run": [f"tests/GUARD_{i}.py::test_it" for i in range(14)],
-            "basis": "measured",
-        }
         recommendations = [
             {
                 "test_id": f"tests/REC_{i}.py::test_it",
@@ -394,16 +403,29 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
         return payload
 
     monkeypatch.setattr(PRBlastRadiusAnalyzer, "analyze_files", sealed_analyze)
-    changed = [f"src/gap_{i}.py" for i in range(6)]
-    result = await tool_middleware(get_risk)(
-        ["src/auth/service.py"], changed_files=changed
+    guards = tuple(f"tests/GUARD_{i}.py::test_it" for i in range(14))
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=guards,
+        test_files=tuple(t.split("::")[0] for t in guards),
+        basis={"src/gap_0.py": "coverage"},
+        why={t.split("::")[0]: "src/gap_0.py changed (coverage)" for t in guards},
     )
 
-    _assert_wire(result, "directive", DEFAULT_RESPONSE_CHARS)
+    async def sealed_tests(*_a: Any) -> ChangeTests:
+        return ChangeTests(selection=selection)
+
+    monkeypatch.setattr(get_risk_mod, "_change_tests", sealed_tests)
+    changed = [f"src/gap_{i}.py" for i in range(6)]
+    result = await tool_middleware(get_risk)(
+        ["src/auth/service.py"], changed_files=changed, include=["tests", "blast"]
+    )
+
+    _assert_wire(result, "directive", EXPANDED_RESPONSE_CHARS)
     directive = result["directive"]
     expected = {
         "may_break": 9,
-        "may_break_tests": 8,
         "missing_cochanges": 8,
         "missing_tests": 6,
         "tests_to_run": 14,
@@ -416,10 +438,9 @@ async def test_risk_real_adversarial_wire_recovers_each_directive_lane(
         assert directive[f"{key}_emitted"] < total
         assert directive[f"{key}_reduced_reason"].startswith("construction_cap")
     assert result["truncated"] is True
+    # The blast block sheds first, so the directive lists keep their cap.
     assert "pr_blast_radius" not in result
-    assert directive["test_recommendations_reduced_reason"] == (
-        "construction_cap_and_response_budget"
-    )
+    assert directive["test_recommendations_reduced_reason"] == "construction_cap"
     assert directive["test_recommendations_omitted"] == (
         directive["test_recommendations_total"]
         - directive["test_recommendations_emitted"]
@@ -598,14 +619,17 @@ async def test_why_real_minimum_and_typical_wire_shapes(
 
     typical = await wrapped("src/auth/service.py")
     _assert_wire(typical, "mode", DEFAULT_RESPONSE_CHARS)
-    assert typical["decisions"]
+    # The fixture's records name this path and nobody has accepted them, so
+    # the typical response carries a candidate lane and no rules.
+    assert typical["decisions"] == []
+    assert typical["candidates"]
 
 
 @pytest.mark.asyncio
 async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
     setup_mcp: str, session: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import repowise.server.mcp_server.tool_why as why_mod
+    import repowise.server.mcp_server.tool_why.search as why_search
 
     _configure_omissions(tmp_path)
     await _seed_why_decisions(session, setup_mcp, 9)
@@ -629,11 +653,19 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
         population: list[dict[str, Any]] = []
         pending: list[tuple[dict[str, Any], str, str]] = []
         for i in range(8):
-            body = f"EPISODE_SENTINEL_{i}_START_" + "e" * 1100 + f"_END_{i}"
+            # Bodies carry the question's terms. Search mode ranks a
+            # target-scoped episode against the query now, so filler would be
+            # dropped as irrelevant before it ever reached the cap this test is
+            # about — and then there would be nothing capped to recover.
+            body = (
+                f"EPISODE_SENTINEL_{i}_START_ why use sealed response contract "
+                + "e" * 1100
+                + f"_END_{i}"
+            )
             entry = {
                 "tier": "git",
                 "kind": "sealed",
-                "subject": f"Episode {i}",
+                "subject": f"Episode {i} sealed response contract",
                 "recorded": body[:900],
                 "evidence": {"commit": f"{i:040x}"},
                 "scope": ["src/auth/service.py"],
@@ -645,8 +677,8 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
             full.extend(population)
         return population[:3], pending
 
-    monkeypatch.setattr(why_mod, "_semantic_lanes", sealed_semantic)
-    monkeypatch.setattr(why_mod, "episode_evidence", sealed_episodes)
+    monkeypatch.setattr(why_search, "_semantic_lanes", sealed_semantic)
+    monkeypatch.setattr(why_search, "episode_evidence", sealed_episodes)
 
     result = await tool_middleware(get_why)(
         "why use sealed response contract",
@@ -660,7 +692,9 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
     assert result["related_documentation_total"] == 8
     assert result["episodes_total"] == 8
     context = result["target_context"]["src/auth/service.py"]
-    assert context["governing_decisions_total"] >= 9
+    # Nobody accepted the seeded records, so the card's populated lane is the
+    # candidate one and the rules lane is empty.
+    assert context["candidate_decisions_total"] >= 9
 
     recovered = await _recover_one(
         result,
@@ -735,6 +769,8 @@ async def test_why_health_and_targets_only_modes_are_bounded_and_recoverable(
             "conflicts": [
                 {"detail": f"HEALTH_CONFLICT_{index}"} for index in range(12)
             ],
+            "retired_decisions": [("superseded", record) for record in records],
+            "unscoped_decisions": records,
         }
 
     monkeypatch.setattr(crud_mod, "get_decision_health_summary", sealed_health)
@@ -777,8 +813,10 @@ async def test_why_health_and_targets_only_modes_are_bounded_and_recoverable(
     )
     _assert_wire(targets_only, "mode", DEFAULT_RESPONSE_CHARS)
     context = targets_only["target_context"]["src/auth/service.py"]
-    assert context["governing_decisions_total"] >= 9
-    assert context["governing_decisions_emitted"] == 8
+    # Nobody accepted the seeded records, so the card's populated lane is the
+    # candidate one and the rules lane is empty.
+    assert context["candidate_decisions_total"] >= 9
+    assert context["candidate_decisions_emitted"] == 8
     recovered = await _recover_one(targets_only, "sealed-why-8")
     assert "sealed-why-8" in recovered
     assert '"evidence_refs"' in recovered
@@ -791,7 +829,8 @@ async def test_why_fallback_archaeology_and_rationale_wire_recover_annotated_tai
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import repowise.server.mcp_server.tool_why as why_mod
+    import repowise.server.mcp_server.tool_why.archaeology as why_archaeology
+    import repowise.server.mcp_server.tool_why.path_mode as why_path_mode
 
     _configure_omissions(tmp_path)
     commits = [
@@ -834,7 +873,12 @@ async def test_why_fallback_archaeology_and_rationale_wire_recover_annotated_tai
     from repowise.core.persistence.models import Repository
 
     repository = await session.get(Repository, setup_mcp)
-    repository.local_path = str(Path.cwd())
+    # A linked worktree stores `.git` as a gitdir pointer file. The live git
+    # log only needs a working tree, so this must still enable the fallback.
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    (worktree_path / ".git").write_text("gitdir: /tmp/repowise-test-worktree\n")
+    repository.local_path = str(worktree_path)
     await session.flush()
 
     async def sealed_git_log(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
@@ -849,9 +893,9 @@ async def test_why_fallback_archaeology_and_rationale_wire_recover_annotated_tai
             for index in range(23)
         ]
 
-    monkeypatch.setattr(why_mod, "_run_git_log", sealed_git_log)
+    monkeypatch.setattr(why_archaeology, "_run_git_log", sealed_git_log)
     monkeypatch.setattr(
-        why_mod,
+        why_path_mode,
         "_mine_rationale",
         lambda *_args, **_kwargs: [
             {

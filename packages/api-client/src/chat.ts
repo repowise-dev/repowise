@@ -2,9 +2,13 @@
  * Chat API module — conversation management and SSE message streaming.
  */
 
-import { apiGet, apiDelete, BASE_URL, buildHeaders } from "./client";
+import { apiGet, apiDelete, apiPatch, apiPost, BASE_URL, buildHeaders } from "./client";
 import type { ConversationResponse, ChatMessageResponse } from "./types";
-import type { ChatContext } from "@repowise-dev/types/chat";
+import type {
+  ChatArtifact,
+  ChatContext,
+  ChatSuggestion,
+} from "@repowise-dev/types/chat";
 
 export async function listConversations(
   repoId: string,
@@ -12,6 +16,19 @@ export async function listConversations(
   return apiGet<ConversationResponse[]>(
     `/api/repos/${repoId}/chat/conversations`,
   );
+}
+
+/**
+ * Questions built from what the page actually shows. Derived on the server from
+ * the same prefetch a first question would make, so this costs no model call.
+ */
+export async function getChatSuggestions(
+  repoId: string,
+  context: Pick<ChatContext, "kind" | "target">,
+): Promise<{ suggestions: ChatSuggestion[] }> {
+  const query = new URLSearchParams({ kind: context.kind });
+  if (context.target) query.set("target", context.target);
+  return apiGet(`/api/repos/${repoId}/chat/suggestions?${query.toString()}`);
 }
 
 export async function getConversation(
@@ -29,6 +46,51 @@ export async function deleteConversation(
   conversationId: string,
 ): Promise<void> {
   await apiDelete(`/api/repos/${repoId}/chat/conversations/${conversationId}`);
+}
+
+export async function restoreConversation(repoId: string, conversationId: string) {
+  return apiPost<ConversationResponse>(`/api/repos/${repoId}/chat/conversations/${conversationId}/restore`);
+}
+
+export async function updateConversation(
+  repoId: string,
+  conversationId: string,
+  patch: { title?: string; pinned?: boolean },
+) {
+  return apiPatch<ConversationResponse>(`/api/repos/${repoId}/chat/conversations/${conversationId}`, patch);
+}
+
+export async function forkConversation(
+  repoId: string,
+  conversationId: string,
+  point?: { throughMessageId?: string; beforeMessageId?: string },
+) {
+  return apiPost<ConversationResponse>(`/api/repos/${repoId}/chat/conversations/${conversationId}/fork`, {
+    through_message_id: point?.throughMessageId ?? null,
+    before_message_id: point?.beforeMessageId ?? null,
+  });
+}
+
+export async function getConversationArtifact(
+  repoId: string,
+  conversationId: string,
+  artifactId: string,
+): Promise<ChatArtifact> {
+  return apiGet(
+    `/api/repos/${repoId}/chat/conversations/${conversationId}/artifacts/${artifactId}`,
+  );
+}
+
+export async function setConversationArtifactPinned(
+  repoId: string,
+  conversationId: string,
+  artifactId: string,
+  pinned: boolean,
+): Promise<ChatArtifact> {
+  return apiPatch(
+    `/api/repos/${repoId}/chat/conversations/${conversationId}/artifacts/${artifactId}`,
+    { pinned },
+  );
 }
 
 /**

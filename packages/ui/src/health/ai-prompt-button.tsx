@@ -11,8 +11,12 @@ export interface AiPromptButtonProps {
    * `default` shows the green sparkles pill with a label (cards, headers).
    * `icon` is a compact icon-only button for dense table rows; the label
    * still rides along as the tooltip / accessible name.
+   * `ghost` is icon + label with no fill, for a per-row action that should
+   * not repeat a filled pill down every row (see `RowPromptAction`).
    */
-  variant?: "default" | "icon";
+  variant?: "default" | "icon" | "ghost";
+  /** Accessible name when the visible label repeats down a list, e.g. naming the row. */
+  ariaLabel?: string;
   className?: string;
 }
 
@@ -26,10 +30,11 @@ export function AiPromptButton({
   onClick,
   label = "AI fix prompt",
   variant = "default",
+  ariaLabel,
   className,
 }: AiPromptButtonProps) {
   const base =
-    "group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 font-semibold text-[var(--color-success)] transition-colors hover:bg-[var(--color-success)]/20 hover:border-[var(--color-success)]/60";
+    "group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] font-semibold text-[var(--color-model)] transition-colors hover:bg-[var(--color-model)]/20 hover:border-[var(--color-model)]/60";
   if (variant === "icon") {
     return (
       <button
@@ -39,10 +44,30 @@ export function AiPromptButton({
           onClick();
         }}
         title={label}
-        aria-label={label}
+        aria-label={ariaLabel ?? label}
         className={cn(base, "h-6 w-6 justify-center p-0", className)}
       >
         <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
+      </button>
+    );
+  }
+  if (variant === "ghost") {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        title={label}
+        aria-label={ariaLabel}
+        className={cn(
+          "group/ai inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-model-muted)] hover:text-[var(--color-model)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+          className,
+        )}
+      >
+        <Sparkles className="h-3.5 w-3.5 text-[var(--color-model)] transition-transform group-hover/ai:rotate-12" />
+        {label}
       </button>
     );
   }
@@ -54,6 +79,7 @@ export function AiPromptButton({
         onClick();
       }}
       title={label}
+      aria-label={ariaLabel}
       className={cn(base, "px-2.5 py-1 text-xs", className)}
     >
       <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />

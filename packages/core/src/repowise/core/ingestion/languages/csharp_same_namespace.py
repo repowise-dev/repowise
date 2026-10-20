@@ -54,6 +54,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..cohesion import SAME_NAMESPACE_HINT
 from .scope_scan import FileScope, ScopeTier, emit_scope_edges
 
 if TYPE_CHECKING:
@@ -118,7 +119,6 @@ _BCL_COMMON_TYPES = frozenset({
     "Flags", "Serializable", "CLSCompliant", "InternalsVisibleTo",
 })
 
-_SAME_NAMESPACE_HINT = "same_namespace"
 _GLOBAL_USING_HINT = "global_using"
 
 
@@ -198,7 +198,7 @@ def resolve_csharp_same_namespace_refs(
         if own_namespaces:
             tiers.append(
                 ScopeTier(
-                    hint=_SAME_NAMESPACE_HINT,
+                    hint=SAME_NAMESPACE_HINT,
                     lookup=lambda ident: _declarers(own_namespaces, ident),
                 )
             )

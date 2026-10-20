@@ -1,0 +1,998 @@
+"""Materialized performance opportunities: one writer, indexed readers.
+
+Grouping runs once per health persistence transaction over the authoritative
+stored findings, and everything that serves the queue reads the result. That is
+the whole point of this module: a request should cost its page, not the
+repository.
+
+The writer is deliberately the only place that decides lifecycle. A cause that
+stops being observed is resolved rather than deleted, so an id an agent is
+holding keeps answering, and rows minted by an older model version are resolved
+for the same reason - they can no longer describe the current tree.
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, NamedTuple
+
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ...batches import chunked
+from ...models import (
+    HealthFileMetric,
+    HealthFinding,
+    PerformanceOpportunity,
+    PerformanceSummary,
+    RefactoringSuggestion,
+    _new_uuid,
+    _now_utc,
+)
+from ...sql import order_by, rule_predicate
+from .refactoring import _refactoring_row_kwargs
+from .shown import gated_counts, ungated
+
+if TYPE_CHECKING:
+    from ....analysis.execution_roles import ExecutionRoles
+    from ....analysis.health.perf.opportunities import (
+        PerformanceOpportunity as OpportunityModel,
+    )
+    from ....analysis.health.refactoring.performance_fix import PerformancePlanPolicy
+
+_PLAN_TYPE = "performance_fix"
+
+_EVIDENCE_LIMIT = 8
+"""Evidence rows folded into a persisted plan's affected-location list.
+
+Serving reads evidence from the findings table by opportunity, so this bounds
+the plan payload only.
+"""
+
+# A finding's queue judgement: its cause's, written by the finalizer.
+_QUEUE_COLUMNS = (
+    HealthFinding.queue_eligible,
+    HealthFinding.queue_reason,
+    HealthFinding.queue_value,
+    HealthFinding.queue_tier,
+)
+# Columns the causal model reads off a row. Narrower than the ORM entity on
+# purpose: the finalizer walks every open performance finding, and ``severity``
+# and ``health_impact`` are not inputs to grouping.
+_OBSERVATION_COLUMNS = (
+    HealthFinding.id,
+    HealthFinding.public_id,
+    HealthFinding.file_path,
+    HealthFinding.biomarker_type,
+    HealthFinding.function_name,
+    HealthFinding.line_start,
+    HealthFinding.line_end,
+    HealthFinding.reason,
+    HealthFinding.details_json,
+    HealthFinding.dimension,
+    HealthFinding.opportunity_id,
+)
+
+
+def opportunity_details(
+    opportunity: OpportunityModel, plan: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The explanatory half of one opportunity, the half no query filters on.
+
+    Everything a column already holds is deliberately absent, so the row and
+    the payload cannot drift into disagreeing about the same fact. *plan* is
+    the stored plan's validation and economics, resolved once at finalize.
+    """
+    return {
+        **({"plan": plan} if plan else {}),
+        "biomarker_types": list(opportunity.biomarker_types),
+        "intervention_kind": opportunity.intervention_kind,
+        "terminal_sinks": list(opportunity.terminal_sinks),
+        "shared_path_suffix": list(opportunity.shared_path_suffix),
+        "resource_fingerprints": list(opportunity.resource_fingerprints),
+        "reliable_entry_reachability": opportunity.reliable_entry_reachability,
+        "provenance": opportunity.provenance,
+        "facets": dict(opportunity.facets),
+        "actionability_reason": opportunity.actionability_reason,
+        "prerequisites": list(opportunity.prerequisites),
+        "rank_factors": dict(opportunity.rank_factors),
+        "why_ranked": [dict(entry) for entry in opportunity.why_ranked],
+        "fix_rationale": opportunity.fix.rationale if opportunity.fix else None,
+        "may_lead": opportunity.may_lead,
+        **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
+        "siblings": [dict(entry) for entry in opportunity.siblings],
+    }
+
+
+def _row_kwargs(
+    opportunity: OpportunityModel,
+    *,
+    position: int,
+    plan_state: str,
+    analyzed_commit: str | None,
+    plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from ....analysis.health.perf.serving import intervention_file
+    from ....analysis.health.queue.counts import perf_judgement
+    from ....analysis.health.queue.eligibility import queue_proof
+
+    fix = opportunity.fix
+    row = {
+        "opportunity_id": opportunity.opportunity_id,
+        "performance_model_version": opportunity.performance_model_version,
+        "status": "open",
+        "rank_position": position,
+        "rank_score": opportunity.rank_score,
+        "execution_context": opportunity.execution_context,
+        "boundary_kind": opportunity.boundary_kind,
+        "biomarker_type": opportunity.biomarker_type,
+        "actionability_state": opportunity.actionability_state,
+        "evidence_confidence": opportunity.confidence,
+        "plan_state": plan_state,
+        "cost_proof": queue_proof(opportunity),
+        "execution_role": opportunity.facets.get("execution_role", "unknown"),
+        "fix_strategy": fix.strategy if fix else None,
+        "fix_safety": fix.safety if fix else None,
+        "file_path": intervention_file(opportunity),
+        "intervention_symbol": opportunity.intervention_symbol,
+        "terminal_sink": opportunity.terminal_sink,
+        "observations_total": opportunity.observations_total,
+        "affected_call_sites_total": opportunity.affected_call_sites_total,
+        "affected_files_total": opportunity.affected_files_total,
+        "details_json": json.dumps(opportunity_details(opportunity, plan), separators=(",", ":")),
+        "analyzed_commit": analyzed_commit,
+    }
+    # Judged on the row as stored, which Fix first reads the same way.
+    judged = {
+        **row,
+        "facets": opportunity.facets,
+        "actionability_reason": opportunity.actionability_reason,
+    }
+    return {**row, **perf_judgement(judged, opportunity.facets, plan or {}).columns()}
+
+
+def _summary_payload(
+    opportunities: list[OpportunityModel],
+    plan_states: dict[str, str],
+    plans: dict[str, dict[str, Any]] | None = None,
+) -> dict:
+    """The compact current headline, written once and read by primary key."""
+    from ....analysis.health.perf.serving import intervention_file
+    from ....analysis.health.queue.eligibility import (
+        perf_confident_verdict,
+        perf_queue_counts,
+        queue_proof,
+    )
+
+    counts: dict[str, int] = {}
+    contexts: dict[str, int] = {}
+    boundaries: dict[str, int] = {}
+    proofs: dict[str, int] = {}
+    for item in opportunities:
+        counts[item.actionability_state] = counts.get(item.actionability_state, 0) + 1
+        contexts[item.execution_context] = contexts.get(item.execution_context, 0) + 1
+        key = item.boundary_kind or "none"
+        boundaries[key] = boundaries.get(key, 0) + 1
+        proof = queue_proof(item)
+        proofs[proof] = proofs.get(proof, 0) + 1
+    # The lead is the first confident cause of the default queue; never a marker
+    # whose measured precision is below the bar for leading.
+    lead = next(
+        (o for o in opportunities if perf_confident_verdict(o).eligible and o.may_lead),
+        None,
+    )
+    return {
+        "default_queue": perf_queue_counts(opportunities),
+        "actionability": counts,
+        "context": contexts,
+        "boundary": boundaries,
+        "proof": proofs,
+        "with_plan_total": sum(1 for state in plan_states.values() if state == "available"),
+        "lead": None
+        if lead is None
+        else {
+            "opportunity_id": lead.opportunity_id,
+            "actionability_state": lead.actionability_state,
+            "biomarker_type": lead.biomarker_type,
+            "boundary_kind": lead.boundary_kind,
+            "execution_context": lead.execution_context,
+            "intervention_symbol": lead.intervention_symbol,
+            "terminal_sink": lead.terminal_sink,
+            "file_path": intervention_file(lead),
+            "observations_total": lead.observations_total,
+            "affected_call_sites_total": lead.affected_call_sites_total,
+            "affected_files_total": lead.affected_files_total,
+            "plan_state": plan_states.get(lead.opportunity_id, "no_safe_plan"),
+            "why_ranked": [dict(entry) for entry in lead.why_ranked],
+            "prerequisites": list(lead.prerequisites),
+            "actionability_reason": lead.actionability_reason,
+            **({"plan": plan} if (plan := (plans or {}).get(lead.opportunity_id)) else {}),
+        },
+    }
+
+
+async def finalize_performance_opportunities(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    analyzed_commit: str | None = None,
+    plan_policy: PerformancePlanPolicy | None = None,
+    execution_roles: ExecutionRoles | None = None,
+) -> int:
+    """Rebuild this repository's performance read model from stored findings.
+
+    Called by both the repo-wide and the per-path health writers, after their
+    own rows land and inside their transaction, so the queue can never describe
+    a set of findings that was never committed. Returns the number of open
+    opportunities.
+
+    *execution_roles* is this run's role map over the whole graph. A role can
+    change in a file the run did not rescan (a seed or call moved elsewhere),
+    so every stored finding is restamped from it before grouping.
+    """
+    # Deferred throughout this module: the analysis package imports
+    # persistence, so a module-level import here would close the cycle.
+    from ....analysis.health.perf.opportunities import build_performance_opportunities
+    from ....analysis.health.refactoring.performance_fix import PerformancePlanPolicy
+
+    policy = plan_policy or PerformancePlanPolicy()
+    rows = list(
+        (
+            await session.execute(
+                select(*_OBSERVATION_COLUMNS, *_QUEUE_COLUMNS).where(
+                    HealthFinding.repository_id == repository_id,
+                    HealthFinding.status == "open",
+                    HealthFinding.dimension == "performance",
+                )
+            )
+        ).all()
+    )
+    if execution_roles is not None:
+        rows = await _restamp_roles(session, rows, execution_roles)
+    opportunities = build_performance_opportunities(
+        rows,
+        evidence_limit=_EVIDENCE_LIMIT,
+        origins=await _unknown_context_origins(session, repository_id, rows),
+    )
+
+    plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
+    verdicts = await _reconcile_opportunities(
+        session, repository_id, opportunities, plan_states, analyzed_commit, plans
+    )
+    await _restamp_findings(session, rows, verdicts)
+    await _write_summary(session, repository_id, opportunities, plan_states, analyzed_commit, plans)
+    return len(opportunities)
+
+
+async def _restamp_roles(
+    session: AsyncSession, rows: list[Any], roles: ExecutionRoles
+) -> list[Any]:
+    """Each stored finding with its loop owner's current role; changed rows are written.
+
+    A row stored before ``role_owner`` existed gets its owner found the way
+    the analysis finds it, and keeps it from then on.
+    """
+    out: list[Any] = []
+    changed = []
+    for row in rows:
+        details = json.loads(row.details_json or "{}")
+        if "role_owner" in details:
+            owner = details["role_owner"]
+        else:
+            owner = roles.owner_of(row.file_path, row.line_start, details)
+        role = roles.role_of(owner, row.file_path)
+        if details.get("execution_role") == role and "role_owner" in details:
+            out.append(row)
+            continue
+        stamped = {**details, "execution_role": role, "role_owner": owner}
+        details_json = json.dumps(stamped, separators=(",", ":"))
+        changed.append({"id": row.id, "details_json": details_json})
+        out.append(SimpleNamespace(**{**row._mapping, "details_json": details_json}))
+    if changed:
+        await session.execute(update(HealthFinding), changed)
+    return out
+
+
+async def _unknown_context_origins(
+    session: AsyncSession, repository_id: str, rows: list[Any]
+) -> dict[str, str | None]:
+    """The stored ``code_origin`` of each file whose code context is ``unknown``."""
+    from ....analysis.health.perf.causal import execution_context
+
+    paths = sorted(p for p in {r.file_path for r in rows} if execution_context(p) == "unknown")
+    origins: dict[str, str | None] = {}
+    m = HealthFileMetric
+    for batch in chunked(paths):
+        result = await session.execute(
+            select(m.file_path, m.code_origin).where(
+                m.repository_id == repository_id, m.file_path.in_(batch)
+            )
+        )
+        origins.update(result.tuples().all())
+    return origins
+
+
+async def _restamp_findings(
+    session: AsyncSession, rows: list[Any], verdicts: dict[str, dict[str, Any]]
+) -> None:
+    """Point every stored observation at its cause, give it a public id, and
+    write its cause's queue judgement on it.
+
+    The causal key reads one observation's own facts, so the link only ever
+    changes for rows written before the column existed or under an older model.
+    """
+
+    from ....analysis.health.finding_identity import finding_public_id
+    from ....analysis.health.perf.opportunities import opportunity_id_for_finding
+
+    changed = []
+    for row in rows:
+        opportunity_id = opportunity_id_for_finding(row)
+        values = {
+            name: value
+            for name, value in verdicts.get(opportunity_id, {}).items()
+            if getattr(row, name) != value
+        }
+        if opportunity_id != row.opportunity_id:
+            values["opportunity_id"] = opportunity_id
+        if not row.public_id:
+            # A store written before the column existed. Backfilling here is
+            # what lets its evidence carry a quotable reference without a
+            # separate migration pass over the table.
+            values["public_id"] = finding_public_id(row)
+        if values:
+            changed.append({"id": row.id, **values})
+    if changed:
+        await session.execute(update(HealthFinding), changed)
+
+
+async def _replace_plans(
+    session: AsyncSession,
+    repository_id: str,
+    opportunities: list[OpportunityModel],
+    policy: PerformancePlanPolicy,
+) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    """Write the authoritative plans; report each opportunity's plan state and facts.
+
+    Plans are generated here rather than from an analysis report because the
+    report sees one run's findings while this sees the merged stored set, and a
+    partial run must not be allowed to publish a plan built from a subset.
+    """
+
+    from ....analysis.health.refactoring.performance_fix import performance_fix_suggestions
+
+    await session.execute(
+        delete(RefactoringSuggestion).where(
+            RefactoringSuggestion.repository_id == repository_id,
+            RefactoringSuggestion.refactoring_type == _PLAN_TYPE,
+        )
+    )
+    states = {
+        item.opportunity_id: ("no_safe_plan" if item.fix is None else "not_persisted")
+        for item in opportunities
+    }
+    if not policy.enabled:
+        return states, {}
+
+    suggestions = performance_fix_suggestions(
+        opportunities, min_confidence=policy.min_confidence
+    )
+    rows = []
+    for suggestion in suggestions:
+        row = RefactoringSuggestion(**_refactoring_row_kwargs(suggestion, repository_id))
+        session.add(row)
+        rows.append(row)
+        states[suggestion.plan["opportunity_id"]] = "available"
+    await session.flush()
+    return states, await _plan_facts(session, repository_id, rows)
+
+
+async def _plan_facts(
+    session: AsyncSession, repository_id: str, rows: list[Any]
+) -> dict[str, dict[str, Any]]:
+    """Validation and economics per plan, resolved once here rather than per read.
+
+    Serving one plan cannot afford the test-reachability walk, and without this
+    it fell back to an empty profile that read as "no tests" for every plan.
+    """
+    from ....analysis.health.refactoring.recommendations import steps_with_verify
+    from .refactoring_recommendations import hydrate_recommendations, repository_checkout
+
+    if not rows:
+        return {}
+    facts: dict[str, dict[str, Any]] = {}
+    checkout = await repository_checkout(session, repository_id)
+    for recommendation in await hydrate_recommendations(
+        session, repository_id, rows, step_verify=True, checkout=checkout
+    ):
+        suggestion = recommendation.suggestion
+        facts[suggestion.plan["opportunity_id"]] = {
+            "steps": steps_with_verify(
+                (suggestion.plan or {}).get("steps") or [], recommendation.validation
+            ),
+            "effort_bucket": suggestion.effort_bucket,
+            "benefit": recommendation.benefit,
+            "cost": recommendation.cost,
+            "risk": recommendation.risk,
+            "validation": recommendation.validation.as_dict(),
+        }
+    return facts
+
+
+async def _reconcile_opportunities(
+    session: AsyncSession,
+    repository_id: str,
+    opportunities: list[OpportunityModel],
+    plan_states: dict[str, str],
+    analyzed_commit: str | None,
+    plans: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Update, insert, and resolve, in one pass over the stored rows. Returns
+    each open cause's queue judgement columns, by opportunity id."""
+    stored = {
+        (row.performance_model_version, row.opportunity_id): row
+        for row in (
+            await session.execute(
+                select(PerformanceOpportunity).where(
+                    PerformanceOpportunity.repository_id == repository_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    seen: set[tuple[int, str]] = set()
+    verdicts: dict[str, dict[str, Any]] = {}
+    now = _now_utc()
+    for position, item in enumerate(opportunities):
+        key = (item.performance_model_version, item.opportunity_id)
+        seen.add(key)
+        values = _row_kwargs(
+            item,
+            position=position,
+            plan_state=plan_states.get(item.opportunity_id, "no_safe_plan"),
+            analyzed_commit=analyzed_commit,
+            plan=(plans or {}).get(item.opportunity_id),
+        )
+        verdicts[item.opportunity_id] = {c.key: values[c.key] for c in _QUEUE_COLUMNS}
+        row = stored.get(key)
+        if row is None:
+            session.add(
+                PerformanceOpportunity(
+                    id=_new_uuid(), repository_id=repository_id, **values
+                )
+            )
+            continue
+        for name, value in values.items():
+            setattr(row, name, value)
+        row.updated_at = now
+    for key, row in stored.items():
+        # A cause nobody observed this run, or one an older model minted, is
+        # resolved rather than removed: a held id must keep answering, and it
+        # must not keep reading as current.
+        if key not in seen and row.status != "resolved":
+            row.status = "resolved"
+            row.updated_at = now
+    await session.flush()
+    return verdicts
+
+
+async def _write_summary(
+    session: AsyncSession,
+    repository_id: str,
+    opportunities: list[OpportunityModel],
+    plan_states: dict[str, str],
+    analyzed_commit: str | None,
+    plans: dict[str, dict[str, Any]] | None = None,
+) -> None:
+
+    from ....analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
+
+    payload = json.dumps(
+        _summary_payload(opportunities, plan_states, plans), separators=(",", ":")
+    )
+    row = await session.get(PerformanceSummary, repository_id)
+    if row is None:
+        row = PerformanceSummary(repository_id=repository_id)
+        session.add(row)
+    row.performance_model_version = PERFORMANCE_MODEL_VERSION
+    row.opportunities_total = len(opportunities)
+    row.summary_json = payload
+    row.analyzed_commit = analyzed_commit
+    row.updated_at = _now_utc()
+    await session.flush()
+
+
+# ---------------------------------------------------------------------------
+# Indexed readers
+# ---------------------------------------------------------------------------
+
+
+async def get_performance_summary(
+    session: AsyncSession, repository_id: str
+) -> PerformanceSummary | None:
+    """The current headline, by primary key. One statement, no scan."""
+    return await session.get(PerformanceSummary, repository_id)
+
+
+async def get_performance_opportunity(
+    session: AsyncSession, repository_id: str, opportunity_id: str
+) -> PerformanceOpportunity | None:
+    """One materialized opportunity, current model or resolved older one."""
+    result = await session.execute(
+        select(PerformanceOpportunity)
+        .where(
+            PerformanceOpportunity.repository_id == repository_id,
+            PerformanceOpportunity.opportunity_id == opportunity_id,
+        )
+        .order_by(PerformanceOpportunity.performance_model_version.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+def _predicates(
+    repository_id: str, *, include_unverified: bool = False, **params: Any
+) -> list[Any]:
+    """The ``WHERE`` for *params* over open rows, built from the serving layer's filter table.
+
+    Opportunities on a file of a language the registry gates for performance
+    are left out unless ``include_unverified``.
+    """
+    from ....analysis.health.perf.serving import FILTERS
+    from ....analysis.health.queue_rules import active_filters
+
+    return [
+        PerformanceOpportunity.repository_id == repository_id,
+        ungated(
+            "performance",
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.biomarker_type,
+            include_unverified=include_unverified,
+        ),
+        *(
+            rule_predicate(PerformanceOpportunity, rule, value)
+            for rule, value in active_filters(FILTERS, {"status": "open", **params})
+        ),
+    ]
+
+
+async def list_performance_opportunities(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    contexts: frozenset[str] | None = None,
+    boundary: str | None = None,
+    confidence: str | None = None,
+    actionabilities: frozenset[str] | None = None,
+    proofs: frozenset[str] | None = None,
+    roles: frozenset[str] | None = None,
+    queue_eligible: bool | None = None,
+    file_paths: tuple[str, ...] | None = None,
+    area_prefix: str | None = None,
+    sort: str = "rank",
+    limit: int = 20,
+    offset: int = 0,
+    include_unverified: bool = False,
+) -> tuple[list[PerformanceOpportunity], int]:
+    """One page in the requested order, plus the exact total behind it.
+
+    Both statements are index-driven and the fetched rows are the page, so cost
+    tracks the page rather than the repository.
+    """
+    from ....analysis.health.perf.serving import sort_keys
+
+    where = _predicates(
+        repository_id,
+        contexts=contexts,
+        boundary=boundary,
+        confidence=confidence,
+        actionabilities=actionabilities,
+        proofs=proofs,
+        roles=roles,
+        queue_eligible=queue_eligible,
+        file_paths=file_paths,
+        area_prefix=area_prefix,
+        include_unverified=include_unverified,
+    )
+    total = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(PerformanceOpportunity).where(*where)
+            )
+        ).scalar_one()
+    )
+    rows = (
+        (
+            await session.execute(
+                select(PerformanceOpportunity)
+                .where(*where)
+                .order_by(*order_by(PerformanceOpportunity, sort_keys(sort)))
+                .offset(offset)
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
+async def performance_facet_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: tuple[str, ...] | None = None,
+    include_unverified: bool = False,
+    scoped: bool = False,
+    area_prefix: str | None = None,
+) -> list[tuple[Any, ...]]:
+    """Grouped counts over every open opportunity, in one aggregate statement.
+
+    Returned pre-aggregation, one ``(*FACET_FIELDS, count)`` tuple per group,
+    so ``perf.serving.fold_facets`` can cross-filter: a facet must be counted
+    with every filter applied *except* its own, or choosing one value would
+    erase the alternatives.
+    """
+    from ....analysis.health.perf.serving import FACET_FIELDS, SCOPED_GROUP_FIELDS
+
+    # ``scoped`` also groups by the stored queue verdict, for scope-aware facets.
+    fields = SCOPED_GROUP_FIELDS if scoped else FACET_FIELDS
+    columns = tuple(getattr(PerformanceOpportunity, name) for name in fields)
+    result = await session.execute(
+        select(*columns, func.count())
+        .where(
+            *_predicates(
+                repository_id,
+                file_paths=file_paths,
+                area_prefix=area_prefix,
+                include_unverified=include_unverified,
+            )
+        )
+        .group_by(*columns)
+    )
+    return [tuple(row) for row in result.all()]
+
+
+class PerformanceHeadline(NamedTuple):
+    """The performance headline every surface prints, in the Performance
+    view's three scopes: the default queue (worth fixing now) leads, and every
+    production cause and every cause give it context."""
+
+    now: int
+    production: int
+    all: int
+    per_10k_loc: float | None
+    """Every cause per 10K lines a performance detector ran on; ``None`` with none."""
+
+    def as_dict(self) -> dict[str, Any]:
+        return self._asdict()
+
+
+async def performance_headline(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    covered_nloc: int,
+    include_unverified: bool = False,
+) -> PerformanceHeadline:
+    """The one count of open performance causes, read by every surface.
+
+    The scope sizes the Performance view's scope control shows, from the same
+    grouped aggregate, so a headline never states a number that view
+    contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
+    """
+    from ....analysis.health.perf.serving import scope_counts
+    from .queue_counts import any_unjudged
+
+    groups = await performance_facet_counts(
+        session, repository_id, include_unverified=include_unverified, scoped=True
+    )
+    judged = not await any_unjudged(session, repository_id, "causes")
+    scopes = scope_counts(groups, judged=judged)
+    every = scopes["all"]
+    return PerformanceHeadline(
+        now=scopes["now"],
+        production=scopes["production"],
+        all=every,
+        per_10k_loc=round(10000.0 * every / covered_nloc, 2) if covered_nloc > 0 else None,
+    )
+
+
+async def performance_area_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    include_unverified: bool = False,
+    **filters: Any,
+) -> list[tuple[str, str, int]]:
+    """``(file_path, actionability_state, count)`` over the rows *filters*
+    (the serving layer's ``store_filters``) list, for the area facet."""
+    result = await session.execute(
+        select(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            func.count(),
+        )
+        .where(*_predicates(repository_id, include_unverified=include_unverified, **filters))
+        .group_by(PerformanceOpportunity.file_path, PerformanceOpportunity.actionability_state)
+    )
+    return [(row[0], row[1], int(row[2])) for row in result.all()]
+
+
+_ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate", "expected")
+"""The states a rollup breaks down. Named, so a fifth cannot vanish silently."""
+
+
+class PerformanceFileRollup(NamedTuple):
+    """One file's open performance burden, folded from the grouped counts."""
+
+    file_path: str
+    opportunities: int
+    observations: int
+    plan_ready: int
+    advisory: int
+    investigate: int
+    expected: int
+    best_rank: int
+    """Lowest ``rank_position`` on the file, so a map can rank files by cause."""
+    queued: int = 0
+    """Causes in the default queue: what a map colours, as the headline leads with them."""
+    queued_states: frozenset[str] = frozenset()
+    """The actionability states among those queued causes."""
+
+
+async def gated_performance_counts(
+    session: AsyncSession, repository_id: str, *, include_unverified: bool = False
+) -> dict[str, dict]:
+    """The open opportunities a language gate holds back, by language."""
+    return await gated_counts(
+        session,
+        "performance",
+        PerformanceOpportunity,
+        PerformanceOpportunity.repository_id == repository_id,
+        PerformanceOpportunity.status == "open",
+        kind_col=PerformanceOpportunity.biomarker_type,
+        include_unverified=include_unverified,
+    )
+
+
+def _fold_rollups(groups: Any) -> list[PerformanceFileRollup]:
+    """One rollup per file from the grouped ``performance_file_rollups`` rows."""
+    folded: dict[str, dict[str, int]] = {}
+    queued_states: dict[str, set[str]] = {}
+    for path, state, count, observations, best_rank, eligible in groups:
+        if not path:
+            continue
+        # The stored verdict: a row stored before causes were judged counts as
+        # not queued until the next index judges it.
+        if eligible:
+            queued_states.setdefault(path, set()).add(state)
+        row = folded.setdefault(
+            path,
+            {
+                "opportunities": 0,
+                "observations": 0,
+                "plan_ready": 0,
+                "advisory": 0,
+                "investigate": 0,
+                "expected": 0,
+                "best_rank": best_rank or 0,
+                "queued": 0,
+            },
+        )
+        row["queued"] += int(count or 0) if eligible else 0
+        row["opportunities"] += int(count or 0)
+        row["observations"] += int(observations or 0)
+        if state in _ACTIONABILITY_STATES:
+            row[state] += int(count or 0)
+        row["best_rank"] = min(row["best_rank"], int(best_rank or 0))
+    rollups = [
+        PerformanceFileRollup(
+            file_path=path,
+            opportunities=row["opportunities"],
+            observations=row["observations"],
+            plan_ready=row["plan_ready"],
+            advisory=row["advisory"],
+            investigate=row["investigate"],
+            expected=row["expected"],
+            best_rank=row["best_rank"],
+            queued=row["queued"],
+            queued_states=frozenset(queued_states.get(path, ())),
+        )
+        for path, row in folded.items()
+    ]
+    return rollups
+
+
+async def performance_file_rollups(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: tuple[str, ...] | None = None,
+) -> list[PerformanceFileRollup]:
+    """Per-file burden for every file carrying an open opportunity.
+
+    One indexed aggregate over ``(repository_id, status, file_path)`` returning
+    a few rows per file rather than one per observation, so a caller
+    that needs the whole repository still pays a grouped scan and not a
+    per-file query. Ordered best-rank first, which is the order a bounded map
+    feed admits files in.
+    """
+    where = _predicates(repository_id, file_paths=file_paths)
+    result = await session.execute(
+        select(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            func.count(),
+            func.sum(PerformanceOpportunity.observations_total),
+            func.min(PerformanceOpportunity.rank_position),
+            PerformanceOpportunity.queue_eligible,
+        )
+        .where(*where)
+        .group_by(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            PerformanceOpportunity.queue_eligible,
+        )
+    )
+    rollups = _fold_rollups(result.all())
+    # Best rank first, then path, so the order a cap is applied against is
+    # total and does not move between two reads of the same store.
+    rollups.sort(key=lambda r: (r.best_rank, r.file_path))
+    return rollups
+
+
+async def get_performance_plan_rows(
+    session: AsyncSession, repository_id: str, opportunity_ids: list[str]
+) -> dict[str, RefactoringSuggestion]:
+    """The plans for one page of opportunities, in one indexed batch."""
+    if not opportunity_ids:
+        return {}
+    rows = (
+        (
+            await session.execute(
+                select(RefactoringSuggestion).where(
+                    RefactoringSuggestion.repository_id == repository_id,
+                    RefactoringSuggestion.refactoring_type == _PLAN_TYPE,
+                    RefactoringSuggestion.opportunity_id.in_(opportunity_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    matches: dict[str, RefactoringSuggestion] = {}
+    for row in rows:
+        # The writer replaces every plan for the repository, so one per cause is
+        # what a store this writer produced holds. Choosing deterministically
+        # keeps a store an older writer left with two from returning a different
+        # plan on every read.
+        key = row.opportunity_id
+        if key and (key not in matches or row.id < matches[key].id):
+            matches[key] = row
+    return matches
+
+
+async def list_opportunity_evidence(
+    session: AsyncSession,
+    repository_id: str,
+    opportunity_id: str,
+    *,
+    limit: int = 8,
+    offset: int = 0,
+    total: int | None = None,
+) -> tuple[list[Any], int]:
+    """One page of the observations behind a cause, and their exact total.
+
+    A caller holding the opportunity row already knows the total, and it is the
+    same number over the same rows in the same transaction, so passing it in
+    saves a count.
+    """
+    where = [
+        HealthFinding.repository_id == repository_id,
+        HealthFinding.status == "open",
+        HealthFinding.dimension == "performance",
+        HealthFinding.opportunity_id == opportunity_id,
+    ]
+    if total is None:
+        total = int(
+            (
+                await session.execute(
+                    select(func.count()).select_from(HealthFinding).where(*where)
+                )
+            ).scalar_one()
+        )
+    rows = (
+        await session.execute(
+            select(*_OBSERVATION_COLUMNS)
+            .where(*where)
+            .order_by(
+                HealthFinding.file_path.asc(),
+                HealthFinding.line_start.asc(),
+                HealthFinding.id.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return list(rows), total
+
+
+async def list_evidence_for_opportunities(
+    session: AsyncSession,
+    repository_id: str,
+    opportunity_ids: list[str],
+    *,
+    per_opportunity: int = 3,
+) -> dict[str, list[Any]]:
+    """A few evidence rows for each opportunity on a page, in one statement.
+
+    Ranked inside the database rather than fetched and trimmed afterwards, so
+    a page containing one very large cause still reads a bounded number of
+    rows. Both supported backends implement the window function this uses.
+    """
+    if not opportunity_ids or per_opportunity <= 0:
+        return {}
+    ranked = (
+        select(
+            *_OBSERVATION_COLUMNS,
+            func.row_number()
+            .over(
+                partition_by=HealthFinding.opportunity_id,
+                order_by=(
+                    HealthFinding.file_path.asc(),
+                    HealthFinding.line_start.asc(),
+                    HealthFinding.id.asc(),
+                ),
+            )
+            .label("position"),
+        )
+        .where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+            HealthFinding.dimension == "performance",
+            HealthFinding.opportunity_id.in_(opportunity_ids),
+        )
+        .subquery()
+    )
+    rows = (
+        await session.execute(select(ranked).where(ranked.c.position <= per_opportunity))
+    ).all()
+    grouped: dict[str, list[Any]] = {}
+    for row in sorted(rows, key=lambda item: item.position):
+        grouped.setdefault(row.opportunity_id, []).append(row)
+    return grouped
+
+
+async def get_health_finding_by_public_id(
+    session: AsyncSession, repository_id: str, public_id: str
+) -> HealthFinding | None:
+    """One finding by its quoted public id, through the index."""
+    result = await session.execute(
+        select(HealthFinding)
+        .where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.public_id == public_id,
+        )
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+__all__ = [
+    "PerformanceHeadline",
+    "finalize_performance_opportunities",
+    "gated_performance_counts",
+    "get_health_finding_by_public_id",
+    "get_performance_opportunity",
+    "get_performance_plan_rows",
+    "get_performance_summary",
+    "list_evidence_for_opportunities",
+    "list_opportunity_evidence",
+    "list_performance_opportunities",
+    "opportunity_details",
+    "performance_facet_counts",
+    "performance_headline",
+]

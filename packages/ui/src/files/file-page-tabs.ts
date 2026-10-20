@@ -47,7 +47,7 @@ export const FILE_TAB_LABEL: Record<FilePageTab, string> = {
 export const FILE_TAB_BLURB: Record<FilePageTab, string> = {
   overview: "The shape of the file: what it holds, what it touches, and what needs attention.",
   doc: "What Repowise has written about this file.",
-  health: "Defect risk, the biomarkers deducted from it, and how each function churns.",
+  health: "Code health, the markers deducted from it, and how each function churns.",
   history: "What git knows about this file — how often it changes, who changes it, and what moves with it.",
   decisions: "Architectural decisions recorded against this file.",
   graph: "Where this file sits in the indexed dependency graph.",

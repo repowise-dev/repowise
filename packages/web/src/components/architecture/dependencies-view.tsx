@@ -20,6 +20,7 @@ import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 import type {
   ExternalSystemImportingFiles,
   ExternalSystemRelationshipGraph,
@@ -48,6 +49,7 @@ interface ActiveRequest {
 }
 
 export function DependenciesView({ repoId }: { repoId: string }) {
+  const t = useTranslations("architecture");
   const summaryAbortRef = useRef<AbortController | null>(null);
   const relationshipsAbortRef = useRef<ActiveRequest | null>(null);
   const filesAbortRef = useRef<ActiveRequest | null>(null);
@@ -225,10 +227,10 @@ export function DependenciesView({ repoId }: { repoId: string }) {
         <div className="min-w-0">
           <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
             <Package className="h-5 w-5 text-[var(--color-accent-primary)]" />
-            External dependencies
+            {t("dependencies.title")}
           </h1>
           <p className="max-w-3xl text-sm text-[var(--color-text-secondary)]">
-            Declared third-party packages, joined to persisted import-graph evidence. Select a package to inspect declaration counts, versions, and importing files.
+            {t("dependencies.description")}
           </p>
         </div>
         {(scope === "all" || (data?.excluded_declarations ?? 0) > 0) ? <div className="shrink-0">
@@ -245,24 +247,29 @@ export function DependenciesView({ repoId }: { repoId: string }) {
               }}
               className="h-4 w-4 rounded border-[var(--color-border-default)] accent-[var(--color-accent-primary)]"
             />
-            Include auxiliary declarations
+            {t("dependencies.includeAuxiliary")}
           </label>
           <p className="mt-1 max-w-xs text-right text-2xs text-[var(--color-text-tertiary)]">
             {scope === "primary"
-              ? `${data?.excluded_declarations ?? 0} declarations from auxiliary directories excluded`
-              : "Showing primary and auxiliary directories present in this indexed checkout"}
+              ? t("dependencies.auxiliaryExcluded", {
+                  count: data?.excluded_declarations ?? 0,
+                })
+              : t("dependencies.showingAll")}
           </p>
         </div> : null}
       </div>
 
       {error && !data ? (
         <ApiError
-          title="Couldn't load external dependencies"
+          title={t("dependencies.loadFailed")}
           message={toFriendlyMessage(error)}
           onRetry={() => void mutate()}
         />
       ) : isLoading || !data ? (
-        <div className="space-y-4" aria-label="Loading external dependencies">
+        <div
+          className="space-y-4"
+          aria-label={t("dependencies.loading")}
+        >
           <Skeleton className="h-20 w-full" />
           <Skeleton className="h-9 w-full" />
           {Array.from({ length: 8 }).map((_, index) => (

@@ -35,7 +35,7 @@ from __future__ import annotations
 # rendered prompt is byte-identical. Bump when a builder or template change
 # should reach already-cached pages. (File pages have an equivalent in
 # ``_generation_fingerprint``; onboarding pages had none until this.)
-ONBOARDING_GENERATION_VERSION = "3"
+ONBOARDING_GENERATION_VERSION = "4"
 
 # ---- Slot identifiers ----
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from repowise.cli.commands.augment_cmd.session_start import _CORE_TOOLS
 from repowise.core.generation.editor_files.tool_table import TOOL_TABLE_ROWS
-from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
+from repowise.core.registry.tool_selection import LEAN_TOOLS
 
 
 def test_get_symbol_is_still_served():

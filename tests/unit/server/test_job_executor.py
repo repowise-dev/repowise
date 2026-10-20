@@ -14,10 +14,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from repowise.core.persistence.crud import upsert_generation_job, upsert_repository
+from repowise.core.persistence.crud import (
+    get_generation_job,
+    update_job_status,
+    upsert_generation_job,
+    upsert_repository,
+)
 from repowise.server.job_executor import (
+    JobProgressCallback,
     _build_generation_config,
     _incremental_page_regen,
+    _plan_incremental_page_regen,
     _repo_exclude_patterns,
     execute_job,
 )
@@ -337,6 +344,40 @@ async def test_incremental_page_regen_passes_repo_path(tmp_path):
 
     generator.generate_all.assert_awaited_once()
     assert generator.generate_all.await_args.kwargs["repo_path"] == Path(repo_path)
+
+
+@pytest.mark.asyncio
+async def test_incremental_page_regen_offloads_change_detection(session_factory, tmp_path):
+    """Async stale lookup feeds the offloaded Git and graph planning unit."""
+    result = SimpleNamespace()
+    to_thread = AsyncMock(return_value=None)
+    stale_pages = {"foo.py": 123.0}
+
+    with (
+        patch("repowise.server.job_executor.asyncio.to_thread", to_thread),
+        patch(
+            "repowise.core.persistence.get_stale_file_page_ages",
+            AsyncMock(return_value=stale_pages),
+        ),
+    ):
+        pages = await _incremental_page_regen(
+            tmp_path,
+            result,
+            llm_client=object(),
+            job_config={"before": "base-sha"},
+            progress=None,
+            session_factory=session_factory,
+            repo_id="repo-id",
+        )
+
+    assert pages == []
+    to_thread.assert_awaited_once_with(
+        _plan_incremental_page_regen,
+        tmp_path,
+        result,
+        {"before": "base-sha"},
+        stale_pages,
+    )
 
 
 @pytest.mark.asyncio
@@ -671,6 +712,43 @@ async def test_execute_job_defaults_to_sync_when_mode_empty_string(session_facto
 
 
 @pytest.mark.asyncio
+async def test_execute_job_resolves_the_provider_the_ui_picked_for_this_repo(
+    session_factory, tmp_path
+):
+    """The dashboard's provider picker persists its choice per repo, keyed by
+    repo id. Resolving on path alone skipped that entry -- the most specific
+    step in the resolver, and the only one carrying a deliberate user decision
+    -- so a repo whose settings named a provider still indexed with whatever
+    auto-detection guessed from the server's own environment.
+    """
+    async with session_factory() as session:
+        repo = await upsert_repository(session, name="test-repo", local_path=str(tmp_path))
+        job = await upsert_generation_job(
+            session,
+            repository_id=repo.id,
+            config={"mode": "sync"},
+        )
+        await session.commit()
+        job_id, repo_id = job.id, repo.id
+
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    get_provider_mock = MagicMock(side_effect=RuntimeError("no provider"))
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=_fake_result())),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            get_provider_mock,
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    get_provider_mock.assert_called_once()
+    assert get_provider_mock.call_args.kwargs.get("repo_id") == repo_id
+
+
+@pytest.mark.asyncio
 async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
     """A job with mode='generate' passes validation and dispatches to _run_generate_job."""
     async with session_factory() as session:
@@ -697,3 +775,46 @@ async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
 
     run_generate_mock.assert_awaited_once()
 
+
+@pytest.mark.asyncio
+async def test_phase_start_with_unknown_total_clears_stale_denominator(session_factory, tmp_path):
+    """A phase that starts with total=None must zero out a previous phase's
+    total_pages, not leave the record pairing a fresh numerator with a
+    denominator that describes different work (issue #2175)."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+
+    async with session_factory() as session:
+        await update_job_status(session, job_id, "running", completed_pages=241, total_pages=5)
+        await session.commit()
+
+    callback = JobProgressCallback(job_id, session_factory)
+    callback.on_phase_start("generation", None)
+    await callback.drain_and_stop()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert job.total_pages == 0
+        assert job.completed_pages == 0
+
+
+@pytest.mark.asyncio
+async def test_update_job_status_without_total_pages_preserves_existing_value(
+    session_factory, tmp_path
+):
+    """Callers that omit total_pages (None) must keep the record's existing
+    total unchanged, distinct from JobProgressCallback explicitly zeroing it
+    for an unknown-total phase."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+
+    async with session_factory() as session:
+        await update_job_status(session, job_id, "running", completed_pages=241, total_pages=5)
+        await session.commit()
+
+    async with session_factory() as session:
+        await update_job_status(session, job_id, "running", completed_pages=250)
+        await session.commit()
+
+    async with session_factory() as session:
+        job = await get_generation_job(session, job_id)
+        assert job.total_pages == 5
+        assert job.completed_pages == 250

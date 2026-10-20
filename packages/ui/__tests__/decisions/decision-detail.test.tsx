@@ -149,6 +149,26 @@ describe("DecisionDetail", () => {
     expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
   });
 
+  it("says when the governed code last moved, once the field is populated", () => {
+    // The line is guarded on the field, which no writer filled until the
+    // staleness pass began deriving it, so it had never rendered.
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ last_code_change: "2026-03-04T05:06:07Z" })}
+        adapter={makeAdapter()}
+      />,
+    );
+
+    expect(screen.getByText(/Affected files last changed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+  });
+
+  it("says nothing about the governed code when the date is unknown", () => {
+    renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
+
+    expect(screen.queryByText(/Affected files last changed/)).not.toBeInTheDocument();
+  });
+
   it("reports what moved as a count, not as a proportion", () => {
     // Was "Staleness 42%" in a meta ribbon. A proportion has no reading at a
     // glance; the count it is a proportion of does.

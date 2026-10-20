@@ -31,6 +31,41 @@
   body: (compound_statement)
 ) @symbol.cpp_export_type
 
+; Export-macro forward declarations have the same split-name shape, but the
+; real type name is the declaration's bare declarator and there is no body.
+(declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+; The same forward-declaration shape uses field nodes inside a class body.
+(field_declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(field_declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
 ; Function definition: ReturnType funcName(params) { body }
 ; The name is nested inside function_declarator
 (function_definition
@@ -75,6 +110,55 @@
   )
 ) @symbol.def
 
+; A definition returning a pointer or a reference wraps the function_declarator:
+; ``Node *make(...)``, ``char **argv(...)``, ``Foo& Foo::operator=(...)``, and a
+; function returning a function pointer, ``int (*handler(int k))(int)``.
+; Queries cannot recurse, so each wrapper depth is listed (up to two pointer
+; levels; ``T ***f()`` is not matched); the name shapes are
+; the ones the unwrapped patterns above accept. ``reference_declarator`` does
+; not name its declarator field, so its child is matched unnamed.
+(function_definition
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: [
+            (identifier) @symbol.name
+            (field_identifier) @symbol.name
+            (qualified_identifier name: (identifier) @symbol.name)
+            (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+            (qualified_identifier name: (operator_name) @symbol.name)
+          ]
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: [
+          (identifier) @symbol.name
+          (field_identifier) @symbol.name
+          (qualified_identifier name: (identifier) @symbol.name)
+          (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
+          (qualified_identifier name: (operator_name) @symbol.name)
+        ]
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
+) @symbol.def
+
 ; Class
 (class_specifier
   name: (type_identifier) @symbol.name
@@ -109,16 +193,6 @@
   )
 ) @symbol.def
 
-; Template function: template<typename T> T func(T x) { ... }
-(template_declaration
-  (function_definition
-    declarator: (function_declarator
-      declarator: (identifier) @symbol.name
-      parameters: (parameter_list) @symbol.params
-    )
-  )
-) @symbol.def
-
 ; typedef struct { ... } MyType;
 (type_definition
   type: (struct_specifier)
@@ -142,12 +216,45 @@
   parameters: (preproc_params) @symbol.params
 ) @symbol.def
 
+; Generic preprocessor calls cover #undef and pragma-based macro restoration.
+(preproc_call) @symbol.cpp_preproc_call
+
+; Included files can redefine or undef any locally known macro. The one-file
+; parser cannot inspect that state transition, so includes form a conservative
+; recovery barrier until a later local definition establishes a new state.
+(preproc_include) @symbol.cpp_macro_state_barrier
+
 ; Forward declarations: void func(int x);
 (declaration
   declarator: (function_declarator
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params
   )
+) @symbol.def
+
+; ... returning a pointer or a reference, the same wrappers as definitions
+(declaration
+  declarator: [
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @symbol.name
+          parameters: (parameter_list) @symbol.params)))
+    (reference_declarator
+      (function_declarator
+        declarator: (identifier) @symbol.name
+        parameters: (parameter_list) @symbol.params))
+    (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (function_declarator
+            declarator: (identifier) @symbol.name
+            parameters: (parameter_list) @symbol.params))))
+  ]
 ) @symbol.def
 
 ; In-class member-function declaration: ``void Seek(const Slice&);``
@@ -291,6 +398,25 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; The same call once more, for a three-part qualifier: ns::util::fn(args).
+; The grammar nests qualified_identifier left-recursively (see the two-level
+; qualified function definition above), so the outer node's name field is
+; itself a qualified_identifier rather than an identifier, neither pattern
+; above can match it, and no call site was produced at all for this shape
+; (#1918). Capturing the innermost identifier as the target and its adjacent
+; scope as the qualifier mirrors how a two-part call is already captured;
+; the deeper namespace prefix (ns) is dropped the same way the class-name
+; extractor already drops it for definitions.
+(call_expression
+  function: (qualified_identifier
+    name: (qualified_identifier
+      scope: (namespace_identifier) @call.scope
+      name: (identifier) @call.target
+    )
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (field_expression
@@ -308,7 +434,7 @@
 ; carries no import statement naming the type — only the ``#include``.
 ; Without these captures every header type reads as an unused export. The
 ; shared ``@param.type`` capture name routes through the C head extractor
-; (see parser_helpers.TYPE_HEAD_EXTRACTORS); pointer/array declarator
+; (see lang_helpers.type_heads.TYPE_HEAD_EXTRACTORS); pointer/array declarator
 ; wrapping lives on the declarator side, and primitive builtins are filtered.
 
 ; Parameter types: void f(Widget *w)

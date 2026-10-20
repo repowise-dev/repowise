@@ -9,8 +9,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from repowise.core.analysis.health.coverage import (
-    STALE_DRIFT_PCT,
-    STALE_MIN_MEASURED,
+    DRIFT_MIN_MEASURED,
+    DRIFT_PCT,
     decay_for_file,
     decay_since,
     measurement_ref,
@@ -46,7 +46,7 @@ def test_no_covered_lines_does_not_divide_by_zero() -> None:
     d = decay_for_file(set(), {1, 2, 3})
     assert (d.measured, d.confirmed, d.invalidated) == (0, 0, 0)
     assert d.drift_pct == 0.0
-    assert d.is_stale is False
+    assert d.is_drifted is False
 
 
 def test_confirmed_and_invalidated_always_sum_to_measured() -> None:
@@ -66,22 +66,22 @@ def test_small_file_is_never_stale_on_ratio_alone() -> None:
     """
     d = decay_for_file({1}, {1})
     assert d.drift_pct == 100.0
-    assert d.is_stale is False
+    assert d.is_drifted is False
 
 
 def test_stale_once_the_file_is_big_enough_and_drift_clears_the_bar() -> None:
-    covered = set(range(1, STALE_MIN_MEASURED + 1))
+    covered = set(range(1, DRIFT_MIN_MEASURED + 1))
     changed = set(list(covered)[:3])  # 30% of 10
     d = decay_for_file(covered, changed)
-    assert d.measured >= STALE_MIN_MEASURED
-    assert d.drift_pct > STALE_DRIFT_PCT
-    assert d.is_stale is True
+    assert d.measured >= DRIFT_MIN_MEASURED
+    assert d.drift_pct > DRIFT_PCT
+    assert d.is_drifted is True
 
 
 def test_big_file_under_the_bar_is_not_stale() -> None:
     covered = set(range(1, 101))
     d = decay_for_file(covered, {1, 2})  # 2%
-    assert d.is_stale is False
+    assert d.is_drifted is False
 
 
 # --- end-to-end against a real git repo ------------------------------------

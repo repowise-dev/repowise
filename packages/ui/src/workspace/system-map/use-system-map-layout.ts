@@ -9,7 +9,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
-import type { SystemGraph } from "@repowise-dev/types";
+import type { NodeArchitectureRole, SystemGraph } from "@repowise-dev/types";
+import { roleStyle } from "./architecture";
 import {
   applyCollapse,
   applyView,
@@ -32,6 +33,8 @@ export interface UseSystemMapLayoutArgs {
   /** Repo health by repo alias, joined onto service nodes (optional). */
   healthByRepo?: ReadonlyMap<string, RepoHealth>;
   overlay?: SystemMapOverlay;
+  /** Per-service role, named on the node. Service ids only, so not in repo view. */
+  roleByNodeId?: ReadonlyMap<string, NodeArchitectureRole>;
 }
 
 export interface SystemMapLayout {
@@ -53,6 +56,7 @@ export function useSystemMapLayout({
   view,
   healthByRepo,
   overlay,
+  roleByNodeId,
 }: UseSystemMapLayoutArgs): SystemMapLayout {
   const viewGraph = useMemo(() => (graph ? applyView(graph, view) : null), [graph, view]);
 
@@ -127,10 +131,14 @@ export function useSystemMapLayout({
           node,
           health: healthByRepo?.get(node.repo) ?? null,
           overlay: resolveNodeOverlay(overlay, node.id),
+          role: (() => {
+            const r = view.collapsed ? undefined : roleByNodeId?.get(node.id);
+            return r ? roleStyle(r.role).label : null;
+          })(),
         },
       };
     });
-  }, [viewGraph, positions, healthByRepo, overlay]);
+  }, [viewGraph, positions, healthByRepo, overlay, roleByNodeId, view.collapsed]);
 
   const edges = useMemo<Edge<SystemMapEdgeData>[]>(() => {
     if (!viewGraph) return [];

@@ -4,29 +4,16 @@ import { useMemo, useState } from "react";
 // Value imports must come from the package root, not the `/health` subpath:
 // the vite/rollup base alias clobbers subpath value resolution. Type-only
 // subpath imports are fine (erased before resolution).
-import { bandForScore } from "@repowise-dev/types";
-import type { ChurnComplexityPoint, HealthBand } from "@repowise-dev/types/health";
+import { bandForScore, formatScore } from "@repowise-dev/types";
+import type { ChurnComplexityPoint } from "@repowise-dev/types/health";
+import { median } from "../lib/math";
+import { ordinal } from "../lib/format";
+import { HEALTH_BAND_FILL } from "./tokens";
 
 export interface ChurnComplexityQuadrantProps {
   points: ChurnComplexityPoint[];
   onSelect?: (point: ChurnComplexityPoint) => void;
   height?: number;
-}
-
-/* SVG fill class per canonical health band (the 3-bucket currency). Literal
- * strings so Tailwind's static scanner keeps them. */
-const BAND_FILL: Record<HealthBand, string> = {
-  alert: "fill-[var(--color-error)]",
-  warning: "fill-[var(--color-caution)]",
-  healthy: "fill-[var(--color-success)]",
-};
-
-/** Median of a numeric list (the data-driven quadrant split). */
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
 }
 
 /**
@@ -140,7 +127,7 @@ export function ChurnComplexityQuadrant({
             const cx = xScale(p.commit_count_90d);
             const cy = yScale(p.max_ccn);
             const isHovered = hovered?.file_path === p.file_path;
-            const fillCls = BAND_FILL[bandForScore(p.score)];
+            const fillCls = HEALTH_BAND_FILL[bandForScore(p.score)];
             return (
               <circle
                 key={p.file_path}
@@ -155,7 +142,7 @@ export function ChurnComplexityQuadrant({
                 onMouseLeave={() => setHovered(null)}
                 onClick={onSelect ? () => onSelect(p) : undefined}
               >
-                <title>{`${p.file_path}\n${p.commit_count_90d} commits/90d (${Math.round(p.churn_percentile)}th pct) · CCN ${p.max_ccn} · NLOC ${p.nloc} · score ${p.score.toFixed(1)}`}</title>
+                <title>{`${p.file_path}\n${p.commit_count_90d} commits/90d (${ordinal(Math.round(p.churn_percentile))} pct) · CCN ${p.max_ccn} · NLOC ${p.nloc} · score ${formatScore(p.score)}`}</title>
               </circle>
             );
           })}
@@ -164,7 +151,7 @@ export function ChurnComplexityQuadrant({
           <div className="pointer-events-none absolute bottom-2 left-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs shadow-md">
             <span className="font-mono text-[var(--color-text-primary)]">{hovered.file_path}</span>
             <span className="ml-2 text-[var(--color-text-tertiary)]">
-              {hovered.commit_count_90d} commits · CCN {hovered.max_ccn} · {hovered.score.toFixed(1)}
+              {hovered.commit_count_90d} commits · CCN {hovered.max_ccn} · {formatScore(hovered.score)}
             </span>
           </div>
         ) : null}

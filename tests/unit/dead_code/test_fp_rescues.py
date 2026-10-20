@@ -131,6 +131,32 @@ def test_export_alias_without_importer_still_flagged(tmp_path: Path):
     assert "Widget" in names
 
 
+def test_a_default_export_by_name_is_used_through_default(tmp_path: Path):
+    # ``export { default as cssQuery } from "./css"`` imports ``default``.
+    src = "const cssQuery = String.raw`(rule_set)`\n\nexport default cssQuery\n"
+    parsed = {"q/css.ts": _parsed_stub(tmp_path, "q/css.ts", src)}
+    g = _build_graph(
+        nodes={
+            "q/css.ts": _file_node([_sym("cssQuery"), _sym("unusedHelper", start_line=7)]),
+            "q/index.ts": _file_node([]),
+        },
+        edges=[
+            ("q/index.ts", "q/css.ts", {"edge_type": "imports", "imported_names": ["default"]}),
+        ],
+    )
+    names = _unused_export_names(DeadCodeAnalyzer(g, git_meta_map={}, parsed_files=parsed))
+    assert "cssQuery" not in names
+    assert "unusedHelper" in names
+
+
+def test_a_default_export_by_name_is_recorded_in_a_crlf_file():
+    from repowise.core.ingestion.extractors.visibility import ts_export_aliases
+
+    CRLF = chr(13) + chr(10)  # a Windows checkout's line ending
+    src = "const cssQuery = 1" + CRLF + CRLF + "export default cssQuery" + CRLF
+    assert ts_export_aliases(src) == {"default": "cssQuery"}
+
+
 def test_bundler_alias_shim_rescued(tmp_path: Path):
     # Both alias shapes seen in the wild: a plain relative string and a
     # bare segment fed through ``path.resolve(here, ...)``.

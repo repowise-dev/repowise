@@ -128,22 +128,22 @@ def test_the_range_scoped_set_is_exactly_these_steps():
     re-walks whatever it skipped. ``External systems refresh`` is the reverse,
     since it only runs when a dependency manifest is in *this* diff.
     """
-    import re
-    from pathlib import Path
+    import repowise.core.pipeline.incremental.persist_index as mod
 
-    import repowise.core.pipeline.incremental as mod
-
-    source = Path(mod.__file__).read_text(encoding="utf-8")
-    tagged = set(re.findall(r'_skip\(\s*"([^"]+)",\s*exc,\s*range_scoped=True', source))
+    tagged = {
+        step.name for step in (*mod.INCREMENTAL_STEPS, *mod.CLEANUP_STEPS) if step.range_scoped
+    }
     assert tagged == {
         "Tombstone marking",
         "Git persist",
         "Dead-code persist",
         "Health persist",
         "Symbol persist",
+        "Security persist",
         "Graph edges persist",
         "External systems refresh",
         "Tombstone full-text removal",
+        "Tombstone vector-store open",
     }
 
 
@@ -162,3 +162,83 @@ async def test_clean_run_marks_nothing(repo):
         failed_steps=failed_steps,
     )
     assert failed_steps == []
+
+
+async def test_vector_cleanup_open_failure_keeps_debt_for_retry(repo, monkeypatch):
+    import repowise.core.persistence.vector_store as vector_store_mod
+    from repowise.core.pipeline.cleanup_debt import (
+        load_cleanup_debt,
+        record_cleanup_debt,
+    )
+
+    orphan = "file_page:removed.py"
+    (repo / ".repowise" / "lancedb").mkdir()
+    record_cleanup_debt(repo, "vectors", {orphan})
+    opened = 0
+    deleted: list[str] = []
+
+    class _Store:
+        async def delete_many(self, page_ids):
+            deleted.extend(page_ids)
+
+    def _open(*args, **kwargs):
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            raise RuntimeError("lance unavailable")
+        return _Store()
+
+    monkeypatch.setattr(vector_store_mod, "LanceDBVectorStore", _open)
+
+    async def _persist_once() -> None:
+        await persist_incremental_index(
+            repo,
+            object(),
+            {},
+            None,
+            None,
+            [],
+            log=lambda _msg: None,
+            degraded=[],
+            failed_steps=[],
+        )
+
+    await _persist_once()
+    assert load_cleanup_debt(repo)["vectors"] == {orphan}
+    await _persist_once()
+    assert deleted == [orphan]
+    assert load_cleanup_debt(repo)["vectors"] == set()
+
+
+async def test_unwritable_cleanup_debt_still_degrades_the_step(repo, monkeypatch):
+    import repowise.core.persistence.vector_store as vector_store_mod
+    import repowise.core.pipeline.cleanup_debt as cleanup_debt_mod
+
+    cleanup_debt_mod.record_cleanup_debt(repo, "vectors", {"file_page:removed.py"})
+    (repo / ".repowise" / "lancedb").mkdir()
+
+    def _open(*args, **kwargs):
+        raise RuntimeError("lance unavailable")
+
+    def _ledger_fails(*args, **kwargs):
+        raise OSError("ledger is read-only")
+
+    monkeypatch.setattr(vector_store_mod, "LanceDBVectorStore", _open)
+    monkeypatch.setattr(cleanup_debt_mod, "record_cleanup_debt", _ledger_fails)
+
+    degraded: list[str] = []
+    failed_steps: list[str] = []
+    await persist_incremental_index(
+        repo,
+        object(),
+        {},
+        None,
+        None,
+        [],
+        log=lambda _msg: None,
+        degraded=degraded,
+        failed_steps=failed_steps,
+    )
+
+    assert "Tombstone vector-store open" in failed_steps
+    assert any(entry.startswith("Tombstone vector-store open:") for entry in degraded)

@@ -1,4 +1,4 @@
-"""Interactive mode selection, fast-mode offer, and advanced configuration."""
+"""Interactive advanced configuration and the questions it shares."""
 
 from __future__ import annotations
 
@@ -7,19 +7,17 @@ from typing import Any
 
 import click
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
-from rich.text import Text
 
 from repowise.cli.ui.brand import (
     BRAND,
-    BRAND_STYLE,
     DIM,
     VALUE,
     key_value_table,
     print_section,
 )
+from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, written_by
 from repowise.cli.ui.repo_scanner import (
     RepoScanInfo,
     estimated_documentable_files,
@@ -52,117 +50,6 @@ def should_offer_fast_mode(scan: RepoScanInfo | None) -> bool:
     return scan is not None and scan.total_files > LARGE_REPO_FILE_THRESHOLD
 
 
-def interactive_fast_mode_offer(
-    console: Console,
-    scan: RepoScanInfo | None,
-    *,
-    default_fast: bool,
-) -> bool:
-    """Offer fast mode after a large repo is detected. Returns True to use it.
-
-    Shown only when :func:`should_offer_fast_mode` is true. Fast mode is a quick
-    first index (dependency graph + essential git history, metrics in SQL) with
-    no per-file blame, no co-change walk, and no LLM docs — backfillable later.
-    """
-    n = scan.total_files if scan else 0
-    body = Text()
-    body.append("  Large repository detected — ", style="bold")
-    body.append(f"{n:,} files.\n\n", style=BRAND_STYLE)
-    body.append("  Fast mode runs a quick first index:\n", style="bold")
-    body.append("    • dependency graph + essential git history\n")
-    body.append("    • graph metrics materialized to SQL\n")
-    body.append("    • no per-file blame, no co-change walk, no LLM docs\n\n")
-    body.append("  You can backfill full git history and generate docs later.\n", style="dim")
-    console.print(
-        Panel(
-            body,
-            title="[bold]Fast first index?[/bold]",
-            border_style=BRAND,
-            padding=(1, 2),
-        )
-    )
-    return click.confirm("  Use fast mode?", default=default_fast)
-
-
-def interactive_mode_select(console: Console, *, title: str | None = None) -> str:
-    """Let the user choose full / index-only / advanced.
-
-    All three options index identically; what differs is how much of the wiki a
-    model writes, so the panel asks that rather than "how would you like to
-    index". *title* overrides the question for callers indexing more than one
-    repo (the workspace flow shows this same panel for a whole workspace).
-
-    Returns ``"full"``, ``"index_only"``, or ``"advanced"``.
-    """
-    body = Text()
-    body.append("  [1]", style=BRAND_STYLE)
-    body.append("  Everything  ", style="bold")
-    body.append("(recommended, needs an API key)\n", style="dim")
-    body.append("       Everything repowise can build: dependency graph, git history,\n")
-    body.append("       code health, architectural decisions, a model-written wiki,\n")
-    body.append("       architecture diagrams and API docs.\n")
-    body.append(
-        "       Costs a few cents to a few dollars; you see the estimate\n"
-        "       before anything runs.\n\n",
-        style="dim",
-    )
-
-    body.append("  [2]", style=BRAND_STYLE)
-    body.append("  No prose  ", style="bold")
-    body.append("(no key, no spend)\n", style="dim")
-    body.append("       Every page type still gets built, straight from the code.\n")
-    body.append("       Only the subsystem pages come out as outlines instead of prose;\n")
-    body.append("       add a key later and run repowise generate to fill them in.\n\n")
-
-    body.append("  [3]", style=BRAND_STYLE)
-    body.append("  Advanced\n", style="bold")
-    body.append("       Full control — turn AI docs on or off, then tune indexing\n")
-    body.append("       and generation (commit limit, exclude patterns, concurrency, ...)")
-
-    console.print(
-        Panel(
-            body,
-            title=f"[bold]{title or 'How much should repowise write?'}[/bold]",
-            border_style=BRAND,
-            padding=(1, 2),
-        )
-    )
-
-    choice = Prompt.ask(
-        "  Select mode",
-        choices=["1", "2", "3"],
-        default="1",
-        console=console,
-    )
-    return {"1": "full", "2": "index_only", "3": "advanced"}[choice]
-
-
-def interactive_generate_docs_toggle(console: Console) -> bool:
-    """Advanced-mode entry: ask whether to generate AI wiki docs.
-
-    Returns True for a full doc-generating run, False for an index-only run that
-    still flows through the indexing-configuration prompts. Indexing (graph, git,
-    code health, dead code) is free; only doc generation calls the LLM.
-    """
-    console.print()
-    console.print(
-        "  [dim]Model-written docs call the LLM (has a cost). Say no and you still "
-        "get a wiki,\n  rendered from the code's structure, for free.[/dim]"
-    )
-    return click.confirm("  Generate model-written wiki docs?", default=True)
-
-
-def interactive_customize_offer(console: Console, *, generate_docs: bool) -> bool:
-    """Offer to drop into advanced configuration from full / index-only modes.
-
-    Returns True when the user wants to tune the defaults rather than accept
-    them. The label tracks whether generation knobs are in scope.
-    """
-    what = "indexing & generation" if generate_docs else "indexing"
-    console.print()
-    return click.confirm(f"  Customize {what} options?", default=False)
-
-
 def prompt_wiki_style(console: Console) -> str:
     """Interactive picker for the wiki documentation style.
 
@@ -173,7 +60,7 @@ def prompt_wiki_style(console: Console) -> str:
     console.print("\n[bold]Documentation style[/bold]")
     for idx, spec in enumerate(styles, 1):
         marker = " [dim](default)[/dim]" if spec.name == DEFAULT_STYLE else ""
-        console.print(f"  {idx}. [{VALUE}]{spec.name}[/]{marker} — {spec.description}")
+        console.print(f"  {idx}. [{VALUE}]{spec.name}[/]{marker}: {spec.description}")
     default_idx = next((i for i, s in enumerate(styles, 1) if s.name == DEFAULT_STYLE), 1)
     choice = click.prompt(
         "  Choose a style",
@@ -273,9 +160,9 @@ def prompt_file_page_volume(
         console,
         "Page volume",
         f"About [bold]{estimate:,}[/bold] files here would each get a file page "
-        f"({_format_mb(estimate)} of wiki).\n"
-        "  File pages are rendered from structure, so they cost no model tokens — what\n"
-        "  the tail costs is wiki size, one embedding call each, and search results\n"
+        f"({_format_mb(estimate)} of documentation).\n"
+        "  File pages are built from code, so they cost no model tokens. What\n"
+        "  the tail costs is documentation size, one embedding call each, and search results\n"
         "  that restate what a subsystem page already says.",
     )
     if would_be_capped_anyway:
@@ -285,12 +172,12 @@ def prompt_file_page_volume(
         )
     console.print()
     console.print(
-        f"  [{BRAND}][1][/] Top [bold]{recommended:,}[/bold] by importance  [dim](recommended) — "
+        f"  [{BRAND}][1][/] Top [bold]{recommended:,}[/bold] by importance  [dim](recommended), "
         f"~{recommended:,} pages, {_format_mb(recommended)}[/dim]"
     )
     render_min, render_max = estimated_wiki_render_minutes(estimate)
     console.print(
-        f"  [{BRAND}][2][/] Every eligible file  [dim]— ~{estimate:,} pages, "
+        f"  [{BRAND}][2][/] Every eligible file  [dim]~{estimate:,} pages, "
         f"{_format_mb(estimate)}, roughly {render_min:,}-{render_max:,} min "
         "longer to render and embed[/dim]"
     )
@@ -300,7 +187,7 @@ def prompt_file_page_volume(
         # isatty() lied about being answerable (Windows Git Bash `< /dev/null`,
         # pty wrappers, `docker run -t` without -i). Take the recommendation and
         # keep going: an agent or CI job must never hang here.
-        console.print("  [dim]No answer available — taking the recommendation.[/dim]")
+        console.print("  [dim]No answer available, taking the recommendation.[/dim]")
         return recommended
     if choice == "1":
         return recommended
@@ -322,11 +209,13 @@ def _prompt_run_mode(
     # by default on large repos; off otherwise. Only offered for single-repo
     # init (allow_fast); the workspace path leaves this untouched.
     if allow_fast:
-        print_section(
-            console,
-            "Run mode",
-            "standard = full depth · fast = quick graph + essential git, no LLM docs",
-        )
+        blurb = f"standard = full depth · fast = {INDEX_ONLY.lower()}, quick graph + essential git"
+        if is_large:
+            blurb += (
+                f"\n  fast is the default here: it is recommended above "
+                f"{LARGE_REPO_FILE_THRESHOLD:,} files"
+            )
+        print_section(console, "Run mode", blurb)
         result["run_mode"] = click.prompt(
             "  Run mode",
             default="fast" if is_large else "standard",
@@ -375,25 +264,29 @@ def _prompt_exclude(
     return patterns
 
 
-def _prompt_git(console: Console, scan: RepoScanInfo | None, result: dict[str, Any]) -> None:
-    """Git-analysis section: commit limit + rename following."""
+def _prompt_git(
+    console: Console,
+    scan: RepoScanInfo | None,
+    result: dict[str, Any],
+    commit_limit: int | None = None,
+) -> None:
+    """Git-analysis section: commit limit + rename following.
+
+    *commit_limit* is the ``--commit-limit`` flag, offered as the default so
+    Enter keeps it.
+    """
     commit_hint = ""
     if scan and scan.total_commits:
         commit_hint = f" (repo has ~{scan.total_commits:,} total commits)"
     print_section(console, "Git analysis", f"Controls how deeply git history is analyzed{commit_hint}")
     console.print()
 
-    # Smart default based on repo size
-    default_limit = 500
-    if scan:
-        if scan.total_files < 500:
-            default_limit = 1000
-        elif scan.total_files > 5000:
-            default_limit = 200
+    # Imported here: this module must not load core.ingestion at import time.
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
     val = click.prompt(
         "  Max commits per file",
-        default=default_limit,
+        default=commit_limit or _DEFAULT_COMMIT_LIMIT,
         type=int,
     )
     val = max(1, min(val, 10000))
@@ -499,7 +392,7 @@ def _summary_rows(
         summary.append((label, value))
 
     # ── Indexing (always) ──────────────────────────────────────────────────
-    add("Generate docs", "yes" if generate_docs else "no (index only)")
+    add("Documentation", written_by() if generate_docs else BUILT_FROM_CODE)
     add("Skip tests", "yes" if result["skip_tests"] else "no")
     add("Skip infra", "yes" if result["skip_infra"] else "no")
     if result["include_submodules"]:
@@ -531,7 +424,7 @@ def _summary_rows(
             add("Reasoning", result["reasoning"])
         add("Embedder", result["embedder"])
         if result.get("wiki_style"):
-            add("Wiki style", result["wiki_style"])
+            add("Documentation style", result["wiki_style"])
         if result.get("language") and result["language"] != "en":
             add(
                 "Language",
@@ -551,8 +444,13 @@ def interactive_advanced_config(
     generate_docs: bool = True,
     wiki_style: str | None = None,
     language: str | None = None,
+    commit_limit: int | None = None,
+    ask_file_pages: bool = True,
 ) -> dict[str, Any]:
     """Prompt for advanced init options, grouped into logical sections.
+
+    *ask_file_pages* is off for a workspace: each repo keeps the file-page
+    cap in its own config.yaml, so one answer would apply nowhere.
 
     When *scan* is provided, uses it for smart defaults and contextual hints
     (file counts, suggested exclude patterns, etc.).
@@ -588,11 +486,11 @@ def interactive_advanced_config(
     _prompt_scope(console, scan, result)
     _prompt_run_mode(console, result, allow_fast=allow_fast, is_large=is_large)
     patterns = _prompt_exclude(console, scan, result)
-    _prompt_git(console, scan, result)
+    _prompt_git(console, scan, result, commit_limit)
     # Asked in both branches: an index-only run renders file pages too (they need
     # no model), so page volume is a real question either way. Fast mode renders
     # no wiki at all, so there is nothing to bound.
-    if result.get("run_mode") != "fast":
+    if ask_file_pages and result.get("run_mode") != "fast":
         result["max_file_pages"] = prompt_file_page_volume(console, scan)
     if generate_docs:
         _prompt_generation(
@@ -663,39 +561,8 @@ def _resolve_embedder_from_env() -> str:
     # already resolving to.
     if os.environ.get("EDENAI_API_KEY"):
         return "edenai"
-    return "mock"
+    # Same last tier as the shared resolver, or the advanced prompt would
+    # default to mock on a machine whose run header just said otherwise.
+    from repowise.cli.providers.keys import global_config_embedder
 
-
-def print_index_only_intro(console: Console, has_provider: bool = False) -> None:
-    """Show what index-only mode will do before starting.
-
-    A forecast, so no border — nothing here is a thing to act on, and it used to
-    carry the same box as the question two screens earlier.
-    """
-    print_section(console, "Index only", "No LLM calls. No API key. No cost.")
-    console.print()
-    # Bullets, not checkmarks: every green ✓ elsewhere in a run means "already
-    # done", and this is a forecast.
-    lines = [
-        "  [dim]•[/dim] Parse all source files (AST)",
-        "  [dim]•[/dim] Build dependency graph (PageRank, communities)",
-        "  [dim]•[/dim] Index git history (hotspots, ownership, co-changes)",
-        "  [dim]•[/dim] Detect dead code",
-        "  [dim]•[/dim] Extract architectural decisions",
-        "  [dim]•[/dim] Render the wiki from structure: file, module, layer and",
-        "    cycle pages, the architecture diagram, the repo overview, API and",
-        "    infra pages, and the onboarding collection",
-        "  [dim]•[/dim] Set up MCP server for AI assistants",
-    ]
-    if has_provider:
-        lines.append(
-            "  [dim]•[/dim] [dim]Decision extraction enhanced (provider key detected)[/dim]"
-        )
-    for line in lines:
-        console.print(line)
-    console.print()
-    console.print(
-        "  [dim]The subsystem pages read as stubs. Add a key and run "
-        "[bold]repowise generate[/bold] to write them as prose.[/dim]"
-    )
-    console.print()
+    return global_config_embedder() or "mock"

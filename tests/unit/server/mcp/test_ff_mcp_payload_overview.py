@@ -1,6 +1,6 @@
 """Regression tests for get_overview payload quality:
 
-- the git-attributed file count is labelled distinctly (not "total_files"),
+- git health names the riskiest files in the editor files' order,
 - the knowledge map emits a contributor display name, never the raw email.
 """
 
@@ -30,15 +30,26 @@ def _git_row(**kw) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-# --- file-count labelling --------------------------------------------------
+# --- riskiest files --------------------------------------------------------
 
 
-def test_git_health_labels_git_attributed_count():
-    rows = [_git_row(file_path="a.py"), _git_row(file_path="b.py")]
-    out = _build_git_health(rows)
-    assert out["files_git_attributed"] == 2
-    # The ambiguous name is gone so it can't read as a parsed-file total.
-    assert "total_files_indexed" not in out
+def test_git_health_names_the_riskiest_files_bug_magnets_first(tmp_path):
+    rows = [
+        _git_row(file_path="churny.py", is_hotspot=True, churn_percentile=0.99),
+        _git_row(file_path="fixed.py", is_hotspot=True, fix_mass=4.0, churn_percentile=0.5),
+        _git_row(file_path="magnet.py", bug_magnet=True, fix_mass=1.0),
+        _git_row(file_path="gone.py", bug_magnet=True, fix_mass=9.0),
+        _git_row(file_path="quiet.py"),
+    ]
+    for name in ("churny.py", "fixed.py", "magnet.py", "quiet.py"):
+        (tmp_path / name).write_text("")
+
+    out = _build_git_health(rows, tmp_path)
+
+    # A row that outlived its file is not named.
+    assert out["riskiest_files"] == ["magnet.py", "fixed.py", "churny.py"]
+    assert out["hotspot_count"] == 2
+    assert "files_git_attributed" not in out
 
 
 # --- contributor-email privacy ---------------------------------------------

@@ -18,6 +18,9 @@ from repowise.server.mcp_server._budget import (
     resolve_response_budget_repo_root,
 )
 
+# These tests read the accounting the lean envelope leaves out by default.
+pytestmark = pytest.mark.usefixtures("debug_meta")
+
 
 def _payload(tool: str, pad: int) -> dict[str, Any]:
     if tool == "get_health":
@@ -111,6 +114,12 @@ def _signature() -> inspect.Signature:
 
 
 def _enforce(tool: str, payload: dict[str, Any], include: list[str] | None = None) -> dict:
+    # A tool registers its budget hooks when its module loads, which in
+    # production has always happened by the time the middleware calls through.
+    # Loading the surface is what makes a direct call mirror that.
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
     kwargs = {"include": include} if include is not None else {}
     return enforce_response_budget(
         tool,
@@ -223,9 +232,11 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
             for row in reductions
         )
     elif tool == "get_change_risk":
-        assert result["prior_fixes_total"] == 3
-        assert result["prior_fixes_emitted"] == 0
-        assert result["prior_fixes_reduced_reason"] == "response_budget"
+        # Diff-shape history sheds before the action blocks: fix_history's rows
+        # go first, and the directive/health_delta never do.
+        assert result["fix_history"]["files_total"] == 3
+        assert result["fix_history"]["files_emitted"] < 3
+        assert result["fix_history"]["files_reduced_reason"] == "response_budget"
     elif tool == "get_health":
         assert result["high_leverage_files_total"] == 3
         assert result["high_leverage_files_emitted"] < 3
@@ -255,43 +266,6 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
             assert f'"id": {row_id}' not in joined
 
 
-def test_health_budget_prunes_profiles_for_removed_plans(
-    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import repowise.server.mcp_server as mcp_mod
-
-    (tmp_path / ".repowise").mkdir()
-    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
-    plans = [
-        {"id": f"plan-{index}", "validation_profile_id": f"profile-{index}"}
-        for index in range(8)
-    ]
-    profiles = [
-        {
-            "id": f"profile-{index}",
-            "commands": [f"pytest tests/test_{index}.py " + "x" * 6_000],
-        }
-        for index in range(8)
-    ]
-    payload = {
-        "mode": "targets",
-        "targets": ["src/large.py"],
-        "refactoring_plans": plans,
-        "refactoring_plans_total": len(plans),
-        "validation_profiles": profiles,
-        "validation_profiles_total": len(profiles),
-        "_meta": {"contract_version": 1},
-    }
-
-    result = _enforce("get_health", payload, ["refactoring"])
-    referenced = {plan["validation_profile_id"] for plan in result["refactoring_plans"]}
-    retained = {profile["id"] for profile in result["validation_profiles"]}
-    assert retained == referenced
-    assert result["validation_profiles_emitted"] == len(retained)
-    assert result["validation_profiles_reduced_reason"] == "response_budget"
-    assert result["_meta"]["response_budget"]["serialized_chars"] <= EXPANDED_RESPONSE_CHARS
-
-
 def test_explicit_include_uses_the_expansion_tier(
     setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -314,7 +288,7 @@ def test_oversized_protected_answer_is_reduced_and_recoverable(
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
     payload = _payload("get_answer", 0)
-    payload["answer"] = "PROTECTED_ANSWER_" + "z" * 50_000
+    answer = payload["answer"] = "PROTECTED_ANSWER_" + "z" * 50_000
     result = _enforce("get_answer", payload)
 
     accounting = result["_meta"]["response_budget"]
@@ -325,9 +299,44 @@ def test_oversized_protected_answer_is_reduced_and_recoverable(
     refs = result["_meta"]["omitted"]["refs"]
     store = OmissionStore(default_store_path(tmp_path))
     try:
-        assert any("PROTECTED_ANSWER_" in (store.get(ref) or "") for ref in refs)
+        stored = [store.get(ref) or "" for ref in refs]
     finally:
         store.close()
+    # A ref holds the cut tail, never the head the response already serves.
+    assert any(tail and answer.endswith(tail) for tail in stored)
+    assert not any(tail.startswith("PROTECTED_ANSWER_") for tail in stored)
+
+
+def test_an_oversized_omission_restore_serves_its_head_and_stores_only_the_tail(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring a ref bigger than the budget must make progress, not loop."""
+    import repowise.server.mcp_server as mcp_mod
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+    lines = [f"line {i:05d} " + "x" * 40 for i in range(1500)]
+    payload = {
+        "symbol_id": "repowise#0123456789ab",
+        "ref": "repowise#0123456789ab",
+        "kind": "omission",
+        "source": "mcp:get_symbol",
+        "content": "\n".join(lines),
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_symbol", payload)
+
+    head, marker = result["content"].rsplit("\n", 1)
+    shown = head.count("\n") + 1
+    assert head.startswith("line 00000") and shown > 200
+    assert f"{len(lines) - shown} lines omitted" in marker
+    store = OmissionStore(default_store_path(tmp_path))
+    try:
+        tails = [store.get(ref) or "" for ref in result["_meta"]["omitted"]["refs"]]
+    finally:
+        store.close()
+    assert "\n".join(lines[shown:]) in tails
 
 
 @pytest.mark.asyncio
@@ -395,3 +404,441 @@ async def test_budget_repo_root_follows_workspace_alias(
 
     signature = inspect.signature(call)
     assert await resolve_response_budget_repo_root(signature, (), {"repo": "other"}) == selected
+
+
+def test_every_registered_tool_declares_a_contract() -> None:
+    """No tool may fall through the shared layer and be delivered unbounded."""
+    from repowise.server.mcp_server import _TOOL_MODULES
+    from repowise.server.mcp_server._budget import budgeted_tool_names
+
+    assert set(_TOOL_MODULES) == set(budgeted_tool_names())
+
+
+def test_no_contract_sheds_a_block_it_also_protects() -> None:
+    """Removing a whole top-level block the guard protects is a contradiction.
+
+    Trimming a protected block's tail (``targets[]`` under ``targets``) is not:
+    ``fit_to_budget`` ranks rows, ``protected`` only stops wholesale removal.
+    """
+    from repowise.server.mcp_server._budget.contracts import _CONTRACTS
+
+    for tool, contract in _CONTRACTS.items():
+        whole_blocks = {
+            key for key in contract.shed_order if "." not in key and not key.endswith("[]")
+        }
+        assert not whole_blocks & set(contract.protected), tool
+
+
+def test_every_hook_owner_registers_on_tool_import() -> None:
+    """A hook lost at import is a silent correctness bug, so pin the owners."""
+    from repowise.server.mcp_server import ensure_full_surface
+    from repowise.server.mcp_server._budget import registered_hook_tools
+
+    ensure_full_surface()
+    assert {"get_health", "get_why", "search_codebase"} <= registered_hook_tools()
+
+
+def test_an_undeclared_tool_is_still_bounded_and_says_so(setup_mcp: str) -> None:
+    """The floor, for a name the registry does not know."""
+    payload = {"body": "x" * 60_000, "_meta": {"contract_version": 1}}
+
+    result = _enforce("not_a_registered_tool", payload)
+
+    assert len(json.dumps(result, separators=(",", ":"), default=str)) <= (
+        result["_meta"]["response_budget"]["limit_chars"]
+    )
+    assert result["truncated"] is True
+    assert result["_meta"]["omitted"]["refs"]
+    assert "repowise expand" in result["_meta"]["omitted"]["restore"]
+
+
+def test_oversized_symbol_read_sheds_callees_before_the_body(setup_mcp: str) -> None:
+    """get_symbol's measured worst case: callee context goes before the subject."""
+    payload = {
+        "symbol_id": "src/hub.py::Hub",
+        "file": "src/hub.py",
+        "name": "Hub",
+        "verified": True,
+        "continuation": "src/hub.py:601-1200",
+        "source": "BODY" * 4_000,
+        "callee_bodies": [{"symbol_id": f"src/c.py::c{i}", "source": "C" * 4_000} for i in range(8)],
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_symbol", payload)
+
+    assert result["symbol_id"] == "src/hub.py::Hub"
+    assert result["continuation"] == "src/hub.py:601-1200"
+    assert len(result.get("callee_bodies") or []) < 8
+    assert result["truncated"] is True
+    assert result["_meta"]["omitted"]["refs"]
+
+
+def test_an_oversized_body_is_trimmed_to_fit_not_deleted(setup_mcp: str) -> None:
+    """A symbol read with no body is a wasted call, even with a recoverable ref."""
+    payload = {
+        "symbol_id": "src/hub.py::Hub",
+        "file": "src/hub.py",
+        "continuation": "src/hub.py:601-1200",
+        "source": "BODY" * 9_000,
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_symbol", payload)
+
+    limit = result["_meta"]["response_budget"]["limit_chars"]
+    assert len(json.dumps(result, separators=(",", ":"), default=str)) <= limit
+    # Most of the budget goes to the body rather than to a bare pointer.
+    assert len(result["source"]) > limit // 2
+    assert result["truncated"] is True
+    assert result["_meta"]["omitted"]["refs"]
+
+
+def test_budget_hooks_run_for_the_tool_that_registered_them() -> None:
+    """A hook is keyed by tool, so it must not fire for another tool's response."""
+    from repowise.server.mcp_server._budget import hooks
+
+    seen: list[str] = []
+
+    def hook(result: dict[str, Any]) -> None:
+        seen.append(result["tool"])
+
+    hooks.register_post_enforce("tool_a", hook)
+    try:
+        hooks.run_post_enforce("tool_a", {"tool": "tool_a"})
+        hooks.run_post_enforce("tool_b", {"tool": "tool_b"})
+    finally:
+        hooks._POST_ENFORCE.pop("tool_a", None)
+
+    assert seen == ["tool_a"]
+
+
+#: Real response shapes, recorded by ``scripts/measure_mcp_response_sizes.py``
+#: against an indexed repository. Regenerate with ``--skeletons`` when a tool's
+#: payload changes shape.
+_SHAPES_FIXTURE = (
+    Path(__file__).resolve().parents[3] / "fixtures" / "mcp" / "tool_response_shapes.json"
+)
+
+
+def _resolve_shed_path(shape: dict[str, Any], key: str) -> str | None:
+    """Return why *key* fails to name a real block, or None when it resolves.
+
+    A block absent from the recording is not a failure: several are conditional
+    on arguments the recording did not pass. A block whose *parent* is present
+    while the leaf is not is a typo, and a silent no-op in ``fit_to_budget``.
+    """
+    if key.count("[].") > 1:
+        return "only one list level ([].) is supported"
+    if "[]." in key:
+        rows_path, _, row_key = key.partition("[].")
+        rows: Any = shape
+        for part in rows_path.split("."):
+            if not isinstance(rows, dict) or part not in rows:
+                return None
+            rows = rows[part]
+        if not isinstance(rows, list):
+            return f"{rows_path} is not a list of rows"
+        row = next((r for r in rows if isinstance(r, dict)), None)
+        if row is None:
+            return None
+        # A row that is present must carry the field, top-level or not.
+        return _resolve_shed_path({"row": row}, f"row.{row_key}")
+    leaf, tail = (key[:-2], True) if key.endswith("[]") else (key, False)
+    *parents, name = leaf.split(".")
+    node: Any = shape
+    for parent in parents:
+        if not isinstance(node, dict) or parent not in node:
+            return None
+        node = node[parent]
+    if not isinstance(node, dict):
+        return f"{'.'.join(parents)} is not a block"
+    if name not in node:
+        if not parents:
+            return None
+        return f"{leaf} does not exist; {'.'.join(parents)} has {sorted(node)}"
+    if tail and not isinstance(node[name], (list, dict)):
+        return f"{leaf} is not a collection, so a tail trim cannot apply"
+    return None
+
+
+def test_every_shed_path_names_a_real_block() -> None:
+    """A shed path that does not resolve sheds nothing, silently.
+
+    The size columns cannot catch this: the final guard brings the response
+    under the ceiling either way, so a dead order measures as a working one.
+
+    Bound worth knowing: this catches a leaf misspelled under a parent the
+    recording contains. A top-level block the recording never exercised is
+    skipped, because most tools have blocks conditional on arguments the sweep
+    does not pass, and failing on those would be noise rather than signal.
+    """
+    from repowise.server.mcp_server._budget.contracts import _CONTRACTS
+
+    shapes = json.loads(_SHAPES_FIXTURE.read_text(encoding="utf-8"))
+    problems: list[str] = []
+    for tool, contract in _CONTRACTS.items():
+        shape = shapes.get(tool)
+        if shape is None:
+            continue
+        problems += [
+            f"{tool}: {key} -- {reason}"
+            for key in contract.shed_order
+            if (reason := _resolve_shed_path(shape, key))
+        ]
+    assert not problems, "\n".join(problems)
+
+
+def test_recorded_shapes_cover_the_tools_that_can_be_exercised() -> None:
+    """Guard the fixture itself: a shrinking recording weakens the check above."""
+    from repowise.server.mcp_server import _TOOL_MODULES
+
+    shapes = json.loads(_SHAPES_FIXTURE.read_text(encoding="utf-8"))
+    # generate_refactoring_code needs a stored plan, which the recorded index
+    # had none of. Reported as not measured rather than assumed bounded.
+    assert set(shapes) == set(_TOOL_MODULES) - {"generate_refactoring_code"}
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "get_context",
+        "get_risk",
+        "get_change_risk",
+        "get_answer",
+        "get_why",
+        "get_overview",
+        "get_health",
+    ],
+)
+def test_completeness_sums_what_the_budget_dropped(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    """One stamp answers "is this everything", without walking every counter."""
+    import repowise.server.mcp_server as mcp_mod
+
+    repo = tmp_path / tool
+    (repo / ".repowise").mkdir(parents=True)
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(repo))
+    result = _enforce(tool, _payload(tool, 15_000))
+
+    completeness = result["_meta"]["completeness"]
+    assert completeness["capped"] is True
+    assert completeness["reason"] == "response_budget"
+    assert completeness["shown"] < completeness["total"]
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "get_context",
+        "get_risk",
+        "get_change_risk",
+        "get_answer",
+        "get_why",
+        "get_overview",
+        "get_health",
+    ],
+)
+def test_completeness_reports_an_untouched_response_as_whole(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    """A response that lost nothing says so, and claims no reason for a loss."""
+    import repowise.server.mcp_server as mcp_mod
+
+    repo = tmp_path / tool
+    (repo / ".repowise").mkdir(parents=True)
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(repo))
+    result = _enforce(tool, _payload(tool, 0))
+
+    completeness = result["_meta"]["completeness"]
+    assert completeness["capped"] is False
+    assert "reason" not in completeness
+
+
+def test_completeness_names_the_pass_that_dropped_the_most() -> None:
+    """Two passes reduced this response; the reason names the heavier one."""
+    payload = {
+        "rows": [{"id": 1}],
+        "rows_total": 5,
+        "rows_emitted": 1,
+        "rows_reduced_reason": "construction_cap_and_response_budget",
+        "others": [{"id": 2}],
+        "others_total": 3,
+        "others_emitted": 1,
+        "others_reduced_reason": "construction_cap",
+    }
+    result = _enforce("get_overview", payload)
+
+    assert result["_meta"]["completeness"] == {
+        "capped": True,
+        "shown": 2,
+        "total": 8,
+        "reason": "construction_cap_and_response_budget",
+    }
+
+
+def test_completeness_claims_no_reason_when_no_pass_recorded_one() -> None:
+    """A tool that flags its own truncation is not the budget's doing."""
+    result = _enforce("get_symbol", {"source": "def f(): ...", "truncated": True})
+
+    assert result["_meta"]["completeness"] == {"capped": True}
+
+
+def test_floor_names_only_the_graph_counts_the_response_carries() -> None:
+    """A count absent from the payload is not claimed as a floor."""
+    payload = {
+        "directive": {"summary": "review"},
+        "targets": [{"target": "src/a.py", "dependents_count": 3, "impact_surface_total": 9}],
+        "_meta": {"contract_version": 1},
+    }
+    result = _enforce("get_risk", payload)
+
+    assert result["_meta"]["floor"] == ["dependents_count", "impact_surface_total"]
+
+
+def test_a_tool_with_no_graph_counts_claims_no_floor() -> None:
+    result = _enforce("get_overview", _payload("get_overview", 0))
+
+    assert "floor" not in result["_meta"]
+
+
+def _enforce_health(payload: dict[str, Any], **kwargs: Any) -> dict:
+    """Budget *payload* as a ``get_health`` call with *kwargs*, hooks and all."""
+    from repowise.server.mcp_server import ensure_full_surface, get_health
+
+    ensure_full_surface()
+    return enforce_response_budget(
+        "get_health",
+        payload,
+        signature=inspect.signature(get_health),
+        args=(),
+        kwargs=kwargs,
+    )
+
+
+def _fix_first_page(total: int, cursor: int = 0) -> dict[str, Any]:
+    items = [{"id": f"fix1_{index}", "why": "w" * 2_000} for index in range(25)]
+    return {
+        "mode": "dashboard",
+        "fix_first": {
+            "items": items,
+            "lead": items[0],
+            "counts": {"inventory": total, "in_scope": total, "eligible": total, "due": 0,
+                       "shown": len(items), "excluded": {}},
+            "items_total": total,
+            "cursor": cursor,
+        },
+        "recovery": {"fix_first": {"remaining": total - cursor - 25, "call": "stale"}}
+        if cursor + 25 < total
+        else {},
+        "_meta": {"contract_version": 1},
+    }
+
+
+@pytest.mark.parametrize(("total", "cursor"), [(100, 25), (50, 25)])
+def test_a_trimmed_fix_first_page_restates_its_next_cursor(
+    setup_mcp: str, total: int, cursor: int
+) -> None:
+    """The budget trims a 25-item page's tail; the next page must start at the
+    first row the caller did not get, including on the last page, which had no
+    next call before the trim."""
+    result = _enforce_health(
+        _fix_first_page(total, cursor), only=["fix_first"], limit=25, cursor=cursor
+    )
+    block = result["fix_first"]
+    shown = len(block["items"])
+    assert 0 < shown < 25
+    assert block["counts"]["shown"] == shown
+    recovery = result["recovery"]["fix_first"]
+    assert recovery["remaining"] == total - cursor - shown
+    assert recovery["call"].endswith(f"cursor={cursor + shown})")
+    assert "only=['fix_first']" in recovery["call"]
+
+
+def test_a_trimmed_plan_page_restates_its_next_cursor(setup_mcp: str) -> None:
+    plans = [{"id": f"refac4_{index}", "target_symbol": "s" * 2_000} for index in range(25)]
+    payload = {
+        "mode": "dashboard",
+        "refactoring_plans": plans,
+        "refactoring_plans_total": 25,
+        "refactoring_plans_status": {"state": "available", "reason": None},
+        "_meta": {"contract_version": 1},
+    }
+    result = _enforce_health(
+        payload,
+        include=["refactoring"],
+        only=["refactoring_plans"],
+        limit=25,
+        refactoring_scope="all",
+    )
+    shown = len(result["refactoring_plans"])
+    assert 0 < shown < 25
+    recovery = result["recovery"]["refactoring_plans"]
+    assert recovery["remaining"] == 25 - shown
+    assert recovery["call"].endswith(f"cursor={shown})")
+    assert "refactoring_scope='all'" in recovery["call"]
+
+
+def test_an_untrimmed_last_page_names_no_next_call(setup_mcp: str) -> None:
+    payload = _fix_first_page(total=25)
+    for item in payload["fix_first"]["items"]:
+        item["why"] = "w"
+    result = _enforce_health(payload, only=["fix_first"], limit=25)
+    assert len(result["fix_first"]["items"]) == 25
+    assert "fix_first" not in (result.get("recovery") or {})
+
+
+def _evidence_row(kind: str, details: int) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "label": kind.replace("_", " "),
+        "status": "ok",
+        "basis": "measured",
+        "value": 1,
+        "details": [{"path": f"src/{kind}/file_{i}.py", "note": "x" * 400} for i in range(details)],
+    }
+
+
+def test_a_row_shed_path_is_checked_inside_its_rows() -> None:
+    shape = {"evidence": {"items": [{"kind": "owners", "details": []}]}}
+
+    assert _resolve_shed_path(shape, "evidence.items[].details[]") is None
+    assert _resolve_shed_path(shape, "evidence.items[].detials") is not None
+    assert _resolve_shed_path(shape, "evidence[].items[].details") is not None
+
+
+def test_requested_evidence_is_trimmed_not_dropped(setup_mcp: str) -> None:
+    rows = [_evidence_row("reaching_tests", 60), _evidence_row("owners", 20)]
+    rows += [_evidence_row(f"small_{i}", 1) for i in range(9)]
+    payload = {
+        "directive": {"status": "review", "action": "Read the evidence."},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    items = result["evidence"]["items"]
+    assert [row["kind"] for row in items] == [row["kind"] for row in rows]
+    assert all({"kind", "label", "status", "basis", "value"} <= set(row) for row in items)
+    # The heaviest row lost its tail first; the light rows kept every detail.
+    assert items[0]["details_omitted"] > 0 and items[0]["details"]
+    assert all(len(row["details"]) == 1 for row in items[2:])
+    assert result["truncated"] is True and "repowise#" in json.dumps(result)
+    budget = result["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"] == EXPANDED_RESPONSE_CHARS
+
+
+def test_a_small_requested_evidence_block_is_untouched(setup_mcp: str) -> None:
+    rows = [_evidence_row("owners", 2), _evidence_row("decisions_crossed", 1)]
+    payload = {
+        "directive": {"status": "ok"},
+        "health_delta": {"status": "available"},
+        "evidence": {"schema_version": 1, "items": rows},
+    }
+
+    result = _enforce("get_change_risk", payload, include=["evidence"])
+
+    assert result["evidence"]["items"] == rows
+    assert "truncated" not in result

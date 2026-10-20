@@ -165,6 +165,16 @@ def test_fix_annotation_carries_count_age_and_flag():
     assert out == {"fix_count": 5, "last_fix_days_ago": 14, "bug_magnet": True}
 
 
+def test_fix_annotation_anchors_to_passed_reference_time():
+    last_fix = datetime(2022, 8, 4, 14, 24, 20, tzinfo=UTC)
+    now = last_fix + timedelta(days=41)
+    out = fix_annotation(
+        _meta(prior_defect_count=1, last_fix_at=last_fix),
+        now=now,
+    )
+    assert out == {"fix_count": 1, "last_fix_days_ago": 41}
+
+
 def test_defect_profile_still_builds_on_the_shared_annotation():
     # The profile is the annotation plus a window and symbols, so the recency
     # contract is enforced in exactly one place.
@@ -189,9 +199,9 @@ def test_risk_summary_clause_is_empty_without_fix_history():
 
 def test_risk_summary_clause_leads_with_fixes_and_closes_its_separator():
     clause = _fix_clause({"fix_count": 5, "last_fix_days_ago": 14, "bug_magnet": True})
-    assert clause == "5 bug fixes in 6mo, last 14d ago (bug magnet), "
+    assert clause == "5 bug fixes in 6mo, last 14d before the indexed commit (bug magnet), "
 
 
 def test_risk_summary_clause_singularizes_one_fix():
     clause = _fix_clause({"fix_count": 1, "last_fix_days_ago": 2})
-    assert clause == "1 bug fix in 6mo, last 2d ago, "
+    assert clause == "1 bug fix in 6mo, last 2d before the indexed commit, "

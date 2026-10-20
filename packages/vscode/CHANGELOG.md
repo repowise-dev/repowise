@@ -7,6 +7,162 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## 0.12.0
+
+Every dashboard now shares one set of states, palette and controls, Code Health
+gets a clearer map with a file drawer and trend, refactoring plans carry their tests, decisions and consumers,
+and the extension follows your VS Code theme more closely.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved. The "No dead
+code" confirmation in the Dead Code tree needs repowise 0.56.0 and reads "Not
+analysed yet" on an older server; agent prompts for refactoring plans come from
+the server on 0.56.0 and are built locally on older ones.
+
+### Code Health
+
+- The map, file drawer and trend work for repositories of every size.
+- The headline band is held back when most code files are not analysed, so the
+  score only appears when it reflects the repository.
+- Fix first leads with work that pays, and each item carries its first step and
+  verify command. A plan-led finding opens its stored plan.
+- Repositories with no hotspot files say so plainly.
+
+### Refactoring
+
+- Extract Method plans can be staged across several helpers, each step with its
+  own verify, anchored by its first and last lines. The helper's name is left to
+  whoever applies the plan.
+- A plan can be exported as a recipe, and the agent prompt for a plan or
+  opportunity is rendered by the server so every surface hands an agent the same
+  text.
+- Plans list the tests that guard them and carry decisions, consumers, dead code
+  and recent edits.
+
+### Views and trees
+
+- Loading uses the thinking orb. Empty, not-yet, filtered and error states are
+  told apart across Code Health, Refactoring, Decisions and the sidebar trees,
+  and a failed tree row offers one click to retry.
+- The Dead Code tree says "Not analysed yet" until an analysis has run, then
+  "No dead code" with a pass icon.
+- Risk leads with the size percentile, and files changed since a stale coverage
+  report wait for a fresh report before showing coverage.
+- One chart palette and one share bar are used everywhere.
+
+### Docs
+
+- The docs Export menu opens above the header.
+
+### Theme and accessibility
+
+- Views follow your VS Code theme, with consistent names and accessible controls.
+
+## 0.11.0
+
+Code Health gets a shorter lede and a grey "Not analysed" state, markdown
+documents now show documentation drift in the Problems panel, and the risk view
+reports patch coverage. The extension can also publish an indexed repository to
+repowise.dev from the command palette.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved. Two additions
+need a newer server and stay quiet on an older one: documentation drift in the
+Problems panel needs repowise 0.52.0, and patch coverage in the risk view needs
+repowise 0.54.0.
+
+### Documentation drift
+
+- Markdown documents show findings in the Problems panel when they name code
+  that was renamed or deleted, with the suggested replacement in the message.
+  It has its own `repowise.docDrift.diagnostics` settings, so it switches off
+  without touching the health diagnostics.
+
+### Risk
+
+- The risk view shows patch coverage for the branch: the share of changed
+  executable lines that tests ran, and the changed lines no test reached.
+
+### Code Health
+
+- The dashboard lede is shorter: the score, its band, one line on scope and the
+  files that changed most. The band breakdown and the notes on how the score is
+  built sit behind closed toggles.
+- A file in a language health cannot analyse is drawn grey on the map and
+  labelled "Not analysed" instead of showing a score nobody measured. It gets no
+  gutter or Explorer decoration, and the lede says how many files a score left
+  out.
+- A fall in the trend caused only by recent churn is described as history, not
+  raised as an alarm, and maintainability is watched on its own.
+- One band vocabulary (Excellent, Good, Fair, Needs work, At risk) is used across
+  the map, the lede and the file lists, and a displayed score no longer rounds up
+  into the next band.
+- Lists no longer highlight every row when the pointer is over their section.
+
+### Refactoring
+
+- An opportunity whose steps cannot be loaded still shows its facts and triage
+  control, and says how many steps are missing.
+
+### Graph, architecture and docs
+
+- The architecture graph opens on the Files view with community links bundled,
+  and a community can be entered to see its own files.
+- The System Context view lists runtime services and leaves out the repository's
+  own packages and plain libraries.
+- Communities beyond the first twenty can be chosen when narrowing the graph.
+
+### Sharing
+
+- **Repowise: Publish to repowise.dev** runs `repowise publish` in the Repowise
+  terminal. One prompt offers it after setup and is never repeated, and the
+  connected status-bar tooltip and the walkthrough link to it.
+
+### Fixes
+
+- The extension follows a `serve.lock.json` only when its URL points at this
+  machine, so a cloned repository cannot name another host.
+- Open npm and Python security advisories are patched in the bundled
+  dependencies.
+
+## 0.10.0
+
+The refactoring view stops listing detector outputs and starts listing work.
+One row per file, its steps in dependency-safe order, how many of them are
+mechanical, and a lifecycle you can move it through. The health dashboard gains
+the performance lens on the same map.
+
+**Requires repowise 0.47.0 or newer.** The dashboard reads `/health/map` and the
+refactoring view reads `/refactoring/opportunities`, neither of which an earlier
+server serves, so the status bar flags an older one and asks you to upgrade with
+`pip install --upgrade repowise`.
+
+### Refactoring
+
+- A file appears once, as a composed opportunity, rather than once per finding
+  it triggered. The row carries its step count, how many steps are mechanical,
+  and whether the plan addresses what is actually costing the file most.
+- Opening a row loads its steps and evidence on demand, and the AI prompt is
+  built for the opportunity rather than for a single plan.
+- A plan the gates cannot prove behaviour-preserving is suppressed rather than
+  offered (#1984).
+- Opportunity row columns align below the narrow breakpoint, which is most of
+  the time in a side panel.
+
+### Health
+
+- The dashboard reads the health map, so the performance lens sits on the same
+  view as the rest of health instead of beside it.
+- A repeated-cost cause is named by the caller that repeats the work, not only
+  the sink that pays for it, so a shared helper no longer merges unrelated
+  workflows.
+
+### Shared UI
+
+- Loading motion moved from the box to the region, so a panel resolves as one
+  thing rather than a grid of independently twitching cards.
+- The dark overlay plane and the wells nested inside it settle, model work has
+  its own accent instead of borrowing orange and green, and the AI prompt modal
+  uses hairlines instead of a filled well.
+
 ## 0.9.0
 
 Mostly a rebuild. The webviews compile the shared Repowise UI at build time, so

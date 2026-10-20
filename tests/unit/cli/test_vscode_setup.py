@@ -171,11 +171,12 @@ def test_save_vscode_extensions_config_rejects_jsonc_without_writing(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_vscode_setup_writes_both_project_files(tmp_path: Path) -> None:
+def test_vscode_setup_writes_every_project_file(tmp_path: Path) -> None:
     VSCodeSetup().write_project_files(_silent_console(), tmp_path, EditorSetupOptions())
 
     assert (tmp_path / ".vscode" / "mcp.json").exists()
     assert (tmp_path / ".vscode" / "extensions.json").exists()
+    assert (tmp_path / ".github" / "copilot-instructions.md").exists()
 
 
 def test_vscode_setup_skips_when_project_file_disabled(tmp_path: Path) -> None:
@@ -198,6 +199,12 @@ def test_vscode_setup_refresh_rewrites_idempotently(tmp_path: Path) -> None:
 
     assert (tmp_path / ".vscode" / "mcp.json").read_text(encoding="utf-8") == mcp_first
     assert (tmp_path / ".vscode" / "extensions.json").read_text(encoding="utf-8") == ext_first
+
+
+def test_vscode_setup_refresh_never_creates_the_workspace_files(tmp_path: Path) -> None:
+    VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    assert not (tmp_path / ".vscode").exists()
 
 
 def test_vscode_setup_refresh_skips_when_disabled(tmp_path: Path) -> None:

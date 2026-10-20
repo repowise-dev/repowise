@@ -4,6 +4,8 @@
  * themes render correctly via the `.dark` class on the root.
  */
 
+import { ApiError } from "@repowise-dev/ui/shared";
+
 /** A pulsing placeholder block. */
 function Block({ className }: { className: string }) {
   return <div className={`animate-pulse rounded-lg bg-[var(--color-bg-inset)] ${className}`} />;
@@ -64,15 +66,10 @@ export function DashboardSkeleton() {
 export function DashboardError({ message }: { message: string }) {
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-6">
-      <div className="rounded-xl border border-[var(--color-error)] bg-[var(--color-bg-surface)] p-6">
-        <h2 className="text-[15px] font-semibold text-[var(--color-error)]">
-          Health data is unavailable
-        </h2>
-        <p className="mt-2 text-[15px] text-[var(--color-text-secondary)]">{message}</p>
-        <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">
-          Make sure the local Repowise server is running and this repository is indexed.
-        </p>
-      </div>
+      <ApiError title="Health data is unavailable" message={message} />
+      <p className="text-center text-xs text-[var(--color-text-tertiary)]">
+        Make sure the local Repowise server is running and this repository is indexed.
+      </p>
     </div>
   );
 }

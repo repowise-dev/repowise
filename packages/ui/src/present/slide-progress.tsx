@@ -3,50 +3,46 @@
 import { cn } from "../lib/cn";
 
 /**
- * Bottom-of-deck progress: clickable dots when the deck is short, a slim bar
- * when it's long, always with a "n / total" counter. Accent marks the current
- * slide; everything else stays neutral (Linear-style restraint).
+ * Bottom-of-deck progress: one clickable dot per slide (a deck is at most a
+ * dozen slides) and an "n / total" counter. Accent marks the current slide;
+ * everything else stays neutral.
  */
 export function SlideProgress({
   index,
   total,
+  title,
   onSelect,
 }: {
   index: number;
   total: number;
+  /** Announced with the position, so a screen reader hears what the slide is. */
+  title: string;
   onSelect: (i: number) => void;
 }) {
-  const showDots = total <= 16;
   return (
     <div className="flex items-center gap-3">
-      {showDots ? (
-        <div className="flex items-center gap-1.5">
-          {Array.from({ length: total }).map((_, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onSelect(i)}
-              aria-label={`Go to slide ${i + 1}`}
-              aria-current={i === index ? "true" : undefined}
-              className={cn(
-                "h-1.5 rounded-full transition-all",
-                i === index
-                  ? "w-5 bg-[var(--color-accent-primary)]"
-                  : "w-1.5 bg-[var(--color-border-active)] hover:bg-[var(--color-text-tertiary)]",
-              )}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="h-1.5 w-40 overflow-hidden rounded-full bg-[var(--color-border-active)]">
-          <div
-            className="h-full rounded-full bg-[var(--color-accent-primary)] transition-all"
-            style={{ width: `${((index + 1) / total) * 100}%` }}
+      <div className="hidden items-center gap-1.5 sm:flex">
+        {Array.from({ length: total }).map((_, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onSelect(i)}
+            aria-label={`Go to slide ${i + 1}`}
+            aria-current={i === index ? "step" : undefined}
+            className={cn(
+              "h-1.5 rounded-full transition-all motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+              i === index
+                ? "w-5 bg-[var(--color-accent-primary)]"
+                : "w-1.5 bg-[var(--color-border-active)] hover:bg-[var(--color-text-tertiary)]",
+            )}
           />
-        </div>
-      )}
-      <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+        ))}
+      </div>
+      <span aria-hidden className="font-mono text-[12px] tabular-nums text-[var(--color-text-tertiary)]">
         {index + 1} / {total}
+      </span>
+      <span aria-live="polite" className="sr-only">
+        Slide {index + 1} of {total}: {title}
       </span>
     </div>
   );

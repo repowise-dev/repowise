@@ -265,3 +265,72 @@ class TestIsCandidateSourcePath:
 
     def test_empty_path(self) -> None:
         assert is_candidate_source_path("") is False
+
+    def test_output_named_dirs_are_listed_given_the_root(self, tmp_path: Path) -> None:
+        # A source package named like a report dir passes; a bundle dir does not.
+        (tmp_path / "pkg" / "coverage").mkdir(parents=True)
+        (tmp_path / "pkg" / "coverage" / "parsers.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "dist").mkdir()
+        (tmp_path / "dist" / "bundle.js").write_text("var a;\n", encoding="utf-8")
+
+        assert is_candidate_source_path("pkg/coverage/parsers.py", tmp_path) is True
+        assert is_candidate_source_path("dist/bundle.js", tmp_path) is False
+        # No root to list: the conservative answer.
+        assert is_candidate_source_path("pkg/coverage/parsers.py") is False
+        # A deleted package still surfaces its deletions.
+        assert is_candidate_source_path("gone/coverage/parsers.py", tmp_path) is True
+
+    def test_a_shared_cache_lists_each_output_dir_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from repowise.core.ingestion import traverser
+
+        (tmp_path / "dist").mkdir()
+        for i in range(5):
+            (tmp_path / "dist" / f"chunk{i}.js").write_text("var a;\n", encoding="utf-8")
+        listed: list[Path] = []
+        real = traverser.is_output_dir
+        monkeypatch.setattr(traverser, "is_output_dir", lambda d: listed.append(d) or real(d))
+        cache: dict[Path, bool] = {}
+
+        for i in range(5):
+            assert is_candidate_source_path(f"dist/chunk{i}.js", tmp_path, cache) is False
+        assert listed == [tmp_path / "dist"]
+
+        # A hand-written file landing in it later is seen despite the cache.
+        (tmp_path / "dist" / "cli.py").write_text("x = 1\n", encoding="utf-8")
+        assert is_candidate_source_path("dist/cli.py", tmp_path, cache) is True
+
+    def test_reincluded_dir_is_candidate_source_path(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "build").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "index.js").write_text("var a = 1;\n", encoding="utf-8")
+        (tmp_path / "src" / "build" / "node_modules").mkdir(parents=True)
+        (tmp_path / "src" / "build" / "node_modules" / "x.js").write_text(
+            "var b = 2;\n", encoding="utf-8"
+        )
+
+        # Without negation rule, build holding only JS is rejected as output.
+        assert is_candidate_source_path("src/build/index.js", tmp_path) is False
+
+        # With !src/build/, index.js is accepted, but node_modules/x.js remains blocked.
+        (tmp_path / ".repowiseIgnore").write_text("!src/build/\n", encoding="utf-8")
+        assert is_candidate_source_path("src/build/index.js", tmp_path) is True
+        assert is_candidate_source_path("src/build/node_modules/x.js", tmp_path) is False
+
+        # Also via extra_exclude_patterns.
+        assert (
+            is_candidate_source_path(
+                "dist/tool.js", tmp_path, extra_exclude_patterns=["!dist/"]
+            )
+            is True
+        )
+
+        # Also via custom extra_ignore_filename
+        (tmp_path / ".repowiseIgnore").unlink()
+        (tmp_path / ".customIgnore").write_text("!src/build/\n", encoding="utf-8")
+        assert (
+            is_candidate_source_path(
+                "src/build/index.js", tmp_path, extra_ignore_filename=".customIgnore"
+            )
+            is True
+        )

@@ -44,6 +44,14 @@ export function PackageDepsTable({ deps }: PackageDepsTableProps) {
         <Badge variant="default" className="text-xs">
           {d.target_repo}
         </Badge>
+        {d.target_package ? (
+          <span
+            className="mt-1 block max-w-[260px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
+            title={d.target_package}
+          >
+            {d.target_package}
+          </span>
+        ) : null}
       </td>
       <td
         className={`px-3 py-2 text-left font-mono text-xs text-[var(--color-text-secondary)] max-w-[280px] ${HIDE_BELOW_MD}`}
@@ -55,7 +63,12 @@ export function PackageDepsTable({ deps }: PackageDepsTableProps) {
       <td
         className={`px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] ${HIDE_BELOW_MD}`}
       >
-        {d.kind}
+        <span>{d.kind}</span>
+        {d.resolution_basis ? (
+          <span className="block text-[var(--color-text-tertiary)]">
+            {d.resolution_basis}
+          </span>
+        ) : null}
       </td>
     </tr>
   );
@@ -64,7 +77,7 @@ export function PackageDepsTable({ deps }: PackageDepsTableProps) {
     <VirtualizedTable<WorkspacePackageDepEntry>
       rows={deps}
       rowKey={(d) =>
-        `${d.source_repo}|${d.target_repo}|${d.source_manifest}|${d.kind}`
+        `${d.source_repo}|${d.target_repo}|${d.source_manifest}|${d.kind}|${d.target_package ?? ""}|${d.target_manifest ?? ""}`
       }
       header={header}
       renderRow={renderRow}

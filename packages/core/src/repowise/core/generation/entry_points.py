@@ -16,6 +16,9 @@ conventional entry filename and a shallow path — and uses centrality only to
 break ties. It is deliberately free of any DB/graph/LLM dependency so the
 ordering can be unit-tested directly.
 
+Every orientation surface also passes its list through
+:func:`orientation_entry_points_view`, which sets build and CI tooling aside.
+
 Three callable shapes, one rule: :func:`orientation_entry_points` for a
 ``RepoStructure``, :func:`rank_entry_point_paths` for bare paths, and
 :func:`rank_entry_points` for callers holding centrality.
@@ -63,11 +66,15 @@ def entry_point_rank_key(
     pagerank: float = 0.0,
     betweenness: float = 0.0,
     conventional_stems: frozenset[str] = frozenset(),
-) -> tuple[int, int, float, str]:
+    manifest_entries: frozenset[str] = frozenset(),
+) -> tuple[int, int, int, float, str]:
     """Sort key for an entry-point candidate (ascending tuple = better entry).
 
     Most significant component first:
 
+      0. **tier** — a file a package manifest names (``bin``, ``main``,
+         ``exports["."]``, a console script) is declared, not guessed, so it
+         outranks every filename guess.
       1. **name bucket** — a conventional entry name (``main``/``app``/``cli``/
          ``manage``/…) never loses to a generic glue stem (``index``/``mod``),
          and glue never outranks a real entry.
@@ -78,6 +85,7 @@ def entry_point_rank_key(
       4. **path** — deterministic final tiebreak.
     """
     return (
+        0 if path in manifest_entries else 1,
         _name_bucket(path, conventional_stems),
         entry_point_depth(path),
         -(pagerank + betweenness),
@@ -164,6 +172,7 @@ def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -
 def rank_entry_points(
     candidates: list[tuple[str, float, float]],
     conventional_stems: frozenset[str],
+    manifest_entries: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Rank ``(path, pagerank, betweenness)`` candidates, best entry first."""
     return [
@@ -175,6 +184,24 @@ def rank_entry_points(
                 pagerank=c[1],
                 betweenness=c[2],
                 conventional_stems=conventional_stems,
+                manifest_entries=manifest_entries,
             ),
         )
     ]
+
+
+#: Directories of build and CI tooling. Narrower than the layer map's tooling
+#: tokens: a ``plugins/`` tree can be a runtime plugin system.
+_TOOLING_DIRS = frozenset({"scripts", "docker"})
+
+
+def orientation_entry_points_view(paths: Iterable[str]) -> list[str]:
+    """*paths* without build and CI tooling (``scripts/``, ``docker/``), order kept.
+
+    A lint or gate script is a real entry point, so candidacy and dead code keep
+    it, but it is not where a reader enters the system. When tooling is all
+    there is, the list is returned whole rather than emptied.
+    """
+    paths = list(paths)
+    runtime = [p for p in paths if not _TOOLING_DIRS & set(p.lower().split("/")[:-1])]
+    return runtime or paths

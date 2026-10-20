@@ -11,17 +11,7 @@ from __future__ import annotations
 import os
 import platform
 
-# Common CI signals across providers. ``CI`` covers GitHub Actions, GitLab,
-# CircleCI, Travis; the rest catch platforms that don't set a generic ``CI``.
-_CI_ENV_VARS = (
-    "CI",
-    "GITHUB_ACTIONS",
-    "GITLAB_CI",
-    "BUILDKITE",
-    "JENKINS_URL",
-    "TEAMCITY_VERSION",
-    "TF_BUILD",
-)
+from repowise.core.ci.base import CI_ENV_VARS as _CI_ENV_VARS
 
 
 def os_family() -> str:

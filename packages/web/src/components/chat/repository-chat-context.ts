@@ -10,6 +10,20 @@ interface SearchParamsReader {
   getAll?(name: string): string[];
 }
 
+const CONTEXT_QUERY_KEYS = [
+  "page", "commit", "file", "node", "view", "package", "focus", "module", "tab", "lens",
+] as const;
+
+/** Keep workspace-only query state (conversation/artifact/compare) out of chat context identity. */
+export function getRepositoryChatContextQuery(searchParams: SearchParamsReader): string {
+  const relevant = new URLSearchParams();
+  for (const key of CONTEXT_QUERY_KEYS) {
+    const values = searchParams.getAll?.(key) ?? [searchParams.get(key)].filter((value): value is string => value !== null);
+    for (const value of values) relevant.append(key, value);
+  }
+  return relevant.toString();
+}
+
 interface RouteDefinition {
   kind: ChatContextKind;
   targetKind?: ChatContextTargetKind;
@@ -37,8 +51,8 @@ const ROUTES: Readonly<Record<string, RouteDefinition>> = {
   ownership: { kind: "contributor", targetKind: "person" },
   decisions: { kind: "decision", targetKind: "decision" },
   hotspots: { kind: "risk" },
-  "dead-code": { kind: "risk" },
-  "blast-radius": { kind: "risk" },
+  "dead-code": { kind: "dead-code" },
+  "blast-radius": { kind: "blast-radius" },
   risk: { kind: "risk" },
   security: { kind: "security" },
   costs: { kind: "usage" },
@@ -46,6 +60,13 @@ const ROUTES: Readonly<Record<string, RouteDefinition>> = {
   stats: { kind: "settings" },
   chat: { kind: "chat" },
 };
+
+/** Page kinds whose route reads its selected files from `?file=`. */
+const RISK_FILE_TARGET_KINDS = new Set<ChatContextKind>([
+  "risk",
+  "dead-code",
+  "blast-radius",
+]);
 
 function decodeSegment(segment: string): string {
   try {
@@ -118,7 +139,9 @@ export function getRepositoryChatContext(
   const docsTarget = route === "docs" ? joinedTargets(searchParams, "page") : "";
   const commitTarget = route === "commits" ? joinedTargets(searchParams, "commit") : "";
   const selectedFiles =
-    route === "code-health" || route === "health" || definition.kind === "risk"
+    route === "code-health" ||
+    route === "health" ||
+    RISK_FILE_TARGET_KINDS.has(definition.kind)
       ? joinedTargets(searchParams, "file")
       : "";
   const isArchitecture =

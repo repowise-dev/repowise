@@ -44,14 +44,25 @@ export function TestsReachingList({
   onSelect,
   heading = true,
 }: TestsReachingListProps) {
-  const { data, isLoading } = useSWR<TestsReachingFile | null>(
+  const { data, error, isLoading } = useSWR<TestsReachingFile>(
     fetcher ? `tests-reaching:${cacheKey}:${filePath}` : null,
-    () => fetcher!(filePath).catch(() => null),
+    () => fetcher!(filePath),
     { revalidateOnFocus: false },
   );
 
   if (!fetcher) return null;
   if (isLoading) return <Skeleton className="h-16 w-full max-w-[52ch] rounded-md" />;
+
+  if (error) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        {heading ? <Heading>Tests reaching this file</Heading> : null}
+        <p className="max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+          Could not load which tests reach this file. Try again in a moment.
+        </p>
+      </div>
+    );
+  }
 
   // A file nothing reaches is the honest answer, not an error, and it is the
   // one the reader most needs: it is the whole left column of the chart.

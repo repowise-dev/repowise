@@ -43,8 +43,10 @@ async def test_uninitialized_repo_is_success_shaped(empty_mcp):
     assert "repowise init" in result["remedy"]
     # The user decides whether to index; the agent must not run init itself.
     assert "user" in result["remedy"]
-    # Session-scoped guidance: use built-in tools instead of retrying forever.
-    assert "Read/Grep/Glob" in result["guidance"]
+    # Session-scoped guidance: fall back to the agent's own tools, named by
+    # capability rather than by one host's tool names.
+    assert "file-reading and searching tools" in result["guidance"]
+    assert "Read/Grep/Glob" not in result["guidance"]
 
 
 @pytest.mark.asyncio
@@ -99,6 +101,10 @@ async def test_a_store_older_than_the_models_says_run_update_not_give_up():
     assert "repowise update" in result["remedy"]
     assert "user" in result["remedy"]
     assert "Retry this call once" not in result.get("guidance", "")
+    # The same capability wording as the not-indexed shape; this is the second
+    # of the two sites, and a host tool name here would not travel either.
+    assert "file-reading and searching tools" in result["guidance"]
+    assert "Read/Grep/Glob" not in result["guidance"]
 
 
 @pytest.mark.asyncio
@@ -136,6 +142,52 @@ async def test_the_users_own_question_cannot_fake_a_stale_index():
     result = await shield(locked_while_asking_about_columns)()
 
     assert "predates" not in result["error"], result["error"]
+    assert "Retry this call once" in result["guidance"]
+
+
+@pytest.mark.asyncio
+async def test_a_server_older_than_the_checkout_says_restart_not_give_up():
+    """A long-running server's lazy import of a name only the new checkout has.
+
+    The generic shape tells the caller to drop the tool for the session; a
+    restart fixes it, so say that instead.
+    """
+
+    async def stale_server_tool() -> dict:
+        from repowise.core.ingestion.type_names import name_added_after_server_start  # noqa: F401
+
+        return {}
+
+    result = await shield(stale_server_tool)()
+
+    assert "older repowise code than this checkout" in result["error"]
+    assert "Restart the MCP server" in result["error"]
+    assert "user" in result["remedy"]
+    assert "guidance" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_removed_repowise_module_is_also_a_stale_server():
+    async def stale_server_tool() -> dict:
+        import repowise.core.module_removed_from_checkout  # noqa: F401
+
+        return {}
+
+    result = await shield(stale_server_tool)()
+
+    assert "Restart the MCP server" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_missing_dependency_keeps_the_internal_error_shape():
+    async def missing_dep_tool() -> dict:
+        import repowise_no_such_dependency  # noqa: F401
+
+        return {}
+
+    result = await shield(missing_dep_tool)()
+
+    assert "ModuleNotFoundError" in result["error"]
     assert "Retry this call once" in result["guidance"]
 
 

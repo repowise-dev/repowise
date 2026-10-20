@@ -4,9 +4,11 @@ description: Work with architectural decisions — list, inspect health, add, or
 
 # Repowise Decisions
 
-Repowise captures architectural decisions (the *why* behind the code) from eight
-sources and tracks them for staleness and conflicts. This command drives the
-`repowise decision` group.
+Repowise captures architectural decisions (the *why* behind the code) from
+several sources and tracks them for staleness and conflicts. This command drives
+the `repowise decision` group. Sources are individually switchable — run
+`repowise decision source list` to see which are on; transcript mining is off
+unless the repository turns it on.
 
 ## Steps
 
@@ -28,8 +30,13 @@ sources and tracks them for staleness and conflicts. This command drives the
   `--title` and `--decision` it records without prompting and prints the id
   (`--format json` to parse it back), which is the form to use with no terminal.
   The rest are optional: `--context`, `--rationale`, `--alternative`,
-  `--consequence`, `--affects`, `--tag`, the last four repeatable. A flag-driven
-  record lands `proposed` for a person to `confirm`.
+  `--consequence`, `--affects`, `--tag`, `--evidence-commit`, the last five
+  repeatable. A flag-driven record lands `proposed` for a person to `confirm`.
+  **Always state a reason** — pass `--rationale` (or `--context`); a record whose
+  body only restates its own title cannot be accepted. `--kind agreement` records
+  a working agreement: a rule about how the work is conducted, which names no
+  file and is not checked against the code. `--evidence-commit <sha>` ties the
+  record to the commit the choice was made in.
 - **confirm** — `repowise decision confirm` — review decisions auto-proposed from
   git history and accept or reject them.
 - **deprecate / dismiss** — `repowise decision deprecate <id>` (optionally

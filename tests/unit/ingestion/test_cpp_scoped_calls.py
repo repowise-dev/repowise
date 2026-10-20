@@ -100,3 +100,60 @@ class TestScopedCallUsesTheQualifier:
         )
         targets = _call_targets(_build(tmp_path), "main.cc")
         assert any(t.endswith("Helper") for t in targets)
+
+class TestThreePartQualifiedCallProducesACallSite:
+    """A three-part qualified call like ``ns::util::toHex()`` produced no
+    call site at all, not merely an unresolved one (#1918).
+
+    ``cpp.scm``'s two scoped-call patterns require ``name: (identifier)``.
+    tree-sitter nests a three-part qualifier left-recursively, so the outer
+    node's ``name`` field is itself a ``qualified_identifier`` and neither
+    pattern matches. The call never reaches the resolver, so it cannot be
+    resolved, declined, or counted -- it simply is never produced as a
+    ``CallSite``.
+    """
+
+    def _repo(self, root: Path) -> None:
+        (root / "util.h").write_text(
+            "#pragma once\nnamespace ns { namespace util {\nint toHex(int x);\n}}\n"
+        )
+        (root / "util.cc").write_text(
+            '#include "util.h"\nnamespace ns { namespace util {\n'
+            "int toHex(int x) { return x; }\n}}\n"
+        )
+        (root / "main.cc").write_text(
+            '#include "util.h"\n'
+            "int callTwoPart() { return util::toHex(1); }\n"
+            "int callThreePart() { return ns::util::toHex(2); }\n"
+        )
+
+    def test_three_part_call_resolves_to_the_function(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        graph = _build(tmp_path)
+        assert any(
+            s.endswith("callThreePart") and t.endswith("toHex")
+            for s, t, d in graph.edges(data=True)
+            if d.get("edge_type") == "calls"
+        )
+
+    def test_two_part_control_is_unaffected(self, tmp_path: Path) -> None:
+        """The three-part pattern must not crowd out the existing two-part
+        match -- each caller keeps its own distinct edge to toHex."""
+        self._repo(tmp_path)
+        graph = _build(tmp_path)
+        assert any(
+            s.endswith("callTwoPart") and t.endswith("toHex")
+            for s, t, d in graph.edges(data=True)
+            if d.get("edge_type") == "calls"
+        )
+
+    def test_unqualified_control_is_unaffected(self, tmp_path: Path) -> None:
+        (tmp_path / "lib.h").write_text("#pragma once\nint free_thing(int x);\n")
+        (tmp_path / "lib.cc").write_text(
+            '#include "lib.h"\nint free_thing(int x) { return x; }\n'
+        )
+        (tmp_path / "caller.cc").write_text(
+            '#include "lib.h"\nint main() { return free_thing(1); }\n'
+        )
+        targets = _call_targets(_build(tmp_path), "caller.cc")
+        assert any(t.endswith("free_thing") for t in targets)

@@ -96,7 +96,9 @@ def emitting_build() -> str:
 
         # The directory rather than ``__file__``: two modules in one install
         # must not read as two installs.
-        install = hashlib.sha1(os.path.dirname(__file__).encode("utf-8", "replace")).hexdigest()
+        install = hashlib.sha1(
+            os.path.dirname(__file__).encode("utf-8", "replace"), usedforsecurity=False
+        ).hexdigest()
         _BUILD = f"{__version__}+{install[:8]}"
     return _BUILD
 
@@ -173,6 +175,7 @@ def _open_injections(repo_path: Path | str) -> sqlite3.Connection | None:
     key = str(repo_path)
     if key in _CONN:
         return _CONN[key]
+    import contextlib
     import sqlite3
 
     db_dir = os.path.join(key, ".repowise", "sessions")
@@ -180,8 +183,12 @@ def _open_injections(repo_path: Path | str) -> sqlite3.Connection | None:
     try:
         os.makedirs(db_dir, exist_ok=True)
         conn = sqlite3.connect(db_path, timeout=1)
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=1000")
+        # The same tolerance as core.sqlite_pragmas, inline because this
+        # module may not import repowise.core. A switch that loses the lock
+        # race must not turn the ledger off for the whole process.
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(_INJECTIONS_TABLE_SQL)
         conn.execute(_HOOK_RUNS_TABLE_SQL)
         conn.execute(_REWRITE_RUNS_TABLE_SQL)

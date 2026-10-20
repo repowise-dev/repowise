@@ -27,7 +27,7 @@ export function ExploreList({
   LinkComponent,
 }: {
   entries: ExploreEntry[];
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   if (entries.length === 0) return null;

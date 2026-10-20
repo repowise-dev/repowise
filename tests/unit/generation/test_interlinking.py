@@ -171,3 +171,68 @@ def test_link_index_build_returns_expected_keys():
     assert idx.by_path["src/x.py"] == "file_page:src/x.py"
     assert idx.by_target["community-3"] == "module_page:community-3"
     assert idx.by_basename["x.py"] == "file_page:src/x.py"
+
+
+def test_backlinks_deterministic_ordering_above_cap():
+    """Two runs with the same pages in different input orders produce
+    identical backlinks lists (same order and same 25 elements kept)."""
+    def _create_pages():
+        hub = _make_page("file_page", "hub.py", content="")
+        sources = [
+            _make_page(
+                "file_page",
+                f"src/mod_{i:02d}.py",
+                content="Calls into `hub.py` for setup.",
+            )
+            for i in range(30)
+        ]
+        return hub, sources
+
+    hub1, sources1 = _create_pages()
+    pages1 = [hub1, *sources1]
+    attach_wiki_links_and_backlinks(pages1)
+
+    hub2, sources2 = _create_pages()
+    # Reverse the sources order for the second run
+    pages2 = [hub2, *reversed(sources2)]
+    attach_wiki_links_and_backlinks(pages2)
+
+    assert len(hub1.metadata["backlinks"]) == 25
+    assert len(hub2.metadata["backlinks"]) == 25
+    assert hub1.metadata["backlinks"] == hub2.metadata["backlinks"]
+    # Verify the kept entries are the first 25 alphabetically
+    expected_ids = [f"file_page:src/mod_{i:02d}.py" for i in range(25)]
+    actual_ids = [b["source_page_id"] for b in hub1.metadata["backlinks"]]
+    assert actual_ids == expected_ids
+
+
+def test_backlinks_deterministic_ordering_below_cap():
+    """Fewer than 25 sources still sort deterministically across different input orders."""
+    def _create_pages():
+        hub = _make_page("file_page", "hub.py", content="")
+        sources = [
+            _make_page(
+                "file_page",
+                f"src/mod_{i:02d}.py",
+                content="Calls into `hub.py` for setup.",
+            )
+            for i in (5, 2, 8, 1, 9)
+        ]
+        return hub, sources
+
+    hub1, sources1 = _create_pages()
+    attach_wiki_links_and_backlinks([hub1, *sources1])
+
+    hub2, sources2 = _create_pages()
+    attach_wiki_links_and_backlinks([hub2, *reversed(sources2)])
+
+    assert hub1.metadata["backlinks"] == hub2.metadata["backlinks"]
+    actual_ids = [b["source_page_id"] for b in hub1.metadata["backlinks"]]
+    assert actual_ids == [
+        "file_page:src/mod_01.py",
+        "file_page:src/mod_02.py",
+        "file_page:src/mod_05.py",
+        "file_page:src/mod_08.py",
+        "file_page:src/mod_09.py",
+    ]
+

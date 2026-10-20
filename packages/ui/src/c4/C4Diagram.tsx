@@ -210,6 +210,24 @@ function C4DiagramInner({
         {!error && !isLoading && nodes.length === 0 && (
           <CenteredMessage tone="empty" text="Nothing to show at this level." />
         )}
+        {!error && level === 1 && l1View && l1View.external_systems.length === 0 && (
+          <div
+            role="status"
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 16,
+              textAlign: "center",
+              color: "var(--color-text-tertiary)",
+              fontSize: 13,
+              pointerEvents: "none",
+              zIndex: 3,
+            }}
+          >
+            No external service dependencies detected
+          </div>
+        )}
 
         <ReactFlow
           nodes={nodes}

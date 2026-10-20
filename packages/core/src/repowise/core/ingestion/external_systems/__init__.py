@@ -14,10 +14,13 @@ never raise on malformed input.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
+from contextlib import suppress
 from pathlib import Path
 from types import ModuleType
 
+from ..workspace_members import first_party_package_names
 from . import bazel, cargo, cmake, go, maven, npm, nuget, pypi
 from .base import ExternalSystemRecord, ManifestParser
 
@@ -26,6 +29,7 @@ __all__ = [
     "ManifestParser",
     "extract_external_systems",
     "is_manifest_path",
+    "manifest_ecosystem",
 ]
 
 _PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, bazel)
@@ -63,6 +67,12 @@ def is_manifest_path(path: Path | str) -> bool:
     return _parser_for(Path(path)) is not None
 
 
+def manifest_ecosystem(path: Path | str) -> str | None:
+    """The ``ecosystem`` of the parser that reads ``path``, or ``None``."""
+    parser = _parser_for(Path(path))
+    return parser.ecosystem if parser is not None else None
+
+
 def extract_external_systems(
     repo_root: Path,
     manifest_paths: Iterable[Path] | None = None,
@@ -77,23 +87,49 @@ def extract_external_systems(
     candidates = list(manifest_paths) if manifest_paths is not None else _discover(repo_root)
 
     records: list[ExternalSystemRecord] = []
+    maven_paths: list[Path] = []
     for path in candidates:
         parser = _parser_for(path)
         if parser is None:
+            continue
+        if parser is maven:
+            maven_paths.append(path)
             continue
         try:
             records.extend(parser.parse(path, repo_root))
         except Exception:  # parser bugs must not break ingestion
             continue
-    return _deduplicate(records)
+    if maven_paths:
+        with suppress(Exception):  # parser bugs must not break ingestion
+            records.extend(maven.parse_many(maven_paths, repo_root))
+    return _deduplicate(_drop_first_party(records, repo_root))
+
+
+def _dist_key(name: str) -> str:
+    """PEP 503 spelling, so ``repowise_core`` and ``repowise-core`` compare equal."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _drop_first_party(
+    records: list[ExternalSystemRecord], repo_root: Path
+) -> list[ExternalSystemRecord]:
+    """Drop deps on the repo's own packages: they are containers, not external systems."""
+    if not records:
+        return records
+    own = {_dist_key(n) for n in first_party_package_names(Path(repo_root))}
+    return [r for r in records if _dist_key(r.name) not in own]
 
 
 def _discover(repo_root: Path) -> list[Path]:
     """Walk the repo (depth ≤ 4) collecting recognised manifest files."""
     from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+    from repowise.core.ingestion.traverser import load_gitignore_spec
 
     seen: list[Path] = []
     root = Path(repo_root)
+    # walk_repo reads no ignore files: without this, a manifest in a local
+    # worktree or scratch dir that git status cannot see declared packages.
+    ignore = load_gitignore_spec(root)
     # The historical depth cap was a *post-hoc* filter on an unbounded
     # ``rglob("*")`` — the walk itself still descended into everything.
     # walk_repo prunes junk dirs and nested git repos at traversal time;
@@ -102,13 +138,20 @@ def _discover(repo_root: Path) -> list[Path]:
     # Historical skip list included target/dist/build — preserve it on top
     # of the shared never-source set.
     prune = PRUNED_DIRS | {"target", "dist", "build"}
-    for dirpath, dirnames, filenames in walk_repo(root, prune_dirs=prune):
+    # Ignored directories match with a trailing slash, as git matches them.
+    for dirpath, dirnames, filenames in walk_repo(
+        root,
+        prune_dirs=prune,
+        prune=lambda d: ignore.match_file(f"{d.relative_to(root).as_posix()}/"),
+    ):
         if len(dirpath.relative_to(root).parts) >= 3:
             dirnames[:] = []
-        for fname in filenames:
-            path = dirpath / fname
-            if _parser_for(path) is not None:
-                seen.append(path)
+        seen.extend(
+            dirpath / fname
+            for fname in filenames
+            if _parser_for(dirpath / fname) is not None
+            and not ignore.match_file((dirpath / fname).relative_to(root).as_posix())
+        )
     return seen
 
 

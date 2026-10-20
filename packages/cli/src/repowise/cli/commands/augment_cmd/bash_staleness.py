@@ -39,7 +39,7 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
          out of sync.
     """
     output = tool_output if isinstance(tool_output, dict) else {"stdout": str(tool_output)}
-    exit_code = _extract_exit_code(output)
+    exit_code = extract_exit_code(output)
     if exit_code is None:
         stdout = output.get("stdout", "")
         stderr = output.get("stderr", "")
@@ -191,7 +191,7 @@ def _record_warning(repo_path: object, head: str) -> None:
         marker.write_text(head, encoding="utf-8")
 
 
-def _extract_exit_code(tool_output: dict) -> int | None:
+def extract_exit_code(tool_output: dict) -> int | None:
     """Extract a process exit code from known hook output shapes."""
     for key in ("exit_code", "exitCode", "status"):
         value = tool_output.get(key)

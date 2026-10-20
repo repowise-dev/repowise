@@ -1,599 +1,404 @@
 "use client";
 
-import { useState } from "react";
-import useSWR from "swr";
-import { Gauge, ChevronRight, Sparkles } from "lucide-react";
-import type {
-  HealthFinding,
-  PerformanceOpportunity,
-  PerformanceOpportunityEvidence,
-  PerformanceOpportunityPage,
-} from "@repowise-dev/types/health";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
-import { EmptyState } from "../shared/empty-state";
-import { PageLede } from "../shared/page-lede";
+import { ActiveFilterChips, type ActiveFilterChip } from "../shared/more-filters";
 import { PaginationControls } from "../shared/pagination-controls";
-import { ProvenancePathList } from "../shared/provenance-path-list";
-import { ViewTabs } from "../shared/view-tabs";
-import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
-import { StatRibbon } from "../stats/stat-ribbon";
-import { RefactoringDrawer } from "../refactoring/refactoring-drawer";
-import { performancePlanDetail } from "../refactoring/types";
-import { PERF_BOUNDARY_LABEL } from "@repowise-dev/types/health";
-import { biomarkerLabel } from "./biomarker-glossary";
-import { BiomarkerList } from "./biomarker-list";
-import type { CodeHealthAdapter } from "./code-health-adapter";
-import { AiPromptModal } from "./ai-prompt-modal";
+import { Button } from "../ui/button";
+import { useAiPromptAction } from "./ai-prompt-action";
+import { ActionabilityBar } from "./performance/actionability-bar";
+import type { PerformanceViewAdapter } from "./performance/adapter";
 import {
-  buildPerformanceOpportunityPrompt,
-  buildRefactoringPlanPrompt,
-} from "./ai-prompt-builder";
+  AREA_PREVIEW,
+  AreaGroups,
+  areaLabel,
+  type AreaTopRows,
+} from "./performance/area-groups";
+import { useOpportunityDetail, usePrefetchDetail } from "./performance/cache";
+import { NarrowingFilters, narrowingChipLabel, SortControl } from "./performance/filters";
+import {
+  areaGroups,
+  countsFromFacet,
+  excludedReviews,
+  facetAreaGroups,
+  type ExcludedReview,
+} from "./performance/grouping";
+import { LegacyPerformanceFindings } from "./performance/legacy";
+import { ACTIONABILITY_LABEL } from "./performance/presentation";
+import { usePerformancePrompts } from "./performance/prompts";
+import {
+  clearNarrowing,
+  NARROWING_KEYS,
+  narrowingCount,
+  narrowingKeysFor,
+  PAGE_SIZE,
+  readFilters,
+  serverKey,
+  toQuery,
+  withFilter,
+  withScope,
+  writeFilters,
+  type PerformanceFilterState,
+  type PerformanceScope,
+} from "./performance/query";
+import { QUIET_LINK_CLS, type RowCallbacks } from "./performance/queue";
+import { ScopeControl, ScopeSentence, type ScopeCounts } from "./performance/scope";
+import {
+  FilteredEmpty,
+  GoodState,
+  IgnoredArgumentsNotice,
+  LinkedCauseUnavailable,
+  QueueError,
+  QueueSkeleton,
+  StaleModelNotice,
+  UnavailableQueue,
+} from "./performance/states";
+import { usePerformanceFilters } from "./performance/use-filters";
+import { usePerformanceQueue } from "./performance/use-queue";
+import { PerformanceVerdict, verdictOf } from "./performance/verdict";
 
-export type PerformanceViewAdapter = Pick<
-  CodeHealthAdapter,
-  | "cacheKey"
-  | "listFindings"
-  | "getPerformanceOpportunities"
-  | "getPerformanceOpportunityFindings"
-  | "getRefactoringPlan"
-  | "refactoringPlanHref"
-  | "fileHref"
-  | "symbolHref"
-  | "navigate"
->;
+/**
+ * The Performance tab: how many changes are worth making now, where they sit,
+ * and a prompt for an agent to make each one.
+ *
+ * One scope (worth doing now, all production, everything) decides which
+ * causes exist, and every figure is counted inside it by the server: the
+ * lede, the actionability bar and the filter counts. Grouping by area is a
+ * pure derivation over the loaded page (`performance/grouping`).
+ */
 
-const PAGE_SIZE = 20;
-const RAW_PAGE_SIZE = 50;
-type ContextView = "production_tooling" | "test";
+export type { PerformanceViewAdapter, PerformanceFilterState };
+export { readFilters as readPerformanceFilters, writeFilters as writePerformanceFilters };
 
-function contextLabel(context: PerformanceOpportunity["execution_context"]): string {
-  return context === "test" ? "Test suite" : context === "tooling" ? "Tooling" : "Production";
-}
+const OpportunityDrawer = lazy(() => import("./performance/drawer"));
 
-function opportunityTitle(opportunity: PerformanceOpportunity): string {
-  const boundary = opportunity.boundary_kind
-    ? PERF_BOUNDARY_LABEL[opportunity.boundary_kind].toLowerCase()
-    : "repeated";
-  if (opportunity.terminal_sink) {
-    return `${biomarkerLabel(opportunity.biomarker_type)} reaches ${opportunity.terminal_sink}`;
-  }
-  return `${biomarkerLabel(opportunity.biomarker_type)} in ${boundary} work`;
-}
+/** How the good state names each scope. */
+const GOOD_STATE_SCOPE: Record<PerformanceScope, string> = {
+  now: "worth making now in production code",
+  production: "found in production code",
+  all: "found in any code",
+};
 
-export function PerformanceView({ adapter }: { adapter: PerformanceViewAdapter }) {
-  const [context, setContext] = useState<ContextView>("production_tooling");
-  const [offset, setOffset] = useState(0);
+export function PerformanceView({
+  adapter,
+  initialFilters,
+  onFiltersChange,
+  openOpportunityId,
+  onOpenOpportunityChange,
+}: {
+  adapter: PerformanceViewAdapter;
+  /** The tab's URL parameters (or a pre-flat `perf` blob), so a shared link opens the same view. */
+  initialFilters?: string | undefined;
+  /** Called on every change with the flat parameters and the state they encode. */
+  onFiltersChange?: ((search: string, state: PerformanceFilterState) => void) | undefined;
+  /**
+   * A cause to open on arrival, by its stable id. A link from the map or the
+   * file drawer names one, and it need not be on the loaded page, so it is
+   * resolved by id rather than looked for in the queue.
+   */
+  openOpportunityId?: string | null;
+  /** Called with the open cause's id, or null when the drawer closes. */
+  onOpenOpportunityChange?: ((opportunityId: string | null) => void) | undefined;
+}) {
+  const { filters, current, apply } = usePerformanceFilters(initialFilters, onFiltersChange);
+
+  const { data, error, isLoading, mutate, capabilities, supported } = usePerformanceQueue(
+    adapter,
+    filters,
+  );
+
+  // The open cause. A click holds the row so the drawer paints at once; a
+  // link or a sibling names an id, resolved through the same detail key.
   const [selected, setSelected] = useState<PerformanceOpportunity | null>(null);
-  const [promptPlan, setPromptPlan] = useState<RefactoringPlan | null>(null);
-  const [promptOpportunity, setPromptOpportunity] = useState<PerformanceOpportunity | null>(null);
+  const [internalOpenId, setInternalOpenId] = useState<string | null>(null);
+  const select = useCallback(
+    (next: PerformanceOpportunity | null) => {
+      setSelected(next);
+      setInternalOpenId(null);
+      onOpenOpportunityChange?.(next?.opportunity_id ?? null);
+    },
+    [onOpenOpportunityChange],
+  );
+  const openById = useCallback(
+    (opportunityId: string) => {
+      setInternalOpenId(opportunityId);
+      onOpenOpportunityChange?.(opportunityId);
+    },
+    [onOpenOpportunityChange],
+  );
+  const effectiveOpenId = openOpportunityId ?? internalOpenId;
+  const pendingId =
+    effectiveOpenId && effectiveOpenId !== selected?.opportunity_id ? effectiveOpenId : null;
+  const { data: linked, error: linkError } = useOpportunityDetail(
+    adapter,
+    capabilities.detailById ? pendingId : null,
+  );
+  useEffect(() => {
+    // An id from a retired model resolves to a state, not a cause; opening a
+    // drawer on it would render an empty panel.
+    if (linked?.found) setSelected(linked);
+  }, [linked]);
 
+  const { openPrompt, promptModal } = useAiPromptAction();
+  const prompts = usePerformancePrompts(adapter);
+  const prefetch = usePrefetchDetail(adapter);
+  const detailById = capabilities.detailById;
+  const callbacks: RowCallbacks = useMemo(
+    () => ({
+      onInspect: select,
+      onPrompt: (opportunity) => openPrompt(prompts.forOpportunity(opportunity)),
+      onPrefetch: (id) => {
+        if (detailById) prefetch(id);
+      },
+    }),
+    [select, openPrompt, prompts, prefetch, detailById],
+  );
+  const onAreaPrompt = useCallback(
+    (area: string, rows: PerformanceOpportunity[], partial: boolean) =>
+      openPrompt(prompts.forArea(area, rows, partial)),
+    [openPrompt, prompts],
+  );
+  const onOpenArea = useCallback(
+    (area: string) => apply(withFilter(current.current, "area", area)),
+    [apply],
+  );
+
+  const items = useMemo(() => data?.items ?? [], [data]);
+  const counts = useMemo(() => countsFromFacet(data?.facets.actionability), [data]);
+  // Every area in the scope with its true counts, from the server's facet; a
+  // server that predates it groups the loaded page instead.
+  const groups = useMemo(
+    () => (data?.areas ? facetAreaGroups(items, data.areas) : areaGroups(items)),
+    [data, items],
+  );
+  const focused = filters.area !== null;
+  // An opened area that does not split further lists every loaded cause in it.
+  const listAll = focused && groups.length <= 1;
+  // A small area's causes may sit past the loaded page; a card asks for its top.
+  // Page-independent: the area facet and each card's top do not move with it.
+  const viewKey = serverKey({ ...filters, page: 1 });
   const load = adapter.getPerformanceOpportunities;
-  const { data, error, isLoading } = useSWR<PerformanceOpportunityPage>(
-    load ? `performance-opportunities:${adapter.cacheKey}:${context}:${offset}` : null,
-    () => load!({ context, offset, limit: PAGE_SIZE }),
-    { revalidateOnFocus: false, keepPreviousData: true },
-  );
-  const selectedPlanId = selected?.plan_id ?? null;
-  const {
-    data: selectedPlan,
-    error: selectedPlanError,
-    isLoading: selectedPlanLoading,
-  } = useSWR<RefactoringPlan>(
-    selectedPlanId && adapter.getRefactoringPlan
-      ? `performance-plan:${adapter.cacheKey}:${selectedPlanId}`
-      : null,
-    () => adapter.getRefactoringPlan!(selectedPlanId!),
-    { revalidateOnFocus: false },
-  );
-  const selectedPlanMatches = Boolean(
-    selectedPlan &&
-      selected &&
-      selectedPlan.id === selected.plan_id &&
-      selectedPlan.refactoring_type === "performance_fix" &&
-      performancePlanDetail(selectedPlan).opportunityId === selected.opportunity_id,
+  const topRows: AreaTopRows | undefined = useMemo(
+    () =>
+      load
+        ? {
+            key: `${adapter.cacheKey}:${viewKey}`,
+            load: async (area: string) =>
+              (
+                await load(
+                  toQuery(withFilter(current.current, "area", area), { limit: AREA_PREVIEW }),
+                )
+              ).items,
+          }
+        : undefined,
+    [load, adapter.cacheKey, viewKey, current],
   );
 
-  if (!load) {
-    return <LegacyPerformanceFindings adapter={adapter} />;
-  }
+  if (!supported) return <LegacyPerformanceFindings adapter={adapter} />;
   if (error && [404, 405].includes(Number((error as { status?: number }).status))) {
     return <LegacyPerformanceFindings adapter={adapter} />;
   }
-  if (error) {
-    return (
-      <EmptyState
-        icon={<Gauge className="h-6 w-6" />}
-        title="Couldn’t load performance opportunities"
-        description="The repository may need indexing, or the server may be temporarily unavailable."
-      />
-    );
-  }
-  if (isLoading && !data) {
-    return (
-      <div className="space-y-8">
-        <div className="h-32 animate-pulse bg-[var(--color-bg-surface)]" />
-        <div className="h-12 animate-pulse bg-[var(--color-bg-surface)]" />
-        <div className="h-72 animate-pulse bg-[var(--color-bg-surface)]" />
-      </div>
-    );
-  }
+  if (error) return <QueueError onRetry={() => void mutate()} />;
+  if (isLoading && !data) return <QueueSkeleton />;
   if (!data) return null;
 
-  const { summary } = data;
-  const productionToolingTotal = summary.production_total + summary.tooling_total;
-  const stats = [
-    {
-      label: "Production",
-      value: summary.production_total.toLocaleString(),
-      sub: "runtime paths",
-    },
-    {
-      label: "Tooling",
-      value: summary.tooling_total.toLocaleString(),
-      sub: "build and developer paths",
-    },
-    {
-      label: "Test suite",
-      value: summary.test_total.toLocaleString(),
-      sub: "test execution cost",
-    },
-    {
-      label: "Structured plan",
-      value: summary.with_plan_total.toLocaleString(),
-      sub: `of ${summary.total.toLocaleString()} causes`,
-    },
+  const { summary, facets } = data;
+  if (summary.status === "unavailable") return <UnavailableQueue summary={summary} />;
+
+  // A server that predates context scoping sends no repository_total, and
+  // one that predates scopes no scope sizes; both fall back to the summary.
+  const repositoryTotal = summary.repository_total ?? summary.total;
+  const scopes: ScopeCounts = {
+    now: data.scopes?.now ?? summary.default_queue?.total ?? 0,
+    production: data.scopes?.production ?? summary.context?.production ?? 0,
+    all: data.scopes?.all ?? repositoryTotal,
+  };
+  const reviews = excludedReviews(summary.default_queue?.excluded);
+  const toScope = (scope: PerformanceScope) => apply(withScope(filters, scope));
+  const onReview = ({ patch: { scope, ...rest } }: ExcludedReview) =>
+    apply(withScope(filters, scope, rest));
+  const sentence = (
+    <ScopeSentence
+      scope={filters.scope}
+      counts={scopes}
+      reviews={reviews}
+      onScope={toScope}
+      onReview={onReview}
+    />
+  );
+  const otherProduction = scopes.production - scopes.now;
+
+  const chips: ActiveFilterChip[] = [
+    ...NARROWING_KEYS.flatMap((key) => {
+      const value = filters[key];
+      return value
+        ? [
+            {
+              key,
+              label: narrowingChipLabel(key, value),
+              onRemove: () => apply(withFilter(filters, key, null)),
+            },
+          ]
+        : [];
+    }),
+    ...(filters.actionability
+      ? [
+          {
+            key: "actionability",
+            label: `Showing: ${ACTIONABILITY_LABEL[filters.actionability]}`,
+            onRemove: () => apply(withFilter(filters, "actionability", null)),
+          },
+        ]
+      : []),
+    ...(filters.area !== null
+      ? [
+          {
+            key: "area",
+            label: `Area: ${areaLabel(filters.area)}`,
+            onRemove: () => apply(withFilter(filters, "area", null)),
+          },
+        ]
+      : []),
   ];
+
+  const selectedId = selected?.opportunity_id ?? null;
 
   return (
     <div className="space-y-8">
-      <div className="space-y-6">
-        <PageLede
-          label="Causal opportunities"
-          value={summary.total.toLocaleString()}
-          unit="ranked root causes, not duplicated observations"
-          layout="beside"
-          figureFooter={
-            <p className="text-caption text-[var(--color-text-tertiary)]">
-              Static, high-precision signals. They are not measured latency.
-            </p>
-          }
+      {items.length > 0 ? (
+        <PerformanceVerdict
+          verdict={verdictOf(filters.scope, data.total, groups)}
+          analyzedCommit={summary.analyzed_commit}
         >
-          <p>
-            Repeated caller paths are folded into one cause so the first row answers what should
-            change once, while every raw line finding stays available as evidence.
-          </p>
-          <p>
-            Production and tooling stay separate from test-suite cost. A structured plan appears
-            only when the analysis can name an intervention without guessing.
-          </p>
-        </PageLede>
-        <StatRibbon stats={stats} />
-      </div>
+          {sentence}
+        </PerformanceVerdict>
+      ) : null}
 
-      <section className="space-y-4 border-t border-[var(--color-border-default)] pt-8">
-        <div>
-          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
-            Opportunity queue
-          </h2>
-          <p className="mt-1 max-w-[72ch] text-sm text-[var(--color-text-secondary)]">
-            Ordered by the canonical causal score: multiplier shape, boundary, execution context,
-            entry reachability, affected call sites, and resolution provenance.
-          </p>
+      <section aria-label="Performance causes" className="space-y-4">
+        {summary.status === "stale_model" ? <StaleModelNotice summary={summary} /> : null}
+        {data.ignored_arguments ? (
+          <IgnoredArgumentsNotice ignored={data.ignored_arguments} />
+        ) : null}
+
+        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+          <ScopeControl value={filters.scope} counts={scopes} onChange={toScope} />
+          <SortControl
+            value={filters.sort}
+            onChange={(sort) => apply(withFilter(filters, "sort", sort))}
+          />
         </div>
-        <ViewTabs
-          tabs={[
-            {
-              id: "production_tooling",
-              label: "Production & tooling",
-              badge: productionToolingTotal,
-            },
-            { id: "test", label: "Test suite", badge: summary.test_total },
-          ]}
-          value={context}
-          onValueChange={(value) => {
-            setOffset(0);
-            setContext(value as ContextView);
-          }}
-        />
+        {capabilities.serverFacets ? (
+          <NarrowingFilters
+            filters={filters}
+            facets={facets}
+            keys={narrowingKeysFor(filters.scope)}
+            onChange={(key, value) => apply(withFilter(filters, key, value as never))}
+          />
+        ) : null}
+        <ActiveFilterChips chips={chips} onClearAll={() => apply(clearNarrowing(filters))} />
 
-        {data.items.length === 0 ? (
-          <div className="border-t border-[var(--color-border-default)] py-10 text-center">
-            <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-              No causal opportunities in this context
-            </h3>
-            <p className="mx-auto mt-1.5 max-w-[60ch] text-sm text-[var(--color-text-tertiary)]">
-              A supported performance detector must find a repeated cost shape before this queue
-              fills. This does not claim the code is fast.
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-            {data.items.map((opportunity) => (
-              <OpportunityRow
-                key={opportunity.opportunity_id}
-                opportunity={opportunity}
-                onOpen={() => setSelected(opportunity)}
-              />
-            ))}
-          </div>
-        )}
+        {items.length > 0 ? (
+          <ActionabilityBar
+            counts={counts}
+            value={filters.actionability}
+            onChange={(state) => apply(withFilter(filters, "actionability", state))}
+          />
+        ) : null}
 
-        <PaginationControls
-          offset={offset}
-          shown={data.items.length}
-          total={data.total}
-          label="opportunities"
-          onPrevious={offset > 0 ? () => setOffset(Math.max(0, offset - PAGE_SIZE)) : undefined}
-          onNext={data.next_offset != null ? () => setOffset(data.next_offset!) : undefined}
-        />
-      </section>
-
-      {selectedPlanId && adapter.getRefactoringPlan ? (
-        <RefactoringDrawer
-          plan={selectedPlanMatches ? (selectedPlan ?? null) : null}
-          loading={selectedPlanLoading}
-          error={
-            selectedPlanError
-              ? "The exact plan could not be loaded. Close this drawer and retry from the queue."
-              : selectedPlan && !selectedPlanMatches
-                ? "The returned plan no longer matches this opportunity. Reindex before handing it to an agent."
-              : undefined
-          }
-          open={selected !== null}
-          onOpenChange={(open) => {
-            if (!open) setSelected(null);
-          }}
-          onAiPrompt={(plan) => {
-            if (selectedPlanMatches) setPromptPlan(plan);
-          }}
-          contextSlot={
-            selected ? <OpportunityCausalEvidence opportunity={selected} adapter={adapter} /> : null
-          }
-          fileHref={(path, line) => {
-            const href = adapter.fileHref(path);
-            return line ? `${href}${href.includes("?") ? "&" : "?"}line=${line}` : href;
-          }}
-        />
-      ) : (
-        <PerformanceOpportunityDrawer
-          opportunity={selected}
-          adapter={adapter}
-          onClose={() => setSelected(null)}
-          onAiPrompt={setPromptOpportunity}
-        />
-      )}
-
-      <AiPromptModal
-        open={promptPlan !== null || promptOpportunity !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPromptPlan(null);
-            setPromptOpportunity(null);
-          }
-        }}
-        getPrompt={
-          promptPlan
-            ? (flavor) => buildRefactoringPlanPrompt({ plan: promptPlan, flavor })
-            : promptOpportunity
-              ? (flavor) =>
-                  buildPerformanceOpportunityPrompt({ opportunity: promptOpportunity, flavor })
-              : null
-        }
-        filePath={promptPlan?.file_path ?? promptOpportunity?.evidence[0]?.file_path ?? null}
-        title={promptPlan ? "AI performance plan" : "AI performance investigation"}
-        description={
-          promptPlan
-            ? "A ready-to-paste structured plan with the intervention, affected targets, validation, and completion contract."
-            : "A ready-to-paste evidence handoff that asks an agent to verify the cause before proposing any edit."
-        }
-      />
-    </div>
-  );
-}
-
-function LegacyPerformanceFindings({ adapter }: { adapter: PerformanceViewAdapter }) {
-  const { data, error, isLoading } = useSWR<HealthFinding[]>(
-    `performance-findings-legacy:${adapter.cacheKey}`,
-    () => adapter.listFindings({ dimension: "performance", limit: 100 }),
-    { revalidateOnFocus: false },
-  );
-  if (isLoading) return <div className="h-72 animate-pulse bg-[var(--color-bg-surface)]" />;
-  if (error || !data?.length) {
-    return (
-      <EmptyState
-        icon={<Gauge className="h-6 w-6" />}
-        title="No performance opportunities"
-        description="This older server does not provide causal grouping. Reindex with a current server to distinguish an empty result from unsupported grouping."
-      />
-    );
-  }
-  return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          Raw performance findings
-        </h2>
-        <p className="mt-1 max-w-[72ch] text-sm text-[var(--color-text-secondary)]">
-          This server predates causal opportunity groups. Up to 100 canonical findings are shown
-          without inventing plan links or rank semantics.
-        </p>
-      </div>
-      <BiomarkerList
-        findings={data}
-        grouped
-        onSelect={(finding) => adapter.navigate(adapter.fileHref(finding.file_path))}
-      />
-    </div>
-  );
-}
-
-function OpportunityRow({
-  opportunity,
-  onOpen,
-}: {
-  opportunity: PerformanceOpportunity;
-  onOpen: () => void;
-}) {
-  const boundary = opportunity.boundary_kind
-    ? PERF_BOUNDARY_LABEL[opportunity.boundary_kind]
-    : "Local computation";
-
-  return (
-    <article data-performance-opportunity={opportunity.opportunity_id}>
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={`Inspect ${opportunity.affected_call_sites_total} call sites for ${opportunityTitle(opportunity)}`}
-        className="grid w-full grid-cols-[18px_minmax(0,1fr)] gap-3 px-2 py-4 text-left hover:bg-[var(--color-bg-elevated)] sm:grid-cols-[18px_minmax(0,1fr)_auto] sm:items-center"
-      >
-        <ChevronRight className="mt-1 h-4 w-4" />
-        <span className="min-w-0">
-          <span className="block break-words text-[15px] font-semibold text-[var(--color-text-primary)]">
-            {opportunityTitle(opportunity)}
-          </span>
-          <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
-            {boundary} · {contextLabel(opportunity.execution_context)} ·{" "}
-            {opportunity.confidence[0]!.toUpperCase() + opportunity.confidence.slice(1)} confidence
-          </span>
-        </span>
-        <span className="col-start-2 text-xs tabular-nums text-[var(--color-text-tertiary)] sm:col-auto sm:text-right">
-          {opportunity.affected_call_sites_total.toLocaleString()} call site
-          {opportunity.affected_call_sites_total === 1 ? "" : "s"}
-          <br />
-          {opportunity.affected_files_total.toLocaleString()} file
-          {opportunity.affected_files_total === 1 ? "" : "s"}
-          <span
-            className={`mt-1 block font-medium ${
-              opportunity.plan_id
-                ? "text-[var(--color-success)]"
-                : "text-[var(--color-text-tertiary)]"
-            }`}
-          >
-            {opportunity.plan_id
-              ? "Structured plan ready"
-              : opportunity.plan_status === "not_persisted"
-                ? "Index refresh needed"
-                : "Investigation needed"}
-          </span>
-        </span>
-      </button>
-
-    </article>
-  );
-}
-
-function OpportunityCausalEvidence({
-  opportunity,
-  adapter,
-}: {
-  opportunity: PerformanceOpportunity;
-  adapter: PerformanceViewAdapter;
-}) {
-  const paths = opportunity.evidence
-    .filter((item) => item.path.length > 0)
-    .map((item) => ({ nodes: item.path, provenance: item.provenance }));
-  return (
-    <div className="space-y-6">
-      <section>
-        <h4 className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          Causal context
-        </h4>
-        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
-          {contextLabel(opportunity.execution_context)} · {opportunity.confidence} confidence ·{" "}
-          {opportunity.provenance.replaceAll("-", " ")} provenance.{" "}
-          {opportunity.intervention_symbol ? (
-            <>
-              Repeated work converges at{" "}
-              <span className="break-all font-mono text-xs text-[var(--color-text-primary)]">
-                {opportunity.intervention_symbol}
-              </span>
-              .
-            </>
+        {items.length === 0 ? (
+          // A scope with no causes is clean, not a failed filter.
+          narrowingCount(filters) > 0 && repositoryTotal > 0 ? (
+            <FilteredEmpty onClear={() => apply(clearNarrowing(filters))} />
           ) : (
-            <>The paths share a costly sink, but no safe common intervention was proven.</>
-          )}
-        </p>
-      </section>
-      <section>
-        <h4 className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          Caller-to-sink paths
-        </h4>
-        <ProvenancePathList
-          paths={paths}
-          total={opportunity.observations_total}
-          fileHref={adapter.fileHref}
-          symbolHref={adapter.symbolHref}
-        />
-      </section>
-      <RawEvidence opportunity={opportunity} adapter={adapter} />
-    </div>
-  );
-}
-
-function PerformanceOpportunityDrawer({
-  opportunity,
-  adapter,
-  onClose,
-  onAiPrompt,
-}: {
-  opportunity: PerformanceOpportunity | null;
-  adapter: PerformanceViewAdapter;
-  onClose: () => void;
-  onAiPrompt: (opportunity: PerformanceOpportunity) => void;
-}) {
-  const planHref = opportunity?.plan_id
-    ? adapter.refactoringPlanHref?.(opportunity.plan_id, opportunity.opportunity_id)
-    : undefined;
-
-  return (
-    <Sheet open={opportunity !== null} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="right"
-        closeLabel="Close opportunity"
-        className="w-full max-w-[680px] sm:w-[92vw]"
-      >
-        {opportunity ? (
-          <>
-            <div className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12">
-              <div className="text-[11px] text-[var(--color-text-secondary)]">
-                Causal performance opportunity
-              </div>
-              <SheetTitle className="mt-0.5 break-words text-[15px] font-semibold text-[var(--color-text-primary)]">
-                {opportunityTitle(opportunity)}
-              </SheetTitle>
-              <p className="mt-1 text-[11.5px] text-[var(--color-text-tertiary)]">
-                {contextLabel(opportunity.execution_context)} · {opportunity.confidence} confidence ·{" "}
-                {opportunity.affected_call_sites_total} call sites
-              </p>
-            </div>
-
-            <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
-              <OpportunityCausalEvidence opportunity={opportunity} adapter={adapter} />
-
-              <section>
-                <h4 className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                  Recommended next step
-                </h4>
-                <p className="text-sm font-medium text-[var(--color-text-primary)]">
-                  {opportunity.plan_status === "not_persisted"
-                    ? "Refresh the index to materialize the plan"
-                    : opportunity.plan_id
-                      ? "Review the matching structured plan"
-                      : "No safe structured plan — investigate before changing code"}
-                </p>
-                <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">
-                  {opportunity.plan_reason}
-                </p>
-                {planHref ? (
-                  <a
-                    href={planHref}
-                    className="mt-2 inline-block text-sm font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline"
-                  >
-                    Open on Refactoring page
-                  </a>
-                ) : null}
-              </section>
-            </div>
-
-            <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
+            <GoodState
+              scope={GOOD_STATE_SCOPE[filters.scope]}
+              analyzedCommit={summary.analyzed_commit}
+            >
+              {sentence}
+            </GoodState>
+          )
+        ) : (
+          <div className="space-y-3">
+            {focused ? (
               <button
                 type="button"
-                onClick={() => onAiPrompt(opportunity)}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-accent-fill)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90"
+                onClick={() => apply(withFilter(filters, "area", null))}
+                className={`${QUIET_LINK_CLS} text-xs`}
               >
-                <Sparkles className="h-4 w-4" />
-                Copy investigation for an agent
+                Back to all areas
               </button>
-            </div>
-          </>
-        ) : (
-          <SheetTitle className="sr-only">Performance opportunity</SheetTitle>
-        )}
-      </SheetContent>
-    </Sheet>
-  );
-}
-
-function RawEvidence({
-  opportunity,
-  adapter,
-}: {
-  opportunity: PerformanceOpportunity;
-  adapter: PerformanceViewAdapter;
-}) {
-  const [open, setOpen] = useState(false);
-  const [offset, setOffset] = useState(0);
-  const load = adapter.getPerformanceOpportunityFindings;
-  const { data, isLoading } = useSWR(
-    open && load
-      ? `performance-raw:${adapter.cacheKey}:${opportunity.opportunity_id}:${offset}`
-      : null,
-    () => load!(opportunity.opportunity_id, { offset, limit: RAW_PAGE_SIZE }),
-    { revalidateOnFocus: false, keepPreviousData: true },
-  );
-  const fallback = opportunity.evidence;
-  const items: Array<HealthFinding | PerformanceOpportunityEvidence> = data?.items ?? fallback;
-  const total = data?.total ?? opportunity.observations_total;
-
-  return (
-    <section>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className="text-sm font-medium text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline"
-      >
-        {open ? "Hide" : "Review"} raw findings · {total.toLocaleString()} observation
-        {total === 1 ? "" : "s"}
-      </button>
-      {open ? (
-        <div className="mt-3">
-          {isLoading && !data ? (
-            <div className="h-24 animate-pulse bg-[var(--color-bg-surface)]" />
-          ) : (
-            <div className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
-              {items.map((finding, index) => {
-                const href = adapter.fileHref(finding.file_path);
-                return (
-                  <div
-                    key={("id" in finding ? finding.id : finding.finding_id) || index}
-                    className="py-3"
-                  >
-                    <a
-                      href={href}
-                      className="break-all font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
-                    >
-                      {finding.file_path}
-                      {finding.line_start ? `:${finding.line_start}` : ""}
-                    </a>
-                    <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-                      {finding.reason}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {data ? (
-            <PaginationControls
-              offset={offset}
-              shown={data.items.length}
-              total={data.total}
-              label="raw findings"
-              onPrevious={
-                offset > 0 ? () => setOffset(Math.max(0, offset - RAW_PAGE_SIZE)) : undefined
-              }
-              onNext={data.next_offset != null ? () => setOffset(data.next_offset!) : undefined}
+            ) : null}
+            <AreaGroups
+              groups={groups}
+              adapter={adapter}
+              selectedId={selectedId}
+              callbacks={callbacks}
+              onOpenArea={onOpenArea}
+              onAreaPrompt={onAreaPrompt}
+              preview={listAll ? Number.POSITIVE_INFINITY : AREA_PREVIEW}
+              topRows={topRows}
             />
-          ) : opportunity.evidence_truncated ? (
-            <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-              {fallback.length.toLocaleString()} shown of {total.toLocaleString()}; connect the
-              paged evidence endpoint to load the rest.
-            </p>
-          ) : null}
-        </div>
+            {data.areas && data.areas.more > 0 ? (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                {data.areas.more.toLocaleString()} more{" "}
+                {data.areas.more === 1 ? "cause sits" : "causes sit"} in smaller areas not
+                listed here.
+              </p>
+            ) : null}
+          </div>
+        )}
+
+        {filters.scope === "now" && items.length > 0 && otherProduction > 0 ? (
+          <Button variant="outline" size="sm" onClick={() => toScope("production")}>
+            Show the {otherProduction.toLocaleString()} other production{" "}
+            {otherProduction === 1 ? "cause" : "causes"}
+          </Button>
+        ) : null}
+
+        {data.total > PAGE_SIZE ? (
+          <PaginationControls
+            offset={(filters.page - 1) * PAGE_SIZE}
+            shown={items.length}
+            total={data.total}
+            label="causes"
+            onPrevious={
+              filters.page > 1
+                ? () => apply(withFilter(filters, "page", filters.page - 1))
+                : undefined
+            }
+            onNext={
+              data.next_offset != null
+                ? () => apply(withFilter(filters, "page", filters.page + 1))
+                : undefined
+            }
+          />
+        ) : null}
+      </section>
+
+      {pendingId && (linkError || linked?.found === false) ? (
+        <LinkedCauseUnavailable
+          opportunityId={pendingId}
+          detail={linked && !linked.found ? linked.detail : null}
+          onDismiss={() => onOpenOpportunityChange?.(null)}
+        />
       ) : null}
-    </section>
+
+      {selected ? (
+        <Suspense fallback={null}>
+          <OpportunityDrawer
+            opportunity={selected}
+            adapter={adapter}
+            detailEnabled={detailById}
+            planEnabled={capabilities.planById}
+            onClose={() => select(null)}
+            onAgentPrompt={callbacks.onPrompt}
+            onSelectById={openById}
+          />
+        </Suspense>
+      ) : null}
+
+      {promptModal}
+    </div>
   );
 }

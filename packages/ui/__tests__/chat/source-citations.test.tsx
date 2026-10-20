@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import {
   SourceCitations,
   extractSources,
@@ -17,6 +17,86 @@ function searchCall(results: Array<Record<string, unknown>>): ChatUIToolCall {
 }
 
 describe("extractSources", () => {
+  // These five tools produced no citation at all before: a reader could not
+  // check the scored claim the answer was built on. Field names are the live
+  // wire shapes, which differ per tool (`file` on get_symbol, `file_path`
+  // elsewhere, a path-keyed object on get_risk).
+  it("cites the files the scored tools actually read", () => {
+    const calls: ChatUIToolCall[] = [
+      {
+        id: "r1",
+        name: "get_risk",
+        arguments: {},
+        result: { targets: { "packages/core/persist.py": { hotspot_score: 0.9 } } },
+        status: "done",
+      },
+      {
+        id: "h1",
+        name: "get_health",
+        arguments: {},
+        result: { findings: [{ file_path: "packages/cli/command.py" }] },
+        status: "done",
+      },
+      {
+        id: "d1",
+        name: "get_dead_code",
+        arguments: {},
+        result: { tiers: { high: { findings: [{ file_path: "packages/web/unused.ts" }] } } },
+        status: "done",
+      },
+      {
+        id: "s1",
+        name: "get_symbol",
+        arguments: {},
+        result: { file: "packages/ui/widget.tsx", name: "Widget" },
+        status: "done",
+      },
+    ];
+
+    const paths = extractSources(calls, "repo1").map((s) => s.targetPath);
+
+    expect(paths).toContain("packages/core/persist.py");
+    expect(paths).toContain("packages/cli/command.py");
+    expect(paths).toContain("packages/web/unused.ts");
+    expect(paths).toContain("packages/ui/widget.tsx");
+  });
+
+  it("does not cite a tool call that failed", () => {
+    // A failed read is marked status "error"; citing it would advertise
+    // evidence the answer never had.
+    const sources = extractSources(
+      [
+        {
+          id: "r2",
+          name: "get_risk",
+          arguments: {},
+          result: { error: "no git metadata available" },
+          status: "error",
+        },
+      ],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(0);
+  });
+
+  it("survives a malformed payload rather than throwing", () => {
+    const sources = extractSources(
+      [
+        {
+          id: "h2",
+          name: "get_health",
+          arguments: {},
+          result: { findings: [{ file_path: 42 }], targets: [null, "ok.py"] },
+          status: "done",
+        },
+      ],
+      "repo1",
+    );
+
+    expect(sources.map((s) => s.targetPath)).toEqual(["ok.py"]);
+  });
+
   it("reads the rank-normalized confidence, not the raw backend score", () => {
     // BM25 fallback scores are unbounded — reading relevance_score here is what
     // rendered "1808%" in the sources list.
@@ -65,6 +145,55 @@ describe("extractSources", () => {
 
     // Badge hides rather than falling back to the unbounded raw score.
     expect(sources[0]?.confidence).toBeUndefined();
+  });
+
+  it("rebuilds a search row's page id from path when page_id and target_path are gone", () => {
+    // search_codebase drops target_path where it equals path, and then drops
+    // page_id because page_type + path rebuild it.
+    const sources = extractSources(
+      [searchCall([{ page_type: "file_page", path: "src/auth.py", title: "auth.py" }])],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.pageId).toBe("file_page:src/auth.py");
+    expect(sources[0]?.targetPath).toBe("src/auth.py");
+  });
+
+  it("cites a slimmed file row that has only page_type and path", () => {
+    // No page_id, no target_path and no structural title: the file name stands in.
+    const sources = extractSources(
+      [searchCall([{ page_type: "file_page", path: "src/auth.py" }])],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.pageId).toBe("file_page:src/auth.py");
+    expect(sources[0]?.title).toBe("auth.py");
+  });
+
+  it("rebuilds a symbol page's id from symbol_id, not its file", () => {
+    const sources = extractSources(
+      [
+        searchCall([
+          {
+            page_type: "symbol_spotlight",
+            symbol_id: "src/auth.py::login",
+            path: "src/auth.py",
+          },
+          { page_type: "file_page", path: "src/auth.py" },
+        ]),
+      ],
+      "repo1",
+    );
+
+    // The symbol page and its file page are two distinct citations.
+    expect(sources.map((s) => s.pageId)).toEqual([
+      "symbol_spotlight:src/auth.py::login",
+      "file_page:src/auth.py",
+    ]);
+    expect(sources[0]?.title).toBe("src/auth.py::login");
+    expect(sources[0]?.targetPath).toBe("src/auth.py");
   });
 
   it("cites files from get_why health stale_decisions", () => {
@@ -139,5 +268,15 @@ describe("SourceCitations render", () => {
     const pct = screen.getByText("82%");
     expect(pct.className).toContain("tabular-nums");
     expect(pct.className).toContain("font-mono");
+  });
+
+  it("collapses end-of-answer sources by default and lets the reader expand them", () => {
+    const { container } = renderList();
+    const disclosure = container.querySelector("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(screen.getByText("Sources · 2")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Sources · 2"));
+    expect(disclosure).toHaveAttribute("open");
   });
 });

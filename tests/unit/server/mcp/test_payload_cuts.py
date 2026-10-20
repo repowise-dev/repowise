@@ -15,13 +15,14 @@ the failure mode each of these changes was designed around.
 from __future__ import annotations
 
 from repowise.server.mcp_server._budget.budgeter import truncate_to_budget
+from repowise.server.mcp_server._page_paths import add_row_paths
 from repowise.server.mcp_server.tool_answer.answer import (
     _build_best_guesses,
     _drop_duplicated_guess_excerpts,
     _trim_served_payload,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import _CANDIDATE_LIMIT
-from repowise.server.mcp_server.tool_search import _drop_derivable_page_ids
+from repowise.server.mcp_server.tool_search import _drop_derivable_page_ids, _slim_served_rows
 
 # ---------------------------------------------------------------------------
 # search_codebase.results[].page_id — derivable from two of its own siblings
@@ -41,6 +42,27 @@ def test_page_id_dropped_when_page_type_and_target_path_rebuild_it():
     assert "page_id" not in results[0]
     # Lossless: the consumer rebuilds it from what is still there.
     assert f"{results[0]['page_type']}:{results[0]['target_path']}" == "file_page:rich/ansi.py"
+
+
+def test_page_id_dropped_after_add_row_paths_moved_target_path_to_path():
+    """The shape every search response actually has at this point.
+
+    ``add_row_paths`` runs first and deletes ``target_path`` where it equals
+    ``path``, so an ordinary file row reaches the drop with only ``path``.
+    """
+    results = [
+        {
+            "page_id": "file_page:rich/ansi.py",
+            "page_type": "file_page",
+            "target_path": "rich/ansi.py",
+            "title": "ansi",
+        }
+    ]
+    add_row_paths(results)
+    assert "target_path" not in results[0]
+    _drop_derivable_page_ids(results)
+    assert "page_id" not in results[0]
+    assert f"{results[0]['page_type']}:{results[0]['path']}" == "file_page:rich/ansi.py"
 
 
 def test_page_id_kept_when_it_cannot_be_rebuilt():
@@ -120,6 +142,38 @@ def test_null_domain_penalty_is_absent_not_null():
         [{"target_path": "a.py", "score": 0.5, "_domain_penalty": "ui question; cross-domain"}]
     )
     assert penalised[0]["domain_penalty"] == "ui question; cross-domain"
+
+
+def test_best_guesses_keep_one_row_per_file():
+    # A symbol page resolves to its file, so command.go would take two of the
+    # three slots and completions.go would never be offered (#3594).
+    hits = [
+        {"page_type": "file_page", "target_path": "command.go", "score": 5.774},
+        {"page_type": "file_page", "target_path": "args.go", "score": 4.042},
+        {"page_type": "symbol_spotlight", "target_path": "command.go::Find", "score": 3.0},
+        {"page_type": "file_page", "target_path": "completions.go", "score": 2.9},
+    ]
+    guesses = _build_best_guesses(hits)
+    assert [g["file"] for g in guesses] == ["command.go", "args.go", "completions.go"]
+    assert guesses[0]["score"] == 5.774
+
+
+def test_best_guesses_unchanged_for_distinct_files():
+    hits = [
+        {"page_type": "file_page", "target_path": "a.py", "score": 3.0},
+        {"page_type": "file_page", "target_path": "b.py", "score": 2.0},
+        {"page_type": "file_page", "target_path": "c.py", "score": 1.0},
+        {"page_type": "file_page", "target_path": "d.py", "score": 0.5},
+    ]
+    assert [g["file"] for g in _build_best_guesses(hits)] == ["a.py", "b.py", "c.py"]
+
+
+def test_best_guesses_still_skip_hits_without_a_file():
+    hits = [
+        {"page_type": "module_page", "target_path": "pkg", "score": 3.0},
+        {"page_type": "file_page", "target_path": "a.py", "score": 2.0},
+    ]
+    assert [g["file"] for g in _build_best_guesses(hits)] == ["a.py"]
 
 
 # ---------------------------------------------------------------------------
@@ -203,3 +257,88 @@ def test_truncation_keys_present_when_something_was_dropped():
     out = truncate_to_budget({"targets": targets, "_meta": {}}, char_budget=2_000)
     assert out["truncated"] is True
     assert out["dropped_targets"] or out["dropped_symbols"]
+
+
+# ---------------------------------------------------------------------------
+# search_codebase.results[] — one location per row
+# ---------------------------------------------------------------------------
+
+
+def _row(page_type, target, title, **extra):
+    row = {
+        "page_id": f"{page_type}:{target}",
+        "page_type": page_type,
+        "target_path": target,
+        "title": title,
+        "sources": ["fts"],
+        **extra,
+    }
+    return row
+
+
+def _keyless(monkeypatch, value=False):
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.tool_search.semantic_search_state", lambda: value
+    )
+
+
+def test_file_page_row_keeps_only_path(monkeypatch):
+    _keyless(monkeypatch)
+    (row,) = _slim_served_rows([_row("file_page", "src/a.py", "File: src/a.py")])
+    assert row["path"] == "src/a.py"
+    assert not {"page_id", "title", "file", "target_path", "sources"} & row.keys()
+
+
+def test_symbol_page_row_keeps_path_and_symbol_id(monkeypatch):
+    _keyless(monkeypatch)
+    row = _row(
+        "symbol_spotlight",
+        "src/a.py::f",
+        "Symbol: src/a.py::f",
+        symbol_id="src/a.py::f",
+        file="src/a.py",
+    )
+    row["target_path"] = "src/a.py"
+    row["page_id"] = "symbol_spotlight:src/a.py::f"
+    (row,) = _slim_served_rows([row])
+    assert row["path"] == "src/a.py" and row["symbol_id"] == "src/a.py::f"
+    assert not {"page_id", "title", "file"} & row.keys()
+
+
+def test_prose_titles_and_unrebuildable_ids_stay(monkeypatch):
+    _keyless(monkeypatch)
+    module = _row("module_page", "pkg/cmd", "The command layer")
+    edited = _row("file_page", "src/b.py", "Why b.py exists")
+    unloaded = {"page_id": "file_page:x.py", "page_type": "file_page", "target_path": ""}
+    _slim_served_rows([module, edited, unloaded])
+    # A module page has no ``path``; its id rebuilds from ``target_path``, which stays.
+    assert module["title"] == "The command layer" and module["target_path"] == "pkg/cmd"
+    assert edited["title"] == "Why b.py exists" and "page_id" not in edited
+    assert unloaded["page_id"] == "file_page:x.py"
+
+
+def test_localized_structural_title_is_dropped_per_repo_language(monkeypatch):
+    _keyless(monkeypatch)
+    de = _row("file_page", "src/a.py", "Datei: src/a.py", repo="de-repo")
+    en = _row("file_page", "src/a.py", "File: src/a.py", repo="en-repo")
+    wrong = _row("file_page", "src/a.py", "Datei: src/a.py", repo="en-repo")
+    _slim_served_rows([de, en, wrong], {"de-repo": "de", "en-repo": "en"})
+    assert "title" not in de and "title" not in en
+    assert wrong["title"] == "Datei: src/a.py"
+
+
+def test_sources_dropped_only_when_fts_only_and_keyless(monkeypatch):
+    _keyless(monkeypatch, False)
+    fts, sym, both = (
+        _row("file_page", "a.py", "A", sources=["fts"]),
+        _row("file_page", "b.py", "B", sources=["symbol"]),
+        _row("file_page", "c.py", "C", sources=["fts", "vector"]),
+    )
+    _slim_served_rows([fts, sym, both])
+    assert "sources" not in fts
+    assert sym["sources"] == ["symbol"] and both["sources"] == ["fts", "vector"]
+
+    for state in (True, None):
+        _keyless(monkeypatch, state)
+        (kept,) = _slim_served_rows([_row("file_page", "d.py", "D", sources=["fts"])])
+        assert kept["sources"] == ["fts"]

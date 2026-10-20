@@ -44,7 +44,7 @@ def _invoke(monkeypatch: pytest.MonkeyPatch, tmp_path, config: dict) -> dict:
     monkeypatch.setattr(health_cmd, "load_state", lambda _p: {})
     monkeypatch.setattr(health_cmd, "load_config", lambda _p: config)
 
-    result = CliRunner().invoke(cli, ["health", str(tmp_path)])
+    result = CliRunner().invoke(cli, ["health", str(tmp_path), "--recompute"])
 
     assert isinstance(result.exception, _StopHere), result.output
     return seen
@@ -72,7 +72,7 @@ def test_the_state_flags_still_reach_it(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(health_cmd, "load_config", lambda _p: {"exclude_patterns": ["x/**"]})
 
-    result = CliRunner().invoke(cli, ["health", str(tmp_path)])
+    result = CliRunner().invoke(cli, ["health", str(tmp_path), "--recompute"])
 
     assert isinstance(result.exception, _StopHere), result.output
     assert seen == {

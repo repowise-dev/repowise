@@ -6,10 +6,13 @@ import json
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import networkx as nx
 import structlog
+
+if TYPE_CHECKING:
+    # An annotation only: networkx costs ~0.7 s to import on a read path.
+    import networkx as nx
 
 log = structlog.get_logger(__name__)
 
@@ -39,17 +42,24 @@ class ResolverContext:
     go_module_path: str | None = None
     go_modules: tuple[tuple[str, str], ...] = ()  # (module_dir_posix, module_path), longest-first
     has_sfc_files: bool = False  # any .vue/.svelte/.astro present in path_set
+    # Any ``<name>.<ios|android|native|web>.<ts|tsx|...>`` file in path_set:
+    # Metro (React Native) picks one of these over ``<name>.<ext>``. False keeps
+    # TS/JS resolution byte-identical to a repo that has no such files.
+    has_platform_files: bool = False
     parsed_files: dict | None = None  # for Rust crate root detection
     # ``{file_info.path: raw source bytes}`` the pipeline already read, same
     # keys as *parsed_files*. Warmups that scan file text use it in place of
     # a second read; None (or a missing key) means read from disk.
     source_map: dict[str, bytes] | None = field(default=None, repr=False)
     compile_commands_cache: dict[str, dict] | None = field(default=None, repr=False)
+    # Where pytest collects (``pytest_roots.PytestRoots``), from the traverser's
+    # config pass. None when the caller did not walk the repo: collection unknown.
+    pytest_roots: Any | None = field(default=None, repr=False)
     # Lazy per-language indexes are stashed via getattr/setattr (e.g.
-    # ``_php_psr4_map``, ``_ts_workspace_map``, ``_kotlin_index``,
-    # ``_ruby_rails_index``, ``_swift_targets``, ``_scala_index``). This
-    # mirrors the dotnet/index.py pattern and keeps language-specific bloat
-    # off the dataclass.
+    # ``_php_psr4_map``, ``_composer_manifests``, ``_ts_workspace_map``,
+    # ``_kotlin_index``, ``_ruby_rails_index``, ``_swift_targets``,
+    # ``_scala_index``). This mirrors the dotnet/index.py pattern and keeps
+    # language-specific bloat off the dataclass.
 
     # Cached sorted view of ``path_set``. Resolvers that scan for a *first*
     # match MUST iterate this, never the raw set: set iteration order varies

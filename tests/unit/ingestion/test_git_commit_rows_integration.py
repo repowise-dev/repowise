@@ -159,6 +159,38 @@ async def test_index_repo_captures_whole_history_totals(tmp_path) -> None:
     assert totals.first_commit_at is not None
 
 
+
+@pytest.mark.asyncio
+async def test_index_repo_times_each_git_step(tmp_path) -> None:
+    """Every step of the full index lands in the run's phase table, including
+    the repo-wide passes that run beside the per-file pass."""
+    import git as gitpython
+
+    from repowise.core.pipeline import PhaseTimings
+
+    repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Ada Lovelace", "ada@example.com")
+    _commit(repo, tmp_path / "a.py", "x = 1\n", "feat: add a")
+    _commit(repo, tmp_path / "a.py", "x = 2\n", "fix: correct a")
+
+    table = PhaseTimings()
+    summary, _results = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_repo(
+        "repo1", timings=table
+    )
+
+    assert summary.repo_totals is not None
+    assert summary.repo_totals.total_commit_count == 2
+    for step in (
+        "git.commit_index",
+        "git.files",
+        "git.fix_walk",
+        "git.repo_totals",
+        "git.fix_events",
+        "git.episodes",
+    ):
+        assert step in table.totals, step
+
+
 def test_capture_repo_totals_method(tmp_path) -> None:
     """The public capture (used by the incremental update path) opens its own
     repo and returns the same whole-history record."""

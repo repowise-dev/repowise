@@ -7,11 +7,14 @@ the ``llm_costs`` table for historical reporting via ``repowise costs``.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
 import structlog
+
+from repowise.core.providers.llm.specs import ZERO_COST_MODEL_PREFIXES
 
 log = structlog.get_logger(__name__)
 
@@ -20,17 +23,22 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _PRICING: dict[str, dict[str, float]] = {
-    # Anthropic — Opus tier $5/$25, Sonnet $3/$15, Haiku $1/$5 per 1M. The 5 and
-    # 4-x entries are the models the session detector surfaces from current
-    # Claude Code transcripts. Opus used to be listed at $15/$75 here, which is
-    # the Opus 3 rate and overstated every Opus session by 3x.
+    # Anthropic — Opus tier $5/$25, Sonnet $3/$15, Haiku $1/$5 per 1M; the 5.x
+    # Sonnets bill $2/$10 and Opus 5.5 $4/$20. The 5 and 4-x entries are the
+    # models the session detector surfaces from current Claude Code transcripts.
+    # Opus used to be listed at $15/$75 here, which is the Opus 3 rate and
+    # overstated every Opus session by 3x.
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0},
     "claude-opus-5": {"input": 5.0, "output": 25.0},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0},
     "claude-opus-4-7": {"input": 5.0, "output": 25.0},
     "claude-opus-4-6": {"input": 5.0, "output": 25.0},
-    "claude-sonnet-5": {"input": 3.0, "output": 15.0},
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0},
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    # Prompts over 100K tokens bill at $0.50/$2.50; doc-page prompts stay under.
+    "claude-haiku-5-5": {"input": 0.1, "output": 0.5},
     "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
     # OpenAI — GPT-5 family (the models Codex sessions report). Rates per 1M
     # input/output; verify against current OpenAI pricing before relying on
@@ -48,6 +56,12 @@ _PRICING: dict[str, dict[str, float]] = {
     # gpt-5 branch prices it at the flagship $2.50/$15 tier, 12.5x over on
     # output, with no unknown-model warning to notice it by.
     "gpt-5.6-luna": {"input": 0.20, "output": 1.20},
+    # GPT-6 has no family fallback below, so an unlisted variant takes the
+    # flat fallback and warns.
+    "gpt-6-luna": {"input": 0.10, "output": 0.50},
+    "gpt-6-sol": {"input": 2.0, "output": 10.0},
+    "gpt-6.1-sol": {"input": 2.0, "output": 10.0},
+    "gpt-6-astra": {"input": 10.0, "output": 50.0},
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     # Google Gemini
@@ -58,12 +72,23 @@ _PRICING: dict[str, dict[str, float]] = {
     "gemini-1.5-flash-lite": {"input": 0.075, "output": 0.30},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
     # Gemini preview / experimental models
-    "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
-    "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
-    "gemini-3.5-flash-lite": {"input": 0.25, "output": 1.50},
-    # DeepSeek
-    "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
-    "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
+    "gemini-3.1-flash-lite-preview": {"input": 0.25, "output": 1.50},
+    "gemini-3-flash-preview": {"input": 0.50, "output": 3.00},
+    "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
+    # Standard rates; introductory prices run until year end.
+    "gemini-3.8-flash": {"input": 1.50, "output": 7.50},
+    "gemini-4-argon": {"input": 4.0, "output": 20.0},
+    # DeepSeek — https://api-docs.deepseek.com/quick_start/pricing
+    # Peak-hour rates; the legacy flash name bills as V4.1 Flash.
+    "deepseek-flash": {"input": 0.30, "output": 1.20},
+    "deepseek-v4-flash": {"input": 0.30, "output": 1.20},
+    "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
+    "deepseek-chat": {"input": 0.27, "output": 1.10},
+    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    # Kimi / Moonshot — https://platform.moonshot.cn/docs/pricing/chat
+    "kimi-for-coding": {"input": 0.60, "output": 2.40},
+    "kimi-k2.5": {"input": 0.60, "output": 2.40},
+    "kimi-k2.6": {"input": 0.95, "output": 4.00},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
@@ -96,10 +121,16 @@ def is_local_model(model: str) -> bool:
     return (
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
-        or model.startswith(("codex_cli/", "claude_cli/", "opencode/"))
-        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`,
-        # and a `family:size` tag is not a shape any hosted vendor uses.
-        or (":" in model and "/" not in model)
+        or model.startswith(ZERO_COST_MODEL_PREFIXES)
+        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`.
+        # The trailing tag must not be a bare number: Bedrock addresses hosted
+        # Anthropic models as `anthropic.claude-sonnet-4-5-20250929-v1:0`, and
+        # reading that as local priced a Bedrock user's whole history at $0.00
+        # while stamping it as measured — a fabricated rate, just a zero one,
+        # and worse than `None` because it is indistinguishable from a real
+        # local-model zero. Ollama size tags (`:8b`, `:latest`, `:q4_K_M`) are
+        # never purely numeric, so the two shapes separate cleanly.
+        or (":" in model and "/" not in model and not model.rsplit(":", 1)[1].isdigit())
     )
 
 
@@ -111,7 +142,9 @@ def is_local_model(model: str) -> bool:
 #: the Sonnet fallback rate, which would undercount the agent savings it earned
 #: by ~5x. Ordered longest/most-specific prefix first.
 _CLAUDE_FAMILY_PRICING: tuple[tuple[str, dict[str, float]], ...] = (
+    ("claude-opus-5-5", {"input": 4.0, "output": 20.0}),
     ("claude-opus", {"input": 5.0, "output": 25.0}),
+    ("claude-sonnet-5", {"input": 2.0, "output": 10.0}),
     ("claude-sonnet", {"input": 3.0, "output": 15.0}),
     ("claude-haiku", {"input": 1.0, "output": 5.0}),
 )
@@ -150,8 +183,20 @@ def _routed_model_leaf(model: str) -> str:
     return model.rsplit("/", 1)[-1]
 
 
-def _get_pricing(model: str) -> dict[str, float]:
-    """Return pricing for *model*, falling back and warning if unknown."""
+def resolve_model_pricing(model: str) -> dict[str, float] | None:
+    """Pricing for *model*, or ``None`` when this table does not know it.
+
+    The honest half of the lookup, and the one a caller that *records* a rate
+    has to use. :func:`get_model_pricing` answers the same question but
+    substitutes the default tier for a miss, and once that substitute has been
+    written down it is indistinguishable from a measurement: a saving stamped
+    $3/$15 reads as real whether the table knew the model or invented it.
+
+    So anything that stores a rate asks here and stays unpriced on ``None``.
+    Anything merely displaying a rough figure may still take the fallback.
+
+    A local model is a real answer of zero, not a miss.
+    """
     if is_local_model(model):
         return {"input": 0.0, "output": 0.0}
     if model in _PRICING:
@@ -159,9 +204,14 @@ def _get_pricing(model: str) -> dict[str, float]:
     leaf = _routed_model_leaf(model)
     if leaf in _PRICING:
         return _PRICING[leaf]
-    family = _family_pricing(model) or _family_pricing(leaf)
-    if family is not None:
-        return family
+    return _family_pricing(model) or _family_pricing(leaf)
+
+
+def _get_pricing(model: str) -> dict[str, float]:
+    """Return pricing for *model*, falling back and warning if unknown."""
+    resolved = resolve_model_pricing(model)
+    if resolved is not None:
+        return resolved
     if model not in _warned_models:
         log.warning("cost_tracker.unknown_model", model=model, fallback=_FALLBACK_PRICING)
         _warned_models.add(model)
@@ -174,8 +224,30 @@ def get_model_pricing(model: str) -> dict[str, float]:
     Unknown models fall back to the default tier (with a one-time warning).
     Used outside generation (e.g. ``repowise saved``) to turn token counts
     into dollar estimates with the same table the cost ledger uses.
+
+    Prefer :func:`resolve_model_pricing` when the rate will be *stored*: this
+    one cannot tell the caller that the number it returned was invented.
     """
     return _get_pricing(model)
+
+
+def pricing_table_version() -> str:
+    """Stable identifier for the rate tables this module resolves against.
+
+    Savings events snapshot the rate they were priced at so history is never
+    repriced, and that snapshot is only auditable if it also records *which*
+    table produced it. Derived from the table contents rather than declared as
+    a constant: a hand-maintained version is one more thing to keep in sync,
+    and it would go stale silently on exactly the edit that matters.
+    """
+    payload = repr(
+        (
+            sorted(_PRICING.items()),
+            _CLAUDE_FAMILY_PRICING,
+            sorted(_FALLBACK_PRICING.items()),
+        )
+    )
+    return "pricing:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------

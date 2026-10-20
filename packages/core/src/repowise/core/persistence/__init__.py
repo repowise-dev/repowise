@@ -10,8 +10,10 @@ SQLite (default)
     or :class:`LanceDBVectorStore` when the ``search`` extra is installed.
 
 PostgreSQL
-    Uses ``asyncpg`` and the ``pgvector`` extension.  Install the
-    ``pgvector`` extra: ``pip install repowise-core[pgvector]``.
+    Uses ``asyncpg``.  Install the ``postgres`` extra:
+    ``pip install "repowise[postgres]"``.  Semantic search still uses
+    LanceDB on this backend; the ``wiki_pages.embedding`` pgvector column
+    added by the migration is not read or written yet (see #3090).
 """
 
 from repowise.core.providers.embedding.base import Embedder, MockEmbedder
@@ -60,7 +62,10 @@ from .crud import (
     get_repository_by_path,
     get_scc_members,
     get_stale_decisions,
+    get_stale_file_page_ages,
     get_stale_pages,
+    get_stale_structural_file_paths,
+    get_stale_update_targets,
     get_top_entry_points,
     link_graph_nodes_to_external_systems,
     list_chat_messages,
@@ -71,6 +76,8 @@ from .crud import (
     list_page_ids,
     list_pages,
     load_prior_pages,
+    load_stale_structural_file_paths,
+    load_stale_update_targets,
     mark_webhook_processed,
     recompute_decision_staleness,
     save_dead_code_findings,
@@ -104,6 +111,7 @@ from .database import (
     get_repo_db_path,
     get_session,
     init_db,
+    refresh_planner_stats,
     resolve_db_url,
 )
 from .decision_graph import (
@@ -124,6 +132,7 @@ from .models import (
     DecisionEvidence,
     DecisionNodeLink,
     DecisionRecord,
+    DocDriftFinding,
     ExternalSystem,
     GenerationJob,
     GitCommit,
@@ -163,6 +172,7 @@ __all__ = [
     "DecisionEvidence",
     "DecisionNodeLink",
     "DecisionRecord",
+    "DocDriftFinding",
     # embedder
     "Embedder",
     "ExternalSystem",
@@ -255,7 +265,10 @@ __all__ = [
     "get_scc_members",
     "get_session",
     "get_stale_decisions",
+    "get_stale_file_page_ages",
     "get_stale_pages",
+    "get_stale_structural_file_paths",
+    "get_stale_update_targets",
     "get_top_entry_points",
     "init_db",
     "link_graph_nodes_to_external_systems",
@@ -268,8 +281,11 @@ __all__ = [
     "list_page_ids",
     "list_pages",
     "load_prior_pages",
+    "load_stale_structural_file_paths",
+    "load_stale_update_targets",
     "mark_webhook_processed",
     "recompute_decision_staleness",
+    "refresh_planner_stats",
     "resolve_db_url",
     "save_dead_code_findings",
     "store_webhook_event",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tree_sitter import Node
 
-from ...models import NamedBinding
+from ...models import Import, NamedBinding
 from ..helpers import node_text
 
 
@@ -34,68 +34,129 @@ def extract_rust_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Na
             )]
         return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
 
-    arg_node = stmt_node.child_by_field_name("argument")
-    if arg_node is None:
-        for child in stmt_node.children:
-            if child.type not in ("use", ";", "pub", "visibility_modifier"):
-                arg_node = child
-                break
+    arg_node = rust_use_argument(stmt_node)
     if arg_node is None:
         return [], []
 
     names: list[str] = []
     bindings: list[NamedBinding] = []
-    _parse_rust_use_tree(arg_node, src, names, bindings, depth=0)
+    for _path, local, exported in expand_rust_use_tree(arg_node, src):
+        names.append(local)
+        bindings.append(NamedBinding(local_name=local, exported_name=exported, source_file=None))
     return names, bindings
 
 
-def _parse_rust_use_tree(
+def rust_use_argument(stmt_node: Node) -> Node | None:
+    """The use tree of a ``use_declaration`` (the part after ``use``)."""
+    arg_node = stmt_node.child_by_field_name("argument")
+    if arg_node is not None:
+        return arg_node
+    for child in stmt_node.children:
+        if child.type not in ("use", ";", "pub", "visibility_modifier"):
+            return child
+    return None
+
+
+def expand_rust_use_tree(node: Node, src: str) -> list[tuple[str, str, str | None]]:
+    """Flatten a Rust use tree into one ``(path, local_name, exported_name)`` per leaf.
+
+    - ``crate::a::B``                    -> ``[("crate::a::B", "B", "B")]``
+    - ``crate::{a::{self, B as C}, d::*}`` -> ``crate::a`` bound as ``a``,
+      ``crate::a::B`` bound as ``C``, and ``("crate::d::*", "*", None)``
+
+    Each leaf names one path, so a brace group whose members live in
+    different modules resolves member by member instead of as one
+    unresolvable ``crate::{...}`` string.
+    """
+    leaves: list[tuple[str, str, str | None]] = []
+    _walk_use_tree(node, src, "", leaves, depth=0)
+    return leaves
+
+
+def _join(prefix: str, path: str) -> str:
+    return f"{prefix}::{path}" if prefix else path
+
+
+def _walk_use_tree(
     node: Node,
     src: str,
-    names: list[str],
-    bindings: list[NamedBinding],
+    prefix: str,
+    leaves: list[tuple[str, str, str | None]],
     depth: int,
 ) -> None:
-    """Recursively parse a Rust use-tree into named bindings."""
     if depth > 10:
         return
 
-    if node.type == "use_as_clause":
-        path_child = node.child_by_field_name("path") or (
-            node.children[0] if node.children else None
-        )
-        alias_child = node.child_by_field_name("alias") or (
-            node.children[-1] if len(node.children) >= 2 else None
-        )
-        if path_child and alias_child and path_child != alias_child:
-            exported = node_text(path_child, src).rsplit("::", 1)[-1]
-            local = node_text(alias_child, src)
-            names.append(local)
-            bindings.append(
-                NamedBinding(local_name=local, exported_name=exported, source_file=None)
-            )
-        return
-
-    if node.type == "use_wildcard":
-        names.append("*")
-        bindings.append(NamedBinding(local_name="*", exported_name=None, source_file=None))
+    if node.type == "scoped_use_list":
+        path_node = node.child_by_field_name("path")
+        list_node = node.child_by_field_name("list")
+        if path_node is not None:
+            prefix = _join(prefix, node_text(path_node, src))
+        if list_node is not None:
+            _walk_use_tree(list_node, src, prefix, leaves, depth + 1)
         return
 
     if node.type == "use_list":
-        for child in node.children:
-            if child.type in ("{", "}", ","):
-                continue
-            _parse_rust_use_tree(child, src, names, bindings, depth + 1)
+        for child in node.named_children:
+            _walk_use_tree(child, src, prefix, leaves, depth + 1)
         return
 
-    if node.type == "scoped_use_list":
-        for child in node.children:
-            if child.type == "use_list":
-                _parse_rust_use_tree(child, src, names, bindings, depth + 1)
+    if node.type == "use_wildcard":
+        leaves.append((_join(prefix, node_text(node, src)), "*", None))
         return
+
+    alias: str | None = None
+    if node.type == "use_as_clause":
+        path_node = node.child_by_field_name("path")
+        alias_node = node.child_by_field_name("alias")
+        if path_node is None or alias_node is None:
+            return
+        alias = node_text(alias_node, src)
+        node = path_node
 
     text = node_text(node, src)
-    bare = text.rsplit("::", 1)[-1]
-    if bare and bare != "*":
-        names.append(bare)
-        bindings.append(NamedBinding(local_name=bare, exported_name=bare, source_file=None))
+    # ``{self}`` names the enclosing path itself: ``a::{self}`` binds ``a``.
+    path = prefix if text == "self" and prefix else _join(prefix, text)
+    exported = path.rsplit("::", 1)[-1]
+    if exported and exported != "*":
+        leaves.append((path, alias or exported, exported))
+
+
+def macro_mod_imports(token_tree: Node, raw: str) -> list[Import]:
+    """One ``mod`` import per module a macro's tokens declare.
+
+    ``cfg_if! { if #[cfg(unix)] { mod unix; } }`` declares ``unix`` in the
+    module that makes the call, the same as a ``mod unix;`` item there.
+    """
+    return [
+        Import(
+            raw_statement=raw,
+            module_path=name,
+            imported_names=["*"],
+            is_relative=False,
+            resolved_file=None,
+            bindings=[NamedBinding(local_name="*", exported_name=None, source_file=None)],
+        )
+        for name in dict.fromkeys(macro_body_mod_names(token_tree))
+    ]
+
+
+def macro_body_mod_names(token_tree: Node) -> list[str]:
+    """Module names declared in a macro token tree, nested trees included.
+
+    Only the exact tokens ``mod``, a plain name and ``;`` count: a ``$name``
+    metavariable or a ``mod x { ... }`` with a body is no file declaration,
+    and a declaration inside such a body belongs to that inline module, so
+    its tokens are not read.
+    """
+    kids = token_tree.children
+    types = [kid.type for kid in kids]
+    names = [
+        node_text(kids[i + 1], "")
+        for i in range(len(kids) - 2)
+        if types[i : i + 3] == ["mod", "identifier", ";"]
+    ]
+    for i, kid in enumerate(kids):
+        if kid.type == "token_tree" and types[max(i - 2, 0) : i] != ["mod", "identifier"]:
+            names.extend(macro_body_mod_names(kid))
+    return names

@@ -2,12 +2,14 @@ import { Flame } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { fileEntityPath, symbolEntityPath } from "../shared/entity/routes";
 import { EntityHeader } from "../shared/entity";
+import { FilePath } from "../shared/file-path";
 import type { BreadcrumbSegment } from "../shared/breadcrumb";
 import type {
   SymbolDetailData,
   SymbolDetailResponse,
 } from "@repowise-dev/types/symbols";
 import { FixHistoryBadge, SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
+import { AskAboutThis } from "../chat/ask-about-this";
 import { SymbolDetailBody } from "./symbol-detail-body";
 import { toSymbolBodyCall, toSymbolBodyRelations } from "./normalize-calls";
 
@@ -142,11 +144,21 @@ export function SymbolPage({
             />
             <a
               href={fileEntityPath(prefix, s.file_path)}
-              title={`${s.file_path}:${s.start_line}`}
-              className="block max-w-full truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
+              className="max-w-full text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
             >
-              {s.file_path}:{s.start_line}
+              <FilePath path={s.file_path} line={s.start_line} mode="full" />
             </a>
+            <AskAboutThis
+              context={{
+                kind: "symbol",
+                label: s.qualified_name || s.name,
+                target: s.symbol_id,
+                targetKind: "symbol",
+              }}
+              question={`What does ${s.qualified_name || s.name} do, who calls it, and what should tests protect?`}
+              label={`Ask about ${s.name}`}
+              className="h-6 w-6"
+            />
           </>
         }
         {...(LinkComponent ? { LinkComponent } : {})}

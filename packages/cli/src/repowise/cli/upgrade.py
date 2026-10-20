@@ -127,7 +127,7 @@ def _vector_dims(repo_path: Path) -> tuple[int | None, int | None]:
 
     The pin is checked before the table. Reading the stored width costs an
     ``import lancedb`` (1.7s measured, versus 0.09s for the connect and schema
-    read it exists for), and ``assess_store`` runs on every ``update`` including
+    read it exists for) whenever the store has no recorded width yet, and ``assess_store`` runs on every ``update`` including
     the no-op path a post-commit hook fires on. Keyless repos resolve the mock
     here and never pay it. A repo that does pin a real embedder now builds it
     where it used to short-circuit, which imports that provider's module, but

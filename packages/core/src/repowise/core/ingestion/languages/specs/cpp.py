@@ -2,6 +2,7 @@
 
 from ..spec import LanguageSpec
 from .c import BUILTIN_TYPES as _C_BUILTIN_TYPES
+from .c import TEST_SUPPORT_STEM_SUFFIXES
 
 #: Include fragments: C++ source that is ``#include``d into a translation unit
 #: rather than compiled as one of its own. The convention carries inline and
@@ -26,9 +27,11 @@ SPEC = LanguageSpec(
     tag="cpp",
     display_name="C++",
     import_support="full",
-    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp.
+    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp,
+    # and the helpers tests share (abseil's cord_test_helpers.h,
+    # distribution_test_util.h, log_basic_test_impl.inc).
     test_stem_prefixes=("test_",),
-    test_stem_suffixes=("_test", "_unittest"),
+    test_stem_suffixes=("_test", "_unittest", *TEST_SUPPORT_STEM_SUFFIXES),
     # A top-level include/ holds a C++ library's installed public headers —
     # its API surface (fmt, leveldb, boost layouts). Root-anchored: a
     # vendored include/ deep in another tree must not mint the layer.

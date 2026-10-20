@@ -19,8 +19,9 @@ from repowise.core.generation.page_redirects import (
 )
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import _now_utc
-from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.deps import get_db_session, scoped_repo_id, verify_api_key
 from repowise.server.schemas import (
+    JobAcceptedResponse,
     PageResponse,
     PageSummaryResponse,
     PageVersionResponse,
@@ -169,6 +170,7 @@ async def list_pages(
 
 @router.get("/lookup", response_model=PageResponse)
 async def get_page_by_query(
+    request: Request,
     response: Response,
     page_id: str = Query(..., description="Page ID (e.g. file_page:src/main.py)"),
     repo_id: str | None = Query(
@@ -193,9 +195,14 @@ async def get_page_by_query(
     carries ``X-Repowise-Redirected-From``.
     """
     page = await _get_page_or_successor(session, page_id, response)
-    if page is None:
+    if page is None or _outside_scope(request, page.repository_id):
         raise HTTPException(status_code=404, detail="Page not found")
     return PageResponse.from_orm(page)
+
+
+def _outside_scope(request: Request, repository_id: str) -> bool:
+    scoped = scoped_repo_id(request)
+    return scoped is not None and repository_id != scoped
 
 
 @router.get("/lookup/versions", response_model=list[PageVersionResponse])
@@ -233,10 +240,15 @@ async def update_page_notes(
     return PageResponse.from_orm(page)
 
 
-@router.post("/lookup/regenerate", status_code=202)
+@router.post("/lookup/regenerate", response_model=JobAcceptedResponse, status_code=202)
 async def regenerate_page_by_query(
     request: Request,
     page_id: str = Query(..., description="Page ID"),
+    repo_id: str | None = Query(
+        None,
+        description="Repository ID. Required in workspace mode to route to the "
+        "correct repository database.",
+    ),
     style: str | None = Query(
         None,
         description="Optional wiki style to regenerate this page in (per-page override).",
@@ -262,7 +274,7 @@ async def regenerate_page_by_query(
     from repowise.server.routers.repos import _accepted, _ensure_no_active_job, _launch_job_task
 
     page = await crud.get_page(session, page_id)
-    if page is None:
+    if page is None or _outside_scope(request, page.repository_id):
         raise HTTPException(status_code=404, detail="Page not found")
 
     if cascade not in ("none", "dependents", "full"):

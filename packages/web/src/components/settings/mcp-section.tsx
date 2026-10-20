@@ -2,6 +2,7 @@
 
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { CopyLine, SettingsRow, SettingsRows } from "@repowise-dev/ui/settings";
+import { useTranslations } from "next-intl";
 
 const MCP_CONFIG = JSON.stringify(
   {
@@ -17,15 +18,17 @@ const MCP_CONFIG = JSON.stringify(
 );
 
 export function McpSection() {
+  const t = useTranslations("settings");
+
   return (
     <OverviewSection
-      title="Editor config"
-      description="Paste this into Claude Code, Cursor or Cline to let the agent query this codebase. Replace the path with the repo you want served, and index it first so there is something to answer from."
+      title={t("mcp.title")}
+      description={t("mcp.description")}
     >
       <SettingsRows>
         <SettingsRow
-          label="MCP server"
-          hint="Goes in your editor's MCP config file."
+          label={t("mcp.serverLabel")}
+          hint={t("mcp.serverHint")}
         >
           <CopyLine value={MCP_CONFIG} />
         </SettingsRow>

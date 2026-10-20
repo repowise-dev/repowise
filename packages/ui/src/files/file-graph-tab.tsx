@@ -2,6 +2,7 @@ import type { ElementType } from "react";
 import { Network } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
+import { FilePath } from "../shared/file-path";
 import type { FileDetailGraph, FileGraphNeighbor } from "@repowise-dev/types/files";
 import { isExternal, nodeKind } from "@repowise-dev/types";
 import { FileSection, Fig } from "./file-section";
@@ -46,20 +47,24 @@ function NeighborList({
         const href = isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id);
         const row = (
           <>
-            <span
-              className={`min-w-0 flex-1 truncate font-mono text-xs ${
-                isExternalNode
-                  ? "text-[var(--color-text-tertiary)]"
-                  : "text-[var(--color-text-primary)]"
-              }`}
-              title={
-                isExternalNode
-                  ? `${n.node_id} (external dependency, not part of this repo)`
-                  : n.node_id
-              }
-            >
-              {truncatePath(n.node_id, 48)}
-            </span>
+            {isExternalNode || isSymbol ? (
+              <span
+                className={`min-w-0 flex-1 truncate font-mono text-xs ${
+                  isExternalNode
+                    ? "text-[var(--color-text-tertiary)]"
+                    : "text-[var(--color-text-primary)]"
+                }`}
+                title={
+                  isExternalNode
+                    ? `${n.node_id} (external dependency, not part of this repo)`
+                    : n.node_id
+                }
+              >
+                {truncatePath(n.node_id, 48)}
+              </span>
+            ) : (
+              <FilePath path={n.node_id} fold className="flex-1 text-[var(--color-text-primary)]" />
+            )}
             <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
               {n.edge_type}
             </span>
@@ -156,7 +161,7 @@ export function FileGraphTab({
         }
         action={
           <A
-            href={`${linkPrefix}/architecture?view=graph&node=${encodeURIComponent(filePath)}`}
+            href={`${linkPrefix}/architecture?view=files&node=${encodeURIComponent(filePath)}`}
             className="text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
           >
             Show in the dependency graph <span aria-hidden>→</span>

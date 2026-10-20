@@ -62,6 +62,18 @@ def test_extract_comment_blocks_handles_c_style_and_returns_empty_for_unknown():
     assert extract_comment_blocks("plain prose because yes", "txt") == []
 
 
+def test_tree_sitter_query_comments_are_mined():
+    scm = (
+        ";;;;;;;;;;;;;;;;\n"
+        ";; The receiver stays uncaptured because a qualified super call\n"
+        "; binds to the parent class, not the field.\n"
+        "(method_invocation name: (identifier) @call.target) @call.site\n"
+    )
+    blocks = extract_comment_blocks(scm, "scm")
+    assert blocks[0].text.startswith("The receiver stays uncaptured")
+    assert harvest_file_rationale(scm, "scm")
+
+
 # ---------------------------------------------------------------------------
 # Guardrails
 # ---------------------------------------------------------------------------

@@ -8,7 +8,8 @@ const SHORTCUTS: { keys: string[]; action: string }[] = [
   { keys: ["⌘K"], action: "Focus search" },
   { keys: ["1"], action: "Color by language" },
   { keys: ["2"], action: "Color by community" },
-  { keys: ["3"], action: "Color by risk" },
+  { keys: ["↑", "↓"], action: "Step through search results" },
+  { keys: ["Enter"], action: "Select the highlighted search result" },
   { keys: ["Esc"], action: "Dismiss top layer (panel, selection, blossom…)" },
   { keys: ["?"], action: "Toggle this help" },
 ];
@@ -22,7 +23,7 @@ const GESTURES: { gesture: string; action: string }[] = [
 /** Keyboard + gesture cheatsheet, toggled with `?`. */
 export function GraphShortcutHelp({ onClose }: { onClose: () => void }) {
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+    <div className="absolute inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
         className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 shadow-xl shadow-black/30"
         onClick={(e) => e.stopPropagation()}

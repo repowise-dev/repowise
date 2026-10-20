@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from repowise.core.persistence.models import GitMetadata
 
@@ -27,6 +27,18 @@ async def _add_bug_magnet(session, repo_id: str, path: str, *, fixes: int, days:
     StaticPool connection and commit at teardown, so a second session that
     commits mid-test drops the seeded data out from under the tool call.
     """
+    anchor = (
+        await session.execute(
+            select(func.max(GitMetadata.last_commit_at)).where(
+                GitMetadata.repository_id == repo_id
+            )
+        )
+    ).scalar_one_or_none()
+    if anchor is None:
+        anchor = datetime.now(UTC)
+    elif anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
+
     session.add(
         GitMetadata(
             id=f"gm-magnet-{path}",
@@ -40,7 +52,7 @@ async def _add_bug_magnet(session, repo_id: str, path: str, *, fixes: int, days:
             bug_magnet=True,
             fix_mass=9.0,
             prior_defect_count=fixes,
-            last_fix_at=datetime.now(UTC) - timedelta(days=days),
+            last_fix_at=anchor - timedelta(days=days),
             primary_owner_name="Carol",
         )
     )
@@ -103,9 +115,11 @@ async def test_risk_summary_leads_with_fix_history_when_present(setup_mcp, sessi
 
     # The defect evidence comes before the churn number, and agrees with the
     # risk_type printed further along the same line.
-    assert "4 bug fixes in 6mo, last 7d ago (bug magnet)" in summary
-    assert summary.index("bug fixes") < summary.index("hotspot score")
+    assert "4 bug fixes in 6mo, last 7d before the indexed commit (bug magnet)" in summary
+    assert summary.index("bug fixes") < summary.index("direct dependents")
     assert "bug-prone" in summary
+    # Not a churn hotspot (is_hotspot=False), so the summary makes no churn claim.
+    assert "hotspot" not in summary
 
 
 @pytest.mark.asyncio
@@ -116,7 +130,43 @@ async def test_risk_summary_unchanged_without_fix_history(setup_mcp):
     summary = result["targets"]["src/auth/service.py"]["risk_summary"]
 
     assert "bug fix" not in summary
-    assert summary.startswith("src/auth/service.py — hotspot score")
+    assert summary.startswith("src/auth/service.py — churn hotspot, top 8% (")
+
+
+@pytest.mark.asyncio
+async def test_risk_summary_drops_churn_clause_below_the_hotspot_cut(setup_mcp):
+    from repowise.server.mcp_server import get_risk
+
+    # models.py is in the fixture with churn_percentile=0.15 and is_hotspot=False.
+    result = await get_risk(["src/db/models.py"])
+    target = result["targets"]["src/db/models.py"]
+
+    assert target["is_hotspot"] is False
+    assert "hotspot" not in target["risk_summary"]
+    assert "15%" not in target["risk_summary"]
+    assert target["risk_summary"].startswith("src/db/models.py — 1 direct dependents")
+
+
+@pytest.mark.parametrize(
+    ("percentile", "expected"),
+    [
+        (0.92, "churn hotspot, top 8% (stable), "),
+        (0.86, "churn hotspot, top 14% (stable), "),  # 1 - 0.86 is not exactly 0.14
+        (0.9992, "churn hotspot, top 1% (stable), "),  # rounded up, never "top 0%"
+        (1.0, "churn hotspot, top 1% (stable), "),
+        (0.75, "churn hotspot, top 25% (stable), "),
+    ],
+)
+def test_churn_clause_states_the_rank_as_top_n_percent(percentile, expected):
+    from repowise.server.mcp_server.tool_risk.assessment import _churn_clause
+
+    assert _churn_clause(percentile, True, "stable") == expected
+
+
+def test_churn_clause_is_empty_for_a_file_that_is_not_a_hotspot():
+    from repowise.server.mcp_server.tool_risk.assessment import _churn_clause
+
+    assert _churn_clause(0.9, False, "increasing") == ""
 
 
 @pytest.mark.asyncio
@@ -132,7 +182,10 @@ async def test_get_context_triage_reports_fix_history(setup_mcp, session, repo_i
     ).scalar_one()
     row.prior_defect_count = 5
     row.bug_magnet = True
-    row.last_fix_at = datetime.now(UTC) - timedelta(days=3)
+    anchor = row.last_commit_at or datetime.now(UTC)
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
+    row.last_fix_at = anchor - timedelta(days=3)
     await session.flush()
 
     result = await get_context(["src/auth/service.py"])
@@ -153,3 +206,60 @@ async def test_get_context_triage_omits_fix_history_when_there_is_none(setup_mcp
 
     assert "fix_history" not in t
     assert t["hotspot"] is True  # churn bit still reported
+
+
+@pytest.mark.asyncio
+async def test_fix_history_anchors_to_historical_commit_two_years_ago(
+    setup_mcp, session, repo_id
+):
+    """A repository last committed two years ago measures fix age from HEAD, not today."""
+    from repowise.server.mcp_server import get_context, get_risk
+
+    # Move all existing rows back to 2 years ago
+    two_years_ago = datetime.now(UTC) - timedelta(days=730)
+    rows = (
+        await session.execute(
+            select(GitMetadata).where(GitMetadata.repository_id == repo_id)
+        )
+    ).scalars().all()
+    for r in rows:
+        r.last_commit_at = two_years_ago
+    await session.flush()
+
+    # Add a file with one fix 30 days before that anchor
+    session.add(
+        GitMetadata(
+            id="gm-old-fix",
+            repository_id=repo_id,
+            file_path="src/old/fixed.py",
+            commit_count_total=5,
+            commit_count_90d=1,
+            commit_count_30d=0,
+            churn_percentile=0.1,
+            is_hotspot=False,
+            bug_magnet=True,
+            prior_defect_count=1,
+            last_fix_at=two_years_ago - timedelta(days=30),
+            primary_owner_name="Dave",
+        )
+    )
+    await session.flush()
+
+    # get_risk: risk_summary, defect_profile
+    risk_res = await get_risk(["src/old/fixed.py"])
+    target_risk = risk_res["targets"]["src/old/fixed.py"]
+    assert "1 bug fix in 6mo, last 30d before the indexed commit" in target_risk["risk_summary"]
+    assert target_risk["defect_profile"]["last_fix_days_ago"] == 30
+    assert target_risk["defect_profile"]["fix_count"] == 1
+
+    # global_hotspots (target other files so src/old/fixed.py is surfaced in attention list)
+    hotspots_res = await get_risk(["src/auth/service.py", "src/db/models.py"])
+    listed = {h["file_path"]: h for h in hotspots_res["global_hotspots"]}
+    assert "src/old/fixed.py" in listed
+    assert listed["src/old/fixed.py"]["last_fix_days_ago"] == 30
+
+    # get_context: fix_history
+    context_res = await get_context(["src/old/fixed.py"])
+    target_ctx = context_res["targets"]["src/old/fixed.py"]
+    assert target_ctx["fix_history"]["last_fix_days_ago"] == 30
+    assert target_ctx["fix_history"]["fix_count"] == 1

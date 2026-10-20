@@ -4,11 +4,16 @@ import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { CheckoutFacts } from "@repowise-dev/ui/decisions";
-import { getDecisionCounts, listDecisions } from "@/lib/api/decisions";
+import {
+  getDecisionCounts,
+  getDecisionLaneCounts,
+  listDecisions,
+} from "@/lib/api/decisions";
 import { listEpisodes } from "@/lib/api/episodes";
 import { ApiClientError } from "@/lib/api/client";
-import { DecisionsTableWrapper } from "@/components/decisions/decisions-table-wrapper";
 import { AddDecisionButton } from "@/components/decisions/add-decision-button";
+import { DecisionReviewWrapper } from "@/components/decisions/decision-review-wrapper";
+import { getTranslations } from "next-intl/server";
 
 export const revalidate = 30;
 export const metadata: Metadata = { title: "Decisions" };
@@ -60,6 +65,7 @@ interface Props {
  */
 export default async function DecisionsPage({ params }: Props) {
   const { id: repoId } = await params;
+  const t = await getTranslations("views.decisions");
 
   let decisions;
   try {
@@ -84,6 +90,14 @@ export default async function DecisionsPage({ params }: Props) {
     include_proposed: true,
   }).catch(() => undefined);
 
+  // The lede's figure. `/decisions/counts` groups the status column, which is
+  // the projection kept in step for readers that predate the acceptance split,
+  // so its `active` counts records nobody accepted. The number this page leads
+  // with is what the repository actually stands behind, which is the lane
+  // count. Degrades the same way: a frontend ahead of its backend 404s here
+  // and falls back to the projection rather than losing the page.
+  const lanes = await getDecisionLaneCounts(repoId).catch(() => undefined);
+
   // Facts about the checkout, which is the structural tier of the episode
   // store. Five rows on this repository and none of them need history, a key
   // or a transcript, so this is the one section that says something on a
@@ -103,11 +117,22 @@ export default async function DecisionsPage({ params }: Props) {
 
   // With counts we can state a measured total; without them we report only
   // what this page actually loaded, and say so. Never a number nobody counted.
-  const total = counts?.total;
+  const total = lanes?.total ?? counts?.total;
   const proposed =
-    counts?.proposed ?? decisions.filter((d) => d.status === "proposed").length;
-  const active =
-    counts?.active ?? decisions.filter((d) => d.status === "active").length;
+    lanes?.candidates ??
+    counts?.proposed ??
+    decisions.filter((d) => d.status === "proposed").length;
+  // Everything with an acceptance row, which is what "accepted" means. Not
+  // `governing`: that is `active + needs_review` and leaves the accepted but
+  // unscoped records out, so the lede and the Uncheckable tab under it would
+  // not add up. The status fallback counts the projection instead, and it can
+  // include records nobody accepted, so it is labelled differently below.
+  const accepted =
+    lanes !== undefined
+      ? lanes.active + lanes.needs_review + lanes.uncheckable
+      : (counts?.active ??
+        decisions.filter((d) => d.status === "active").length);
+  const measuredByLane = lanes !== undefined;
   const empty = total === 0;
   const denominator =
     total !== undefined
@@ -116,66 +141,57 @@ export default async function DecisionsPage({ params }: Props) {
 
   return (
     <PageShell
-      title="Decisions"
-      description="What this codebase has settled on and what is true of the checkout you are standing in: the constraints, the tradeoffs, and the facts that catch people out."
+      title={t("title")}
+      description={t("description")}
     >
       {/* The headline used to be the size of the review queue, so the largest
           number on the page pointed at the work nobody had done rather than at
-          what the repository actually stands behind. The confirmed count leads
-          now; the queue keeps its sentence, because 87 unconfirmed proposals
-          are worth knowing about, just not worth 52px.
+          what the repository actually stands behind. The accepted count leads
+          now; the queue keeps its sentence, because a few hundred unreviewed
+          candidates are worth knowing about, just not worth 52px.
 
-          The count is the measured `active` total and is not de-duplicated. A
-          live index carries near-identical pairs, two spellings of one fix
-          landing as two confirmed records, and collapsing them here would need
-          a title-similarity threshold tuned on one repository sitting in a
-          page component, where a wrong merge hides a record a human confirmed.
-          That belongs to supersession, which is structural and not yet built.
-          Until then the number is honest about what it counts and the pairs
-          stay visible in the table, where they can be deprecated. */}
+          It counts acceptance rows, not the status column, so it is every
+          record somebody accepted: the ones that govern plus the ones that
+          were accepted and then drifted or turned out to name nothing. Those
+          are separate lanes below and the four numbers add up.
+
+          The count is not de-duplicated. A live index carries near-identical
+          pairs, two spellings of one fix landing as two accepted records, and
+          collapsing them here would need a title-similarity threshold tuned on
+          one repository sitting in a page component, where a wrong merge hides
+          a record a human accepted. That belongs to supersession, which is
+          structural and not yet built. Until then the number is honest about
+          what it counts and the pairs stay visible in their lane, where they
+          can be superseded. */}
       <PageLede
-        label="Confirmed"
-        value={active.toLocaleString()}
+        label={measuredByLane ? t("ledeAccepted") : t("ledeConfirmed")}
+        value={accepted.toLocaleString()}
         unit={denominator}
         layout="beside"
       >
-        {empty || active === 0 ? (
+        {empty ? (
+          <p>
+            {t.rich("ledeEmpty", {
+              code: (chunks) => <code>{chunks}</code>,
+            })}
+          </p>
+        ) : accepted === 0 ? (
+          // A repository with records and no accepted one is not an empty
+          // repository, and it used to get the copy for one: "decisions land
+          // here as the indexer mines them" on a store already holding five
+          // hundred of them. It is also what a store looks like the first time
+          // it is read after the acceptance split, when everything the status
+          // column called active turns out to be something nobody accepted, so
+          // this is the state most likely to be read by somebody surprised.
           <>
-            <p>
-              Decisions land here as the indexer mines them from pull requests,
-              commit messages, code comments and your own sessions, and as you
-              record them yourself — below, or with{" "}
-              <code>repowise decision add</code>. Each one keeps the quote it
-              was drawn from and the files it governs.
-            </p>
-            {proposed > 0 && (
-              <p>
-                {proposed.toLocaleString()} proposal
-                {proposed === 1 ? " is" : "s are"} waiting below. Confirming one
-                takes a click and changes no code; it marks the record as
-                something the team stands behind, which is what makes it worth
-                quoting back to an agent later.
-              </p>
-            )}
+            <p>{t("ledeNoGovernance")}</p>
+            <p>{t("ledeCandidates", { count: proposed })}</p>
           </>
         ) : (
           <>
-            <p>
-              {active.toLocaleString()} record
-              {active === 1 ? " is" : "s are"} confirmed: somebody read{" "}
-              {active === 1 ? "it" : "them"} and marked{" "}
-              {active === 1 ? "it" : "them"} as something the team stands
-              behind, which is what makes {active === 1 ? "it" : "them"} worth
-              quoting back to an agent later.
-            </p>
+            <p>{t("ledeAcceptedRecords", { count: accepted })}</p>
             {proposed > 0 && (
-              <p>
-                {proposed.toLocaleString()} more are proposals the indexer mined
-                and nobody has confirmed yet. Until one is confirmed it is a
-                guess about your codebase rather than a rule for it. Filter by
-                status below to work through them; confirming or dismissing one
-                takes a click and changes no code.
-              </p>
+              <p>{t("ledeAcceptedMore", { count: proposed })}</p>
             )}
           </>
         )}
@@ -190,8 +206,8 @@ export default async function DecisionsPage({ params }: Props) {
 
       {facts && (
         <OverviewSection
-          title="About this checkout"
-          description="Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent."
+          title={t("checkoutTitle")}
+          description={t("checkoutDescription")}
         >
           <CheckoutFacts
             facts={facts.episodes}
@@ -203,17 +219,14 @@ export default async function DecisionsPage({ params }: Props) {
 
       {!empty && (
         <OverviewSection
-          title="All decisions"
-          description="Confirmed records first, then the proposals most likely to be real. Filter by status to work the queue, or by source to see where a record came from. The last column is a count, not a score: how many of the files a record names have been committed to since it was recorded, or are no longer tracked."
+          title={t("reviewTitle")}
+          description={t("reviewDescription")}
         >
-          <DecisionsTableWrapper
-            repoId={repoId}
-            initialData={decisions}
-            {...(total !== undefined ? { initialTotal: total } : {})}
-            pageSize={PAGE_SIZE}
-          />
+          <DecisionReviewWrapper repoId={repoId} pageSize={PAGE_SIZE} />
         </OverviewSection>
       )}
+
+
     </PageShell>
   );
 }

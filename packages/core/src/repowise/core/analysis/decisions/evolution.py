@@ -3,7 +3,7 @@
 Phase 3B + 3C of the decision-layer overhaul. Two complementary mechanisms,
 both small and gated, both leaning on the Phase-2 primitives
 (:data:`decision_semantic_match.DEFAULT_DEDUP_TAU` for similarity and
-:func:`decision_gate.apply_substring_gate` for anti-hallucination):
+:func:`gate.apply_substring_gate` for anti-hallucination):
 
 **3B — semantic supersession & conflict** (:func:`detect_supersessions_and_conflicts`).
     When a freshly upserted decision is semantically *about the same topic* as
@@ -31,8 +31,11 @@ walk that consumes these edges is bounded elsewhere.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import subprocess
+from functools import lru_cache
 from typing import Any
 
 import structlog
@@ -51,6 +54,7 @@ __all__ = [
     "RELATED_TAU",
     "SEMANTIC_SUPERSESSION_ENABLED",
     "SUPERSEDE_AUTOFLIP_CONFIDENCE",
+    "commits_in_range",
     "contradicts",
     "detect_supersessions_and_conflicts",
     "is_reversal",
@@ -58,6 +62,7 @@ __all__ = [
     "run_update_evolution",
     "scan_evolution_signals",
     "supersession_confidence",
+    "update_evidence_by_file",
 ]
 
 # ---------------------------------------------------------------------------
@@ -83,13 +88,36 @@ SUPERSEDE_AUTOFLIP_CONFIDENCE = 0.85
 # supersession is a chain, 18-in is noise) and auto-retired 74 records, 25% of
 # the store, correct ones included.
 #
-# It stays as code rather than a deletion because the *shape* is right and
-# Phase 2 re-enables it structurally: a conflict must require intersecting node
-# sets — two records that touch the same code — and similarity may then rank
-# those candidates but never scope them. The 3B tests flip it to True to
-# exercise the machinery; flipping it in a real run does not work, because both
-# persist paths run ``unretire_auto_superseded`` ahead of the detector and the
-# next run reverts whatever the previous one wrote.
+# The fix this comment used to propose — require intersecting node sets, let
+# similarity only rank — was then measured against the same store and does not
+# work. Replaying this function over 626 real records with their real vectors:
+# 475 edges, and requiring a shared *file* link leaves 465. A 2% cut, because
+# decisions mined from one repository share files as a matter of course.
+#
+# The reason no gate helped is that the band is mislabelled. ``[RELATED_TAU,
+# DEFAULT_DEDUP_TAU)`` is described above as "related but not a duplicate"; on
+# real data it is exactly where the duplicates that 0.83 failed to merge live.
+# Of the 465 pairs, 418 share an evidence commit and 232 have a title Jaccard
+# over 0.3; all 20 of a random sample and all 23 of the pairs matching neither
+# were read by hand and every one is the same decision written twice, by two
+# runs that phrased the title differently. This store contains no supersession
+# for the detector to find, so everything it finds is a duplicate.
+#
+# ``contradicts`` is what converts them into edges, and it is not a
+# contradiction test: ``is_reversal`` reads the record's *own subject matter* —
+# a decision to replace something in the code — as a signal that it reverses
+# another decision. 171 of the 465 fired on the bare word "replace".
+#
+# One more thing to know before re-enabling: the ``conflicts_with`` branch
+# below is unreachable in a real store. It needs both sides ``active``, and
+# after the entity split machine capture lands at ``proposed`` (0 of 626 here
+# are active), so every pair takes the supersedes branch and 87 records — 14%
+# — would be auto-retired. Re-enabling means fixing that, fixing
+# ``contradicts``, and finding a corpus that actually contains a supersession;
+# not a threshold and not a node-set gate. Both persist paths also run
+# ``unretire_auto_superseded`` ahead of the detector, so the next run reverts
+# whatever the previous one wrote. The 3B tests flip this to True to exercise
+# the machinery.
 #
 # ``run_update_evolution`` (3C) is a different mechanism — diff-driven, per
 # changed file, with an LLM verdict — and is not gated by this flag.
@@ -162,18 +190,35 @@ _REVERSAL_SIGNALS: tuple[str, ...] = (
 _OPPOSING_VERB_PAIRS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
     (
         frozenset(
-            {"adopt", "adopted", "use", "using", "add", "added", "introduce", "enable", "enabled"}
+            {
+                "adopt",
+                "adopted",
+                "adopting",
+                "use",
+                "using",
+                "add",
+                "added",
+                "introduce",
+                "introducing",
+                "enable",
+                "enabled",
+                "enabling",
+            }
         ),
         frozenset(
             {
                 "drop",
                 "dropped",
+                "dropping",
                 "remove",
                 "removed",
+                "removing",
                 "deprecate",
                 "deprecated",
+                "deprecating",
                 "disable",
                 "disabled",
+                "disabling",
                 "revert",
                 "reverted",
                 "abandon",
@@ -257,13 +302,58 @@ def is_reversal(text: str) -> tuple[bool, str]:
     return False, ""
 
 
-def contradicts(text_a: str, text_b: str) -> tuple[bool, str]:
+#: A verb as a word, plus the ``-s``/``-ed`` inflections corrections are
+#: written in -- :data:`_OPPOSING_VERB_PAIRS` lists ``removed`` but not
+#: *removes*. It cannot build a silent-e or doubled ``-ing`` (*removing*,
+#: *dropping*), so those are listed there instead. The left edge excludes
+#: ``-`` too, so ``blocking`` does not match inside *non-blocking*, which sits
+#: on the other side of its own pair.
+_VERB_RE = r"(?<![\w-]){verb}(?:s|es|d|ed|ing)?\b"
+
+
+@lru_cache(maxsize=512)
+def _verb_pattern(verb: str) -> re.Pattern[str]:
+    return re.compile(_VERB_RE.format(verb=re.escape(verb)))
+
+
+def _mentions(low: str, verbs: frozenset[str]) -> bool:
+    """Does *low* use any of *verbs* as a word, rather than inside one?
+
+    Substring matching put ``use`` inside *user*, ``add`` inside *address* and
+    ``sync`` inside *asynchronous*, each scoring an agreeing correction as a
+    contradiction. The straddle is the only test the default path has left.
+    """
+    return any(_verb_pattern(v).search(low) for v in verbs)
+
+
+def contradicts(
+    text_a: str, text_b: str, *, lone_reversal_counts: bool = False
+) -> tuple[bool, str]:
     """Heuristic: do two decision texts push in opposite directions?
 
-    True when (a) an opposing verb pair straddles the two texts, or (b) either
-    text carries a directional reversal signal — *and* the two share enough
-    content tokens to be about the same topic (so "deprecate X" and "adopt Y"
-    for unrelated X/Y don't false-positive). Returns ``(bool, signal)``.
+    True when an opposing verb pair straddles the two texts *and* they share
+    enough content tokens to be about the same topic (so "deprecate X" and
+    "adopt Y" for unrelated X/Y don't false-positive) — or, for a caller that
+    passes ``lone_reversal_counts``, when one text carries a directional
+    reversal signal. Returns ``(bool, signal)``.
+
+    A directional reversal signal in **one** text is not, on its own, evidence
+    that the two contradict: it says that text changes something, never that
+    it changes *this*. Token overlap is far too weak to supply the missing
+    half. Measured over this repository's whole injection corpus — 426
+    (decision, quote) pairs behind 201 judged rows — 96% of pairs share zero or
+    one token, the opposing-verb straddle fires on none of them, and the lone
+    reversal branch fires exactly once: the word *migration*, in a quote about
+    not mutating production, against a record reading "Never run Ruff format",
+    on the two tokens *run* and *not*. That single firing is the whole of the
+    10.0% contradiction rate this layer has published.
+
+    ``lone_reversal_counts`` restores the old branch for a caller that has
+    already established the two texts are about the same thing by a stronger
+    test than token overlap. Supersession detection is that caller: it only
+    reaches here for pairs a vector store scored between ``RELATED_TAU`` and
+    ``DEFAULT_DEDUP_TAU``, where "the newer one says it replaces something" is
+    genuine evidence. Injection feedback has no such gate and must not pass it.
     """
     if not _shared_topic(text_a, text_b):
         return False, ""
@@ -271,13 +361,15 @@ def contradicts(text_a: str, text_b: str) -> tuple[bool, str]:
     low_b = normalize_text(text_b)
 
     for left, right in _OPPOSING_VERB_PAIRS:
-        a_left = any(v in low_a for v in left)
-        b_right = any(v in low_b for v in right)
-        a_right = any(v in low_a for v in right)
-        b_left = any(v in low_b for v in left)
+        a_left = _mentions(low_a, left)
+        b_right = _mentions(low_b, right)
+        a_right = _mentions(low_a, right)
+        b_left = _mentions(low_b, left)
         if (a_left and b_right) or (a_right and b_left):
             return True, "opposing-verbs"
 
+    if not lone_reversal_counts:
+        return False, ""
     rev_a, sig_a = is_reversal(text_a)
     if rev_a:
         return True, sig_a
@@ -347,8 +439,6 @@ async def detect_supersessions_and_conflicts(
     if not touched_ids or vector_store is None:
         return summary
 
-    from datetime import UTC, datetime
-
     from repowise.core.persistence.decision_graph import upsert_decision_edge
     from repowise.core.persistence.models import DecisionRecord
 
@@ -388,7 +478,9 @@ async def detect_supersessions_and_conflicts(
 
             text_new = f"{rec.title}. {rec.decision}"
             text_old = f"{other.title}. {other.decision}"
-            contra, signal = contradicts(text_new, text_old)
+            # Vector similarity already put these two on the same topic, which
+            # is the gate a lone reversal signal needs to mean anything.
+            contra, signal = contradicts(text_new, text_old, lone_reversal_counts=True)
             if not contra and provider is not None:
                 contra, signal = await _llm_contradiction_judge(
                     provider, text_a=text_new, text_b=text_old
@@ -426,9 +518,7 @@ async def detect_supersessions_and_conflicts(
                 if edge is not None:
                     summary["supersedes"] += 1
                     if conf >= autoflip_confidence and older.status in ("active", "proposed"):
-                        older.status = "superseded"
-                        older.superseded_by = newer.id
-                        older.updated_at = datetime.now(UTC)
+                        await _retire(session, older, successor_id=newer.id)
                         summary["flipped"] += 1
             else:
                 # Two active decisions contradict, neither clearly reverses the
@@ -447,8 +537,6 @@ async def detect_supersessions_and_conflicts(
 
     await session.flush()
     return summary
-
-
 _CONTRADICTION_SYSTEM = (
     "You judge whether two architectural decisions contradict each other. "
     "Answer with a single word: CONTRADICT or COMPATIBLE."
@@ -517,6 +605,72 @@ def pass1_evolution_candidates(
     return out
 
 
+def commits_in_range(repo_path: Any, base_ref: str, head: str | None) -> set[str]:
+    """8-char prefixes of the commits in ``base_ref..head``.
+
+    The prefix length matches the ``sha`` the git indexer stores in
+    ``significant_commits_json``. Empty when git fails, which leaves Pass 1
+    without commit evidence for this run rather than falling back to history.
+    """
+    try:
+        out = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "rev-list",
+                "--end-of-options",
+                f"{base_ref}..{head or 'HEAD'}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("decision_evolution.range_failed", error=str(exc))
+        return set()
+    if out.returncode != 0:
+        logger.warning("decision_evolution.range_failed", error=out.stderr.strip()[:200])
+        return set()
+    return {sha[:8] for sha in out.stdout.split()}
+
+
+def update_evidence_by_file(
+    file_diffs: list[Any],
+    git_meta_map: dict[str, dict],
+    range_shas: set[str],
+) -> dict[str, str]:
+    """Pass 1 evidence per changed file, limited to this update's commits.
+
+    A file's ``significant_commits_json`` is its whole history. Feeding all of
+    it made every update re-judge decisions against commits an earlier update
+    (or the initial index) had already seen, so only commits whose sha is in
+    *range_shas* count here. A commit outside the range was in the range of
+    the update that first brought it in, and its verdict was applied then.
+    """
+    evidence: dict[str, str] = {}
+    for fd in file_diffs:
+        if fd.status not in ("added", "modified"):
+            continue
+        parts: list[str] = []
+        if fd.trigger_commit_message:
+            parts.append(fd.trigger_commit_message)
+        if fd.diff_text:
+            parts.append(fd.diff_text)
+        meta = git_meta_map.get(fd.path)
+        if meta and range_shas:
+            for c in json.loads(meta.get("significant_commits_json", "[]") or "[]"):
+                if (c.get("sha") or "")[:8] not in range_shas:
+                    continue
+                msg = c.get("message") or ""
+                body = c.get("body") or ""
+                if msg or body:
+                    parts.append(f"{msg}\n{body}")
+        if parts:
+            evidence[fd.path] = "\n\n".join(parts)
+    return evidence
+
+
 _EVOLUTION_JUDGE_SYSTEM = (
     "You assess whether a code change evolves a previously recorded "
     "architectural decision. Return only valid JSON. "
@@ -545,6 +699,12 @@ Respond with a JSON object:
 - "reaffirmed": the change is consistent with and strengthens the decision.
 - "none": the change does not affect the decision.
 Quote only text that appears verbatim in the change evidence."""
+
+
+# The answer is ~150 tokens of JSON, but reasoning models count their thinking
+# against the same budget (OpenAI's max_completion_tokens). At 400, 17 of 121
+# real calls hit the cap and returned truncated JSON, which the parser drops.
+_JUDGE_MAX_TOKENS = 2000
 
 
 class _JudgeCandidate:
@@ -581,7 +741,7 @@ async def _judge_evolution(
     )
     try:
         response = await provider.generate(
-            _EVOLUTION_JUDGE_SYSTEM, prompt, max_tokens=400, temperature=0.1
+            _EVOLUTION_JUDGE_SYSTEM, prompt, max_tokens=_JUDGE_MAX_TOKENS, temperature=0.1
         )
     except Exception:
         return None
@@ -647,8 +807,12 @@ async def run_update_evolution(
     changed_files: set[str],
     evidence_by_file: dict[str, str],
     provider: Any | None = None,
+    max_concurrency: int = 1,
 ) -> dict[str, Any]:
     """Two-pass evolution for ``repowise update``, run *before* page regen.
+
+    ``max_concurrency`` bounds the Pass 2 judge calls in flight; the update
+    passes the generation config's ``max_concurrency``.
 
     Returns ``{"regen_files": set[str], "superseded": n, "amended": n,
     "reaffirmed": n}``. ``regen_files`` are the governed files of every decision
@@ -680,33 +844,55 @@ async def run_update_evolution(
     regen: set[str] = result["regen_files"]
     now = datetime.now(UTC)
 
-    for dec, evidence_text, _signals in candidates:
+    def _governed(dec: Any) -> list[str]:
         try:
-            governed = list(json.loads(dec.affected_files_json or "[]"))
+            return list(json.loads(dec.affected_files_json or "[]"))
         except (TypeError, ValueError):
-            governed = []
+            return []
 
-        if provider is None:
-            # No LLM available: a signal touched a governed file — re-render the
-            # governed pages so docs stay fresh, but don't change status.
-            regen.update(governed)
-            continue
+    if provider is None:
+        # No LLM available: a signal touched a governed file — re-render the
+        # governed pages so docs stay fresh, but don't change status.
+        for dec, _evidence, _signals in candidates:
+            regen.update(_governed(dec))
+        return result
 
-        verdict = await _judge_evolution(
-            provider,
-            title=dec.title,
-            decision=dec.decision,
-            rationale=dec.rationale,
-            evidence_text=evidence_text,
-        )
+    # The judge calls are independent, so they run concurrently under the same
+    # limit page generation uses. Only the calls overlap: verdicts are applied
+    # below one at a time, in candidate order, because the session is not safe
+    # for concurrent writes.
+    semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+    async def _judge_one(dec: Any, evidence_text: str) -> dict | None:
+        async with semaphore:
+            try:
+                return await _judge_evolution(
+                    provider,
+                    title=dec.title,
+                    decision=dec.decision,
+                    rationale=dec.rationale,
+                    evidence_text=evidence_text,
+                )
+            except Exception as exc:
+                # One bad candidate must not cost the others their verdicts.
+                logger.warning(
+                    "decision_evolution.judge_failed",
+                    decision_id=getattr(dec, "id", None),
+                    error=str(exc),
+                )
+                return None
+
+    verdicts = await asyncio.gather(*(_judge_one(dec, ev) for dec, ev, _s in candidates))
+
+    for (dec, _evidence, _signals), verdict in zip(candidates, verdicts, strict=True):
         if verdict is None:
             continue
+        governed = _governed(dec)
 
         kind = verdict["verdict"]
         if kind == "superseded":
             if dec.status in ("active", "proposed"):
-                dec.status = "superseded"
-                dec.updated_at = now
+                await _retire(session, dec)
             regen.update(governed)
             result["superseded"] += 1
         elif kind == "amended":
@@ -726,3 +912,40 @@ async def run_update_evolution(
 
     await session.flush()
     return result
+
+
+async def _retire(session, record, *, successor_id: str | None = None) -> None:
+    """Mark a record superseded, recording the withdrawal if it was accepted.
+
+    An accepted decision's authority lives in the acceptance log, so retiring it
+    by writing the status column alone would leave the log still saying it
+    governs — and the tracked manifest would keep exporting it as current.
+    A candidate has no authority to withdraw, so it only moves status.
+    """
+    import contextlib
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.crud.authority import (
+        AcceptanceRefusedError,
+        is_accepted,
+        record_acceptance,
+    )
+
+    if await is_accepted(session, record.id):
+        # A record that lost the evidence its acceptance rested on cannot log
+        # the withdrawal; the retirement itself still applies.
+        with contextlib.suppress(AcceptanceRefusedError):
+            await record_acceptance(
+                session,
+                record,
+                action="superseded",
+                currency="superseded",
+                accepter="evolution",
+                # This stage retires records and has no path that accepts one.
+                kind="agent",
+                note="a later commit reversed this decision",
+            )
+    record.status = "superseded"
+    if successor_id is not None:
+        record.superseded_by = successor_id
+    record.updated_at = datetime.now(UTC)

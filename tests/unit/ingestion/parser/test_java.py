@@ -83,6 +83,18 @@ class TestJavaParser:
         module_paths = [i.module_path for i in result.imports]
         assert any("ArrayList" in p for p in module_paths)
 
+    def test_annotation_type_elements_are_its_methods(self, parser: ASTParser) -> None:
+        source = (
+            b"package p;\npublic @interface Since {\n    double value();\n"
+            b"    String[] names() default {};\n}\n"
+        )
+        result = parser.parse_file(_make_file_info("p/Since.java", "java"), source)
+        assert sorted((s.id, s.kind, s.signature) for s in result.symbols) == [
+            ("p/Since.java::Since", "interface", "@interface Since"),
+            ("p/Since.java::Since::names", "method", "names() -> String[]"),
+            ("p/Since.java::Since::value", "method", "value() -> double"),
+        ]
+
     def test_own_field_receiver_is_captured(self, parser: ASTParser) -> None:
         """``this.field.m()`` must carry ``field``, not arrive receiver-less.
 
@@ -110,3 +122,69 @@ class TestJavaParser:
             assert all(
                 c.receiver_name is None for c in result.calls if c.target_name == target
             ), target
+
+
+TWIN_SOURCE = b"""package com.repowise.sample;
+
+import static java.lang.Math.max;
+
+public class Token extends Base {
+
+    private final TokenData data = new TokenData();
+
+    void data(String str) {
+        data.set(str);
+        this.reset();
+        reset();
+        super.reset();
+        max(1, 2);
+        set(data.set(str));
+    }
+
+    void reset() {
+    }
+}
+"""
+
+
+class TestReceiverlessTwin:
+    """The bare-call pattern leaves ``object`` unconstrained, so it also matches
+    ``obj.m()``. That copy folds into the member call as its bare-name fallback;
+    a call with no receiver pattern is kept as it is."""
+
+    def _sites(self, parser: ASTParser, target: str) -> list[tuple[int, str | None]]:
+        fi = _make_file_info("java_pkg/Token.java", "java")
+        result = parser.parse_file(fi, TWIN_SOURCE)
+        return sorted(
+            ((c.line, c.receiver_name) for c in result.calls if c.target_name == target),
+            key=lambda s: (s[0], s[1] or ""),
+        )
+
+    def test_a_member_call_arrives_once_with_its_receiver(self, parser: ASTParser) -> None:
+        assert (10, "data") in self._sites(parser, "set")
+        assert (10, None) not in self._sites(parser, "set")
+        assert (11, "this") in self._sites(parser, "reset")
+        assert (11, None) not in self._sites(parser, "reset")
+        assert (13, "super") in self._sites(parser, "reset")
+        assert (13, None) not in self._sites(parser, "reset")
+        fi = _make_file_info("java_pkg/Token.java", "java")
+        calls = parser.parse_file(fi, TWIN_SOURCE).calls
+        assert all(c.bare_name_fallback for c in calls if c.receiver_name)
+        assert not any(c.bare_name_fallback for c in calls if not c.receiver_name)
+
+    def test_genuine_receiverless_calls_are_kept(self, parser: ASTParser) -> None:
+        resets = self._sites(parser, "reset")
+        assert (12, None) in resets, "a bare reset()"
+        assert self._sites(parser, "max") == [(14, None)], "a static-imported call"
+
+    def test_a_bare_call_sharing_a_line_with_its_member_twin_is_kept(
+        self, parser: ASTParser
+    ) -> None:
+        assert self._sites(parser, "set")[-2:] == [(15, None), (15, "data")]
+
+
+def test_a_qualified_super_call_keeps_its_qualifier(parser: ASTParser) -> None:
+    """``Sub.super.m()`` arrives as a ``super`` call scoped by ``Sub``, never as ``Sub.m()``."""
+    source = b"package b;\nclass Sub extends Base {\n  class In { void q() { Sub.super.m(); } }\n}\n"
+    calls = parser.parse_file(_make_file_info("b/Sub.java", "java"), source).calls
+    assert [(c.receiver_name, c.scope_name, c.target_name) for c in calls] == [("super", "Sub", "m")]

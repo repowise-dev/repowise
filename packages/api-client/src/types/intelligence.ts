@@ -47,6 +47,10 @@ export interface CommunityMember {
   path: string;
   pagerank: number;
   is_entry_point: boolean;
+  /** Cross-link signals, so a count can name the files behind it. Optional: an
+   *  older server omits them, which reads as "no signal", not as "not flagged". */
+  is_hotspot?: boolean;
+  is_dead?: boolean;
 }
 
 export interface NeighboringCommunity {
@@ -59,17 +63,39 @@ export interface CommunityDetailResponse {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   members: CommunityMember[];
   truncated: boolean;
   neighboring_communities: NeighboringCommunity[];
+  /** State of the area rather than its shape. Every field below is optional:
+   *  additive on the wire, and absent from an older server.
+   *
+   *  LOC-weighted mean health over the members that carry a score, 0-10, higher
+   *  is better. `null` when none do — which is not zero and must not render as
+   *  a score. */
+  health_score?: number | null;
+  /** How many members contributed to `health_score`. */
+  scored_member_count?: number;
+  /** Members flagged hot / dead / decision-anchored, over every member — not
+   *  only the page returned in `members`. */
+  hot_count?: number;
+  dead_count?: number;
+  decision_count?: number;
+  /** Who is primary owner on the most members, and how many. "Most files
+   *  owned", not "most commits" — see the router comment. */
+  primary_owner?: string | null;
+  primary_owner_file_count?: number;
 }
 
 export interface CommunitySummaryItem {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
 }
 
@@ -80,6 +106,8 @@ export interface GraphMetricsResponse {
   pagerank_percentile: number;
   betweenness: number;
   betweenness_percentile: number;
+  /** False when the node appeared after the last exact centrality scoring. */
+  betweenness_scored?: boolean;
   community_id: number;
   community_label: string | null;
   is_entry_point: boolean;

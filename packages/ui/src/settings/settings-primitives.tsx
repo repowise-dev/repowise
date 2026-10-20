@@ -12,7 +12,8 @@
  */
 
 import * as React from "react";
-import { Check, Copy, Loader2 } from "lucide-react";
+import { Check, Copy } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { cn } from "../lib/cn";
 
 export const SETTINGS_MICRO_LABEL =
@@ -113,7 +114,7 @@ export function SaveIndicator({
     >
       {state === "saving" && (
         <>
-          <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+          <Spinner size="xs" />
           Saving…
         </>
       )}
@@ -139,11 +140,14 @@ export function SaveIndicator({
 export function CopyLine({
   value,
   label,
+  copyLabel,
   className,
 }: {
   value: string;
   /** Optional micro-label above the value. */
   label?: string;
+  /** What the copy button copies, for its accessible name. Defaults to `label`. */
+  copyLabel?: string;
   className?: string;
 }) {
   const [copied, setCopied] = React.useState(false);
@@ -177,7 +181,7 @@ export function CopyLine({
         <button
           type="button"
           onClick={copy}
-          aria-label={copied ? "Copied" : `Copy ${label ?? "value"}`}
+          aria-label={copied ? "Copied" : `Copy ${copyLabel ?? label ?? "value"}`}
           className="shrink-0 rounded-md p-2 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
         >
           {copied ? (

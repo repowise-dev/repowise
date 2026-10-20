@@ -18,9 +18,11 @@ anything.
 from __future__ import annotations
 
 import math
+import re
+from collections.abc import Callable, Collection, Container
 from typing import Any
 
-from repowise.server.mcp_server._query_terms import content_terms
+from repowise.server.mcp_server._query_terms import content_terms, split_humps
 
 #: Weighted share of a question's vocabulary a record must carry to be served.
 #:
@@ -39,12 +41,30 @@ from repowise.server.mcp_server._query_terms import content_terms
 RELEVANCE_FLOOR = 0.6
 
 
-def question_terms(query: str) -> list[str]:
-    """Content words of *query*, singularised and deduplicated, longest first."""
+def question_terms(query: str, *, prose: bool = False) -> list[str]:
+    """Content words of *query*, singularised and deduplicated, longest first.
+
+    ``prose=True`` is for text that names code by its words, comments and
+    commit messages: an identifier counts by its parts and every term is kept.
+    No commit subject spells ``_narrow_overload``, so weighting it as an unseen
+    word put the floor out of reach of every commit for any question naming code.
+    """
     seen: dict[str, None] = {}
-    for t in content_terms(query):
+    terms = (
+        content_terms(query, max_terms=None, identifiers=False) if prose else content_terms(query)
+    )
+    for t in terms:
         seen.setdefault(stem(t), None)
     return list(seen)
+
+
+def word_set(text: str) -> frozenset[str]:
+    """The singularised words of *text*, for whole-word presence.
+
+    Substring presence lets ``tie`` match "tier" and "entire". Splitting humps
+    and underscores first lets ``withManagedSignal`` carry "managed".
+    """
+    return frozenset(stem(w) for w in re.split(r"[^a-z0-9]+", split_humps(text).lower()) if w)
 
 
 def stem(term: str) -> str:
@@ -61,8 +81,10 @@ def stem(term: str) -> str:
     the safe direction and under-stripping is not: presence is a substring test,
     so a record writing ``comments`` still contains ``comment``, and ``status``
     reduced to ``statu`` still matches both ``status`` and ``statuses``. Words
-    ending ``-ies`` are left whole for the same reason — turning ``queries``
+    ending ``-ies`` are left whole for the same reason: turning ``queries``
     into ``query`` would stop it matching a record that writes ``queries``.
+    :func:`word_set` applies it to the text as well, so whole-word presence
+    sees both sides through the same rule.
 
     Ceiling: English regular plurals. The upgrade path is a real stemmer, which
     is a dependency this earns only once misses appear that a trailing ``s``
@@ -81,7 +103,7 @@ def stem(term: str) -> str:
     return term
 
 
-def term_idf(terms: list[str], corpus: list[str]) -> dict[str, float]:
+def term_idf(terms: list[str], corpus: Collection[Container[str]]) -> dict[str, float]:
     """``{term: weight}``, rarer terms weighing more, from *corpus* itself.
 
     A count of distinct terms present is the shape the sibling episode ranker
@@ -117,6 +139,8 @@ def term_idf(terms: list[str], corpus: list[str]) -> dict[str, float]:
     unseen, outweighed both words that identify the answer. Capping at the
     rarest weight the store could actually award says what absence knows without
     claiming more than the corpus can support.
+
+    A corpus entry is a string (substring presence) or a :func:`word_set`.
     """
     n = len(corpus)
     idf: dict[str, float] = {}
@@ -126,7 +150,7 @@ def term_idf(terms: list[str], corpus: list[str]) -> dict[str, float]:
     return idf
 
 
-def relevance(text: str, idf: dict[str, float]) -> float:
+def relevance(text: Container[str], idf: dict[str, float]) -> float:
     """Share of the question's *weight* that *text* carries, 0.0 to 1.0.
 
     Distinct terms only: a record repeating one word forty times is not more
@@ -151,6 +175,49 @@ def clears_floor(score: float) -> bool:
     (:func:`stem`) turned out to be what those cases actually needed.
     """
     return score >= RELEVANCE_FLOOR
+
+
+def query_scorer(query: str, corpus: list[str]) -> Callable[[str], float]:
+    """A ``text -> relevance`` function bound to *query* and *corpus*'s rarity.
+
+    The same judgement the decision ranker makes, exposed for the blocks a
+    target-anchored call carries beside the ranked records. Those blocks are
+    built from a path and never saw the question, so on this repo two unrelated
+    questions about one file returned byte-identical governing decisions, origin
+    stories and episodes — and at 13,397 of a 20,000-char response they crowded
+    out the mined comment that actually answered both.
+
+    *corpus* supplies the rarity half, so pass the whole population a block is
+    drawn from rather than the survivors: idf computed over three episodes makes
+    every word one of them happens to share look ordinary.
+    """
+    terms = question_terms(query)
+    idf = term_idf(terms, corpus)
+    return lambda text: relevance(text.lower(), idf)
+
+
+def floor_ranked(query: str, rows: list[Any], text: Callable[[Any], str], limit: int) -> list[Any]:
+    """The *rows* whose ``text(row)`` clears the floor for *query*, best first.
+
+    Rarity comes from every row passed, so pass the whole population (every
+    harvested comment, every commit subject), not a shortlist. Ties keep input
+    order, so a caller that pre-sorts by strength or recency keeps that order.
+    """
+    score = query_scorer(query, [text(r).lower() for r in rows])
+    scored = [(s, i) for i, r in enumerate(rows) if clears_floor(s := score(text(r)))]
+    scored.sort(key=lambda t: -t[0])
+    return [rows[i] for _, i in scored[:limit]]
+
+
+def recovery_note(total: int, recall: str) -> dict[str, Any]:
+    """What a block reduces to when a query is present and nothing bears on it.
+
+    A count and the exact call that returns the block in full. Silence would be
+    a lie by omission — the reader cannot tell "this file has no history" from
+    "none of its history mentions what you asked" — and the full block is the
+    padding that teaches an agent the tool is not worth calling.
+    """
+    return {"suppressed": total, "reason": "query-irrelevant", "recover_with": recall}
 
 
 # --- Redirect ---------------------------------------------------------------
@@ -192,7 +259,63 @@ def redirect_for(query: str) -> dict[str, Any]:
     return {
         "try_instead": tools,
         "reason": (
-            "No decision record covers this question. The store holds none "
-            "carrying its terms, and the closest ones would be noise."
+            "No recorded rationale: no decision record covers this question. "
+            "The store holds none carrying its terms, and the closest ones "
+            "would be noise."
         ),
+    }
+
+
+def redirect_when_served(lanes: list[str], recall: str | None) -> dict[str, Any]:
+    """The redirect for a call that missed the store but *answered anyway*.
+
+    Once the relevance floor started rejecting target-anchored records, the
+    branch that used to serve three unrelated decisions began serving this
+    file's mined rationale comments instead — and on the two questions this was
+    measured with, that lane carried the exact docstring each one was asking
+    about, where ``get_answer`` scoped to the same file returned "No wiki hits"
+    and unscoped returned a hedge that said its excerpts did not include the
+    symbol.
+
+    So the plain redirect is withdrawn here. Naming another tool beside a
+    correct answer is worse than naming none: the agent pays for a second call
+    to reach something weaker, and learns from that trade that this tool's
+    answers are not to be acted on. What is left is the true and narrower
+    statement — the *decision store* was silent, these other lanes were not.
+
+    ``recall`` is None when no file was named: the lanes were then searched
+    repository-wide by the question itself, so there is no file to recall.
+    """
+    served = " and ".join(lanes)
+    if recall is None:
+        return {
+            "reason": (
+                f"No decision record covers this question. The {served} below "
+                "carry its terms. They are quoted from the code and its history, "
+                "not a ruling: read them as evidence, not as the recorded reason."
+            )
+        }
+    return {
+        "reason": (
+            f"No decision record covers this question. This file's {served} "
+            "carry what the store does not. Read them here, as evidence from "
+            "the code rather than as a ruling. For this file's full history, "
+            f"unfiltered by the question: {recall}."
+        )
+    }
+
+
+def redirect_when_governed() -> dict[str, Any]:
+    """The reason for a call that missed on its terms but names a governed file.
+
+    An accepted rule binds its files whatever the question, so the target card
+    serves it and ``answer_basis`` is ``decision``. Saying no record covers the
+    call beside it would contradict both.
+    """
+    return {
+        "reason": (
+            "No decision record carries this question's terms. The accepted "
+            "decision governing a named file binds it whatever the question; "
+            "anything else served is evidence, not a ruling."
+        )
     }

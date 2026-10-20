@@ -19,10 +19,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.server.mcp_server.tool_answer import symbols as symbols_mod
 from repowise.server.mcp_server.tool_answer.answer import (
     _degraded_payload,
     _drop_duplicated_guess_excerpts,
+)
+from repowise.server.mcp_server.tool_answer.confidence import (
+    _degraded_confidence,
+    lead_leaves_retrieval,
 )
 from repowise.server.mcp_server.tool_answer.projection import project_answer_payload
 
@@ -187,19 +193,20 @@ async def test_degraded_hint_never_advertises_an_unresolvable_id(tmp_path, monke
     assert "src/flask/app.py:122-200" in hint
 
 
-async def test_degraded_with_no_anchor_match_keeps_its_verdict(tmp_path):
-    """The no-body degraded payload keeps every judgement it was making.
+async def test_degraded_with_no_anchor_match_still_describes_a_ranking(tmp_path):
+    """The no-body degraded payload keeps the shape it reports about itself.
 
     This path is still reached (a question that names nothing indexed). It has
     since gained the choosing evidence (best_guesses, and code_rationale where
-    the source carries any), but the verdict it reports about itself — low
-    confidence, the degradation reason, an `answer` that describes a ranking and
-    not a body — must be exactly what it was.
+    the source carries any), and the degradation reason and the `answer` that
+    describes a ranking rather than a body are unchanged. Confidence is no
+    longer part of that fixed verdict: this hit is a sole hit over the score
+    floor, so the retrieval is good and the grade follows it.
     """
     ctx = _tree(tmp_path)
     payload = await _degraded(ctx, _hits(end_line=6), set())
 
-    assert payload["confidence"] == "low"
+    assert payload["confidence"] == "medium"
     assert payload["degraded"] == "no-llm-provider"
     assert "ranked" in payload["answer"]
     assert "symbol_bodies" not in payload
@@ -208,16 +215,16 @@ async def test_degraded_with_no_anchor_match_keeps_its_verdict(tmp_path):
 # --- retrieval_quality on the degraded payload (D10) -----------------------
 #
 # 26 of 26 measured keyless payloads carried no `retrieval_quality` key at all,
-# so the only trust signal a caller had was `confidence: "low"`, which rates
+# so the only trust signal a caller had was `confidence: "low"`, which rated
 # synthesised prose that a degraded payload does not have. 11 of those 26 said
-# "low" while rank 1 was a file the keyed arm went on to cite. `confidence`
-# stays low on purpose; the retrieval gets rated separately, by the same rule
-# the synthesised path uses.
+# "low" while rank 1 was a file the keyed arm went on to cite. The retrieval is
+# rated separately here, by the same rule the synthesised path uses; the grade
+# derived from it is pinned in the confidence block further down.
 
 
-def _scored(*scores: float) -> list[dict]:
+def _scored(*scores: float, summary: str = "how the module works") -> list[dict]:
     return [
-        {"target_path": f"pkg/m{i}.py", "title": f"m{i}", "summary": "s", "score": s}
+        {"target_path": f"pkg/m{i}.py", "title": f"m{i}", "summary": summary, "score": s}
         for i, s in enumerate(scores)
     ]
 
@@ -244,6 +251,13 @@ async def test_degraded_rates_a_dominant_retrieval_high():
 async def test_degraded_rates_a_dominant_but_weak_retrieval_partial():
     """Dominant relative to its siblings, but under the floor: partial, not high."""
     assert await _quality(_scored(1.0, 0.1)) == "partial"
+
+
+async def test_degraded_rates_a_dominant_hit_that_misses_the_question_weak():
+    """Dominance compares hits with each other; a winner that never mentions what
+    was asked is an off-topic page beating worse ones, so it rates weak."""
+    assert await _quality(_scored(6.0, 1.0, summary="parses yaml files")) == "weak"
+    assert await _confidence(_scored(6.0, 1.0, summary="parses yaml files")) == "low"
 
 
 async def test_degraded_does_not_lift_a_genuinely_weak_retrieval():
@@ -278,12 +292,61 @@ async def test_degraded_agreement_can_lift_but_the_floor_still_binds():
     assert await _quality(_scored(0.9, 0.8), agreement_dominant=True) == "partial"
 
 
-async def test_degraded_keeps_confidence_low():
-    """The label the reporter asked to raise stays where it is.
+# --- confidence on the degraded payload ------------------------------------
+#
+# `confidence` was pinned to "low" here on the grounds that it rates synthesised
+# text and there is none. In the field that told 69 percent of get_answer calls
+# to distrust evidence that was frequently excellent, and 84 percent of those
+# verdicts were unearned: a keyless install never configures a provider, so it
+# got "low" on every call forever, decoupled from what retrieval actually did.
+# The field is now graded from the retrieval, under a ceiling that preserves the
+# original objection rather than discarding it.
 
-    Confidence rates the synthesised text, and a degraded `answer` is assembled
-    boilerplate, byte-identical on 24 of the 26 measured questions. Telling an
-    agent to cite that is worse than the extra call it saves.
+
+async def _confidence(hits, *, reason: str = "no-llm-provider") -> str:
+    payload = await _degraded_payload(
+        reason=reason,
+        note="DEGRADED",
+        question="how does the module work",
+        hits=hits,
+        fallback_targets=["pkg/m0.py"],
+        repository=None,
+        t0=0.0,
+    )
+    return payload["confidence"]
+
+
+async def test_degraded_grades_a_good_retrieval_medium():
+    """The unearned "low" this whole block exists to remove."""
+    assert await _confidence(_scored(6.0, 1.0)) == "medium"
+
+
+async def test_degraded_grades_a_partial_retrieval_medium_too():
+    """Dominant but under the score floor is still a payload worth acting on.
+
+    Only "weak" — no dominant page at all — leaves the caller with a real choice
+    to make, and that is the one the grade should push back on.
+    """
+    assert await _confidence(_scored(1.0, 0.1)) == "medium"
+
+
+async def test_degraded_keeps_a_weak_retrieval_low():
+    """The control. An ambiguous retrieval was always an earned "low".
+
+    This agrees with the `_meta` hint on the same payload, which tells a caller
+    on weak retrieval to refine the query rather than read the hits in order.
+    Two signals that disagreed about the same retrieval would be worse than one.
+    """
+    assert await _confidence(_scored(6.0, 5.9)) == "low"
+
+
+async def test_degraded_never_reaches_high():
+    """The original objection, kept as a ceiling.
+
+    A degraded `answer` is assembled boilerplate, byte-identical on 24 of the 26
+    measured questions, and our own agent instructions license citing a
+    high-confidence answer directly. So "high" has to stay unreachable here even
+    though the retrieval under it graded high.
     """
     payload = await _degraded_payload(
         reason="no-llm-provider",
@@ -294,8 +357,51 @@ async def test_degraded_keeps_confidence_low():
         repository=None,
         t0=0.0,
     )
-    assert payload["confidence"] == "low"
     assert payload["retrieval_quality"] == "high"
+    assert payload["confidence"] == "medium"
+
+
+@pytest.mark.parametrize("reason", ["no-llm-provider", "synthesis-failed"])
+@pytest.mark.parametrize("quality", ["high", "partial", "weak"])
+def test_the_ceiling_holds_over_every_input(reason: str, quality: str):
+    """The ceiling as a property, not a coincidence of one fixture.
+
+    An assertion on a single payload cannot say "never high" - it says "not high
+    here". This walks the whole input space the grader can be called with.
+    """
+    assert _degraded_confidence(reason, quality) in {"low", "medium"}
+
+
+def test_only_a_no_provider_payload_over_real_retrieval_earns_medium():
+    """The exact shape of the grade, pinned as a table.
+
+    Reading it as one block is what makes the two rules visible: retrieval
+    decides the grade, and only for the install that has no better reply coming.
+    """
+    grades = {
+        (reason, quality): _degraded_confidence(reason, quality)
+        for reason in ("no-llm-provider", "synthesis-failed")
+        for quality in ("high", "partial", "weak")
+    }
+    assert grades == {
+        ("no-llm-provider", "high"): "medium",
+        ("no-llm-provider", "partial"): "medium",
+        ("no-llm-provider", "weak"): "low",
+        ("synthesis-failed", "high"): "low",
+        ("synthesis-failed", "partial"): "low",
+        ("synthesis-failed", "weak"): "low",
+    }
+
+
+async def test_synthesis_failed_stays_low_however_good_the_retrieval_was():
+    """A configured provider that failed is not the end of the line.
+
+    The evidence is identical to the no-provider case, but a retry can still
+    produce a real answer here, so the payload is not everything the caller is
+    going to get. "no-llm-provider" is the end of the line for that install,
+    which is what makes grading its evidence the honest thing to do.
+    """
+    assert await _confidence(_scored(6.0, 1.0), reason="synthesis-failed") == "low"
 
 
 async def test_degraded_hint_says_what_is_missing_not_what_to_doubt():
@@ -449,6 +555,116 @@ async def test_degraded_mines_rationale_comments_from_the_candidates(tmp_path):
     assert "code_rationale" in payload["note"]
 
 
+async def test_degraded_cites_the_retrieval_top_file_before_a_rationale_hub(
+    tmp_path, monkeypatch
+):
+    """A comment-heavy hub wins the rationale sort by volume, not by rank.
+
+    The rationale rows come back hub first; citations must still lead with the
+    file retrieval ranked first, and the rows follow the retrieval ranking.
+    """
+    _rationale_rows(monkeypatch, "cmd/completions.go", "cmd/command.go")
+    payload = await _degraded(
+        SimpleNamespace(path=str(tmp_path), session_factory=None), _go_hits(), set()
+    )
+
+    assert payload["citations"] == [
+        "cmd/powershell_completions.go",
+        "cmd/command.go",
+        "cmd/completions.go",
+    ]
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "cmd/command.go",
+        "cmd/completions.go",
+    ]
+
+
+def _rationale_rows(monkeypatch, *paths: str, matched: tuple[str, ...] = ("flask", "app")) -> None:
+    """Stub the rationale miner to return one row per path, in the given order."""
+    import repowise.server.mcp_server.tool_answer.degraded as degraded_mod
+
+    async def _rows(ctx, hits, fallback_targets, question):
+        return [
+            {"path": p, "lines": [100 + i, 101 + i], "comment": "c", "matched_terms": list(matched)}
+            for i, p in enumerate(paths)
+        ]
+
+    monkeypatch.setattr(degraded_mod, "_gather_code_rationale", _rows)
+
+
+def _go_hits() -> list[dict]:
+    return [
+        {"target_path": "cmd/powershell_completions.go", "title": "ps", "summary": "s", "score": 4.0},
+        {"target_path": "cmd/command.go", "title": "cmd", "summary": "s", "score": 2.0},
+    ]
+
+
+async def test_degraded_dedups_citations_across_path_forms(tmp_path, monkeypatch):
+    """A backslash rationale path names the same file as the slash guess."""
+    _rationale_rows(monkeypatch, "cmd\\command.go", "cmd\\completions.go")
+    payload = await _degraded(
+        SimpleNamespace(path=str(tmp_path), session_factory=None), _go_hits(), set()
+    )
+
+    assert payload["citations"] == [
+        "cmd/powershell_completions.go",
+        "cmd/command.go",
+        "cmd\\completions.go",
+    ]
+
+
+async def test_degraded_citations_unchanged_when_rationale_adds_nothing(tmp_path, monkeypatch):
+    """Rationale only on the body's own file: no ranked files join the citations."""
+    _rationale_rows(monkeypatch, "src/flask/app.py")
+    hits = [
+        *_hits(end_line=6),
+        {"target_path": "src/flask/other.py", "title": "o", "summary": "s", "score": 2.0},
+    ]
+    payload = await _degraded(_tree(tmp_path), hits, {"Flask"})
+
+    assert payload["citations"] == ["src/flask/app.py"]
+
+
+async def test_degraded_cites_rationale_alone_without_best_guesses(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch, "cmd/completions.go")
+    payload = await _degraded(SimpleNamespace(path=str(tmp_path), session_factory=None), [], set())
+
+    assert "best_guesses" not in payload
+    assert payload["citations"] == ["cmd/completions.go"]
+
+
+async def test_degraded_body_path_then_guesses_then_rationale(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch, "src/flask/hub.py")
+    hits = [
+        *_hits(end_line=6),
+        {"target_path": "src/flask/other.py", "title": "o", "summary": "s", "score": 2.0},
+    ]
+    payload = await _degraded(_tree(tmp_path), hits, {"Flask"})
+
+    assert payload["symbol_bodies"][0]["path"] == "src/flask/app.py"
+    assert payload["citations"] == ["src/flask/app.py", "src/flask/other.py", "src/flask/hub.py"]
+
+
+def test_degraded_citing_the_guesses_does_not_grow_the_served_files():
+    """Ranked guesses moved into citations keep their candidate_files slots."""
+    from repowise.server.mcp_server.tool_answer.projection import _shape_candidate_files
+
+    pool = ["top.go", "a.go", "b.go", "c.go", "d.go", "e.go", "f.go"]
+
+    def served(citations: list[str]) -> set[str]:
+        payload = {
+            "degraded": "no-llm-provider",
+            "citations": citations,
+            "best_guesses": [{"file": "top.go"}],
+            "code_rationale": [{"path": "hub.go", "lines": [1, 2]}],
+            "candidate_files": list(pool),
+        }
+        _shape_candidate_files(payload, expanded=False)
+        return set(payload["citations"]) | set(payload.get("candidate_files") or [])
+
+    assert served(["top.go", "hub.go"]) == served(["hub.go"])
+
+
 async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
     """`best_guesses[].excerpt` and `retrieval[].excerpt` are the same bytes.
 
@@ -460,9 +676,14 @@ async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
     hits[0]["excerpt"] = "x" * 1500
     payload = await _degraded(ctx, hits, {"Blueprint"})
 
-    external = project_answer_payload(payload, question="what is Blueprint")
+    external = project_answer_payload(
+        payload, question="what is Blueprint", include=["evidence"]
+    )
     assert external["best_guesses"][0]["excerpt"] == "x" * 1500
-    assert "retrieval" not in external
+    # The default low shape serves the guess without its excerpt.
+    compact = project_answer_payload(payload, question="what is Blueprint")
+    assert "excerpt" not in compact["best_guesses"][0]
+    assert "retrieval" not in compact
 
 
 async def test_degraded_keeps_the_guess_excerpt_when_nothing_duplicates_it(tmp_path):
@@ -513,3 +734,278 @@ async def test_first_resolvable_id_keeps_an_id_whose_file_cannot_be_read(tmp_pat
     ctx = SimpleNamespace(path=str(tmp_path), session_factory=None)
 
     assert await _first_resolvable_id(["gone.py::Thing"], ctx, None, None) == "gone.py::Thing"
+
+
+# --- projection of a degraded payload --------------------------------------
+#
+# The projection trims evidence by `confidence`, on the rule that prose replaces
+# it: a high-confidence answer makes the ranked list redundant. A degraded
+# payload has no prose, so nothing replaces anything, and grading its evidence
+# must not be read as licence to serve less of it.
+
+
+def _degraded_raw(confidence: str) -> dict:
+    return {
+        "answer": "No synthesized prose (no-llm-provider), but the evidence is here",
+        "citations": ["pkg/m0.py"],
+        "confidence": confidence,
+        "retrieval_quality": "high",
+        "degraded": "no-llm-provider",
+        "fallback_targets": ["pkg/m0.py"],
+        "retrieval": [
+            {"path": f"pkg/m{i}.py", "title": f"m{i}", "summary": "s"} for i in range(4)
+        ],
+        "symbol_bodies": [
+            {"name": f"S{i}", "path": f"pkg/m{i}.py", "lines": [1, 4], "source": "x"}
+            for i in range(3)
+        ],
+        "_meta": {},
+    }
+
+
+def test_a_graded_degraded_payload_serves_the_same_evidence_as_before():
+    """The regression guard on grading confidence at all.
+
+    `medium` trims symbol_bodies to 1 and the ranked list to 2. Applying that to
+    a payload whose whole value is the evidence would take a body and a hit away
+    from the keyless caller this change exists to help.
+    """
+    projected = project_answer_payload(_degraded_raw("medium"), question="how does this work")
+
+    assert len(projected["symbol_bodies"]) == 2
+    assert len(projected["retrieval"]) == 3
+
+
+def test_the_degraded_shape_does_not_move_with_the_grade():
+    """Whatever it graded, the caller is served the same evidence."""
+    low = project_answer_payload(_degraded_raw("low"), question="how does this work")
+    medium = project_answer_payload(_degraded_raw("medium"), question="how does this work")
+
+    assert len(low["symbol_bodies"]) == len(medium["symbol_bodies"])
+    assert len(low["retrieval"]) == len(medium["retrieval"])
+    assert medium["confidence"] == "medium"
+
+
+def test_a_synthesised_payload_still_trims_on_its_grade():
+    """The control: the trimming rule is untouched where prose really does exist."""
+    raw = _degraded_raw("medium")
+    del raw["degraded"]
+
+    projected = project_answer_payload(raw, question="how does this work")
+
+    assert len(projected["symbol_bodies"]) == 1
+
+
+def test_the_hint_is_the_same_whatever_the_payload_graded():
+    """The grade moved; the hint deliberately does not read it.
+
+    `answer_hint` keys on `degraded` before it looks at confidence, because on
+    this path what is missing is the prose and not the evidence - the push to go
+    verify would be the wrong one. The payload passes its real grade in rather
+    than a hardcoded "low" so the two never drift apart, and this pins that the
+    hint ignoring it is the intended behaviour rather than an oversight.
+    """
+    from repowise.server.mcp_server._meta import answer_hint
+
+    hints = {
+        answer_hint(grade, degraded="no-llm-provider", retrieval_quality="high")
+        for grade in ("low", "medium", "high")
+    }
+
+    assert len(hints) == 1
+    assert "Synthesis is what is missing here" in hints.pop()
+
+
+# --- the keyless answer leads with the top retrieval file -------------------
+#
+# "medium" tells the caller to start from the file `answer` names first. That
+# file is the top-ranked one, a rationale comment never promotes another file
+# over it, and a top file that hybrid retrieval does not back grades "low".
+
+
+def _ranked(*paths: str, ranks: tuple[int | None, ...] | None = None) -> list[dict]:
+    """Strong, dominant hits in this order, each stamped with its hybrid rank."""
+    hits = [
+        {"target_path": p, "title": p, "summary": "the Flask app", "score": 6.0 if i == 0 else 2.0}
+        for i, p in enumerate(paths)
+    ]
+    for h, rank in zip(hits, ranks if ranks is not None else range(len(hits)), strict=True):
+        if rank is not None:
+            h["_hybrid_rank"] = rank
+    return hits
+
+
+async def _keyless(tmp_path, hits, question_ids=frozenset()):
+    return await _degraded(
+        SimpleNamespace(path=str(tmp_path), session_factory=None), hits, set(question_ids)
+    )
+
+
+def _answer(payload: dict) -> str:
+    return project_answer_payload(payload, question="which file")["answer"]
+
+
+async def test_the_top_file_rationale_leads_over_a_higher_scoring_hub(tmp_path, monkeypatch):
+    """The miner puts the hub's comment first; the answer still names the top file."""
+    _rationale_rows(monkeypatch, "src/config/types.ts", "src/agents/poll-backoff.ts")
+    payload = await _keyless(tmp_path, _ranked("src/agents/poll-backoff.ts", "src/config/types.ts"))
+
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "src/agents/poll-backoff.ts",
+        "src/config/types.ts",
+    ]
+    assert "Source rationale in src/agents/poll-backoff.ts" in _answer(payload)
+    assert payload["confidence"] == "medium"
+
+
+async def test_a_rationale_matching_one_question_word_does_not_lead(tmp_path, monkeypatch):
+    """A marker plus one shared word clears the miner's gate but answers nothing."""
+    _rationale_rows(monkeypatch, "src/agents/poll-backoff.ts", matched=("flask",))
+    payload = await _keyless(tmp_path, _ranked("src/agents/poll-backoff.ts", "src/config/types.ts"))
+
+    answer = _answer(payload)
+    assert "Source rationale" not in answer
+    assert "Local retrieval points first to src/agents/poll-backoff.ts" in answer
+
+
+async def test_without_a_top_file_rationale_the_answer_names_the_ranking(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch, "cmd/completions.go")
+    payload = await _keyless(tmp_path, _ranked("cmd/command.go", "cmd/completions.go"))
+
+    answer = _answer(payload)
+    assert "Local retrieval points first to cmd/command.go" in answer
+    assert "completions.go" not in answer
+    assert payload["confidence"] == "medium"
+
+
+async def test_other_rationale_rows_follow_in_hybrid_rank_order(tmp_path, monkeypatch):
+    """Not comment-score order; a hit hybrid retrieval never ranked goes last."""
+    _rationale_rows(monkeypatch, "pkg/d.py", "pkg/b.py", "pkg/c.py", "pkg/a.py")
+    hits = _ranked("pkg/a.py", "pkg/b.py", "pkg/c.py", "pkg/d.py", ranks=(0, 2, 1, None))
+    payload = await _keyless(tmp_path, hits)
+
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "pkg/a.py",
+        "pkg/c.py",
+        "pkg/b.py",
+        "pkg/d.py",
+    ]
+
+
+async def test_unranked_hits_order_rationale_by_hit_position(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch, "src/Z.java", "src/Y.java")
+    payload = await _keyless(tmp_path, _ranked("src/X.java", "src/Y.java", "src/Z.java", ranks=(None, None, None)))
+
+    assert [r["path"] for r in payload["code_rationale"]] == ["src/Y.java", "src/Z.java"]
+
+
+async def test_a_ranked_lead_inside_the_hybrid_top_stays_medium(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch)
+    hits = _ranked("src/main/java/App.java", "src/main/java/Util.java", ranks=(3, 0))
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "medium"
+
+
+async def test_a_lead_reranked_up_from_below_the_hybrid_top_grades_low(tmp_path, monkeypatch):
+    _rationale_rows(monkeypatch)
+    hits = _ranked("src/main/java/App.java", "src/main/java/Util.java", ranks=(4, 0))
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "low"
+
+
+async def test_an_injected_lead_hybrid_retrieval_never_ranked_grades_low(tmp_path, monkeypatch):
+    """Graph expansion and anchoring add hits with no hybrid rank at all."""
+    _rationale_rows(monkeypatch)
+    hits = _ranked("lib/faraday/adapter.rb", "lib/faraday/request.rb", ranks=(None, 0))
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "low"
+
+
+async def test_a_body_lead_reads_the_same_hybrid_rank(tmp_path):
+    """A served body leads `answer`, so its file's rank is the one checked."""
+    inside = _hits(end_line=6)
+    inside[0]["_hybrid_rank"] = 1
+    outside = _hits(end_line=6)
+    outside[0]["_hybrid_rank"] = 7
+
+    ctx = _tree(tmp_path)
+    assert (await _degraded(ctx, inside, {"Flask"}))["confidence"] == "medium"
+    assert (await _degraded(ctx, outside, {"Flask"}))["confidence"] == "low"
+
+
+@pytest.mark.parametrize(
+    ("lead", "expected"),
+    [
+        ("src/a.py", False),
+        ("src/a.py::run", False),
+        (r"src\b.py", False),
+        ("src/c.py", True),
+        ("src/missing.py", True),
+    ],
+)
+def test_lead_leaves_retrieval_table(lead, expected):
+    hits = _ranked("src/a.py::run", "src/b.py", "src/c.py", ranks=(0, 2, 5))
+
+    assert lead_leaves_retrieval(hits, lead) is expected
+
+
+def test_unstamped_hits_have_no_hybrid_order_to_leave():
+    hits = _ranked("src/a.py", "src/b.py", ranks=(None, None))
+
+    assert lead_leaves_retrieval(hits, "src/b.py") is False
+
+
+def test_the_keyed_grade_does_not_read_the_hybrid_rank():
+    """Only the keyless grade changed; synthesis is graded on its own text."""
+    from repowise.server.mcp_server.tool_answer.confidence import _grade_answer
+
+    def grade(hits):
+        return _grade_answer(
+            question="how does polling back off",
+            question_ids=set(),
+            answer_text="It backs off exponentially.",
+            hits=hits,
+            citations=["src/poll.ts"],
+            symbol_bodies=[],
+            served_named_body=False,
+            dominance="gap",
+        ).confidence
+
+    far = _ranked("src/poll.ts", "src/other.ts", ranks=(9, 0))
+    assert grade(far) == grade(_ranked("src/poll.ts", "src/other.ts"))
+    assert _degraded_confidence("synthesis-failed", "high") == "low"
+
+
+def test_hybrid_rank_counts_files_and_symbol_pages_share_theirs():
+    from repowise.server.mcp_server._answer_pipeline import stamp_hybrid_rank
+
+    hits = [{"target_path": p} for p in ("a.go", "a.go::Run", "b.go", "a.go::Stop", "c.go")]
+    stamp_hybrid_rank(hits)
+
+    assert [h["_hybrid_rank"] for h in hits] == [0, 0, 1, 0, 2]
+
+
+async def test_an_unranked_duplicate_does_not_hide_its_files_rank(tmp_path, monkeypatch):
+    """An injected symbol page of a ranked file can precede that file's own hit."""
+    _rationale_rows(monkeypatch, "src/hub.ts", "src/other.ts", "src/poll.ts")
+    hits = [
+        {"target_path": "src/poll.ts::backoff", "title": "t", "summary": "the Flask app", "score": 6.0},
+        {"target_path": "src/hub.ts", "title": "t", "summary": "the Flask app", "score": 2.0},
+        {"target_path": "src/other.ts::Run", "title": "t", "summary": "the Flask app", "score": 1.5},
+        {"target_path": "src/other.ts", "title": "t", "summary": "the Flask app", "score": 1.0},
+        {"target_path": "src/poll.ts", "title": "t", "summary": "the Flask app", "score": 1.0},
+    ]
+    for h, rank in zip(hits, (None, 5, None, 1, 0), strict=True):
+        if rank is not None:
+            h["_hybrid_rank"] = rank
+    payload = await _keyless(tmp_path, hits)
+
+    assert payload["confidence"] == "medium"
+    assert [r["path"] for r in payload["code_rationale"]] == [
+        "src/poll.ts",
+        "src/other.ts",
+        "src/hub.ts",
+    ]

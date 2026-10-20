@@ -240,7 +240,13 @@ EXAMPLE = "@router.delete('/fabricated')"'''
 
 
 class TestFlaskIsInherited:
-    """Flask providers via the index path — no Flask dialect module exists."""
+    """Flask providers via the index path, for a file that names no framework.
+
+    A file that imports Flask is left to the Flask dialect, which owns the
+    ``register_blueprint`` prefix rule this path cannot apply. What is inherited
+    here is the decorator shape: a ``@x.route`` above an indexed handler is read
+    as a route wherever the framework is not spelled out.
+    """
 
     PRELUDE = 'app = Flask(__name__)\nbp = Blueprint("api", __name__)'
 
@@ -272,12 +278,11 @@ class TestFlaskIsInherited:
         ids = _ids(_extract(prelude, ("listing", ['@bp.route("/items")'])))
         assert ids == {"http::GET::/api/items"}
 
-    def test_the_regex_layer_has_no_flask_dialect(self) -> None:
-        # Guards the claim in this class's docstring: if a Flask dialect is
-        # added later, this test should be deleted along with the claim.
-        from repowise.core.workspace.extractors.http import PROVIDER_DIALECTS
-
-        assert "flask" not in {d.name for d in PROVIDER_DIALECTS}
+    def test_a_flask_file_is_left_to_the_flask_dialect(self) -> None:
+        # One layer per file: this one cannot read a `register_blueprint`
+        # prefix, so a route it published would be served somewhere else.
+        prelude = "from flask import Flask\n\n" + self.PRELUDE
+        assert _extract(prelude, ("index", ['@app.route("/health")'])) == []
 
 
 def test_no_index_on_the_context_means_no_symbols() -> None:

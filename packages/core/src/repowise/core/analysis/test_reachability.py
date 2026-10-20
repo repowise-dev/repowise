@@ -34,7 +34,7 @@ source file references it, which is real evidence and a much cruder one. A test
 importing a module pulls in every symbol the module defines while the test body
 may touch one function.
 
-Measured against a real ``coverage run --contexts=test`` on this repository,
+Measured against real per-test coverage on this repository,
 over the slice where per-test attribution is complete and both sides see the
 same 37 test files (159 production files provably executed):
 
@@ -148,8 +148,10 @@ over data already in the database.
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from pathlib import PurePosixPath
+from typing import Any, Literal, NamedTuple, TypeAlias
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -160,7 +162,11 @@ from repowise.core.analysis.execution_graph import (
     file_of_symbol,
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GraphNode
+from repowise.core.test_paths import paired_test_names
+
+from .dead_code.file_reachability import BARREL_FILENAMES
 
 # How many call hops a test may take and still be said to reach a file. The walk
 # saturates here; see the Depth section above.
@@ -180,7 +186,8 @@ MAX_TESTS_PER_TARGET = 50
 
 # Which tier answered. The CLI prints this so a reader can tell "this test runs
 # into the file" from the weaker "this test imports it".
-ReachedVia = Literal["call-graph", "import-graph"]
+# ``name-match`` is weaker still: a test named for the file, with no edge.
+ReachedVia = Literal["call-graph", "import-graph", "name-match"]
 
 __all__ = [
     "DEFAULT_CALL_DEPTH",
@@ -188,17 +195,40 @@ __all__ = [
     "MAX_TESTS_PER_TARGET",
     "UNRELIABLE_CALL_ORIGINS",
     "CallGraphView",
+    "ImportGraph",
+    "ReachDistance",
     "ReachedBy",
+    "any_tests_reaching",
+    "cached_files_reached_by_tests",
+    "cached_test_files",
     "call_graph_from_db",
     "call_graph_from_graph",
+    "clear_test_map_cache",
+    "direct_dependents",
+    "direct_importers",
     "files_reached_by_tests",
+    "files_with_paired_tests",
+    "imported_names_by_test",
+    "load_import_graph",
     "load_test_files",
+    "rank_tests",
+    "reach_into_symbols",
+    "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
+    "tests_reaching_through_helpers",
 ]
 
 
 CallGraphView: TypeAlias = ExecutionGraphIndex
+
+
+class ReachDistance(NamedTuple):
+    """How a test reached a seed: the fewest call hops, and how many of the
+    test's symbols made a call at that depth."""
+
+    hops: int
+    callers: int
 
 
 @dataclass(frozen=True)
@@ -207,9 +237,9 @@ class ReachedBy:
 
     ``total`` is how many the walk actually found, before
     ``MAX_TESTS_PER_TARGET`` trimmed ``tests``. A surface that prints
-    ``len(tests)`` as the answer is stating a cap as a measurement, and the cut
-    is alphabetical, so *which* ones survive is arbitrary. Carry the total and
-    say the bound.
+    ``len(tests)`` as the answer is stating a cap as a measurement. The cut keeps
+    the test named for the target and its directory neighbours first
+    (:func:`rank_tests`). Carry the total and say the bound.
     """
 
     tests: list[str]
@@ -218,6 +248,12 @@ class ReachedBy:
     # Internal uncapped identities let downstream aggregators de-duplicate one
     # test that reaches several targets while public lists remain bounded.
     all_tests: tuple[str, ...] | None = None
+    # How close each test came, for the call tier only: the import and name
+    # tiers have no hop count to report.
+    reach: Mapping[str, ReachDistance] | None = None
+    # Import tier only: the files each test was reached through, i.e. the
+    # dependencies of that test on the route to the target.
+    entries: Mapping[str, frozenset[str]] | None = None
 
 
 def call_graph_from_graph(graph: Any) -> CallGraphView:
@@ -245,28 +281,30 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
     walk is seeded with a change's files; this question is seeded with the
     repository, and a per-level ``IN`` list over every file is the shape it was
     explicitly not built for.
+
+    The view carries no call-site lines: reachability reads only ``declares``
+    and the forward/reverse adjacency, and ``call_lines_json`` was most of the
+    read's cost (measured on this repository, 189k edges: 8.4 s cold with the
+    column, under 2 s without it).
     """
     wanted = ["defines", *sorted(EXECUTION_EDGE_TYPES)]
     params: dict[str, Any] = {"repo_id": repo_id}
     ets = _in_clause("e", wanted, params)
     rows = await session.execute(
         text(
-            "SELECT source_node_id, target_node_id, edge_type, resolution_origin, "
-            "call_lines_json "
+            "SELECT source_node_id, target_node_id, edge_type, resolution_origin "
             "FROM graph_edges WHERE repository_id = :repo_id "
             f"AND edge_type IN ({ets}) "
             "ORDER BY source_node_id, target_node_id, edge_type"
         ),
         params,
     )
-    edge_rows = []
-    for src, dst, edge_type, origin, call_lines_json in rows:
-        try:
-            call_lines = json.loads(call_lines_json or "[]")
-        except (TypeError, ValueError):
-            call_lines = []
-        edge_rows.append((src, dst, edge_type, origin, call_lines))
-    return ExecutionGraphIndex(edge_rows=edge_rows)
+    # No call or spawn lines here: test reachability reads only forward/reverse,
+    # never first-hop sites, ``spawn_only`` or roles, and a spawned callee is
+    # still reached.
+    return ExecutionGraphIndex(
+        edge_rows=((src, dst, edge_type, origin, None) for src, dst, edge_type, origin in rows)
+    )
 
 
 def files_reached_by_tests(
@@ -308,6 +346,79 @@ def files_reached_by_tests(
     return {file_of_symbol(symbol) for symbol in reached} - test_files
 
 
+def _dependencies_of(graph: Any, path: str) -> set[str]:
+    try:
+        return {
+            dst
+            for _src, dst, data in graph.out_edges(path, data=True)
+            if data.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES
+        }
+    except Exception:
+        return set()
+
+
+def files_with_paired_tests(
+    graph: Any, paths: Collection[str], test_files: Collection[str]
+) -> set[str]:
+    """Files among *paths* that have a test of their own, import graph first.
+
+    A test file that imports a file directly is its test, wherever either
+    lives: ``tests/unit/cli/test_init.py`` importing ``cli/main.py`` pairs
+    them although no name says so. A test *named* for a file
+    (:func:`paired_test_names`) still pairs, but only when the graph agrees
+    or cannot say: the named test imports the file directly or through a
+    re-export barrel, has no resolved dependency at all, or there is no graph.
+    Otherwise the name is a collision - ``distill/test_engine.py`` tests the
+    distill engine, not ``health/engine.py`` - and does not pair.
+
+    One hop, plus one more through a re-export barrel: a test importing a
+    package's ``index.ts`` or ``__init__.py`` pairs the files that barrel
+    imports, since that is how a package's tests reach its modules. A
+    file-level "some test imports this", never a quantity. The reach walk
+    above stays call-graph-only; pairing is the looser question "does this
+    file have a test", and against this repository's stored line coverage
+    direct-import pairing finds 71.6% of covered files at 98.9% precision
+    where names alone found 34.6% at 100%.
+    """
+    barrel_deps: dict[str, set[str]] = {}
+
+    def imports_of(test: str) -> set[str]:
+        direct = _dependencies_of(graph, test)
+        through: set[str] = set()
+        for mid in direct:
+            if PurePosixPath(mid).name in BARREL_FILENAMES:
+                if mid not in barrel_deps:
+                    barrel_deps[mid] = _dependencies_of(graph, mid)
+                through |= barrel_deps[mid]
+        return direct | through
+
+    paired: set[str] = set()
+    deps: dict[str, set[str]] = {}
+    if graph is not None:
+        for test in test_files:
+            deps[test] = imports_of(test)
+            paired.update(deps[test])
+    paired &= set(paths)
+
+    by_name: dict[str, list[str]] = {}
+    for path in {*paths, *test_files}:
+        by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+
+    def named_pair_holds(test: str, path: str) -> bool:
+        if graph is None:
+            return True
+        imported = deps[test] if test in deps else imports_of(test)
+        return not imported or path in imported
+
+    for path in paths:
+        if path in paired:
+            continue
+        candidates = (c for name in paired_test_names(path) for c in by_name.get(name, ()))
+        if any(c != path and named_pair_holds(c, path) for c in candidates):
+            paired.add(path)
+    return paired
+
+
 async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
     """Paths of every file node ingestion classified as a test."""
     res = await session.execute(
@@ -319,6 +430,196 @@ async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
     return {row[0] for row in res.all()}
 
 
+# Answers kept in process per (database, repository, index stamp), so one
+# request reads the test files once whoever asks: Fix first's validation and
+# Do next both walk from them. Ceiling: Do next's per-file reach is still
+# walked once per index; persisting it at index time (the engine's
+# ``RepoTestIndex.reached_files`` set, stored as a per-file bool) is the upgrade path.
+_cache = IndexStampCache(32)
+
+
+def clear_test_map_cache() -> None:
+    _cache.clear()
+
+
+async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """:func:`load_test_files`, read once per index state; frozen because it is shared."""
+    key = await _cache.key(session, repo_id, "test_files")
+    if key in _cache:
+        return _cache.get(key)
+    return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
+
+
+async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """:func:`files_reached_by_tests` over the stored graph, walked once per index state.
+
+    The Tests page asks this on every load and the answer moves only when an
+    index run rewrites the graph, so the bulk edge read is paid once per index.
+    """
+    key = await _cache.key(session, repo_id, "files_reached")
+    if key in _cache:
+        return _cache.get(key)
+    test_files = set(await cached_test_files(session, repo_id))
+    view = await call_graph_from_db(session, repo_id)
+    return _cache.remember(key, frozenset(files_reached_by_tests(view, test_files)))
+
+
+async def any_tests_reaching(
+    session: AsyncSession, repo_id: str, targets: Collection[str]
+) -> dict[str, ReachedBy]:
+    """Whether any test reaches each target: the default tiers, then a test-only helper.
+
+    The first walk is :func:`tests_reaching_by_tier` at its defaults, the one
+    impacted-tests runs, so the two never disagree about a file it answers.
+    For the rest, :func:`tests_reaching_through_helpers`. Cached per index state.
+    """
+    seeds = tuple(sorted(set(targets)))
+    key = await _cache.key(session, repo_id, "any_reach", seeds)
+    if key in _cache:
+        return _cache.get(key)
+    test_files = set(await cached_test_files(session, repo_id))
+    found = await tests_reaching_by_tier(session, repo_id, list(seeds), test_files=test_files)
+    rest = [s for s in seeds if s not in found]
+    if rest:
+        found |= await tests_reaching_through_helpers(session, repo_id, rest, test_files)
+    return _cache.remember(key, found)
+
+
+async def tests_reaching_through_helpers(
+    session: AsyncSession, repo_id: str, targets: list[str], test_files: set[str]
+) -> dict[str, ReachedBy]:
+    """Tests that import a file only tests import, or a barrel, which imports the target.
+
+    A second import hop, kept off hubs: a blanket second hop was measured and
+    rejected (see Depth), but a module nothing outside the test suite imports
+    is test support whatever its name (``attempt.spawn-workspace.test-support.ts``
+    loading ``attempt.ts`` for 30-odd tests), so walking through it claims
+    nothing a hub would. A barrel (``index.ts``, ``__init__.py``) passes on
+    what it imports even when source imports it too, as
+    :func:`files_with_paired_tests` already reads it: a package's tests
+    import its entry, not each module behind it.
+    """
+    edge_types = sorted(FILE_DEPENDENCY_EDGE_TYPES)
+    middles: dict[str, set[str]] = {}
+    for dependent, target in await _edges_into(session, repo_id, targets, edge_types, frozenset()):
+        if dependent not in test_files:
+            middles.setdefault(dependent, set()).add(target)
+    importers: dict[str, set[str]] = {}
+    for dependent, middle in await _edges_into(
+        session, repo_id, sorted(middles), edge_types, frozenset()
+    ):
+        importers.setdefault(middle, set()).add(dependent)
+    reached: dict[str, set[str]] = {}
+    for middle, who in importers.items():
+        tests = who & test_files
+        if tests and (tests == who or PurePosixPath(middle).name in BARREL_FILENAMES):
+            for target in middles[middle]:
+                reached.setdefault(target, set()).update(tests)
+    out: dict[str, ReachedBy] = {}
+    for target, tests in reached.items():
+        ordered = tuple(rank_tests(target, tests))
+        out[target] = ReachedBy(
+            list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
+        )
+    return out
+
+
+async def placed_test_files(session: AsyncSession, repo_id: str) -> set[str]:
+    """Test files with a resolved dependency edge into a non-test file of the repository.
+
+    Only these can be found by walking back from a changed file; a test with
+    none (every import unresolved, or it only runs a subprocess) is invisible.
+    An edge into test material (a conftest, a helper) or a third-party module
+    (``external:``) does not count: it says nothing about which of the
+    repository's files the test exercises.
+    """
+    params: dict[str, Any] = {"repo_id": repo_id, "is_test": True, "not_test": False}
+    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), params)
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT e.source_node_id FROM graph_edges e "
+            "JOIN graph_nodes s ON s.repository_id = e.repository_id "
+            "AND s.node_id = e.source_node_id "
+            "JOIN graph_nodes t ON t.repository_id = e.repository_id "
+            "AND t.node_id = e.target_node_id "
+            f"WHERE e.repository_id = :repo_id AND e.edge_type IN ({ets}) "
+            "AND s.is_test = :is_test AND t.is_test = :not_test AND t.node_type = 'file' "
+            "AND t.node_id NOT LIKE 'external:%'"
+        ),
+        params,
+    )
+    return {row[0] for row in rows}
+
+
+async def always_run_test_files(session: AsyncSession, repo_id: str) -> dict[str, str]:
+    """``{test file: why}`` for the tests the indexer found the graph cannot see into.
+
+    Stored per file at index time (``repowise.core.ingestion.always_run``), so
+    this is one indexed read, never a scan of the test files.
+    """
+    res = await session.execute(
+        select(GraphNode.node_id, GraphNode.always_run_reason).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.always_run_reason.is_not(None),
+            GraphNode.always_run_reason != "",
+        )
+    )
+    return {node_id: reason for node_id, reason in res.all()}
+
+
+async def unscanned_test_files(session: AsyncSession, repo_id: str) -> set[str]:
+    """Judged test files the indexer never stamped (an index built before the check).
+
+    A stamped test holds ``""`` when it is ordinary, so ``NULL`` means unknown,
+    not "nothing found": such a test may walk the tree unseen.
+    """
+    from ..ingestion.always_run import is_judged_test
+
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            GraphNode.is_test == True,  # noqa: E712
+            GraphNode.always_run_reason.is_(None),
+        )
+    )
+    return {node_id for (node_id,) in res.all() if is_judged_test(node_id)}
+
+
+async def dependency_path(
+    session: AsyncSession, repo_id: str, source: str, targets: Collection[str], max_depth: int = 64
+) -> list[str]:
+    """The shortest file-dependency route from *source* to any of *targets*, ends included.
+
+    ``[]`` when none is found within *max_depth* hops. Breadth-first, one ``IN``
+    query per level, over the same edges the import walk follows
+    (``FILE_DEPENDENCY_EDGE_TYPES``, every resolution origin). Ceiling: a test
+    found through the call walk alone may have no such route; following call
+    edges with ``UNRELIABLE_CALL_ORIGINS`` excluded is the upgrade path.
+    """
+    goals = set(targets)
+    parent: dict[str, str | None] = {source: None}
+    frontier = [source]
+    for _ in range(max_depth):
+        if not frontier or goals & parent.keys():
+            break
+        level, frontier = frontier, []
+        for dependent, dependency in await _edges_from(
+            session, repo_id, level, sorted(FILE_DEPENDENCY_EDGE_TYPES)
+        ):
+            if dependency not in parent:
+                parent[dependency] = dependent
+                frontier.append(dependency)
+    hit = goals & parent.keys()
+    if not hit:
+        return []
+    route, node = [], min(hit)
+    while node is not None:
+        route.append(node)
+        node = parent[node]
+    return route[::-1]
+
+
 async def tests_reaching(
     session: AsyncSession,
     repo_id: str,
@@ -326,6 +627,7 @@ async def tests_reaching(
     *,
     call_depth: int = DEFAULT_CALL_DEPTH,
     import_depth: int = DEFAULT_MAX_DEPTH,
+    test_files: set[str] | None = None,
 ) -> dict[str, list[str]]:
     """Test files that reach each of *targets*, keyed by target path.
 
@@ -334,7 +636,12 @@ async def tests_reaching(
     or as unknown.
     """
     found = await tests_reaching_by_tier(
-        session, repo_id, targets, call_depth=call_depth, import_depth=import_depth
+        session,
+        repo_id,
+        targets,
+        call_depth=call_depth,
+        import_depth=import_depth,
+        test_files=test_files,
     )
     return {target: reached.tests for target, reached in found.items()}
 
@@ -346,8 +653,29 @@ async def tests_reaching_by_tier(
     *,
     call_depth: int = DEFAULT_CALL_DEPTH,
     import_depth: int = DEFAULT_MAX_DEPTH,
+    symbol_seeds: Mapping[str, Collection[str]] | None = None,
+    test_files: set[str] | None = None,
+    avoid: Collection[str] = frozenset(),
+    import_graph: ImportGraph | None = None,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *test_files* is :func:`load_test_files`'s answer, for a caller that walks
+    more than once and need not read it twice. A target may be a symbol id
+    (``path::name``); its tests are ranked against the file part.
+
+    *symbol_seeds* narrows the call walk for the targets it names: the walk
+    enters at exactly those symbol ids instead of at every symbol the file
+    declares. A target it does not name, or names with no ids, keeps the
+    ``defines`` lookup, and the
+    import tier stays file-level either way.
+
+    *avoid* names files the call walk does not pass reach through, except
+    into a target's own symbols. The import tier is
+    one hop, so it never passes through anything.
+
+    *import_graph* (:func:`load_import_graph`) answers the import tier's
+    levels from memory, for a caller that walks deep or more than once.
 
     The call walk runs first; the import walk is then seeded with only the
     targets it left unanswered, so the weaker tier never speaks over the
@@ -365,26 +693,35 @@ async def tests_reaching_by_tier(
     if not seeds:
         return {}
 
-    test_files = await load_test_files(session, repo_id)
+    if test_files is None:
+        test_files = await load_test_files(session, repo_id)
     if not test_files:
         return {}
 
     out: dict[str, ReachedBy] = {}
     if call_depth >= 1:
-        found = await _call_reaching(session, repo_id, seeds, test_files, call_depth)
-        for seed, tests in found.items():
-            ordered = tuple(sorted(tests))
+        found = await _call_reaching(
+            session, repo_id, seeds, test_files, call_depth, symbol_seeds=symbol_seeds, avoid=avoid
+        )
+        for seed, reach in found.items():
+            ordered = tuple(rank_tests(seed.split("::", 1)[0], reach))
             out[seed] = ReachedBy(
-                list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered
+                list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered, reach
             )
 
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
-        found = await _import_reaching(session, repo_id, unanswered, test_files, import_depth)
+        found, entries = await _import_reaching(
+            session, repo_id, unanswered, test_files, import_depth, import_graph
+        )
         for seed, tests in found.items():
-            ordered = tuple(sorted(tests))
+            ordered = tuple(rank_tests(seed.split("::", 1)[0], tests))
             out[seed] = ReachedBy(
-                list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
+                list(ordered[:MAX_TESTS_PER_TARGET]),
+                "import-graph",
+                len(ordered),
+                ordered,
+                entries={t: frozenset(via) for t, via in entries[seed].items()},
             )
     return out
 
@@ -395,27 +732,41 @@ async def _call_reaching(
     seeds: list[str],
     test_files: set[str],
     max_depth: int,
-) -> dict[str, set[str]]:
+    *,
+    symbol_seeds: Mapping[str, Collection[str]] | None = None,
+    strict: bool = False,
+    avoid: Collection[str] = frozenset(),
+) -> dict[str, dict[str, ReachDistance]]:
     """Tests that can execute into each seed file, walking call edges backwards.
 
     Starts one layer below the other walk: the seeds are files and call edges
     join symbols, so the first query resolves each seed to the symbols it
     declares, and the walk carries the seed from there.
+
+    Each test carries the fewest call hops it took and how many of its symbols
+    made a call at that depth. Every node records each seed's distance, not
+    the level it was found at: one level's batch can carry a seed through a
+    node another seed entered, so the level alone overstates how close a test
+    is. A shorter distance found later re-queues the node; which tests reach
+    which seed is unchanged by that, only how far.
+
+    *strict* reads each level against the distances it started with, so a seed
+    moves one hop per level and its answer does not depend on which other
+    seeds share the walk. The file tiers keep the historical batch semantics.
     """
-    declared = await _edges_from(session, repo_id, seeds, ["defines"])
-    origins: dict[str, set[str]] = {}
-    for seed, symbol in declared:
-        origins.setdefault(symbol, set()).add(seed)
+    # node -> seed -> call hops from the node to the seed.
+    origins = await _call_origins(session, repo_id, seeds, symbol_seeds)
     if not origins:
         return {}
 
-    found: dict[str, set[str]] = {}
+    found: dict[str, dict[str, tuple[int, set[str]]]] = {}
     frontier = list(origins)
     for _ in range(max_depth):
         if not frontier:
             break
         level, frontier = frontier, []
         queued: set[str] = set()
+        start = {node: dict(origins[node]) for node in level} if strict else origins
         for caller, callee in await _edges_into(
             session,
             repo_id,
@@ -423,25 +774,255 @@ async def _call_reaching(
             sorted(EXECUTION_EDGE_TYPES),
             UNRELIABLE_CALL_ORIGINS,
         ):
-            carried = origins.get(callee)
+            carried = start.get(callee)
             if not carried:
                 continue
             owner = file_of_symbol(caller)
             if owner in test_files:
-                for seed in carried:
-                    found.setdefault(seed, set()).add(owner)
+                _record_test_hit(found, owner, caller, carried)
                 # A test is a leaf. Walking through one would let "test A calls
                 # shared helper B" drag B's unrelated targets in.
                 continue
-            known = origins.setdefault(caller, set())
-            fresh = carried - known
-            if not fresh:
+            if owner in avoid:
+                # A hub carries on only the seeds it declares itself.
+                carried = {s: d for s, d in carried.items() if s.split("::", 1)[0] == owner}
+            if not _carry_closer(origins, caller, carried):
                 continue
-            known |= fresh
             if caller not in queued:
                 queued.add(caller)
                 frontier.append(caller)
-    return found
+    return {
+        seed: {test: ReachDistance(depth, len(callers)) for test, (depth, callers) in tests.items()}
+        for seed, tests in found.items()
+    }
+
+
+async def _call_origins(
+    session: AsyncSession,
+    repo_id: str,
+    seeds: list[str],
+    symbol_seeds: Mapping[str, Collection[str]] | None,
+) -> dict[str, dict[str, int]]:
+    """The symbols each seed enters the call walk at, each at distance 0 from its seed."""
+    origins: dict[str, dict[str, int]] = {}
+    # A caller that knows which symbol in the file it cares about enters there,
+    # so a test reaching an unrelated symbol in the same file does not count.
+    # An empty entry names no symbol, so that file is unseeded and keeps the
+    # ``defines`` lookup; treating it as seeded would silence the file entirely.
+    seeded = {
+        seed: symbol_seeds[seed]
+        for seed in seeds
+        if symbol_seeds and symbol_seeds.get(seed)
+    }
+    for seed, symbol_ids in seeded.items():
+        for symbol in symbol_ids:
+            origins.setdefault(symbol, {})[seed] = 0
+    unseeded = [seed for seed in seeds if seed not in seeded]
+    if unseeded:
+        declared = await _edges_from(session, repo_id, unseeded, ["defines"])
+        for seed, symbol in declared:
+            origins.setdefault(symbol, {})[seed] = 0
+    return origins
+
+
+def _record_test_hit(
+    found: dict[str, dict[str, tuple[int, set[str]]]],
+    test: str,
+    caller: str,
+    carried: Mapping[str, int],
+) -> None:
+    """Keep the fewest hops *test* took to each carried seed, and its callers at that depth."""
+    for seed, distance in carried.items():
+        hops = distance + 1
+        by_test = found.setdefault(seed, {})
+        best = by_test.get(test)
+        if best is None or hops < best[0]:
+            by_test[test] = (hops, {caller})
+        elif hops == best[0]:
+            best[1].add(caller)
+
+
+def _carry_closer(
+    origins: dict[str, dict[str, int]], caller: str, carried: Mapping[str, int]
+) -> bool:
+    """Record the seeds *caller* reaches closer than before; True when any did."""
+    if not carried:
+        return False
+    known = origins.setdefault(caller, {})
+    closer = {
+        seed: distance + 1
+        for seed, distance in carried.items()
+        if seed not in known or distance + 1 < known[seed]
+    }
+    known.update(closer)
+    return bool(closer)
+
+
+async def reach_into_symbols(
+    session: AsyncSession,
+    repo_id: str,
+    symbol_ids: Collection[str],
+    test_files: set[str],
+    *,
+    max_depth: int = DEFAULT_CALL_DEPTH,
+    avoid: Collection[str] = frozenset(),
+) -> dict[str, dict[str, ReachDistance]]:
+    """Tests that call into each symbol id, keyed by the symbol, with their hops.
+
+    The file walk answers "does a test reach this file"; this one answers how
+    close each test gets to one symbol in it, which is what decides which of a
+    file's many tests to run first after changing that symbol.
+    """
+    seeds = sorted({symbol for symbol in symbol_ids if symbol})
+    if not seeds or not test_files:
+        return {}
+    return await _call_reaching(
+        session,
+        repo_id,
+        seeds,
+        test_files,
+        max_depth,
+        symbol_seeds={symbol: (symbol,) for symbol in seeds},
+        strict=True,
+        avoid=avoid,
+    )
+
+
+async def imported_names_by_test(
+    session: AsyncSession, repo_id: str, files: Collection[str], test_files: set[str]
+) -> dict[str, dict[str, frozenset[str]]]:
+    """The names each test file imports from each of *files*, keyed by file then test.
+
+    An empty set is an import of the module itself. One hop, plus one through a
+    re-export barrel (``index.ts``, ``__init__.py``) that imports the file: a
+    test importing ``foo`` from the barrel imports it from the file. What a test
+    names, not what it reaches.
+    """
+    targets = sorted({path for path in files if path})
+    if not targets or not test_files:
+        return {}
+    out: dict[str, dict[str, frozenset[str]]] = {}
+    barrels: dict[str, dict[str, frozenset[str]]] = {}
+    for source, target, names in await _imported_names(session, repo_id, targets):
+        if source in test_files:
+            _add_names(out, target, source, names)
+        elif PurePosixPath(source).name in BARREL_FILENAMES:
+            barrels.setdefault(source, {})[target] = names
+    if barrels:
+        await _add_barrel_imports(session, repo_id, barrels, test_files, out)
+    return out
+
+
+async def _add_barrel_imports(
+    session: AsyncSession,
+    repo_id: str,
+    barrels: dict[str, dict[str, frozenset[str]]],
+    test_files: set[str],
+    out: dict[str, dict[str, frozenset[str]]],
+) -> None:
+    """Credit each test importing a barrel with the names the barrel passes on from each file."""
+    for source, barrel, names in await _imported_names(session, repo_id, sorted(barrels)):
+        if source not in test_files:
+            continue
+        for target, exported in barrels[barrel].items():
+            # ``export *`` passes every name on; otherwise only the ones it re-exports.
+            passed = names if not exported or "*" in exported else names & exported
+            if passed or not names:
+                _add_names(out, target, source, passed)
+
+
+def _add_names(
+    out: dict[str, dict[str, frozenset[str]]], target: str, test: str, names: frozenset[str]
+) -> None:
+    by_test = out.setdefault(target, {})
+    by_test[test] = by_test.get(test, frozenset()) | names
+
+
+async def _imported_names(
+    session: AsyncSession, repo_id: str, targets: list[str]
+) -> list[tuple[str, str, frozenset[str]]]:
+    """``(importer, imported file, names)`` for every import edge into *targets*."""
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), shared)
+    targets = list(dict.fromkeys(targets))
+    out = []
+    for start in range(0, len(targets), _IN_BATCH):
+        params = dict(shared)
+        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT source_node_id, target_node_id, imported_names_json FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets})"
+            ),
+            params,
+        )
+        out.extend((source, target, _names_of(names_json)) for source, target, names_json in rows)
+    return out
+
+
+def _names_of(names_json: str | None) -> frozenset[str]:
+    """The names an import edge records; unreadable JSON records none."""
+    try:
+        names = json.loads(names_json or "[]")
+    except (TypeError, ValueError):
+        return frozenset()
+    return frozenset(n for n in names if isinstance(n, str))
+
+
+@dataclass(frozen=True)
+class ImportGraph:
+    """Every file-dependency edge, reversed (``{file: files depending on it}``), read once.
+
+    The import walk is unbounded on the selection path, so on a hub it runs
+    dozens of levels; one bulk read replaces a query per level. Either source
+    gives the same answer: the walk reaches a fixpoint, so edge order does not
+    matter. Ceiling: read per selection, not kept across calls; caching it per
+    index stamp is the upgrade path if the read shows up.
+    """
+
+    importers: Mapping[str, tuple[str, ...]]
+
+    def edges_into(self, targets: Collection[str]) -> list[tuple[str, str]]:
+        """``(dependent, dependency)`` pairs, as :func:`_edges_into` returns them."""
+        return [(src, t) for t in targets for src in self.importers.get(t, ())]
+
+    def hops(self, sources: Collection[str]) -> dict[str, int]:
+        """``{file: fewest dependency hops from any of *sources*}``, sources at 0.
+
+        One multi-source breadth-first pass through every file, tests
+        included, so a test importing a reached helper is one hop past it.
+        """
+        best = dict.fromkeys(sources, 0)
+        frontier = list(best)
+        depth = 0
+        while frontier:
+            depth += 1
+            fresh = [
+                d for node in frontier for d in self.importers.get(node, ()) if d not in best
+            ]
+            fresh = list(dict.fromkeys(fresh))
+            best.update(dict.fromkeys(fresh, depth))
+            frontier = fresh
+        return best
+
+
+async def load_import_graph(session: AsyncSession, repo_id: str) -> ImportGraph:
+    """The edges the import walk follows (``_edges_into`` over every file), in one read."""
+    params: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", sorted(FILE_DEPENDENCY_EDGE_TYPES), params)
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+            f"WHERE repository_id = :repo_id AND edge_type IN ({ets}){_LEGACY_CONFTEST_FILTER}"
+        ),
+        params,
+    )
+    importers: dict[str, list[str]] = {}
+    for source, target in rows:
+        importers.setdefault(target, []).append(source)
+    # Sorted, so a bounded walk does not depend on the order rows come back in.
+    return ImportGraph({t: tuple(sorted(s)) for t, s in importers.items()})
 
 
 async def _import_reaching(
@@ -450,10 +1031,17 @@ async def _import_reaching(
     seeds: list[str],
     test_files: set[str],
     max_depth: int,
-) -> dict[str, set[str]]:
-    """Tests that import each seed file, directly or within *max_depth* hops."""
+    graph: ImportGraph | None = None,
+) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
+    """Tests that import each seed file, directly or within *max_depth* hops.
+
+    Also ``{seed: {test: the files it imports on a route to the seed}}``.
+    With *graph* the levels are read from it instead of the database.
+    """
     origins: dict[str, set[str]] = {s: {s} for s in seeds}
-    found: dict[str, set[str]] = {}
+    # (test, file it imports) -> seeds carried in: one set union per edge, not
+    # a dict write per seed; split per seed once the walk ends.
+    reached: dict[tuple[str, str], set[str]] = {}
     seed_set = set(seeds)
     frontier = list(seeds)
 
@@ -462,15 +1050,19 @@ async def _import_reaching(
             break
         level, frontier = frontier, []
         queued: set[str] = set()
-        for dependent, dependency in await _edges_into(
-            session, repo_id, level, sorted(FILE_DEPENDENCY_EDGE_TYPES), frozenset()
-        ):
+        edges = (
+            graph.edges_into(level)
+            if graph is not None
+            else await _edges_into(
+                session, repo_id, level, sorted(FILE_DEPENDENCY_EDGE_TYPES), frozenset()
+            )
+        )
+        for dependent, dependency in edges:
             carried = origins.get(dependency)
             if not carried:
                 continue
             if dependent in test_files:
-                for seed in carried:
-                    found.setdefault(seed, set()).add(dependent)
+                reached.setdefault((dependent, dependency), set()).update(carried)
                 continue
             if dependent in seed_set:
                 continue
@@ -485,7 +1077,56 @@ async def _import_reaching(
             if dependent not in queued:
                 queued.add(dependent)
                 frontier.append(dependent)
-    return found
+    found: dict[str, set[str]] = {}
+    entries: dict[str, dict[str, set[str]]] = {}
+    for (test, dependency), carried in reached.items():
+        for seed in carried:
+            found.setdefault(seed, set()).add(test)
+            entries.setdefault(seed, {}).setdefault(test, set()).add(dependency)
+    return found, entries
+
+
+async def direct_dependents(
+    session: AsyncSession, repo_id: str, files: list[str]
+) -> dict[str, set[str]]:
+    """Files with an import edge into each of *files*, or a call into a symbol it declares.
+
+    One hop, no tests excluded: the direct callers and importers a change to
+    them could have moved coverage through. A file with none is absent.
+    """
+    out: dict[str, set[str]] = {}
+    for dependent, dependency in await _edges_into(
+        session, repo_id, files, sorted(FILE_DEPENDENCY_EDGE_TYPES), frozenset()
+    ):
+        out.setdefault(dependency, set()).add(dependent)
+    declared = await _edges_from(session, repo_id, files, ["defines"])
+    owner = {symbol: path for path, symbol in declared}
+    for caller, callee in await _edges_into(
+        session, repo_id, sorted(owner), sorted(EXECUTION_EDGE_TYPES), UNRELIABLE_CALL_ORIGINS
+    ):
+        if (source := file_of_symbol(caller)) != owner[callee]:
+            out.setdefault(owner[callee], set()).add(source)
+    return out
+
+
+# Indexes built before the conftest -> test hint was removed still hold edges
+# that point from a conftest to each test using one of its fixtures, which made
+# the conftest read as that test's importer. The test -> conftest edge already
+# records the relation. Upgrade path: drop this once such indexes are rebuilt.
+_LEGACY_CONFTEST_FILTER = (
+    " AND NOT (edge_type = 'dynamic_uses' AND COALESCE(hint_source, '') = 'pytest_conftest')"
+)
+
+
+#: Edges a test file writes itself: imports and references, not the wiring a
+#: test runner adds (a conftest or setup file reaches every test under it).
+_AUTHORED_EDGE_TYPES = sorted(FILE_DEPENDENCY_EDGE_TYPES - {"framework"})
+
+
+async def direct_importers(session: AsyncSession, repo_id: str, files: list[str]) -> set[str]:
+    """Files whose own code imports or references one of *files*, one hop."""
+    rows = await _edges_into(session, repo_id, files, _AUTHORED_EDGE_TYPES, frozenset())
+    return {source for source, _ in rows}
 
 
 def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:
@@ -494,24 +1135,34 @@ def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:
     return ",".join(f":{prefix}{i}" for i in range(len(values)))
 
 
+#: Values one ``IN`` list binds. SQLite refuses a statement with more variables
+#: than SQLITE_MAX_VARIABLE_NUMBER (999 before 3.32, 32766 after), and the lists
+#: below are a change's files or every file and symbol of a repository.
+_IN_BATCH = 500
+
+
 async def _edges_from(
     session: AsyncSession, repo_id: str, sources: list[str], edge_types: list[str]
 ) -> list[tuple[str, str]]:
     """``(source, target)`` pairs leaving *sources* along *edge_types*."""
-    if not sources:
-        return []
-    params: dict[str, Any] = {"repo_id": repo_id}
-    src = _in_clause("s", sources, params)
-    ets = _in_clause("e", edge_types, params)
-    rows = await session.execute(
-        text(
-            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
-        ),
-        params,
-    )
-    return [(s, t) for s, t in rows]
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", edge_types, shared)
+    out: list[tuple[str, str]] = []
+    # Each source is in one batch only, so a pair is distinct across batches too.
+    sources = list(dict.fromkeys(sources))
+    for start in range(0, len(sources), _IN_BATCH):
+        params = dict(shared)
+        src = _in_clause("s", sources[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
+            ),
+            params,
+        )
+        out.extend((s, t) for s, t in rows)
+    return out
 
 
 async def _edges_into(
@@ -528,23 +1179,63 @@ async def _edges_into(
     loading every row, and the two walks should not disagree about how they read
     it.
     """
-    if not targets:
-        return []
-    params: dict[str, Any] = {"repo_id": repo_id}
-    tgt = _in_clause("p", targets, params)
-    ets = _in_clause("e", edge_types, params)
+    shared: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", edge_types, shared)
     origin_filter = ""
     if excluded_origins:
         # NULL means the row predates the vocabulary, not "unknown", so it has
         # to survive the filter, and a bare NOT IN would drop it.
-        bad = _in_clause("o", sorted(excluded_origins), params)
+        bad = _in_clause("o", sorted(excluded_origins), shared)
         origin_filter = f" AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad}))"
-    rows = await session.execute(
-        text(
-            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-            "WHERE repository_id = :repo_id "
-            f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
-        ),
-        params,
-    )
-    return [(s, t) for s, t in rows]
+    out: list[tuple[str, str]] = []
+    # Each target is in one batch only, so a pair is distinct across batches too.
+    targets = list(dict.fromkeys(targets))
+    for start in range(0, len(targets), _IN_BATCH):
+        params = dict(shared)
+        tgt = _in_clause("p", targets[start : start + _IN_BATCH], params)
+        rows = await session.execute(
+            text(
+                "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+                "WHERE repository_id = :repo_id "
+                f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
+                f"{_LEGACY_CONFTEST_FILTER}"
+            ),
+            params,
+        )
+        out.extend((s, t) for s, t in rows)
+    return out
+
+
+def rank_tests(target: str, tests: Collection[str]) -> list[str]:
+    """*tests* with the one named for *target* first, then by how much of its directory
+    path each mirrors, so a capped list keeps the test most likely to exercise it."""
+    names = paired_test_names(target)
+    dirs = set(target.split("/")[:-1])
+
+    def key(test: str) -> tuple[bool, int, str]:
+        path = test.split("::", 1)[0]
+        return path.rsplit("/", 1)[-1] not in names, -len(dirs & set(path.split("/")[:-1])), test
+
+    return sorted(tests, key=key)
+
+
+def tests_matching_by_name(targets: list[str], test_files: Collection[str]) -> dict[str, ReachedBy]:
+    """Tests named for each target by convention: the fallback when no edge answered.
+
+    An unresolved graph (dynamic client, unindexed framework) leaves
+    ``tests/test_x.py`` with no edge to ``x.py``; "unknown" there argues
+    against a change a test guards.
+    """
+    by_name: dict[str, list[str]] = {}
+    for path in test_files:
+        by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+    out: dict[str, ReachedBy] = {}
+    for target in targets:
+        found = rank_tests(
+            target, [path for name in paired_test_names(target) for path in by_name.get(name, ())]
+        )
+        if found:
+            out[target] = ReachedBy(
+                found[:MAX_TESTS_PER_TARGET], "name-match", len(found), tuple(found)
+            )
+    return out

@@ -1,6 +1,6 @@
 ---
 description: Check the health of your Repowise index — sync state, page counts, provider, and token usage.
-allowed-tools: Bash, Read
+allowed-tools: Bash(repowise status:*), Read
 ---
 
 # Repowise Status

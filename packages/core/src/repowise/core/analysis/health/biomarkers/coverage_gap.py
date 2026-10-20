@@ -13,7 +13,6 @@ does nothing — the absence-of-coverage case is the
 
 from __future__ import annotations
 
-from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -32,14 +31,17 @@ class CoverageGapDetector:
             return []
         if ctx.total_coverable_lines <= 0:
             return []
-        if is_test_related_path(ctx.file_path, ctx.language):
+        if ctx.is_test_material or ctx.reexport_only:
             return []
 
         cov = ctx.line_coverage_pct
         total = ctx.total_coverable_lines
-        uncovered = total - len(ctx.covered_lines or ())
-        # Some parsers don't emit a per-line set; fall back to math.
-        if uncovered <= 0:
+        if ctx.covered_lines:
+            uncovered = max(0, total - len(ctx.covered_lines))
+        else:
+            # Some parsers pin a file with a percentage and a total but no
+            # per-line set; count from the percentage rather than reading the
+            # absent set as "nothing is covered".
             uncovered = round(total * (100.0 - cov) / 100.0)
 
         deep_gap = cov < _LINE_COVERAGE_DEEP_GAP and total >= _MIN_FILE_SIZE

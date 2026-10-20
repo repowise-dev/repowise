@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1700000000000" clover="3.2.0">
+  <project timestamp="1700000000000" name="All files">
+    <metrics statements="4" coveredstatements="3" conditionals="6" coveredconditionals="3" methods="1" coveredmethods="1" elements="11" coveredelements="7" complexity="0" loc="4" ncloc="4" packages="1" files="1" classes="1"/>
+    <file name="util.ts" path="/work/app/src/util.ts">
+      <metrics statements="4" coveredstatements="3" conditionals="6" coveredconditionals="3" methods="1" coveredmethods="1"/>
+      <line num="1" count="3" type="stmt"/>
+      <line num="2" count="3" type="cond" truecount="1" falsecount="3"/>
+      <line num="3" count="2" type="cond" truecount="2" falsecount="0"/>
+      <line num="4" count="0" type="stmt"/>
+    </file>
+  </project>
+</coverage>

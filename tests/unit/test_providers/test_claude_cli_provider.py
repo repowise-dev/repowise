@@ -94,17 +94,17 @@ def claude_on_path(monkeypatch):
 def test_provider_name_and_default_model(claude_on_path):
     provider = ClaudeCliProvider()
     assert provider.provider_name == "claude_cli"
-    assert provider.model_name == "claude_cli/claude-haiku-4-5"
+    assert provider.model_name == "claude_cli/claude-haiku-5-5"
 
 
 @pytest.mark.parametrize(
     ("given", "expected"),
     [
-        (None, "claude-haiku-4-5"),
+        (None, "claude-haiku-5-5"),
         ("claude-sonnet-4-6", "claude-sonnet-4-6"),
         # A persisted label must round-trip rather than become "claude_cli/claude_cli/...".
         ("claude_cli/claude-sonnet-4-6", "claude-sonnet-4-6"),
-        ("claude_cli/default", "claude-haiku-4-5"),
+        ("claude_cli/default", "claude-haiku-5-5"),
     ],
 )
 def test_model_normalization_round_trips(given, expected):
@@ -144,9 +144,9 @@ def test_reasoning_modes_match_the_claude_cli_effort_flag(claude_on_path):
 def test_available_model_options_are_labelled(claude_on_path):
     options = ClaudeCliProvider().available_model_options()
     assert [o.model for o in options] == [
-        "claude_cli/claude-haiku-4-5",
-        "claude_cli/claude-sonnet-4-6",
-        "claude_cli/claude-opus-4-6",
+        "claude_cli/claude-haiku-5-5",
+        "claude_cli/claude-sonnet-5-5",
+        "claude_cli/claude-opus-5-5",
     ]
     assert sum(1 for o in options if o.recommended) == 1
     assert all(
@@ -176,7 +176,11 @@ async def test_generate_success(claude_on_path, monkeypatch):
 
     assert isinstance(result, GeneratedResponse)
     assert result.content == "Hello from Claude"
-    assert result.input_tokens == 120
+    # The prompt total, not the uncached remainder: Claude Code splits a prompt
+    # across ``input_tokens``, ``cache_read_input_tokens`` and
+    # ``cache_creation_input_tokens``.
+    assert result.input_tokens == 120 + 30 + 7955
+    assert result.usage["uncached_input_tokens"] == 120
     assert result.output_tokens == 40
     # cached_tokens is the *read* half; creations are recorded separately.
     assert result.cached_tokens == 30
@@ -389,6 +393,58 @@ def test_parse_result_rejects_empty_output():
         _parse_result("   ")
 
 
+def test_parse_result_reads_result_event_from_verbose_array():
+    """With --verbose the CLI emits an event array, not a single object (#3161)."""
+    events = json.dumps(
+        [
+            {"type": "system", "subtype": "init", "session_id": "abc"},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+            {"type": "result", "subtype": "success", "is_error": False, "result": "hi"},
+        ]
+    )
+    assert _parse_result(events)["result"] == "hi"
+
+
+def test_parse_result_rejects_array_without_result_event():
+    """An event array with no result event must keep the existing failure."""
+    events = json.dumps(
+        [
+            {"type": "system", "subtype": "init"},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+        ]
+    )
+    with pytest.raises(ProviderError, match="could not parse"):
+        _parse_result(events)
+
+
+async def test_verbose_array_nonzero_exit_surfaces_error_and_http_status(claude_on_path, monkeypatch):
+    """A verbose run still reports the API failure carried by its result event."""
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(
+            returncode=1,
+            stdout=json.dumps(
+                [
+                    {"type": "system", "subtype": "init"},
+                    {
+                        "type": "result",
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "api_error_status": 404,
+                        "result": "There's an issue with the selected model.",
+                    },
+                ]
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError, match="selected model") as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    assert caught.value.status_code == 404
+
+
 async def test_missing_usage_is_flagged_estimated(claude_on_path, monkeypatch):
     async def fake_exec(*_args, **_kwargs):
         return FakeProcess(stdout=json.dumps({"subtype": "success", "result": "hi"}) + "\n")
@@ -399,6 +455,162 @@ async def test_missing_usage_is_flagged_estimated(claude_on_path, monkeypatch):
     assert result.usage["estimated"] is True
     assert result.input_tokens == 0
     assert result.output_tokens == 0
+
+
+# ---------------------------------------------------------------------------
+# Token accounting and the cost ledger (#2267)
+# ---------------------------------------------------------------------------
+
+
+def _cached_page_json(*, uncached: int, read: int, created: int) -> str:
+    """A ``claude -p`` payload shaped like a real page generation.
+
+    Claude Code splits the prompt across the three usage fields: a page prompt
+    carries a large stable prefix, so the bulk of it arrives as a cache write on
+    the first page of a type and a cache read on every later one, leaving a
+    couple of uncached tokens. Only reading ``input_tokens`` recorded 2 against
+    a ~20k-token page, and ``repowise status`` summed a whole wiki to 0.
+    """
+    return _success_json(
+        "page prose",
+        usage={
+            "input_tokens": uncached,
+            "output_tokens": 2465,
+            "cache_read_input_tokens": read,
+            "cache_creation_input_tokens": created,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("uncached", "read", "created"),
+    [
+        # First page of a page type: the prompt is written to the cache.
+        (2, 0, 19311),
+        # Later pages of the same type: that prefix is read back.
+        (2, 19311, 0),
+        # A short prompt that fits entirely in the uncached remainder.
+        (120, 0, 0),
+    ],
+)
+async def test_input_tokens_is_the_prompt_total(
+    claude_on_path, monkeypatch, uncached, read, created
+):
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(stdout=_cached_page_json(uncached=uncached, read=read, created=created))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    result = await ClaudeCliProvider().generate("sys", "user")
+
+    assert result.input_tokens == uncached + read + created
+    assert result.usage["uncached_input_tokens"] == uncached
+    # The read half stays its own number: cached_tokens means "served from
+    # cache", and the report and the UI both read it that way.
+    assert result.cached_tokens == read
+    assert result.usage["cache_creation_input_tokens"] == created
+    assert result.output_tokens == 2465
+
+
+class _RecordingTracker:
+    """Minimal stand-in that captures what the provider books."""
+
+    def __init__(self) -> None:
+        self.operation = "doc_generation"
+        self.calls: list[dict[str, Any]] = []
+
+    async def record(self, **kwargs: Any) -> float:
+        self.calls.append(kwargs)
+        return 0.0
+
+
+async def test_cost_ledger_row_carries_the_prompt_total(claude_on_path, monkeypatch):
+    """No row was written at all, so a claude_cli wiki produced an empty ledger.
+
+    ``repowise costs`` printed "No cost records found" and the run report's
+    dollar figure stayed $0.000 because the tokens it multiplies by a rate were
+    never recorded.
+    """
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(stdout=_cached_page_json(uncached=2, read=0, created=19311))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    provider = ClaudeCliProvider(model="claude-opus-5")
+    tracker = _RecordingTracker()
+    provider._cost_tracker = tracker
+
+    await provider.generate("sys", "user")
+
+    assert len(tracker.calls) == 1
+    booked = tracker.calls[0]
+    # The prefixed label is what prices the call at zero; the bare slug would
+    # bill a subscription seat at API rates.
+    assert booked["model"] == "claude_cli/claude-opus-5"
+    assert booked["input_tokens"] == 19313
+    assert booked["output_tokens"] == 2465
+    assert booked["operation"] == "doc_generation"
+
+
+async def test_cost_ledger_row_is_priced_at_zero_for_a_seat(claude_on_path, monkeypatch):
+    """The ledger shows the run's token volume and $0.00 of API spend."""
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(stdout=_cached_page_json(uncached=2, read=0, created=19311))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    from repowise.core.generation.cost_tracker import CostTracker, get_model_pricing
+
+    tracker = CostTracker()
+    provider = ClaudeCliProvider(model="claude-opus-5")
+    provider._cost_tracker = tracker
+
+    await provider.generate("sys", "user")
+
+    assert get_model_pricing(provider.model_name) == {"input": 0.0, "output": 0.0}
+    assert tracker.session_tokens == 19313 + 2465
+    assert tracker.session_cost == 0.0
+
+
+async def test_a_failing_cost_tracker_does_not_break_generation(claude_on_path, monkeypatch):
+    """Cost telemetry is non-critical: a tracker that raises must not lose the page."""
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(stdout=_success_json("still produced"))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    class _ExplodingTracker:
+        operation = "doc_generation"
+
+        async def record(self, **_kwargs: Any) -> float:
+            raise RuntimeError("ledger unavailable")
+
+    provider = ClaudeCliProvider()
+    provider._cost_tracker = _ExplodingTracker()
+
+    result = await provider.generate("sys", "user")
+
+    assert result.content == "still produced"
+
+
+async def test_no_cost_tracker_is_a_no_op(claude_on_path, monkeypatch):
+    """The MCP and server paths construct the provider without a tracker."""
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(stdout=_success_json("no tracker"))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    provider = ClaudeCliProvider()
+    assert not hasattr(provider, "_cost_tracker")
+
+    result = await provider.generate("sys", "user")
+
+    assert result.content == "no tracker"
+    assert result.input_tokens == 120 + 30 + 7955
 
 
 # ---------------------------------------------------------------------------
@@ -416,12 +628,12 @@ def test_registered_as_keyless_provider():
 
 def test_subscription_usage_is_priced_at_zero():
     """A seat is not API spend; the bare `claude` prefixes would price it wrongly."""
-    from repowise.core.cost_estimator.pricing import _lookup_cost
+    from repowise.core.cost_estimator.pricing import lookup_cost
 
-    assert _lookup_cost("claude_cli/claude-haiku-4-5") == (0.0, 0.0)
-    assert _lookup_cost("claude_cli/claude-opus-4-6") == (0.0, 0.0)
+    assert lookup_cost("claude_cli/claude-haiku-4-5") == (0.0, 0.0)
+    assert lookup_cost("claude_cli/claude-opus-4-6") == (0.0, 0.0)
     # The keyed API path is unaffected.
-    assert _lookup_cost("claude-haiku-4-5") != (0.0, 0.0)
+    assert lookup_cost("claude-haiku-4-5") != (0.0, 0.0)
 
 
 def test_resolves_through_the_registry(claude_on_path):
@@ -429,4 +641,20 @@ def test_resolves_through_the_registry(claude_on_path):
 
     provider = get_provider("claude_cli")
     assert provider.provider_name == "claude_cli"
-    assert provider.model_name == "claude_cli/claude-haiku-4-5"
+    assert provider.model_name == "claude_cli/claude-haiku-5-5"
+
+
+def test_nested_session_markers_are_stripped(claude_on_path, monkeypatch):
+    """Run from inside Claude Code, the child must not inherit the parent session."""
+    for name in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_TOKEN"):
+        monkeypatch.setenv(name, "parent")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "keep")
+
+    env = ClaudeCliProvider().subprocess_env()
+
+    assert "CLAUDECODE" not in env
+    assert "CLAUDE_CODE_SESSION_ID" not in env
+    assert "CLAUDE_CODE_MESSAGING_TOKEN" not in env
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert env["ANTHROPIC_MODEL"] == "keep"

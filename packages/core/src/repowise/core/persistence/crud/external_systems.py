@@ -11,6 +11,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.external_systems.links import (
+    EXTERNAL_NODE_PREFIX,
+    declaration_name_candidates,
+)
 from ..models import (
     ExternalSystem,
     GraphNode,
@@ -114,7 +118,8 @@ async def link_graph_nodes_to_external_systems(
     """
     if not name_to_id:
         return 0
-    prefix = "external:"
+
+    prefix = EXTERNAL_NODE_PREFIX
     result = await session.execute(
         select(GraphNode).where(
             GraphNode.repository_id == repository_id,
@@ -124,9 +129,12 @@ async def link_graph_nodes_to_external_systems(
     updated = 0
     for node in result.scalars():
         suffix = node.node_id[len(prefix) :]
-        # Try exact and ecosystem-shaped package candidates in priority order.
         sys_id = next(
-            (name_to_id[name] for name in _external_name_candidates(suffix) if name in name_to_id),
+            (
+                name_to_id[name]
+                for name in declaration_name_candidates(suffix)
+                if name in name_to_id
+            ),
             None,
         )
         if node.external_system_id != sys_id:
@@ -136,47 +144,38 @@ async def link_graph_nodes_to_external_systems(
     return updated
 
 
-def _external_name_candidates(external_name: str) -> tuple[str, ...]:
-    """Return declaration names to try, ordered from precise to broad.
-
-    Resolver output is ecosystem-shaped (npm subpaths, Rust ``::`` paths,
-    Python dotted modules). Keeping normalization in this small pure function
-    makes another ecosystem a local extension without another graph traversal.
-    """
-    candidates = [external_name]
-    if external_name.startswith("@"):
-        parts = external_name.split("/")
-        if len(parts) >= 2:
-            candidates.append("/".join(parts[:2]))
-    for separator in ("::", ".", "/"):
-        if separator in external_name:
-            candidates.append(external_name.split(separator, 1)[0])
-    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
-
-
 def build_external_system_link_map(
     systems: list[dict],
     id_map: dict[tuple[str, str], int],
 ) -> dict[str, int | None]:
-    """Build exact/prefixed link keys while preserving name ambiguity."""
-    links: dict[str, int | None] = {}
-    name_ecosystems: dict[str, str] = {}
-    for system in systems:
-        name = system.get("name", "")
-        declared_in = system.get("declared_in", "")
-        ecosystem = system.get("ecosystem", "")
-        system_id = id_map.get((name, declared_in))
-        if not name or system_id is None:
-            continue
-        if ecosystem:
-            links.setdefault(f"{ecosystem}:{name}", system_id)
-        previous_ecosystem = name_ecosystems.get(name)
-        if previous_ecosystem is None:
-            name_ecosystems[name] = ecosystem
-            links[name] = system_id
-        elif previous_ecosystem != ecosystem:
-            links[name] = None
-    return links
+    """Build exact/prefixed link keys while preserving name ambiguity.
+
+    The ambiguity rule itself lives in ``analysis.external_systems.links`` and
+    is shared with the plain-record path, so the stored ``external_system_id``
+    and a link built without a database cannot disagree about what resolves.
+    Declarations whose row was not persisted are dropped before indexing: they
+    have no id to resolve to, and letting one poison a bare name would refuse a
+    target the old map linked.
+    """
+    from repowise.core.analysis.external_systems.links import build_declaration_index
+
+    persisted = [
+        system
+        for system in systems
+        if system.get("name")
+        and id_map.get((system.get("name", ""), system.get("declared_in", ""))) is not None
+    ]
+    # First row wins per identity, matching the insertion order the map is built in.
+    first_id: dict[tuple[str, str], int] = {}
+    for system in persisted:
+        identity = (system.get("ecosystem", ""), system.get("name", ""))
+        first_id.setdefault(
+            identity, id_map[(system.get("name", ""), system.get("declared_in", ""))]
+        )
+    return {
+        key: (None if identity is None else first_id.get(identity))
+        for key, identity in build_declaration_index(persisted).items()
+    }
 
 
 async def list_external_systems(session: AsyncSession, repository_id: str) -> list[ExternalSystem]:
@@ -198,26 +197,26 @@ def _symbol_id(sym: Any) -> str:
     return getattr(sym, "id", None) or f"{sym.file_path}::{sym.name}"
 
 
-def _new_wiki_symbol(repository_id: str, sym: Any) -> WikiSymbol:
-    """Build a WikiSymbol row from an ingestion Symbol (shared insert recipe)."""
-    return WikiSymbol(
-        id=_new_uuid(),
-        repository_id=repository_id,
-        file_path=getattr(sym, "file_path", ""),
-        symbol_id=_symbol_id(sym),
-        name=sym.name,
-        qualified_name=getattr(sym, "qualified_name", sym.name),
-        kind=sym.kind,
-        signature=getattr(sym, "signature", ""),
-        start_line=getattr(sym, "start_line", 0),
-        end_line=getattr(sym, "end_line", 0),
-        docstring=getattr(sym, "docstring", None),
-        visibility=getattr(sym, "visibility", "public"),
-        is_async=getattr(sym, "is_async", False),
-        complexity_estimate=getattr(sym, "complexity_estimate", 0),
-        language=getattr(sym, "language", ""),
-        parent_name=getattr(sym, "parent_name", None),
-    )
+def _wiki_symbol_values(repository_id: str, sym: Any) -> dict:
+    """Column values for a WikiSymbol row from an ingestion Symbol (shared insert recipe)."""
+    return {
+        "id": _new_uuid(),
+        "repository_id": repository_id,
+        "file_path": getattr(sym, "file_path", ""),
+        "symbol_id": _symbol_id(sym),
+        "name": sym.name,
+        "qualified_name": getattr(sym, "qualified_name", sym.name),
+        "kind": sym.kind,
+        "signature": getattr(sym, "signature", ""),
+        "start_line": getattr(sym, "start_line", 0),
+        "end_line": getattr(sym, "end_line", 0),
+        "docstring": getattr(sym, "docstring", None),
+        "visibility": getattr(sym, "visibility", "public"),
+        "is_async": getattr(sym, "is_async", False),
+        "complexity_estimate": getattr(sym, "complexity_estimate", 0),
+        "language": getattr(sym, "language", ""),
+        "parent_name": getattr(sym, "parent_name", None),
+    }
 
 
 def _update_wiki_symbol(existing: WikiSymbol, sym: Any) -> None:
@@ -245,15 +244,17 @@ async def batch_upsert_symbols(
 
     Accepts ingestion.models.Symbol dataclass instances (duck-typed).
     """
+    # One row per id and the last duplicate wins: an overload set's
+    # implementation goes last so its body, not a stub, is the stored range.
     await _batch_upsert_keyed(
         session,
         WikiSymbol,
-        symbols,
+        sorted(symbols, key=lambda sym: not getattr(sym, "is_declaration", False)),
         prefilter=(WikiSymbol.repository_id == repository_id,),
         item_key_fn=_symbol_id,
         row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_wiki_symbol,
-        insert_fn=lambda sym: _new_wiki_symbol(repository_id, sym),
+        insert_fn=lambda sym: _wiki_symbol_values(repository_id, sym),
     )
 
 
@@ -314,7 +315,7 @@ async def reconcile_symbols_for_files(
         if existing is not None:
             _update_wiki_symbol(existing, sym)
         else:
-            obj = _new_wiki_symbol(repository_id, sym)
+            obj = WikiSymbol(**_wiki_symbol_values(repository_id, sym))
             session.add(obj)
             by_id[sid] = obj
 

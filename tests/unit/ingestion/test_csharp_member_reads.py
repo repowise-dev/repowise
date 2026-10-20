@@ -53,6 +53,60 @@ def test_typed_local_binds_member_read() -> None:
     assert graph.has_edge("Caller.cs", "Order.cs")
 
 
+def test_object_initializer_local_binds_member_read() -> None:
+    """``var x = new Order { ... }; ... x.Total`` resolves to Order.cs."""
+    graph = _seed_graph("Caller.cs", "Order.cs")
+    cs_texts = {
+        "Caller.cs": (
+            "namespace Acme;\npublic class Caller {\n"
+            "  decimal Sum() { var order = new Order { Id = 42, Total = 100m };"
+            " return order.Total; }\n}"
+        ),
+        "Order.cs": "namespace Acme;\npublic class Order { public decimal Total { get; init; } }",
+    }
+    type_to_file = {"Order": "Order.cs", "Caller": "Caller.cs"}
+
+    added = resolve_csharp_member_reads(graph, cs_texts, type_to_file)
+
+    assert added == 1
+    assert graph.has_edge("Caller.cs", "Order.cs")
+
+
+def test_typed_object_initializer_local_binds_member_read() -> None:
+    """``Order o = new Order{...};`` binds even with no space before the brace."""
+    graph = _seed_graph("Caller.cs", "Order.cs")
+    cs_texts = {
+        "Caller.cs": (
+            "namespace Acme;\npublic class Caller {\n"
+            "  decimal Sum() { Order o = new Order{ Total = 1m }; return o.Total; }\n}"
+        ),
+        "Order.cs": "namespace Acme;\npublic class Order { public decimal Total { get; init; } }",
+    }
+    type_to_file = {"Order": "Order.cs", "Caller": "Caller.cs"}
+
+    resolve_csharp_member_reads(graph, cs_texts, type_to_file)
+
+    assert graph.has_edge("Caller.cs", "Order.cs")
+
+
+def test_anonymous_object_no_edge() -> None:
+    """``var x = new { ... }`` is an anonymous type, so no type is bound."""
+    graph = _seed_graph("Caller.cs", "Order.cs")
+    cs_texts = {
+        "Caller.cs": (
+            "namespace Acme;\npublic class Caller {\n"
+            "  decimal Sum() { var order = new { Total = 1m }; return order.Total; }\n}"
+        ),
+        "Order.cs": "namespace Acme;\npublic class Order { public decimal Total { get; init; } }",
+    }
+    type_to_file = {"Order": "Order.cs", "Caller": "Caller.cs"}
+
+    added = resolve_csharp_member_reads(graph, cs_texts, type_to_file)
+
+    assert added == 0
+    assert not graph.has_edge("Caller.cs", "Order.cs")
+
+
 def test_unknown_receiver_no_edge() -> None:
     """An untyped receiver must not produce an edge — would be a guess."""
     graph = _seed_graph("Caller.cs", "Order.cs")
@@ -99,3 +153,27 @@ def test_self_reads_skipped() -> None:
     resolve_csharp_member_reads(graph, cs_texts, {"Order": "Order.cs"})
 
     assert not graph.has_edge("Order.cs", "Order.cs")
+
+
+def test_reads_edges_are_strictly_file_to_file() -> None:
+    """Every `reads` edge emitted connects two file nodes, never symbol nodes."""
+    graph = _seed_graph("Caller.cs", "Order.cs")
+    cs_texts = {
+        "Caller.cs": (
+            "namespace Acme;\npublic class Caller {\n"
+            "  decimal Sum() { var order = new Order(); return order.Total; }\n}"
+        ),
+        "Order.cs": "namespace Acme;\npublic class Order { public decimal Total { get; } }",
+    }
+    type_to_file = {"Order": "Order.cs", "Caller": "Caller.cs"}
+    resolve_csharp_member_reads(graph, cs_texts, type_to_file)
+
+    reads_edges = [
+        (u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "reads"
+    ]
+    assert reads_edges, "Expected at least one reads edge"
+    for u, v in reads_edges:
+        assert "::" not in u, f"reads edge source {u} is a symbol node, expected file node"
+        assert "::" not in v, f"reads edge target {v} is a symbol node, expected file node"
+        assert u.endswith(".cs")
+        assert v.endswith(".cs")

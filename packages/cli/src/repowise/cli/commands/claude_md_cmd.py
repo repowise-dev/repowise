@@ -195,7 +195,22 @@ def _curate_contract_links(links: list[dict]) -> list[dict]:
             "alembic/versions/" in (current.get("provider_file") or "") and not is_migration
         ):
             best[key] = link
-    return list(best.values())[:_MAX_CONTRACT_LINKS]
+    curated = list(best.values())
+    # The cap cuts on evidence, not insertion order: rank by confidence so a
+    # high-confidence link discovered late in the scan is never dropped for a
+    # weak one found early (the co-change list already does the same by
+    # frequency). Tiebreak on stable fields so the output doesn't shuffle
+    # between runs.
+    curated.sort(
+        key=lambda link: (
+            float(link.get("confidence", 0.0) or 0.0),
+            link.get("contract_id") or "",
+            link.get("consumer_repo") or "",
+            link.get("consumer_file") or "",
+        ),
+        reverse=True,
+    )
+    return curated[:_MAX_CONTRACT_LINKS]
 
 
 def _generate_workspace(

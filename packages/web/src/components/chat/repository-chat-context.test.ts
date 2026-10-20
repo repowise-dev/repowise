@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { getRepositoryChatContext } from "./repository-chat-context";
+import { getRepositoryChatContext, getRepositoryChatContextQuery } from "./repository-chat-context";
 
 const params = (entries: Record<string, string>) => new URLSearchParams(entries);
 
 describe("getRepositoryChatContext", () => {
+  it("excludes conversation workspace state from context identity", () => {
+    const params = new URLSearchParams("file=src%2Fchat.ts&conversation=c1&artifact=a1&compare=a2");
+    expect(getRepositoryChatContextQuery(params)).toBe("file=src%2Fchat.ts");
+  });
   it("returns a repository fallback at the repo root", () => {
     expect(getRepositoryChatContext("/repos/r1")).toEqual({
       kind: "repository",
@@ -17,9 +21,30 @@ describe("getRepositoryChatContext", () => {
       label: "Architecture",
     });
     expect(getRepositoryChatContext("/repos/r1/dead-code")).toEqual({
-      kind: "risk",
+      kind: "dead-code",
       label: "Dead Code",
     });
+  });
+
+  it("separates the three risk-shaped routes so each seeds its own question", () => {
+    // They used to share the `risk` kind, which gave a dead-code page the
+    // wrong first question and the wrong placeholder.
+    expect(getRepositoryChatContext("/repos/r1/blast-radius").kind).toBe(
+      "blast-radius",
+    );
+    expect(getRepositoryChatContext("/repos/r1/risk").kind).toBe("risk");
+    expect(getRepositoryChatContext("/repos/r1/hotspots").kind).toBe("risk");
+  });
+
+  it("keeps reading selected files on every risk-shaped route", () => {
+    for (const route of ["risk", "dead-code", "blast-radius"]) {
+      expect(
+        getRepositoryChatContext(
+          `/repos/r1/${route}`,
+          new URLSearchParams("file=a.py"),
+        ),
+      ).toMatchObject({ target: "a.py", targetKind: "path" });
+    }
   });
 
   it("preserves decoded dynamic file targets as machine context", () => {

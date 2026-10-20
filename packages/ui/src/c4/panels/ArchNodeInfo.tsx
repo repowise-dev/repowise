@@ -4,7 +4,7 @@ import { X, Code, MapPin, Layers, ExternalLink, Folder, CornerDownRight } from "
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { getTone } from "../../graph-primitives/tone-styles";
 import { THEME } from "../theme/theme-variables";
-import { HealthScoreRing } from "../../dashboard/health-score-ring";
+import { HealthScoreRing } from "../health-score-ring";
 import { Section, Title, Sub, KVList, ActionRow, ActionButton, Badge, Pill } from "./panel-atoms";
 
 export interface ArchNodeHealth {

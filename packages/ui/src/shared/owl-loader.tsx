@@ -1,67 +1,28 @@
 "use client";
 
-import { useState } from "react";
-import { DotLottieReact } from "@lottiefiles/dotlottie-react";
 import { cn } from "../lib/cn";
-import { BrandMark } from "./brand-mark";
+import { OrbLoader } from "./orb-loader";
 
+/** @deprecated Use `OrbLoaderProps`. */
 export interface OwlLoaderProps {
-  /** Path to the owl Lottie asset, served from the consuming app's public/. */
+  /** @deprecated Ignored; the owl animation is gone. */
   src?: string;
-  /** Fallback brand-mark assets, shown if the animation fails to load. */
+  /** @deprecated Ignored. */
   logoDarkSrc?: string;
+  /** @deprecated Ignored. */
   logoLightSrc?: string;
+  /** @deprecated Ignored; the orb renders at its 64px region size. */
   size?: number;
   label?: string;
   className?: string;
 }
 
 /**
- * Brand loading animation — the owl Lottie, centered. Falls back to a
- * pulsing static brand mark if the animation asset fails to load, so a
- * missing lottie asset never breaks a loading state. The asset itself stays
- * per-app (lazy-fetched, CDN-cached) — only the component is shared.
+ * @deprecated Use `OrbLoader` for unknown-shape waits, or a `PageSkeleton`
+ * for a page. Kept only so consumers pinned to the old export keep
+ * compiling; it renders the region orb and keeps the old `min-h-[50vh]`
+ * frame so their layouts do not jump.
  */
-export function OwlLoader({
-  src = "/owl-loading.json",
-  logoDarkSrc = "/repowise-logo.png",
-  logoLightSrc = "/repowise-logo-light.png",
-  size = 160,
-  label = "Loading…",
-  className,
-}: OwlLoaderProps) {
-  const [failed, setFailed] = useState(false);
-
-  return (
-    <div
-      role="status"
-      aria-label={label}
-      className={cn(
-        "flex min-h-[50vh] flex-col items-center justify-center gap-3",
-        className,
-      )}
-    >
-      {failed ? (
-        <span className="motion-safe:animate-pulse">
-          <BrandMark
-            darkSrc={logoDarkSrc}
-            lightSrc={logoLightSrc}
-            size={size * 0.6}
-            alt=""
-          />
-        </span>
-      ) : (
-        <DotLottieReact
-          src={src}
-          loop
-          autoplay
-          style={{ width: size, height: size }}
-          dotLottieRefCallback={(dotLottie) => {
-            dotLottie?.addEventListener("loadError", () => setFailed(true));
-          }}
-        />
-      )}
-      <span className="text-sm text-[var(--color-text-tertiary)]">{label}</span>
-    </div>
-  );
+export function OwlLoader({ label = "Loading…", className }: OwlLoaderProps) {
+  return <OrbLoader fill label={label} className={cn("min-h-[50vh]", className)} />;
 }

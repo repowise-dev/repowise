@@ -25,6 +25,9 @@ an index lookup. Useful as a pre-merge / CI gate ("run these 40, not all 4,000")
 Useful flags:
 - `--format list` — test ids one per line (pipe to `xargs pytest`)
 - `--format json` — full report
+- `--format args` — one line of runner arguments, or `:all` when the whole suite
+  must run; reasons go to stderr. `--runner pytest|go|jest|files|auto` picks the
+  argument shape
 - `--path <dir>` — point at a different repo
 
 ```
@@ -44,5 +47,8 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
   guess). Report them as candidates. Only `via: coverage` proves a test
   executed the change.
 - A file none of those can speak to is "unknown, run the full suite".
+- In CI, `--format args` prints `:all` whenever the selection is not certain
+  (lockfiles, build or CI config, a changed file no test reaches, an index built
+  at neither end of the change). Run everything when you see it.
 - For a whole-change repo-relative review priority, use `/prompts:repowise-risk`. For per-file
   blast radius / `tests_to_run`, use the `get_risk` MCP tool.

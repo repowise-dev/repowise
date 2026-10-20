@@ -1,0 +1,21 @@
+{
+  "symbol_id": "src/auth/service.py::login",
+  "file": "src/auth/service.py",
+  "name": "login",
+  "kind": "method",
+  "qualified_name": "auth.service.AuthService.login",
+  "signature": "async def login(self, username: str, password: str) -> Token",
+  "language": "python",
+  "start_line": 20,
+  "end_line": 40,
+  "symbol_start_line": 20,
+  "symbol_end_line": 40,
+  "source": "    20\t    async def login(self, username: str, password: str) -> Token:\n    21\t        \"\"\"Authenticate a user.\"\"\"\n    22\t        user = await self.store.get(User, username)\n    23\t        if user is None:\n    24\t            return None\n    25\t        return self._hash(password)\n    26\t    # line 26\n    27\t    # line 27\n    28\t    # line 28\n    29\t    # line 29\n    30\t    # line 30\n    31\t    # line 31\n    32\t    # line 32\n    33\t    # line 33\n    34\t    # line 34\n    35\t    # line 35\n    36\t    # line 36\n    37\t    # line 37\n    38\t    # line 38\n    39\t    # line 39\n    40\t    # line 40",
+  "truncated": false,
+  "verified": true,
+  "_meta": {
+    "index_age_days": 7,
+    "complete": "Complete: 1 symbol body served whole from live source; do not re-open it.",
+    "replaced_tokens": 385
+  }
+}

@@ -1,7 +1,8 @@
 """One implicit-scope scan, bound to a different declaration index per language.
 
 Several languages let a file name a sibling's type with no import statement:
-JVM same-package, C# same-namespace and ``global using``, Swift same-module.
+JVM same-package, C# same-namespace and ``global using``, Swift same-module,
+PHP same-namespace.
 What differs between them is which index answers and what shadows a name, so
 those are the parameters; the scan, the one-declaring-file rule and the edge
 emission are shared.
@@ -57,6 +58,8 @@ def emit_scope_edges(
     plan: Callable[[str, str], FileScope | None],
     *,
     skip_names: frozenset[str],
+    ident_re: re.Pattern[str] = _TYPE_IDENT_RE,
+    declared_name: Callable[[str], str] = str,
 ) -> int:
     """Scan *files* for implicit scope references and add ``imports`` edges.
 
@@ -64,6 +67,10 @@ def emit_scope_edges(
     the caller's, since nothing here depends on it. *plan* returns the scopes
     visible to one file, or ``None`` to skip the file entirely. *skip_names*
     is the language's stdlib/default-import set, checked before every tier.
+    *ident_re* overrides the candidate-identifier shape for a language whose
+    type names are not reliably capitalised ASCII. *declared_name* maps an
+    identifier to the name its target declares, for a language whose
+    identifiers can be qualified; an edge's ``imported_names`` carries that.
 
     Returns the number of edges added.
 
@@ -81,7 +88,7 @@ def emit_scope_edges(
 
         # target file → (referenced names, hint of the tier that answered)
         found: dict[str, tuple[list[str], str]] = {}
-        for ident in sorted(set(_TYPE_IDENT_RE.findall(text))):
+        for ident in sorted(set(ident_re.findall(text))):
             if ident in skip_names or ident in scope.shadowed:
                 continue
             for tier in scope.tiers:
@@ -92,7 +99,7 @@ def emit_scope_edges(
                     target = next(iter(declaring))
                     if target != path:
                         names, _ = found.setdefault(target, ([], tier.hint))
-                        names.append(ident)
+                        names.append(declared_name(ident))
                 break
 
         for target, (names, hint) in sorted(found.items()):

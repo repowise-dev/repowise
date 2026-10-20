@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from repowise.cli import rewrite_hook
+from repowise.cli.agent_adapters.base import SHELL_POWERSHELL
 from repowise.cli.rewrite_hook import FAMILY_PATTERNS, _normalize, classify, decide
 
 # ---------------------------------------------------------------------------
@@ -202,18 +203,12 @@ class TestSafeTails:
     """The two shell-syntax carve-outs: trailing ``2>&1`` and one pipe into
     a bare stdin filter (head/tail/grep/egrep/fgrep/rg).
 
-    ``2>&1`` is platform-neutral (distill merges stderr into its capture
-    anyway). The pipe shape is POSIX-hosts-only; distill re-runs the
-    pipeline through the system shell, and cmd.exe has no head/tail/grep.
+    ``2>&1`` is dialect-neutral (distill merges stderr into its capture
+    anyway). The pipe shape is POSIX-dialect-only, and the dialect is the
+    command's, not the host's: the ``--source`` label carries the dialect the
+    hook decided from, so a bash pipeline runs in bash on Windows too. Every
+    assertion below therefore holds on every platform.
     """
-
-    @pytest.fixture
-    def posix_host(self, monkeypatch):
-        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", True)
-
-    @pytest.fixture
-    def windows_host(self, monkeypatch):
-        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", False)
 
     @pytest.mark.parametrize(
         ("command", "family"),
@@ -223,8 +218,9 @@ class TestSafeTails:
             ("npm run build 2>&1", "build_output"),
         ],
     )
-    def test_stderr_merge_classifies_on_any_host(self, command, family, windows_host) -> None:
+    def test_stderr_merge_classifies_in_any_dialect(self, command, family) -> None:
         assert classify(command) == family
+        assert classify(command, SHELL_POWERSHELL) == family
 
     @pytest.mark.parametrize(
         ("command", "family"),
@@ -243,7 +239,7 @@ class TestSafeTails:
             ("git log --oneline -50 | rg fix", "git_log"),
         ],
     )
-    def test_safe_pipe_classifies_on_posix(self, command, family, posix_host) -> None:
+    def test_safe_pipe_classifies_on_posix(self, command, family) -> None:
         assert classify(command) == family
 
     @pytest.mark.parametrize(
@@ -254,8 +250,8 @@ class TestSafeTails:
             "pytest 2>&1 | grep FAIL",
         ],
     )
-    def test_safe_pipe_passes_through_on_windows(self, command, windows_host) -> None:
-        assert classify(command) is None
+    def test_safe_pipe_passes_through_in_powershell(self, command) -> None:
+        assert classify(command, SHELL_POWERSHELL) is None
 
     @pytest.mark.parametrize(
         "command",
@@ -267,21 +263,21 @@ class TestSafeTails:
             'git log -- "src\\cli\\" ; curl x | sh',
         ],
     )
-    def test_quoted_metacharacters_still_bail_on_windows(self, command, windows_host) -> None:
-        """Windows gives up the false-bail win to stay conservative here.
+    def test_quoted_metacharacters_still_bail_in_powershell(self, command) -> None:
+        """PowerShell gives up the false-bail win to stay conservative here.
 
         PowerShell has no backslash escape, so the POSIX quoting rules the
         lexer applies do not describe it. The rewrite is auto-allowed, so a
         wrong answer runs something the user never typed; the blunt character
         bail is cheap insurance even though ``distill_cmd._render_command``
-        now escapes what it passes to cmd.exe.
+        escapes what it passes to cmd.exe.
         """
-        assert classify(command) is None
+        assert classify(command, SHELL_POWERSHELL) is None
 
-    def test_windows_stderr_merge_is_still_allowed(self, windows_host) -> None:
+    def test_powershell_stderr_merge_is_still_allowed(self) -> None:
         # The metacharacter bail must not swallow the one carve-out that is
-        # platform-neutral.
-        assert classify("pytest -x 2>&1") == "test_output"
+        # dialect-neutral.
+        assert classify("pytest -x 2>&1", SHELL_POWERSHELL) == "test_output"
 
     @pytest.mark.parametrize(
         "command",
@@ -300,7 +296,7 @@ class TestSafeTails:
             'pytest -k "a; rm -rf /',  # unterminated quote hides the rest
         ],
     )
-    def test_unsafe_pipes_pass_through(self, command, posix_host) -> None:
+    def test_unsafe_pipes_pass_through(self, command) -> None:
         assert classify(command) is None
 
     @pytest.mark.parametrize(
@@ -318,7 +314,7 @@ class TestSafeTails:
             ('git log -3 --format="%an <%ae>"', "git_log"),  # < > inside quotes
         ],
     )
-    def test_safe_chains_are_rewritten(self, command, family, posix_host) -> None:
+    def test_safe_chains_are_rewritten(self, command, family) -> None:
         assert classify(command) == family
 
     @pytest.mark.parametrize(
@@ -339,13 +335,91 @@ class TestSafeTails:
             "echo hi && echo bye",  # nothing recognized: nothing to distill
         ],
     )
-    def test_unsafe_chains_pass_through(self, command, posix_host) -> None:
+    def test_unsafe_chains_pass_through(self, command) -> None:
         assert classify(command) is None
 
-    def test_chains_never_rewrite_off_posix(self, monkeypatch) -> None:
-        """distill re-runs the token through cmd.exe here, not a POSIX shell."""
-        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", False)
-        assert classify("ls a && ls b") is None
+    @pytest.mark.parametrize(
+        ("command", "family"),
+        [
+            # Phase 1c: read-only `sed`/`cat`/`wc`/`sort` are inert chain
+            # segments. Every shape here is taken verbatim from the measured
+            # 30-day corpus, which is overwhelmingly `sed -n '<range>p' f`.
+            ("cd pkg && sed -n '1,60p' README.md && git diff", "git_diff"),
+            ("cd pkg && cat notes.md && git diff", "git_diff"),
+            ("git diff && wc -l src/a.py src/b.py", "git_diff"),
+            ("git log -3 && sort -u names.txt", "git_log"),
+            ("ls a && sed -n 'p' f.txt", "file_listing"),
+            ("ls a && cat -n f.txt", "file_listing"),
+            # The confinement for the redirect fix: a real stderr redirect
+            # still works, with and without an inline target.
+            ("git diff 2>/dev/null && ls a", "git_diff"),
+            ("pytest 2>&1|sed -n '1,5p'", "test_output"),
+            ("ls a && wc -lw f.txt", "file_listing"),
+        ],
+    )
+    def test_read_only_forms_are_inert_chain_segments(self, command, family) -> None:
+        assert classify(command) == family
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The guard. Each of these is the *same tool* in a form that
+            # writes, executes, or reads a file we cannot vet. A rewrite is
+            # auto-allowed, so admitting the name rather than the form would
+            # hand the agent an approval nobody granted.
+            "git diff && sed -i 's/a/b/' f.py",  # in-place edit
+            "git diff && sed --in-place 's/a/b/' f.py",
+            "git diff && sort -o sorted.txt names.txt",  # -o writes
+            "git diff && sort --output=sorted.txt names.txt",
+            "git diff && sed -n '1,5w out.txt' f.py",  # script writes a file
+            "git diff && sed -n '1,5e rm -rf x' f.py",  # script executes
+            "git diff && sed -n '/secret/p' f.py",  # regex address not admitted
+            "git diff && sed -f script.sed f.py",  # unvettable script file
+            "git diff && sed -e '1,5p' f.py",  # -e moves the script operand
+            "git diff && sed -n '1,5d' f.py",  # not a print
+            "git diff && cat --help-me f.py",  # unknown long flag
+            "git diff && wc --files0-from=list f",  # reads a file list
+            "git diff && cat f.py > out.txt",  # stdout redirect
+            # A redirect that carries its own target consumes no following
+            # word. Skipping one anyway swallowed the next argument -- and
+            # across the `&&`, the next segment's first word. Both of these
+            # were rewritten and auto-allowed, and `sort -o` writes the file.
+            "pytest && sort 2>&- -o evil.txt in.txt",
+            "pytest && sort 2>&2 -o evil.txt in.txt",
+            "pytest 2>&- && sudo npm test",
+            # `startswith("2")` read these as "the stderr redirect". They
+            # truncate evil.txt on file descriptor 21 / 20.
+            "git diff 21>evil.txt && ls",
+            "git diff 20>evil.txt && ls",
+            # `$` is a valid sed address, but the chain gate bails on `$`
+            # before any segment is looked at, because expansion timing
+            # differs inside the wrapped shell. Recorded so the interaction
+            # is not rediscovered as a bug in the allowlist.
+            "ls a && sed -n '$p' f.txt",
+        ],
+    )
+    def test_a_writing_form_of_an_admitted_tool_still_declines(self, command) -> None:
+        assert classify(command) is None
+
+    def test_the_allowlist_is_what_declines_the_writing_forms(self) -> None:
+        """Proves the guard by breaking what it protects.
+
+        Without the per-form check these tools would be admitted on their
+        name alone, and `sed -i` -- a command that edits files in place --
+        would be wrapped and auto-allowed. Pinned here rather than trusted,
+        because the failure is silent: a rewrite that runs.
+        """
+        from repowise.cli import shell_lexer
+
+        writing = ["sed", "-i", "s/a/b/", "f.py"]
+        assert shell_lexer.is_read_only_segment(writing) is False
+        # And with the name admitted but the form unchecked, the chain gate
+        # would have said yes -- which is exactly the bug this prevents.
+        assert shell_lexer._basename(writing[0]) in shell_lexer.READONLY_SEGMENT_TOOLS
+
+    def test_chains_never_rewrite_in_powershell(self) -> None:
+        """``&&`` is POSIX syntax; distill would hand this to cmd.exe."""
+        assert classify("ls a && ls b", SHELL_POWERSHELL) is None
 
     def test_single_quote_survives_a_shell_round_trip(self) -> None:
         """The wrap has to hand the inner shell back exactly what was typed."""
@@ -375,7 +449,7 @@ class TestSafeTails:
             "npm test | tail --follow",
         ],
     )
-    def test_follow_modes_never_rewrite(self, command, posix_host) -> None:
+    def test_follow_modes_never_rewrite(self, command) -> None:
         assert classify(command) is None
 
     @pytest.mark.parametrize(
@@ -387,7 +461,7 @@ class TestSafeTails:
             ("cat server.log", "logs"),
         ],
     )
-    def test_follow_check_does_not_overreach(self, command, family, posix_host) -> None:
+    def test_follow_check_does_not_overreach(self, command, family) -> None:
         assert classify(command) == family
 
     @pytest.mark.parametrize(
@@ -398,7 +472,7 @@ class TestSafeTails:
             'echo "a; b"',
         ],
     )
-    def test_quoted_operators_are_not_bailouts(self, command, posix_host) -> None:
+    def test_quoted_operators_are_not_bailouts(self, command) -> None:
         """An operator inside quotes is text, so these classify normally.
 
         None of them is a distill family, so the visible outcome is still a
@@ -413,7 +487,7 @@ class TestSafeTails:
         assert analysis.final_tool is None
         assert classify(command) is None
 
-    def test_quoted_operator_in_a_family_command_rewrites(self, repo, posix_host) -> None:
+    def test_quoted_operator_in_a_family_command_rewrites(self, repo) -> None:
         """The false-bail fix is visible on a family command: a quoted ``|``
         no longer stops ``pytest -k`` from being recognized."""
         result = decide('pytest -k "a|b"', str(repo))
@@ -428,7 +502,7 @@ class TestSafeTails:
         assert result is not None
         assert result.command == "repowise distill --source hook-bash pytest -x 2>&1"
 
-    def test_decide_quotes_safe_pipeline(self, repo, posix_host) -> None:
+    def test_decide_quotes_safe_pipeline(self, repo) -> None:
         result = decide("pytest tests/unit -q | head -50", str(repo))
         assert result is not None
         assert result.command == (
@@ -436,7 +510,7 @@ class TestSafeTails:
         )
         assert result.permission == "allow"
 
-    def test_decide_quotes_grep_pipeline(self, repo, posix_host) -> None:
+    def test_decide_quotes_grep_pipeline(self, repo) -> None:
         # The whole pipeline stays one token, so grep still filters distill's
         # rendering inside distill's own shell and the omission marker it
         # emits survives to the agent.
@@ -445,12 +519,12 @@ class TestSafeTails:
         assert result.command == "repowise distill --source hook-bash 'pytest 2>&1 | grep FAIL'"
         assert "repowise expand" in result.reason
 
-    def test_decide_wraps_a_chain_as_one_token(self, repo, posix_host) -> None:
+    def test_decide_wraps_a_chain_as_one_token(self, repo) -> None:
         result = decide("ls src && git diff a.ts", str(repo))
         assert result is not None
         assert result.command == "repowise distill --source hook-bash 'ls src && git diff a.ts'"
 
-    def test_a_family_set_off_cannot_be_reached_by_chaining(self, repo, posix_host) -> None:
+    def test_a_family_set_off_cannot_be_reached_by_chaining(self, repo) -> None:
         """Otherwise `git_diff: off` is bypassable by prefixing anything."""
         _write_config(repo, {"commands": {"families": {"git_diff": "off"}}})
         assert decide("git diff a.py", str(repo)) is None

@@ -7,15 +7,16 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from pathlib import Path
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...git_head import read_head_commit
 from ..models import (
     GenerationJob,
     Page,
+    PageVersion,
     Repository,
     WebhookEvent,
     _new_uuid,
@@ -37,6 +38,7 @@ async def upsert_repository(
     default_branch: str = "main",
     settings: dict | None = None,
     head_commit: str | None = None,
+    stamp_head: bool = False,
     repo_id: str | None = None,
 ) -> Repository:
     """Create or update a repository record.
@@ -50,17 +52,20 @@ async def upsert_repository(
     when a row for ``local_path`` already exists (the existing id wins).
 
     ``head_commit`` records the git commit the index was built against — the
-    value the MCP ``_meta`` freshness check compares to the live HEAD. Callers
-    that already know the synced commit may pass it; otherwise it is read from
-    ``local_path``'s git HEAD via plain file I/O (no ``git`` subprocess). This
-    runs at the start of every index/update, so the stored commit tracks each
-    sync and the MCP staleness signal stays calibrated instead of being NULL
-    forever (which silently disabled the preferred HEAD-vs-index comparison).
+    value the MCP ``_meta`` freshness check compares to the live HEAD. A new
+    row always gets one: the passed value, else ``local_path``'s git HEAD read
+    via plain file I/O (no ``git`` subprocess). An existing row's commit moves
+    only when the caller records a sync, by passing ``head_commit`` or
+    ``stamp_head=True`` (read HEAD). Callers that only need the row, such as
+    decisions, scans and server registration, leave it alone: moving it there
+    made the database claim an index at HEAD while ``state.json`` still named
+    the last real sync.
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
 
-    resolved_head = head_commit or _read_head_commit(local_path)
+    stamping = repo is None or stamp_head or head_commit is not None
+    resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
 
     if repo is None:
         repo = Repository(
@@ -78,7 +83,7 @@ async def upsert_repository(
         repo.url = url
         repo.default_branch = default_branch
         if settings is not None:
-            repo.settings_json = json.dumps(settings)
+            repo.settings_json = json.dumps(keep_analysis_ran(repo.settings_json, settings))
         # Only advance the stamp when we could read a real commit; never blank
         # out a previously recorded one (e.g. a transient non-checkout path).
         if resolved_head:
@@ -89,43 +94,74 @@ async def upsert_repository(
     return repo
 
 
+ANALYSIS_RAN_KEY = "analysis_ran_at"
+
+
+def _settings_dict(raw: str | None) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def keep_analysis_ran(old_json: str | None, new_settings: dict) -> dict:
+    """Carry the stage-completion stamps across a wholesale settings replace."""
+    kept = _settings_dict(old_json).get(ANALYSIS_RAN_KEY)
+    if kept is None or ANALYSIS_RAN_KEY in new_settings:
+        return new_settings
+    return {**new_settings, ANALYSIS_RAN_KEY: kept}
+
+
+async def stamp_analysis_ran(session: AsyncSession, repository_id: str, stage: str) -> None:
+    """Record that *stage* ("security" or "dead_code") just persisted a result.
+
+    Called only on the success path of the stage's own write, so the stamp
+    proves the stage ran, which a completed index job does not.
+    """
+    repo = await session.get(Repository, repository_id)
+    if repo is None:
+        return
+    settings = _settings_dict(repo.settings_json)
+    stamps = settings.get(ANALYSIS_RAN_KEY)
+    if not isinstance(stamps, dict):
+        stamps = {}
+    stamps[stage] = datetime.now(UTC).isoformat()
+    settings[ANALYSIS_RAN_KEY] = stamps
+    repo.settings_json = json.dumps(settings)
+    await session.flush()
+
+
 def _read_head_commit(local_path: str) -> str | None:
     """Return the repo's current git HEAD SHA via plain file I/O, or None.
 
-    Dependency-free (no ``git`` binary, no gitpython): parse ``.git/HEAD`` and
-    follow at most one ref, falling back to ``packed-refs``. Returns ``None``
-    when *local_path* is not a git checkout (hosted/ephemeral indexes) or the
-    ref can't be resolved. Mirrors the MCP ``_meta`` reader so the value we
-    write is read back the same way — keeping freshness comparisons honest.
+    Dependency-free (no ``git`` binary, no gitpython). Returns ``None`` when
+    *local_path* is not a git checkout (hosted/ephemeral indexes) or the ref
+    can't be resolved. A linked worktree or submodule keeps ``.git`` as a
+    ``gitdir:`` pointer file; the shared reader follows that pointer and
+    resolves the branch against the common dir, so the stored commit is the
+    worktree's own.
+
+    The MCP ``_meta.read_live_head`` reader calls the same helper. The old
+    ``is_dir()`` guard treated a pointer file as non-git on both sides so the
+    written commit and the read-back comparison stayed symmetric; they still
+    share one implementation, and a ``None`` read still never blanks a
+    commit already stored.
     """
-    try:
-        git_dir = Path(local_path) / ".git"
-        # Linked worktrees use a ``.git`` *file* (gitdir pointer), not a dir;
-        # treated as non-git here on purpose so this stays in lockstep with the
-        # MCP ``_meta.read_live_head`` reader (same is_dir() guard), keeping
-        # the written commit and the read-back comparison symmetric.
-        if not git_dir.is_dir():
-            return None
-        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if head.startswith("ref: "):
-        ref_rel = head[5:].strip()
-        try:
-            return (git_dir / ref_rel).read_text(encoding="utf-8").strip() or None
-        except OSError:
-            pass
-        try:
-            for raw in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
-                if raw.startswith("#") or raw.startswith("^"):
-                    continue
-                sha, _, name = raw.partition(" ")
-                if name.strip() == ref_rel:
-                    return sha.strip() or None
-        except OSError:
-            return None
-        return None
-    return head or None
+    return read_head_commit(local_path)
+
+
+async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
+    """Store the repo-wide function-mod p80 a full index measured.
+
+    Deliberately not folded into :func:`update_repo_git_totals`: that one
+    carries whole-history git totals (#730), and this is a health quantity that
+    happens to live on the same row. No-ops on a missing repo.
+    """
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return
+    repo.function_mod_p80 = int(value)
 
 
 async def update_repo_git_totals(
@@ -133,6 +169,7 @@ async def update_repo_git_totals(
     repo_id: str,
     *,
     total_commit_count: int | None = None,
+    total_merge_commit_count: int | None = None,
     first_commit_at: datetime | None = None,
     total_contributor_count: int | None = None,
     first_commit_author: str | None = None,
@@ -151,6 +188,7 @@ async def update_repo_git_totals(
     """
     updates = {
         "total_commit_count": total_commit_count,
+        "total_merge_commit_count": total_merge_commit_count,
         "first_commit_at": first_commit_at,
         "total_contributor_count": total_contributor_count,
         "first_commit_author": first_commit_author,
@@ -193,10 +231,18 @@ async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
 
     NOTE: The caller should clean up the FTS index *before* calling this,
     since the CASCADE will delete Page rows and we lose the page IDs.
+
+    ``PageVersion`` is swept explicitly first. Its ``page_id`` foreign key is
+    declared without ``ondelete="CASCADE"``, so the cascade that removes the
+    repository's ``Page`` rows leaves the snapshots pointing at rows that no
+    longer exist and SQLite aborts the whole statement with ``FOREIGN KEY
+    constraint failed``. The pipeline's page-pruning paths already pre-delete
+    snapshots for exactly this reason; deletion is the one path that did not.
     """
     repo = await session.get(Repository, repo_id)
     if repo is None:
         return False
+    await session.execute(delete(PageVersion).where(PageVersion.repository_id == repo_id))
     await session.delete(repo)
     await session.flush()
     return True

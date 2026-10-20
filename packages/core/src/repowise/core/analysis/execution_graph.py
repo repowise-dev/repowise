@@ -18,14 +18,16 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from collections.abc import Callable, Hashable, Iterable, Mapping
+from collections.abc import Callable, Container, Hashable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 
 UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique"})
-_EXCLUDED_EXECUTION_PATHS = re.compile(
+# Not a test classifier: flows also leave out demos, examples, scripts and
+# benchmarks, which are no more product code than tests are.
+_NON_PRODUCT_FLOW_PATH_RE = re.compile(
     r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|"
     r"fixture[s]?[/.]|mock[s]?[/.]|stub[s]?[/.]|fake[s]?[/.]|"
     r"demo[_/.]|example[s]?[/.]|sample[s]?[/.]|benchmark[s]?[/.]|"
@@ -74,7 +76,7 @@ def is_walkable_execution_edge(
 
 def is_excluded_execution_path(path: str) -> bool:
     """Whether a flow target is test/demo/fixture/tooling material."""
-    return bool(_EXCLUDED_EXECUTION_PATHS.search(path))
+    return bool(_NON_PRODUCT_FLOW_PATH_RE.search(path))
 
 
 def _append_unique(
@@ -101,6 +103,32 @@ def _line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
     return tuple(line for line in raw if isinstance(line, int) and line > 0)
 
 
+def _spawn_lines(attrs: Mapping[str, Any]) -> frozenset[int]:
+    """Call lines that hand the callee to a task scheduler (``create_task(f())``)."""
+    return frozenset(line for line in attrs.get("spawn_lines") or () if isinstance(line, int))
+
+
+def _split_spawned(
+    source: str,
+    target: str,
+    lines: tuple[int, ...],
+    spawned: frozenset[int],
+    callers_with_site_metadata: set[str],
+    spawn_only: dict[str, list[str]],
+) -> tuple[int, ...]:
+    """The call lines that run the callee in its caller.
+
+    A spawned site is still an edge but never resolves as a call: its caller is
+    recorded as having site facts, so the name fallback cannot bind it either.
+    """
+    if not spawned:
+        return lines
+    callers_with_site_metadata.add(source)
+    if spawned.issuperset(lines):
+        _append_unique(spawn_only, source, target)
+    return tuple(line for line in lines if line not in spawned)
+
+
 class ExecutionGraphIndex:
     """The shared read-only index over reliable execution edges.
 
@@ -115,6 +143,7 @@ class ExecutionGraphIndex:
         "_call_only",
         "_callers_with_site_metadata",
         "_ranges",
+        "_span_end",
         "calls",
         "declares",
         "forward",
@@ -122,6 +151,7 @@ class ExecutionGraphIndex:
         "name",
         "nodes",
         "reverse",
+        "spawn_only",
     )
 
     def __init__(
@@ -147,6 +177,7 @@ class ExecutionGraphIndex:
         call_only_seen: set[tuple[str, str]] = set()
         callers_with_site_metadata: set[str] = set()
         ranges: dict[str, list[tuple[int, int, str]]] = {}
+        spawn_only: dict[str, list[str]] = {}
 
         if graph is not None:
             try:
@@ -176,6 +207,16 @@ class ExecutionGraphIndex:
             for source, target, data in graph_edges:
                 attrs = data or {}
                 edge_type = attrs.get("edge_type")
+                lines = _line_values(attrs) if edge_type == "calls" else ()
+                if lines:
+                    lines = _split_spawned(
+                        source,
+                        target,
+                        lines,
+                        _spawn_lines(attrs),
+                        callers_with_site_metadata,
+                        spawn_only,
+                    )
                 self._ingest_edge(
                     declaration_map,
                     declaration_seen if deduplicate_graph else None,
@@ -192,7 +233,7 @@ class ExecutionGraphIndex:
                     target,
                     edge_type,
                     attrs.get("resolution_origin"),
-                    _line_values(attrs) if edge_type == "calls" else (),
+                    lines,
                 )
 
         for source, targets in (declares or {}).items():
@@ -232,7 +273,10 @@ class ExecutionGraphIndex:
         self._callers_with_site_metadata = frozenset(callers_with_site_metadata)
         self._by_file_line = {key: min(values) for key, values in by_file_line_candidates.items()}
         self._ranges = {path: tuple(values) for path, values in ranges.items()}
+        self._span_end = {node_id: end for values in ranges.values() for _, end, node_id in values}
         self.in_degree = {node: len(callers) for node, callers in self.reverse.items()}
+        #: Edges whose every call site hands the callee to a task scheduler.
+        self.spawn_only = {key: frozenset(values) for key, values in spawn_only.items()}
 
     @staticmethod
     def _ingest_edge(
@@ -267,17 +311,35 @@ class ExecutionGraphIndex:
                     callers_with_site_metadata.add(source)
                     _append_unique(by_caller_line, (source, line), target, caller_line_seen)
 
-    def resolve_function(self, path: str, func_start: int) -> str | None:
-        """Resolve a function definition, tolerating decorator line offsets."""
+    def resolve_function(
+        self, path: str, func_start: int, *, func_end: int | None = None
+    ) -> str | None:
+        """Resolve a function definition, tolerating decorator line offsets.
+
+        Without *func_end* the fallback returns the innermost symbol whose range
+        contains *func_start*, which is what a caller attributing a fact to
+        whatever encloses it wants. Pass *func_end* to ask for the function
+        itself: a symbol that outlives it is then rejected rather than returned
+        as a stand-in. A TS ``const suite = describe(...)`` is one symbol
+        spanning every ``it`` callback inside it, so containment alone would
+        answer the same node for all of them.
+        """
         if func_start == 0:
             module = module_node_id(path)
             return module if module in self.nodes else None
         exact = self._by_file_line.get((path, func_start))
-        if exact is not None:
+        if exact is not None and (func_end is None or self._span_end.get(exact, func_end) <= func_end):
+            # Bounded here too: sharing a start line is not being the function.
+            # ``const suite = describe('outer', () => { it(...)`` puts the
+            # wrapper and the first callback on one line, and without this the
+            # exact hit would hand back the wrapper and the fallback below --
+            # the whole point of ``func_end`` -- would never run.
             return exact
         best: str | None = None
         best_start = -1
         for start, end, node_id in self._ranges.get(path, ()):
+            if func_end is not None and end > func_end:
+                continue
             if start <= func_start <= end and (
                 start > best_start or (start == best_start and (best is None or node_id < best))
             ):
@@ -353,16 +415,29 @@ class ExecutionGraphIndex:
         walk(self.reverse, forward_reached, reverse_depth)
         return affected
 
-    def forward_reachable(self, seeds: Iterable[str], *, max_depth: int | None = None) -> set[str]:
-        """Reliable execution nodes reachable from all *seeds* in one BFS."""
+    def forward_reachable(
+        self,
+        seeds: Iterable[str],
+        *,
+        max_depth: int | None = None,
+        stop_at: Container[str] = frozenset(),
+        skip: Mapping[str, Container[str]] | None = None,
+    ) -> set[str]:
+        """Reliable execution nodes reachable from all *seeds* in one BFS.
+
+        A node in *stop_at* is never entered, so nothing past it is reached
+        through it. ``skip[node]`` names targets not followed from *node*.
+        """
+        skip = skip or {}
         reached = set(seeds)
         queue: deque[tuple[str, int]] = deque((seed, 0) for seed in sorted(reached))
         while queue:
             node, depth = queue.popleft()
             if max_depth is not None and depth >= max_depth:
                 continue
+            skipped = skip.get(node, ())
             for target in self.forward.get(node, ()):
-                if target not in reached:
+                if target not in reached and target not in stop_at and target not in skipped:
                     reached.add(target)
                     queue.append((target, depth + 1))
         return reached

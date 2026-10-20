@@ -59,27 +59,29 @@ class CoverageDecay:
     drift_pct: float
 
     @property
-    def is_stale(self) -> bool:
+    def is_drifted(self) -> bool:
         """Whether enough of the measurement went unknown to stop quoting it.
 
         The threshold is a display convention, not a scoring input. Nothing in
         this module deducts health points; consumers use it to decide whether
-        to caveat the figure they render.
+        to caveat the figure they render. Not "stale": that word means coverage
+        measured at another commit (``coverage_freshness``), which a file can
+        be without drifting and drift without being.
         """
-        return self.measured >= STALE_MIN_MEASURED and self.drift_pct >= STALE_DRIFT_PCT
+        return self.measured >= DRIFT_MIN_MEASURED and self.drift_pct >= DRIFT_PCT
 
 
 #: Share of a measurement that must have gone unknown before a consumer should
 #: caveat the figure. A fifth is enough that "91% covered" has stopped being a
 #: fair summary of the file in front of the reader.
-STALE_DRIFT_PCT = 20.0
+DRIFT_PCT = 20.0
 
 #: Covered lines a file must have before the ratio means anything. Measured on
 #: this repo's own index: without a floor the drift ranking is led by package
 #: ``__init__.py`` files carrying a single covered line, where one version bump
 #: is 100% drift and says nothing about the file. Ten lines puts the trigger at
 #: two changed lines, which is the smallest move worth caveating a figure over.
-STALE_MIN_MEASURED = 10
+DRIFT_MIN_MEASURED = 10
 
 
 def measurement_ref(

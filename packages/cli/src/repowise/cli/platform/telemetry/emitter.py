@@ -27,12 +27,12 @@ import atexit
 import contextlib
 import json
 import os
-import subprocess
 import sys
 
 from repowise.cli.platform import identity, settings
 from repowise.cli.platform.telemetry import environment, spool
 from repowise.cli.platform.telemetry.events import TelemetryEvent
+from repowise.cli.spawn import spawn_detached
 
 #: Module the detached flusher runs as.
 _FLUSHER_MODULE = "repowise.cli.platform.telemetry.flusher"
@@ -97,6 +97,22 @@ def record(event: TelemetryEvent) -> None:
         return
 
 
+def _flusher_executable() -> str:
+    """Return the executable for the detached flusher.
+
+    On Windows (``os.name == "nt"``) prefer a ``pythonw.exe`` sibling next
+    to ``sys.executable`` (windowless GUI subsystem, never allocates a
+    console) when it exists as a file; otherwise fall back to
+    ``sys.executable``.
+    """
+    if os.name == "nt" and sys.executable:
+        candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        with contextlib.suppress(Exception):
+            if os.path.isfile(candidate):
+                return candidate
+    return sys.executable or ""
+
+
 def _spawn_flusher() -> bool:
     """Start the detached delivery process. Returns whether it started.
 
@@ -106,20 +122,10 @@ def _spawn_flusher() -> bool:
     """
     if not sys.executable:
         return False
-    kwargs: dict[str, object] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-        "cwd": os.getcwd(),
-    }
-    if os.name == "nt":
-        # DETACHED_PROCESS | CREATE_NO_WINDOW: no console window flashes up
-        # in front of the user between commands.
-        kwargs["creationflags"] = 0x00000008 | 0x08000000
-    else:
-        kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, "-m", _FLUSHER_MODULE], **kwargs)  # type: ignore[arg-type]
+    try:
+        spawn_detached([_flusher_executable(), "-m", _FLUSHER_MODULE], os.getcwd())
+    except Exception:
+        return False
     return True
 
 

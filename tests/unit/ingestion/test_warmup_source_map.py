@@ -44,7 +44,7 @@ def test_cpp_warmup_reads_the_source_map_not_the_disk(tmp_path):
 
     _mark_cpp_entry_point_files(parsed, graph, {"src/mod.cpp": b"PYBIND11_MODULE(m, x) {}\n"})
 
-    assert graph.nodes["src/mod.cpp"]["is_entry_point"] is True
+    assert graph.nodes["src/mod.cpp"]["is_reachability_root"] is True
 
 
 def test_cpp_warmup_falls_back_to_disk_on_a_map_miss(tmp_path):
@@ -53,7 +53,7 @@ def test_cpp_warmup_falls_back_to_disk_on_a_map_miss(tmp_path):
 
     _mark_cpp_entry_point_files(parsed, graph, {"src/other.cpp": b"nothing\n"})
 
-    assert graph.nodes["src/mod.cpp"]["is_entry_point"] is True
+    assert graph.nodes["src/mod.cpp"]["is_reachability_root"] is True
 
 
 def test_cpp_warmup_with_no_source_map_still_reads_disk(tmp_path):
@@ -62,7 +62,7 @@ def test_cpp_warmup_with_no_source_map_still_reads_disk(tmp_path):
 
     _mark_cpp_entry_point_files(parsed, graph, None)
 
-    assert graph.nodes["src/mod.cpp"]["is_entry_point"] is True
+    assert graph.nodes["src/mod.cpp"]["is_reachability_root"] is True
 
 
 def test_cpp_warmup_leaves_unmarked_files_alone(tmp_path):
@@ -71,7 +71,7 @@ def test_cpp_warmup_leaves_unmarked_files_alone(tmp_path):
 
     _mark_cpp_entry_point_files(parsed, graph, {"src/plain.cpp": b"int f() { return 0; }\n"})
 
-    assert graph.nodes["src/plain.cpp"]["is_entry_point"] is False
+    assert "is_reachability_root" not in graph.nodes["src/plain.cpp"]
 
 
 # --------------------------------------------------------------------------
@@ -135,8 +135,8 @@ def test_awkward_bytes_decode_the_same_from_map_and_disk(tmp_path):
     _mark_cpp_entry_point_files(parsed, from_disk, None)
 
     assert (
-        from_map.nodes["src/awkward.cpp"]["is_entry_point"]
-        == from_disk.nodes["src/awkward.cpp"]["is_entry_point"]
+        from_map.nodes["src/awkward.cpp"]["is_reachability_root"]
+        == from_disk.nodes["src/awkward.cpp"]["is_reachability_root"]
         is True
     )
 
@@ -151,4 +151,4 @@ def test_missing_file_with_no_map_entry_is_skipped(tmp_path):
 
     _mark_cpp_entry_point_files(parsed, graph, {})
 
-    assert graph.nodes["src/gone.cpp"]["is_entry_point"] is False
+    assert "is_reachability_root" not in graph.nodes["src/gone.cpp"]

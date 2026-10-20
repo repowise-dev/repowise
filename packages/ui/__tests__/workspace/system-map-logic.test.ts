@@ -334,14 +334,14 @@ describe("buildBreakingChangeOverlay", () => {
     [edge("web", "api"), edge("idle", "api")],
   );
 
-  it("badges the changed provider and at-risk consumers, highlighting the seam", () => {
+  it("badges the changed provider and exposed consumers, highlighting the seam", () => {
     const overlay = buildBreakingChangeOverlay(g, report([change()]));
     expect(overlay.nodeBadges?.api).toEqual({ label: "1 breaking", tone: "danger" });
-    expect(overlay.nodeBadges?.web).toEqual({ label: "at risk", tone: "warning" });
+    expect(overlay.nodeBadges?.web).toEqual({ label: "exposed", tone: "warning" });
     // Only the consumer→provider edge in the report is highlighted.
     expect(overlay.highlightEdgeIds?.has("web->api")).toBe(true);
     expect(overlay.highlightEdgeIds?.has("idle->api")).toBe(false);
-    expect(overlay.edgeBadges?.["web->api"]).toEqual({ label: "breaking", tone: "danger" });
+    expect(overlay.edgeBadges?.["web->api"]).toEqual({ label: "incompatible", tone: "danger" });
     // Additive overlay: nothing is dimmed.
     expect(overlay.dimNodeIds).toBeUndefined();
   });
@@ -349,9 +349,11 @@ describe("buildBreakingChangeOverlay", () => {
   it("a warning-only provider reads as a warning badge", () => {
     const overlay = buildBreakingChangeOverlay(
       g,
-      report([change({ severity: "warning", kind: "removed_field", impacted_consumers: [] })]),
+      report([change({ severity: "warning", kind: "schema_comparison_uncertain" })]),
     );
     expect(overlay.nodeBadges?.api).toEqual({ label: "1 change", tone: "warning" });
+    expect(overlay.nodeBadges?.web).toBeUndefined();
+    expect(overlay.highlightEdgeIds).toBeUndefined();
   });
 
   it("returns an empty overlay when there are no changes", () => {

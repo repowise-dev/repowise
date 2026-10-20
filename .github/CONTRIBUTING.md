@@ -30,8 +30,8 @@ npm run build
 # Verify the CLI runs
 uv run repowise --version
 
-# Run tests
-uv run pytest tests/unit/
+# Run tests (both suites; CI runs these two on every pull request)
+uv run pytest tests/providers/ tests/unit/
 ```
 
 ## Getting oriented
@@ -65,7 +65,7 @@ uv run repowise serve                # dashboard + MCP server on localhost
 ```
 
 Then point your coding agent at the MCP server (see the
-[Quickstart](../README.md#quickstart-under-5-minutes-no-api-key) for Claude Code, Codex
+[Start in minutes](../README.md#quickstart) for Claude Code, Codex
 and others) and ask it questions directly:
 
 ```
@@ -86,9 +86,16 @@ are the only people who use repowise on repowise with fresh eyes.
 
 ## Looking for something to work on
 
-- **[Good first issues](https://github.com/repowise-dev/repowise/labels/good%20first%20issue)** on the tracker.
-- **[Help wanted](https://github.com/repowise-dev/repowise/labels/help%20wanted)** for
-  issues that are scoped and ready to pick up but need more context than a first issue.
+- **[Good first issues](https://github.com/repowise-dev/repowise/labels/good%20first%20issue)**.
+  **These are reserved for people making their first contributions here.** They are the
+  only route new contributors have into the codebase, and they disappear within hours if
+  everyone takes them, so if you have already had work merged please leave them. It costs
+  you very little and it is the difference between this project having new contributors
+  and not.
+- **[Help wanted](https://github.com/repowise-dev/repowise/labels/help%20wanted)** is the
+  opposite and is where experienced contributors should be. It marks work that is scoped
+  and ready but needs someone who already knows their way around. There is always more of
+  it than there are people, so take as much as you want.
 - **[The refactoring backlog](https://repowise.dev/repo/repowise-dev/repowise/refactoring).**
   Repowise ranks its own concrete refactoring plans (Extract Class, Split File, Break
   Cycle, and so on) with the blast radius attached. Each card has a copy-to-agent
@@ -105,11 +112,20 @@ are the only people who use repowise on repowise with fresh eyes.
 Issues are assigned to one person at a time, so that two contributors do not build the
 same fix in parallel and one of them has to throw the work away.
 
-- Comment on the issue saying you are taking it, and a maintainer will assign it to you.
-- Only the assignee should open a PR for that issue.
+- Comment on the issue saying you are taking it. **That comment is what reserves the
+  issue, from the moment you post it.** A maintainer will assign it to you when they next
+  go through the tracker, which may be a few days later; the issue is yours in the
+  meantime and does not become available again because the assignee field is still empty.
+- **Before you start, read the thread.** If somebody else has already said they are taking
+  it, it is theirs, even if nothing is assigned and no code has appeared yet. Somebody who
+  posted a plan and then watched a finished PR land the same evening does not come back,
+  and that costs this project more than any single fix is worth.
+- Only the person who claimed it should open a PR for that issue. A PR opened over
+  somebody else's claim will be held, not merged, however good it is.
 - If you get pulled away, a one-line comment to unclaim is enough. It carries no
   obligation and no hard feelings, and it frees the issue for someone else.
-- An assigned issue that goes quiet for two weeks goes back to unassigned.
+- A claim expires after two weeks of silence, whether or not it was ever assigned,
+  and the issue goes back to open. Claiming is not a way to park an issue.
 
 Questions about scope before you claim are welcome. Asking is not claiming.
 
@@ -119,7 +135,7 @@ and it can be split into its own issue so more than one person can work in paral
 Before you start, check the file you are about to edit:
 
 ```bash
-uv run repowise health --file <path>   # score, markers, findings
+uv run repowise health --file <path> --recompute   # score, markers, findings
 uv run repowise risk HEAD              # or ask get_risk from your agent
 ```
 
@@ -138,16 +154,18 @@ current ones. Changes there are welcome, but expect closer review and bring test
 3. **Make your changes**: keep commits focused and well-described
 4. **Run tests** before pushing:
    ```bash
-   uv run pytest tests/unit/
+   uv run pytest tests/providers/ tests/unit/   # both, CI runs both
    npm run lint
    npm run type-check
    ```
+   `tests/providers/` is easy to forget and CI does not forget it, so a run that
+   skips it is the most common way a green local suite turns red on the PR.
 5. **Check your own change** with the tool you are contributing to:
    ```bash
    uv run repowise risk main..HEAD        # 0-10 defect score, plus may_break,
                                           # missing_cochanges and missing_tests
    uv run repowise impacted-tests --staged  # the tests your diff actually exercises
-   uv run repowise health --file <path>   # did the file you touched get worse?
+   uv run repowise health --file <path> --recompute   # did the file you touched get worse?
    ```
    None of this is a gate, and none of it calls an LLM. It is the same signal the
    reviewer will be looking at, and running it yourself catches the boring problems
@@ -177,52 +195,91 @@ duplication detection`. Keep the subject line in the imperative mood and under
 ```
 repowise/
   packages/
-    core/     # Ingestion pipeline, analysis, generation engine
-    cli/      # CLI commands (click-based)
-    server/   # FastAPI API + MCP server
-    types/    # Shared TypeScript types
-    ui/       # Shared React UI components
-    web/      # Next.js frontend
-  tests/      # Unit and integration tests
-  docs/       # Documentation
+    core/        # Ingestion pipeline, analysis, generation engine
+    cli/         # CLI commands (click-based)
+    server/      # FastAPI API + MCP server
+    types/       # Shared TypeScript types
+    api-client/  # Typed fetch client over the server API
+    ui/          # Shared React UI components
+    web/         # Next.js frontend
+    vscode/      # VS Code extension (has its own CI job)
+  tests/         # providers/, unit/ and integration/
+  docs/          # Documentation
 ```
 
 ## Code Style
 
-- **Python**: Formatted with [ruff](https://docs.astral.sh/ruff/) (`ruff format .`, `ruff check .`)
+- **Python**: Linted with [ruff](https://docs.astral.sh/ruff/). CI runs `ruff check .`
+  and nothing else.
+- **Do not run `ruff format .`** The repository is not kept under the ruff formatter,
+  nothing in CI checks formatting, and the dependency pin is wide enough that a fresh
+  install can pick up a newer ruff whose formatter rewrites hundreds of files. That diff
+  buries the change you actually made.
 - **TypeScript**: Linted with ESLint (`npm run lint`) and type-checked (`npm run type-check`)
 - Keep functions small and focused
 - Write docstrings for public APIs
 
 ### Adding a new LLM provider
 
-1. **Create `packages/core/src/repowise/core/providers/llm/<name>.py`**
-   - Subclass `BaseProvider` and implement `generate()`, `provider_name`, `model_name`
-   - For local CLI providers, use `asyncio.create_subprocess_exec` (never `shell=True`), validate user-supplied model names against a safe character set, and resolve paths with `Path.resolve()`
-   - See `opencode.py` for a clean reference implementation
+1. Create `packages/core/src/repowise/core/providers/llm/<name>.py` with a
+   `BaseProvider` subclass. For an OpenAI-compatible API, subclass
+   `OpenAICompatibleProvider` from `openai_compat.py`, as `deepseek.py` does.
+2. Add one `ProviderSpec` to `_SPECS` in
+   `packages/core/src/repowise/core/providers/llm/specs.py`: key and base-URL env vars,
+   default model and model list, rate limit, package, picker rank and signup URL.
+   The registry tables, the server catalog, the init picker and the web UI all read
+   it, so there is no second list to edit.
+3. Add tests in `tests/unit/test_providers/`. If the spec has a `picker_rank`, add
+   the name to the frozen picker order in `tests/unit/cli/test_init_ux.py`.
 
-2. **Register** in `registry.py`: add to `_BUILTIN_PROVIDERS` and the `_missing` package map
-
-3. **Wire up configuration** in these files:
-   - `rate_limiter.py`, add `RateLimitConfig` to `PROVIDER_DEFAULTS`
-   - `provider_config.py`, add entry to `PROVIDER_CATALOG`
-   - `provider_selection.py`, add to `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, and detection
-   - `helpers.py`, add validation in `validate_provider_config()`
-
-4. **Update the web UI**: add to `PROVIDERS`, `MODEL_PLACEHOLDERS`, and `PROVIDER_ENV_VARS` in `provider-section.tsx` and `run-config-form.tsx`
-
-5. **Add tests** in `tests/unit/test_providers/`: mock the subprocess, test success/error/timeout paths (see `test_codex_cli_provider.py` for the pattern)
-
-6. **Write docs**: `docs/<NAME>.md` and `website/<name>.md`, following `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
+An agent CLI used as a backend (`claude_cli`, `codex_cli`, `opencode`) follows the
+agent platform recipe instead.
 
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).
+Adding an agent integration or an agent CLI indexing backend has its own recipe, see
+[docs/architecture/agent-platform.md](../docs/architecture/agent-platform.md).
 
 ## Testing
 
 - Add tests for new features and bug fixes
 - Place tests in `tests/unit/` or `tests/integration/`
 - Run the full suite with `uv run pytest`
+- A test asserting on a `caplog` record needs `caplog.set_level(logging.INFO, logger="<the module's full logger name>")` (or the level you're asserting on) — setting the root logger's level is not enough when an ancestor logger (e.g. `repowise.core`, `repowise.server`) has its own level raised, since Python resolves the *effective* level from the nearest ancestor that has one set, not from root.
+
+### Retrieval guard
+
+`tests/unit/server/mcp/test_retrieval_guard.py` indexes `tests/fixtures/sample_repo`
+with no API key and asks `search_codebase` (default and `limit=10`) and
+`get_answer` the corpus questions in
+`tests/fixtures/mcp/retrieval_guard_corpus.json`, whose gold files were read off
+the code by hand. `get_answer` is measured twice: with no provider (the degraded
+retrieval-only shape) and with a stub provider whose fixed answer cites the top
+retrieved file (the synthesised shape; it measures projection, not answer
+quality). Each arm reports coverage at 1, 5 and all served files, file
+precision, median response tokens and, for information only, median files
+served, compared against `tests/fixtures/mcp/retrieval_guard_baseline.json`.
+It runs inside `tests/unit/` in seconds, so every pull request runs it, and CI
+writes the metrics table to the job summary. Run it alone with
+`uv run pytest tests/unit/server/mcp/test_retrieval_guard.py -s` to see the
+table. The test clears `MAX_MCP_OUTPUT_TOKENS` and every `REPOWISE_*` variable,
+so local settings do not change the result.
+
+It fails when coverage or precision drops by more than 0.03 or median tokens
+grow by more than 10%. An improvement passes with a note (shown with `-s` and in
+the CI step summary), but it is only locked in once you commit the refreshed
+baseline. If your change moves ranking or response shape on purpose, or improves
+it, refresh the baseline in the same pull request:
+
+```bash
+REPOWISE_UPDATE_RETRIEVAL_BASELINE=1 uv run pytest tests/unit/server/mcp/test_retrieval_guard.py -s
+```
+
+and paste the before/after table into the description. To see which questions
+moved, run with `REPOWISE_RETRIEVAL_GUARD_DUMP=<file>` on both branches and diff
+the two dumps (do not commit them). Always report coverage
+with precision beside it: serving more files raises coverage for free, so a
+coverage gain that costs precision is a trade-off to justify, not a win.
 
 ## Pull Request Guidelines
 

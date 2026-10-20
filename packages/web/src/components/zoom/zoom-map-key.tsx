@@ -30,7 +30,13 @@
 
 import { FilterChip } from "@repowise-dev/ui/health";
 import { type VerbCount, toggleVerb } from "@repowise-dev/ui/zoom";
-import { HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
+import {
+  FAIR_MIN,
+  GOOD_MIN,
+  HEALTH_BAND_LABEL,
+  NEEDS_WORK_MIN,
+} from "@repowise-dev/types/health";
+import { useTranslations } from "next-intl";
 
 interface ZoomMapKeyProps {
   /** Every verb present in the loaded map, descending by count. */
@@ -56,6 +62,7 @@ export function ZoomMapKey({
   selected,
   onSelectedChange,
 }: ZoomMapKeyProps) {
+  const t = useTranslations("zoom");
   const filtered = selected !== null;
 
   return (
@@ -63,28 +70,21 @@ export function ZoomMapKey({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-baseline sm:justify-between">
         <p className="min-w-0 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
           {filtered ? (
-            <>
-              Showing{" "}
-              <span className="text-[var(--color-text-primary)]">
-                {[...selected].join(", ")}
-              </span>{" "}
-              only. Arrow weight is how many file pairs the relation covers.
-            </>
+            t.rich("mapKey.showingFiltered", {
+              list: [...selected].join(", "),
+              verbs: (chunks) => (
+                <span className="text-[var(--color-text-primary)]">{chunks}</span>
+              ),
+            })
           ) : (
-            <>
-              Hover a card to see what it depends on. Arrow weight is how many file pairs the
-              dependency covers.
-            </>
+            t("mapKey.hoverHint")
           )}
-          {unclaimedFiles > 0 && (
+          {unclaimedFiles > 0 &&
             /* Silence when nothing is missing: "0 not shown" is noise. */
-            <>
-              {" "}
-              {unclaimedFiles.toLocaleString()} of{" "}
-              {(totalFiles + unclaimedFiles).toLocaleString()} files are not on the map; they
-              belong to no layer.
-            </>
-          )}
+            t("mapKey.unclaimed", {
+              shown: unclaimedFiles.toLocaleString(),
+              total: (totalFiles + unclaimedFiles).toLocaleString(),
+            })}
         </p>
         {verbs.length > 1 && (
           /* Counts sit on the chips so you can tell whether one is worth a
@@ -108,7 +108,7 @@ export function ZoomMapKey({
                 onClick={() => onSelectedChange(null)}
                 className="rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)] underline-offset-2 transition-colors hover:text-[var(--color-text-primary)] hover:underline"
               >
-                Clear
+                {t("mapKey.clear")}
               </button>
             )}
           </div>
@@ -121,17 +121,25 @@ export function ZoomMapKey({
       <dl className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[12px] text-[var(--color-text-tertiary)]">
         <div className="flex items-center gap-1.5">
           <Dot className="bg-[var(--color-accent-primary)]" />
-          <dt className="sr-only">Top-right dot</dt>
-          <dd>Entry point, hotspot, dead code or on an execution flow. Hover for which.</dd>
+          <dt className="sr-only">{t("mapKey.topRightDot")}</dt>
+          <dd>{t("mapKey.entryDotHelp")}</dd>
         </div>
         <div className="flex items-center gap-1.5">
           <Dot className="bg-[var(--color-success)]" />
+          <Dot className="bg-[var(--color-caution)]" />
           <Dot className="bg-[var(--color-warning)]" />
           <Dot className="bg-[var(--color-error)]" />
-          <dt className="sr-only">Footer dot</dt>
+          <dt className="sr-only">{t("mapKey.footerDot")}</dt>
           <dd>
-            Code health: {HEALTH_BAND_LABEL.healthy} 8+, {HEALTH_BAND_LABEL.warning} 4 to 8,{" "}
-            {HEALTH_BAND_LABEL.alert} under 4.
+            {t("mapKey.healthBand", {
+              good: HEALTH_BAND_LABEL.good,
+              goodMin: GOOD_MIN.toFixed(1),
+              fair: HEALTH_BAND_LABEL.fair,
+              fairMin: FAIR_MIN.toFixed(1),
+              needsWork: HEALTH_BAND_LABEL.needs_work,
+              needsWorkMin: NEEDS_WORK_MIN.toFixed(1),
+              atRisk: HEALTH_BAND_LABEL.at_risk,
+            })}
           </dd>
         </div>
       </dl>

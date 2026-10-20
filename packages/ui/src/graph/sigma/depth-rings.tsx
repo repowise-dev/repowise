@@ -14,8 +14,9 @@ interface DepthRingsProps {
  * Faint concentric "depth" rings drawn behind the constellation. An SVG
  * underlay synced to the Sigma camera: we project the graph origin and a
  * point one radius out into viewport pixels every frame, so the rings track
- * zoom/pan smoothly with transform-only updates (no re-layout). Captioned
- * only in the legend ("inner = entry surface"), never on-canvas.
+ * zoom/pan smoothly with transform-only updates (no re-layout). What they mean
+ * is stated in the host's scope description, not on the canvas, so a host that
+ * renders its own copy must say it there.
  */
 export function DepthRings({ sigma, ringRadii }: DepthRingsProps) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -27,7 +28,7 @@ export function DepthRings({ sigma, ringRadii }: DepthRingsProps) {
     const svg = svgRef.current;
     if (!svg) return;
 
-    const stroke = resolveToken("--color-canvas-dot", "rgba(128,128,128,0.08)");
+    const stroke = resolveToken("--color-canvas-grid", "rgba(128,128,128,0.1)");
 
     const draw = () => {
       const center = sigma.graphToViewport({ x: 0, y: 0 });

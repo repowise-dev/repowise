@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from ..complexity import PerfHit
 from ..models import Severity
+from ..perf.actionability import LOCK_SERIALIZED_BOUNDARIES
 from .base import BiomarkerResult, FileContext
 
 _KIND = "blocking_io_under_lock"
@@ -34,6 +35,13 @@ _BOUNDARY_PHRASING: dict[str, str] = {
     "subprocess": "a subprocess spawn",
     "lock": "a lock acquisition",
 }
+
+
+def _advice(boundary: str, move: str) -> str:
+    """*move*, unless the lock most likely exists to serialize this very I/O."""
+    if boundary in LOCK_SERIALIZED_BOUNDARIES:
+        return "every thread that needs the lock waits for it"
+    return move
 
 
 class BlockingIoUnderLockDetector:
@@ -57,10 +65,11 @@ class BlockingIoUnderLockDetector:
                         line_start=hit.line,
                         line_end=hit.line,
                         details={"boundary_kind": hit.detail, "cross_function": False},
-                        reason=(
-                            f"{phrasing} runs while a lock is held; move the I/O "
-                            "outside the critical section to avoid serializing "
-                            "every thread on the round-trip"
+                        reason=f"{phrasing} runs while a lock is held; "
+                        + _advice(
+                            hit.detail,
+                            "move the I/O outside the critical section to avoid "
+                            "serializing every thread on the round-trip",
                         ),
                     )
                 )
@@ -82,10 +91,8 @@ class BlockingIoUnderLockDetector:
                 "path": list(hit.path),
                 "resolution_basis": hit.resolution_basis,
             },
-            reason=(
-                f"{phrasing} is reached while a lock is held, through "
-                f"{chain}; move the I/O outside the critical section"
-            ),
+            reason=f"{phrasing} is reached while a lock is held, through {chain}; "
+            + _advice(hit.detail, "move the I/O outside the critical section"),
         )
 
 

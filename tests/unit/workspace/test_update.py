@@ -10,9 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
     RepoUpdateResult,
+    _collect_update_results,
     check_repo_staleness,
     count_commits_between,
     get_head_commit,
@@ -141,6 +143,7 @@ def _write_state(repo: Path, commit: str | None) -> None:
     state = {}
     if commit:
         state["last_sync_commit"] = commit
+        state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     (state_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -303,6 +306,16 @@ class TestUpdateWorkspace:
 
         async def _run():
             await _seed()
+            from repowise.core.repo_config import (
+                config_dependency_fingerprints,
+                config_fingerprint,
+            )
+
+            state_path = repo / ".repowise" / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["config_fingerprint"] = config_fingerprint(repo)
+            state["config_dependency_fingerprints"] = config_dependency_fingerprints(repo)
+            state_path.write_text(json.dumps(state), encoding="utf-8")
             return await update_workspace(tmp_path, ws_config)
 
         import asyncio
@@ -334,7 +347,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -345,6 +358,170 @@ class TestUpdateWorkspace:
         updated = [r for r in results if r.updated]
         assert len(updated) == 1
         assert updated[0].alias == "backend"
+        saved_state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert saved_state["phase_timings"]["run"] >= 0
+
+    def test_detects_config_only_staleness(self, tmp_path: Path) -> None:
+        """A workspace member with no new commit still runs when its local
+        configuration changed."""
+        from repowise.core.repo_config import config_fingerprint, save_repo_config
+
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        save_repo_config(repo, {"provider": "mock"})
+        _write_state(repo, head)
+        state_path = repo / ".repowise" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["config_fingerprint"] = config_fingerprint(repo)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        save_repo_config(repo, {"provider": "openai"})
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)]
+        )
+        mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1, symbol_count=1)
+
+        async def _run():
+            with patch(
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ) as mocked:
+                results = await update_workspace(tmp_path, ws_config)
+                return results, mocked.await_count
+
+        import asyncio
+
+        results, calls = asyncio.run(_run())
+        assert calls == 1
+        assert results[0].updated is True
+        saved_state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert saved_state["phase_timings"]["run"] >= 0
+
+    def test_legacy_config_fingerprints_are_backfilled_then_detect_changes(
+        self, tmp_path: Path
+    ) -> None:
+        from repowise.core.repo_config import save_repo_config
+
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        _write_state(repo, head)
+        (repo / ".repowise" / "wiki.db").touch()
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)]
+        )
+        mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1)
+
+        async def _run() -> int:
+            with patch(
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ) as mocked:
+                await update_workspace(tmp_path, ws_config)
+                save_repo_config(repo, {"future_setting": True})
+                await update_workspace(tmp_path, ws_config)
+                return mocked.await_count
+
+        import asyncio
+
+        assert asyncio.run(_run()) == 2
+        state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert state.get("config_fingerprint")
+        assert state.get("config_dependency_fingerprints")
+
+    def test_shared_db_missing_fingerprint_is_stale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shared-database repo with a row and no config fingerprint is stale.
+
+        Dry run omits stale repos, so an empty result list is the verdict.
+        """
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        _write_state(repo, head)
+        assert not (repo / ".repowise" / "wiki.db").exists()
+
+        shared_db = tmp_path / "shared.db"
+        db_url = f"sqlite+aiosqlite:///{shared_db}"
+        monkeypatch.setenv("REPOWISE_DB_URL", db_url)
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        async def _seed() -> None:
+            engine = create_engine(db_url)
+            try:
+                await init_db(engine)
+                sf = create_session_factory(engine)
+                async with get_session(sf) as session:
+                    await upsert_repository(
+                        session,
+                        name=repo.name,
+                        local_path=str(repo.resolve()),
+                        head_commit=head,
+                    )
+            finally:
+                await engine.dispose()
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)],
+        )
+
+        async def _run():
+            await _seed()
+            return await update_workspace(
+                tmp_path, ws_config, dry_run=True, run_hooks=False
+            )
+
+        import asyncio
+
+        results = asyncio.run(_run())
+        assert results == []
+
+    def test_shared_db_missing_row_without_fingerprint_stays_up_to_date(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No shared-database row keeps a missing fingerprint off the stale path."""
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        _write_state(repo, head)
+        assert not (repo / ".repowise" / "wiki.db").exists()
+
+        shared_db = tmp_path / "shared.db"
+        db_url = f"sqlite+aiosqlite:///{shared_db}"
+        monkeypatch.setenv("REPOWISE_DB_URL", db_url)
+
+        from repowise.core.persistence import create_engine, init_db
+
+        async def _init_schema() -> None:
+            engine = create_engine(db_url)
+            try:
+                await init_db(engine)
+            finally:
+                await engine.dispose()
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)],
+        )
+
+        async def _run():
+            await _init_schema()
+            return await update_workspace(
+                tmp_path, ws_config, dry_run=True, run_hooks=False
+            )
+
+        import asyncio
+
+        results = asyncio.run(_run())
+        assert len(results) == 1
+        assert results[0].updated is False
+        assert results[0].skipped_reason == "up_to_date"
 
     def test_repo_filter(self, tmp_path: Path) -> None:
         """--repo flag should only update the specified repo."""
@@ -370,7 +547,7 @@ class TestUpdateWorkspace:
 
         async def _run():
             with patch(
-                "repowise.core.workspace.update.update_single_repo_index",
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
                 new_callable=AsyncMock,
                 return_value=mock_result,
             ):
@@ -439,6 +616,346 @@ class TestUpdateWorkspace:
         updated = [r for r in results if r.updated]
         assert len(updated) == 0
 
+    @pytest.mark.parametrize(
+        "failure_stage",
+        ["start", "mkdir", "lock", "index", "state", "stamp", "pending"],
+    )
+    def test_repo_failure_preserves_alias_and_notifies_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str
+    ) -> None:
+        """A failed member is named and reported without losing successful siblings."""
+        import asyncio
+
+        from repowise.core.update_lock import update_lock_path, workspace_update_lock_path
+        from repowise.core.workspace.update import workspace_pass
+
+        repos = [_make_git_repo(tmp_path, name) for name in ("web", "core")]
+        entries = []
+        for repo in repos:
+            old_head = get_head_commit(repo)
+            _write_state(repo, old_head)
+            _add_commit(repo, "new.txt")
+            entries.append(RepoEntry(path=repo.name, alias=repo.name, last_commit_at_index=old_head))
+        ws_config = WorkspaceConfig(repos=entries)
+        ws_config.save(tmp_path)
+        done_results: list[RepoUpdateResult] = []
+
+        async def fake_update(path, **_):
+            return RepoUpdateResult(alias="", updated=True, file_count=1, symbol_count=2)
+
+        monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+        monkeypatch.setattr(workspace_pass, "reconcile_repo_head_commit", AsyncMock())
+
+        def on_start(alias):
+            if failure_stage == "start" and alias == "web":
+                raise OSError("disk full")
+
+        if failure_stage == "mkdir":
+            real_mkdir = Path.mkdir
+
+            def fail_mkdir(path, *args, **kwargs):
+                if path == repos[0] / ".repowise":
+                    raise OSError("disk full")
+                return real_mkdir(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+        elif failure_stage in {"index", "stamp"}:
+            name = "update_single_repo_index" if failure_stage == "index" else "reconcile_repo_head_commit"
+            original = getattr(workspace_pass, name)
+
+            async def fail_async(path, *args, **kwargs):
+                if path == repos[0]:
+                    raise OSError("disk full")
+                return await original(path, *args, **kwargs)
+
+            monkeypatch.setattr(workspace_pass, name, fail_async)
+        elif failure_stage in {"lock", "state", "pending"}:
+            name = {
+                "lock": "_try_acquire_lock",
+                "state": "_write_repo_state",
+                "pending": "clear_stale_update_pending",
+            }[failure_stage]
+            original = getattr(workspace_pass, name)
+
+            def fail_sync(path, *args, **kwargs):
+                if path == repos[0]:
+                    raise OSError("disk full")
+                return original(path, *args, **kwargs)
+
+            monkeypatch.setattr(workspace_pass, name, fail_sync)
+
+        results = asyncio.run(update_workspace(
+            tmp_path, ws_config, run_hooks=False,
+            on_repo_start=on_start, on_repo_done=done_results.append,
+        ))
+        assert [r.alias for r in results] == ["web", "core"]
+        assert results[0].updated is False
+        assert results[0].error == "disk full"
+        assert results[1].updated is True
+        assert results[1].error is None
+        assert (results[1].file_count, results[1].symbol_count) == (1, 2)
+        assert len(done_results) == 2
+        assert {r.alias: r for r in done_results} == {r.alias: r for r in results}
+        assert not workspace_update_lock_path(tmp_path).exists()
+        assert all(not update_lock_path(repo).exists() for repo in repos)
+
+    @pytest.mark.parametrize("index_error", [None, "index failed"])
+    def test_completion_callback_failure_preserves_alias_and_original_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog, index_error: str | None
+    ) -> None:
+        """A broken reporter is called once; it cannot replace the real failure."""
+        import asyncio
+        import logging
+
+        from repowise.core.workspace.update import workspace_pass
+
+        repo = _make_git_repo(tmp_path, "web")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+        ws_config = WorkspaceConfig(repos=[RepoEntry(path="web", alias="web")])
+        done_results: list[RepoUpdateResult] = []
+
+        async def fake_update(path, **_):
+            return RepoUpdateResult(alias="", updated=index_error is None, error=index_error)
+
+        def on_done(result):
+            done_results.append(result)
+            raise OSError("progress output failed")
+
+        monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+        monkeypatch.setattr(workspace_pass, "reconcile_repo_head_commit", AsyncMock())
+        caplog.set_level(logging.WARNING, logger="repowise.workspace.update")
+        results = asyncio.run(update_workspace(
+            tmp_path, ws_config, run_hooks=False, on_repo_done=on_done,
+        ))
+        assert len(results) == 1
+        assert results[0].alias == "web"
+        assert results[0].updated is False
+        assert results[0].error == (index_error or "progress output failed")
+        assert len(done_results) == 1
+        assert "web" in caplog.text
+        assert "progress output failed" in caplog.text
+
+    @pytest.mark.parametrize("cancel_stage", ["start", "index", "stamp", "done"])
+    def test_member_cancellation_propagates_and_releases_both_locks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_stage: str
+    ) -> None:
+        import asyncio
+
+        from repowise.core.update_lock import update_lock_path, workspace_update_lock_path
+        from repowise.core.workspace.update import workspace_pass
+
+        repo = _make_git_repo(tmp_path, "backend")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+        ws_config = WorkspaceConfig(repos=[RepoEntry(path="backend", alias="backend")])
+        hooks = AsyncMock()
+        monkeypatch.setattr(workspace_pass, "run_cross_repo_hooks", hooks)
+
+        def cancel():
+            assert workspace_update_lock_path(tmp_path).exists()
+            assert update_lock_path(repo).exists() == (cancel_stage == "index")
+            raise asyncio.CancelledError()
+
+        def on_start(_alias):
+            if cancel_stage == "start":
+                cancel()
+
+        def on_done(_result):
+            if cancel_stage == "done":
+                cancel()
+
+        async def fake_update(path, **_):
+            if cancel_stage == "index":
+                cancel()
+            return RepoUpdateResult(alias="", updated=True)
+
+        async def stamp(*_):
+            if cancel_stage == "stamp":
+                cancel()
+
+        monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+        monkeypatch.setattr(workspace_pass, "reconcile_repo_head_commit", stamp)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(update_workspace(
+                tmp_path, ws_config, on_repo_start=on_start, on_repo_done=on_done,
+            ))
+        assert not workspace_update_lock_path(tmp_path).exists()
+        assert not update_lock_path(repo).exists()
+        hooks.assert_not_awaited()
+
+    def test_cancelling_workspace_task_releases_all_member_locks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelling gather itself cleans up every running member before returning."""
+        import asyncio
+
+        from repowise.core.update_lock import update_lock_path, workspace_update_lock_path
+        from repowise.core.workspace.update import workspace_pass
+
+        repos = [_make_git_repo(tmp_path, name) for name in ("web", "core")]
+        for repo in repos:
+            _write_state(repo, get_head_commit(repo))
+            _add_commit(repo, "new.txt")
+        ws_config = WorkspaceConfig(repos=[RepoEntry(path=r.name, alias=r.name) for r in repos])
+        done = []
+
+        async def run():
+            started = set()
+            all_started = asyncio.Event()
+            blocked = asyncio.Event()
+
+            async def fake_update(path, **_):
+                assert update_lock_path(path).exists()
+                started.add(path)
+                if len(started) == len(repos):
+                    all_started.set()
+                await blocked.wait()
+
+            monkeypatch.setattr(workspace_pass, "update_single_repo_index", fake_update)
+            task = asyncio.create_task(update_workspace(
+                tmp_path, ws_config, run_hooks=False, on_repo_done=done.append,
+            ))
+            try:
+                await asyncio.wait_for(all_started.wait(), timeout=5)
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(run())
+        assert done == []
+        assert not workspace_update_lock_path(tmp_path).exists()
+        assert all(not update_lock_path(repo).exists() for repo in repos)
+
+
+# ---------------------------------------------------------------------------
+# _collect_update_results
+# ---------------------------------------------------------------------------
+
+
+class TestCollectUpdateResults:
+    @pytest.mark.parametrize("fatal", ["cancel", "interrupt", "exit"])
+    @pytest.mark.parametrize("fatal_first", [False, True])
+    def test_fatal_result_propagates_before_mutating_results(self, fatal: str, fatal_first: bool) -> None:
+        import asyncio
+
+        exception = {
+            "cancel": asyncio.CancelledError(),
+            "interrupt": KeyboardInterrupt(),
+            "exit": SystemExit(),
+        }[fatal]
+        previous = RepoUpdateResult(alias="previous", updated=False, skipped_reason="up_to_date")
+        results = [previous]
+        success = RepoUpdateResult(alias="web", updated=True)
+        gathered = [exception, success] if fatal_first else [success, exception]
+        with pytest.raises(type(exception)) as raised:
+            _collect_update_results(gathered, results)
+        assert raised.value is exception
+        assert results == [previous]
+
+    def test_collects_results_in_input_order_with_last_resort_exception(self) -> None:
+        previous = RepoUpdateResult(alias="previous", updated=False)
+        web = RepoUpdateResult(alias="web", updated=True)
+        skipped = RepoUpdateResult(alias="skipped", updated=False, skipped_reason="in_flight")
+        core = RepoUpdateResult(alias="core", updated=True)
+        results = [previous]
+        changed = _collect_update_results([web, ValueError("disk full"), skipped, core], results)
+        assert changed == ["web", "core"]
+        assert [r.alias for r in results] == ["previous", "web", "unknown", "skipped", "core"]
+        assert results[1] is web
+        assert results[2].updated is False
+        assert results[2].error == "disk full"
+        assert results[3] is skipped
+        assert results[4] is core
+
+
+# ---------------------------------------------------------------------------
+# Workspace-level single-flight (issue #1831)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceSingleFlight:
+    def test_concurrent_run_defers_to_owner(self, tmp_path: Path) -> None:
+        """A workspace update that finds another workspace update already in
+        flight must defer (skipped_reason=\"in_flight\") instead of running a
+        redundant full pass over every member."""
+        repo = _make_git_repo(tmp_path, "backend")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=old_head)],
+            default_repo="backend",
+        )
+        ws_config.save(tmp_path)
+
+        from repowise.core.update_lock import update_workspace_lock
+
+        # Simulate another workspace update already in flight (same process).
+        assert update_workspace_lock(tmp_path) is None
+        try:
+            mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1, symbol_count=1)
+
+            async def _run():
+                with patch(
+                    "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
+                    new_callable=AsyncMock,
+                    return_value=mock_result,
+                ):
+                    return await update_workspace(tmp_path, ws_config)
+
+            import asyncio
+            results = asyncio.run(_run())
+            # No repo should have been updated — the whole pass deferred.
+            assert len(results) == 1
+            assert results[0].updated is False
+            assert results[0].skipped_reason == "in_flight"
+            # The running owner should pick up the deferred head via the
+            # pending marker written by the defereer.
+            pending = (tmp_path / "backend" / ".repowise" / ".update.pending")
+            assert pending.exists()
+            assert pending.read_text(encoding="utf-8") == get_head_commit(tmp_path / "backend")
+        finally:
+            from repowise.core.update_lock import release_workspace_lock
+
+            release_workspace_lock(tmp_path)
+
+    def test_lock_released_after_pass(self, tmp_path: Path) -> None:
+        """update_workspace must release the workspace lock after a successful
+        pass so the next hook-triggered invocation can take over."""
+        repo = _make_git_repo(tmp_path, "backend")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=old_head)],
+            default_repo="backend",
+        )
+        ws_config.save(tmp_path)
+
+        mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1, symbol_count=1)
+
+        from repowise.core.update_lock import workspace_update_lock_path
+
+        async def _run():
+            with patch(
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ):
+                return await update_workspace(tmp_path, ws_config)
+
+        import asyncio
+        asyncio.run(_run())
+
+        # The workspace lock was created during the pass and released at the end.
+        assert not workspace_update_lock_path(tmp_path).exists()
+
 
 # ---------------------------------------------------------------------------
 # Cross-repo hooks placeholder
@@ -452,6 +969,30 @@ class TestCrossRepoHooks:
 
         import asyncio
         asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["backend"]))
+
+    def test_measures_contract_facts_of_the_changed_repos_last(self, tmp_path: Path) -> None:
+        """The snapshot each update took ran before extraction, so the hooks
+        end by filling its contract facts, for the repos that changed only."""
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
+        )
+        order: list[str] = []
+
+        async def _phases(*_a, **_k):
+            order.append("phases")
+
+        async def _refresh(path):
+            order.append(path.name)
+
+        import asyncio
+
+        with (
+            patch("repowise.core.workspace.update.phases._run_phases", _phases),
+            patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
+            patch("repowise.core.workspace.update.phases._refresh_contract_facts", _refresh),
+        ):
+            asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["api"]))
+        assert order == ["phases", "api"]
 
 
 # ---------------------------------------------------------------------------

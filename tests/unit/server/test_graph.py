@@ -707,3 +707,113 @@ async def test_module_graph_aggregates_signals(client: AsyncClient, app) -> None
     assert src["dead_count"] == 1
     assert src["has_decision"] is True
     assert src["primary_owner"] == "Alice"
+
+
+# ---------------------------------------------------------------------------
+# Community detail: state, not just shape (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _health_metric(path: str, *, score: float, nloc: int) -> dict:
+    return {
+        "file_path": path,
+        "score": score,
+        "max_ccn": 3,
+        "max_nesting": 2,
+        "nloc": nloc,
+        "duplication_pct": 0.0,
+        "has_test_file": False,
+        "line_coverage_pct": None,
+        "branch_coverage_pct": None,
+        "module": "src",
+    }
+
+
+@pytest.mark.asyncio
+async def test_community_detail_rolls_up_health_hot_dead_and_owner(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _populate_two_communities(app.state.session_factory, repo["id"])
+
+    async with get_session(app.state.session_factory) as session:
+        # a.py: 100 lines at 9.0. b.py: 300 lines at 5.0. LOC-weighted mean is
+        # (900 + 1500) / 400 = 6.0, which a plain mean would put at 7.0.
+        await crud.save_health_metrics(
+            session,
+            repo["id"],
+            [
+                _health_metric("src/a.py", score=9.0, nloc=100),
+                _health_metric("src/b.py", score=5.0, nloc=300),
+            ],
+        )
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo["id"],
+            file_path="src/a.py",
+            is_hotspot=True,
+            primary_owner_name="Ada",
+        )
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo["id"],
+            file_path="src/b.py",
+            is_hotspot=False,
+            primary_owner_name="Ada",
+        )
+        session.add(
+            DeadCodeFinding(
+                repository_id=repo["id"],
+                file_path="src/b.py",
+                kind="unreachable_file",
+                status="open",
+                confidence=0.9,
+            )
+        )
+        session.add(
+            DecisionRecord(
+                repository_id=repo["id"],
+                title="Adopt FastAPI",
+                status="active",
+                source="cli",
+                affected_files_json=json.dumps(["src/a.py"]),
+            )
+        )
+        await session.flush()
+
+    resp = await client.get(f"/api/graph/{repo['id']}/communities/0")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["health_score"] == 6.0
+    assert data["scored_member_count"] == 2
+    assert data["hot_count"] == 1
+    assert data["dead_count"] == 1
+    assert data["decision_count"] == 1
+    assert data["primary_owner"] == "Ada"
+    assert data["primary_owner_file_count"] == 2
+
+    # The flags are on the members too, so the panel can name the files behind
+    # each count rather than only reporting a number.
+    by_path = {m["path"]: m for m in data["members"]}
+    assert by_path["src/a.py"]["is_hotspot"] is True
+    assert by_path["src/a.py"]["is_dead"] is False
+    assert by_path["src/b.py"]["is_dead"] is True
+
+
+@pytest.mark.asyncio
+async def test_community_detail_health_is_null_when_nothing_is_scored(
+    client: AsyncClient, app
+) -> None:
+    # Not zero. An unscored area has no reading, and a 0.0 would render as the
+    # worst possible score on a surface whose whole job is "is this in trouble".
+    repo = await create_test_repo(client)
+    await _populate_two_communities(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/graph/{repo['id']}/communities/0")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["health_score"] is None
+    assert data["scored_member_count"] == 0
+    assert data["hot_count"] == 0
+    assert data["primary_owner"] is None

@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import update
 
+from repowise.core.analysis.health.models import HealthFindingData, Severity
+from repowise.core.analysis.health.perf.opportunities import link_performance_findings
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import PerformanceOpportunity
 from tests.unit.server.conftest import create_test_repo
 
 _FULL_ONLY = {
@@ -60,18 +64,42 @@ def _finding(path: str, biomarker: str, dimension: str, impact: float) -> dict:
     }
 
 
+def _perf_finding(path: str, line: int) -> HealthFindingData:
+    return HealthFindingData(
+        biomarker_type="io_in_loop",
+        severity=Severity.MEDIUM,
+        file_path=path,
+        function_name="run",
+        line_start=line,
+        line_end=line,
+        details={
+            "boundary_kind": "db",
+            "cross_function": True,
+            "path": [f"{path}::run", "src/db.py::fetch"],
+            "resolution_basis": "reliable-edge",
+        },
+        health_impact=0.0,
+        reason="Database work repeats for every loop iteration.",
+        dimension="performance",
+    )
+
+
 async def _seed(app, repo_id: str) -> None:
+    perf = [_perf_finding("src/f00.py", 1), _perf_finding("src/f01.py", 1)]
+    link_performance_findings(perf)
     async with get_session(app.state.session_factory) as session:
         await crud.save_health_metrics(session, repo_id, [_metric(i) for i in range(3)])
         await crud.save_health_findings(
             session,
             repo_id,
-            [
-                _finding("src/f00.py", "complex_method", "defect", 2.5),
-                _finding("src/f00.py", "io_in_loop", "performance", 0.0),
-                _finding("src/f01.py", "io_in_loop", "performance", 0.0),
-                _finding("src/f01.py", "io_in_loop", "performance", 0.0),
-            ],
+            [_finding("src/f00.py", "complex_method", "defect", 2.5), *perf],
+        )
+        await crud.finalize_performance_opportunities(session, repo_id, analyzed_commit="a" * 40)
+        # The verdict the finalizer stores for a production cause with a proven cost.
+        await session.execute(
+            update(PerformanceOpportunity)
+            .where(PerformanceOpportunity.repository_id == repo_id)
+            .values(queue_eligible=True)
         )
 
 
@@ -113,10 +141,10 @@ async def test_summary_keeps_every_field_the_map_actually_colours_by(
 ) -> None:
     """The saving is only legitimate if the map can still draw itself.
 
-    ``performance_findings`` is the one that makes this non-obvious: the
-    narrowed read has to keep counting perf findings per file, and a summary
-    mode that skipped the finding read entirely would grey out the performance
-    lens while every other assertion here still passed.
+    ``performance_opportunities`` is the one that makes this non-obvious: the
+    narrowed read has to keep counting queued causes per file, and a summary
+    mode that skipped that read would grey out the performance lens while
+    every other assertion here still passed.
     """
     repo = await create_test_repo(client)
     await _seed(app, repo["id"])
@@ -135,7 +163,7 @@ async def test_summary_keeps_every_field_the_map_actually_colours_by(
         "has_test_file",
         "maintainability_score",
         "performance_score",
-        "performance_findings",
+        "performance_opportunities",
         "performance_analyzed",
     }
     by_path_full = {f["file_path"]: f for f in full["files"]}
@@ -145,8 +173,9 @@ async def test_summary_keeps_every_field_the_map_actually_colours_by(
         for key in map_fields:
             assert row[key] == wide[key], f"{key} diverged on {row['file_path']}"
     # And the counts are real, not a constant zero.
-    assert by_path_full["src/f01.py"]["performance_findings"] == 2
-    assert by_path_full["src/f00.py"]["performance_findings"] == 1
+    assert by_path_full["src/f01.py"]["performance_opportunities"] == 1
+    assert by_path_full["src/f00.py"]["performance_opportunities"] == 1
+    assert by_path_full["src/f02.py"]["performance_opportunities"] == 0
 
 
 @pytest.mark.asyncio

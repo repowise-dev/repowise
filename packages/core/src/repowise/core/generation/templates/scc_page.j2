@@ -7,7 +7,7 @@
 -#}
 {#- ``default(..., true)`` so an absent *or* empty title both fall back: the
     caller names the whole set at once and a caller that does not is still
-    entitled to a page. #}
+    entitled to a page. -#}
 # {{ page_title | default(labels.circular_dependency ~ ": " ~ ctx.scc_id, true) }}
 
 {{ labels.cycle_overview.format(count=ctx.files | length) }}

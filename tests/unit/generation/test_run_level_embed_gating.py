@@ -57,8 +57,10 @@ def _fake_run(store) -> SimpleNamespace:
         job_id=None,
         on_page_done=None,
         on_page_ready=None,
+        on_embed=None,
         vector_store=store,
         completed_page_summaries={},
+        timings=None,
     )
 
 
@@ -92,3 +94,128 @@ def test_ephemeral_store_still_embeds_reused_pages() -> None:
     embedded = _run_level(store)
     assert "fresh.py" in embedded
     assert "reused.py" in embedded
+
+
+class _FailingStore:
+    persists_across_runs = True
+
+    async def embed_batch(self, items):
+        raise AttributeError("module 'lancedb' has no attribute 'connect_async'")
+
+
+def test_a_failed_embed_is_counted_on_the_generator() -> None:
+    """Callers read the count to refuse calling semantic search healthy.
+
+    A warning string alone left init and update exiting 0 with a semantic
+    index that held none of the pages.
+    """
+    warnings: list[str] = []
+    gen = SimpleNamespace(embed_failed_pages=0)
+
+    async def _go():
+        async def fresh():
+            return _page("fresh.py")
+
+        run = _fake_run(_FailingStore())
+        run.gen = gen
+        run.on_warning = warnings.append
+        await _GenerationRun.run_level(run, [("p1", fresh())], level=2)
+
+    asyncio.run(_go())
+
+    assert gen.embed_failed_pages == 1
+    assert warnings and "Embedding failed for 1 page(s)" in warnings[0]
+
+
+def test_each_embed_batch_is_bracketed_for_the_display() -> None:
+    """Embedding is its own step on screen: start before the batch, done after."""
+    calls: list[tuple[int, bool]] = []
+
+    async def _go():
+        async def fresh():
+            return _page("fresh.py")
+
+        async def other():
+            return _page("other.py")
+
+        run = _fake_run(_RecordingStore(persists=False))
+        run.on_embed = lambda count, finished: calls.append((count, finished))
+        await _GenerationRun.run_level(run, [("p1", fresh()), ("p2", other())], level=2)
+
+    asyncio.run(_go())
+    assert calls == [(2, False), (2, True)]
+
+
+def test_a_failed_embed_batch_is_never_reported_finished() -> None:
+    calls: list[tuple[int, bool]] = []
+
+    async def _go():
+        async def fresh():
+            return _page("fresh.py")
+
+        run = _fake_run(_FailingStore())
+        run.gen = SimpleNamespace(embed_failed_pages=0)
+        run.on_warning = lambda _text: None
+        run.on_embed = lambda count, finished: calls.append((count, finished))
+        await _GenerationRun.run_level(run, [("p1", fresh())], level=2)
+
+    asyncio.run(_go())
+    assert calls == [(1, False)]
+
+
+class _Phases:
+    def __init__(self) -> None:
+        self.events: list[tuple] = []
+
+    def on_phase_start(self, phase, total):
+        self.events.append(("start", phase, total))
+
+    def on_item_done(self, phase):
+        self.events.append(("item", phase))
+
+    def on_phase_done(self, phase):
+        self.events.append(("done", phase))
+
+    def on_phase_failed(self, phase):
+        self.events.append(("failed", phase))
+
+
+class _Embedder:
+    pass
+
+
+def _display(store):
+    from repowise.core.pipeline.phases.generation import _GenerationDisplay
+
+    progress = _Phases()
+    return progress, _GenerationDisplay(progress, store, None)
+
+
+def test_embedding_shows_as_its_own_step_with_a_real_embedder() -> None:
+    progress, display = _display(SimpleNamespace(_embedder=_Embedder()))
+    display.on_embed(2, False)
+    display.on_embed(2, True)
+    display.close_embedding()
+    assert progress.events == [
+        ("start", "embedding", 2),
+        ("item", "embedding"),
+        ("item", "embedding"),
+        ("done", "embedding"),
+    ]
+
+
+def test_a_failed_embed_closes_the_step_without_a_done_row() -> None:
+    progress, display = _display(SimpleNamespace(_embedder=_Embedder()))
+    display.on_embed(3, False)
+    display.close_embedding()
+    assert progress.events[-1] == ("failed", "embedding")
+
+
+def test_the_keyless_embedder_gets_no_embedding_step() -> None:
+    from repowise.core.providers.embedding import KeylessEmbedder
+
+    progress, display = _display(SimpleNamespace(_embedder=KeylessEmbedder()))
+    display.on_embed(2, False)
+    display.on_embed(2, True)
+    display.close_embedding()
+    assert progress.events == []

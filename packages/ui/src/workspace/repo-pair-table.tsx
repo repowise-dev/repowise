@@ -1,12 +1,11 @@
 "use client";
 
-import { Badge } from "../ui/badge";
 import { EmptyState } from "../shared/empty-state";
-import { VirtualizedTable } from "../shared/virtualized-table";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
+import { AiPromptButton } from "../health/ai-prompt-button";
+import { PAIR_MICRO as MICRO } from "../coupling/pair-drawer-parts";
 import { cn } from "../lib/cn";
 import { formatDate, formatDateTime } from "../lib/format";
-import { ChevronRight } from "lucide-react";
 
 export interface RepoPairSummary {
   id: string; // "repo1↔repo2"
@@ -21,22 +20,22 @@ interface RepoPairTableProps {
   repoPairs: RepoPairSummary[];
   onSelectPair?: (id: string) => void;
   selectedPairId?: string | null;
+  /** Opens the AI prompt for one repository pair. */
+  onPrompt?: (pair: RepoPairSummary) => void;
 }
 
-// Column-priority hide classes, mirroring the shared ResponsiveTable scale:
-// priority 2 hides below md (768px), priority 3 hides below lg (1024px). The
-// pair identity, max-strength and action columns (priority 1) stay visible.
+// Priority 2 hides below md, priority 3 below lg, matching ResponsiveTable.
 const HIDE_BELOW_MD = "max-md:hidden";
 const HIDE_BELOW_LG = "max-lg:hidden";
 
 /**
- * Cross-repo pair summary: one row per repository pair, click to drill in.
+ * Cross-repo pair summary: one row per repository pair. Choosing a row narrows
+ * the file list; the row says so, since a narrowing is not a navigation.
  *
- * The body is virtualized (windowed `<tbody>`) so long pair lists stay cheap to
- * render; below the wrapper's threshold every row renders, so the common short
- * list behaves exactly as a plain table.
+ * Repository names are plain mono text rather than chips: they are neutral
+ * categories, and a bordered chip reads as a control the row already is.
  */
-export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId }: RepoPairTableProps) {
+export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId, onPrompt }: RepoPairTableProps) {
   if (repoPairs.length === 0) {
     return (
       <EmptyState
@@ -46,75 +45,91 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId }: RepoP
     );
   }
 
-  const header = (
-    <tr className="bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider">
-      <th className="px-3 py-2 text-left font-medium">Repository Pair</th>
-      <th className={`px-3 py-2 text-right font-medium ${HIDE_BELOW_MD}`}>File Pairs</th>
-      <th className="px-3 py-2 text-left font-medium w-32">Max Strength</th>
-      <th className={`px-3 py-2 text-right font-medium ${HIDE_BELOW_LG}`}>Latest Activity</th>
-      {onSelectPair ? <th className="px-3 py-2 text-right font-medium" /> : null}
-    </tr>
-  );
-
-  const renderRow = (p: RepoPairSummary) => {
-    const onClick = onSelectPair ? () => onSelectPair(p.id) : undefined;
-    const isSelected = selectedPairId != null && selectedPairId === p.id;
-    return (
-      <tr
-        className={cn(
-          "border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)]",
-          isSelected && "bg-[var(--color-accent-muted)]/30",
-          onClick && CLICKABLE_ROW_CLS,
-        )}
-        {...(onClick ? clickableRowProps(onClick) : {})}
-      >
-        <td className="px-3 py-2 text-left">
-          <div className="flex items-center gap-2">
-            <Badge variant="default" className="text-xs">{p.repo1}</Badge>
-            <span className="text-[var(--color-text-tertiary)] text-xs">↔</span>
-            <Badge variant="default" className="text-xs">{p.repo2}</Badge>
-          </div>
-        </td>
-        <td className={`px-3 py-2 text-right text-xs text-[var(--color-text-secondary)] tabular-nums ${HIDE_BELOW_MD}`}>
-          {p.filePairCount}
-        </td>
-        <td className="px-3 py-2 text-left">
-          <div className="flex items-center gap-2 min-w-[90px]">
-            <div className="h-1.5 flex-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
-              <div
-                className="h-full rounded-full bg-[var(--color-accent-primary)] transition-all"
-                style={{ width: `${Math.min(Math.round(p.maxStrength * 100), 100)}%` }}
-              />
-            </div>
-            <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8 text-right">
-              {`${Math.round(p.maxStrength * 100)}%`}
-            </span>
-          </div>
-        </td>
-        <td className={`px-3 py-2 text-right text-xs text-[var(--color-text-tertiary)] ${HIDE_BELOW_LG}`}>
-          {/* formatDate, not toLocaleDateString(): the bare call resolves the
-              ambient locale, so Node and the browser can render the same date
-              differently and hydration fails. */}
-          <span title={p.lastDate ? formatDateTime(p.lastDate) : undefined}>
-            {p.lastDate ? formatDate(p.lastDate) : "—"}
-          </span>
-        </td>
-        {onSelectPair ? (
-          <td className="px-3 py-2 text-right">
-            <ChevronRight className="h-4 w-4 text-[var(--color-text-tertiary)] inline-block" />
-          </td>
-        ) : null}
-      </tr>
-    );
-  };
-
   return (
-    <VirtualizedTable<RepoPairSummary>
-      rows={repoPairs}
-      rowKey={(p) => p.id}
-      header={header}
-      renderRow={renderRow}
-      aria-label="Cross-repo pairs"
-    />
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse" aria-label="Cross-repo pairs">
+        <thead>
+          <tr className="border-b border-[var(--color-border-default)]">
+            <th className={cn(MICRO, "px-3 py-2 text-left font-normal")}>Repositories</th>
+            <th className={cn(MICRO, "px-3 py-2 text-right font-normal", HIDE_BELOW_MD)}>File pairs</th>
+            <th className={cn(MICRO, "px-3 py-2 text-right font-normal")}>Strongest</th>
+            <th className={cn(MICRO, "px-3 py-2 text-right font-normal", HIDE_BELOW_LG)}>Latest</th>
+            {onSelectPair || onPrompt ? (
+              <th className="px-3 py-2">
+                <span className="sr-only">Actions</span>
+              </th>
+            ) : null}
+          </tr>
+        </thead>
+        <tbody>
+          {repoPairs.map((p) => {
+            const onClick = onSelectPair ? () => onSelectPair(p.id) : undefined;
+            const isSelected = selectedPairId != null && selectedPairId === p.id;
+            return (
+              <tr
+                key={p.id}
+                className={cn(
+                  "border-t border-[var(--color-border-default)] first:border-t-0",
+                  onClick && "hover:bg-[var(--color-bg-elevated)]",
+                  isSelected && "bg-[var(--color-accent-muted)]",
+                  onClick && CLICKABLE_ROW_CLS,
+                )}
+                aria-current={isSelected ? "true" : undefined}
+                {...(onClick ? clickableRowProps(onClick) : {})}
+              >
+                <td className="px-3 py-2.5 text-left font-mono text-xs font-medium text-[var(--color-text-primary)]">
+                  <span>{p.repo1}</span>
+                  <span className="px-1.5 font-sans font-normal text-[var(--color-text-tertiary)]">and</span>
+                  <span>{p.repo2}</span>
+                </td>
+                <td
+                  className={`px-3 py-2.5 text-right font-mono text-xs tabular-nums text-[var(--color-text-secondary)] ${HIDE_BELOW_MD}`}
+                >
+                  {p.filePairCount}
+                </td>
+                <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums text-[var(--color-text-primary)]">
+                  {Math.round(p.maxStrength * 100)}%
+                </td>
+                <td
+                  className={`whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)] ${HIDE_BELOW_LG}`}
+                >
+                  {/* formatDate, not toLocaleDateString(): the bare call resolves the
+                      ambient locale, so Node and the browser can render the same date
+                      differently and hydration fails. */}
+                  <span title={p.lastDate ? formatDateTime(p.lastDate) : undefined}>
+                    {p.lastDate ? formatDate(p.lastDate) : "unknown"}
+                  </span>
+                </td>
+                {onSelectPair || onPrompt ? (
+                  <td className="px-3 py-2 text-right">
+                    <span className="inline-flex items-center justify-end gap-3">
+                      {onSelectPair && (
+                        <span
+                          className={cn(
+                            "whitespace-nowrap text-xs max-sm:sr-only",
+                            isSelected
+                              ? "font-medium text-[var(--color-accent-primary)]"
+                              : "text-[var(--color-text-tertiary)]",
+                          )}
+                        >
+                          {isSelected ? "Showing only these" : "Show only these"}
+                        </span>
+                      )}
+                      {onPrompt && (
+                        <AiPromptButton
+                          variant="icon"
+                          label={`AI prompt for ${p.repo1} and ${p.repo2}`}
+                          onClick={() => onPrompt(p)}
+                        />
+                      )}
+                    </span>
+                  </td>
+                ) : null}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }

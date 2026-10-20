@@ -1,9 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Route, Loader2, X, ArrowRight, Search, ChevronDown } from "lucide-react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Route, X, ArrowRight, Search, ChevronDown } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
 import { useDebounce } from "../hooks/use-debounce";
+import { disambiguateBasenames } from "../lib/format";
+import { FilePath } from "../shared/file-path";
+import { isFileNodeId } from "./node-id";
 import type { GraphPath, NodeSearchResult } from "@repowise-dev/types/graph";
 
 export interface PathFinderPanelProps {
@@ -96,7 +100,7 @@ function NodeAutocomplete({
       />
       <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--color-text-tertiary)]" />
       {showDropdown && displayResults.length > 0 && (
-        <div className="absolute top-full left-0 mt-1 w-full max-h-52 overflow-auto z-50 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/30 py-1">
+        <div className="absolute top-full left-0 mt-1 w-full max-h-52 overflow-auto z-[var(--z-dropdown)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/30 py-1">
           {results.length === 0 && topNodes.length > 0 && (
             <div className="px-3 py-1 text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider">
               Top files by importance
@@ -108,9 +112,11 @@ function NodeAutocomplete({
               className="w-full px-3 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] transition-colors flex items-center gap-2"
               onMouseDown={() => handleSelect(r.node_id)}
             >
-              <span className="font-mono text-[var(--color-text-primary)] truncate flex-1">
-                {r.node_id}
-              </span>
+              {isFileNodeId(r.node_id) ? (
+                <FilePath path={r.node_id} fold className="flex-1 text-[var(--color-text-primary)]" />
+              ) : (
+                <span className="flex-1 truncate font-mono text-[var(--color-text-primary)]">{r.node_id}</span>
+              )}
               <span className="text-[10px] text-[var(--color-text-tertiary)] capitalize shrink-0 tabular-nums">
                 {r.language}
               </span>
@@ -135,6 +141,7 @@ export function PathFinderPanel({
   const [to, setTo] = useState(initialTo);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<GraphPath | null>(null);
+  const hopLabels = useMemo(() => disambiguateBasenames(result?.path ?? []), [result]);
   const [error, setError] = useState<string | null>(null);
 
   // Sync initial values when they change from context menu
@@ -238,7 +245,7 @@ export function PathFinderPanel({
         }}
       >
         {loading ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Spinner size="sm" />
         ) : (
           <Route className="h-3.5 w-3.5" />
         )}
@@ -253,18 +260,26 @@ export function PathFinderPanel({
           </p>
           <div className="space-y-0.5 max-h-28 overflow-auto">
             {result.path.map((nodeName, i) => {
-              const shortName = nodeName.split("/").pop() ?? nodeName;
               return (
                 <div key={i} className="flex items-center gap-1">
                   {i > 0 && (
                     <ArrowRight className="w-2.5 h-2.5 text-[var(--color-accent-graph)] shrink-0" />
                   )}
-                  <span
-                    className="text-[10px] font-mono text-[var(--color-text-secondary)] truncate"
-                    title={nodeName}
-                  >
-                    {shortName}
-                  </span>
+                  {isFileNodeId(nodeName) ? (
+                    <FilePath
+                      path={nodeName}
+                      mode="distinguishing"
+                      labels={hopLabels}
+                      className="text-[10px] text-[var(--color-text-secondary)]"
+                    />
+                  ) : (
+                    <span
+                      className="truncate font-mono text-[10px] text-[var(--color-text-secondary)]"
+                      title={nodeName}
+                    >
+                      {nodeName}
+                    </span>
+                  )}
                 </div>
               );
             })}

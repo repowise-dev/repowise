@@ -89,7 +89,7 @@ def content_digest(content: str) -> str:
     """
     import hashlib
 
-    return hashlib.sha1(content.encode("utf-8", "replace")).hexdigest()[:12]
+    return hashlib.sha1(content.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
 
 
 def _range_label(offset: object, limit: object) -> str:

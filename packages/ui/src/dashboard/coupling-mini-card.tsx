@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ArrowRight, GitMerge } from "lucide-react";
 import { Card } from "../ui/card";
+import { disambiguateBasenames } from "../lib/format";
 import type { CouplingEdge } from "@repowise-dev/types/coupling";
 
 /** Injected link component (e.g. Next's Link); defaults to a plain anchor. */
@@ -21,10 +22,6 @@ export interface CouplingMiniCardProps {
   LinkComponent?: LinkLike;
 }
 
-function basename(path: string): string {
-  return path.split("/").pop() ?? path;
-}
-
 /**
  * Overview front-door for the change-coupling view. The full diagram lives as
  * an Architecture tab (off the sidebar), so this card gives it a landing-page
@@ -37,6 +34,8 @@ export function CouplingMiniCard({ edges, href, LinkComponent }: CouplingMiniCar
   const Link: LinkLike = LinkComponent ?? "a";
   const top = edges.slice(0, 3);
   const maxStrength = Math.max(...top.map((e) => e.strength), 1);
+  // Labelled against the pairs actually shown, so no line repeats a name.
+  const labels = disambiguateBasenames(top.flatMap((e) => [e.source, e.target]));
 
   return (
     <Card className="overflow-hidden">
@@ -60,9 +59,9 @@ export function CouplingMiniCard({ edges, href, LinkComponent }: CouplingMiniCar
                   className="truncate font-mono text-xs text-[var(--color-text-secondary)]"
                   title={`${e.source} ↔ ${e.target}`}
                 >
-                  {basename(e.source)}
+                  {labels.get(e.source) ?? e.source}
                   <span className="text-[var(--color-text-tertiary)]"> ↔ </span>
-                  {basename(e.target)}
+                  {labels.get(e.target) ?? e.target}
                 </div>
                 <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
                   <div

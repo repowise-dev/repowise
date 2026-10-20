@@ -3,10 +3,16 @@ import { cn } from "../lib/cn";
 import { Card, CardContent } from "../ui/card";
 
 export interface MetricCardProps {
-  label: string;
+  /**
+   * Usually a string. Typed as a node so a loading placeholder can pass a
+   * `Skeleton` and get this component's real height rather than guessing at
+   * it (see `StatGridSkeleton`).
+   */
+  label: React.ReactNode;
   value: React.ReactNode;
-  /** One-line context rendered beneath the value. */
-  description?: string;
+  /** One-line context rendered beneath the value. Node, so a placeholder can
+   *  pass a `Skeleton` and reserve the real line. */
+  description?: React.ReactNode;
   /**
    * Signed change indicator. `positive` is a good-vs-bad flag (drives
    * success/error colouring), not up-vs-down. Set `neutral` to render the
@@ -56,9 +62,9 @@ export function MetricCard({
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 space-y-1">
-            <p className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            <div className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
               {label}
-            </p>
+            </div>
             <div className="flex items-baseline gap-2">
               <div className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)]">
                 {value}
@@ -79,7 +85,7 @@ export function MetricCard({
               )}
             </div>
             {description && (
-              <p className="text-xs text-[var(--color-text-secondary)]">{description}</p>
+              <div className="text-xs text-[var(--color-text-secondary)]">{description}</div>
             )}
           </div>
           {icon && (

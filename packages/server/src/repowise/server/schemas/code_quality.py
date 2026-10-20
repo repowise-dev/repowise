@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
-    effective_safe_to_delete,
     path_risk_factors,
 )
+from repowise.core.analysis.finding_registry import preview_label, verification_label
+
+from .preview import PreviewLabelled
 
 
-class DeadCodeFindingResponse(BaseModel):
+class DeadCodeFindingResponse(PreviewLabelled, BaseModel):
     id: str
     kind: str
     file_path: str
@@ -21,7 +25,7 @@ class DeadCodeFindingResponse(BaseModel):
     symbol_kind: str | None
     confidence: float
     reason: str
-    lines: int
+    lines: int | None
     start_line: int | None
     end_line: int | None
     # Effective deletion-readiness — re-derived from confidence + path risk
@@ -45,6 +49,10 @@ class DeadCodeFindingResponse(BaseModel):
     # ladder (0 commits is what earns the high tiers), so surfacing it is what
     # makes a low confidence score legible: the file is still being worked on.
     commit_count_90d: int
+    # ``"unverified"`` for a provisional kind a caller asked for by name.
+    verification: str | None = None
+    #: The measurement note on a language dead code is served as a preview on.
+    preview: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DeadCodeFindingResponse:
@@ -68,7 +76,12 @@ class DeadCodeFindingResponse(BaseModel):
             lines=obj.lines,  # type: ignore[attr-defined]
             start_line=obj.start_line,  # type: ignore[attr-defined]
             end_line=obj.end_line,  # type: ignore[attr-defined]
-            safe_to_delete=effective_safe_to_delete(confidence, file_path, stored_safe),
+            safe_to_delete=effective_safe_to_delete(
+                confidence,
+                file_path,
+                stored_safe,
+                obj.kind,  # type: ignore[attr-defined]
+            ),
             risk_factors=list(path_risk_factors(file_path)),
             evidence=evidence,
             primary_owner=obj.primary_owner,  # type: ignore[attr-defined]
@@ -76,6 +89,8 @@ class DeadCodeFindingResponse(BaseModel):
             note=obj.note,  # type: ignore[attr-defined]
             last_commit_at=obj.last_commit_at,  # type: ignore[attr-defined]
             commit_count_90d=obj.commit_count_90d,  # type: ignore[attr-defined]
+            verification=verification_label(obj.kind),  # type: ignore[attr-defined]
+            preview=preview_label("dead_code", file_path, obj.kind),  # type: ignore[attr-defined]
         )
 
 
@@ -88,8 +103,14 @@ class DeadCodeSummaryResponse(BaseModel):
     total_findings: int
     confidence_summary: dict
     deletable_lines: int
+    #: Deletion-ready findings, the ones ``deletable_lines`` sums.
+    safe_to_delete_count: int | None = None
     total_lines: int
     by_kind: dict
+    # When dead-code analysis last ran; None = never ran or unknown (not all-clear).
+    analyzed_at: datetime | None = None
+    #: Open findings a language gate held back, ``{language: {count, reason}}``.
+    gated: dict = {}
 
 
 class SecurityFindingResponse(BaseModel):
@@ -112,6 +133,20 @@ class SecurityFindingResponse(BaseModel):
     commit_sha: str | None
     commit_at: datetime | None
     found_in_history: bool
+    # Shipped source, tests, or docs (``services/security_classes.py``).
+    path_class: Literal["source", "test", "docs"] = "source"
+
+
+class SecuritySummaryResponse(BaseModel):
+    # When the pattern scan last ran; None = never ran or unknown (not all-clear).
+    scanned_at: datetime | None = None
+    # Every stored finding, and how many sit in shipped source, tests and docs
+    # (``services/security_classes.py``). The page lede reads these rather
+    # than counting a capped list.
+    total: int = 0
+    class_counts: dict[Literal["source", "test", "docs"], int] = Field(default_factory=dict)
+    # High-severity findings in shipped source.
+    source_high: int = 0
 
 
 class RepoStatsResponse(BaseModel):
@@ -121,3 +156,11 @@ class RepoStatsResponse(BaseModel):
     doc_coverage_pct: float
     freshness_score: float
     dead_export_count: int
+
+
+class DeadCodeAnalyzeResponse(BaseModel):
+    """202 launch payload for a re-analysis (an index-only job, no LLM work)."""
+
+    job_id: str
+    status: str = "accepted"
+    repository_id: str

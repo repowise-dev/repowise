@@ -78,7 +78,7 @@ def apply_perf_promotions(
 ) -> None:
     """Mark provably-independent advisory perf hits ``promoted``, in place.
 
-    Mirrors ``engine._apply_crossfn_perf``: it mutates each file's ``perf_hits``
+    Mirrors ``CrossFunctionPerfStage.apply_crossfn``: it mutates each file's ``perf_hits``
     in place and is fully failure-isolated, so a promotion hiccup never blocks
     the health report. Must run AFTER the graph-dependent perf passes so the
     centrality-gated ``nested_loop_quadratic`` hits are present.
@@ -238,37 +238,23 @@ def _must_defined_before_block(
 ) -> dict[int, frozenset[str]]:
     """Variables guaranteed written before each loop block, within one iteration.
 
-    A forward *must* (intersection) analysis over the loop's blocks, treating the
-    header as the iteration start (nothing defined yet) and ignoring the back-edge
-    - so it measures what a single pass from the header definitely writes before a
-    given block. With back-edges removed the loop subgraph is a DAG whose block-id
-    order is a valid topological order, so one pass in id order reaches the
-    fixpoint. A use whose variable is in this set was redefined this iteration and
-    cannot read a previous one.
+    A forward *must* analysis (:func:`dataflow.assigned.must_defined_in`) over
+    the loop's blocks, treating the header as the iteration start (nothing
+    defined yet) and ignoring the back-edge, so it measures what a single pass
+    from the header definitely writes before a given block. A use whose
+    variable is in this set was redefined this iteration and cannot read a
+    previous one.
     """
-    defs_in_block: dict[int, frozenset[str]] = {}
-    for bid in loop_blocks:
-        bdu = def_use.block(bid)
-        defs_in_block[bid] = frozenset(d.var for d in bdu.defs) if bdu is not None else frozenset()
+    # Deferred like the module's other dataflow imports (an import cycle).
+    from ..dataflow.assigned import must_defined_in
 
-    defined_in: dict[int, frozenset[str]] = {}
-    defined_out: dict[int, frozenset[str]] = {}
-    for block in cfg.blocks:  # emission (id) order
-        bid = block.id
-        if bid not in loop_blocks:
-            continue
-        if bid == header_id:
-            din: frozenset[str] = frozenset()
-        else:
-            pred_outs = [
-                defined_out[p]
-                for p in block.predecessors
-                if p in loop_blocks and p in defined_out and not _is_back_edge(cfg, p, bid)
-            ]
-            din = frozenset.intersection(*pred_outs) if pred_outs else frozenset()
-        defined_in[bid] = din
-        defined_out[bid] = din | defs_in_block[bid]
-    return defined_in
+    return must_defined_in(
+        cfg,
+        def_use,
+        loop_blocks,
+        header_id,
+        edge=lambda src, dst: not _is_back_edge(cfg, src, dst),
+    )
 
 
 def _is_back_edge(cfg: CFG, src: int, dst: int) -> bool:

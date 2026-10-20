@@ -10,6 +10,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import type { ZoomNode } from "@repowise-dev/ui/zoom";
+import { useTranslations } from "next-intl";
 
 interface ZoomSearchProps {
   nodes: ZoomNode[];
@@ -29,6 +30,7 @@ function rank(node: ZoomNode, q: string): number {
 }
 
 export function ZoomSearch({ nodes, onPick }: ZoomSearchProps) {
+  const t = useTranslations("zoom");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -84,8 +86,8 @@ export function ZoomSearch({ nodes, onPick }: ZoomSearchProps) {
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 120)}
           onKeyDown={onKeyDown}
-          placeholder="Search files…"
-          aria-label="Search the system map"
+          placeholder={t("search.placeholder")}
+          aria-label={t("search.aria")}
           className="w-full bg-transparent text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
         />
         {query && (
@@ -95,7 +97,7 @@ export function ZoomSearch({ nodes, onPick }: ZoomSearchProps) {
               setQuery("");
               inputRef.current?.focus();
             }}
-            aria-label="Clear search"
+            aria-label={t("search.clear")}
             className="shrink-0 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
           >
             <X className="h-3.5 w-3.5" />

@@ -3,7 +3,11 @@
  */
 
 import { apiGet, apiPatch, apiPost, apiDelete } from "./client";
-import type { ProvidersResponse, ProviderValidation } from "./types";
+import type {
+  ProviderModels,
+  ProvidersResponse,
+  ProviderValidation,
+} from "./types";
 
 export async function getProviders(
   repoId?: string,
@@ -12,16 +16,40 @@ export async function getProviders(
   return apiGet<ProvidersResponse>(`/api/providers${qs}`);
 }
 
+/** Set the provider and model (any id the provider accepts). With `repoId`
+ *  the choice is written to that repo's `.repowise/config.yaml`, which the CLI
+ *  reads too; without it, the server-wide default. `baseUrl` is an http(s)
+ *  endpoint such as an OpenAI-compatible LM Studio server: omit it to keep the
+ *  current one, pass `""` to clear it. */
 export async function setActiveProvider(
   provider: string,
   model?: string,
   repoId?: string,
+  options: { baseUrl?: string } = {},
 ): Promise<ProvidersResponse> {
   return apiPatch<ProvidersResponse>("/api/providers/active", {
     provider,
     model: model ?? null,
     repo_id: repoId ?? null,
+    ...(options.baseUrl !== undefined ? { base_url: options.baseUrl } : {}),
   });
+}
+
+/** The provider's models, live where it can list them, else its built-in
+ *  list with `error` set. `baseUrl` tests an endpoint before it is saved (no
+ *  stored key is sent to it); `refresh` skips the server's short cache. */
+export async function getProviderModels(
+  providerId: string,
+  options: { repoId?: string; baseUrl?: string; refresh?: boolean } = {},
+): Promise<ProviderModels> {
+  const params = new URLSearchParams();
+  if (options.repoId) params.set("repo_id", options.repoId);
+  if (options.baseUrl) params.set("base_url", options.baseUrl);
+  if (options.refresh) params.set("refresh", "true");
+  const qs = params.size ? `?${params}` : "";
+  return apiGet<ProviderModels>(
+    `/api/providers/${encodeURIComponent(providerId)}/models${qs}`,
+  );
 }
 
 /** Store a key for a provider. Passing `repoId` also mirrors it into that

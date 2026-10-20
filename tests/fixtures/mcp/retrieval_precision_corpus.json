@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "sealed_at_commit": "c2f915d07c11ca3f451309054dfb610e75b8ae26",
   "window_size": 5,
-  "modes": ["full", "degraded"],
-  "degraded_mode": {
+  "modes": ["full", "keyless"],
+  "keyless_mode": {
     "embedder": "keyless",
     "llm": "absent",
     "retained_legs": ["path", "symbol", "fts", "history"]
@@ -24,12 +24,12 @@
       "supported_generic_targets": [],
       "oracle_basis": "Exact seeded WikiSymbol.name and canonical path::Symbol identity.",
       "candidates": [
-        {"target": "packages/server/src/repowise/server/mcp_server/tool_search.py::search_codebase", "kind": "symbol", "member_name": "search_codebase", "path": "packages/server/src/repowise/server/mcp_server/tool_search.py", "owner": "", "context": ["search", "codebase", "mcp"], "legs": {"full": ["symbol", "semantic"], "degraded": ["symbol", "fts"]}},
-        {"target": "packages/cli/src/repowise/cli/commands/search_cmd.py::search", "kind": "symbol", "member_name": "search", "path": "packages/cli/src/repowise/cli/commands/search_cmd.py", "owner": "", "context": ["search", "cli"], "legs": {"full": ["semantic"], "degraded": ["fts"]}},
-        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace", "registry"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli", "entrypoint"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/server/src/repowise/server/mcp_server/tool_context/__init__.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_context/__init__.py", "owner": "", "context": ["mcp", "context"], "legs": {"full": ["semantic"], "degraded": ["fts"]}},
-        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill", "command"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}}
+        {"target": "packages/server/src/repowise/server/mcp_server/tool_search.py::search_codebase", "kind": "symbol", "member_name": "search_codebase", "path": "packages/server/src/repowise/server/mcp_server/tool_search.py", "owner": "", "context": ["search", "codebase", "mcp"], "legs": {"full": ["symbol", "semantic"], "keyless": ["symbol", "fts"]}},
+        {"target": "packages/cli/src/repowise/cli/commands/search_cmd.py::search", "kind": "symbol", "member_name": "search", "path": "packages/cli/src/repowise/cli/commands/search_cmd.py", "owner": "", "context": ["search", "cli"], "legs": {"full": ["semantic"], "keyless": ["fts"]}},
+        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace", "registry"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli", "entrypoint"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/server/src/repowise/server/mcp_server/tool_context/__init__.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_context/__init__.py", "owner": "", "context": ["mcp", "context"], "legs": {"full": ["semantic"], "keyless": ["fts"]}},
+        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill", "command"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}}
       ]
     },
     {
@@ -46,12 +46,12 @@
       "supported_generic_targets": [],
       "oracle_basis": "Exact seeded Page.target_path equality.",
       "candidates": [
-        {"target": "packages/core/src/repowise/core/analysis/test_impact.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/test_impact.py", "owner": "", "context": ["analysis", "test", "impact"], "legs": {"full": ["path", "semantic"], "degraded": ["path", "fts"]}},
-        {"target": "tests/unit/server/mcp/test_pr_test_impact_semantics.py", "kind": "page", "member_name": "", "path": "tests/unit/server/mcp/test_pr_test_impact_semantics.py", "owner": "", "context": ["test", "impact", "semantics"], "legs": {"full": ["path", "semantic"], "degraded": ["path", "fts"]}},
-        {"target": "packages/core/src/repowise/core/analysis/pr_blast.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/pr_blast.py", "owner": "", "context": ["analysis", "pr", "blast"], "legs": {"full": ["semantic"], "degraded": ["fts"]}},
-        {"target": "packages/core/src/repowise/core/workspace/repo_index.py::RepoIndex.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/repo_index.py", "owner": "RepoIndex", "context": ["workspace", "repository"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/server/src/repowise/server/mcp_server/tool_risk/get_risk.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_risk/get_risk.py", "owner": "", "context": ["risk", "impact"], "legs": {"full": ["semantic"], "degraded": ["fts"]}}
+        {"target": "packages/core/src/repowise/core/analysis/test_impact.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/test_impact.py", "owner": "", "context": ["analysis", "test", "impact"], "legs": {"full": ["path", "semantic"], "keyless": ["path", "fts"]}},
+        {"target": "tests/unit/server/mcp/test_pr_test_impact_semantics.py", "kind": "page", "member_name": "", "path": "tests/unit/server/mcp/test_pr_test_impact_semantics.py", "owner": "", "context": ["test", "impact", "semantics"], "legs": {"full": ["path", "semantic"], "keyless": ["path", "fts"]}},
+        {"target": "packages/core/src/repowise/core/analysis/pr_blast.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/pr_blast.py", "owner": "", "context": ["analysis", "pr", "blast"], "legs": {"full": ["semantic"], "keyless": ["fts"]}},
+        {"target": "packages/core/src/repowise/core/workspace/repo_index.py::RepoIndex.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/repo_index.py", "owner": "RepoIndex", "context": ["workspace", "repository"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/server/src/repowise/server/mcp_server/tool_risk/get_risk.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_risk/get_risk.py", "owner": "", "context": ["risk", "impact"], "legs": {"full": ["semantic"], "keyless": ["fts"]}}
       ]
     },
     {
@@ -68,13 +68,13 @@
       "supported_generic_targets": [],
       "oracle_basis": "analyze_test_impact owns measured/inferred recommendations and coverage-backed tests_to_run; pr_blast consumes it.",
       "candidates": [
-        {"target": "packages/core/src/repowise/core/analysis/health/perf/coverage.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/health/perf/coverage.py", "owner": "", "context": ["performance", "coverage", "health"], "legs": {"full": ["fts"], "degraded": ["fts"]}},
-        {"target": "packages/core/src/repowise/core/analysis/test_impact.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/test_impact.py", "owner": "", "context": ["pr", "test", "impact", "coverage", "changed", "files", "tests", "run"], "legs": {"full": ["semantic", "fts", "symbol"], "degraded": ["fts", "symbol"]}},
-        {"target": "packages/core/src/repowise/core/analysis/pr_blast.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/pr_blast.py", "owner": "", "context": ["pr", "changed", "files", "test", "impact"], "legs": {"full": ["semantic", "fts"], "degraded": ["fts"]}},
-        {"target": "packages/server/src/repowise/server/mcp_server/tool_risk/directives.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_risk/directives.py", "owner": "", "context": ["tests", "run", "basis", "risk", "directive"], "legs": {"full": ["semantic"], "degraded": ["fts"]}},
-        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}}
+        {"target": "packages/core/src/repowise/core/analysis/health/perf/coverage.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/health/perf/coverage.py", "owner": "", "context": ["performance", "coverage", "health"], "legs": {"full": ["fts"], "keyless": ["fts"]}},
+        {"target": "packages/core/src/repowise/core/analysis/test_impact.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/test_impact.py", "owner": "", "context": ["pr", "test", "impact", "coverage", "changed", "files", "tests", "run"], "legs": {"full": ["semantic", "fts", "symbol"], "keyless": ["fts", "symbol"]}},
+        {"target": "packages/core/src/repowise/core/analysis/pr_blast.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/pr_blast.py", "owner": "", "context": ["pr", "changed", "files", "test", "impact"], "legs": {"full": ["semantic", "fts"], "keyless": ["fts"]}},
+        {"target": "packages/server/src/repowise/server/mcp_server/tool_risk/directives.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_risk/directives.py", "owner": "", "context": ["tests", "run", "basis", "risk", "directive"], "legs": {"full": ["semantic"], "keyless": ["fts"]}},
+        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}}
       ]
     },
     {
@@ -91,12 +91,12 @@
       "supported_generic_targets": [],
       "oracle_basis": "answer.py invokes the retrieval pipeline; _answer_pipeline.py owns hybrid page/symbol retrieval across module boundaries.",
       "candidates": [
-        {"target": "packages/server/src/repowise/server/mcp_server/tool_answer/answer.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_answer/answer.py", "owner": "", "context": ["mcp", "question", "answer", "orchestration", "retrieval"], "legs": {"full": ["semantic", "fts"], "degraded": ["fts"]}},
-        {"target": "packages/server/src/repowise/server/mcp_server/_answer_pipeline.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/_answer_pipeline.py", "owner": "", "context": ["answer", "pipeline", "hybrid", "page", "symbol", "retrieval"], "legs": {"full": ["semantic", "fts", "symbol"], "degraded": ["fts", "symbol"]}},
-        {"target": "packages/server/src/repowise/server/mcp_server/tool_answer/retrieval.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_answer/retrieval.py", "owner": "", "context": ["answer", "retrieval"], "legs": {"full": ["semantic"], "degraded": ["fts"]}},
-        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}}
+        {"target": "packages/server/src/repowise/server/mcp_server/tool_answer/answer.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_answer/answer.py", "owner": "", "context": ["mcp", "question", "answer", "orchestration", "retrieval"], "legs": {"full": ["semantic", "fts"], "keyless": ["fts"]}},
+        {"target": "packages/server/src/repowise/server/mcp_server/_answer_pipeline.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/_answer_pipeline.py", "owner": "", "context": ["answer", "pipeline", "hybrid", "page", "symbol", "retrieval"], "legs": {"full": ["semantic", "fts", "symbol"], "keyless": ["fts", "symbol"]}},
+        {"target": "packages/server/src/repowise/server/mcp_server/tool_answer/retrieval.py", "kind": "page", "member_name": "", "path": "packages/server/src/repowise/server/mcp_server/tool_answer/retrieval.py", "owner": "", "context": ["answer", "retrieval"], "legs": {"full": ["semantic"], "keyless": ["fts"]}},
+        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}}
       ]
     },
     {
@@ -111,12 +111,12 @@
       "supported_generic_targets": [],
       "oracle_basis": "Standing decision: embed_batch raises on failure so indexed/failed counters stay honest; affected source is decision_extractor.py.",
       "candidates": [
-        {"target": "dec_embed_batch_counters", "kind": "decision", "member_name": "", "path": "packages/core/src/repowise/core/analysis/decision_extractor.py", "owner": "", "context": ["decision", "indexing", "embed", "batch", "counters", "failure"], "legs": {"full": ["history", "semantic"], "degraded": ["history", "fts"]}},
-        {"target": "packages/core/src/repowise/core/analysis/decision_extractor.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/decision_extractor.py", "owner": "", "context": ["decision", "extractor", "indexing", "embed", "batch"], "legs": {"full": ["semantic", "fts"], "degraded": ["fts"]}},
-        {"target": "dec_generic_branch_names", "kind": "decision", "member_name": "", "path": "", "owner": "", "context": ["branch", "names"], "legs": {"full": ["history"], "degraded": ["history"]}},
-        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}}
+        {"target": "dec_embed_batch_counters", "kind": "decision", "member_name": "", "path": "packages/core/src/repowise/core/analysis/decision_extractor.py", "owner": "", "context": ["decision", "indexing", "embed", "batch", "counters", "failure"], "legs": {"full": ["history", "semantic"], "keyless": ["history", "fts"]}},
+        {"target": "packages/core/src/repowise/core/analysis/decision_extractor.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/analysis/decision_extractor.py", "owner": "", "context": ["decision", "extractor", "indexing", "embed", "batch"], "legs": {"full": ["semantic", "fts"], "keyless": ["fts"]}},
+        {"target": "dec_generic_branch_names", "kind": "decision", "member_name": "", "path": "", "owner": "", "context": ["branch", "names"], "legs": {"full": ["history"], "keyless": ["history"]}},
+        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}}
       ]
     },
     {
@@ -135,13 +135,13 @@
       ],
       "oracle_basis": "The generic leaf is supported by exact owner, module/path, and omission-reference query context; every other generic member is manually labelled unsupported.",
       "candidates": [
-        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace", "alias"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/core/src/repowise/core/distill/store.py::OmissionStore.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/distill/store.py", "owner": "OmissionStore", "context": ["omission", "store", "saved", "reference", "expand"], "legs": {"full": ["symbol", "semantic", "fts"], "degraded": ["symbol", "fts"]}},
-        {"target": "packages/core/src/repowise/core/ingestion/languages/registry.py::LanguageRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/ingestion/languages/registry.py", "owner": "LanguageRegistry", "context": ["language", "tag"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/core/src/repowise/core/sessions/cursor.py::SessionCursor.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/sessions/cursor.py", "owner": "SessionCursor", "context": ["session", "cursor", "file"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill", "command"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli", "entrypoint"], "legs": {"full": ["symbol"], "degraded": ["symbol"]}},
-        {"target": "packages/core/src/repowise/core/distill/store.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/distill/store.py", "owner": "", "context": ["omission", "store", "saved", "reference", "expand"], "legs": {"full": ["semantic", "fts"], "degraded": ["fts"]}}
+        {"target": "packages/core/src/repowise/core/workspace/registry.py::WorkspaceRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/workspace/registry.py", "owner": "WorkspaceRegistry", "context": ["workspace", "alias"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/core/src/repowise/core/distill/store.py::OmissionStore.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/distill/store.py", "owner": "OmissionStore", "context": ["omission", "store", "saved", "reference", "expand"], "legs": {"full": ["symbol", "semantic", "fts"], "keyless": ["symbol", "fts"]}},
+        {"target": "packages/core/src/repowise/core/ingestion/languages/registry.py::LanguageRegistry.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/ingestion/languages/registry.py", "owner": "LanguageRegistry", "context": ["language", "tag"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/core/src/repowise/core/sessions/cursor.py::SessionCursor.get", "kind": "symbol", "member_name": "get", "path": "packages/core/src/repowise/core/sessions/cursor.py", "owner": "SessionCursor", "context": ["session", "cursor", "file"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/core/src/repowise/core/distill/runner.py::run", "kind": "symbol", "member_name": "run", "path": "packages/core/src/repowise/core/distill/runner.py", "owner": "", "context": ["distill", "command"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/cli/src/repowise/cli/main.py::main", "kind": "symbol", "member_name": "main", "path": "packages/cli/src/repowise/cli/main.py", "owner": "", "context": ["cli", "entrypoint"], "legs": {"full": ["symbol"], "keyless": ["symbol"]}},
+        {"target": "packages/core/src/repowise/core/distill/store.py", "kind": "page", "member_name": "", "path": "packages/core/src/repowise/core/distill/store.py", "owner": "", "context": ["omission", "store", "saved", "reference", "expand"], "legs": {"full": ["semantic", "fts"], "keyless": ["fts"]}}
       ]
     }
   ]

@@ -8,9 +8,9 @@ from pathlib import Path
 import jinja2
 import pytest
 
+from repowise.core.generation.context.module_facts import build_module_facts
 from repowise.core.generation.context_assembler import (
     ApiContractContext,
-    ArchitectureDiagramContext,
     FilePageContext,
     InfraPageContext,
     ModulePageContext,
@@ -19,11 +19,7 @@ from repowise.core.generation.context_assembler import (
     SymbolSpotlightContext,
     _TopFile,
 )
-from repowise.core.generation.page_generator.structural import (
-    as_markdown,
-    oneline,
-    signature,
-)
+from repowise.core.generation.page_generator.structural import register_filters
 from repowise.core.generation.structural_labels import resolve_structural_labels
 from repowise.core.ingestion.models import PackageInfo
 
@@ -53,9 +49,7 @@ def jinja_env() -> jinja2.Environment:
     # The same filters PageGenerator registers. Structural templates render
     # page content rather than a prompt, so they lean on these to keep
     # docstrings and signatures inside a table cell or list item.
-    env.filters.setdefault("oneline", oneline)
-    env.filters.setdefault("as_markdown", as_markdown)
-    env.filters.setdefault("signature", signature)
+    register_filters(env)
     env.globals["labels"] = resolve_structural_labels(None)
     return env
 
@@ -272,7 +266,7 @@ def test_file_page_asks_about_importers_only_when_it_has_them(
 
 @pytest.fixture(scope="module")
 def module_page_ctx() -> ModulePageContext:
-    return ModulePageContext(
+    ctx = ModulePageContext(
         title="Calculation Engine",
         language="python",
         total_symbols=5,
@@ -284,6 +278,8 @@ def module_page_ctx() -> ModulePageContext:
         files=["python_pkg/calculator.py", "python_pkg/models.py"],
         directories=["python_pkg"],
     )
+    ctx.facts = build_module_facts(ctx, [], None)
+    return ctx
 
 
 def test_module_page_renders_without_error(jinja_env, module_page_ctx):
@@ -532,37 +528,6 @@ def test_spotlight_asks_about_importers_only_when_it_has_them(
     # The two it can always ask survive on a symbol with no edges at all.
     assert "`_normalise`" in without
     assert without.count("?") >= 2
-
-
-# ---------------------------------------------------------------------------
-# architecture_diagram.j2
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def architecture_diagram_ctx() -> ArchitectureDiagramContext:
-    return ArchitectureDiagramContext(
-        repo_name="my-repo",
-        nodes=["pkg/a.py", "pkg/b.py"],
-        edges=[("pkg/a.py", "pkg/b.py")],
-        communities={0: ["pkg/a.py"], 1: ["pkg/b.py"]},
-        scc_groups=[],
-    )
-
-
-def test_architecture_diagram_renders_without_error(jinja_env, architecture_diagram_ctx):
-    result = render(jinja_env, "architecture_diagram.j2", architecture_diagram_ctx)
-    assert result
-
-
-def test_architecture_diagram_has_heading(jinja_env, architecture_diagram_ctx):
-    result = render(jinja_env, "architecture_diagram.j2", architecture_diagram_ctx)
-    assert "##" in result
-
-
-def test_architecture_diagram_mentions_mermaid(jinja_env, architecture_diagram_ctx):
-    result = render(jinja_env, "architecture_diagram.j2", architecture_diagram_ctx)
-    assert "mermaid" in result.lower()
 
 
 # ---------------------------------------------------------------------------

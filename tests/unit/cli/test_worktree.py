@@ -69,3 +69,53 @@ def test_base_is_seedable_requires_state_and_db(tmp_path: Path) -> None:
     assert not base_is_seedable(repo)
     (repo / ".repowise" / "wiki.db").write_text("", encoding="utf-8")
     assert base_is_seedable(repo)
+
+
+def test_adopting_identity_rekeys_the_repo_level_pages(tmp_path: Path) -> None:
+    """The overview id carries the repo name; the seeded copy must be findable and regenerable."""
+    import sqlite3
+    from contextlib import closing
+
+    from repowise.cli.worktree import _adopt_repository_identity
+
+    src, dest = tmp_path / "base", tmp_path / "feature-tree"
+    db = tmp_path / "wiki.db"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.executescript(
+            "CREATE TABLE repositories (id TEXT, name TEXT, local_path TEXT);"
+            "CREATE TABLE wiki_pages (id TEXT, repository_id TEXT, page_type TEXT,"
+            " target_path TEXT, parent_page_id TEXT);"
+            "CREATE TABLE wiki_page_versions (id TEXT, page_id TEXT);"
+            "CREATE VIRTUAL TABLE page_fts USING fts5(page_id UNINDEXED, title, target_path);"
+        )
+        conn.execute("INSERT INTO repositories VALUES ('r1', 'base', ?)", (str(src),))
+        conn.execute(
+            "INSERT INTO wiki_pages VALUES ('repo_overview:base', 'r1', 'repo_overview', 'base', NULL)"
+        )
+        conn.execute(
+            "INSERT INTO wiki_pages VALUES ('module_page:src', 'r1', 'module_page', 'src',"
+            " 'repo_overview:base')"
+        )
+        conn.execute("INSERT INTO wiki_page_versions VALUES ('v1', 'repo_overview:base')")
+        conn.execute("INSERT INTO page_fts VALUES ('repo_overview:base', 'Overview', 'base')")
+        conn.commit()
+
+    _adopt_repository_identity(tmp_path, src_repo=src, dest_repo=dest)
+
+    with closing(sqlite3.connect(db)) as conn:
+        pages = conn.execute("SELECT id, target_path, parent_page_id FROM wiki_pages").fetchall()
+        versions = conn.execute("SELECT page_id FROM wiki_page_versions").fetchall()
+        fts = conn.execute("SELECT page_id, target_path FROM page_fts").fetchall()
+    assert ("repo_overview:feature-tree", "feature-tree", None) in pages
+    assert ("module_page:src", "src", "repo_overview:feature-tree") in pages
+    assert versions == [("repo_overview:feature-tree",)]
+    assert fts == [("repo_overview:feature-tree", "feature-tree")]
+
+
+def test_as_commit_id_accepts_only_hex_commit_ids() -> None:
+    from repowise.cli.helpers import as_commit_id
+
+    assert as_commit_id("a" * 40) == "a" * 40
+    assert as_commit_id("DeadBee") == "DeadBee"
+    for bad in ("--output=x", "-abcdef0", "abc123", "a" * 41, "HEAD", "", None, 7):
+        assert as_commit_id(bad) is None

@@ -87,7 +87,7 @@ def test_mine_ranks_marker_plus_query_overlap_first(tmp_path):
     top = out[0]
     assert "PYTHONIOENCODING" in top["comment"]
     assert top["lines"] == [3, 4]
-    assert "windows" in top["matched_terms"]
+    assert "window" in top["matched_terms"]
 
 
 def test_mine_path_mode_returns_marker_comments_without_query(tmp_path):
@@ -139,23 +139,106 @@ def test_mine_is_bounded_and_safe(tmp_path):
     assert mine_rationale(str(tmp_path), [], "x") == []
 
 
-def test_mine_drops_markerless_docstrings_when_a_marker_block_wins(tmp_path):
-    """Generic query terms (lines/source/one) drag in plain docstrings; once a
-    real rationale-marker block is found, the marker-less ones are dropped."""
+def test_mine_ranks_the_marker_block_over_a_generic_docstring(tmp_path):
+    """Generic query terms (lines/source/one) drag in plain docstrings; the
+    marked block that carries the question ranks first, and an unmarked one
+    carrying too little of its weight is dropped."""
     src = (
         '"""Slice text to source lines; one indexed symbol per call."""\n'
         "MAX = 1\n"
         "# The source line cap is 600 because round-trip count, not payload\n"
         "# size, dominates agent token cost.\n"
         "LIMIT = 600\n"
+        '"""Read the source of a file."""\n'
     )
     p = tmp_path / "s.py"
     p.write_text(src, encoding="utf-8")
     out = mine_rationale(str(tmp_path), ["s.py"], "why source lines cap one")
     assert out, "expected the rationale block to survive"
-    # The marker block (has 'because') is the only one kept.
-    assert all("because" in r["comment"] for r in out)
-    assert any("round-trip count" in r["comment"] for r in out)
+    assert "round-trip count" in out[0]["comment"]
+    assert all("Read the source" not in r["comment"] for r in out)
+
+
+def test_mine_keeps_an_unmarked_block_carrying_the_question_beside_marked_ones(tmp_path):
+    """A docstring stating the behaviour asked about has no causal connective;
+    it must not be dropped because some other block in the file has one."""
+    src = (
+        "# Tiers run in order because the earlier tier is cheaper.\n"
+        "TIERS = 3\n"
+        "def narrow(rep, call):\n"
+        '    """A tie between overloads keeps the representative."""\n'
+        "    return rep\n"
+    )
+    _write(tmp_path, "r.py", src)
+    out = mine_rationale(str(tmp_path), ["r.py"], "why does an overload tie keep the representative")
+    assert out and "keeps the representative" in out[0]["comment"]
+
+
+def test_mine_matches_whole_words_not_substrings(tmp_path):
+    """``tie`` is not in "tier" or "entire"."""
+    src = (
+        "# The entire tier is skipped because it is slow.\n"
+        "X = 1\n"
+        "# A tie is broken by name because the order must be stable.\n"
+        "Y = 2\n"
+    )
+    _write(tmp_path, "t.py", src)
+    out = mine_rationale(str(tmp_path), ["t.py"], "why is a tie broken")
+    assert [r["lines"][0] for r in out] == [3]
+
+
+def test_mine_lone_number_does_not_qualify_a_block(tmp_path):
+    """A number counts beside a content term, never on its own."""
+    src = (
+        "# Strategy 3 runs last because it is the most expensive.\n"
+        "X = 1\n"
+        "# Java is left out because its bare-call pattern also matches fields.\n"
+        "LANGS = ()\n"
+    )
+    _write(tmp_path, "n.py", src)
+    out = mine_rationale(str(tmp_path), ["n.py"], "why is java excluded after tier 3")
+    assert [r["lines"][0] for r in out] == [3]
+
+
+def test_mine_anchors_a_block_to_the_symbol_the_query_names(tmp_path):
+    """The comment above a constant never repeats its name; naming it in the
+    question ranks that comment over one sharing only the prose words."""
+    src = (
+        "# Checked in order because java is the common case.\n"
+        "ORDER = ()\n"
+        "\n"
+        "# Kotlin is here and java is not because its receivers differ.\n"
+        "_INHERITED_LANGUAGES = frozenset()\n"
+    )
+    _write(tmp_path, "a.py", src)
+    out = mine_rationale(str(tmp_path), ["a.py"], "why is java not in _INHERITED_LANGUAGES")
+    assert out[0]["lines"][0] == 4
+
+
+def test_mine_does_not_anchor_a_comment_to_a_call_site(tmp_path):
+    """A line that only calls the named symbol lends nothing: the comment below
+    it is about something else, and carries none of the question's words."""
+    src = (
+        "r = _narrow_overload(1)\n"
+        "# never retry here, it is unsafe\n"
+        "x = 2\n"
+    )
+    _write(tmp_path, "c.py", src)
+    out = mine_rationale(str(tmp_path), ["c.py"], "why does _narrow_overload narrow first")
+    assert out == []
+
+
+def test_mine_anchored_block_still_needs_a_word_of_its_own(tmp_path):
+    """The declaration lends its words, but a marked block must carry one
+    question word itself."""
+    src = (
+        "# never retry here, it is unsafe\n"
+        "def _narrow_overload(rep):\n"
+        "    return rep\n"
+    )
+    _write(tmp_path, "d.py", src)
+    out = mine_rationale(str(tmp_path), ["d.py"], "why does _narrow_overload narrow first")
+    assert out == []
 
 
 def test_mine_keeps_term_only_blocks_when_no_marker_exists(tmp_path):
@@ -294,6 +377,47 @@ def test_grep_comment_candidates_skips_gitignored_file(tmp_path):
     cands = grep_comment_candidates(str(tmp_path), "why is the widget list capped at 77")
     assert "enrichment.py" in cands
     assert "stale/leak.py" not in cands
+
+
+def test_grep_comment_candidates_bounds_a_pasted_issue_body(tmp_path, monkeypatch):
+    """A long issue body must not become an unbounded alternation or output."""
+    from repowise.server.mcp_server import _code_rationale as cr
+
+    repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
+    seen: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy(args, **kwargs):
+        seen.append(list(args))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(cr.subprocess, "run", spy)
+    filler = " ".join(f"longnoun{chr(97 + i % 26)}{chr(97 + i // 26)}" for i in range(60))
+    numbers = " ".join(str(n) for n in range(100, 120))
+    question = f"why is the caller list capped at 50 {filler} {numbers}"
+    cands = grep_comment_candidates(str(repo), question)
+
+    args = seen[0]
+    pattern = args[args.index("-E") + 1]
+    # Longest nouns are kept, so the 10-char filler crowds out "caller".
+    assert pattern.count("longnoun") == 2 * cr._MAX_GREP_NOUNS
+    assert "caller" not in pattern
+    # The first numbers in question order: 50, 100, 101, 102.
+    assert "102" in pattern and "103" not in pattern
+    # Per-file counts, never one output line per matched source line.
+    assert "-c" in args and "-n" not in args
+    assert cands == []
+
+
+def test_grep_comment_candidates_ranks_by_per_file_count(tmp_path):
+    repo = _git_repo(
+        tmp_path,
+        {
+            "one.py": "# caller cap 50\n",
+            "three.py": "# caller cap 50\n# caller cap 50 again\n# caller 50 here\n",
+        },
+    )
+    assert grep_comment_candidates(str(repo), "caller capped at 50") == ["three.py", "one.py"]
 
 
 def test_grep_comment_candidates_needs_a_noun(tmp_path):

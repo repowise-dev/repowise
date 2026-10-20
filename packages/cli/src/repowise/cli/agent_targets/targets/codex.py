@@ -36,6 +36,9 @@ import json
 import tomllib
 from pathlib import Path
 
+from repowise.cli.errors import reasoned_error
+from repowise.core.agents import identity
+
 from ..types import (
     Capability,
     DoctorReport,
@@ -48,8 +51,9 @@ from ..types import (
     WriteResult,
 )
 
-ID = "codex"
-DISPLAY_NAME = "Codex CLI"
+IDENTITY = identity.CODEX
+ID = IDENTITY.cli_target_id
+DISPLAY_NAME = IDENTITY.display_name
 DOCS_URL = "https://developers.openai.com/codex/cli"
 
 #: Config key for this agent's managed instruction file (``AGENTS.md``).
@@ -165,16 +169,17 @@ def hooks_config() -> dict[str, object]:
     startup and edits alone.
     """
     from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
+    from repowise.core.owned_paths import CODEX_HOOK_COMMAND
 
     context_hook = {
         "type": "command",
-        "command": "repowise-augment --client codex",
+        "command": CODEX_HOOK_COMMAND,
         "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Loading repowise context...",
     }
     freshness_hook = {
         "type": "command",
-        "command": "repowise-augment --client codex",
+        "command": CODEX_HOOK_COMMAND,
         "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Checking repowise freshness...",
     }
@@ -261,7 +266,6 @@ def _migrate_hooks_config(hooks: dict) -> None:
 
 def write_server_config(repo_path: Path) -> FileWrite:
     """Merge the repowise server table into project-local ``.codex/config.toml``."""
-    import click
 
     from ..formats.toml_merge import (
         ensure_valid_toml,
@@ -305,9 +309,10 @@ def write_server_config(repo_path: Path) -> FileWrite:
     try:
         block = table_block("mcp_servers.repowise", merged)
     except TypeError as exc:
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: [mcp_servers.repowise] holds a value repowise "
-            f"cannot rewrite ({exc}). Remove that key and retry; no changes were written."
+            f"cannot rewrite ({exc}). Remove that key and retry; no changes were written.",
+            reason="editor_config_unmergeable",
         ) from exc
     merged_text = replace_table(existing_text, "mcp_servers.repowise", block)
     merged_doc = ensure_valid_toml(merged_text, config_path)
@@ -355,8 +360,6 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     because they are genuinely two files and reporting only the first would hide
     a run whose sole effect was switching the feature back on.
     """
-    import click
-
     from ..formats.json_merge import load_json_object, write_json_config
 
     hooks_path = project_hooks_path(repo_path)
@@ -370,9 +373,10 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
 
     hooks = existing.setdefault("hooks", {})
     if not isinstance(hooks, dict):
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {hooks_path}: hooks must contain a JSON object. "
-            "Fix or remove it and retry; no changes were written."
+            "Fix or remove it and retry; no changes were written.",
+            reason="editor_config_malformed",
         )
 
     _migrate_hooks_config(hooks)
@@ -380,9 +384,10 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     for event, entries in new_config["hooks"].items():
         event_hooks = hooks.setdefault(event, [])
         if not isinstance(event_hooks, list):
-            raise click.ClickException(
+            raise reasoned_error(
                 f"Cannot update {hooks_path}: hooks.{event} must contain a JSON array. "
-                "Fix or remove it and retry; no changes were written."
+                "Fix or remove it and retry; no changes were written.",
+                reason="editor_config_malformed",
             )
         for entry in entries:
             if not _has_augment_hook_for_matcher(event_hooks, entry.get("matcher")):
@@ -976,8 +981,9 @@ class CodexTarget:
     id = ID
     display_name = DISPLAY_NAME
     docs_url = DOCS_URL
-    hook_adapter = "codex"
-    session_adapter = "codex"
+    hook_adapter = IDENTITY.hook_adapter
+    session_adapter = IDENTITY.session_adapter
+    capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
 
@@ -994,9 +1000,7 @@ class CodexTarget:
         answer: the setup path warns when it writes config for a CLI that is
         installed and signed out.
         """
-        import shutil
-
-        return shutil.which("codex") is not None or (Path.home() / ".codex").is_dir()
+        return IDENTITY.is_installed() or (Path.home() / ".codex").is_dir()
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
@@ -1186,7 +1190,7 @@ class CodexTarget:
             str(instructions_path(repo)),
         ]
 
-    def doctor(self) -> DoctorReport:
+    def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """Health of the Codex wiring.
 
         The stale-matcher case matters more here than anywhere else: Codex is

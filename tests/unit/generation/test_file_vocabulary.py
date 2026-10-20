@@ -9,15 +9,17 @@ Measured on the cli/cli and django canary indexes, gold file in the top ten of
 a full-text search over page text: **Go 4 to 12 of 20 instances, python 34 to
 38 of 50**. The same probe against an index shaped like a symbol-only
 competitor scored 8 of 20 on Go and *worse than the current pages* on python,
-which is why this ships as page content and not as a second symbol index.
+which is why this ships with the page and not as a second symbol index.
 
-Two properties carry the whole result and each has a test below:
+It is a bag of words, so it is stored in page metadata and embedded rather
+than rendered: a reader saw it as token soup. Two properties carry the result
+and each has a test below:
 
-* it is **per-file**, so it discriminates. Repo-level vocabulary rendered here
-  would be byte-identical on every page in the corpus.
-* it reaches the **full-text row**, not only the rendered page. The write path
-  hands ``page.content`` to the indexer verbatim, so nothing would raise if the
-  section were dropped or moved into metadata.
+* it is **per-file**, so it discriminates. Repo-level vocabulary would be
+  byte-identical on every page in the corpus.
+* it reaches the **embedded text**, not only the page's metadata. The embed
+  recipe reads it from there, so nothing would raise if a writer stopped
+  handing the metadata over.
 """
 
 from __future__ import annotations
@@ -26,20 +28,12 @@ from pathlib import Path
 
 import jinja2
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from repowise.core.generation.context.file_vocabulary import file_vocabulary
 from repowise.core.generation.context_assembler import FilePageContext
-from repowise.core.generation.page_generator.structural import (
-    as_markdown,
-    oneline,
-    signature,
-)
+from repowise.core.generation.page_generator.structural import register_filters
 from repowise.core.generation.structural_labels import resolve_structural_labels
-from repowise.core.persistence.crud import upsert_page, upsert_repository
-from repowise.core.persistence.database import init_db
-from repowise.core.persistence.search import FullTextSearch
+from repowise.core.persistence.vector_store import FILE_VOCABULARY_KEY, embed_item
 
 VOCAB_HEADING = "## In the code"
 
@@ -178,9 +172,7 @@ def jinja_env() -> jinja2.Environment:
         undefined=jinja2.StrictUndefined,
         autoescape=False,
     )
-    env.filters.setdefault("oneline", oneline)
-    env.filters.setdefault("as_markdown", as_markdown)
-    env.filters.setdefault("signature", signature)
+    register_filters(env)
     env.globals["labels"] = resolve_structural_labels(None)
     return env
 
@@ -223,104 +215,42 @@ def _file_page(**overrides) -> FilePageContext:
 
 
 class TestRendering:
-    def test_the_section_renders_when_there_is_vocabulary(self, jinja_env):
+    def test_the_vocabulary_is_not_rendered(self, jinja_env):
         ctx = _file_page(file_vocabulary=file_vocabulary(GO_SOURCE))
         page = jinja_env.get_template("file_page.j2").render(ctx=ctx)
-        assert VOCAB_HEADING in page
-        assert "Order of releases returned" in page
-
-    def test_no_heading_when_the_file_yields_nothing(self, jinja_env):
-        """Every section below the Overview is conditional, and this is why.
-
-        An empty heading puts the same stock line into the index on thousands
-        of pages, where it matches every query and distinguishes none.
-        """
-        page = jinja_env.get_template("file_page.j2").render(ctx=_file_page(file_vocabulary=""))
         assert VOCAB_HEADING not in page
-
-    def test_it_sits_below_the_questions_block(self, jinja_env):
-        """``_extract_summary`` reads back from the top. A bag of words is not
-        a summary, so it must not be the first thing the page says."""
-        ctx = _file_page(file_vocabulary=file_vocabulary(GO_SOURCE))
-        page = jinja_env.get_template("file_page.j2").render(ctx=ctx)
-        assert page.index("## Overview") < page.index(VOCAB_HEADING)
-        assert page.index("## Questions this page answers") < page.index(VOCAB_HEADING)
-
-    def test_two_files_get_different_vocabulary(self, jinja_env):
-        """The property the whole result rests on.
-
-        Repo-level vocabulary would render byte-identically on all ~700 file
-        pages of cli/cli and carry zero discriminative power. This is the
-        opposite granularity, deliberately.
-        """
-        tmpl = jinja_env.get_template("file_page.j2")
-        a = tmpl.render(ctx=_file_page(file_vocabulary=file_vocabulary(GO_SOURCE)))
-        b = tmpl.render(
-            ctx=_file_page(
-                file_path="api/client.go",
-                file_vocabulary=file_vocabulary('type Client struct {\n\tHTTP string\n}'),
-            )
-        )
-        assert "Order of releases returned" in a
-        assert "Order of releases returned" not in b
+        assert "Order of releases returned" not in page
 
 
-@pytest.fixture
-async def fts():
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    await init_db(engine)
-    search = FullTextSearch(engine)
-    await search.ensure_index()
-    yield engine, search
-    await engine.dispose()
+def test_two_files_get_different_vocabulary():
+    """The property the whole result rests on.
+
+    Repo-level vocabulary would be byte-identical on all ~700 file pages of
+    cli/cli and carry zero discriminative power. This is the opposite
+    granularity, deliberately.
+    """
+    a = file_vocabulary(GO_SOURCE)
+    b = file_vocabulary("type Client struct {\n\tHTTP string\n}")
+    assert "Order of releases returned" in a
+    assert "Order of releases returned" not in b
 
 
-async def _index(engine, search, *, page_id, target_path, content):
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as session:
-        repo = await upsert_repository(session, name="r", local_path="/tmp/r")
-        await session.commit()
-        await upsert_page(
-            session,
-            page_id=page_id,
-            repository_id=repo.id,
-            page_type="file_page",
-            title=target_path,
-            content=content,
-            summary="",
-            target_path=target_path,
-            source_hash="h",
-            model_name="template",
-            provider_name="template",
-        )
-        await session.commit()
-    await search.index(page_id, target_path, content, summary="", target_path=target_path)
-
-
-@pytest.mark.asyncio
-async def test_the_words_reach_the_full_text_row(fts, jinja_env):
+def test_the_words_reach_the_embedded_text(jinja_env):
     """The round trip, not the render.
 
-    ``FullTextSearch.index`` is handed ``page.content`` verbatim, so the
-    section could be dropped, moved into metadata, or added after the row was
-    written and nothing would raise. This is the assertion that the page is
-    actually findable by the words its own file contains, which is the entire
-    claim.
+    The vocabulary lives in page metadata, so a writer that passed only the
+    content would embed a page without it and nothing would raise. This is the
+    assertion that the embedded text carries the words the file itself uses.
     """
-    engine, search = fts
     ctx = _file_page(file_vocabulary=file_vocabulary(GO_SOURCE))
     content = jinja_env.get_template("file_page.j2").render(ctx=ctx)
-    await _index(
-        engine,
-        search,
-        page_id="file_page:pkg/cmd/release/list/list.go",
+    _pid, text, _meta = embed_item(
+        "file_page:pkg/cmd/release/list/list.go",
+        title="pkg/cmd/release/list/list.go",
+        page_type="file_page",
         target_path="pkg/cmd/release/list/list.go",
+        summary="",
         content=content,
+        page_metadata={FILE_VOCABULARY_KEY: ctx.file_vocabulary},
     )
-
-    hits = await search.search("order of releases returned", limit=10)
-    assert [h.target_path for h in hits] == ["pkg/cmd/release/list/list.go"]
+    assert "Order of releases returned" in text

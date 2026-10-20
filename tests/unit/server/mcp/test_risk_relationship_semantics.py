@@ -99,7 +99,9 @@ async def relationship_payload(setup_mcp, factory, tmp_path):
     try:
         yield {
             "normal": await get_risk([target], repo="alpha", include=["graph"]),
-            "pr": await get_risk([target], repo="alpha", changed_files=[target], include=["graph"]),
+            "pr": await get_risk(
+                [target], repo="alpha", changed_files=[target], include=["graph", "blast"]
+            ),
         }
     finally:
         _state._registry, _state._cross_repo_enricher = previous
@@ -168,16 +170,12 @@ async def test_co_change_is_historical_only_and_mixed_evidence_stays_separate(
     consumer_paths = {row["consumer_file"] for row in card["consumers"]}
 
     only = partners["docs/cochange-only.md"]
-    assert only["relationship_type"] == "co_change"
-    assert only["evidence_kind"] == "historical"
-    assert only["provenance"] == "git_history"
     assert only["support"] == 7
-    assert only["has_structural_link"] is False
+    assert only["has_import_link"] is False
     assert only["file_path"] not in dependent_paths | consumer_paths
 
     mixed = partners["src/direct_0.py"]
-    assert mixed["has_structural_link"] is True
-    assert mixed["structural_relationship_types"] == ["imports"]
+    assert mixed["has_import_link"] is True
     assert card["co_change_partners_total"] == 6
     assert card["co_change_partners_emitted"] == len(card["co_change_partners"]) == 5
     assert card["co_change_partners_truncated"] is True
@@ -352,3 +350,20 @@ async def test_valid_empty_workspace_analysis_is_not_reported_as_unknown(setup_m
     assert card["cross_repo_links"] == []
     assert card["cross_repo_links_total"] == card["cross_repo_links_emitted"] == 0
     assert card["relationship_analysis"]["cross_repo"]["status"] == "available"
+
+
+def test_empty_deprecated_consumers_list_is_left_out():
+    from repowise.server.mcp_server.tool_risk.enrichment import _attach_impact
+
+    card: dict = {"target": "src/api.py"}
+    link = {
+        "evidence_kind": "structural",
+        "source_repository": "web",
+        "target_repository": "api",
+    }
+    links = {"all": [link], "provider": [], "consumer": []}
+    _attach_impact(card, "api", {"status": "ok"}, [], links, None)
+    impact = card["cross_repo_impact"]
+    assert impact["affected_repos"] == ["web"]
+    legacy = {k for k in impact if k.startswith("cross_repo_consumers")}
+    assert legacy == {"cross_repo_consumers_analysis"}

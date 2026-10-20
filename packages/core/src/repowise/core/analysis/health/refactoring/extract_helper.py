@@ -28,8 +28,12 @@ Precision-first, the gate demands a block genuinely worth a helper:
   vendored bundles) the block still duplicates across ``>= 2`` sites — test
   fixtures and migration boilerplate duplicate constantly but a shared
   helper is the wrong fix for them;
-- the recovered impact is read off the file's ``dry_violation`` finding
-  when it overlaps the block, else ``0`` (same posture as Extract Class).
+- the recovered impact is the block's share of the file's ``dry_violation``
+  finding when it overlaps the block, else ``0``: the finding grades the
+  file's cross-file duplication, so one block is credited the lines of it it
+  removes here, not the whole finding (:func:`clone_share`). A block inside
+  one file recovers ``0``: that finding does not grade it, so it stays
+  evidence of the duplication rather than a step that claims a score.
 
 Confidence rides the co-change signal: a clone whose sites are actively
 co-modified is real, maintained duplication (``high``); a dormant clone is
@@ -39,12 +43,22 @@ still worth extracting but ranks ``medium``.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
+import structlog
+
+from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
+from ..duplication.detector import clone_ranges, union_line_count
+from ..effort import effort_bucket
+from .graph_signals import defined_symbols
+from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
-from .naming import identifier_slug
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
+from .reuse import find_reuse
+
+log = structlog.get_logger(__name__)
 
 # The biomarker this detector answers — the recovered impact is read off it.
 _SOURCE_BIOMARKER = "dry_violation"
@@ -57,8 +71,10 @@ _MIN_HELPER_LINES = 8
 
 # Co-change count at/above which duplication counts as actively maintained
 # (mirrors ``dry_violation._ACTIVE_CO_CHANGE``) — the strong, high-confidence
-# smell rather than a dormant clone.
-_ACTIVE_CO_CHANGE = 3
+# smell rather than a dormant clone. Public because the opportunity composer
+# gates the same threshold when it decides whether a clone instructs a change
+# or only evidences one.
+ACTIVE_CO_CHANGE = 3
 
 # Slack (lines) for treating two clone regions on this file's side as the
 # same block — matches the duplication merger's one-line window slack.
@@ -106,13 +122,42 @@ _FIELD_CTOR = re.compile(
     r"^\s*(dataclasses\.|attr\.|attrs\.|pydantic\.|msgspec\.)?"
     r"(field|Field|ib|attrib|mapped_column|Column|relationship)\s*\(",
 )
+# Table-level declarative constructs. Same closed-vocabulary posture as
+# ``_FIELD_CTOR``: these are schema, never behaviour, and a run of them was the
+# other half of the ORM boilerplate that reached the top of the plan board.
+_TABLE_DECL = re.compile(
+    r"^\s*(UniqueConstraint|Index|CheckConstraint|ForeignKeyConstraint|PrimaryKeyConstraint)\s*\(",
+)
+# A dunder class attribute (``__table_args__``, ``__tablename__``, ``__all__``)
+# configures the class; it does not compute.
+_DUNDER_ATTR = re.compile(r"^\s*__\w+__\s*=")
 _DECL_LINE = re.compile(
     r"""^\s*(
         [\w.\[\]"']+ \s* : \s* [^=]+            # annotated, no default: name: type
         | [\w]+ \s* ,?                          # bare parameter / enum member
         | [)\]}]\s* [:,]? \s* (->.*)? :? \s*    # a closer, with or without a return type
         | (async\s+)?(def|function|fn|func|class|interface|type|struct)\s+[\w<>]+\s*[(<{:]?\s*
+        | (async\s+)?(def|function|fn|func|class|interface|type|struct)\s+[\w<>]+\s*
+            \( (?: [^()] | \([^()]*\) )* \)      # its parameter list, and nothing past it
+            \s* (->[^:{;]*)? \s*               # a signature joined back whole,
+            (: \s* \.\.\. | [:{])? \s*          # or a stub whose whole body is `...`
         | @[\w.]+ \s* \(?                       # decorator / annotation
+    )$""",
+    re.VERBOSE,
+)
+# A declaration head whose parameter list is still open where the block ends: a
+# clone window can stop at the last parameter two signatures share, before the
+# closing `) -> T:` line. Only the parameters themselves may follow the `(`.
+_OPEN_DECL_HEAD = re.compile(
+    r"^\s*(async\s+)?(def|function|fn|func|class|interface)\s+[\w<>]+\s*\((?P<params>.*)$"
+)
+# One parameter: `name`, `name: type`, `name: type = default`, `*args`, `**kw`,
+# a bare `*` or `/`, an optional `name?: type`, or Go's `name type`.
+_PARAM = re.compile(
+    r"""^(
+        (\.\.\.)? \*{0,2} &? (mut\s+)? [\w$]+ \?? \s* (: [^=]*)? (= .+)?
+        | [\w$]+ \s+ [\w.*\[\]&]+
+        | [*/]
     )$""",
     re.VERBOSE,
 )
@@ -120,6 +165,91 @@ _CONTROL_FLOW = re.compile(
     r"\b(if|else|elif|for|while|try|except|catch|finally|return|yield|raise|throw|"
     r"with|switch|case|await|match|break|continue|next|fallthrough|defer|goto|redo|retry)\b"
 )
+
+
+_STRING_LITERAL = re.compile(r"\"([^\"\\]|\\.)*\"|'([^'\\]|\\.)*'")
+_TRAILING_COMMENT = re.compile(r"(#|//).*$")
+
+
+def _logical_lines(lines: list[str]) -> list[str]:
+    """Join bracket continuations so one declaration reads as one line.
+
+    ``user_id: Mapped[str] = mapped_column(\n    String(32), nullable=False\n)``
+    is one field declaration. Classified line by line, its middle line matches
+    no declaration shape and the whole block reads as behaviour -- which is how
+    runs of ORM columns reached the top of the plan board.
+    """
+    out: list[str] = []
+    pending = ""
+    depth = 0
+    for line in lines:
+        pending = f"{pending} {line.strip()}".strip() if pending else line.strip()
+        depth += _continuation_depth(line)
+        if depth <= 0:
+            out.append(pending)
+            pending = ""
+            depth = 0
+    if pending:
+        out.append(pending)
+    return out
+
+
+def _continuation_depth(line: str) -> int:
+    """Net unclosed ``(``/``[`` on *line*, ignoring strings and comments.
+
+    Braces are excluded deliberately: in a brace language ``{`` opens a body,
+    not a continuation, and counting it welded whole function bodies into one
+    line, which then read as a declaration. A bracket inside a string or a
+    trailing comment is text, and counting those desynchronised the depth and
+    absorbed the statements that followed.
+    """
+    bare = _STRING_LITERAL.sub("", line)
+    bare = _TRAILING_COMMENT.sub("", bare)
+    return sum(bare.count(o) - bare.count(c) for o, c in ("()", "[]"))
+
+
+def _is_open_declaration_head(line: str) -> bool:
+    """True when *line* is a ``def``/``class``/... head cut off inside its
+    parameter list, with nothing but parameters after the ``(``.
+
+    Only a line still open at the end of the block qualifies, so a statement
+    folded into it by ``_logical_lines`` (``def f( emit(a)``) has to read as a
+    parameter to pass, and does not.
+    """
+    if _continuation_depth(line) <= 0:
+        return False
+    m = _OPEN_DECL_HEAD.match(line)
+    if m is None:
+        return False
+    params = _split_top_level(m.group("params"))
+    return all(_PARAM.match(p) for p in params if p)
+
+
+def _strip_trailing_comment(line: str) -> str:
+    """*line* without a trailing ``#``/``//`` comment; one inside a string stays."""
+    masked = _STRING_LITERAL.sub(lambda s: "_" * len(s.group(0)), line)
+    found = re.search(r"#|//", masked)
+    return line[: found.start()].rstrip() if found else line
+
+
+def _split_top_level(text: str) -> list[str]:
+    """*text* split on the commas outside any bracket or string, each piece
+    stripped. A string's contents are blanked first (``"a,b"`` -> ``""``), so
+    a comma or bracket in a default value is not read as syntax."""
+    text = _STRING_LITERAL.sub('""', text)
+    pieces: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append(text[start:i].strip())
+            start = i + 1
+    pieces.append(text[start:].strip())
+    return pieces
 
 
 def _code_lines(block: list[str]) -> list[str]:
@@ -169,15 +299,23 @@ def _is_declaration_only(block: list[str]) -> bool:
     and the defect here is the advice, not the measurement. The block still
     counts as duplication; it just no longer produces a plan to extract it.
     """
-    lines = _code_lines(block)
+    code = _code_lines(block)
+    lines = _logical_lines(code)
     if not lines:
         return True
-    for line in lines:
+    # Only the last logical line can still be open. It is read for parameters
+    # without its trailing comments, whose commas do not separate anything.
+    open_tail = _logical_lines([_strip_trailing_comment(c) for c in code])[-1]
+    for i, line in enumerate(lines):
         if _CONTROL_FLOW.search(line):
             return False
         if line.startswith(_IMPORT_PREFIXES) or line in ("(", ")", "):", "}", "];", "{"):
             continue
+        if _TABLE_DECL.match(line) or _DUNDER_ATTR.match(line):
+            continue
         if _DECL_LINE.match(line):
+            continue
+        if i == len(lines) - 1 and _is_open_declaration_head(open_tail):
             continue
         # An assignment is a declaration only by what it assigns. A constant
         # RHS is inert either way; an annotated line may additionally use a
@@ -201,16 +339,7 @@ def _is_generated_path(path: str) -> bool:
     helper is the wrong advice — a migration must stay self-contained — so
     these occurrences are dropped like test ones (plan's "no generated-file
     noise" gate)."""
-    p = path.lower().replace("\\", "/")
-    return (
-        "/migrations/versions/" in p
-        or "/alembic/versions/" in p
-        or "/migrations/" in p
-        or "/node_modules/" in p
-        or "/vendor/" in p
-        or "/__generated__/" in p
-        or p.endswith(".min.js")
-    )
+    return is_vendored_or_generated_path(path) or is_migration_path(path)
 
 
 def _is_skippable_occurrence(path: str, language: str | None = None) -> bool:
@@ -245,7 +374,7 @@ class _Block:
         self.anchor_start = min(self.anchor_start, start)
         self.anchor_end = max(self.anchor_end, end)
         self.token_count = max(self.token_count, int(getattr(pair, "token_count", 0)))
-        self.co_change = max(self.co_change, int(getattr(pair, "co_change_count", 0)))
+        self.co_change = max(self.co_change, int(getattr(pair, "co_change_count", 0) or 0))
         # The anchor-side region of this pair is always an occurrence; add it
         # plus the partner region(s). Intra-file pairs contribute both regions.
         self.occurrences.add((anchor, start, end))
@@ -255,6 +384,43 @@ class _Block:
             self.occurrences.add((pair.file_b, pair.b_start_line, pair.b_end_line))
         else:
             self.occurrences.add((pair.file_a, pair.a_start_line, pair.a_end_line))
+
+
+def _symbol_spans(graph: Any, file_path: str, cache: dict[str, list[tuple[int, int]]]) -> list[tuple[int, int]]:
+    """Declaration spans defined in *file_path*, via ``defines`` edges.
+
+    Empty when the graph has no node for the file, which the caller reads as
+    "no evidence" and abstains on rather than guessing.
+    """
+    hit = cache.get(file_path)
+    if hit is not None:
+        return hit
+    spans = [(n["start_line"], n["end_line"]) for _id, n in defined_symbols(graph, file_path)]
+    cache[file_path] = spans
+    return spans
+
+
+def _within_one_declaration(
+    occurrence: tuple[str, int, int], graph: Any, cache: dict[str, list[tuple[int, int]]]
+) -> bool:
+    """True when the occurrence sits inside a single declaration.
+
+    Every symbol whose span it touches must also contain it. That admits a run
+    of top-level statements and a block nested in a function or class (a method
+    inside its class contains it twice over), and rejects both a span that ends
+    part-way into the next declaration and one that swallows whole declarations.
+    A helper function cannot be lifted out of either.
+    """
+    file_path, start, end = occurrence
+    spans = _symbol_spans(graph, file_path, cache)
+    if not spans:
+        return True  # no symbol facts for this file: nothing to gate on
+    for sym_start, sym_end in spans:
+        if sym_end < start or sym_start > end:
+            continue
+        if not (sym_start <= start and end <= sym_end):
+            return False
+    return True
 
 
 @register
@@ -270,15 +436,18 @@ class ExtractHelperDetector(RefactoringDetector):
             return []
 
         impact_lookup = self._impact_for_dry_violation(ctx)
+        spans_cache: dict[str, list[tuple[int, int]]] = {}
+        read = _cached_reader(ctx)
         out: list[RefactoringSuggestion] = []
         for block in blocks:
-            suggestion = self._build_suggestion(ctx, block, impact_lookup)
+            suggestion = self._build_suggestion(ctx, block, impact_lookup, spans_cache)
             if suggestion is not None:
+                suggestion.plan.update(_reuse_fields(ctx, suggestion.plan["occurrences"], read))
                 out.append(suggestion)
 
         # Stable order: biggest recovery first, then — because dry_violation
         # deductions are near-uniform, so impact rarely separates clones — the
-        # plan's "co_change x span" priority (actively co-modified, larger
+        # co-change x span priority (actively co-modified, larger
         # blocks first), then target for a fully deterministic tie-break.
         out.sort(
             key=lambda s: (
@@ -324,17 +493,27 @@ class ExtractHelperDetector(RefactoringDetector):
         ctx: RefactoringContext,
         block: _Block,
         impact_lookup: list[tuple[int, int, float]],
+        spans_cache: dict[str, list[tuple[int, int]]],
     ) -> RefactoringSuggestion | None:
         # Drop test-file occurrences — duplication among fixtures is noise —
         # then coalesce the overlapping windows the clone detector emits for one
         # physical block into a single site per region (without merging, the
         # same import/parse block reads as "5 sites" when it is really one).
-        # Clones are detected within a language, so every occurrence in a block
-        # shares ``ctx.language`` — which the ambiguous ``spec/`` rule needs.
+        # The clone index hashes token shapes across every language, so a site
+        # in another language family is dropped too: no shared helper can serve
+        # it. What is left shares ``ctx.language``'s family, which the
+        # ambiguous ``spec/`` rule needs.
         kept = [
-            o for o in block.occurrences if not _is_skippable_occurrence(o[0], ctx.language)
+            o
+            for o in block.occurrences
+            if same_language_family(ctx.file_path, o[0])
+            and not _is_skippable_occurrence(o[0], ctx.language)
         ]
-        occurrences = _merge_ranges_per_file(kept)
+        occurrences = [
+            o
+            for o in _merge_ranges_per_file(kept)
+            if _within_one_declaration(o, ctx.graph, spans_cache)
+        ]
         if len(occurrences) < 2:
             return None
 
@@ -365,8 +544,13 @@ class ExtractHelperDetector(RefactoringDetector):
         if region_lines and _is_declaration_only(region_lines):
             return None
 
-        impact = self._impact_for_block(anchor_region, impact_lookup)
         is_intra = len(occ_files) == 1
+        impact = (
+            0.0
+            if is_intra
+            else self._impact_for_block(anchor_region, impact_lookup)
+            * clone_share(occurrences, ctx.file_path, _cross_file_lines(ctx))
+        )
 
         suggested_site = self._suggested_site(occ_files)
         snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
@@ -404,7 +588,7 @@ class ExtractHelperDetector(RefactoringDetector):
             impact_delta=round(float(impact), 3),
             effort_bucket=effort_bucket(duplicated_lines),
             blast_radius=blast_radius,
-            confidence="high" if block.co_change >= _ACTIVE_CO_CHANGE else "medium",
+            confidence="high" if block.co_change >= ACTIVE_CO_CHANGE else "medium",
             source_biomarker=_SOURCE_BIOMARKER,
         )
 
@@ -424,9 +608,9 @@ class ExtractHelperDetector(RefactoringDetector):
           in** — ``module: "ui"`` for a block shared by ``packages/api-client``,
           ``packages/types`` and ``packages/ui``. Acting on it files shared code
           into a package two thirds of its callers are not in.
-        - **The namespace depended on the writer.** ``module_map`` is populated
+        - **The namespace depended on the writer.** ``community_label_map`` was populated
           only by the full-index path; the incremental, re-score and
-          ``repowise health`` paths leave it empty, so the same clone got
+          ``repowise health`` paths left it empty, so the same clone got
           ``"ui"`` or ``None`` depending on which pass last wrote the row. That
           is exactly the defect the ``module`` column was fixed for; the
           refactoring payload had kept it.
@@ -513,6 +697,58 @@ class ExtractHelperDetector(RefactoringDetector):
         return best
 
 
+def _cached_reader(ctx: RefactoringContext) -> Callable[[str], list[str] | None] | None:
+    """``ctx.read_lines`` reading each file once per pass, this file from the
+    lines already held; None when no reader was provided."""
+    read_lines = ctx.read_lines
+    if read_lines is None:
+        return None
+    cache: dict[str, list[str] | None] = {ctx.file_path: ctx.source_lines}
+
+    def read(path: str) -> list[str] | None:
+        if path not in cache:
+            cache[path] = read_lines(path)
+        return cache[path]
+
+    return read
+
+
+def _reuse_fields(
+    ctx: RefactoringContext,
+    occurrences: list[dict[str, Any]],
+    read: Callable[[str], list[str] | None] | None,
+) -> dict[str, Any]:
+    """``{"reuse": ...}`` when one site already is a function the others can
+    call (no second copy of it is asked for), else ``{}``."""
+    if read is None:
+        return {}
+    sites = [(o["file"], o["line_start"], o["line_end"]) for o in occurrences]
+    verdict = find_reuse(ctx.graph, ctx.language, sites, read)
+    if verdict.refused:
+        # Counted in the log, not the plan: a refusal changes nothing it serves.
+        log.debug("extract_helper_reuse_refused", file=ctx.file_path, reason=verdict.refused)
+    return {"reuse": verdict.plan} if verdict.plan else {}
+
+
+def _cross_file_lines(ctx: RefactoringContext) -> int:
+    """Lines of the file covered by clones shared with other files."""
+    return union_line_count(clone_ranges(ctx.file_path, ctx.clones, cross_file_only=True))
+
+
+def clone_share(
+    occurrences: list[tuple[str, int, int]], file_path: str, duplicated_lines: int
+) -> float:
+    """Share of *file_path*'s cross-file duplicated lines this block removes.
+
+    1.0 when the file's duplication is unknown, keeping the finding's own
+    impact as the other detectors do when they cannot re-measure it.
+    """
+    if duplicated_lines <= 0:
+        return 1.0
+    here = sum(end - start + 1 for path, start, end in occurrences if path == file_path)
+    return min(1.0, here / duplicated_lines)
+
+
 def _merge_ranges_per_file(
     occurrences: list[tuple[str, int, int]],
 ) -> list[tuple[str, int, int]]:
@@ -543,33 +779,29 @@ def _merge_ranges_per_file(
     return sorted(out)
 
 
-def _suggested_name(suggested_site: dict[str, str | None]) -> str:
-    """A deterministic starting name for the extracted helper.
+def _suggested_name(suggested_site: dict[str, str | None]) -> str | None:
+    """Always ``None``: no fact this detector holds names the block.
 
-    Precision-first: without semantics we cannot name the block for what it
-    *does*, so we anchor the name to where the helper will live (the shared
-    directory leaf) and suffix ``_helper``. It is an editable starting point
-    (the UI frames it that way), not a claim about behaviour, so it stays
-    deterministic and never guesses intent. Falls back to ``shared_helper``
-    when the site has no usable label.
-
-    Reads ``directory`` only. Plans stored before that key became the sole
-    namespace still carry a ``module`` community label, and it is precisely the
-    one that produced names like ``repowise_helper`` -- the repo naming its own
-    helper -- so it is not consulted as a fallback. ``directory`` was correct on
-    those rows too, which is why dropping the label needs no migration.
+    The name used to be the shared directory's leaf plus ``_helper``, which
+    says where the helper would live and nothing about what it does, and
+    collides by construction -- six plans on this repo's index were all
+    ``persistence_helper``. Naming the block needs its semantics, which is an
+    opt-in LLM pass, not an index-time guess. Kept as a function, taking the
+    site it used to read, so the one call site stays a named decision rather
+    than a bare ``None`` literal in the plan dict.
     """
-    label = suggested_site.get("directory") or ""
-    leaf = label.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    slug = identifier_slug(leaf)
-    if not slug:
-        return "shared_helper"
-    return slug if slug.endswith("helper") else f"{slug}_helper"
+    return None
 
 
 def _common_directory(paths: list[str]) -> str | None:
-    """Longest shared directory prefix of *paths* (POSIX), or ``None`` when
-    they share no directory. Component-wise, never mid-segment."""
+    """The directory every occurrence shares *and* at least one lives in.
+
+    A shared prefix alone is not a site: occurrences in ``packages/core/...``
+    and ``packages/ui/...`` share ``packages``, a container holding no module,
+    and proposing a helper there names a place nothing could go. Requiring one
+    occurrence directly in the directory keeps the honest answer (they really
+    are siblings) and returns ``None`` for the rest.
+    """
     seg_lists = [p.replace("\\", "/").split("/")[:-1] for p in paths]
     if not seg_lists or any(not segs for segs in seg_lists):
         return None
@@ -579,4 +811,7 @@ def _common_directory(paths: list[str]) -> str | None:
             common.append(parts[0])
         else:
             break
-    return "/".join(common) or None
+    shared = "/".join(common)
+    if not shared or not any(len(segs) == len(common) for segs in seg_lists):
+        return None
+    return shared

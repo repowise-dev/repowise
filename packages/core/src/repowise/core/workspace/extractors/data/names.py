@@ -65,3 +65,21 @@ def normalize_table_name(raw: str) -> str | None:
         if schema in _DEFAULT_SCHEMAS or not _IDENT_RE.match(schema):
             schema = None
     return f"{schema}.{table}" if schema else table
+
+
+def snake_case(name: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+
+
+def pluralize(name: str) -> str:
+    """Naive English pluralization, matching the common ActiveRecord cases.
+
+    Deliberate ceiling: irregular nouns (person/people) are wrong here and
+    yield a missed link, not a false one. Upgrade path: vendor a real
+    inflector if Rails smoke tests show it matters.
+    """
+    if name.endswith(("s", "x", "z", "ch", "sh")):
+        return name + "es"
+    if name.endswith("y") and len(name) > 1 and name[-2] not in "aeiou":
+        return name[:-1] + "ies"
+    return name + "s"

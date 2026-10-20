@@ -12,6 +12,8 @@ import type {
   ChurnComplexityResponse,
   HealthFilesQuery,
   HealthFilesResponse,
+  HealthMapFeed,
+  HealthMapQuery,
   HealthOverviewResponse,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
@@ -32,10 +34,15 @@ import type {
   PageResponse,
 } from "@repowise-dev/api-client/types";
 import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
+import type { PatchCoverageResponse } from "@repowise-dev/types/generated/http";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import type { ArchitectureView } from "@repowise-dev/ui/c4";
-import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/types/refactoring";
+import type {
+  RefactoringOpportunityDetail,
+  RefactoringOpportunityPage,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 
 /** Every editor-tab webview panel the extension can open. */
@@ -76,6 +83,8 @@ export const SETTING_KEYS = [
   "diagnostics.enabled",
   "diagnostics.minSeverity",
   "diagnostics.dimensions",
+  "docDrift.diagnostics.enabled",
+  "docDrift.diagnostics.minConfidence",
   "gutterHeat.enabled",
   "fileDecorations.enabled",
   "fileDecorations.maxScore",
@@ -124,6 +133,8 @@ export interface HostApi {
   // Health dashboard
   healthOverview(limit?: number): Promise<HealthOverviewResponse>;
   healthFiles(query?: HealthFilesQuery): Promise<HealthFilesResponse>;
+  /** The bounded field the map draws, chosen by the server. */
+  healthMap(query?: HealthMapQuery): Promise<HealthMapFeed>;
   healthTrend(limit?: number): Promise<HealthTrendResponse>;
   churnComplexity(limit?: number): Promise<ChurnComplexityResponse>;
   // Architecture map
@@ -144,7 +155,13 @@ export interface HostApi {
   hotFilesGraph(): Promise<HotFilesGraphResponse>;
   executionFlows(): Promise<ExecutionFlowsResponse>;
   // Refactoring
-  refactoringTargets(filePath?: string): Promise<RefactoringTargets>;
+  /** The composed unit the web board and the agent contract both speak. */
+  refactoringOpportunities(filePath?: string): Promise<RefactoringOpportunityPage>;
+  refactoringOpportunity(opportunityId: string): Promise<RefactoringOpportunityDetail>;
+  refactoringOpportunityPrompt(
+    opportunityId: string,
+    flavor: AiPromptFlavor,
+  ): Promise<string>;
   refactoringPlan(suggestionId: string): Promise<RefactoringPlan>;
   /** Built host-side so the prompt matches the CodeLens copy path exactly. */
   refactoringPrompt(suggestionId: string, flavor: AiPromptFlavor): Promise<string>;
@@ -205,6 +222,12 @@ export interface RiskRangeReport {
   base: string;
   branch: string | null;
   result: RiskRangeResponse;
+  /**
+   * Patch coverage of the same base...HEAD range. Null when no coverage was
+   * ingested, or when the fetch failed (an older server has no endpoint): the
+   * panel then shows nothing rather than an error.
+   */
+  patchCoverage: PatchCoverageResponse | null;
 }
 
 /**
