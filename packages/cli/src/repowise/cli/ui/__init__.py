@@ -58,7 +58,6 @@ _LAZY: dict[str, str] = {
     "load_dotenv": "env_persistence",
     "make_progress": "progress_display",
     "mini": "mascot",
-    "print_analysis_summary": "result_panels",
     "print_banner": "brand",
     "print_files_written": "result_panels",
     "print_index_only_intro": "mode_selection",

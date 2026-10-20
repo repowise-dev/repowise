@@ -458,8 +458,6 @@ def run_repo_generation(
             "  [dim]Run [bold]repowise init --resume[/bold] to generate the pages that "
             "failed, without re-spending on the ones that succeeded.[/dim]\n"
         )
-    elif verbose:
-        console.print(f"  [{OK}]✓[/] Generated [bold]{written_count}[/bold] pages")
 
     # KG enrichment is layer naming and the guided tour, both pure prompting.
     # A deterministic run has no model to ask, and the skeleton's structural
