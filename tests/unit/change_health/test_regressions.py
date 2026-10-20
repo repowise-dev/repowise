@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from repowise.core.analysis.change_health.analyzer import MAX_FILE_BYTES
+from repowise.core.analysis.change_health.analyzer import (
+    MAX_FILE_BYTES,
+    RevisionAnalysis,
+    RevisionHealthAnalyzer,
+)
 from repowise.core.analysis.change_health.identity import change_finding_id, finding_key
 from repowise.core.analysis.change_health.matcher import FindingMatcher
 from repowise.core.analysis.change_health.models import FindingKey
@@ -299,3 +303,22 @@ def test_an_unlisted_expected_reason_keeps_the_inherent_sentence():
         actionability_state="expected", actionability_reason="something_new", intervention_symbol=None
     )
     assert "inherent" in _suggestion(SimpleNamespace(), perf)
+
+
+def test_revision_analysis_retains_dependents_and_test_paths():
+    """RevisionAnalysis must retain both dependents and test_paths without AttributeError."""
+    analysis = RevisionAnalysis()
+    assert analysis.dependents == {}
+    assert analysis.test_paths == set()
+
+    analyzer = RevisionHealthAnalyzer()
+    sources = {
+        "src/main.py": b"def hello():\n    return 42\n",
+        "tests/test_main.py": b"def test_hello():\n    pass\n",
+    }
+    result = analyzer.analyze(sources, subject_paths={"src/main.py"})
+    assert isinstance(result.dependents, dict)
+    assert isinstance(result.test_paths, set)
+    assert "tests/test_main.py" in result.test_paths
+    assert "src/main.py" not in result.test_paths
+

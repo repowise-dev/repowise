@@ -72,6 +72,8 @@ class RevisionAnalysis:
     findings: list[HealthFindingData] = field(default_factory=list)
     analyzed: set[str] = field(default_factory=set)
     skipped: dict[str, str] = field(default_factory=dict)
+    #: Dependents count per file, as this side's centrality gates read it.
+    dependents: dict[str, int] = field(default_factory=dict)
     #: Paths identified as tests (from FileInfo.is_test).
     test_paths: set[str] = field(default_factory=set)
     symbols: dict[str, list[Symbol]] = field(default_factory=dict)
