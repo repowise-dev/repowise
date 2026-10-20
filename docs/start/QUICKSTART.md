@@ -41,14 +41,17 @@ From the repository root:
 repowise init
 ```
 
-`init` shows what it found and asks how to index. The free run builds the
-documentation from code: no key, no model calls. Choosing a model shows what
-it adds, the estimated cost and time, and waits for your confirmation before
-any model call. A large repository takes a few minutes.
+`init` opens on one plan screen: what it found, what it will build, an ETA,
+and an opt-in model line with what a model adds and costs. Enter starts the
+free run, which builds the documentation from code: no key, no model calls.
+`m` picks a model, `e` edits the plan (advanced options, agents, the
+post-commit hook), `s` connects only this repo, and `q` quits. A detected API
+key or logged-in agent CLI is named on the model line and used only after `m`.
 
 `repowise init --yes --no-prose` does the free run with no questions. Without
-`--no-prose`, `--yes` uses a model whenever an API key is set, with the cost
-pre-approved.
+`--no-prose`, `--yes` uses a model when an API key is configured, with the
+cost pre-approved. A logged-in Claude Code, Codex or OpenCode is used only
+with `--provider`.
 
 ### 3. Open the dashboard
 
@@ -72,13 +75,15 @@ Node.js 20+, and its first run downloads the UI (about 50 MB, cached in
 |---|---|---|
 | MCP server entry | `.mcp.json`, `.vscode/mcp.json` (plus `.vscode/extensions.json`) | by default |
 | Agent context files | `.claude/CLAUDE.md`, `AGENTS.md`, Copilot instructions under `.github/` | by default |
-| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude/settings.json` and the Claude Desktop config | asked first when it points at another repo (default yes); `--yes` points it here and prints the old and new repo |
+| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude/settings.json` and the Claude Desktop config | by default; when it points at another repo the plan screen shows the move and `s` keeps it; `--yes` points it here and prints the old and new repo |
 | Claude Code hooks (session briefing, post-edit context) | `~/.claude/settings.json` | with the global entry |
-| Post-commit hook that runs `repowise update` | the repo's git `post-commit` hook | asked first; on under `--yes` (`--no-hook` skips it) |
+| Post-commit hook that runs `repowise update` | the repo's git `post-commit` hook | by default; `e` turns it off, `--no-hook` skips it |
 
-The global entry points at one repo at a time. Declining keeps it where it is,
-and agents opened in this repo still connect through `.mcp.json`. Point it
+The global entry points at one repo at a time. Pressing `s` keeps it where it
+is, and agents opened in this repo still connect through `.mcp.json`. Point it
 here later with `repowise agents add --target=claude-code --scope=user`.
+When machine-specific files such as `.claude/CLAUDE.md` would show up in
+`git status`, `e` offers to add them to `.git/info/exclude` (off by default).
 
 Other hosts need one more command, run after `init`:
 
@@ -165,7 +170,9 @@ That runbook follows the steps below. An agent can also follow them directly.
    | other | Failed | `repowise doctor` |
 
    `repowise status --format json` then gives the mode, the counts and the
-   next command.
+   next command. With `--progress json`, init writes one JSON event per line
+   to stdout and ends on a summary line with the status, mode, spend and next
+   commands.
 5. **Reconnect.** MCP tools appear only after the host restarts, or after
    `/mcp` in Claude Code. Do not assume they are active in the current session.
 6. **First tools.** Call `get_overview`. An architecture summary back means
@@ -215,9 +222,11 @@ one, search is full-text, and every run names the command that turns it on.
 
 When nothing names an embedder, repowise takes the first one with a key set,
 in the order gemini, openai, openrouter, ollama, edenai, and every model run
-prints which embedder it uses and why. A logged-in Claude Code, Codex or
-OpenCode is detected and offered with its call count and time. It is used
-only when you pick it or pass `--provider`. Keys, models and base URLs:
+prints which embedder it uses and why. init reads each logged-in Claude Code,
+Codex or OpenCode's auth status and offers it with its call count, time and
+billing (plan quota, or per token for an API key), Claude Code first. A Codex
+signed in through ChatGPT stays in the picker but is not offered. An agent
+CLI is used only when you pick it or pass `--provider`. Keys, models and base URLs:
 [Config](../reference/CONFIG.md).
 
 ## Keeping it fresh
@@ -233,7 +242,9 @@ repowise status     # mode, counts, and how far behind HEAD
 
 `repowise hook uninstall` removes the post-commit hook. Webhooks and polling:
 [Auto-Sync](../scale/AUTO_SYNC.md). Several repositories as one:
-[Workspaces](../scale/WORKSPACES.md). A new `git worktree` seeds its index from
+[Workspaces](../scale/WORKSPACES.md); `init` in a folder of repos opens the
+same plan screen, where `r` chooses the repos, and `--repos a,b` picks them in
+a script. A new `git worktree` seeds its index from
 the main checkout: [Worktrees](../scale/WORKTREES.md).
 
 ## Where to go next

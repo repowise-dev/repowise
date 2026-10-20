@@ -110,7 +110,7 @@ repowise serve                    # dashboard + MCP server (needs Node 20+; firs
 ```
 
 `init` wires Claude Code for this repo and points the global repowise MCP entry
-here (an interactive run asks first). Restart Claude Code or run `/mcp`, then ask
+here (on the interactive plan screen, `s` keeps it where it is). Restart Claude Code or run `/mcp`, then ask
 *"Use Repowise `get_overview` to summarize this repository"* or *"What breaks if I
 change `src/auth.py`?"*
 [Full setup, every agent, documentation written by a model →](docs/start/QUICKSTART.md)
@@ -949,7 +949,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 ## CLI
 
 ```bash
-repowise init [PATH]      # index a codebase (asks; --yes --no-prose needs no key)
+repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
 repowise generate [PATH]  # write wiki pages with a model, on demand
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (--workspace for every repo)
