@@ -161,8 +161,8 @@ def baseline_growth(root: Path, path: Path, revspec: str | None) -> list[dict]:
         raise CannotEvaluateError("baseline_unreadable", str(exc)) from exc
 
 
-def report_baseline_growth(fmt: str, path: Path, added: list[dict]) -> None:
-    """Say which entries *path* gained; the caller exits :data:`EXIT_GATE_FAILED`.
+def report_baseline_growth(fmt: str, path: Path | None, added: list[dict] | None) -> None:
+    """Say which entries *path* gained, if any; the caller exits :data:`EXIT_GATE_FAILED`.
 
     ``json`` carries them in its own document; ``github`` adds an ``::error::``.
     """
@@ -170,7 +170,7 @@ def report_baseline_growth(fmt: str, path: Path, added: list[dict]) -> None:
 
     from repowise.core.ci.github import error
 
-    if fmt == "json":
+    if fmt == "json" or not added:
         return
     noun = "entry" if len(added) == 1 else "entries"
     header = (

@@ -331,9 +331,7 @@ def _run_check(
         return
 
     baseline = _read_check_baseline(baseline_path, fmt)
-    grown = None
-    if fail_on_growth and baseline_path is not None:
-        grown = _baseline_growth(root, baseline_path, since, fmt)
+    grown = _baseline_growth(root, baseline_path, since, fmt) if fail_on_growth else None
     gate = evaluate_gate(findings, fail_on=fail_on, baseline=baseline)
     payload = _payload(root, findings, min_confidence)
     payload.update(
@@ -347,8 +345,7 @@ def _run_check(
     if grown is not None:
         payload["baseline_growth"] = grown
     _emit(fmt, payload, gate=gate, report=report, accepted=baseline or frozenset())
-    if grown and baseline_path is not None:
-        report_baseline_growth(fmt, baseline_path, grown)
+    report_baseline_growth(fmt, baseline_path, grown)
     if not gate.passed or grown:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
@@ -391,10 +388,12 @@ def _read_check_baseline(path: Path | None, fmt: str) -> frozenset[str] | None:
         cannot_evaluate(fmt, "baseline_unreadable", str(exc))
 
 
-def _baseline_growth(root: Path, path: Path, since: str | None, fmt: str) -> list[dict]:
+def _baseline_growth(root: Path, path: Path | None, since: str | None, fmt: str) -> list[dict]:
     """The entries *path* adds over its base: *since*'s, else the CI target branch's."""
     from repowise.core.analysis.change_risk.features import split_revspec
 
+    if path is None:  # the command refuses the flag without --baseline
+        return []
     try:
         revspec = ci_revspec(str(root), None if since in (None, "auto") else since)
         if split_revspec(revspec) is None:

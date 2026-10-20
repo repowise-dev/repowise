@@ -371,9 +371,8 @@ def _check(opts: _CheckOptions) -> None:
         if opts.write_baseline_path is not None:
             _record_baseline(opts.write_baseline_path, scan, fmt, also_keep=accepted or [])
             return
-        if opts.fail_on_growth and opts.baseline_path is not None:
-            revspec = None if opts.staged else ci_revspec(str(root), opts.revspec)
-            grown = baseline_growth(root, opts.baseline_path, revspec)
+        if opts.fail_on_growth:
+            grown = _growth(root, opts)
     except CannotEvaluateError as exc:
         cannot_evaluate(fmt, exc.code, str(exc))
 
@@ -385,10 +384,17 @@ def _check(opts: _CheckOptions) -> None:
     )
     verdict = _Verdict(scan, gate, label, baseline or frozenset(), patterns, grown)
     _EMITTERS.get(fmt, _print_check)(verdict)
-    if grown and opts.baseline_path is not None:
-        report_baseline_growth(fmt, opts.baseline_path, grown)
+    report_baseline_growth(fmt, opts.baseline_path, grown)
     if not gate.passed or grown:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
+
+
+def _growth(root: Path, opts: _CheckOptions) -> list[dict]:
+    """The entries ``--baseline`` adds over the change's base (``HEAD`` when staged)."""
+    if opts.baseline_path is None:  # the command refuses the flag without --baseline
+        return []
+    revspec = None if opts.staged else ci_revspec(str(root), opts.revspec)
+    return baseline_growth(root, opts.baseline_path, revspec)
 
 
 def _custom_patterns(root: Path) -> tuple[CustomPattern, ...]:
