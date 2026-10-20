@@ -56,11 +56,13 @@ STABLE_TAGS = frozenset(
 INTERNAL_TAGS = frozenset(
     {
         "actions",
+        "areas",
         "claude-md",
         "costs",
         "episodes",
         "feedback",
         "files",
+        "history",
         "knowledge-map",
         "mcp",
         "meta",
