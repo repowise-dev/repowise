@@ -108,6 +108,11 @@ class LanguageConfig:
     # the edge they produce is ``references`` rather than ``calls``.
     reference_call_node_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Call-site node types that represent object construction syntax (e.g. C#
+    # ``new Foo()``: ``object_creation_expression``). Recorded on ``CallSite``
+    # so bare-name resolution does not bind it to a same-named member method.
+    construction_call_node_types: frozenset[str] = field(default_factory=frozenset)
+
     # Children of a declaration that hold its keyword modifiers (C#
     # ``modifier``, Kotlin ``modifiers``), read into ``Symbol.modifiers``.
     modifier_node_types: frozenset[str] = field(default_factory=frozenset)
@@ -371,6 +376,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
                 "file_scoped_namespace_declaration",
             }
         ),
+        construction_call_node_types=frozenset({"object_creation_expression"}),
     ),
     "vbnet": LanguageConfig(
         symbol_node_types={
