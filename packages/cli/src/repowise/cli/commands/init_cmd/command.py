@@ -57,7 +57,6 @@ from ._questions import (
     _offer_fast_mode,
 )
 from ._seed import delegate_to_seeded_update
-from .reporting import show_analysis_summary
 from .workspace import _workspace_init
 
 __all__ = [
@@ -483,7 +482,6 @@ def init_command(**params: Any) -> None:
     if run is None or not index_repository(run):
         return
 
-    show_analysis_summary(run.result)
     if _generate(run):
         return
 

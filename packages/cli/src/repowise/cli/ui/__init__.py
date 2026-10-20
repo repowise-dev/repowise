@@ -61,7 +61,6 @@ _LAZY: dict[str, str] = {
     "make_progress": "progress_display",
     "mini": "mascot",
     "owl_status": "mascot",
-    "print_analysis_summary": "result_panels",
     "print_banner": "brand",
     "print_files_written": "result_panels",
     "print_index_only_intro": "mode_selection",

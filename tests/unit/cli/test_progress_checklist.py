@@ -250,3 +250,64 @@ def test_a_failed_step_is_hidden_without_a_done_row() -> None:
         assert not [t for t in bar.tasks if t.visible]
     assert "Saving a resume checkpoint" not in buf.getvalue()
     emit_phase_failed(None, "checkpoint.index")  # headless: a no-op
+
+
+def test_concurrent_graph_steps_fold_into_one_row_and_name_what_still_runs() -> None:
+    """Graph metrics run several kernels at once: no per-kernel lines, one done row."""
+    import asyncio
+    import threading
+
+    from repowise.core.pipeline.phases.ingestion import _run_concurrent_steps
+
+    console, buf = _console(terminal=False)
+    release = threading.Event()
+    seen: list[str] = []
+    with make_progress(console) as bar:
+        callback = RichProgressCallback(bar, console)
+
+        def fast() -> None:
+            pass
+
+        def slow() -> None:
+            release.wait(5)
+
+        async def run() -> None:
+            job = asyncio.ensure_future(
+                _run_concurrent_steps(
+                    "graph.metrics", [("PageRank", fast), ("symbol betweenness", slow)], callback
+                )
+            )
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                if bar.tasks and bar.tasks[0].completed == 1:
+                    break
+            seen.append(str(bar.tasks[0].fields["detail"]))
+            release.set()
+            await job
+
+        asyncio.run(run())
+
+    assert seen == ["symbol betweenness"]
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert len(lines) == 1
+    assert lines[0].startswith("    ✓ Computing graph metrics (PageRank, betweenness) · 2 algorithms · ")
+
+
+def test_generation_done_row_counts_pages_made_including_its_paid_tier() -> None:
+    """Announced totals are upper bounds (a page may gate-skip): count what was made."""
+    console, buf = _console(terminal=False)
+    with make_progress(console) as bar:
+        callback = RichProgressCallback(bar, console)
+        callback.on_phase_start("generation", 130)
+        callback.on_phase_start("generation.llm", 7)
+        callback.on_phase_start("onboarding", 6)
+        for phase, n in (("generation", 126), ("generation.llm", 6), ("onboarding", 4)):
+            for _ in range(n):
+                callback.on_item_done(phase)
+        for phase in ("onboarding", "generation.llm", "generation"):
+            callback.on_phase_done(phase)
+
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert lines[0].startswith("    ✓ Curating onboarding docs · 4 pages")
+    assert lines[1].startswith("    ✓ Writing overview and subsystem pages · 6 pages")
+    assert lines[2].startswith("  ✓ Generating pages · 132 pages")
