@@ -31,8 +31,8 @@ from .health.scoring import is_code_shape
 #: ``--fail-on`` values, least to most severe: a level fails it and every level above.
 FAIL_ON = ("worsened", "introduced")
 _KIND_RANK = {kind: i for i, kind in enumerate(FAIL_ON)}
-#: The lowest severity that can fail the gate; below it a finding warns.
-_FAIL_SEVERITY = severity_rank("high")
+#: ``--fail-at`` values: the lowest severity that can fail; below it a finding warns.
+FAIL_AT = ("medium", "high", "critical")
 
 ERROR, WARNING, NOTE = "error", "warning", "note"
 PASS, WARN, FAIL = "pass", "warn", "fail"
@@ -101,6 +101,7 @@ class GateResult:
     verdict: str
     fail_on: str
     findings: tuple[GateFinding, ...] = ()
+    fail_at: str = "high"
     #: What limits the verdict (files not compared, nothing to compare).
     notes: tuple[str, ...] = ()
 
@@ -117,6 +118,7 @@ class GateResult:
             "passed": self.passed,
             "verdict": self.verdict,
             "fail_on": self.fail_on,
+            "fail_at": self.fail_at,
             "failing_count": len(self.at(ERROR)),
             "warning_count": len(self.at(WARNING)),
             "note_count": len(self.at(NOTE)),
@@ -126,13 +128,17 @@ class GateResult:
 
 
 def assemble(
-    findings: Iterable[GateFinding], *, fail_on: str, notes: Iterable[str] = ()
+    findings: Iterable[GateFinding],
+    *,
+    fail_on: str,
+    fail_at: str = "high",
+    notes: Iterable[str] = (),
 ) -> GateResult:
     """``fail`` on any error, ``warn`` on any warning, else ``pass``; errors first."""
     ordered = tuple(sorted(findings, key=_order))
     levels = {f.level for f in ordered}
     verdict = FAIL if ERROR in levels else WARN if WARNING in levels else PASS
-    return GateResult(verdict, fail_on, ordered, tuple(notes))
+    return GateResult(verdict, fail_on, ordered, fail_at, tuple(notes))
 
 
 def _order(f: GateFinding) -> tuple:
@@ -148,18 +154,26 @@ def evaluate(
     delta: ChangeHealthDelta,
     *,
     fail_on: str = "introduced",
+    fail_at: str = "high",
     extra: Iterable[GateFinding] = (),
 ) -> GateResult:
     """The verdict on *delta*, however it was built (a checkout or supplied bytes).
 
-    *extra* are findings from another source, judged alongside. Raises
-    :class:`NotEvaluatedError` when the comparison judged nothing.
+    *fail_on* names the change kinds that fail (:data:`FAIL_ON`), *fail_at*
+    the lowest severity that does (:data:`FAIL_AT`); below either a finding
+    warns. *extra* are findings from another source, judged alongside. Raises
+    ``ValueError`` on an unknown option and :class:`NotEvaluatedError` when the
+    comparison judged nothing.
     """
-    findings, notes = health_findings(delta, fail_on=fail_on)
-    return assemble([*findings, *extra], fail_on=fail_on, notes=notes)
+    if fail_on not in FAIL_ON or fail_at not in FAIL_AT:
+        raise ValueError(f"fail_on must be one of {FAIL_ON}, fail_at one of {FAIL_AT}")
+    findings, notes = health_findings(delta, fail_on=fail_on, fail_at=fail_at)
+    return assemble([*findings, *extra], fail_on=fail_on, fail_at=fail_at, notes=notes)
 
 
-def health_findings(delta: ChangeHealthDelta, *, fail_on: str) -> tuple[list[GateFinding], list[str]]:
+def health_findings(
+    delta: ChangeHealthDelta, *, fail_on: str, fail_at: str = "high"
+) -> tuple[list[GateFinding], list[str]]:
     """``(findings, notes)`` for *delta*; raises :class:`NotEvaluatedError` when it judged nothing.
 
     A change with nothing health reads (docs, config, an unsupported language,
@@ -173,7 +187,7 @@ def health_findings(delta: ChangeHealthDelta, *, fail_on: str) -> tuple[list[Gat
         if unread:
             raise NotEvaluatedError("not_analysed", delta.explanation)
         return [], [delta.explanation]
-    findings = [_from_change(f, fail_on) for f in delta.findings]
+    findings = [_from_change(f, fail_on, fail_at) for f in delta.findings]
     findings += unread
     notes = []
     if code_skipped := delta.code_skipped:
@@ -184,7 +198,7 @@ def health_findings(delta: ChangeHealthDelta, *, fail_on: str) -> tuple[list[Gat
     return findings, notes
 
 
-def _from_change(f: ChangeFinding, fail_on: str) -> GateFinding:
+def _from_change(f: ChangeFinding, fail_on: str, fail_at: str) -> GateFinding:
     extra: dict[str, Any] = {
         "change_kind": f.change_kind,
         "severity": f.severity,
@@ -198,7 +212,7 @@ def _from_change(f: ChangeFinding, fail_on: str) -> GateFinding:
     return GateFinding(
         source=_SOURCE,
         rule=f.biomarker_type,
-        level=_level(f, fail_on),
+        level=_level(f, fail_on, fail_at),
         path=f.path,
         line=f.line_start,
         message=_message(f),
@@ -208,21 +222,22 @@ def _from_change(f: ChangeFinding, fail_on: str) -> GateFinding:
     )
 
 
-def _level(f: ChangeFinding, fail_on: str) -> str:
-    """Error when the change wrote a code-shape finding at or above *fail_on*.
+def _level(f: ChangeFinding, fail_on: str, fail_at: str) -> str:
+    """Error when the change wrote a code-shape finding at or above *fail_on* and *fail_at*.
 
     A finding the change only carried (moved) or sits away from its lines
-    (incidental) is a note, as is anything that is not code shape. Below high
-    severity a finding warns at most (CCN 9 to 14, nesting depth 4: just past a
-    detector's threshold), and so does one in a test file: long test functions
-    are the change's own scaffolding more often than a defect.
+    (incidental) is a note, as is anything that is not code shape. Below
+    *fail_at* a finding warns at most (by default medium: CCN 9 to 14, nesting
+    depth 4, just past a detector's threshold), and so does one in a test
+    file: long test functions are the change's own scaffolding more often than
+    a defect.
     """
     authored = f.attribution_basis != "moved" and f.attribution_basis not in INCIDENTAL_BASES
     if not authored or not is_code_shape(f.biomarker_type) or f.change_kind not in _KIND_RANK:
         return NOTE
     if (
         _KIND_RANK[f.change_kind] >= _KIND_RANK[fail_on]
-        and severity_rank(f.severity) >= _FAIL_SEVERITY
+        and severity_rank(f.severity) >= severity_rank(fail_at)
         and not is_test_related_path(f.path)
     ):
         return ERROR
@@ -299,7 +314,8 @@ def render_markdown(result: GateResult, *, label: str, scope: str) -> str:
             warnings=plural(len(warnings), "warning"),
         ),
         "",
-        f"{scope}; fails on {_FAILS_ON_TEXT[result.fail_on]} findings.",
+        f"{scope}; fails on {_FAILS_ON_TEXT[result.fail_on]} findings at "
+        f"{result.fail_at} severity or above.",
     ]
     for note in result.notes:
         lines += ["", cell(note)]

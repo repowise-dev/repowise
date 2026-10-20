@@ -95,6 +95,9 @@ baseline shrink-only: it fails either gate when the baseline lists a finding the
 same file at the change's base does not, so a change cannot hide new findings by
 re-saving it. A baseline the change adds for the first time passes.
 
+The health gate reads `.repowise/health-rules.json` as the change's base has it,
+so a rule a change adds or loosens applies from the next change on.
+
 ## GitHub Actions
 
 The repository is itself an action. It installs Repowise, runs the gates you
@@ -143,6 +146,7 @@ release the action installs.
 | `security-baseline` | none | Committed baseline file. |
 | `fail-on-baseline-growth` | `false` | Fail doc drift and security when their baseline gains an entry over the change's base. |
 | `health-fail-on` | `introduced` | What fails the health gate: `introduced`, or `worsened` to fail on findings the change made worse too. |
+| `health-fail-at` | `high` | Lowest severity that fails the health gate: `medium`, `high`, `critical`. |
 | `risk-fail-above-percentile` | none | With `risk` in `checks`, fail when the change ranks above this percentile of recent commits. Empty reports the rank without gating. |
 | `upload-sarif` | `false` | Upload doc drift, security and health findings to code scanning. |
 | `impacted-tests` | `false` | Select the tests the change needs (needs a cached `.repowise` index); see [below](#selecting-the-tests-a-change-needs). |
@@ -220,7 +224,7 @@ variables: `REPOWISE_VERSION`, `REPOWISE_COVERAGE_MIN_COVERABLE_LINES`,
 separated, like the report list), `REPOWISE_COVERAGE_MAX_DROP`,
 `REPOWISE_DOC_DRIFT_BASELINE`,
 `REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`, and
-`REPOWISE_HEALTH: "true"` (with `REPOWISE_HEALTH_FAIL_ON`) for a
+`REPOWISE_HEALTH: "true"` (with `REPOWISE_HEALTH_FAIL_ON` and `REPOWISE_HEALTH_FAIL_AT`) for a
 `repowise-health` job that also writes `gl-code-quality-health.json`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.
 

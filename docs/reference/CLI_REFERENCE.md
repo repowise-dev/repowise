@@ -1192,18 +1192,19 @@ Gate a change on the code-health findings it introduces. Built for CI: it needs 
 
 | Finding | Default | With `--fail-on worsened` |
 |---------|---------|---------------------------|
-| Introduced on lines the change wrote, high or critical severity | fails | fails |
-| Made worse by the change, high or critical severity | warns | fails |
-| Either of those below high severity, or in a test file | warns | warns |
+| Introduced on lines the change wrote, at `--fail-at` severity or above | fails | fails |
+| Made worse by the change, at `--fail-at` severity or above | warns | fails |
+| Either of those below `--fail-at`, or in a test file | warns | warns |
 | Moved or renamed with its code, away from the changed lines, or not code shape (performance, history, coverage) | context only | context only |
 
 | Flag | Description |
 |------|-------------|
 | `--fail-on` | `introduced` (default) or `worsened` |
+| `--fail-at` | Lowest severity that can fail: `medium`, `high` (default), `critical` |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
 
-REVSPEC is the change, resolved as for [`security check`](#repowise-security-check-revspec). Rules in `.repowise/health-rules.json` apply to both sides. A changed code file left unread (unparsable, or over 1.5 MB) warns; a change touching no file health reads passes with a note.
+REVSPEC is the change, resolved as for [`security check`](#repowise-security-check-revspec). Rules in `.repowise/health-rules.json` are read as the change's base has them and apply to both sides, so a change cannot loosen its own gate; an invalid file there exits `2`. A changed code file left unread (unparsable, or over 1.5 MB) warns; a change touching no file health reads passes with a note.
 
 ```bash
 repowise health check origin/main...HEAD
@@ -1211,7 +1212,7 @@ repowise health check --format github
 repowise health check --format sarif > health.sarif
 ```
 
-Exit codes: `0` passed (warnings included), `1` gate failed, `2` could not evaluate (not a git repository, unknown revision, no merge-base in a shallow clone, more than 300 changed code files, no changed code file could be read, an unexpected internal error).
+Exit codes: `0` passed (warnings included), `1` gate failed, `2` could not evaluate (not a git repository, unknown revision, no merge-base in a shallow clone, an invalid `health-rules.json` at the base, more than 300 changed code files, no changed code file could be read, an unexpected internal error).
 
 ---
 

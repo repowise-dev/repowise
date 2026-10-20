@@ -263,6 +263,7 @@ def _run(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[int, str, str]:
         "SECURITY_BASELINE": "",
         "FAIL_ON_BASELINE_GROWTH": "false",
         "HEALTH_FAIL_ON": "introduced",
+        "HEALTH_FAIL_AT": "high",
         "RISK_FAIL_ABOVE_PERCENTILE": "",
         "SARIF": "false",
         "SARIF_DIR": str(tmp_path / "sarif"),
@@ -337,11 +338,14 @@ def test_health_inputs_reach_the_command(tmp_path, fake_repowise) -> None:
         CHECKS="health",
         BASE="origin/main...HEAD",
         HEALTH_FAIL_ON="worsened",
+        HEALTH_FAIL_AT="medium",
         FAKE_HEALTH="1",
     )
     assert code == 1
     assert outputs.split() == ["health=1"]
-    assert calls.strip() == "health check origin/main...HEAD --fail-on worsened --format github"
+    assert calls.strip() == (
+        "health check origin/main...HEAD --fail-on worsened --fail-at medium --format github"
+    )
 
 
 def test_base_report_inputs_reach_the_coverage_command(tmp_path, fake_repowise) -> None:

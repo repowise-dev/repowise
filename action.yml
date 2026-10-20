@@ -100,6 +100,11 @@ inputs:
       What fails the health gate: introduced (findings the change wrote) or
       worsened (those, plus findings it made worse). Below it they warn.
     default: introduced
+  health-fail-at:
+    description: >-
+      Lowest severity that fails the health gate (medium, high or critical);
+      findings below it warn.
+    default: high
   risk-fail-above-percentile:
     description: >-
       Fail when the change ranks above this percentile of the repository's
@@ -197,6 +202,7 @@ runs:
         SECURITY_BASELINE: ${{ inputs.security-baseline }}
         FAIL_ON_BASELINE_GROWTH: ${{ inputs.fail-on-baseline-growth }}
         HEALTH_FAIL_ON: ${{ inputs.health-fail-on }}
+        HEALTH_FAIL_AT: ${{ inputs.health-fail-at }}
         RISK_FAIL_ABOVE_PERCENTILE: ${{ inputs.risk-fail-above-percentile }}
         SARIF: ${{ inputs.upload-sarif }}
         SARIF_DIR: ${{ runner.temp }}/repowise-sarif

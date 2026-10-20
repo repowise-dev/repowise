@@ -76,7 +76,7 @@ drift=(doc-drift --check)
 [[ -n "$DOC_DRIFT_BASELINE" ]] && drift+=(--baseline "$DOC_DRIFT_BASELINE" ${growth[@]+"${growth[@]}"})
 security=(security check ${base[@]+"${base[@]}"} --fail-on "$SECURITY_FAIL_ON")
 [[ -n "$SECURITY_BASELINE" ]] && security+=(--baseline "$SECURITY_BASELINE" ${growth[@]+"${growth[@]}"})
-health=(health check ${base[@]+"${base[@]}"} --fail-on "$HEALTH_FAIL_ON")
+health=(health check ${base[@]+"${base[@]}"} --fail-on "$HEALTH_FAIL_ON" --fail-at "$HEALTH_FAIL_AT")
 
 wants doc-drift && run doc-drift repowise "${drift[@]}" --format github
 wants security && run security repowise "${security[@]}" --format github

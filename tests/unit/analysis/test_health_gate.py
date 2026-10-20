@@ -236,3 +236,34 @@ def test_markdown_leads_with_the_verdict_and_folds_the_context():
     assert text.startswith("**Health: 1 finding fails the gate**")
     assert "<details>" in text and "<summary>Context (moved" in text
     assert "Git history, coverage and file scores never decide" in text
+
+
+@pytest.mark.parametrize(
+    "fail_at, severity, level",
+    [
+        ("medium", "medium", ERROR),
+        ("high", "medium", WARNING),
+        ("high", "high", ERROR),
+        ("critical", "high", WARNING),
+        ("critical", "critical", ERROR),
+    ],
+)
+def test_fail_at_is_the_lowest_severity_that_fails(fail_at, severity, level):
+    assert levels(evaluate(delta(finding(severity=severity)), fail_at=fail_at)) == [level]
+
+
+def test_an_unknown_option_is_refused():
+    with pytest.raises(ValueError):
+        evaluate(delta(), fail_at="low")
+    with pytest.raises(ValueError):
+        evaluate(delta(), fail_on="resolved")
+
+
+def test_health_rules_parse_from_any_revision_and_refuse_a_non_object():
+    from repowise.core.analysis.health.config import HealthConfig
+
+    assert HealthConfig.from_json('{"disabled_biomarkers": ["complex_method"]}').disabled_biomarkers
+    with pytest.raises(ValueError):
+        HealthConfig.from_json("[1, 2]")
+    with pytest.raises(ValueError):
+        HealthConfig.from_json("{oops")

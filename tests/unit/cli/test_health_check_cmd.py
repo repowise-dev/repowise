@@ -120,3 +120,46 @@ def test_a_policy_rule_can_wrap_the_health_gate():
     assert _gate_argv(policy.rules[0], "main...HEAD") == [
         "health", "check", "--fail-on=worsened", "--format", "json", "--", "main...HEAD",
     ]
+
+
+TANGLE = SIMPLE + "\n\n" + python_complex("tangle", 25)
+RULES = ".repowise/health-rules.json"
+DISABLE = '{"disabled_biomarkers": ["complex_method"]}'
+
+
+def based_on(tmp_path, rules: str) -> Repo:
+    """A repo whose base commit holds *rules* as its health-rules.json."""
+    r = Repo(tmp_path / "ruled")
+    r.commit("base", {"app.py": SIMPLE, RULES: rules})
+    git(r.path, "checkout", "-q", "-b", "feature")
+    return r
+
+
+def test_rules_at_the_base_apply(tmp_path):
+    r = based_on(tmp_path, DISABLE)
+    r.commit("add", {"app.py": TANGLE})
+    assert check(r).exit_code == 0
+
+
+def test_rules_the_change_writes_do_not_loosen_its_own_gate(repo):
+    repo.commit("add", {"app.py": TANGLE, RULES: DISABLE})
+    result = check(repo, "--format", "json")
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["gate"]["failing"][0]["rule"] == "complex_method"
+
+
+def test_invalid_rules_at_the_base_exit_two(tmp_path):
+    r = based_on(tmp_path, "[not json")
+    r.commit("add", {"app.py": TANGLE})
+    result = check(r, "--format", "json")
+    assert result.exit_code == 2
+    doc = json.loads(result.stdout)
+    assert doc["error"] == "rules_invalid" and RULES in doc["message"]
+
+
+def test_fail_at_moves_the_severity_floor(repo):
+    repo.commit("add", {"app.py": TANGLE})  # CCN 51: critical
+    assert check(repo, "--fail-at", "critical").exit_code == 1
+    repo.commit("tame", {"app.py": SIMPLE + "\n\n" + python_complex("tangle", 6)})
+    assert check(repo).exit_code == 0
+    assert check(repo, "--fail-at", "medium").exit_code == 1

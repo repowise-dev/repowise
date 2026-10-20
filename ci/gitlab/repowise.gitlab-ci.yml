@@ -36,6 +36,8 @@
 #   REPOWISE_HEALTH                 "true" adds repowise-health, which fails on code-shape
 #                                   findings the merge request introduces.
 #   REPOWISE_HEALTH_FAIL_ON         What fails it: introduced (default) or worsened.
+#   REPOWISE_HEALTH_FAIL_AT         Lowest severity that fails it: medium, high (default),
+#                                   critical.
 #   REPOWISE_RISK_FAIL_ABOVE_PERCENTILE
 #                                   Fail when the change ranks above this percentile of
 #                                   recent commits by size (a size gate, not a bug
@@ -138,10 +140,10 @@ repowise-health:
     - |
       status=0
       repowise health check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" \
-        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}" \
+        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}"         --fail-at "${REPOWISE_HEALTH_FAIL_AT:-high}" \
         --format markdown > repowise-health.md || status=$?
       repowise health check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD" \
-        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}" \
+        --fail-on "${REPOWISE_HEALTH_FAIL_ON:-introduced}"         --fail-at "${REPOWISE_HEALTH_FAIL_AT:-high}" \
         --format gitlab > gl.tmp || true
       python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-health.json \
         || echo '[]' > gl-code-quality-health.json
