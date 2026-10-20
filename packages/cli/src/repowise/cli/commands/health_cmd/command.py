@@ -244,7 +244,7 @@ def health_command(
     status = err_console if fmt != "table" else console
 
     repo_path = _resolve_repo_path(path, no_workspace, repo_alias, status)
-    status.print(f"[bold]repowise health[/bold] — {repo_path}")
+    status.print(f"[bold]repowise health[/bold]: {repo_path}")
     if score_paths:
         _render_score_view(repo_path, score_paths, against, opts, badge_view)
         return
@@ -599,7 +599,7 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         f"({kpis.get('worst_performer_path') or 'n/a'})"
     )
     if code_shape:
-        console.print("[dim]Counting code shape only — change history is left out.[/dim]")
+        console.print("[dim]Counting code shape only. Change history is left out.[/dim]")
     if unanalysed:
         console.print(
             f"[dim]{unanalysed} file(s) not analysed: health does not support "

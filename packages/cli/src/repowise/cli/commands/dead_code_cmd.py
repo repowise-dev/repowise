@@ -270,7 +270,7 @@ def dead_code_command(
         assert target.repo_path is not None
         repo_path = target.repo_path
 
-    notices.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
+    notices.print(f"[bold]repowise dead-code[/bold]: {repo_path}")
 
     config: dict = {
         "min_confidence": min_confidence,
@@ -329,7 +329,7 @@ def dead_code_command(
         for f in findings:
             safe = " (cleanup-ready)" if f.safe_to_delete else ""
             name = f"`{f.symbol_name}`" if f.symbol_name else f"`{f.file_path}`"
-            click.echo(f"- [{f.kind.value}] {name} — {f.reason} ({f.confidence:.0%}){safe}")
+            click.echo(f"- [{f.kind.value}] {name}: {f.reason} ({f.confidence:.0%}){safe}")
         if report.hidden_below_threshold:
             click.echo(
                 f"\n> {report.hidden_below_threshold} finding(s) hidden below threshold "

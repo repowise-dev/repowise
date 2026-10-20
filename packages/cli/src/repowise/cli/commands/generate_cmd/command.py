@@ -80,7 +80,7 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
     if bad:
         joined = ", ".join(bad)
         raise click.ClickException(
-            f"These pages are rendered from structure, not written by a model, so "
+            f"These pages are built from code, not written by a model, so "
             f"generate has nothing to write for them: {joined}. They refresh on "
             "`repowise update`. generate writes the concept and overview pages."
         )
@@ -174,7 +174,7 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
     "--unwritten",
     is_flag=True,
     default=False,
-    help="Write every template (unwritten) page. The default when no selection is given.",
+    help="Write every unwritten page. The default when no selection is given.",
 )
 @click.option("--stale", is_flag=True, default=False, help="Regenerate pages marked stale.")
 @click.option(

@@ -270,7 +270,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 console.print(
-                    "[yellow]No repository row yet — run `repowise init` once "
+                    "[yellow]No repository row yet. Run `repowise init` once "
                     "before persisting health updates.[/yellow]"
                 )
                 return

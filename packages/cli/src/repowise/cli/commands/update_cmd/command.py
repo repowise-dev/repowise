@@ -430,7 +430,7 @@ def update_command(
     progress: str = "rich",
     include_working_tree: bool = False,
 ) -> None:
-    """Incrementally update wiki pages for files changed since last sync.
+    """Incrementally update the index and pages for files changed since the last sync.
 
     Auto-detects workspace mode when invoked from a workspace root or when a
     workspace exists upstream of the working directory. Use --no-workspace to
@@ -498,7 +498,7 @@ def _render_full_upgrade_dry_run(
     recorded_pages = state.get("total_pages")
     page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
 
-    console.print("[yellow]Dry run — full upgrade plan:[/yellow]")
+    console.print("[yellow]Dry run: full upgrade plan:[/yellow]")
     console.print(f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]")
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
@@ -1225,7 +1225,7 @@ def _config_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     repo_path, head, config = run.repo_path, run.head, run.config
     if opts.dry_run:
         action = "health would be re-scored" if config.health_changed else "state would be updated"
-        console.print(f"[yellow]Dry run — {action}. No changes made.[/yellow]")
+        console.print(f"[yellow]Dry run: {action}. No changes made.[/yellow]")
         return _emit_done(run, UpdateOutcome.DRY_RUN)
     if config.health_changed:
         cfg = load_config(repo_path)
@@ -1369,7 +1369,7 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         split = load_cascade_overflow_split(run.repo_path, affected.regenerate)
         if split and split[0]:
             console.print(
-                f"  {split[0]} model-written pages are marked stale: run "
+                f"  {split[0]} pages written by a model are marked stale: run "
                 "[cyan]repowise generate --stale[/cyan] to rewrite them "
                 "(it estimates the cost first)."
             )
@@ -2144,7 +2144,7 @@ def run_update(
         return _no_changed_files(opts, run)
 
     if run.config.health_changed:
-        console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
+        console.print("[yellow]Config files changed. Re-running health analysis.[/yellow]")
     if _config_change_only(run):
         return _config_only_update(opts, run)
 
@@ -2152,7 +2152,7 @@ def run_update(
     _rebuild_index(run)
     _plan_pages(opts, run)
     if opts.dry_run:
-        console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
+        console.print("[yellow]Dry run: no pages regenerated.[/yellow]")
         return _emit_done(run, UpdateOutcome.DRY_RUN)
     _analyze_changes(run)
     _refresh_knowledge_graph_stage(run)

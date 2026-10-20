@@ -79,6 +79,17 @@ _SURFACES = [
     "commands/init_cmd/generation.py",
     "commands/init_cmd/workspace.py",
     "commands/update_cmd/reporting.py",
+    # Commands people run right after init.
+    "commands/coverage_cmd.py",
+    "commands/dead_code_cmd.py",
+    "commands/generate_cmd/command.py",
+    "commands/health_cmd/codegen.py",
+    "commands/health_cmd/command.py",
+    "commands/health_cmd/persist.py",
+    "commands/health_cmd/refactoring_targets.py",
+    "commands/health_cmd/summary.py",
+    "commands/update_cmd/command.py",
+    "commands/update_cmd/workspace.py",
 ]
 
 _BANNED = [

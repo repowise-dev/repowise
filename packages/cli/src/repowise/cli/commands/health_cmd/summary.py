@@ -92,7 +92,7 @@ def _render_split_line(kpis: dict) -> None:
         return
     console.print(
         f"[dim]Of that deduction, [/dim]{structure:.2f}[dim] is code shape and [/dim]"
-        f"{history:.2f}[dim] is history — history answers to time, not to editing.[/dim]"
+        f"{history:.2f}[dim] is history. History answers to time, not to editing.[/dim]"
     )
 
 
@@ -132,7 +132,7 @@ def _render_badge(average_health: object, share: float | None = None) -> None:
     )
 
     if not isinstance(average_health, (int, float)):
-        console.print("[yellow]No health score yet — run `repowise init` first.[/yellow]")
+        console.print("[yellow]No health score yet. Run `repowise init` first.[/yellow]")
         return
     band = headline_band(float(average_health), share)
     # Neutral, not green, when too little of the repo was analysed for a band.
