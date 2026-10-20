@@ -16,6 +16,7 @@ from repowise.cli.helpers import (
     stamp_offered_slots,
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.index_scope import stamp_index_scope
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
@@ -156,6 +157,8 @@ def _finish_upgrade_state(
     # Every onboarding slot was evaluated against whole-repo signals, so the
     # missing-slot notice has nothing left to report.
     stamp_offered_slots(state, enabled=config.enable_onboarding)
+    if outcome.get("decision_lanes_pending") is not None:
+        set_pending_decision_lanes(state, outcome["decision_lanes_pending"])
     # Health and the git backfill ran over the whole repo under the current
     # analyzer and history rules, so the next update need not redo them.
     state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
@@ -175,6 +178,7 @@ def _finish_upgrade_state(
         git_commit_cap=(commit_limit if isinstance(commit_limit, int) else _DEFAULT_COMMIT_LIMIT),
         git_history_coverage=outcome["git_history_coverage"],
         file_pages=outcome["file_pages"],
+        test_run=False,
         analysis={"unavailable": [], "skipped": []},
         upgrade=state["full_upgrade"],
         provider=dict(provider_block),

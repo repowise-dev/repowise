@@ -193,6 +193,8 @@ def resolve_index_scope(
             else None
         ),
         "dropped_files": _dropped_files(scope.get("dropped_files")),
+        # ``init --test-run``: the model wrote documentation for a sample of files.
+        "test_run": scope.get("test_run") if isinstance(scope.get("test_run"), bool) else None,
         "file_pages": {
             "configured_cap": configured_cap,
             "effective_cap": _number(pages.get("effective_cap")),

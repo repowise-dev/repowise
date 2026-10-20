@@ -12,13 +12,25 @@ from repowise.cli.ui import (
     BRAND_STYLE,
     OK,
     OWL_SPINNER,
-    WARN,
     MaybeCountColumn,
     RichProgressCallback,
 )
 
 from ._options import InitRun
 from .persistence import build_resume_controller
+
+
+def structural_generation_config(index_only: bool) -> Any:
+    """A deterministic config for a structural run, so the pipeline knows no model was chosen.
+
+    The pipeline generates no pages here (the CLI renders them afterwards); the
+    config only tells decision reporting why the model-only sources did not run.
+    """
+    if not index_only:
+        return None
+    from repowise.core.generation.models import GenerationConfig
+
+    return GenerationConfig(deterministic=True)
 
 
 def _index_vector_store(run: InitRun) -> Any:
@@ -100,21 +112,28 @@ async def _index_with_resume(
             ),
             # Only local init describes the user's own environment.
             derive_environment_facts=True,
+            generation_config=structural_generation_config(opts.index_only),
         )
     finally:
         if engine is not None:
             await engine.dispose()
 
 
-def index_repository(run: InitRun) -> bool:
-    """Phases 1 and 2, without docs (generation follows the cost gate). False if interrupted."""
+def decision_llm_client(run: InitRun) -> Any:
+    """The model decision extraction calls this run, or None (always None on a dry run).
+
+    A structural run makes no model calls, decisions included.
+    """
+    return None if run.opts.dry_run or run.opts.index_only else run.provider
+
+
+def index_repository(run: InitRun) -> None:
+    """Phases 1 and 2, without docs (generation follows the cost gate). Exits 130 if interrupted."""
     opts = run.opts
     # Fast mode skips generation, so it has three phases.
     run.total_phases = 3 if opts.run_mode == "fast" else 4
     # None on a dry run: analysis would call it before generation's dry-run exit.
-    llm_client = None
-    if not opts.dry_run:
-        llm_client = run.provider if not opts.index_only else run.decision_provider
+    llm_client = decision_llm_client(run)
 
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
@@ -152,18 +171,10 @@ def index_repository(run: InitRun) -> bool:
                     )
                 )
         except (PipelineCancelled, KeyboardInterrupt):
-            from repowise.cli.ui.mascot import EYES_SLEEPY, mini
+            from ._exit import exit_interrupted
 
-            console.print(
-                f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
-                "saved — run [bold]repowise init --resume[/] to continue where it stopped."
-            )
-            from repowise.cli.hints import maybe_hint
-
-            maybe_hint("interrupt")
-            return False
+            exit_interrupted()
 
     run.result = result
     run.recorder = callback
     run.run_warnings = list(rich_callback.warnings)
-    return True

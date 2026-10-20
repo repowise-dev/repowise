@@ -28,10 +28,17 @@ import contextlib
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import click
 
+from repowise.cli.commands.decision_lanes import (
+    print_lane_estimate,
+    run_and_report_lanes,
+    still_pending_after,
+    with_lane_plan,
+)
 from repowise.cli.commands.upgrade_state import (
     _finish_upgrade_state,
     _mark_transition,
@@ -50,6 +57,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+from repowise.core.decision_lanes import plan_decision_lanes
 from repowise.core.index_scope import FAST_TO_FULL_COMMAND, file_page_scope
 from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 
@@ -63,6 +71,7 @@ def _gate_cost(
     *,
     yes: bool,
     embedder: str = "mock",
+    decisions: Any = None,
 ) -> None:
     """Print the estimated spend, embedding included, and confirm past the gate.
 
@@ -85,7 +94,7 @@ def _gate_cost(
 
         plans = build_generation_plan(parsed_files, graph_builder, config)
         est = estimate_cost(
-            plans,
+            with_lane_plan(plans, decisions),
             provider.provider_name,
             provider.model_name,
             repo_path=repo_path,
@@ -104,6 +113,7 @@ def _gate_cost(
     embedding = embedding_note(est)
     if embedding:
         console.print(f"  [dim]{embedding}[/dim]")
+    print_lane_estimate(decisions, provider)
 
     # Nothing to ask on a run that cannot be asked. Without this the confirm
     # reads EOF, raises, and the caller reports a successful run that generated
@@ -311,6 +321,20 @@ async def _run_upgrade(
         "(graph reused from index — not re-resolved)."
     )
 
+    # The decision lanes a keyless index skipped run with this model as well.
+    lane_inputs = SimpleNamespace(
+        graph_builder=graph_builder,
+        git_meta_map=git_meta_map,
+        parsed_files=parsed_files,
+        source_map=source_map,
+    )
+    # A keyless upgrade has no model for them, so they stay pending.
+    lane_plan = (
+        None
+        if getattr(config, "deterministic", False)
+        else plan_decision_lanes(load_state(repo_path), repo_path, lane_inputs)
+    )
+
     # Show the bill before running it, as init does: the user reaching for
     # `--full` has never been shown a cost for this repo. Documentation built
     # from code with a free embedder has no bill to show.
@@ -327,6 +351,7 @@ async def _run_upgrade(
             repo_path,
             yes=yes,
             embedder=embedder_name or "mock",
+            decisions=lane_plan,
         )
 
     # 5. Generate the docs the fast index skipped, embedding as we go.
@@ -350,6 +375,17 @@ async def _run_upgrade(
 
     # Flush buffered cost rows now generation is done (best-effort).
     await cost_tracker.flush()
+
+    lanes = await run_and_report_lanes(
+        sf,
+        repo_id,
+        repo_path,
+        lane_plan,
+        provider=provider,
+        inputs=lane_inputs,
+        vector_store=vector_store,
+        cost_tracker=cost_tracker,
+    )
 
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     retired_page_ids = await _persist_upgrade_pages(
@@ -411,6 +447,7 @@ async def _run_upgrade(
             "embedding_error": embedding_error,
             "stub_fallbacks": stub_fallbacks,
             "stub_reasons": stub_reasons,
+            "decision_lanes_pending": still_pending_after(lanes),
         },
     )
 

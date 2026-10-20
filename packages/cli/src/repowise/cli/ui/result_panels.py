@@ -179,7 +179,7 @@ def build_contextual_next_steps(
         # `generate` is the scoped, cost-gated upgrade path — a coverage, a
         # directory or one page at a time, each behind an estimate — not the
         # all-or-nothing `update --full` this used to suggest.
-        steps.append(("repowise generate", "write the subsystem pages with a model (needs a key)"))
+        steps.append(("repowise generate", "write the documentation with a model (needs a key)"))
     elif dead_unreachable + dead_unused > 0:
         steps.append(
             ("repowise dead-code", f"explore {dead_unreachable + dead_unused} dead code findings")
@@ -189,7 +189,7 @@ def build_contextual_next_steps(
     elif decision_count > 0:
         steps.append(("repowise decision list", f"browse {decision_count} architectural decisions"))
     else:
-        steps.append(('repowise search "<query>"', "search the generated wiki"))
+        steps.append(('repowise search "<query>"', "search the documentation"))
 
     return steps
 

@@ -24,6 +24,13 @@ from repowise.cli.ui import (
     print_analysis_summary,
     print_files_written,
 )
+from repowise.cli.ui.mode_names import (
+    INDEX_ONLY,
+    TITLE_WORKSPACE,
+    completion_title,
+    pages,
+    scope_line,
+)
 from repowise.core.index_scope import FAST_TO_FULL_COMMAND, fast_to_full_command
 
 
@@ -208,10 +215,7 @@ def show_completion(
     # languages and graph size appeared once in the "Analysis Complete"
     # interstitial, minutes and one cost prompt earlier.
     _index_rows: list[tuple[str, str]] = [
-        (
-            "Scope",
-            f"{_scope['run_mode']} · {_scope['content_provenance']} · git {_scope['git_tier']}",
-        ),
+        ("Scope", scope_line(_scope)),
         ("Files indexed", f"{result.file_count:,}"),
         ("Symbols", f"{result.symbol_count:,}"),
         ("Languages", _lang_summary_final),
@@ -244,7 +248,10 @@ def show_completion(
         _template_pages = len(result.generated_pages or [])
         metrics: list[tuple[str, str]] = [
             *_index_rows,
-            ("Wiki pages", f"{_template_pages:,} rendered from structure"),
+            (
+                "Documentation",
+                f"{pages(_template_pages)} built from code" if _template_pages else "none",
+            ),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
             *_structure_rows,
@@ -262,7 +269,7 @@ def show_completion(
         )
         console.print()
         console.print(
-            build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
+            build_completion_panel(completion_title(_scope), metrics, next_steps=next_steps)
         )
         console.print()
         # Fast mode reaches this branch too, and it generates nothing, so the
@@ -280,7 +287,7 @@ def show_completion(
                     "(Ollama is the keyless one)."
                 )
             console.print(
-                "  [dim]Every page is derived from structure and says so in its footer. "
+                "  [dim]Every page is built from code and says so in its footer. "
                 f"{_search_note}[/dim]"
             )
             # A keyless index is finished, not partial — this just names the
@@ -311,11 +318,11 @@ def show_completion(
         _written = len(_pages) - _stubs
         _det = sum(1 for p in _pages if getattr(p, "provider_name", "") == "template")
         _ai = len(_pages) - _det
-        _pages_label = str(_written)
+        _pages_label = pages(_written)
         if _failed_ids:
-            _pages_label = f"{_written} ({len(_failed_ids)} failed)"
+            _pages_label += f" ({len(_failed_ids):,} failed)"
         elif _det:
-            _pages_label = f"{_written} ({_ai} model-written · {_det} from structure)"
+            _pages_label += f" ({_ai:,} written by the model · {_det:,} built from code)"
         # The ledger has the real figure; before this the panel reported
         # millions of tokens and no dollars, on a run the user had just
         # approved a dollar estimate for.
@@ -327,7 +334,7 @@ def show_completion(
         )
         metrics = [
             *_index_rows,
-            ("Pages generated", _pages_label),
+            ("Documentation", _pages_label),
             _spend_row,
             ("Provider", f"{provider.provider_name} / {provider.model_name}"),
             ("Elapsed", format_elapsed(elapsed)),
@@ -347,7 +354,7 @@ def show_completion(
 
         console.print()
         console.print(
-            build_completion_panel("repowise init complete", metrics, next_steps=next_steps)
+            build_completion_panel(completion_title(_scope), metrics, next_steps=next_steps)
         )
         console.print()
         _print_embed_failure(_embed_failed)
@@ -407,7 +414,7 @@ def _show_generation_checks(result: Any) -> None:
 def _fast_to_full_note() -> str:
     """The closing note of an Index only run, naming the one fast-to-full command."""
     return (
-        "  [dim]Index only: fast mode indexes the graph and git history, no "
+        f"  [dim]{INDEX_ONLY}: fast mode indexes the graph and git history, no "
         f"documentation.\n  Run [bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from "
         "code (no key needed).[/dim]"
     )
@@ -421,7 +428,7 @@ def _workspace_next_steps(run_mode: str, keyless: bool) -> list[tuple[str, str]]
             "build a repo's documentation from code and its full git history (no key)",
         )
     elif keyless:
-        upgrade = ("repowise generate <repo>", "upgrade a repo's wiki to model-written prose")
+        upgrade = ("repowise generate <repo>", "write a repo's documentation with a model")
     else:
         upgrade = ("repowise search <query>", "search across all indexed repos")
     return [
@@ -463,7 +470,7 @@ def show_workspace_completion(
         ("Elapsed", format_elapsed(elapsed)),
     ]
     if not index_only and provider is not None:
-        metrics.insert(3, ("Pages generated", f"{total_pages:,}"))
+        metrics.insert(3, ("Documentation", pages(total_pages)))
         metrics.insert(4, ("Provider", f"{provider.provider_name} / {provider.model_name}"))
     if errors:
         metrics.append(("Errors", f"{len(errors)} repos failed"))
@@ -472,7 +479,7 @@ def show_workspace_completion(
 
     console.print()
     console.print(
-        build_completion_panel("repowise workspace init complete", metrics, next_steps=next_steps)
+        build_completion_panel(TITLE_WORKSPACE, metrics, next_steps=next_steps)
     )
     console.print()
 
@@ -481,7 +488,7 @@ def show_workspace_completion(
     # to discover empty Docs/Overview in the web UI on their own.
     docs_skipped = _upgradable_skips(docs_outcomes)
     if docs_outcomes:
-        console.print("[bold]Docs status[/bold]")
+        console.print("[bold]Documentation[/bold]")
         for alias, (count, reason) in docs_outcomes.items():
             if reason:
                 console.print(

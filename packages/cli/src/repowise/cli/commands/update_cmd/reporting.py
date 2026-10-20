@@ -24,6 +24,7 @@ from repowise.cli.ui import (
     build_completion_panel,
     format_elapsed,
 )
+from repowise.cli.ui.mode_names import TITLE_INDEX_UPDATED, TITLE_UPDATED_BUILT_FROM_CODE, pages
 
 # Status -> display color, shared by the changed-file summary.
 _STATUS_COLOR = {"added": "green", "deleted": "red", "modified": "yellow", "renamed": "blue"}
@@ -99,7 +100,7 @@ def render_cascade_budget_warning(
         )
     if model:
         console.print(
-            f"  {model} model-written pages: run [cyan]repowise generate --stale[/cyan] "
+            f"  {model} pages written by a model: run [cyan]repowise generate --stale[/cyan] "
             f"to rewrite them (it estimates the cost first), or pass `{full}` "
             "to regenerate everything in this run."
         )
@@ -323,8 +324,8 @@ def show_full_completion(
     metrics.append(("Elapsed", format_elapsed(elapsed)))
 
     next_steps = [
-        ("repowise serve", "browse the updated wiki at localhost:3000"),
-        ("repowise search <query>", "search the wiki"),
+        ("repowise serve", "browse the updated documentation at localhost:3000"),
+        ("repowise search <query>", "search the documentation"),
     ]
     console.print()
     console.print(
@@ -361,7 +362,7 @@ def show_index_only_completion(
         ("Dead code", _dead_code_line(dead_code_report, changed_paths)),
     ]
     if pages_rendered:
-        metrics.append(("Wiki pages", f"{pages_rendered} re-rendered from structure"))
+        metrics.append(("Documentation", f"{pages(pages_rendered)} rebuilt from code"))
     if degraded:
         metrics.append(("Degraded", f"{len(degraded)} step(s)"))
     if git_files:
@@ -375,7 +376,7 @@ def show_index_only_completion(
         # The scoped, cost-gated upgrade path — a coverage, a directory or one
         # page at a time — not the all-or-nothing `update --full`.
         next_steps.append(
-            ("repowise generate", "upgrade the wiki to model-written prose (needs a key)")
+            ("repowise generate", "write the documentation with a model (needs a key)")
         )
     elif upgrade_command:
         # Index only: there are no docs to regenerate.
@@ -387,7 +388,9 @@ def show_index_only_completion(
     console.print()
     console.print(
         build_completion_panel(
-            "repowise index-only update complete", metrics, next_steps=next_steps
+            TITLE_UPDATED_BUILT_FROM_CODE if template_wiki else TITLE_INDEX_UPDATED,
+            metrics,
+            next_steps=next_steps,
         )
     )
     console.print()
@@ -421,7 +424,7 @@ def show_workspace_completion(
 
     next_steps = [
         ("repowise status --workspace", "show workspace status"),
-        ("repowise serve", "browse a repo wiki at localhost:3000"),
+        ("repowise serve", "browse a repo's documentation at localhost:3000"),
     ]
     console.print()
     console.print(
