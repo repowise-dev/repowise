@@ -66,11 +66,7 @@ def _ask_mode(run: InitRun) -> None:
 
 
 def _ask_provider(run: InitRun) -> None:
-    """Provider selection, only when docs will be generated.
-
-    Index-only runs auto-detect a decision-extraction provider later without
-    prompting.
-    """
+    """Provider selection, only when docs will be generated."""
     opts = run.opts
     selection = interactive_provider_config_select(
         console,

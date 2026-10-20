@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
     console,
     get_head_commit,
     head_commit_ts,
+    load_config,
     load_state,
     run_async,
     save_config_partial,
@@ -40,6 +41,7 @@ from ._options import InitRun
 from .persistence import (
     apply_git_history_coverage_state,
     git_tier_for_run_mode,
+    keep_prior_documentation,
     persist_result,
     save_full_state_and_config,
 )
@@ -164,6 +166,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=run.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
+        test_run=run.opts.test_run and docs_mode == "llm",
         file_pages={
             "configured_cap": run.max_file_pages,
             **(
@@ -212,6 +215,7 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     result = run.result
     run_mode = run.opts.run_mode
     head = get_head_commit(repo_path)
+    prior_state = load_state(repo_path)
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
     docs_mode = _docs_mode(run)
@@ -222,6 +226,7 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
     _stamp_scope(run, base_state, docs_mode)
+    keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings
@@ -295,6 +300,19 @@ def write_run_state(run: InitRun) -> None:
             include_submodules=opts.include_submodules,
             save_key=opts.save_key,
         )
+        _stamp_test_run(run)
+
+
+def _stamp_test_run(run: InitRun) -> None:
+    """Record ``--test-run`` on the model path, which re-reads state from disk.
+
+    Stamped every run, so a whole-repo init clears an earlier sample's mark.
+    """
+    from repowise.core.index_scope import stamp_index_scope
+
+    state = load_state(run.repo_path)
+    stamp_index_scope(state, load_config(run.repo_path), test_run=run.opts.test_run)
+    save_state(run.repo_path, state, full_index=True)
 
 
 def _record_init_outcome(run: InitRun) -> None:

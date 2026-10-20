@@ -69,6 +69,7 @@ from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
+from ._ingest import structural_generation_config
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
     CostGateDeclined,
@@ -79,7 +80,11 @@ from .generation import (
     run_repo_generation,
     structural_page_summary,
 )
-from .persistence import apply_git_history_coverage_state, persist_result
+from .persistence import (
+    apply_git_history_coverage_state,
+    keep_prior_documentation,
+    persist_result,
+)
 from .reporting import show_workspace_completion
 
 
@@ -442,6 +447,7 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 progress=callback,
                 existing_kg_fingerprint=_prev_kg_fp,
                 derive_environment_facts=True,
+                generation_config=structural_generation_config(ctx.index_only),
             )
         )
     console.print(f"    [{OK}]✓[/] {result.file_count:,} files, {result.symbol_count:,} symbols")
@@ -601,6 +607,7 @@ def _repo_state(
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
     _stamp_repo_scope(state, repo_path, ctx, index, docs)
+    keep_prior_documentation(state, load_state(repo_path), ctx.run_mode)
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
@@ -631,6 +638,7 @@ def _stamp_repo_scope(
         git_tier=state["git_tier"],
         git_commit_cap=ctx.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
+        test_run=ctx.test_run and docs_mode == "llm",
         file_pages={"configured_cap": configured_cap, **_file_page_fields(result, configured_cap)},
         analysis={
             "unavailable": unavailable,
