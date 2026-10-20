@@ -418,6 +418,7 @@ def test_changed_lines_name_files_from_a_checkout_below_the_git_top_level(git_re
     _git(git_repo, "commit", "-qam", "edit both")
 
     changed, _ = changed_lines(str(git_repo / "svc"), "HEAD~1..HEAD")
-    assert changed == {"a.py": {2}}
+    # A file outside the checkout keeps a path no index file has.
+    assert changed == {"a.py": {2}, "../mod.py": {4}}
     # Read from the top level, nothing moves.
     assert changed_lines(str(git_repo), "HEAD~1..HEAD")[0] == {"svc/a.py": {2}, "mod.py": {4}}

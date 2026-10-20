@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 import subprocess
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .git_cli import _git, checkout_relative, path_filter, split_revspec, untracked_paths
@@ -242,8 +242,8 @@ def changed_lines(
     no merge-base, falls back to the plain working-tree diff and its label.
     *skip_untracked* (gitignore-style) names untracked files not to read; the
     caller still filters tracked paths. Paths are relative to *repo_path*, as
-    the index names them, and files outside it are left out when it sits below
-    the git top level. *label* is a human string naming what was diffed.
+    the index names them (see :func:`~.git_cli.checkout_relative`).
+    *label* is a human string naming what was diffed.
     Raises ``ValueError`` on an unknown revision so the caller can fail loudly
     rather than silently reporting "no changes".
     """
@@ -315,7 +315,8 @@ def change_set(
     *working_tree* reads what ``HEAD`` does not have, staged or not, untracked
     files included; its base is ``HEAD``. *exclude_patterns* (gitignore-style)
     drops paths that are not part of the change at all, such as repowise's own
-    output. Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
+    output. Paths are relative to *repo_path*, as :func:`changed_lines` names
+    them. Raises ``ValueError`` on an unknown revision, as :func:`changed_lines` does.
     """
     if working_tree:
         command, revisions, label = ["diff"], ["HEAD"], working_tree_label()
@@ -337,6 +338,8 @@ def change_set(
             files[path] = diffs.get(path) or FileDiff(path=path)
     if working_tree:
         files.update(untracked_diffs(repo_path, exclude_patterns))
+    files = {p: replace(d, path=p) for p, d in checkout_relative(repo_path, files).items()}
+    deleted = set(checkout_relative(repo_path, dict.fromkeys(deleted)))
     base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
     return ChangeSet(files, deleted, label, base, head)
 
@@ -398,8 +401,10 @@ def untracked_diffs(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> d
     *exclude_patterns* is never read.
     """
     out: dict[str, FileDiff] = {}
+    # Listed from the git top level, so read from there too.
+    root = _git(["rev-parse", "--show-toplevel"], repo_path, check=False).strip() or repo_path
     for path in untracked_paths(repo_path, exclude_patterns):
-        target = Path(repo_path) / path
+        target = Path(root) / path
         try:
             data = b"" if target.stat().st_size > _UNTRACKED_READ_LIMIT else target.read_bytes()
         except OSError:
@@ -511,4 +516,5 @@ def index_gap(repo_path: str, indexed_commit: str | None, change: ChangeSet) -> 
     except (subprocess.SubprocessError, OSError):
         return None
     touched = set(change.files) | change.deleted
-    return [p for p in listing.split("\0") if p.strip() and p not in touched]
+    gap = checkout_relative(repo_path, dict.fromkeys(p for p in listing.split("\0") if p.strip()))
+    return [p for p in gap if p not in touched]

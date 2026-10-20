@@ -354,7 +354,9 @@ def _gap_routes(repo_path, change, config, repo_keys: set[str], out: dict) -> li
     plan = plan_gap(gap, config, [*change.files, *change.deleted])
     if plan.candidates:
         old, new = out["indexed_commit"], change.base
-        specs = [(rev, p) for p in plan.candidates for rev in (old, new)]
+        # ``rev:./path`` reads from the checkout, which can sit below the git
+        # top level; plain ``rev:path`` would miss and read as absent.
+        specs = [(rev, f"./{p}") for p in plan.candidates for rev in (old, new)]
         blobs = read_blobs(str(repo_path), specs)
         # Unreadable means nothing was compared, so every candidate may have moved.
         unread = _unread(repo_path, specs, blobs)
@@ -362,8 +364,8 @@ def _gap_routes(repo_path, change, config, repo_keys: set[str], out: dict) -> li
             p
             for p in plan.candidates
             if blobs is None
-            or p in unread
-            or edges_may_differ(p, blobs.get((old, p)), blobs.get((new, p)))
+            or f"./{p}" in unread
+            or edges_may_differ(p, blobs.get((old, f"./{p}")), blobs.get((new, f"./{p}")))
         ]
         plan = with_rewired(plan, rewired, repo_keys)
     out["gap"] = plan

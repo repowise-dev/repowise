@@ -112,13 +112,18 @@ def checkout_relative(repo_path: str, by_path: Mapping[str, _V]) -> dict[str, _V
     """*by_path*, keyed by git's top-level paths, re-keyed relative to *repo_path*.
 
     The index names files from the checkout it was built in, which can sit
-    below the git top level; paths outside that checkout are dropped. Raises
-    as :func:`_git` does when *repo_path* is not in a repository.
+    below the git top level. A path outside that checkout keeps a ``../`` form
+    no index path has, so a reader that must not miss a change still sees one
+    it cannot place. Raises as :func:`_git` does when *repo_path* is not in a
+    repository.
     """
     prefix = _git(["rev-parse", "--show-prefix"], repo_path).strip()
     if not prefix:
         return dict(by_path)
-    return {p[len(prefix) :]: v for p, v in by_path.items() if p.startswith(prefix)}
+    up = "../" * prefix.count("/")
+    return {
+        p[len(prefix) :] if p.startswith(prefix) else up + p: v for p, v in by_path.items()
+    }
 
 
 def untracked_paths(

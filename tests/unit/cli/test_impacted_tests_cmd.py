@@ -592,3 +592,49 @@ def test_prioritize_needs_a_machine_format(repo) -> None:
     result = _run(repo, "main...feat", "--prioritize")
     assert result.exit_code != 0
     assert "--prioritize needs --format args, list or json" in result.output + result.stderr
+
+
+@pytest.fixture
+def nested_repo(tmp_path):
+    """The ``repo`` layout indexed in ``svc/``, below the git top level, beside ``lib/``."""
+    top = tmp_path / "mono"
+    svc = top / "svc"
+    svc.mkdir(parents=True)
+    _git(top, "init", "-q", "-b", "main")
+    _git(top, "config", "user.email", "t@t.co")
+    _git(top, "config", "user.name", "t")
+    _write(
+        svc,
+        {
+            "src/a.py": "A = 1\n",
+            "src/b.py": "B = 1\n",
+            "tests/test_a.py": "from src.a import A\n\ndef test_a():\n    assert A\n",
+            "README.md": "docs\n",
+            ".gitignore": ".repowise/\n",
+        },
+    )
+    _write(top, {"lib/x.py": "X = 1\n"})
+    _git(top, "add", "-A")
+    _git(top, "commit", "-qm", "init")
+    asyncio.run(_index(svc, _git(top, "rev-parse", "HEAD")))
+    _git(top, "switch", "-qc", "feat")
+    _write(svc, {"src/a.py": "A = 2\n", "README.md": "more docs\n"})
+    _git(top, "commit", "-qam", "feat")
+    return svc
+
+
+def test_a_checkout_below_the_git_top_level_selects_as_the_top_level_does(nested_repo) -> None:
+    result = _run(nested_repo, "main...feat", "--format", "args")
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "tests/test_a.py\n"
+    assert "documentation: no tests needed" in _err(result)
+
+
+def test_a_change_outside_the_checkout_runs_every_test(nested_repo) -> None:
+    # A path the index cannot place pushes toward more tests, never fewer.
+    _write(nested_repo.parent, {"lib/x.py": "X = 2\n"})
+    _git(nested_repo.parent, "commit", "-qam", "lib")
+    result = _run(nested_repo, "feat~1...feat", "--format", "json", "--runner", "files")
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["run_all"] is True and data["args"] == [":all"], data
