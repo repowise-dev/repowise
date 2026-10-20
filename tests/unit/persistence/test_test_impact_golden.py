@@ -85,6 +85,10 @@ async def test_a_failed_per_file_coverage_read_degrades_coverage_only(
     async def _boom(*args, **kwargs):
         raise RuntimeError("coverage read failed")
 
+    # Both arms: the batch is what normally runs, and the per-file read is what it falls back
+    # to when the batch raises. Patching only the batch left the fallback serving rows, so the
+    # coverage came back `measured` and this case asserted the opposite of its own name.
+    monkeypatch.setattr("repowise.core.persistence.crud.tests_covering_many", _boom)
     monkeypatch.setattr("repowise.core.persistence.crud.tests_covering", _boom)
     impact = await analyze_test_impact(async_session, repo.id, fixture["changed_files"])
 
