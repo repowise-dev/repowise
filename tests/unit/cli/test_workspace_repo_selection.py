@@ -11,6 +11,7 @@ import pytest
 from repowise.cli.commands.init_cmd import _workspace_repos
 from repowise.cli.commands.init_cmd._workspace_repos import (
     all_repos_line,
+    repos_primary_line,
     select_workspace_repos,
     split_repo_names,
 )
@@ -60,7 +61,7 @@ def test_split_repo_names_drops_blanks():
     assert split_repo_names(None) == []
 
 
-def test_repos_flag_skips_the_picker_and_makes_the_first_primary(repos, monkeypatch, capsys):
+def test_repos_flag_skips_the_picker_and_makes_the_first_primary(repos, monkeypatch):
     def no_prompt(*_a, **_k):
         raise AssertionError("--repos must not prompt")
 
@@ -73,8 +74,19 @@ def test_repos_flag_skips_the_picker_and_makes_the_first_primary(repos, monkeypa
     assert [r.alias for r in pick.selected] == ["gamma", "alpha"]
     assert pick.primary_alias == "gamma"
     assert pick.primary_repo is repos[2]
-    assert pick.primary_picked is True
-    assert "Primary: gamma (first in --repos)" in capsys.readouterr().out
+    # An existing workspace keeps its primary; a new one takes the first listed.
+    assert pick.primary_picked is False
+
+
+def test_repos_primary_line_says_where_the_primary_came_from(repos):
+    pick = select_workspace_repos(
+        SimpleNamespace(root=ROOT, repos=repos), repo_names=["gamma", "beta"], select_all=False
+    )
+    kept = repos_primary_line("beta", pick)
+    assert "Primary: [bold]beta[/bold] (kept from the workspace)" in kept
+    first = repos_primary_line("gamma", pick)
+    assert "Primary: [bold]gamma[/bold] (first in --repos)" in first
+    assert "(first in --repos)" in repos_primary_line(None, pick)
 
 
 def test_repos_flag_unknown_name_is_a_usage_error(repos):

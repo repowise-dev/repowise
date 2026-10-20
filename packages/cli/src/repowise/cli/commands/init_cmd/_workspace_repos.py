@@ -54,9 +54,9 @@ def select_workspace_repos(
             selected = match_repo_names(scan.repos, repo_names, root)
         except ValueError as exc:
             raise click.UsageError(f"--repos: {exc}") from exc
-        console.print(f"  Primary: [bold]{selected[0].alias}[/bold] (first in --repos)\n")
-        # The first name listed is the primary the user chose.
-        return WorkspacePick(selected, root, selected[0].alias, selected[0], True)
+        # The first name listed is primary only for a new workspace; an existing
+        # workspace keeps its primary (see repos_primary_line).
+        return WorkspacePick(selected, root, selected[0].alias, selected[0], False)
 
     select_all = select_all or not sys.stdin.isatty()
     if select_all:
@@ -74,6 +74,13 @@ def select_workspace_repos(
     # interactive_primary_select asks only when there is more than one to choose from.
     primary_picked = not select_all and len(selected) > 1
     return WorkspacePick(selected, root, primary_alias, primary_repo, primary_picked)
+
+
+def repos_primary_line(default_repo: str | None, pick: WorkspacePick) -> str:
+    """The primary a ``--repos`` run ended with, and where it came from."""
+    if default_repo and default_repo != pick.primary_alias:
+        return f"  Primary: [bold]{default_repo}[/bold] (kept from the workspace)\n"
+    return f"  Primary: [bold]{pick.primary_alias}[/bold] (first in --repos)\n"
 
 
 def all_repos_line(repos: list[Any]) -> str:

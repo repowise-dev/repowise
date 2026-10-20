@@ -78,7 +78,7 @@ from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from ._workspace_config import WorkspacePick, build_workspace_config
-from ._workspace_repos import select_workspace_repos
+from ._workspace_repos import repos_primary_line, select_workspace_repos
 from .generation import (
     CostGateDeclined,
     concept_page_count,
@@ -877,6 +877,8 @@ def _workspace_init(
         answers, primary_repo, embedder_name, yes=yes, save_key=save_key
     )
     ws_config = _workspace_config(pick, ask=sys.stdin.isatty() and not yes, dry_run=dry_run)
+    if repo_names:
+        console.print(repos_primary_line(ws_config.default_repo, pick))
 
     from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
