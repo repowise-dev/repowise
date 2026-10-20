@@ -61,3 +61,26 @@ class TestDoctorFormatJson:
         assert result.exit_code != 0
         assert "--repair" in result.output
         assert "json" in result.output.lower()
+
+
+class TestDoctorTableExitCode:
+    """Table mode must exit 1 when checks fail, like json mode does."""
+
+    def test_table_output_on_unindexed_repo_exits_1(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
+
+        result = CliRunner().invoke(doctor_command, [str(tmp_path), "--no-workspace"])
+
+        assert result.exit_code == 1, result.output
+        assert "Some checks failed" in result.output
+
+    def test_table_output_on_healthy_repo_exits_0(self, tmp_path: Path, monkeypatch) -> None:
+        _git_init(tmp_path)
+        monkeypatch.setattr(
+            "repowise.cli.commands.doctor_cmd.command._run_repo_checks",
+            lambda repo_path, repair, fmt="table": (True, []),
+        )
+
+        result = CliRunner().invoke(doctor_command, [str(tmp_path), "--no-workspace"])
+
+        assert result.exit_code == 0, result.output
