@@ -252,7 +252,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="claude_cli",
-        picker_rank=7,
+        picker_rank=6,
         impl=f"{_LLM}.claude_cli:ClaudeCliProvider",
         label="Claude Code (Local CLI)",
         default_model="claude_cli/claude-haiku-5-5",
@@ -271,7 +271,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="codex_cli",
-        picker_rank=6,
+        picker_rank=7,
         impl=f"{_LLM}.codex_cli:CodexCliProvider",
         label="Codex (Local CLI)",
         default_model="codex_cli/default",

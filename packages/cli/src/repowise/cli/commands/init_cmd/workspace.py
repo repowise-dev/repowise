@@ -20,6 +20,7 @@ from typing import Any
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli._setup import setup_logging_silence
+from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.editor_integrations.defaults import (
     get_default_disabled_project_files,
     get_default_integration_overrides,
@@ -86,7 +87,6 @@ from .generation import (
     cost_gate_declined,
     embedding_note,
     estimate_generation,
-    format_cost,
     run_repo_generation,
     structural_page_summary,
 )
@@ -151,7 +151,7 @@ def _run_workspace_generation(
     # a dozen times, which makes plain text easier to miss, not harder.
     console.print(
         f"    Writing [bold]{concept_page_count(plans):,}[/bold] subsystem pages with "
-        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. {spend_phrase(est, concurrency)}."
     )
     structural = structural_page_summary(plans)
     if structural:

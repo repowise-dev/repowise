@@ -89,6 +89,7 @@ def _gate_cost(
             format_cost,
             structural_page_summary,
         )
+        from repowise.cli.cost_gate import spend_phrase
         from repowise.cli.providers.embedders import resolve_embedding_model
         from repowise.core.cost_estimator import build_generation_plan, estimate_cost
 
@@ -106,7 +107,7 @@ def _gate_cost(
         return
 
     pages = sum(p.count for p in plans)
-    console.print(f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold].")
+    console.print(f"[bold]{pages}[/bold] pages. {spend_phrase(est, config.max_concurrency)}.")
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"  [dim]{structural}[/dim]")

@@ -8,6 +8,7 @@ from typing import Any
 
 from rich.table import Table
 
+from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.helpers import console, load_config, warn
 from repowise.cli.ui import BRAND, VALUE, print_phase_header
 from repowise.cli.ui.mode_names import INDEX_ONLY
@@ -20,7 +21,6 @@ from .generation import (
     cost_gate_declined,
     embedding_note,
     estimate_generation,
-    format_cost,
     page_type_label,
     run_repo_generation,
     structural_page_summary,
@@ -163,6 +163,19 @@ def _run_deterministic_generation_phase(
     return embedder
 
 
+def _local_server_overloaded(provider_name: str, concurrency: int) -> bool:
+    """A local model server (Ollama) at high concurrency, which can time out.
+
+    An agent CLI bounds its own process count (its estimate says so), so it
+    never needs the advice to lower --concurrency.
+    """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider_name)
+    is_local_server = spec is not None and spec.local and not spec.agent
+    return is_local_server and concurrency > 4
+
+
 def _print_generation_plan(
     est: Any, result: Any, provider: Any, *, concurrency: int, onboarding: bool
 ) -> None:
@@ -199,11 +212,7 @@ def _print_generation_plan(
         lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
-    # Warn when a local provider runs with default concurrency
-    from repowise.core.providers.llm.specs import PROVIDER_SPECS
-
-    spec = PROVIDER_SPECS.get(provider.provider_name)
-    if spec is not None and spec.local and concurrency > 4:
+    if _local_server_overloaded(provider.provider_name, concurrency):
         warn(
             f"  {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
@@ -291,7 +300,7 @@ def _run_generation_phase(
     concept_n = concept_page_count(plans)
     console.print(
         f"  Writing [bold]{concept_n:,}[/bold] subsystem pages with "
-        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. {spend_phrase(est, concurrency)}."
     )
     structural = structural_page_summary(plans)
     if structural:
