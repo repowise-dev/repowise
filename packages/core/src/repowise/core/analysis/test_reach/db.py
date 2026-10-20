@@ -23,6 +23,7 @@ from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GraphNode
 
 from .forward import CallGraphView, files_reached_by_tests
+from .hubs import call_hub_files
 from .maps import LEGACY_CONFTEST_HINT, ImportGraph, Need, Walk
 from .model import (
     DEFAULT_CALL_DEPTH,
@@ -142,6 +143,27 @@ async def cached_test_files(session: AsyncSession, repo_id: str) -> frozenset[st
     if key in _cache:
         return _cache.get(key)
     return _cache.remember(key, frozenset(await load_test_files(session, repo_id)))
+
+
+async def cached_hub_files(session: AsyncSession, repo_id: str) -> frozenset[str]:
+    """:func:`~.hubs.call_hub_files` by the stored call edges, read once per index state."""
+    key = await _cache.key(session, repo_id, "hubs")
+    if key in _cache:
+        return _cache.get(key)
+    params: dict[str, Any] = {"repo_id": repo_id}
+    ets = _in_clause("e", sorted(EXECUTION_EDGE_TYPES), params)
+    bad = _in_clause("o", sorted(UNRELIABLE_CALL_ORIGINS), params)
+    rows = await session.execute(
+        text(
+            "SELECT target_node_id, COUNT(DISTINCT source_node_id) FROM graph_edges "
+            f"WHERE repository_id = :repo_id AND edge_type IN ({ets}) "
+            f"AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad})) "
+            "GROUP BY target_node_id"
+        ),
+        params,
+    )
+    test_files = await cached_test_files(session, repo_id)
+    return _cache.remember(key, call_hub_files(dict(rows.all()), test_files))
 
 
 async def cached_files_reached_by_tests(session: AsyncSession, repo_id: str) -> frozenset[str]:
@@ -332,8 +354,12 @@ async def tests_reaching_by_tier(
     test_files: set[str] | None = None,
     avoid: Collection[str] = frozenset(),
     import_graph: ImportGraph | None = None,
+    hubs: Collection[str] = frozenset(),
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *hubs* (:func:`cached_hub_files`) tags the call-tier tests that reach a
+    target only through a hub, and lists them last (``ReachedBy.transitive``).
 
     *test_files* is :func:`load_test_files`'s answer, for a caller that walks
     more than once and need not read it twice. A target may be a symbol id
@@ -376,6 +402,7 @@ async def tests_reaching_by_tier(
         import_depth=import_depth,
         symbol_seeds=symbol_seeds,
         avoid=avoid,
+        hubs=hubs,
     )
     return await drive(walk, session, repo_id, import_graph=import_graph)
 

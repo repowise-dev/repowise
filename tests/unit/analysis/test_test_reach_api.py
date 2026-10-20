@@ -334,3 +334,101 @@ def test_runnable_tests_stand_on_the_stored_flag_and_leave_support_out() -> None
     assert not is_runnable_test("tests/test_a.py", is_test=False)
     assert not is_runnable_test("tests/conftest.py", is_test=True)
     assert not is_runnable_test("tests/fixtures/data.py", is_test=True)
+
+
+# ---------------------------------------------------------------------------
+# Listings: a test reaching only through a hub is tagged and listed last
+# ---------------------------------------------------------------------------
+
+
+def _hub_graph() -> nx.MultiDiGraph:
+    """``src/t.py::f``: one direct test, one 3 calls out through a plain chain,
+    one 3 calls out through ``src/hub.py``, and one with two such callers."""
+    files = ["src/t.py", "src/x.py", "src/y.py", "src/hub.py"]
+    tests = [
+        "tests/test_a_hub.py",
+        "tests/test_b_chain.py",
+        "tests/test_c_two.py",
+        "tests/test_t.py",
+    ]
+    edges = [(p, f"{p}::f", "defines") for p in files]
+    edges += [(t, f"{t}::t", "defines") for t in tests]
+    edges += [("tests/test_c_two.py", "tests/test_c_two.py::u", "defines")]
+    calls = [
+        ("tests/test_t.py::t", "src/t.py::f"),
+        ("src/hub.py::f", "src/t.py::f"),
+        ("src/x.py::f", "src/hub.py::f"),
+        ("tests/test_a_hub.py::t", "src/x.py::f"),
+        ("src/y.py::f", "src/t.py::f"),
+        ("src/y.py::g", "src/y.py::f"),
+        ("tests/test_b_chain.py::t", "src/y.py::g"),
+        ("tests/test_c_two.py::t", "src/x.py::f"),
+        ("tests/test_c_two.py::u", "src/x.py::f"),
+    ]
+    edges += [("src/y.py", "src/y.py::g", "defines")]
+    edges += [(a, b, "calls") for a, b in calls]
+    return _graph({**dict.fromkeys(files, False), **dict.fromkeys(tests, True)}, edges)
+
+
+def test_a_test_reaching_only_through_a_hub_is_tagged_and_listed_last() -> None:
+    maps = build_walk_maps(_hub_graph())
+    plain = reaching_by_tier(maps, ["src/t.py"])["src/t.py"]
+    assert plain.transitive == frozenset()
+    listed = reaching_by_tier(maps, ["src/t.py"], hubs={"src/hub.py"})["src/t.py"]
+    assert listed.transitive == {"tests/test_a_hub.py"}
+    assert listed.tests == [
+        "tests/test_t.py",
+        # Through the hub too, but from two test functions: not tagged.
+        "tests/test_c_two.py",
+        "tests/test_b_chain.py",
+        "tests/test_a_hub.py",
+    ]
+    # Tagged, not dropped: it still runs the target.
+    assert listed.total == plain.total == 4
+
+
+def test_a_call_hub_is_a_file_declaring_a_symbol_most_callers_call() -> None:
+    from repowise.core.analysis.test_reach import call_hub_files
+
+    fan_in = {"src/walk.py::Walker::run": 60, "src/leaf.py::f": 2, "tests/test_x.py::helper": 90}
+    assert call_hub_files(fan_in, {"tests/test_x.py"}) == {"src/walk.py"}
+    tests = [f"tests/test_{i:02}.py" for i in range(60)]
+    edges = [(t, f"{t}::t", "defines") for t in tests]
+    edges += [("src/walk.py", "src/walk.py::run", "defines")]
+    edges += [(f"{t}::t", "src/walk.py::run", "calls") for t in tests]
+    g = _graph({**dict.fromkeys(tests, True), "src/walk.py": False}, edges)
+    assert build_walk_maps(g).hubs() == {"src/walk.py"}
+
+
+def test_a_target_that_is_a_hub_still_carries_its_own_symbols() -> None:
+    """Seeded at ``t.py::f``, a route in through ``t.py::g`` passes through the
+    target's own file, which is a hub here; that is not a route through a hub."""
+    g = _hub_graph()
+    g.add_node("src/t.py::g", node_type="symbol")
+    g.add_edge("src/t.py", "src/t.py::g", edge_type="defines")
+    g.add_edge("src/t.py::g", "src/t.py::f", edge_type="calls")
+    g.add_node("src/z.py", node_type="file", is_test=False)
+    g.add_node("src/z.py::f", node_type="symbol")
+    g.add_edge("src/z.py", "src/z.py::f", edge_type="defines")
+    g.add_edge("src/z.py::f", "src/t.py::g", edge_type="calls")
+    g.add_node("tests/test_d_own.py", node_type="file", is_test=True)
+    g.add_node("tests/test_d_own.py::t", node_type="symbol")
+    g.add_edge("tests/test_d_own.py", "tests/test_d_own.py::t", edge_type="defines")
+    g.add_edge("tests/test_d_own.py::t", "src/z.py::f", edge_type="calls")
+    maps = build_walk_maps(g)
+    sid = "src/t.py::f"
+    listed = reaching_by_tier(
+        maps, [sid], symbol_seeds={sid: {sid}}, hubs={"src/hub.py", "src/t.py"}
+    )[sid]
+    assert listed.reach["tests/test_d_own.py"].hops == 3
+    assert listed.transitive == {"tests/test_a_hub.py"}
+
+
+def test_a_path_level_transitive_entry_ranks_a_test_id_last() -> None:
+    from repowise.core.analysis.test_reach import rank_reaching
+
+    tests = ["tests/test_a.py::t", "tests/test_b.py::t"]
+    assert rank_reaching("src/x.py", tests, transitive={"tests/test_a.py"}) == [
+        "tests/test_b.py::t",
+        "tests/test_a.py::t",
+    ]

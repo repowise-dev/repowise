@@ -26,6 +26,11 @@ UNRELIABLE_CALL_ORIGINS = UNRELIABLE_EXECUTION_ORIGINS
 # suite cannot produce an unbounded intermediate.
 MAX_TESTS_PER_TARGET = 50
 
+# A call-tier test this many hops out, from one test function, through a hub
+# (:func:`~.hubs.call_hub_files`), reaches the target the way every test does: by
+# calling into the hub. Such a row is tagged ``transitive``.
+TRANSITIVE_HOPS = 3
+
 # Which tier answered. The CLI prints this so a reader can tell "this test runs
 # into the file" from the weaker "this test imports it".
 # ``name-match`` is weaker still: a test named for the file, with no edge.
@@ -74,6 +79,10 @@ class ReachedBy:
     # Import tier only: the files each test was reached through, i.e. the
     # dependencies of that test on the route to the target.
     entries: Mapping[str, frozenset[str]] | None = None
+    # Call tier, when the walk was told the hubs: tests that reach the target
+    # only through a hub, at ``TRANSITIVE_HOPS`` or more from one test function.
+    # Listed after every other test; still reaching, so never dropped.
+    transitive: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -93,11 +102,22 @@ def capped(
     direct: Collection[str] = frozenset(),
     changed: Collection[str] = frozenset(),
     entries: Mapping[str, frozenset[str]] | None = None,
+    transitive: Collection[str] = frozenset(),
 ) -> ReachedBy:
     """*tests* ranked by :func:`rank_reaching`, then cut to ``MAX_TESTS_PER_TARGET``."""
-    ordered = tuple(rank_reaching(target, tests, reach=reach, direct=direct, changed=changed))
+    ordered = tuple(
+        rank_reaching(
+            target, tests, reach=reach, direct=direct, changed=changed, transitive=transitive
+        )
+    )
     return ReachedBy(
-        list(ordered[:MAX_TESTS_PER_TARGET]), via, len(ordered), ordered, reach, entries
+        list(ordered[:MAX_TESTS_PER_TARGET]),
+        via,
+        len(ordered),
+        ordered,
+        reach,
+        entries,
+        frozenset(transitive),
     )
 
 
@@ -108,10 +128,12 @@ def rank_reaching(
     reach: Mapping[str, ReachDistance] | None = None,
     direct: Collection[str] = frozenset(),
     changed: Collection[str] = frozenset(),
+    transitive: Collection[str] = frozenset(),
 ) -> list[str]:
     """*tests* reaching *target*, the likeliest to exercise it first. Cap after this.
 
-    In turn: a test in *changed* (the change edits it), fewer call hops
+    In turn: a test in *changed* (the change edits it), a test not in
+    *transitive* (one reaching only through a hub), fewer call hops
     (*reach*; a test without one sorts after every test with one), a test in
     *direct* (it imports or calls *target* itself), more of the test's
     functions at that distance, then by name: the test named for *target*,
@@ -124,11 +146,12 @@ def rank_reaching(
     reach = reach or {}
     edited = {c.split("::", 1)[0] for c in changed}
 
-    def key(test: str) -> tuple[bool, int, bool, int, bool, int, str]:
+    def key(test: str) -> tuple[bool, bool, int, bool, int, bool, int, str]:
         path = test.split("::", 1)[0]
         distance = reach.get(test) or reach.get(path)
         return (
             path not in edited,
+            test in transitive or path in transitive,
             distance.hops if distance else sys.maxsize,
             test not in direct and path not in direct,
             -distance.callers if distance else 0,

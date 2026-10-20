@@ -148,14 +148,22 @@ async def _read_inferred(
     session: AsyncSession, repository_id: str, changed: list[str]
 ) -> tuple[dict[str, dict[str, Any]], set[str], str | None]:
     """The tests the graph walk reaches per changed path, the test files, and the walk error."""
-    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching_by_tier
+    from repowise.core.analysis.test_reachability import (
+        cached_hub_files,
+        load_test_files,
+        tests_reaching_by_tier,
+    )
 
     inference_error: str | None = None
     test_files: set[str] = set()
     try:
         test_files = await load_test_files(session, repository_id)
         reached_by_file = await tests_reaching_by_tier(
-            session, repository_id, changed, test_files=test_files
+            session,
+            repository_id,
+            changed,
+            test_files=test_files,
+            hubs=await cached_hub_files(session, repository_id),
         )
     except Exception as exc:
         reached_by_file = {}
@@ -165,6 +173,7 @@ async def _read_inferred(
             "tests": list(reached.all_tests or reached.tests),
             "via": reached.via,
             "reach": reached.reach,
+            "transitive": reached.transitive,
         }
         for path, reached in reached_by_file.items()
     }
@@ -212,11 +221,12 @@ def assemble_test_impact(
     to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
     uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``), and
     ``narrowed`` true when a reached conftest was already resolved to its tests,
-    and optional ``reach`` (``ReachedBy.reach``); paths outside *changed_files*
-    are ignored. That list is used in the walk's order, except where a scope
-    file expanded (below), and inferred recommendations keep that order.
-    *coverage_summary* carries ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
-    ``source_format`` and ``ingested_commit_sha``. The ``*_error`` arguments
+    and optional ``reach`` and ``transitive`` (from ``ReachedBy``); paths
+    outside *changed_files* are ignored. That list is used in the walk's order,
+    except where a scope file expanded (below), and inferred recommendations
+    keep that order. *coverage_summary* carries ``pair_count``, ``test_count``,
+    ``source_file_count``, ``ingested_at``, ``source_format`` and
+    ``ingested_commit_sha``. The ``*_error`` arguments
     are the exception type names of a failed read; each marks the analysis degraded.
     *changed_files* is filtered by *exclude_spec* here too.
 
@@ -335,7 +345,11 @@ def assemble_test_impact(
             # A root conftest stands for every test in the repository: rank the
             # expansion nearest-first and keep the walk's own per-target cap.
             kept_tests = rank_reaching(
-                path, kept_tests, reach=reached.get("reach"), changed=changed
+                path,
+                kept_tests,
+                reach=reached.get("reach"),
+                changed=changed,
+                transitive=reached.get("transitive") or (),
             )
             kept_tests = kept_tests[:MAX_TESTS_PER_TARGET]
         for place, test_id in enumerate(kept_tests):

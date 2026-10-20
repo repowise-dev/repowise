@@ -22,6 +22,7 @@ from .maps import Need, Walk, WalkMaps, run
 from .model import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
+    TRANSITIVE_HOPS,
     ReachDistance,
     ReachedBy,
     ReachRow,
@@ -248,12 +249,17 @@ def tier_walk(
     symbol_seeds: Mapping[str, Collection[str]] | None = None,
     avoid: Collection[str] = frozenset(),
     helpers: bool = False,
+    hubs: Collection[str] = frozenset(),
 ) -> Walk[dict[str, ReachedBy]]:
     """The call walk, then the import walk for what it left, then (*helpers*) the helper hop.
 
     Each tier is seeded with only the targets the stronger ones left
     unanswered, so a weaker tier never speaks over a stronger one. The targets
     are usually a change's files, so a test among them leads every list.
+
+    With *hubs*, a call-tier test is tagged ``transitive`` when it reaches the
+    target only through a hub (:func:`transitive_tests`). A listing passes
+    them; a selection does not, since a tagged test still runs the target.
     """
     seeds = sorted({t for t in targets if t})
     if not seeds or not test_files:
@@ -263,8 +269,20 @@ def tier_walk(
         found = yield from call_walk(
             seeds, test_files, call_depth, symbol_seeds=symbol_seeds, avoid=avoid
         )
+        tagged: dict[str, set[str]] = {}
+        if hubs:
+            tagged = yield from transitive_tests(
+                found, test_files, call_depth, symbol_seeds=symbol_seeds, avoid=avoid, hubs=hubs
+            )
         for seed, reach in found.items():
-            out[seed] = capped(seed, reach, "call-graph", reach=reach, changed=seeds)
+            out[seed] = capped(
+                seed,
+                reach,
+                "call-graph",
+                reach=reach,
+                changed=seeds,
+                transitive=tagged.get(seed, ()),
+            )
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
         found, entries = yield from import_walk(unanswered, test_files, import_depth)
@@ -282,6 +300,40 @@ def tier_walk(
     return out
 
 
+def transitive_tests(
+    found: Mapping[str, Mapping[str, ReachDistance]],
+    test_files: Collection[str],
+    max_depth: int,
+    *,
+    symbol_seeds: Mapping[str, Collection[str]] | None = None,
+    avoid: Collection[str] = frozenset(),
+    hubs: Collection[str],
+) -> Walk[dict[str, set[str]]]:
+    """``{seed: tests reaching it only through a hub}``, among *found*'s far, single-caller tests.
+
+    A candidate is ``TRANSITIVE_HOPS`` or more calls out from one test
+    function. The call walk runs again for the seeds with candidates, with
+    *hubs* added to *avoid*; a candidate it no longer finds had no route that
+    skips a hub. A target that is a hub itself still carries its own seeds.
+    """
+    candidates = {
+        seed: {t for t, d in reach.items() if d.hops >= TRANSITIVE_HOPS and d.callers == 1}
+        for seed, reach in found.items()
+    }
+    candidates = {seed: tests for seed, tests in candidates.items() if tests}
+    if not candidates:
+        return {}
+    around = yield from call_walk(
+        sorted(candidates),
+        test_files,
+        max_depth,
+        symbol_seeds=symbol_seeds,
+        avoid={*avoid, *hubs},
+    )
+    tagged = {seed: tests - set(around.get(seed, ())) for seed, tests in candidates.items()}
+    return {seed: tests for seed, tests in tagged.items() if tests}
+
+
 def reaching_by_tier(
     maps: WalkMaps,
     targets: Collection[str],
@@ -291,6 +343,7 @@ def reaching_by_tier(
     symbol_seeds: Mapping[str, Collection[str]] | None = None,
     avoid: Collection[str] = frozenset(),
     helpers: bool = True,
+    hubs: Collection[str] = frozenset(),
 ) -> dict[str, ReachedBy]:
     """Test files reaching each of *targets*, and which tier found them: :func:`tier_walk`.
 
@@ -307,6 +360,7 @@ def reaching_by_tier(
             symbol_seeds=symbol_seeds,
             avoid=avoid,
             helpers=helpers,
+            hubs=hubs,
         ),
         maps,
     )

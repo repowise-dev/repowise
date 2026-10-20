@@ -15,6 +15,7 @@ from typing import Any, Literal, NamedTuple, TypeVar
 
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
 
+from .hubs import call_hub_files
 from .model import UNRELIABLE_CALL_ORIGINS
 
 NeedKind = Literal["declared", "callers", "importers", "known"]
@@ -98,6 +99,10 @@ class WalkMaps:
     imports: ImportGraph
     files: frozenset[str]
     test_files: frozenset[str]
+
+    def hubs(self) -> frozenset[str]:
+        """:func:`~.hubs.call_hub_files` by these maps' call fan-in."""
+        return call_hub_files({n: len(c) for n, c in self.callers.items()}, self.test_files)
 
     def answer(self, need: Need) -> Any:
         if need.kind == "declared":

@@ -922,3 +922,32 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
     assert in_memory["app/lonely.py"].reached.via == "changed-test"
     assert in_memory["app/types.py"].state == "type_only"
     assert {in_memory[p].state for p in in_memory} >= {"reached", "unreached", "new"}
+
+
+async def test_stored_call_hubs_match_the_in_memory_ones(async_session):
+    """Distinct reliable callers, tests included; a name-guessed call does not count."""
+    import networkx as nx
+
+    from repowise.core.analysis.test_reachability import build_walk_maps, cached_hub_files
+    from repowise.core.analysis.test_reachability import clear_test_map_cache as clear
+
+    tests = [f"tests/test_{i:02}.py" for i in range(10)]
+    edges = [("src/hub.py", "src/hub.py::run", "defines"), ("src/few.py", "src/few.py::f", "defines")]
+    for t in tests:
+        edges += [(t, f"{t}::t", "defines"), (f"{t}::t", "src/hub.py::run", "calls")]
+    edges += [(f"{t}::t", "src/few.py::f", "calls", "global_unique") for t in tests]
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={**dict.fromkeys(tests, True), "src/hub.py": False, "src/few.py": False},
+        edges=edges,
+    )
+    clear()
+    g = nx.MultiDiGraph()
+    for t in tests:
+        g.add_node(t, node_type="file", is_test=True)
+    for src, dst, kind, *origin in edges:
+        g.add_edge(src, dst, edge_type=kind, resolution_origin=origin[0] if origin else None)
+    stored = await cached_hub_files(async_session, repo.id)
+    assert stored == build_walk_maps(g).hubs() == {"src/hub.py"}

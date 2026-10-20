@@ -158,6 +158,7 @@ from .db import (
     always_run_test_files,
     any_tests_reaching,
     cached_files_reached_by_tests,
+    cached_hub_files,
     cached_test_files,
     call_graph_from_db,
     clear_test_map_cache,
@@ -181,12 +182,14 @@ from .forward import (
     files_reached_by_tests,
     files_with_paired_tests,
 )
+from .hubs import call_hub_files, hub_files
 from .inline import go_inline_tests, inline_tests, rust_has_inline_tests
 from .maps import ImportGraph, WalkMaps, build_walk_maps
 from .model import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
     MAX_TESTS_PER_TARGET,
+    TRANSITIVE_HOPS,
     UNRELIABLE_CALL_ORIGINS,
     ReachDistance,
     ReachedBy,
@@ -204,6 +207,7 @@ __all__ = [
     "DEFAULT_CALL_DEPTH",
     "DEFAULT_MAX_DEPTH",
     "MAX_TESTS_PER_TARGET",
+    "TRANSITIVE_HOPS",
     "UNRELIABLE_CALL_ORIGINS",
     "CallGraphView",
     "ImportGraph",
@@ -217,9 +221,11 @@ __all__ = [
     "any_tests_reaching",
     "build_walk_maps",
     "cached_files_reached_by_tests",
+    "cached_hub_files",
     "cached_test_files",
     "call_graph_from_db",
     "call_graph_from_graph",
+    "call_hub_files",
     "clear_test_map_cache",
     "dependency_path",
     "direct_dependents",
@@ -227,6 +233,7 @@ __all__ = [
     "files_reached_by_tests",
     "files_with_paired_tests",
     "go_inline_tests",
+    "hub_files",
     "imported_names_by_test",
     "inline_tests",
     "is_runnable_test",

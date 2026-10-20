@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.test_reachability import (
     cached_files_reached_by_tests,
+    cached_hub_files,
     cached_test_files,
     tests_reaching_by_tier,
 )
@@ -330,7 +331,9 @@ async def health_tests_reaching(
         "truncated": False,
     }
     try:
-        found = await tests_reaching_by_tier(session, repo_id, [file_path])
+        # A listing: tests that reach the file only through a hub go last.
+        hubs = await cached_hub_files(session, repo_id)
+        found = await tests_reaching_by_tier(session, repo_id, [file_path], hubs=hubs)
     except Exception:
         return empty
     reached = found.get(file_path)
