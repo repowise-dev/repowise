@@ -3,8 +3,9 @@
 Pure formatting, no live display: :mod:`repowise.cli.ui.progress_display`
 draws the running rows and :class:`~repowise.cli.ui.progress.RichProgressCallback`
 prints a done row as each step finishes. Every glyph and style a step state
-uses is in :data:`STATE_MARKS`, so a theme swaps them in one place. Each state
-carries a glyph as well as a colour, so it still reads with colour off.
+uses is in :data:`STATE_MARKS`: the glyph comes from
+:mod:`repowise.cli.ui.glyphs` and the style from the theme. Each state carries a
+glyph as well as a colour, so it still reads with colour off.
 """
 
 from __future__ import annotations
@@ -14,14 +15,15 @@ from dataclasses import dataclass
 from rich.markup import escape
 
 from repowise.cli.ui.brand import DIM, OK, format_elapsed
+from repowise.cli.ui.glyphs import GLYPHS, glyph
 
 DONE = "done"
 PENDING = "pending"
 
-#: state -> (glyph, style). The running state is the live spinner row.
+#: state -> (glyph name, style). The running state is the live owl row.
 STATE_MARKS: dict[str, tuple[str, str]] = {
-    DONE: ("✓", OK),
-    PENDING: ("○", DIM),
+    DONE: ("ok", OK),
+    PENDING: ("pending", DIM),
 }
 
 #: A step running longer than this gets the long-step line.
@@ -35,17 +37,30 @@ _MIN_RATE_SECONDS = 3.0
 _MIN_TOTAL_ITEMS = 20
 _MIN_DONE_ITEMS = 5
 
-_SUBSTEP_PREFIX = "↳"
+_SUBSTEP_PREFIX, _ = GLYPHS["substep"]
+_ELLIPSIS, _ = GLYPHS["ellipsis"]
+
+
+def running_label(raw: str) -> str:
+    """A step label as a running row shows it: its ``↳`` and ``…`` in this terminal's form."""
+    return raw.replace(_SUBSTEP_PREFIX, glyph("substep")).replace(_ELLIPSIS, glyph("ellipsis"))
 
 
 def split_label(raw: str) -> tuple[str, int]:
-    """``"  ↳ Resolving imports"`` -> ``("Resolving imports", 1)``; trailing ``…`` dropped."""
+    """``"  ↳ Resolving imports"`` -> ``("Resolving imports", 1)``; trailing ``…`` dropped.
+
+    Takes the label in either form, as written or as :func:`running_label` made it.
+    """
     text = raw.strip()
     depth = 0
-    if text.startswith(_SUBSTEP_PREFIX):
-        depth = 1
-        text = text[len(_SUBSTEP_PREFIX) :].strip()
-    return text.rstrip("…").rstrip(), depth
+    for prefix in GLYPHS["substep"]:
+        if text.startswith(prefix):
+            depth = 1
+            text = text[len(prefix) :].strip()
+            break
+    for more in GLYPHS["ellipsis"]:
+        text = text.removesuffix(more)
+    return text.rstrip(), depth
 
 
 def count_text(completed: float, total: float | None, unit: str) -> str:
@@ -100,13 +115,14 @@ class FinishedStep:
 def done_line(step: FinishedStep) -> str:
     """The markup line a finished step leaves behind: ``  ✓ Parsing files · 30 files · 0.4s``."""
     label, depth = split_label(step.label)
-    glyph, style = STATE_MARKS[DONE]
+    name, style = STATE_MARKS[DONE]
     indent = "  " * (depth + 1)
     amount = step.total or step.completed
     count = count_text(amount, None, step.unit) if amount else ""
     facts = [f for f in (count, format_elapsed(step.elapsed or 0.0)) if f]
-    tail = f" [{DIM}]· {' · '.join(facts)}[/]" if facts else ""
-    return f"{indent}[{style}]{glyph}[/] {escape(label)}{tail}"
+    sep = glyph("sep")
+    tail = f" [{DIM}]{sep} {f' {sep} '.join(facts)}[/]" if facts else ""
+    return f"{indent}[{style}]{glyph(name)}[/] {escape(label)}{tail}"
 
 
 def long_step_line(resume_command: str) -> str:
@@ -119,5 +135,6 @@ def long_step_line(resume_command: str) -> str:
 
 def upcoming_line(titles: list[str]) -> str:
     """The stages still to run, e.g. ``  ○ Next: Analysis · Generation · Persistence``."""
-    glyph, style = STATE_MARKS[PENDING]
-    return f"  [{style}]{glyph} Next: {escape(' · '.join(titles))}[/]"
+    name, style = STATE_MARKS[PENDING]
+    sep = glyph("sep")
+    return f"  [{style}]{glyph(name)} Next: {escape(f' {sep} '.join(titles))}[/]"

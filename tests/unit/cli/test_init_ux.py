@@ -16,13 +16,14 @@ from rich.console import Console
 from rich.progress import Progress, TextColumn
 
 from repowise.cli.ui import provider_selection
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.progress import RichProgressCallback
 from repowise.core.pipeline.progress import STAGE_ANALYSIS, STAGE_INGESTION, emit_stage
 
 
 def _console() -> tuple[Console, StringIO]:
     buf = StringIO()
-    return Console(file=buf, force_terminal=False, width=100), buf
+    return Console(file=buf, force_terminal=False, width=100, theme=THEME), buf
 
 
 # --- stage headers ---------------------------------------------------------

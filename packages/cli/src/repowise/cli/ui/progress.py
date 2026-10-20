@@ -10,6 +10,7 @@ from rich.console import Console
 
 from repowise.cli.ui import checklist
 from repowise.cli.ui.brand import ERR, WARN, print_phase_header
+from repowise.cli.ui.glyphs import GLYPHS, for_terminal
 from repowise.core.redaction import redact_secrets
 
 # Message levels that mean "this run degraded". ``notice`` is deliberately not
@@ -240,7 +241,7 @@ class RichProgressCallback:
         self._print_above_live(lambda: print_stage(self._progress.console, stage, total))
 
     def on_phase_start(self, phase: str, total: int | None) -> None:
-        label = _PHASE_LABELS.get(phase, f"{phase}…")
+        label = checklist.running_label(_PHASE_LABELS.get(phase, f"{phase}…"))
         self._done.discard(phase)
         self._done_counts.pop(phase, None)
         # If phase already has a task, update its total and make visible
@@ -336,8 +337,9 @@ class RichProgressCallback:
         style = style_map.get(level, "")
         if level in _DEGRADING_LEVELS:
             self.warnings.append(redact_secrets(text))
-        # Insight lines (indented with →) get special formatting
-        if text.lstrip().startswith("→"):
+        text = for_terminal(text)
+        # Insight lines (indented with →, in either form) get special formatting
+        if text.lstrip().startswith(GLYPHS["arrow"]):
             line = f"  [dim]{text}[/dim]"
         elif style:
             line = f"  [{style}]{text}[/{style}]"

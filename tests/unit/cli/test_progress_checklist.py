@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.progress import TextColumn
 
 from repowise.cli.ui import checklist
+from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.progress import RichProgressCallback, print_stage, upcoming_stages
 from repowise.cli.ui.progress_display import ChecklistProgress, make_progress
 
@@ -92,7 +93,7 @@ def test_pending_and_done_states_carry_a_glyph_not_only_a_colour() -> None:
     assert Console().render_str(checklist.upcoming_line(["Analysis", "Persistence"])).plain == (
         "  ○ Next: Analysis · Persistence"
     )
-    assert checklist.STATE_MARKS[checklist.DONE][0] == "✓"
+    assert glyph(checklist.STATE_MARKS[checklist.DONE][0]) == "✓"
 
 
 def test_no_em_dashes_in_checklist_copy() -> None:

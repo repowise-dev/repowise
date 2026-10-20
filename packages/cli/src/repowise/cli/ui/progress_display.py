@@ -13,15 +13,22 @@ from collections.abc import Iterable
 from typing import Any
 
 from rich.console import Console, RenderableType
-from rich.progress import BarColumn, Progress, ProgressColumn, SpinnerColumn, Task, TextColumn
+from rich.progress import BarColumn, Progress, ProgressColumn, Task, TextColumn
 from rich.text import Text
 
-from repowise.cli.ui import checklist
-from repowise.cli.ui.brand import BRAND_STYLE, DIM, OK
-from repowise.cli.ui.mascot import OWL_SPINNER
+from repowise.cli.ui import checklist, mascot
+from repowise.cli.ui.brand import DIM, OK
+from repowise.cli.ui.glyphs import glyph
 
 # The item a step is on is a path; keep its tail, which is the part that changes.
 _DETAIL_WIDTH = 36
+
+
+class OwlColumn(ProgressColumn):
+    """The blinking mini owl at the head of a running row."""
+
+    def render(self, task: Task) -> Text:
+        return mascot.thinking_text(task.get_time())
 
 
 class MaybeCountColumn(ProgressColumn):
@@ -63,7 +70,8 @@ class DetailColumn(ProgressColumn):
     def render(self, task: Task) -> Text:
         detail = str(task.fields.get("detail") or "")
         if len(detail) > _DETAIL_WIDTH:
-            detail = "…" + detail[-(_DETAIL_WIDTH - 1) :]
+            more = glyph("ellipsis")
+            detail = more + detail[-(_DETAIL_WIDTH - len(more)) :]
         return Text(detail, style=DIM, overflow="ellipsis", no_wrap=True)
 
 
@@ -112,7 +120,7 @@ def make_progress(
     only where Ctrl-C really is safe, since the long-step line says so.
     """
     columns: list[Any] = [
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        OwlColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=24),
         MaybeCountColumn(),

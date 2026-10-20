@@ -9,6 +9,7 @@ import pytest
 
 from repowise.cli.commands.init_cmd.generation import run_repo_generation
 from repowise.cli.commands.init_cmd.reporting import show_completion
+from repowise.cli.ui.brand import THEME
 from repowise.core.generation.job_system import JobSystem
 from repowise.core.generation.models import GeneratedPage
 
@@ -319,7 +320,7 @@ class TestInitRendersGenerationChecks:
         buf = io.StringIO()
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.console",
-            Console(file=buf, width=200, force_terminal=False),
+            Console(file=buf, width=200, force_terminal=False, theme=THEME),
         )
         show_completion(
             repo_path="/fake",
@@ -564,7 +565,7 @@ class TestInitClosingKeylessNote:
         buf = io.StringIO()
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.console",
-            Console(file=buf, width=200, force_terminal=False),
+            Console(file=buf, width=200, force_terminal=False, theme=THEME),
         )
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.load_state",

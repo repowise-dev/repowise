@@ -19,6 +19,7 @@ from repowise.cli.commands.init_cmd._workspace_config import (
     build_workspace_config,
 )
 from repowise.cli.commands.init_cmd._workspace_repos import select_workspace_repos
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.workspace_selection import interactive_repo_select
 from repowise.core.workspace import WorkspaceConfig
 
@@ -41,7 +42,7 @@ def _write(root: Path, aliases: list[str], default: str, **extra: object) -> Non
 
 
 def _build(root: Path, picked: list[str], primary: str, **kw: bool) -> WorkspaceConfig:
-    console = Console(record=True, width=200)
+    console = Console(record=True, width=200, theme=THEME)
     repos = [_repo(root, n) for n in picked]
     pick = WorkspacePick(repos, root.resolve(), primary, repos[0], kw.get("primary_picked", False))
     cfg = build_workspace_config(pick, console=console, ask=kw.get("ask", False))
@@ -132,7 +133,7 @@ def test_picker_number_column_fits_three_digits() -> None:
         SimpleNamespace(name=f"r{i}", path=Path(f"/w/r{i}"), has_repowise=False, is_submodule=False)
         for i in range(226)
     ]
-    console = Console(record=True, width=120)
+    console = Console(record=True, width=120, theme=THEME)
     with patch("repowise.cli.ui.workspace_selection.Prompt.ask", return_value="none"):
         interactive_repo_select(console, repos)
     text = console.export_text()

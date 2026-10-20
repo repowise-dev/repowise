@@ -22,6 +22,7 @@ from click.testing import CliRunner
 from rich.console import Console
 
 from repowise.cli.providers import embed_failure_message, semantic_search_status
+from repowise.cli.ui.brand import THEME
 from repowise.core.generation.models import GeneratedPage
 
 
@@ -155,7 +156,7 @@ def _closing_card(tmp_path: Path, monkeypatch, *, semantic: str, failed: int) ->
     buf = io.StringIO()
     monkeypatch.setattr(
         "repowise.cli.commands.init_cmd.reporting.console",
-        Console(file=buf, width=200, force_terminal=False),
+        Console(file=buf, width=200, force_terminal=False, theme=THEME),
     )
     graph = MagicMock()
     graph.number_of_nodes.return_value = 1

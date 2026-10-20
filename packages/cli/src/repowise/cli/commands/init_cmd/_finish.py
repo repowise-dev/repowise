@@ -20,7 +20,8 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
-from repowise.cli.ui import OK, print_stage, progress_steps
+from repowise.cli.ui import OK, mascot, print_stage, progress_steps
+from repowise.cli.ui.glyphs import glyph
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.decision_lanes import record_decision_lanes
@@ -75,7 +76,7 @@ def catch_up_savings(repo_path: Path) -> None:
         return
     if outcome.recorded:
         console.print(
-            f"  [{OK}]✓[/] Recovered {outcome.saved_input_tokens:,} saved tokens "
+            f"  [{OK}]{glyph('ok')}[/] Recovered {outcome.saved_input_tokens:,} saved tokens "
             f"from agent history"
         )
 
@@ -468,24 +469,40 @@ def complete_setup(run: InitRun) -> None:
         setup=setup_outcome,
         files_written=files_written,
         verbose=opts.verbose,
+        owl=_finish_owl(run),
     )
 
 
-def exit_with_gaps(run: InitRun) -> None:
-    """Exit degraded when the run left a gap; last, so everything else is kept."""
-    from repowise.cli.agent_events import active
+def _gaps(run: InitRun) -> list[str]:
+    """Everything the run was asked for and did not get; non-empty means exit 2."""
     from repowise.cli.providers import embed_failure_message
 
-    from ._agent_summary import run_summary
-    from ._exit import exit_on_gaps, run_gaps
+    from ._exit import run_gaps
 
     result = run.result
-    gaps = run.gaps + run_gaps(
+    return run.gaps + run_gaps(
         failed_pages=len(getattr(result, "failed_page_ids", None) or []),
         embed_error=embed_failure_message(
             run.scope_embedder, getattr(result, "embed_failed_pages", 0)
         ),
     )
+
+
+def _finish_owl(run: InitRun) -> str:
+    """Failed when the run is about to exit non-zero, warn when it degraded, else done."""
+    if _gaps(run):
+        return mascot.FAILED
+    return mascot.WARNED if run.run_warnings else mascot.DONE
+
+
+def exit_with_gaps(run: InitRun) -> None:
+    """Exit degraded when the run left a gap; last, so everything else is kept."""
+    from repowise.cli.agent_events import active
+
+    from ._agent_summary import run_summary
+    from ._exit import exit_on_gaps
+
+    gaps = _gaps(run)
     events = active()
     if events is not None:
         events.summary(run_summary(run, gaps))

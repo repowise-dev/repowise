@@ -11,6 +11,7 @@ from repowise.cli.commands.serve_cmd._ports import DEFAULT_UI_PORT
 from repowise.cli.commands.serve_cmd._web_assets import _NODE_MIN_MAJOR
 from repowise.cli.editor_setup import EditorSetupOutcome
 from repowise.cli.ui import build_contextual_next_steps
+from repowise.cli.ui.brand import THEME
 from repowise.cli.ui.finish_panel import FinishFacts, build_finish_panel
 from repowise.cli.ui.mode_names import completion_title, scope_line
 from repowise.cli.ui.result_panels import serve_step
@@ -57,7 +58,7 @@ def _render(mode: str, setup=None, files_written=None) -> str:
         top_hotspot="serializer.py",
         setup=setup,
     )
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
     console.print(
         build_finish_panel(
             facts, steps=steps, setup=setup, repo_path=Path("/r"), files_written=files_written
@@ -164,7 +165,7 @@ def test_bracketed_file_names_render_literally():
     steps = build_contextual_next_steps(
         index_only=False, hotspot_count=1, top_hotspot="[id].tsx", setup=setup
     )
-    console = Console(record=True, width=100)
+    console = Console(record=True, width=100, theme=THEME)
     console.print(
         build_finish_panel(
             facts, steps=steps, setup=setup, repo_path=Path("/r"),
@@ -194,7 +195,7 @@ def test_semantic_search_line_names_who_pays_for_the_embedder(command, tail, abs
         scope=scope, files=1, symbols=1, languages="Python 100%", graph_nodes=1,
         graph_edges=0, elapsed="1.0s", pages="1 page",
     )
-    console = Console(record=True, width=120)
+    console = Console(record=True, width=120, theme=THEME)
     console.print(build_finish_panel(facts, steps=[serve_step()]))
     line = next(x for x in console.export_text().splitlines() if "Semantic search is off" in x)
     assert f"{command} turns it on {tail}" in line
