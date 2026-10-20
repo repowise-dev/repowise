@@ -157,10 +157,6 @@ def _closing_card(tmp_path: Path, monkeypatch, *, semantic: str, failed: int) ->
         "repowise.cli.commands.init_cmd.reporting.console",
         Console(file=buf, width=200, force_terminal=False),
     )
-    monkeypatch.setattr(
-        "repowise.cli.commands.init_cmd.reporting.print_completion_panel",
-        lambda console, title, metrics, next_steps=None: console.print("PANEL"),
-    )
     graph = MagicMock()
     graph.number_of_nodes.return_value = 1
     graph.number_of_edges.return_value = 0
@@ -195,13 +191,13 @@ def test_card_names_a_failed_embed(tmp_path, monkeypatch):
 
 def test_card_does_not_ask_for_an_embedder_the_run_used(tmp_path, monkeypatch):
     out = _closing_card(tmp_path, monkeypatch, semantic="available", failed=0)
-    assert "and semantic search work now" in out
-    assert "needs an embedder" not in out
+    assert "full-text and semantic" in out
+    assert "Semantic search is off" not in out
 
 
 def test_card_keeps_the_keyless_note(tmp_path, monkeypatch):
     out = _closing_card(tmp_path, monkeypatch, semantic="unavailable", failed=0)
-    assert "semantic search needs an embedder" in out
+    assert "Semantic search is off: repowise reindex turns it on" in out
     assert "Semantic search is unavailable" not in out
 
 

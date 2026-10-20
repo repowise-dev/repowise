@@ -51,6 +51,7 @@ class InitOptions:
     include_submodules: bool
     no_workspace: bool
     init_all: bool
+    repos: str | None
     onboarding: bool
     max_file_pages_opt: int | None
     coverage_report: tuple[str, ...]

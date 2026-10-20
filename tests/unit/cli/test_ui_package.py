@@ -37,7 +37,6 @@ def test_facade_reexports_public_surface() -> None:
         "quick_repo_scan",
         "build_completion_panel",
         "build_contextual_next_steps",
-        "build_status_notes",
         "format_bytes",
         "format_elapsed",
         "LARGE_REPO_FILE_THRESHOLD",

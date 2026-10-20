@@ -190,7 +190,8 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--dry-run` | Show the generation plan and cost estimate. Writes no wiki |
 | `--test-run` | Write docs with the model for only the top 10 files (by PageRank). Not with `--no-prose` or `--mode fast` |
-| `--all` | In multi-repo mode, index every detected repo without prompting |
+| `--all` | In a folder with several repos, index every detected repo without prompting. `--yes` and a piped stdin do the same and print which repos they took |
+| `--repos` | In a folder with several repos, index only these, with no picker: `--repos api,web`. Each name is a repo's alias, directory name, or its path relative to the folder when two repos share a name. In a new workspace the first one listed is primary; an existing workspace keeps its primary. An unknown name stops the run and lists the available ones |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
 | `--progress` | `rich` (default): a live checklist in a terminal, one short line per step (at most 100 columns) anywhere else. `json`: one JSON event per line on stdout, ending with a summary line; see below. |
 
@@ -214,6 +215,7 @@ repowise init --no-editor-setup --yes                 # index only, leave global
 repowise init --provider openai --yes --no-save-key    # CI: index, but never write the key to disk
 repowise init .                                       # workspace mode
 repowise init . --no-prose -x "node_modules/"        # workspace, no LLM
+repowise init . --yes --repos api,web                # workspace, two of its repos
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 
@@ -1897,13 +1899,13 @@ Show all repos in the workspace with their index status.
 
 Add a new repo to an existing workspace and index it.
 
-This defaults to `--index --docs` when a provider is configured, the added repo is indexed and gets LLM doc generation in one step, with a cost-gate prompt before any tokens are spent. Pass `--no-docs` to skip generation, or `--no-index` to only register the entry. The provider, model, embedder, and exclude patterns are inherited from the primary repo's `.repowise/config.yaml` unless overridden.
+By default the added repo is indexed and its documentation is built from code, with no model calls, so it never spends. Pass `--docs` (or `--provider`) to have a model write it, `--no-docs` to index only, or `--no-index` to only register the entry. The provider, model, embedder, and exclude patterns are inherited from the primary repo's `.repowise/config.yaml` unless overridden.
 
 | Flag | Description |
 |------|-------------|
 | `--alias` | Short name for the repo (defaults to directory name) |
 | `--index` / `--no-index` | Run the index pipeline (default: on) |
-| `--docs` / `--no-docs` | Run LLM doc generation (default: on when a provider is configured) |
+| `--docs` / `--no-docs` | `--docs`: documentation written by the model. `--no-docs`: index only. Default: documentation built from code |
 | `--provider` / `--model` | Override the inherited provider/model |
 | `--concurrency` | Max concurrent LLM calls for this repo's generation |
 | `--primary` | Mark this repo as the workspace default |
@@ -1911,7 +1913,8 @@ This defaults to `--index --docs` when a provider is configured, the added repo 
 
 ```bash
 repowise workspace add ../new-service --alias api-gateway
-repowise workspace add ../mobile --no-docs            # index, no LLM
+repowise workspace add ../mobile --no-docs            # index only, no documentation
+repowise workspace add ../billing --docs             # documentation written by the model
 repowise workspace add ../shared --no-index           # register only
 ```
 

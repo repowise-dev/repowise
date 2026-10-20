@@ -7,6 +7,9 @@ import socket
 
 from repowise.cli.helpers import console
 
+#: The port `serve` tries first for the web UI; every surface that names it reads this.
+DEFAULT_UI_PORT = 3000
+
 
 def _is_port_free(host: str, port: int) -> bool:
     """Return True if *port* can be bound on *host* right now."""
@@ -36,7 +39,7 @@ def _find_free_port(host: str, preferred: int, label: str, max_attempts: int = 2
             break
         if _is_port_free(host, candidate):
             console.print(
-                f"[yellow]Port {preferred} for {label} is in use — using {candidate} instead.[/yellow]"
+                f"[yellow]Port {preferred} for {label} is in use, using {candidate} instead.[/yellow]"
             )
             return candidate
 
@@ -44,6 +47,6 @@ def _find_free_port(host: str, preferred: int, label: str, max_attempts: int = 2
         sock.bind((host, 0))
         candidate = sock.getsockname()[1]
     console.print(
-        f"[yellow]Port {preferred} for {label} and nearby ports busy — using {candidate}.[/yellow]"
+        f"[yellow]Port {preferred} for {label} and nearby ports are busy, using {candidate}.[/yellow]"
     )
     return candidate

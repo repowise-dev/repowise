@@ -13,24 +13,38 @@ from typing import Any
 
 from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
-    ERR,
     OK,
     WARN,
     build_contextual_next_steps,
-    build_status_notes,
     format_elapsed,
-    keyless_upgrade_note,
     print_completion_panel,
-    print_files_written,
 )
-from repowise.cli.ui.mode_names import (
-    INDEX_ONLY,
-    TITLE_WORKSPACE,
-    completion_title,
-    pages,
-    scope_line,
-)
-from repowise.core.index_scope import FAST_TO_FULL_COMMAND, fast_to_full_command
+from repowise.cli.ui.finish_panel import FinishFacts, print_finish_panel
+from repowise.cli.ui.mode_names import TITLE_WORKSPACE, pages
+from repowise.cli.ui.result_panels import serve_step
+from repowise.core.index_scope import fast_to_full_command
+
+
+def _dead_counts(result: Any) -> tuple[int, int]:
+    findings = result.dead_code_report.findings if result.dead_code_report else []
+    kinds = [f.kind.value for f in findings]
+    return kinds.count("unreachable_file"), kinds.count("unused_export")
+
+
+def _lang_summary(result: Any) -> str:
+    dist = result.repo_structure.root_language_distribution
+    if not dist:
+        return ""
+    top = sorted(dist.items(), key=lambda x: -x[1])[:4]
+    summary = ", ".join(f"{lang} {pct:.0%}" for lang, pct in top)
+    if len(dist) > 4:
+        summary += f" +{len(dist) - 4} more"
+    return summary
+
+
+def _hotspots(result: Any) -> int:
+    summary = result.git_summary
+    return summary.hotspots if summary and hasattr(summary, "hotspots") else 0
 
 
 def _render_defect_accuracy(result: Any) -> None:
@@ -93,223 +107,64 @@ def show_completion(
     provider: Any,
     setup: Any = None,
     files_written: list[Path] | None = None,
+    verbose: bool = False,
 ) -> list[tuple[str, str]]:
-    """Render the final completion panel (index-only or full mode); returns its next steps.
+    """Render the one finish panel and return its next steps; generation checks only under ``-v``.
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
-    snapshot, so the next-step panel and the MCP status note reflect what setup
-    actually did. Passed as ``None`` only by callers with nothing to report.
-
-    *files_written* is what editor setup put in the working tree, straight from
-    the writers. Printed below the panel and dim: it is a receipt, and the run's
-    result is the panel above it.
+    snapshot and *files_written* what editor setup put in the working tree,
+    so the panel reports what setup actually did.
     """
-    elapsed = time.monotonic() - start
     from repowise.core.index_scope import resolve_index_scope
 
-    _scope = resolve_index_scope(load_state(Path(repo_path)), load_config(Path(repo_path)))
-
-    # Unavailable also describes a keyless run; only a failed write earns
-    # the failure line.
-    _embed_failed = getattr(result, "embed_failed_pages", 0)
-    _semantic_on = _scope["search"]["semantic"] == "available"
-
-    _graph_final = result.graph_builder.graph()
-    _dc_unreachable = sum(
-        1
-        for f in (result.dead_code_report.findings if result.dead_code_report else [])
-        if f.kind.value == "unreachable_file"
+    scope = resolve_index_scope(load_state(Path(repo_path)), load_config(Path(repo_path)))
+    graph = result.graph_builder.graph()
+    dead_unreachable, dead_unused = _dead_counts(result)
+    decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
+    # A most-committed file is only worth naming when git analysis calls it a hotspot.
+    top_hotspot = _top_hotspot(result) if _hotspots(result) else ""
+    documentation, spend = (
+        _template_pages(result) if effective_index_only else _model_pages(result)
     )
-    _dc_unused = sum(
-        1
-        for f in (result.dead_code_report.findings if result.dead_code_report else [])
-        if f.kind.value == "unused_export"
+    facts = FinishFacts(
+        scope=scope,
+        files=result.file_count,
+        symbols=result.symbol_count,
+        languages=_lang_summary(result) or str(len(getattr(result, "languages", []))),
+        graph_nodes=graph.number_of_nodes(),
+        graph_edges=graph.number_of_edges(),
+        elapsed=format_elapsed(time.monotonic() - start),
+        dead_unreachable=dead_unreachable,
+        dead_unused=dead_unused,
+        decisions=decisions,
+        git_files=result.git_summary.files_indexed if result.git_summary else None,
+        hotspots=_hotspots(result),
+        top_hotspot=top_hotspot,
+        pages=documentation,
+        spend=spend,
+        embed_failed=getattr(result, "embed_failed_pages", 0),
     )
-    _n_decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
-    _hotspot_count_final = (
-        result.git_summary.hotspots
-        if result.git_summary and hasattr(result.git_summary, "hotspots")
-        else 0
+    steps = build_contextual_next_steps(
+        index_only=effective_index_only,
+        fast_mode=(run_mode == "fast"),
+        dead_unreachable=dead_unreachable,
+        dead_unused=dead_unused,
+        hotspot_count=facts.hotspots,
+        decision_count=decisions,
+        top_hotspot=top_hotspot,
+        setup=setup,
     )
-
-    # Find top hotspot file for contextual next steps
-    _top_hotspot = ""
-    if result.git_meta_map:
-        _by_churn = sorted(
-            result.git_meta_map.items(),
-            key=lambda x: x[1].get("commit_count", 0),
-            reverse=True,
-        )
-        if _by_churn:
-            _top_hotspot = _by_churn[0][0]
-            # Shorten to basename for display
-            if "/" in _top_hotspot:
-                _top_hotspot = _top_hotspot.rsplit("/", 1)[-1]
-
-    # Build a compact language summary for the completion panel
-    _lang_dist_final = result.repo_structure.root_language_distribution
-    if _lang_dist_final:
-        _top_final = sorted(_lang_dist_final.items(), key=lambda x: -x[1])[:4]
-        _lang_summary_final = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top_final)
-        if len(_lang_dist_final) > 4:
-            _lang_summary_final += f" +{len(_lang_dist_final) - 4} more"
-    else:
-        _lang_summary_final = str(len(result.languages))
-
-    # What the run found, in both modes: this panel is the one place a run
-    # reports file count, symbols, languages and graph size.
-    _index_rows: list[tuple[str, str]] = [
-        ("Scope", scope_line(_scope)),
-        ("Files indexed", f"{result.file_count:,}"),
-        ("Symbols", f"{result.symbol_count:,}"),
-        ("Languages", _lang_summary_final),
-    ]
-    if _scope["file_pages"]["eligible"] is not None:
-        _fp = _scope["file_pages"]
-        _index_rows.append(
-            (
-                "File pages",
-                f"{_fp['generated']}/{_fp['eligible']} generated · {_fp['omitted']} omitted",
-            )
-        )
-    _structure_rows: list[tuple[str, str]] = [
-        (
-            "Graph",
-            f"{_graph_final.number_of_nodes():,} nodes · {_graph_final.number_of_edges():,} edges",
-        ),
-        ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
-        ("Decisions", str(_n_decisions)),
-    ]
-    if result.git_summary:
-        _structure_rows.append(
-            (
-                "Git history",
-                f"{result.git_summary.files_indexed:,} files · {_hotspot_count_final} hotspots",
-            )
-        )
-
-    if effective_index_only:
-        _template_pages = len(result.generated_pages or [])
-        metrics: list[tuple[str, str]] = [
-            *_index_rows,
-            (
-                "Documentation",
-                f"{pages(_template_pages)} built from code" if _template_pages else "none",
-            ),
-            ("Elapsed", format_elapsed(elapsed)),
-            ("", ""),
-            *_structure_rows,
-        ]
-
-        next_steps = build_contextual_next_steps(
-            index_only=True,
-            fast_mode=(run_mode == "fast"),
-            dead_unreachable=_dc_unreachable,
-            dead_unused=_dc_unused,
-            hotspot_count=_hotspot_count_final,
-            decision_count=_n_decisions,
-            top_hotspot=_top_hotspot,
-            setup=setup,
-        )
-        console.print()
-        print_completion_panel(console, completion_title(_scope), metrics, next_steps)
-        console.print()
-        # Fast mode reaches this branch too, and it generates nothing, so the
-        # note has to check rather than assume.
-        if result.generated_pages:
-            # Read from the stamped scope, so the note cannot contradict what
-            # status and MCP report for the same run.
-            if _embed_failed:
-                _search_note = "Full-text\n  search works now."
-            elif _semantic_on:
-                _search_note = "Full-text\n  and semantic search work now."
-            else:
-                _search_note = (
-                    "Full-text\n  search works now; semantic search needs an embedder "
-                    "(Ollama is the keyless one)."
-                )
-            console.print(
-                "  [dim]Every page is built from code and says so in its footer. "
-                f"{_search_note}[/dim]"
-            )
-            # A keyless index is finished, not partial — this just names the
-            # two upgrades available from here and the command for each, so
-            # the headless path (no editor setup, no `generate` row in
-            # build_contextual_next_steps) still learns about them (#3105).
-            _note = keyless_upgrade_note(_semantic_on, _scope["search"]["next_command"])
-            console.print(f"  [dim]{_note}[/dim]")
-            _print_embed_failure(_embed_failed)
-        else:
-            console.print(_fast_to_full_note())
-        for _line in build_status_notes(setup):
-            console.print(_line)
-        console.print()
-        _render_defect_accuracy(result)
-    else:
-        _pages = result.generated_pages or []
-        _failed_ids = getattr(result, "failed_page_ids", []) or []
-        total_tokens = sum(p.total_tokens for p in _pages)
-        # Split model-written from the zero-LLM deterministic coverage tail so
-        # broad coverage reads as thoroughness, not padding.
-        # A stub standing in for a failed provider call is in ``_pages`` like
-        # any other page, so counting the list here reported it as generated
-        # while the same run reported it as failed one line down.
-        from repowise.core.generation.models import count_stub_fallbacks
-
-        _stubs = count_stub_fallbacks(_pages)
-        _written = len(_pages) - _stubs
-        _det = sum(1 for p in _pages if getattr(p, "provider_name", "") == "template")
-        _ai = len(_pages) - _det
-        _pages_label = pages(_written)
-        if _failed_ids:
-            _pages_label += f" ({len(_failed_ids):,} failed)"
-        elif _det:
-            _pages_label += f" ({_ai:,} written by the model · {_det:,} built from code)"
-        # The ledger has the real figure; before this the panel reported
-        # millions of tokens and no dollars, on a run the user had just
-        # approved a dollar estimate for.
-        _cost_usd = getattr(result, "llm_cost_usd", None)
-        _spend_row = (
-            ("Cost", f"${_cost_usd:.2f}  [dim]({total_tokens:,} tokens)[/dim]")
-            if _cost_usd is not None
-            else ("Total tokens", f"{total_tokens:,}")
-        )
-        metrics = [
-            *_index_rows,
-            ("Documentation", _pages_label),
-            _spend_row,
-            ("Provider", f"{provider.provider_name} / {provider.model_name}"),
-            ("Elapsed", format_elapsed(elapsed)),
-            ("", ""),
-            *_structure_rows,
-        ]
-
-        next_steps = build_contextual_next_steps(
-            index_only=False,
-            dead_unreachable=_dc_unreachable,
-            dead_unused=_dc_unused,
-            hotspot_count=_hotspot_count_final,
-            decision_count=_n_decisions,
-            top_hotspot=_top_hotspot,
-            setup=setup,
-        )
-
-        console.print()
-        print_completion_panel(console, completion_title(_scope), metrics, next_steps)
-        console.print()
-        _print_embed_failure(_embed_failed)
-        if not _semantic_on and not _embed_failed and _scope["search"]["next_command"]:
-            console.print(
-                "  [dim]Semantic search is off. Run "
-                f"[bold]{_scope['search']['next_command']}[/bold] to turn it on.[/dim]"
-            )
-        _render_defect_accuracy(result)
-        # A concise, dynamic MCP note (who is connected, how others connect)
-        # replaces the old wall of manual per-client config: init already wrote
-        # the Claude Code / VS Code registrations and repo `.mcp.json`.
-        for _line in build_status_notes(setup):
-            console.print(_line)
-        console.print()
+    console.print()
+    print_finish_panel(
+        console,
+        facts,
+        steps=steps,
+        setup=setup,
+        repo_path=Path(repo_path),
+        files_written=files_written,
+    )
+    console.print()
+    _render_defect_accuracy(result)
 
     # One quiet stderr line about repowise.dev (see hints.py for when it is
     # shown); a big repo hears about staying fresh instead.
@@ -317,48 +172,53 @@ def show_completion(
 
     maybe_hint(completion_hint(run_mode, result.file_count))
 
-    print_files_written(console, Path(repo_path), files_written or [])
+    if verbose:
+        _show_generation_checks(result)
+    return steps
 
-    _show_generation_checks(result)
-    return next_steps
+
+def _top_hotspot(result: Any) -> str:
+    """Basename of the most-committed file, for the risk step and the agent question."""
+    if not result.git_meta_map:
+        return ""
+    path = max(result.git_meta_map.items(), key=lambda x: x[1].get("commit_count", 0))[0]
+    return path.rsplit("/", 1)[-1]
 
 
-def _print_embed_failure(failed: int) -> None:
+def _template_pages(result: Any) -> tuple[str | None, None]:
+    count = len(result.generated_pages or [])
+    return (pages(count) if count else None), None
+
+
+def _model_pages(result: Any) -> tuple[str, str]:
+    """Pages and spend for a model run; a stub left by a failed call counts as failed."""
+    from repowise.core.generation.models import count_stub_fallbacks
+
+    generated = result.generated_pages or []
+    failed = getattr(result, "failed_page_ids", []) or []
+    written = len(generated) - count_stub_fallbacks(generated)
+    from_code = sum(1 for p in generated if getattr(p, "provider_name", "") == "template")
+    label = pages(written)
     if failed:
-        console.print(
-            f"  [{WARN}]Semantic search is unavailable:[/] embedding failed for "
-            f"{failed} page(s). See the warning above, then run "
-            "[bold]repowise reindex[/bold]."
-        )
+        label += f" ({len(failed)} failed)"
+    elif from_code:
+        label += f" ({len(generated) - from_code:,} written by the model · "
+        label += f"{from_code:,} built from code)"
+    tokens = sum(p.total_tokens for p in generated)
+    cost = getattr(result, "llm_cost_usd", None)
+    spend = f"${cost:.2f} ({tokens:,} tokens)" if cost is not None else f"{tokens:,} tokens"
+    return label, spend
 
 
 def _show_generation_checks(result: Any) -> None:
-    """Report the generation quality checks on the pages this run wrote.
-
-    ``init`` built no report at all, so the checks ran on a later ``update``
-    and never on the first index — which is the run that creates a repository's
-    pages, and so the run where duplication first appears.
-
-    Only the checks are shown, not the statistics table: the completion panel
-    above already carries the page count, cost and token totals.
-    """
+    """The quality checks on the pages this run wrote (``-v`` only)."""
     try:
         from repowise.core.generation.report import GenerationReport, render_generation_checks
 
         render_generation_checks(GenerationReport.from_pages(result.generated_pages or []), console)
     except Exception as exc:
-        # A first index that could not check itself must not read like one that
-        # checked itself clean. The run still exits 0; the wiki is written.
-        console.print(f"[{ERR}]Generation checks did not run:[/] {type(exc).__name__}: {exc}")
-
-
-def _fast_to_full_note() -> str:
-    """The closing note of an Index only run, naming the one fast-to-full command."""
-    return (
-        f"  [dim]{INDEX_ONLY}: fast mode indexes the graph and git history, no "
-        f"documentation.\n  Run [bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from "
-        "code (no key needed).[/dim]"
-    )
+        # The run still exits 0 and the documentation is written.
+        console.print(f"  [dim]Generation checks were skipped ({type(exc).__name__}: {exc}).[/dim]")
 
 
 def _workspace_next_steps(run_mode: str, keyless: bool) -> list[tuple[str, str]]:
@@ -373,7 +233,7 @@ def _workspace_next_steps(run_mode: str, keyless: bool) -> list[tuple[str, str]]
     else:
         upgrade = ("repowise search <query>", "search across all indexed repos")
     return [
-        ("repowise serve", "open the workspace dashboard at http://localhost:3000"),
+        serve_step("workspace dashboard"),
         ("repowise status --workspace", "show workspace status"),
         upgrade,
     ]
@@ -434,7 +294,7 @@ def show_workspace_completion(
                     f"  [{WARN}]✗[/] {alias:<20} [{WARN}]skipped[/]  [dim]({reason})[/dim]"
                 )
             else:
-                console.print(f"  [{OK}]✓[/] {alias:<20} [{OK}]{count} pages[/]")
+                console.print(f"  [{OK}]✓[/] {alias:<20} [{OK}]{pages(count)}[/]")
         if docs_skipped:
             first = docs_skipped[0][0]
             console.print()
