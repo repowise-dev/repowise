@@ -241,7 +241,9 @@ def test_status_names_the_fast_to_full_command(tmp_path) -> None:
     repo = _repo(tmp_path)
     result = CliRunner().invoke(status_command, [str(repo), "--no-workspace", "--format", "json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["upgrade_command"] == "repowise update --full"
+    payload = json.loads(result.output)
+    assert payload["upgrade_command"] == "repowise update --full"
+    assert payload["model_command"] == "repowise update --full"
 
     result = CliRunner().invoke(status_command, [str(repo), "--no-workspace"])
     assert "Index only" in result.output

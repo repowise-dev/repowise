@@ -29,11 +29,25 @@ def fast_to_full_command(repo_alias: str | None = None) -> str:
     return f"repowise update --repo {repo_alias} --full" if repo_alias else FAST_TO_FULL_COMMAND
 
 
+#: The command that has a model write the documentation of an index that has
+#: pages. An Index only repo has none yet, so it takes FAST_TO_FULL_COMMAND.
+MODEL_COMMAND = "repowise generate"
+
+
 def upgrade_command(scope: Mapping[str, Any] | None) -> str | None:
     """The fast-to-full command when *scope* is Index only (no documentation), else None."""
-    if isinstance(scope, Mapping) and scope.get("content_provenance") == "none":
+    if not isinstance(scope, Mapping):
+        return None
+    provenance = scope.get("content_provenance")
+    # A fast run whose state predates the docs stamp is Index only too.
+    if provenance == "none" or (provenance == "unknown" and scope.get("run_mode") == "fast"):
         return FAST_TO_FULL_COMMAND
     return None
+
+
+def model_command(scope: Mapping[str, Any] | None) -> str:
+    """The command that has a model write *scope*'s documentation, for its mode."""
+    return upgrade_command(scope) or MODEL_COMMAND
 
 # repo dir -> (identity of the files it was built from, scope). Every MCP
 # response embeds this, so without a cache each one re-reads state.json and

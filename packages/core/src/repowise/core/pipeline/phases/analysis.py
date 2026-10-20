@@ -20,13 +20,16 @@ from repowise.core.analysis.decisions.discovery import (
     DiscoveryReport,
     run_update_discovery,
 )
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
 
 # Shown for the model-only decision sources of a deterministic run, which may
 # well have a key configured.
-STRUCTURAL_RUN_REASON = "this run builds from code; repowise generate adds them"
+STRUCTURAL_RUN_REASON = f"this run builds from code; {MODEL_COMMAND} adds them"
+# The same for a fast run, which writes no pages for `generate` to work on.
+INDEX_ONLY_RUN_REASON = f"this run writes no documentation; {FAST_TO_FULL_COMMAND} adds them"
 
 logger = structlog.get_logger(__name__)
 

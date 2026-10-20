@@ -298,3 +298,18 @@ async def test_the_headline_separates_kept_decisions_from_candidates(_patched, m
         "→ 5 architectural decisions kept from 16 candidates: "
         "13 from git history, 3 from comments",
     ) in progress.messages
+
+
+def test_a_fast_run_points_skipped_sources_at_update_full() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline._run.analysis import _no_model_reason
+
+    def reason(tier: str, deterministic: bool = True) -> str | None:
+        config = SimpleNamespace(deterministic=deterministic)
+        return _no_model_reason(SimpleNamespace(generation_config=config, git_tier=tier))
+
+    # `generate` refuses a repo with no documentation, so a fast run names update --full.
+    assert reason("essential").endswith("repowise update --full adds them")
+    assert reason("full").endswith("repowise generate adds them")
+    assert reason("full", deterministic=False) is None

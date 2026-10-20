@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from repowise.core.index_scope import (
     FAST_TO_FULL_COMMAND,
+    MODEL_COMMAND,
     compact_index_scope,
     fast_to_full_command,
+    model_command,
     resolve_index_scope,
     upgrade_command,
 )
@@ -32,3 +34,16 @@ def test_compact_scope_carries_the_command_only_when_index_only() -> None:
     assert compact_index_scope(_scope("none"))["upgrade_command"] == FAST_TO_FULL_COMMAND
     assert "upgrade_command" not in compact_index_scope(_scope("deterministic"))
     assert "upgrade_command" not in compact_index_scope(_scope("llm"))
+
+
+def test_a_fast_run_without_a_docs_stamp_is_index_only() -> None:
+    # The same fallback the mode label applies, so the label and command agree.
+    assert upgrade_command(resolve_index_scope({"run_mode": "fast"})) == FAST_TO_FULL_COMMAND
+    assert upgrade_command(resolve_index_scope({"run_mode": "standard"})) is None
+
+
+def test_model_command_names_the_step_for_each_mode() -> None:
+    assert MODEL_COMMAND == "repowise generate"
+    assert model_command(_scope("none")) == FAST_TO_FULL_COMMAND
+    assert model_command(_scope("deterministic")) == MODEL_COMMAND
+    assert model_command(_scope("llm")) == MODEL_COMMAND

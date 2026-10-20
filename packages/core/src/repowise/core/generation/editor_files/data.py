@@ -151,6 +151,13 @@ class EditorFileData:
         )
 
     @property
+    def model_command(self) -> str:
+        """The command that has a model write this index's documentation."""
+        from repowise.core.index_scope import model_command
+
+        return model_command(self.index_scope)
+
+    @property
     def scope_gaps(self) -> list[str]:
         """What this index lacks, for the header; empty when nothing does."""
         scope = self.index_scope

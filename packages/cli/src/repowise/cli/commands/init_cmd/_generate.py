@@ -13,6 +13,7 @@ from repowise.cli.helpers import console, load_config, warn
 from repowise.cli.ui import BRAND, VALUE, print_stage
 from repowise.cli.ui.mode_names import INDEX_ONLY, provider_model
 from repowise.core.generation.styles import DEFAULT_STYLE
+from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
 
 from ._exit import COST_UNCONFIRMED_BUILT, COST_UNCONFIRMED_KEPT
 from ._options import InitRun
@@ -401,7 +402,7 @@ def _after_cost_declined(run: InitRun) -> None:
     run.cost_declined = True
     console.print(
         "  [dim]Building documentation from code instead. Run "
-        "[bold]repowise update --full[/bold] to write it with a "
+        f"[bold]{MODEL_COMMAND}[/bold] to write it with a "
         "model later.[/dim]"
     )
     # Declining the bill keeps the configured embedder.
@@ -434,8 +435,6 @@ def _generate(run: InitRun) -> bool:
 
     # Fast mode is a graph-and-git index only.
     if opts.index_only and opts.run_mode == "fast":
-        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
-
         console.print(
             f"  [dim]{INDEX_ONLY}: fast mode skips documentation. Run "
             f"[bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from code (no key "

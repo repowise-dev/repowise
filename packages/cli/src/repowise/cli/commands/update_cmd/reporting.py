@@ -27,6 +27,7 @@ from repowise.cli.ui.mode_names import (
     provider_model,
 )
 from repowise.cli.ui.result_panels import serve_step
+from repowise.core.index_scope import MODEL_COMMAND
 
 # Status -> display color, shared by the changed-file summary.
 _STATUS_COLOR = {"added": "green", "deleted": "red", "modified": "yellow", "renamed": "blue"}
@@ -363,7 +364,7 @@ def show_index_only_completion(
         # The scoped, cost-gated upgrade path — a coverage, a directory or one
         # page at a time — not the all-or-nothing `update --full`.
         next_steps.append(
-            ("repowise generate", "write the documentation with a model (needs a key)")
+            (MODEL_COMMAND, "write the documentation with a model (needs a key)")
         )
     elif upgrade_command:
         # Index only: there are no docs to regenerate.

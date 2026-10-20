@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rich.markup import escape
+
 from repowise.cli._setup import setup_logging_silence
 from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.editor_integrations.defaults import (
@@ -65,7 +67,7 @@ from repowise.cli.ui.mode_names import pages
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
-from repowise.core.index_scope import fast_to_full_command
+from repowise.core.index_scope import MODEL_COMMAND
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
@@ -516,7 +518,7 @@ def _generate_repo_with_model(
             ctx.gaps.append(f"{repo.alias}: {COST_UNCONFIRMED_BUILT}")
         console.print(
             "    [dim]Building this repo's documentation from code instead. Run "
-            f"[bold]{fast_to_full_command(repo.alias)}[/bold] to write it with a model "
+            f"[bold]{MODEL_COMMAND} {escape(str(repo.path))}[/bold] to write it with a model "
             "later.[/dim]"
         )
         _render_repo_from_templates(repo, ctx, index, docs)

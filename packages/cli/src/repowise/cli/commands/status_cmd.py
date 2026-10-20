@@ -33,7 +33,12 @@ from repowise.cli.ui.mode_names import (
 from repowise.cli.ui.result_panels import keyless_upgrade_note
 from repowise.core.decision_lanes import lanes_label, pending_decision_lanes
 from repowise.core.docs_mode import resolve_docs_mode
-from repowise.core.index_scope import fast_to_full_command, resolve_index_scope, upgrade_command
+from repowise.core.index_scope import (
+    fast_to_full_command,
+    model_command,
+    resolve_index_scope,
+    upgrade_command,
+)
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -719,6 +724,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
+                "model_command": model_command(scope),
                 "decision_lanes_pending": list(pending_lanes),
             }
         )
@@ -787,7 +793,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     if pending_lanes:
         state_table.add_row(
             "Decisions",
-            f"{lanes_label(pending_lanes)} not read yet (needs a model): repowise generate",
+            f"{lanes_label(pending_lanes)} not read yet (needs a model): {model_command(scope)}",
         )
     console.print(state_table)
 
