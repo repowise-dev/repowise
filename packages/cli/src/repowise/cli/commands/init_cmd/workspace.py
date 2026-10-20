@@ -282,6 +282,8 @@ class _WorkspaceCtx:
     embedder_was_requested: bool
     resolved_commit_limit: int
     run_mode: str = "standard"
+    #: No workspace config existed before this run, so the MCP entry is new.
+    first_index: bool = True
     #: Mirrors the single-repo flag. A workspace writes project files per repo,
     #: so --no-editor-setup has to reach every one of them, not just the
     #: primary's client registration.
@@ -879,6 +881,7 @@ def _workspace_init(
         embedder_was_requested=embedder_was_requested,
         resolved_commit_limit=max(1, min(answers.commit_limit or _DEFAULT_COMMIT_LIMIT, 10000)),
         run_mode=run_mode,
+        first_index=first_index,
     )
     totals = _index_workspace_repos(selected, ctx)
 
@@ -908,30 +911,22 @@ def _workspace_init(
         provider=provider,
         docs_outcomes=totals.docs_outcomes,
         dry_run=dry_run,
-        setup=_workspace_setup(
-            primary_repo.path,
-            dry_run=dry_run,
-            yes=yes,
-            first_index=first_index,
-            editor_setup=editor_setup,
-        ),
+        setup=_workspace_setup(primary_repo.path, ctx),
     )
     _raise_on_embed_failures(totals.embed_failures)
 
 
-def _workspace_setup(
-    primary_path: Path, *, dry_run: bool, yes: bool, first_index: bool, editor_setup: bool
-) -> Any:
+def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx) -> Any:
     """What editor setup left for the primary repo; None on a dry run, which set nothing up."""
-    if dry_run:
+    if ctx.dry_run:
         return None
     from repowise.cli.editor_setup import detect_editor_setup_outcome
 
     return detect_editor_setup_outcome(
         primary_path,
-        interactive=sys.stdin.isatty() and not yes,
-        first_index=first_index,
-        no_editor_setup=not editor_setup,
+        interactive=sys.stdin.isatty() and not ctx.yes,
+        first_index=ctx.first_index,
+        no_editor_setup=not ctx.editor_setup,
     )
 
 
