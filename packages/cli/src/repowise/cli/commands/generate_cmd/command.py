@@ -31,7 +31,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import model_run_embedder
 from repowise.cli.ui import load_dotenv
 from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
@@ -102,7 +102,7 @@ def _dry_run_provider(
         return None
 
 
-def _make_gate(dry_run: bool):
+def _make_gate(dry_run: bool, embedder: str | None = None):
     """Return the ``gate_cost`` callback the engine invokes before generating.
 
     Prints the estimate, stops on ``--dry-run``, and enforces the LLM-cost
@@ -112,7 +112,12 @@ def _make_gate(dry_run: bool):
     def gate_cost(
         cost_plans: Any, provider: Any, repo_path: Path, *, yes: bool, dry_run: bool
     ) -> bool:
-        from repowise.cli.commands.init_cmd.generation import cost_gate_blocks, format_cost
+        from repowise.cli.commands.init_cmd.generation import (
+            cost_gate_blocks,
+            embedding_note,
+            format_cost,
+        )
+        from repowise.cli.providers.embedders import resolve_embedding_model
         from repowise.core.cost_estimator import estimate_cost
 
         if provider is None:
@@ -129,7 +134,12 @@ def _make_gate(dry_run: bool):
         est = None
         try:
             est = estimate_cost(
-                cost_plans, provider.provider_name, provider.model_name, repo_path=repo_path
+                cost_plans,
+                provider.provider_name,
+                provider.model_name,
+                repo_path=repo_path,
+                embedder=embedder,
+                embedding_model=resolve_embedding_model(embedder) if embedder else None,
             )
         except Exception as exc:
             console.print(f"[yellow]Cost estimate unavailable ({exc}).[/yellow]")
@@ -140,6 +150,9 @@ def _make_gate(dry_run: bool):
                 f"Writing [bold]{pages}[/bold] pages with "
                 f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
             )
+            embedding = embedding_note(est)
+            if embedding:
+                console.print(f"[dim]{embedding}[/dim]")
 
         if dry_run:
             console.print("[dim]Dry run, nothing generated.[/dim]")
@@ -309,14 +322,8 @@ def generate_command(
     # search as useless as it was before, with nothing in the output saying so.
     # `update --full` has re-resolved here since it was written; `generate`
     # never did. Same rule, same message.
-    embedder_name = cfg.get("embedder")
-    embedder_upgraded = False
-    if not embedder_name or embedder_name == "mock":
-        resolved = resolve_embedder(None)
-        if resolved != (embedder_name or "mock"):
-            console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
-            embedder_name = resolved
-            embedder_upgraded = True
+    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"))
+    console.print(f"Embedder: [cyan]{stated}[/cyan].")
 
     start = time.monotonic()
     outcome = run_async(
@@ -330,7 +337,7 @@ def generate_command(
             embedder_name=embedder_name,
             yes=yes,
             dry_run=dry_run,
-            gate_cost=_make_gate(dry_run),
+            gate_cost=_make_gate(dry_run, embedder_name or "mock"),
             interactive=interactive,
         )
     )

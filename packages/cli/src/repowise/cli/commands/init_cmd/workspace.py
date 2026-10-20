@@ -45,7 +45,11 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
-from repowise.cli.providers import resolve_embedder, semantic_search_status
+from repowise.cli.providers import (
+    resolve_embedder,
+    semantic_search_command,
+    semantic_search_status,
+)
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
@@ -69,12 +73,14 @@ from repowise.cli.ui.mode_names import pages
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 
+from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
     CostGateDeclined,
     concept_page_count,
     cost_gate_declined,
+    embedding_note,
     estimate_generation,
     format_cost,
     run_repo_generation,
@@ -133,6 +139,7 @@ def _run_workspace_generation(
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
+        embedder=embedder_name_resolved,
     )
 
     # Same decision and same stakes as the single-repo flow, so the count and
@@ -145,6 +152,9 @@ def _run_workspace_generation(
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"    [dim]{structural}[/dim]")
+    embedding = embedding_note(est)
+    if embedding:
+        console.print(f"    [dim]{embedding}[/dim]")
 
     # Declines rather than raises when it cannot ask (see the note in init's
     # _run_generation_phase): a raise would land in the caller's generic error
@@ -294,6 +304,8 @@ class _WorkspaceCtx:
     #: Same reasoning for key persistence: each workspace repo gets its own
     #: .repowise/, so each needs its own credential to be MCP-answerable.
     save_key: bool = True
+    #: Asked-for work a repo did not get; any entry makes init exit degraded.
+    gaps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -509,6 +521,8 @@ def _generate_repo_with_model(
     except CostGateDeclined:
         # Declining only meant "not at that price": fall back to the free
         # template renderer rather than leave the repo with no wiki.
+        if not sys.stdin.isatty():
+            ctx.gaps.append(f"{repo.alias}: {COST_UNCONFIRMED_BUILT}")
         console.print(
             "    [dim]Building this repo's documentation from code instead. Run "
             "[bold]repowise update --repo "
@@ -518,6 +532,7 @@ def _generate_repo_with_model(
     except Exception as gen_exc:
         console.print(f"    [{ERR}]✗ Generation failed: {gen_exc}[/]\n")
         docs.skip_reason = f"generation error: {gen_exc}"
+        ctx.gaps.append(f"{repo.alias}: documentation not written ({gen_exc})")
         result.generated_pages = []
 
 
@@ -622,6 +637,11 @@ def _stamp_repo_scope(
     scope_config = load_config(repo_path)
     configured_cap = resolve_max_file_pages(config=scope_config)
     scope_embedder = _scope_embedder(ctx, docs)
+    semantic = (
+        semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
+        if result.generated_pages
+        else "unavailable"
+    )
     state["run_mode"] = ctx.run_mode
     state["git_tier"] = "essential" if ctx.run_mode == "fast" else "full"
     unavailable = [] if getattr(result, "health_report", None) is not None else ["health"]
@@ -648,12 +668,12 @@ def _stamp_repo_scope(
         },
         search={
             "full_text": "available" if result.generated_pages else "unavailable",
-            "semantic": (
-                semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
-                if result.generated_pages
-                else "unavailable"
+            "semantic": semantic,
+            "next_command": (
+                semantic_search_command(repo_path, scope_embedder)
+                if result.generated_pages and semantic == "unavailable"
+                else None
             ),
-            "next_command": "repowise reindex" if result.generated_pages else None,
         },
         upgrade={
             "status": "pending" if docs_mode != "llm" else "not_applicable",
@@ -890,7 +910,9 @@ def _workspace_init(
 
     # A dry run writes nothing for any repo, so nothing at the workspace level.
     if not dry_run:
-        _save_workspace(ws_config, root, selected, totals.errors, editor_setup=editor_setup)
+        _save_workspace(
+            ws_config, root, selected, totals.errors, editor_setup=editor_setup, yes=yes
+        )
 
     show_workspace_completion(
         selected=selected,
@@ -914,7 +936,7 @@ def _workspace_init(
             editor_setup=editor_setup,
         )
     console.print()
-    _raise_on_embed_failures(totals.embed_failures)
+    exit_on_gaps(_workspace_gaps(ctx, totals))
 
 
 def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], str, Any] | None:
@@ -934,7 +956,13 @@ def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], 
 
 
 def _save_workspace(
-    ws_config: Any, root: Path, selected: list[Any], errors: list, *, editor_setup: bool
+    ws_config: Any,
+    root: Path,
+    selected: list[Any],
+    errors: list,
+    *,
+    editor_setup: bool,
+    yes: bool,
 ) -> None:
     """Save the indexed timestamps, run cross-repo analysis, register the primary."""
     ws_config.save(root)
@@ -942,7 +970,10 @@ def _save_workspace(
     primary_entry = ws_config.get_primary()
     if primary_entry:
         primary_path = (root / primary_entry.path).resolve()
-        register_editor_clients(console, primary_path, no_editor_setup=not editor_setup)
+        from repowise.cli.editor_integrations.global_mcp import confirm_global_mcp
+
+        if confirm_global_mcp(console, primary_path, yes=yes, no_editor_setup=not editor_setup):
+            register_editor_clients(console, primary_path)
 
 
 def _ask_workspace_mode(
@@ -1153,17 +1184,17 @@ def _offer_workspace_hooks(
     )
 
 
-def _raise_on_embed_failures(embed_failures: dict[str, int]) -> None:
-    """Fail a scripted run whose semantic indexes were not built.
-
-    Raised after every repo is persisted, as single-repo init does.
-    """
-    if embed_failures:
-        import click
-
-        listed = ", ".join(f"{alias} ({n} page(s))" for alias, n in embed_failures.items())
-        raise click.ClickException(
+def _workspace_gaps(ctx: _WorkspaceCtx, totals: _WorkspaceTotals) -> list[str]:
+    """Every repo's gaps, raised after each one is persisted, as single-repo init does."""
+    gaps = list(ctx.gaps)
+    if totals.errors:
+        failed = ", ".join(alias for alias, _ in totals.errors)
+        gaps.append(f"{len(totals.errors):,} repo(s) failed to index ({failed})")
+    if totals.embed_failures:
+        listed = ", ".join(f"{alias} ({n:,} page(s))" for alias, n in totals.embed_failures.items())
+        gaps.append(
             f"Embedding failed for {listed}, so semantic search is unavailable there "
             "(full-text search still works). Fix the cause in the warnings above, "
-            "then run: repowise reindex in each."
+            "then run: repowise reindex in each"
         )
+    return gaps

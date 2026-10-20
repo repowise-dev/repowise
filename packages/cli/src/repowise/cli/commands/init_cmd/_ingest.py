@@ -12,7 +12,6 @@ from repowise.cli.ui import (
     BRAND_STYLE,
     OK,
     OWL_SPINNER,
-    WARN,
     MaybeCountColumn,
     RichProgressCallback,
 )
@@ -120,8 +119,8 @@ async def _index_with_resume(
             await engine.dispose()
 
 
-def index_repository(run: InitRun) -> bool:
-    """Phases 1 and 2, without docs (generation follows the cost gate). False if interrupted."""
+def index_repository(run: InitRun) -> None:
+    """Phases 1 and 2, without docs (generation follows the cost gate). Exits 130 if interrupted."""
     opts = run.opts
     # Fast mode skips generation, so it has three phases.
     run.total_phases = 3 if opts.run_mode == "fast" else 4
@@ -165,18 +164,10 @@ def index_repository(run: InitRun) -> bool:
                     )
                 )
         except (PipelineCancelled, KeyboardInterrupt):
-            from repowise.cli.ui.mascot import EYES_SLEEPY, mini
+            from ._exit import exit_interrupted
 
-            console.print(
-                f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
-                "saved — run [bold]repowise init --resume[/] to continue where it stopped."
-            )
-            from repowise.cli.hints import maybe_hint
-
-            maybe_hint("interrupt")
-            return False
+            exit_interrupted()
 
     run.result = result
     run.recorder = callback
     run.run_warnings = list(rich_callback.warnings)
-    return True

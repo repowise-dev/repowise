@@ -411,6 +411,7 @@ def _stamp_full_init_scope(
     resolved_commit_limit: int,
     max_file_pages: int | None,
     embedder_name_resolved: str,
+    repo_path: Path,
 ) -> None:
     """Attach the canonical scope receipt for a successful model-backed init."""
     from repowise.core.generation.selection import count_documentable_files
@@ -426,7 +427,7 @@ def _stamp_full_init_scope(
         )
     else:
         pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
-    from repowise.cli.providers import semantic_search_status
+    from repowise.cli.providers import semantic_search_command, semantic_search_status
 
     semantic = semantic_search_status(
         embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
@@ -451,7 +452,11 @@ def _stamp_full_init_scope(
         search={
             "full_text": "available",
             "semantic": semantic,
-            "next_command": "repowise reindex" if semantic == "unavailable" else None,
+            "next_command": (
+                semantic_search_command(repo_path, embedder_name_resolved)
+                if semantic == "unavailable"
+                else None
+            ),
         },
         upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
     )
@@ -519,6 +524,7 @@ def save_full_state_and_config(
         resolved_commit_limit=resolved_commit_limit,
         max_file_pages=max_file_pages,
         embedder_name_resolved=embedder_name_resolved,
+        repo_path=repo_path,
     )
     # Same pattern as git_tier: `repowise update` reads this back so its
     # graph rebuild keeps the init run's submodule boundary semantics.

@@ -28,7 +28,7 @@ from repowise.cli.helpers import (
     resolve_max_file_pages,
     resolve_reasoning,
 )
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import resolve_embedder_choice
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.ui import WARN, load_dotenv
 from repowise.core.docs_mode import resolve_docs_mode
@@ -149,7 +149,7 @@ def _resolve_settings(run: InitRun) -> None:
     if opts.follow_renames:
         config["follow_renames"] = True
 
-    run.embedder_name_resolved = resolve_embedder(opts.embedder_name)
+    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(opts.embedder_name)
     run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
 
 

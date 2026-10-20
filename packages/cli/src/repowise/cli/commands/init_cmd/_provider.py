@@ -9,7 +9,7 @@ import click
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console, resolve_explicit_provider_or_prompt, run_async
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import resolve_embedder_choice, template_run_embedder
 from repowise.cli.ui import OK, OWL_SPINNER, VALUE, WARN, print_index_only_intro
 from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, written_by
 
@@ -80,11 +80,24 @@ def _print_provider_summary(run: InitRun) -> None:
         console.print(
             f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"
         )
-    console.print(f"  Embedder: [{VALUE}]{run.embedder_name_resolved}[/]")
+    console.print(f"  Embedder: [{VALUE}]{_stated_embedder(run)}[/]")
     if run.language != "en":
         console.print(f"  Language: [{VALUE}]{run.language}[/]")
     if run.resolved_reasoning != "auto":
         console.print(f"  Reasoning: [{VALUE}]{run.resolved_reasoning}[/]")
+
+
+def _stated_embedder(run: InitRun) -> str:
+    """The embedder this run will use and why, e.g. ``gemini (GEMINI_API_KEY is set)``."""
+    name, reason = run.embedder_name_resolved, run.embedder_reason
+    if run.provider is None:
+        # The template wiki keeps a free run free; the generation phase says so.
+        keyless = template_run_embedder(name, run.embedder_was_requested)
+        if keyless != name:
+            name, reason = keyless, "keyless run"
+    if name == "mock":
+        return f"mock ({reason}, semantic search off)"
+    return f"{name} ({reason})"
 
 
 def _verify_provider(provider: Any, reasoning: str) -> None:
@@ -118,7 +131,9 @@ def resolve_docs_provider(run: InitRun) -> None:
     # Provider resolution may have just set the API key in os.environ.
     # Re-resolve the embedder so the display and the embed path honor the key
     # the user just pasted, rather than the pre-prompt "mock" fallback.
-    run.embedder_name_resolved = resolve_embedder(run.opts.embedder_name)
+    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(
+        run.opts.embedder_name
+    )
     _print_provider_summary(run)
     # Nothing to verify when there is no provider: this run renders from
     # templates and never calls a model.

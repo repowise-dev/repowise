@@ -144,3 +144,16 @@ def format_cost(est: Any) -> str:
             cost_str += " (calibrated on this repo's history)"
         return cost_str
     return f"${est.estimated_cost_usd:.2f} USD"
+
+
+def embedding_note(est: Any) -> str | None:
+    """One line on the embedding share of *est*, ``None`` when none was priced."""
+    embedder = getattr(est, "embedder", "")
+    if not embedder or embedder == "mock":
+        return None
+    pages = f"{est.total_pages:,} pages"
+    usd = est.embedding_cost_usd
+    if not usd:
+        return f"Embedding {pages} with {embedder} adds no cost."
+    amount = "under $0.01" if usd < 0.01 else f"about ${usd:.2f}"
+    return f"Includes {amount} USD to embed {pages} with {embedder}."
