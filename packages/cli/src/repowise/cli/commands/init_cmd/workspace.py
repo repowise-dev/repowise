@@ -65,10 +65,12 @@ from repowise.cli.ui import (
     load_dotenv,
     print_banner,
 )
+from repowise.core.ci.markdown import plural
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._workspace_config import build_workspace_config
 from .generation import (
     CostGateDeclined,
     concept_page_count,
@@ -813,7 +815,7 @@ def _workspace_init(
     picked = _select_workspace_repos(scan, select_all=init_all or yes or not sys.stdin.isatty())
     if picked is None:
         return
-    selected, primary_alias, primary_repo = picked
+    selected, primary_alias, primary_repo, primary_picked = picked
     load_dotenv(primary_repo.path)
 
     # --yes suppresses every prompt, so it means non-interactive.
@@ -846,7 +848,14 @@ def _workspace_init(
     provider, resolved_reasoning = _resolve_workspace_provider(
         answers, primary_repo, embedder_name, yes=yes, save_key=save_key
     )
-    ws_config = _workspace_config(selected, root, primary_alias, dry_run=dry_run)
+    ws_config = _workspace_config(
+        selected,
+        root,
+        primary_alias,
+        ask=sys.stdin.isatty() and not yes,
+        primary_picked=primary_picked,
+        dry_run=dry_run,
+    )
 
     from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
@@ -908,8 +917,11 @@ def _workspace_init(
     _raise_on_embed_failures(totals.embed_failures)
 
 
-def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], str, Any] | None:
-    """The repos to index, the primary alias and repo; None when none were selected."""
+def _select_workspace_repos(
+    scan: Any, *, select_all: bool
+) -> tuple[list[Any], str, Any, bool] | None:
+    """The repos to index, the primary alias and repo, and whether the user chose
+    that primary in a prompt; None when none were selected."""
     root = scan.root
     selected = (
         list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
@@ -921,7 +933,9 @@ def _select_workspace_repos(scan: Any, *, select_all: bool) -> tuple[list[Any], 
         selected[0].alias if select_all else interactive_primary_select(console, selected)
     )
     primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
-    return selected, primary_alias, primary_repo
+    # interactive_primary_select asks only when there is more than one to choose from.
+    primary_picked = not select_all and len(selected) > 1
+    return selected, primary_alias, primary_repo, primary_picked
 
 
 def _save_workspace(
@@ -947,7 +961,7 @@ def _ask_workspace_mode(
     """The mode menu, then the provider (and advanced config) it calls for."""
     mode = interactive_mode_select(
         console,
-        title=f"How much should repowise write for these {len(selected)} repos?",
+        title=f"How much should repowise write for {plural(len(selected), 'repo')}?",
     )
     if mode == "index_only":
         answers.index_only = True
@@ -1044,22 +1058,26 @@ def _resolve_workspace_provider(
     return provider, resolved_reasoning
 
 
-def _workspace_config(selected: list[Any], root: Path, primary_alias: str, *, dry_run: bool) -> Any:
+def _workspace_config(
+    selected: list[Any],
+    root: Path,
+    primary_alias: str,
+    *,
+    ask: bool,
+    primary_picked: bool,
+    dry_run: bool,
+) -> Any:
     """The workspace config for the selected repos, saved unless this is a dry run."""
-    from repowise.core.workspace import RepoEntry, WorkspaceConfig
+    from repowise.core.workspace import WORKSPACE_CONFIG_FILENAME
 
-    entries = [
-        RepoEntry(
-            path=repo.path.relative_to(root).as_posix(),
-            alias=repo.alias,
-            is_primary=(repo.alias == primary_alias),
-        )
-        for repo in selected
-    ]
-    ws_config = WorkspaceConfig(
-        version=1,
-        repos=entries,
-        default_repo=primary_alias,
+    verb = "Updated" if (root / WORKSPACE_CONFIG_FILENAME).is_file() else "Created"
+    ws_config = build_workspace_config(
+        selected,
+        root,
+        primary_alias,
+        console=console,
+        ask=ask,
+        primary_picked=primary_picked,
     )
     if dry_run:
         # `.repowise/` is still created per repo, so a later distill-hook
@@ -1070,7 +1088,7 @@ def _workspace_config(selected: list[Any], root: Path, primary_alias: str, *, dr
         )
     else:
         config_path = ws_config.save(root)
-        console.print(f"  [{OK}]✓[/] Created {config_path.name}")
+        console.print(f"  [{OK}]✓[/] {verb} {config_path.name}")
     console.print()
     return ws_config
 
