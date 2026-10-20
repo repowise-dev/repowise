@@ -24,6 +24,10 @@ from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
 
+# Shown for the model-only decision sources of a deterministic run, which may
+# well have a key configured.
+STRUCTURAL_RUN_REASON = "this run builds from code; repowise generate adds them"
+
 logger = structlog.get_logger(__name__)
 
 
@@ -382,12 +386,15 @@ async def _run_decision_extraction(
     parsed_files: list[Any],
     source_map: dict[str, bytes] | None = None,
     progress: ProgressCallback | None,
+    no_model_reason: str | None = None,
     only_sources: Container[str] | None = None,
 ) -> Any | None:
     """Extract architectural decisions from source and git history.
 
-    *only_sources* runs just those index sources and skips the session passes:
-    the later run that fills in the lanes a keyless index could not.
+    *no_model_reason* replaces the no-provider reason when the caller chose a
+    run without a model rather than having none configured. *only_sources* runs
+    just those index sources and skips the session passes: the later run that
+    fills in the lanes a keyless index could not.
     """
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
@@ -436,6 +443,7 @@ async def _run_decision_extraction(
                 indexed=indexed,
                 enabled=enabled,
                 progress=progress,
+                no_model_reason=no_model_reason,
             )
 
         _phase_done(progress, "decisions")
@@ -464,6 +472,7 @@ async def _session_passes_and_report(
     indexed: Container[str] | None,
     enabled: Any,
     progress: ProgressCallback | None,
+    no_model_reason: str | None = None,
 ) -> None:
     """Session mining, broad discovery, then the per-source summary lines."""
     await _add_session_decisions(
@@ -486,6 +495,7 @@ async def _session_passes_and_report(
             enabled=enabled,
             discovery=discovery,
             provider_available=llm_client is not None,
+            no_model_reason=no_model_reason,
         )
 
 
@@ -536,6 +546,7 @@ def _report_decision_sources(
     enabled: Any,
     discovery: DiscoveryOutcome,
     provider_available: bool,
+    no_model_reason: str | None = None,
 ) -> None:
     """Say per source what was found, found nothing, failed, or never ran.
 
@@ -547,7 +558,9 @@ def _report_decision_sources(
     failures = dict(getattr(report, "failures", {}) or {})
     if discovery.report.status == "failed":
         failures["session_discovery"] = discovery.report.reason
-    runtime, not_run = _decision_sources_not_run(policy, discovery, provider_available)
+    runtime, not_run = _decision_sources_not_run(
+        policy, discovery, provider_available, no_model_reason
+    )
     # ``session`` is mined outside the extractor, so it is never listed as empty.
     considered = set(enabled) | {DISCOVERY_SOURCE}
     # A grounded candidate is a finding even before a second sighting promotes it.
@@ -612,14 +625,20 @@ def _decision_headline(report: Any) -> str:
 
 
 def _decision_sources_not_run(
-    policy: Any, discovery: DiscoveryOutcome, provider_available: bool
+    policy: Any,
+    discovery: DiscoveryOutcome,
+    provider_available: bool,
+    no_model_reason: str | None = None,
 ) -> tuple[dict[str, Any], set[str]]:
     """Runtime status per source and the togglable sources that never ran.
 
     Broad discovery is always considered; its own reason overrides the policy's
     as the more specific one.
     """
-    runtime = {rt.key: rt for rt in policy.runtime(provider_available=provider_available)}
+    runtime = {
+        rt.key: _with_no_model_reason(rt, no_model_reason)
+        for rt in policy.runtime(provider_available=provider_available)
+    }
     not_run = {
         key
         for key, rt in runtime.items()
@@ -627,8 +646,14 @@ def _decision_sources_not_run(
     }
     if discovery.report.status in ("not_run", "skipped_no_provider"):
         not_run.add(DISCOVERY_SOURCE)
-    if discovery.report.reason:
-        runtime[DISCOVERY_SOURCE] = replace(
-            runtime[DISCOVERY_SOURCE], reason=discovery.report.reason
-        )
+    discovery_reason = _with_no_model_reason(discovery.report, no_model_reason).reason
+    if discovery_reason:
+        runtime[DISCOVERY_SOURCE] = replace(runtime[DISCOVERY_SOURCE], reason=discovery_reason)
     return runtime, not_run
+
+
+def _with_no_model_reason(status: Any, no_model_reason: str | None) -> Any:
+    """*status* with *no_model_reason* when no model was chosen rather than missing."""
+    if no_model_reason and status.status == "skipped_no_provider":
+        return replace(status, reason=no_model_reason)
+    return status

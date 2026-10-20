@@ -90,7 +90,6 @@ class InitRun:
     prior_docs_mode: str | None = None
     first_index: bool = False
     provider: Any = None
-    decision_provider: Any = None
     # Set when a full run found no provider at all and fell back to the
     # template renderer. Treated exactly like ``--index-only`` from the
     # generation phase onward.

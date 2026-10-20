@@ -21,6 +21,19 @@ from ._options import InitRun
 from .persistence import build_resume_controller
 
 
+def structural_generation_config(index_only: bool) -> Any:
+    """A deterministic config for a structural run, so the pipeline knows no model was chosen.
+
+    The pipeline generates no pages here (the CLI renders them afterwards); the
+    config only tells decision reporting why the model-only sources did not run.
+    """
+    if not index_only:
+        return None
+    from repowise.core.generation.models import GenerationConfig
+
+    return GenerationConfig(deterministic=True)
+
+
 def _index_vector_store(run: InitRun) -> Any:
     """Generation's vector store, built early so analysis can dedup decisions against it.
 
@@ -100,6 +113,7 @@ async def _index_with_resume(
             ),
             # Only local init describes the user's own environment.
             derive_environment_facts=True,
+            generation_config=structural_generation_config(opts.index_only),
         )
     finally:
         if engine is not None:
@@ -107,10 +121,11 @@ async def _index_with_resume(
 
 
 def decision_llm_client(run: InitRun) -> Any:
-    """The model decision extraction calls this run, or None (always None on a dry run)."""
-    if run.opts.dry_run:
-        return None
-    return run.provider if not run.opts.index_only else run.decision_provider
+    """The model decision extraction calls this run, or None (always None on a dry run).
+
+    A structural run makes no model calls, decisions included.
+    """
+    return None if run.opts.dry_run or run.opts.index_only else run.provider
 
 
 def index_repository(run: InitRun) -> bool:

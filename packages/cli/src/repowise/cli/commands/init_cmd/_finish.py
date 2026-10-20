@@ -44,6 +44,7 @@ from ._options import InitRun
 from .persistence import (
     apply_git_history_coverage_state,
     git_tier_for_run_mode,
+    keep_prior_documentation,
     persist_result,
     save_full_state_and_config,
 )
@@ -217,6 +218,7 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     result = run.result
     run_mode = run.opts.run_mode
     head = get_head_commit(repo_path)
+    prior_state = load_state(repo_path)
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
     docs_mode = _docs_mode(run)
@@ -230,6 +232,7 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     record_decision_lanes(
         base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
     )
+    keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings

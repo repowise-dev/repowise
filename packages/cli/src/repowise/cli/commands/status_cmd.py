@@ -334,14 +334,35 @@ _RESUME_COMMAND = "repowise init --resume"
 def _incomplete_index(repo_path: Path, state: dict) -> dict | None:
     """Why the index is unfinished, or ``None``.
 
-    ``init`` writes state.json last, with ``index_scope`` (and ``last_sync_commit``
-    in a git repo), so persisted graph rows without either are a run that
-    stopped before it finished.
+    A live ``init`` holds its lock for the whole run. Without one, ``init``
+    writes state.json last, with ``index_scope`` (and ``last_sync_commit`` in a
+    git repo), so persisted graph rows without either are a run that stopped
+    before it finished.
     """
+    from datetime import datetime
+
+    from repowise.core.update_lock import read_init_lock
+
+    lock = read_init_lock(repo_path)
+    if lock is not None:
+        started = datetime.fromtimestamp(lock["started_at"], UTC).isoformat()
+        return {"reason": "running", "started_at": started, "next_command": "repowise status"}
     finished = state.get("last_sync_commit") or "index_scope" in state
     if finished or not _query_repo_counts(repo_path)[0]:
         return None
     return {"reason": "interrupted", "next_command": _RESUME_COMMAND}
+
+
+def _incomplete_line(incomplete: dict) -> str:
+    """The "Next" line for an index that is still running or was interrupted."""
+    command = f"[bold]{incomplete['next_command']}[/bold]"
+    if incomplete["reason"] == "running":
+        started = _format_relative_time(incomplete["started_at"])
+        return (
+            f"[bold]Next:[/bold] Index in progress (started {started}). "
+            f"Wait for it to finish, then run {command}."
+        )
+    return f"[bold]Next:[/bold] Index incomplete (interrupted). Run {command}."
 
 
 def _shows_upgrade_row(scope: dict) -> bool:
@@ -797,10 +818,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         console.print(health_line)
 
     if incomplete is not None:
-        next_lines = [
-            "[bold]Next:[/bold] Index incomplete (interrupted). "
-            f"Run [bold]{incomplete['next_command']}[/bold]."
-        ]
+        next_lines = [_incomplete_line(incomplete)]
     else:
         next_lines = _next_actions_lines(_load_actions(repo_path))
     if next_lines:

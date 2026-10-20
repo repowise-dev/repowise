@@ -58,6 +58,31 @@ class TestInterruptedInit:
         state = {"last_sync_commit": None, "index_scope": {"run_mode": "standard"}}
         assert "interrupted" not in _status(tmp_path, monkeypatch, state, files=40)
 
+    def test_a_live_init_reads_as_running_not_interrupted(self, tmp_path, monkeypatch) -> None:
+        from repowise.core.update_lock import init_in_progress
+
+        (tmp_path / ".repowise").mkdir()
+        with init_in_progress(tmp_path):
+            monkeypatch.setattr(status_cmd, "_query_repo_counts", lambda _p: (40, 0))
+            incomplete = status_cmd._incomplete_index(tmp_path, {})
+            line = status_cmd._incomplete_line(incomplete)
+        assert incomplete["reason"] == "running"
+        assert "Index in progress (started " in line
+        assert "Wait for it to finish, then run [bold]repowise status[/bold]." in line
+        assert not (tmp_path / ".repowise" / ".init.lock").exists()
+
+    def test_a_dead_inits_lock_reads_as_interrupted(self, tmp_path, monkeypatch) -> None:
+        import time
+
+        from repowise.core import procutils
+
+        lock = tmp_path / ".repowise" / ".init.lock"
+        lock.parent.mkdir()
+        lock.write_text(json.dumps({"pid": 999_999, "started_at": time.time()}))
+        monkeypatch.setattr(procutils, "pid_alive", lambda _pid: False)
+        monkeypatch.setattr(status_cmd, "_query_repo_counts", lambda _p: (40, 0))
+        assert status_cmd._incomplete_index(tmp_path, {})["reason"] == "interrupted"
+
     def test_an_empty_store_is_not_an_interrupted_run(self, tmp_path, monkeypatch) -> None:
         assert "interrupted" not in _status(tmp_path, monkeypatch, {}, files=0)
 
