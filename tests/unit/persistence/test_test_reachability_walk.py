@@ -737,6 +737,8 @@ _SWAPPED = {
         '@patch("app.util")\ndef test_run(m):\n    assert run()\n'
     ),
     "tests/test_util.py": "from app.util import helper\n\ndef test_helper():\n    assert helper()\n",
+    "web/a.ts": "export const a = 1;\n",
+    "web/a.test.ts": 'import {vi} from "vitest";\nvi.mock("./a", () => ({a: 2}));\n',
 }
 
 
@@ -762,7 +764,8 @@ async def test_any_reach_reads_which_tests_replace_a_module_from_the_checkout(
     clear_test_map_cache()
 
     assert await cached_test_masks(async_session, repo.id) == {
-        "tests/test_core.py": frozenset({"app/util.py"})
+        "tests/test_core.py": frozenset({"app/util.py"}),
+        "web/a.test.ts": frozenset({"web/a.ts"}),
     }
     found = await any_tests_reaching(async_session, repo.id, ["app/core.py", "app/util.py"])
     assert found["app/core.py"].reached.tests == ["tests/test_core.py"]
@@ -986,15 +989,22 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
     assert in_memory["app/types.py"].state == "type_only"
     assert {in_memory[p].state for p in in_memory} >= {"reached", "unreached", "new"}
 
-    # Both tests swap ``app.util`` out, so only replacing tests reach it.
+    # Both Python tests swap ``app.util`` out and the TS test swaps ``retry.ts``,
+    # so only replacing tests reach either.
     swap = 'from unittest.mock import patch\n\n@patch("app.util")\ndef test_swapped(m): ...\n'
-    masks = replaced_files(dict.fromkeys(["tests/test_core.py", "tests/test_pkg.py"], swap), _PARITY)
-    assert masks == {t: {"app/util.py"} for t in ("tests/test_core.py", "tests/test_pkg.py")}
+    texts = dict.fromkeys(["tests/test_core.py", "tests/test_pkg.py"], swap)
+    texts["test/x.test.ts"] = 'import {vi} from "vitest";\nvi.mock("../src/retry", () => ({retry: 1}));\n'
+    masks = replaced_files(texts, _PARITY)
+    assert masks == {
+        **{t: {"app/util.py"} for t in ("tests/test_core.py", "tests/test_pkg.py")},
+        "test/x.test.ts": {"src/retry.ts"},
+    }
     in_memory = reach_states(maps, asked, masks=masks, **evidence)
     assert await reach_states_from_db(async_session, repo.id, asked, masks=masks, **evidence) == (
         in_memory
     )
     assert in_memory["app/util.py"].state == "mocked_only"
+    assert in_memory["src/retry.ts"].state == "mocked_only"
     assert in_memory["app/core.py"].state == "reached"
 
 

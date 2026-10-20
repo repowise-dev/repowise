@@ -1,8 +1,9 @@
 """Which repository modules a test replaces outright, read from the test's own text.
 
 A test that swaps a module object for a double runs the double, not the module,
-so its route into that module is no evidence that a test exercises it. Python
-only: the patch forms come from the mock lexicon
+so its route into that module is no evidence that a test exercises it. This
+module reads Python (:mod:`.mocks_js` reads JavaScript); the patch forms come
+from the mock lexicon
 (:attr:`~repowise.core.analysis.health.mocks.lexicon.MockDialect.binding_patches`).
 
 A patch replaces one binding. Only a binding that *is* a module masks it:
@@ -32,6 +33,10 @@ from collections.abc import Collection, Mapping
 
 from repowise.core.analysis.health.mocks.lexicon import MockDialect, mock_dialect
 from repowise.core.ingestion.languages.python_modules import build_python_module_index
+from repowise.core.ingestion.resolvers.context import ResolverContext
+from repowise.core.ingestion.resolvers.typescript import resolve_ts_js_import
+
+from .mocks_js import JS_SUFFIXES, replaced_specifiers
 
 
 def replaced_modules(path: str, text: str | bytes) -> frozenset[str]:
@@ -59,18 +64,37 @@ def replaced_modules(path: str, text: str | bytes) -> frozenset[str]:
     return frozenset(found - _imported_modules(tree))
 
 
+# Test files :func:`replaced_files` reads; a caller need not read any other.
+MASKABLE_SUFFIXES = (".py", *JS_SUFFIXES)
+
+
 def replaced_files(
     texts: Mapping[str, str | bytes], files: Collection[str]
 ) -> dict[str, frozenset[str]]:
     """``{test: the repository files it replaces outright}``, for the tests in *texts*.
 
-    *files* are the repository's paths; a replaced name masks a file only when
-    it is exactly that file's dotted module name. Tests replacing none are absent.
+    *files* are the repository's paths. A Python name masks a file only when it
+    is exactly that file's dotted module name; a JavaScript or TypeScript
+    specifier (:func:`~.mocks_js.replaced_specifiers`) only when it is relative
+    and resolves to one of *files*. Ceiling: a bare or aliased specifier
+    (``@/lib/x``, a workspace package) needs the repository's tsconfig and
+    workspace map, so it abstains; resolving it with the indexer's full
+    resolver context is the upgrade path. Tests replacing none are absent.
     """
     index = build_python_module_index({f for f in files if f.endswith(".py")})
+    ctx = ResolverContext(path_set=set(files), stem_map={}, graph=None)
     out: dict[str, frozenset[str]] = {}
     for test, text in texts.items():
-        hits = {index[name] for name in replaced_modules(test, text) if name in index}
+        if test.endswith(".py"):
+            hits = {index[name] for name in replaced_modules(test, text) if name in index}
+        else:
+            specs = replaced_specifiers(test, text)
+            hits = {
+                hit
+                for spec in specs
+                if spec.startswith(".")
+                and (hit := resolve_ts_js_import(spec, test, ctx)) in ctx.path_set
+            }
         hits.discard(test)
         if hits:
             out[test] = frozenset(hits)

@@ -145,7 +145,10 @@ A Python test that swaps a module object out (`patch("pkg.helpers")`,
 does not reach that module through the swap. A file only such tests reach is
 `mocked_only`, read from the test files' text at walk time, never stored.
 Patching a name inside a module, a run-time target, or a patch with `wraps`,
-`side_effect` or `autospec` keeps the reach.
+`side_effect` or `autospec` keeps the reach. In JavaScript and TypeScript,
+`vi.mock` / `jest.mock` swaps a module out when its factory takes no parameter
+and returns only literals and `vi.fn()` / `jest.fn()`; an automock, `doMock`, a
+factory that reads the original, or a non-relative specifier keeps the reach.
 
 ## Measured map internals
 

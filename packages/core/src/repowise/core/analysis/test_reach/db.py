@@ -26,7 +26,7 @@ from repowise.core.persistence.models import GraphNode, Repository
 from .forward import CallGraphView, files_reached_by_tests
 from .hubs import call_hub_files
 from .maps import LEGACY_CONFTEST_HINT, ImportGraph, Need, Walk
-from .mocks import replaced_files
+from .mocks import MASKABLE_SUFFIXES, replaced_files
 from .model import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
@@ -194,7 +194,7 @@ async def cached_test_masks(session: AsyncSession, repo_id: str) -> dict[str, fr
     root = (
         await session.execute(select(Repository.local_path).where(Repository.id == repo_id))
     ).scalar_one_or_none()
-    tests = [t for t in await cached_test_files(session, repo_id) if t.endswith(".py")]
+    tests = [t for t in await cached_test_files(session, repo_id) if t.endswith(MASKABLE_SUFFIXES)]
     texts = await asyncio.to_thread(_read_texts, root, tests) if root else {}
     files = await _file_paths(session, repo_id) if texts else set()
     return _cache.remember(key, replaced_files(texts, files))
