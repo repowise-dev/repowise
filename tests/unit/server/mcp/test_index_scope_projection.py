@@ -331,7 +331,7 @@ def test_a_long_degraded_list_is_sampled_with_its_count() -> None:
 
 def test_a_real_analysis_id_survives_a_flood_of_run_warnings() -> None:
     """Warnings with a leading space sort first alphabetically; the id still shows."""
-    warnings = [f"  Not indexed: big/file_{i}.cs (3,000 KB, over the limit)" for i in range(16)]
+    warnings = [f"  Warning: failed to trace step {i}" for i in range(16)]
     scope = resolve_index_scope({**_FULL_STATE, "degraded": [*warnings, "dead_code"]})
 
     compact = compact_index_scope(scope)

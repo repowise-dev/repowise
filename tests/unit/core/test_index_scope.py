@@ -76,3 +76,49 @@ def test_scope_without_traversal_does_not_claim_nothing_dropped() -> None:
 
     assert dropped_files_scope(None) is None
     assert resolve_index_scope({})["dropped_files"] is None
+
+
+def test_scope_drops_legacy_init_tips_and_size_skips() -> None:
+    scope = resolve_index_scope(
+        {
+            "index_scope": {"analysis": {"unavailable": [], "skipped": []}},
+            "degraded": [
+                "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
+                "re-run 'repowise init --resume' to continue where it stopped.",
+                "  Not indexed: src/TestData.g.cs (9,745 KB, over the 2,048 KB limit)",
+                "  ...and more source files skipped on size",
+                "Git indexing skipped: boom",
+            ],
+        }
+    )
+    assert scope["analysis"]["unavailable"] == ["Git indexing skipped: boom"]
+
+
+def test_scope_with_only_legacy_tips_reports_complete() -> None:
+    from repowise.core.index_scope import compact_index_scope
+
+    state = {
+        "run_mode": "standard",
+        "git_tier": "full",
+        "docs_mode": "llm",
+        "index_scope": {
+            "git_commit_cap": 500,
+            "file_pages": {"eligible": 10, "generated": 10, "omitted": 0},
+            "provider": {"name": "openai", "model": "a-model", "embedder": "openai"},
+            "search": {"full_text": "available", "semantic": "available"},
+        },
+        "git_history_coverage": {"eligible_files": 10, "retained_commits": 50},
+        "full_upgrade": {"status": "complete", "completed_stages": ["generation"]},
+        "degraded": [
+            "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
+            "re-run 'repowise init --resume' to continue where it stopped.",
+            "  Not indexed: big.cs (9,745 KB, over the 2,048 KB limit)",
+            "  ...and more source files skipped on size",
+        ],
+    }
+    scope = resolve_index_scope(state)
+    compact = compact_index_scope(scope)
+    assert compact is not None
+    assert compact["status"] == "complete"
+    assert "degraded_analyses" not in compact
+
