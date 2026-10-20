@@ -159,7 +159,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `edenai`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `mock` (default: auto-detect) |
-| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. Fill or refill that prose later with [`repowise generate`](#repowise-generate-path). |
+| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. `--no-prose` makes no model calls even when a key is set, so decision extraction from PRs, commit history and comments waits for a model run. Fill or refill that prose, and add those decisions, later with [`repowise generate`](#repowise-generate-path). |
 | `--index-only` | Deprecated hidden alias for `--no-prose`. |
 | `--docs` | Deprecated hidden alias: `--docs llm` == `--prose`, `--docs deterministic` == `--no-prose`. Prefer `--prose` / `--no-prose`. |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only, no per-file blame/co-change, no LLM docs, for very large repos; upgrade later with `update --full`) |
@@ -189,9 +189,10 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--dry-run` | Show the generation plan and cost estimate. Writes no wiki |
-| `--test-run` | Generate docs for only the top 10 files (by PageRank) |
+| `--test-run` | Write docs with the model for only the top 10 files (by PageRank). Not with `--no-prose` or `--mode fast` |
 | `--all` | In multi-repo mode, index every detected repo without prompting |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
+| `--progress` | `rich` (default): a live checklist in a terminal, one short line per step (at most 100 columns) anywhere else. `json`: one JSON event per line on stdout, ending with a summary line; see below. |
 
 **Examples:**
 
@@ -216,13 +217,30 @@ repowise init . --no-prose -x "node_modules/"        # workspace, no LLM
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 
-**Exit status when embedding fails.** With a real embedder (anything but
-`mock`), a run whose page vectors fail to write, for example because the
-LanceDB install is broken, still saves its pages and full-text index but
-exits `1`, records `search.semantic: unavailable` in the index scope, and names
-the fix: reinstall the dependency, then `repowise reindex`. `update` follows the
-same rule, and a workspace `init` exits `1` after saving every repo, naming the
-repos whose embed failed. The keyless `mock` embedder never fails a run this way.
+**Exit codes.** `0` ready. `2` finished with gaps: everything is saved, and the
+last line names what is missing and the command that adds it (for example
+documentation built from code because the cost estimate needed confirmation and
+there was no terminal, so re-run with `--yes`). `130` interrupted: run
+`repowise init --resume` to continue. Any other non-zero code is a failure; a
+usage error (a bad flag) also exits `2`, before anything runs.
+
+**Driving init from an agent or script.** `repowise init --yes --no-prose --progress json`
+writes only JSON lines to stdout; human text goes to stderr. Every line has `v`
+(schema version, `1`) and `event`: `stage`, `phase` (`state` is `start`, `done`
+or `failed`, with `completed`, `total`, `unit` and `elapsed_s`), `warning`, and
+last `summary`. The summary's `status` is `ready`, `degraded`, `interrupted` or
+`failed`, matching exit `0`, `2`, `130` or any other code, and it carries
+`mode` (`key` from the index scope, `label`, `run_mode`), `restart_required`
+(the editor needs a restart or `/mcp` to load the tools), `spend` (`tokens`,
+`usd`), `warnings`, `files_written` and `next` (commands, `repowise serve` first).
+
+With a real embedder (anything but `mock`), a run whose page vectors fail to
+write, for example because the LanceDB install is broken, keeps its pages and
+full-text index, records `search.semantic: unavailable` in the index scope, and
+exits `2` naming the fix: reinstall the dependency, then `repowise reindex`. A
+workspace `init` exits `2` after saving every repo, naming the repos with gaps.
+`update` exits `1` on a failed embed. The keyless `mock` embedder never fails a
+run this way.
 
 **Documentation output limit.** Set `max_tokens` in
 `.repowise/config.yaml` to bound each model-written page. It is persistent, not
@@ -285,7 +303,7 @@ See [WORKTREES.md](../scale/WORKTREES.md).
 
 **First-time indexing:** `update --workspace` runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only, no LLM cost, and writes a state.json marker. Doc generation then follows on the next update once the repo has an index: pass `--docs` (or set its `docs_enabled`) and it regenerates pages like any other member.
 
-**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no model-written docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL using a resumable checkpoint, reuses the persisted graph, generates the missing prose, rebuilds full-text search, embeds pages when the resolved embedder is available, and recomputes health against FULL history. The command records the transition before work and checkpoints each completed stage; failure or cancellation leaves the prior scope truthful and a retryable upgrade instead of stamping the repository full early. Persisted provider/model/embedder choices are reused when valid, overrides remain explicit, and estimated model cost is shown before paid generation. If embedding is unavailable the completed scope says so and gives the exact recovery command, `repowise reindex`; it never implies semantic search was built. Single-repo only; it errors in workspace mode.
+**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no model-written docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL using a resumable checkpoint, reuses the persisted graph, builds the missing documentation, rebuilds full-text search, embeds pages when the resolved embedder is available, and recomputes health against FULL history. The command records the transition before work and checkpoints each completed stage; failure or cancellation leaves the prior scope truthful and a retryable upgrade instead of stamping the repository full early. Persisted provider/model/embedder choices are reused when valid, overrides remain explicit, and estimated model cost is shown before paid generation. If embedding is unavailable the completed scope says so and gives the exact recovery command, `repowise reindex`; it never implies semantic search was built. It needs no key: with no model configured the documentation is built from code, with no model calls and no spend, and the embedder stays the free one unless you chose another. With a model configured, the model writes it. One repo at a time; in a workspace, pass `--repo <alias>`.
 
 `state.json:index_scope` is the canonical machine-readable description used by `status --format json`, `/api/repos`, generated agent guidance, and MCP `_meta.index_scope`. It separately records run mode, content provenance (`none`, `template`, or `model`), Git tier, configured commit cap, achieved Git-history coverage, configured/effective file-page caps, eligible/generated/omitted file-page counts, unavailable/skipped analysis, search availability, provider choices, and upgrade state. Older indexes project missing facts as `unknown`/`null`; a configured cap is never reported as achieved coverage and a missing analysis result is never reported as a clean result.
 
@@ -327,6 +345,12 @@ the onboarding collection. Every structural page (file, symbol, API, infra,
 cycle) is rendered from structure and refreshes on `repowise update`, so
 naming one with `--page` is an actionable error rather than a silent LLM
 re-render.
+
+**Decisions a keyless index skipped.** An index built without a model (no key,
+or `--no-prose`) cannot read decisions from PRs, git history or code comments.
+The first `generate` (or `update --full`) with a model runs those lanes too, and
+the cost estimate prices them on their own line. Later runs skip them, and
+`repowise status` shows a Decisions row while they are still pending.
 
 **Interactive chooser.** Run `repowise generate` with no selection flag on a
 terminal and it prints the wiki's state (written / unwritten / stale on the

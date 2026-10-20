@@ -46,9 +46,9 @@ def test_next_steps_fast_mode_second_row_is_full_upgrade():
     steps = build_contextual_next_steps(index_only=True, fast_mode=True)
     cmds = [c for c, _ in steps]
     descs = " ".join(d for _, d in steps).lower()
-    # After serve, fast mode points at the full result.
-    assert cmds[1] == "repowise init"
-    assert "full" in descs and "documentation" in descs
+    # After serve, fast mode points at the one fast-to-full command, keyless.
+    assert cmds[1] == "repowise update --full"
+    assert "documentation" in descs and "no key" in descs
 
 
 def test_next_steps_index_only_upgrades_via_generate_not_update_full():

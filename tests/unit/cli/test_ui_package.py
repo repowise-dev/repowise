@@ -35,7 +35,6 @@ def test_facade_reexports_public_surface() -> None:
         "print_banner",
         "print_phase_header",
         "quick_repo_scan",
-        "print_analysis_summary",
         "build_completion_panel",
         "build_contextual_next_steps",
         "build_status_notes",
