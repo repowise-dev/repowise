@@ -21,6 +21,7 @@ from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types, gate_for, is_served, language_label
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.biomarker_labels import biomarker_label
+from ..health.crap import measured_crap
 from ..health.finding_identity import finding_public_id
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
@@ -686,10 +687,13 @@ def _hunks(changes: list[FileChange]) -> dict[str, list[tuple[int, int, int, int
 
 
 def _comparable(finding: HealthFindingData, withheld: frozenset[str]) -> bool:
-    """A finding both sides of a comparison count: not advisory, not a test's
-    performance finding, and one the registry serves."""
+    """A finding both sides of a comparison count: not advisory (save CRAP on
+    measured coverage), not a test's performance finding, and one the registry serves."""
     return (
-        not is_advisory(finding.biomarker_type)
+        (
+            not is_advisory(finding.biomarker_type)
+            or measured_crap(finding.biomarker_type, finding.details) is not None
+        )
         and not _is_test_perf(finding)
         and is_served("health", finding.biomarker_type, finding.file_path, withheld)
     )

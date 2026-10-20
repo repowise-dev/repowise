@@ -279,8 +279,9 @@ def build_authors(rows: Rows, *, since: datetime | None) -> dict[str, Any]:
 
 #: Markers that read a measured coverage report, so "worsened" is coverage the
 #: change lost. ``untested_hotspot`` is left out: without a report it fires on a
-#: missing test file, which no commit's lines decide.
-COVERAGE_MARKERS = frozenset({"coverage_gap", "coverage_gradient"})
+#: missing test file, which no commit's lines decide. ``untested_complexity``
+#: reaches the serious severities only on measured coverage.
+COVERAGE_MARKERS = frozenset({"coverage_gap", "coverage_gradient", "untested_complexity"})
 
 #: Commit-health rows a loader reads: the authored kinds, at a severity that
 #: counts, or a performance marker of any severity (its proof is the cause's

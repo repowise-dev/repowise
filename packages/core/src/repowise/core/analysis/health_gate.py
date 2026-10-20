@@ -227,15 +227,20 @@ def _level(f: ChangeFinding, fail_on: str, fail_at: str) -> str:
     """Error when the change wrote a code-shape finding at or above *fail_on* and *fail_at*.
 
     A finding the change only carried (moved) or sits away from its lines
-    (incidental) is a note, as is anything that is not code shape. Below
+    (incidental) is a note, as is anything that is not code shape save measured
+    CRAP, which warns. Below
     *fail_at* a finding warns at most (by default medium: CCN 9 to 14, nesting
     depth 4, just past a detector's threshold), and so does one in a test
     file: long test functions are the change's own scaffolding more often than
     a defect.
     """
     authored = f.attribution_basis != "moved" and f.attribution_basis not in INCIDENTAL_BASES
-    if not authored or not is_code_shape(f.biomarker_type) or f.change_kind not in _KIND_RANK:
+    if not authored or f.change_kind not in _KIND_RANK:
         return NOTE
+    if not is_code_shape(f.biomarker_type):
+        # CRAP on measured coverage, the one coverage reading a comparison keeps
+        # (estimates never reach it): worth a warning, never a failure.
+        return WARNING if f.biomarker_type == "untested_complexity" else NOTE
     if (
         _KIND_RANK[f.change_kind] >= _KIND_RANK[fail_on]
         and severity_rank(f.severity) >= severity_rank(fail_at)

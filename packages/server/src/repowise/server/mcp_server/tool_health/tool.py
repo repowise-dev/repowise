@@ -14,7 +14,7 @@ from time import perf_counter
 from typing import Any
 
 from repowise.core.analysis.finding_registry import (
-    FILE_HOLDS,
+    HOLD_REASONS,
     GateLayer,
     served_previews,
     withheld_summary,
@@ -296,12 +296,12 @@ def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:
     # once under ``reasons`` and only when the call lists no finding, so a
     # default response grows by a few tokens at most.
     gated: dict[str, Any] = {
-        layer: {k: v["count"] if k in FILE_HOLDS else v for k, v in cells.items()}
+        layer: {k: v["count"] if k in HOLD_REASONS else v for k, v in cells.items()}
         for layer, cells in data.gated.items()
     }
-    held = sorted({k for cells in data.gated.values() for k in cells if k in FILE_HOLDS})
+    held = sorted({k for cells in data.gated.values() for k in cells if k in HOLD_REASONS})
     if held and not data.findings.emitted:
-        gated["reasons"] = {k: FILE_HOLDS[k] for k in held}
+        gated["reasons"] = {k: HOLD_REASONS[k] for k in held}
     meta["gated"] = {**gated, "opt_in": {"include": ["unverified"]}}
 
 
@@ -412,6 +412,7 @@ def _finish(
             "top_findings": findings.findings_total,
             "test_findings": findings.test_findings_total,
             "churn_complexity": len(data.churn_points),
+            "untested_complexity": len(data.crap_rows),
             "refactoring_plans": (
                 data.refactoring_plans.total if data.refactoring_plans is not None else 0
             ),

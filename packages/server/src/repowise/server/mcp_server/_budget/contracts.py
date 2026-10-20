@@ -322,6 +322,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "trend.recent[]",
             "trend.alerts[]",
             "churn_complexity[]",
+            "untested_complexity[]",
             "doc_drift.findings[]",
             "test_findings[]",
             "top_findings[]",

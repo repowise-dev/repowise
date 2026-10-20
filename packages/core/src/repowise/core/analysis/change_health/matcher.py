@@ -8,12 +8,15 @@ from dataclasses import dataclass, field
 from ..changed_lines import map_old_line
 from ..health import HealthFindingData
 from ..health.aggregation import finding_raw_deduction
+from ..health.crap import measured_crap
 from .identity import finding_key, measured_shape, normalize_path, severity_rank
 from .models import ChangeKind, FindingKey
 from .moves import MoveMap, SymbolKey
 
 #: Health-impact movement below this is rounding, not a regression.
 _IMPACT_EPSILON = 0.01
+#: Stored CRAP is rounded to one decimal; smaller moves are rounding.
+_CRAP_EPSILON = 0.5
 
 #: Measured values a finding's details may carry, compared for "improved".
 _METRICS = ("ccn", "nloc", "max_nesting", "params")
@@ -248,9 +251,21 @@ def _classify(
     impact = finding_raw_deduction(head) - finding_raw_deduction(base)
     if abs(impact) > _IMPACT_EPSILON:
         return "worsened" if impact > 0 else "improved"
+    crap = _crap_change(base, head)
+    if crap:
+        return "worsened" if crap > 0 else "improved"
     # Lower metrics within one band read as improved; higher ones stay quiet,
     # since only a deduction change is a regression worth surfacing.
     return "improved" if _metrics_dropped(base, head) else carried
+
+
+def _crap_change(base: HealthFindingData, head: HealthFindingData) -> float:
+    """How far a measured CRAP moved past rounding; 0 unless both sides measured it."""
+    before = measured_crap(base.biomarker_type, base.details)
+    after = measured_crap(head.biomarker_type, head.details)
+    if before is None or after is None or abs(after - before) < _CRAP_EPSILON:
+        return 0.0
+    return after - before
 
 
 def _metrics_dropped(base: HealthFindingData, head: HealthFindingData) -> bool:

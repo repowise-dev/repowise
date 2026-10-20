@@ -15,9 +15,9 @@ never leaves this module as a percentage.
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 #: The CRAP at which a function is worth a finding: an untested ``CC`` of 5.
 CRAP_THRESHOLD: float = 30.0
@@ -109,3 +109,49 @@ def function_crap(ccn: int, measured: float | None, tier: CoverageTier) -> Funct
             crap_score(ccn, measured), "measured", coverage_pct=round(measured * 100.0, 1)
         )
     return FunctionCrap(crap_score(ccn, _TIER_FRACTION[tier]), "estimated", tier=tier)
+
+
+def ranked_by_crap(findings: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """``untested_complexity`` findings as a list ranked by CRAP, worst first.
+
+    Each row keeps its basis and either the measured percentage or the tier,
+    never both, so an estimate is never read as a percentage.
+    """
+    rows = []
+    for f in findings:
+        details = f.get("details") or {}
+        measured = details.get("coverage_basis") == "measured"
+        rows.append(
+            {
+                "id": f.get("id"),
+                "file_path": f.get("file_path"),
+                "function_name": f.get("function_name"),
+                "line_start": f.get("line_start"),
+                "severity": f.get("severity"),
+                "crap": details.get("crap"),
+                "ccn": details.get("judged_ccn", details.get("ccn")),
+                "coverage_basis": details.get("coverage_basis"),
+                **(
+                    {"coverage_pct": details.get("coverage_pct")}
+                    if measured
+                    else {"coverage_tier": details.get("coverage_tier")}
+                ),
+                "action": details.get("action"),
+            }
+        )
+    rows.sort(key=lambda r: (-(r["crap"] or 0.0), r["file_path"] or "", r["line_start"] or 0))
+    return rows
+
+
+def measured_crap(biomarker_type: str, details: Mapping[str, Any] | None) -> float | None:
+    """The CRAP of an ``untested_complexity`` finding on measured coverage, else ``None``.
+
+    The one coverage reading a base-to-head comparison keeps: an estimate rests
+    on call-graph reach and never makes a finding introduced or worsened.
+    """
+    if biomarker_type != "untested_complexity" or not details:
+        return None
+    if details.get("coverage_basis") != "measured":
+        return None
+    crap = details.get("crap")
+    return float(crap) if isinstance(crap, int | float) else None

@@ -57,6 +57,7 @@ from repowise.server.mcp_server.tool_health.findings import (
     load_dashboard_findings,
     load_targeted_findings,
     read_accuracy_rows,
+    read_crap_rows,
     read_withheld_rows,
 )
 from repowise.server.mcp_server.tool_health.pillars import (
@@ -104,6 +105,8 @@ class HealthData:
     drift_rows: list[Any] = field(default_factory=list)
     drift_unavailable: str | None = None
     churn_points: list[dict[str, Any]] = field(default_factory=list)
+    #: ``untested_complexity`` findings ranked by CRAP, read only on that include.
+    crap_rows: list[dict[str, Any]] = field(default_factory=list)
     snapshots: list[Any] = field(default_factory=list)
     fix_first: FixFirstQueue | None = None
     #: The whole queue the page was cut from: its lead and its counts.
@@ -190,6 +193,7 @@ async def load_health_data(
         session, repository, pop, req
     )
     data.churn_points = await _read_churn_points(session, repository, pop, req)
+    data.crap_rows = await read_crap_rows(session, repository, pop, req, reference_repository)
     data.snapshots = await _read_snapshots(session, repository, pop, req)
     data.withheld_rows = await read_withheld_rows(session, repository, pop, req)
     data.by_leverage, data.leads = _rank_leverage_and_leads(

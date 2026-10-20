@@ -52,6 +52,8 @@ def add_optional_blocks(
         )
     if "doc_drift" in include:
         result["doc_drift"] = _doc_drift_block(data, pager)
+    if "untested_complexity" in include:
+        result["untested_complexity"] = pager.bound(data.crap_rows, "untested_complexity")
     # The dimension filter (``include=["performance"]`` etc.) is applied where
     # rows are selected: filtering here would filter a list already capped.
     if "refactoring" in include and req.wants("suggestion_legend"):

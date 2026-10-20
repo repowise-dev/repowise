@@ -35,6 +35,10 @@ Duplication (cap −1.0):
 Test coverage (cap −2.0):
 - `untested_hotspot` — hotspot × low coverage × many dependents.
 - `coverage_gap` — non-test files with meaningful uncovered surface.
+- `untested_complexity` — functions whose CRAP score (`CC² × (1 − cov)³ + CC`,
+  `health/crap.py`) is 30 or more, on measured coverage or a reach tier.
+  Advisory: filed here, deducts nothing, since complexity and coverage already
+  deduct through their own markers.
 
 Test coverage — continuous (cap −2.0, own category `test_coverage_gradient`):
 - `coverage_gradient` — a per-file deduction that scales **continuously** with

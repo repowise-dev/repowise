@@ -50,6 +50,8 @@ _KNOWN_INCLUDES = frozenset(
         "accuracy",
         "signals",
         "churn_complexity",
+        # Functions ranked by CRAP; measured only unless ``unverified`` too.
+        "untested_complexity",
         "doc_drift",
         "performance",
         "defect",

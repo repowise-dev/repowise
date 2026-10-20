@@ -113,6 +113,7 @@ analysis/health/
     ├── untested_hotspot.py
     ├── coverage_gap.py
     ├── coverage_gradient.py
+    ├── untested_complexity.py
     ├── developer_congestion.py
     ├── knowledge_loss.py
     ├── hidden_coupling.py
@@ -302,17 +303,17 @@ returning a list of `BiomarkerResult`s.
 
 ### The full roster
 
-`biomarkers/registry.py` registers **53 detectors**; counting the three
+`biomarkers/registry.py` registers **54 detectors**; counting the three
 governance findings written by the additive pass (`governance.py`) there
-are **56 marker ids**. They divide by what each is permitted to affect:
+are **57 marker ids**. They divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 25 | `defect` (11 of them also `maintainability`) |
+| Defect-scoring | 24 | `defect` (11 of them also `maintainability`) |
 | Performance | 22 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing: the finding surfaces, the score is untouched |
-| Advisory | 3 | nothing: measured by construction, kept out of impact-ranked lists unless requested |
+| Advisory | 5 | nothing: measured by construction, kept out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. Any biomarker **not** listed
 there defaults into `defect`, which is why every `sql_*` and every performance
@@ -325,7 +326,7 @@ golden guarantee (§6).
 |------------------------|------|------------|
 | Organizational         | −3.5‡ | developer_congestion, knowledge_loss, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
 | Structural complexity  | −2.5 | low_cohesion, god_class, nested_complexity, repeated_nesting, complex_conditional |
-| Test coverage          | −2.0 | untested_hotspot, coverage_gap |
+| Test coverage          | −2.0 | untested_hotspot, coverage_gap, untested_complexity (advisory) |
 | Test coverage gradient | −2.0 | coverage_gradient |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0 | dry_violation |

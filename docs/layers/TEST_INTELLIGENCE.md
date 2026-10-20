@@ -173,7 +173,11 @@ a test file.
 
 Severity is `CRITICAL` at 15% coverage or less with 10+ dependents, `HIGH` at one of
 those two, `MEDIUM` otherwise. `coverage_gap` covers thin-but-present coverage, and
-`coverage_gradient` deducts in proportion to the uncovered share. The graph check
+`coverage_gradient` deducts in proportion to the uncovered share. Per function,
+`untested_complexity` reads the CRAP score: complexity weighted by the share of
+the function a report measured as run, or by its reach tier when no report covers
+it. A tier never becomes a percentage, and only measured findings are listed by
+default. The graph check
 matters because a filename convention misses tests in both directions
 ([examples](../architecture/test-intelligence.md#why-a-graph-signal)).
 

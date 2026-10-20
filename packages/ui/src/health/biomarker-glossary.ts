@@ -116,6 +116,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "Specific uncovered lines in a file. Surfaced when a coverage report has been ingested.",
   },
+  untested_complexity: {
+    label: BIOMARKER_LABELS.untested_complexity,
+    category: "test_coverage",
+    description:
+      "A function whose CRAP score (complexity weighted by how little of it tests run) is 30 or more. Coverage is measured from a report when one covers the function, otherwise estimated from call-graph reach and shown as a tier, never a percentage. Advisory: it never deducts.",
+  },
   coverage_gradient: {
     label: BIOMARKER_LABELS.coverage_gradient,
     category: "test_coverage_gradient",
@@ -401,6 +407,7 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "mock_saturated_test",
   "hidden_coupling",
   "brain_method",
+  "untested_complexity",
 ]);
 
 /**

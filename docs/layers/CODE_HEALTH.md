@@ -206,12 +206,12 @@ dominating a file.
 | Duplication | 1 | 1.0 | Cloned blocks |
 | Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
 | Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, fading ownership, prior bug fixes |
-| Test coverage | 3 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a coverage report) |
+| Test coverage | 4 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a coverage report), untested complex functions (advisory) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins; maintainability or performance only |
 | Performance | 21 | none | See [PERFORMANCE.md](PERFORMANCE.md); performance only |
 
-Twenty-five detectors move code health. Three markers are advisory: they are
+Twenty-four detectors move code health. Five markers are advisory: they are
 listed, carry zero impact, and stay out of impact-ranked lists unless you ask for
 the advisory dimension. Three governance findings (an ungoverned hotspot, stale
 governance, a contradictory decision) come from the
@@ -232,6 +232,7 @@ same burst of activity.
 | `developer_congestion` | 5 or more contributors, top quarter of churn, and nobody owns half |
 | `assertion_free_test` | Advisory. A Python or TypeScript/JavaScript test that checks nothing |
 | `mock_saturated_test` | Advisory. Many mock setup statements per assertion (same languages) |
+| `untested_complexity` | Advisory. A function's CRAP score (complexity weighted by how little of it tests run) is 30 or more |
 
 On a small team, `knowledge_loss` and `ownership_risk` are capped at low severity
 unless the file is a hotspot, and the `small-team` profile lowers them further.
@@ -251,7 +252,12 @@ git-history half moved, so there is nothing in the code to act on).
 
 Coverage reports (LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, Repowise JSON)
 feed the coverage detectors: `repowise coverage add coverage.lcov`. With no report,
-only `untested_hotspot` runs, and no file is treated as uncovered. After adding a
+only `untested_hotspot` runs, and no file is treated as uncovered. `untested_complexity`
+scores each function as `CC² × (1 − coverage)³ + CC`: medium from 30, and high
+from 50 or critical from 100 when a report measured the function. Without a
+measurement its coverage is a tier (a test calls it, tests reach it, or neither),
+never a percentage. Only measured findings are listed by default; estimated ones
+appear when you ask for the type by name or opt into unverified findings. After adding a
 report, run `repowise health --recompute`, which analyzes the working tree
 instead of reading the stored analysis and, on a whole-repo table run, writes the
 result to the index. `repowise health --badge` prints README badge Markdown.

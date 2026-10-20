@@ -8,13 +8,16 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.finding_registry import split_held
+from repowise.core.analysis.health.crap import ranked_by_crap
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL, finding_priorities
 from repowise.core.persistence.crud.analysis.plain_rows import plain_rows
 from repowise.core.persistence.crud.analysis.shown import gated_counts, ungated
 from repowise.core.persistence.models import HealthFinding
 from repowise.server.mcp_server.tool_health.population import Population
 from repowise.server.mcp_server.tool_health.request import HealthRequest
-from repowise.server.mcp_server.tool_health.serialize import _rank_emitted
+from repowise.server.mcp_server.tool_health.serialize import _rank_emitted, _serialize_finding
+
+UNTESTED_COMPLEXITY = "untested_complexity"
 
 
 def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
@@ -257,6 +260,33 @@ async def _read_findings_by_id(session: Any, ids: list[str]) -> dict[str, Any]:
         .scalars()
         .all()
     }
+
+
+async def read_crap_rows(
+    session: Any, repository: Any, pop: Population, req: HealthRequest, reference: str
+) -> list[dict[str, Any]]:
+    """Open ``untested_complexity`` findings ranked by CRAP, for that include.
+
+    Measured ones only, unless the call also opts into unverified rows: an
+    estimate rests on call-graph reach (``finding_registry.ROW_HOLDS``).
+    """
+    if UNTESTED_COMPLEXITY not in req.include_set or pop.nothing_resolved:
+        return []
+    query = select(HealthFinding).where(
+        HealthFinding.repository_id == repository.id,
+        HealthFinding.status == "open",
+        HealthFinding.biomarker_type == UNTESTED_COMPLEXITY,
+        ungated(
+            "health",
+            HealthFinding.file_path,
+            HealthFinding.biomarker_type,
+            include_unverified=req.include_unverified,
+        ),
+    )
+    if pop.scoped:
+        query = query.where(HealthFinding.file_path.in_(pop.effective_targets))
+    rows = pop.in_scope_rows(list((await session.execute(query)).scalars().all()))
+    return ranked_by_crap(_serialize_finding(f, reference) for f in rows)
 
 
 async def read_withheld_rows(

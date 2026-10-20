@@ -102,6 +102,10 @@ const BY_BIOMARKER: Record<string, PlainIssue> = {
     title: "Changes often and is untested",
     why: "Frequent edits with nothing to catch a mistake.",
   },
+  untested_complexity: {
+    title: "Complex and little tested",
+    why: "Many paths through it, and few of them run under test.",
+  },
   prior_defect: {
     title: "Fixed for bugs often",
     why: "Files with past bug fixes tend to get more.",

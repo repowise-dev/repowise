@@ -30,6 +30,7 @@ is served unlabelled.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -90,13 +91,6 @@ REGISTRY: dict[str, FindingTypeStatus] = {
         corpus=_LABELLED,
         measured_on="2026-09-29",
         reason="Flags duplicated import blocks and data literals as design duplication.",
-    ),
-    # New and unmeasured. Measured CRAP is arithmetic over the report, but an
-    # estimate rests on call-graph reach, whose recall is partial; flip to
-    # validated once a labelled sample clears the floor.
-    "untested_complexity": FindingTypeStatus(
-        "provisional",
-        reason="Not yet measured; estimated coverage rests on call-graph reach.",
     ),
 }
 
@@ -215,6 +209,31 @@ FILE_HOLDS: dict[str, str] = {
     "history": "History markers are context: they order hotspots and Fix first, not the defect list.",
     "test": "Plans held back on test files: tests change with the code they cover.",
 }
+
+#: Health rows held back by their own evidence rather than their type or file:
+#: an ``untested_complexity`` finding on estimated coverage rests on call-graph
+#: reach, whose recall is partial, so only measured ones are served by default.
+#: Same opt-in as a gate, or ask for the type by name.
+ROW_HOLDS: dict[str, str] = {
+    "estimated": "Held back: coverage estimated from call-graph reach, not measured.",
+}
+#: The types :data:`ROW_HOLDS` ``estimated`` applies to, and the detail it reads.
+ESTIMATE_HELD_TYPES: frozenset[str] = frozenset({"untested_complexity"})
+COVERAGE_BASIS_KEY = "coverage_basis"
+#: Every file and row hold with its reason, as a surface reports them.
+HOLD_REASONS: dict[str, str] = {**FILE_HOLDS, **ROW_HOLDS}
+
+
+def is_estimated(kind: Any, details: Any) -> bool:
+    """Whether a health row of *kind* rests on estimated coverage (see :data:`ROW_HOLDS`)."""
+    if kind not in ESTIMATE_HELD_TYPES:
+        return False
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except ValueError:
+            return False
+    return isinstance(details, Mapping) and details.get(COVERAGE_BASIS_KEY) == "estimated"
 
 #: The stored ``code_origin`` values a health finding is never served on.
 HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
@@ -412,8 +431,8 @@ def gated_summary(layer: GateLayer, counts: Mapping[str, int]) -> dict[str, dict
         count = counts.get(gate.language, 0)
         if count:
             out[gate.language] = {"count": count, "reason": held_back_note([gate.language])}
-    # File holds ride beside the languages under their own keys, with their reason.
-    for key, reason in FILE_HOLDS.items():
+    # File and row holds ride beside the languages under their own keys, with their reason.
+    for key, reason in HOLD_REASONS.items():
         if counts.get(key):
             out[key] = {"count": counts[key], "reason": reason}
     return out
@@ -429,7 +448,12 @@ def row_hold(
     hold_history: bool = True,
 ) -> str | None:
     """The :data:`FILE_HOLDS` key on *row*, read off its file's metric row in
-    *files* (``code_origin``, ``is_test``); a path missing from it is not held."""
+    *files* (``code_origin``, ``is_test``), or the :data:`ROW_HOLDS` key read off
+    the row itself; a path missing from *files* is not file-held."""
+    if layer == "health" and get(row, kind) in ESTIMATE_HELD_TYPES:
+        details = _row_details(row, get)
+        if is_estimated(get(row, kind), details):
+            return "estimated"
     metric = (files or {}).get(get(row, "file_path") or "")
     if metric is None:
         return None
@@ -440,6 +464,18 @@ def row_hold(
         getattr(metric, "is_test", None),
         hold_history=hold_history,
     )
+
+
+def _row_details(row: Any, get: Callable[[Any, str], Any]) -> Any:
+    """A row's details: a mapping, or the stored JSON text of an ORM row."""
+    for key in ("details", "details_json"):
+        try:
+            value = get(row, key)
+        except (AttributeError, KeyError):
+            continue
+        if value is not None:
+            return value
+    return None
 
 
 def split_held(
