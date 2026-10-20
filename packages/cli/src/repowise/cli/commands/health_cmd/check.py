@@ -55,6 +55,15 @@ _FORMATS = (*CI_FORMATS, "sarif", "gitlab")
     help="The lowest severity that can fail; findings below it warn.",
 )
 @click.option(
+    "--diff-risk",
+    "diff_risk",
+    multiple=True,
+    metavar="[RULE=]LEVEL",
+    help="Level of the diff-risk rules (added-suppression, weakened-tests, "
+    "test-only-branch): warn (default), error or off. LEVEL sets every rule, "
+    "RULE=LEVEL one; repeatable.",
+)
+@click.option(
     "--path",
     "repo",
     default=None,
@@ -67,7 +76,12 @@ _FORMATS = (*CI_FORMATS, "sarif", "gitlab")
     "upload; ``gitlab`` is a GitLab Code Quality report.",
 )
 def health_check(
-    revspec: str | None, fail_on: str, fail_at: str, repo: str | None, fmt: str
+    revspec: str | None,
+    fail_on: str,
+    fail_at: str,
+    diff_risk: tuple[str, ...],
+    repo: str | None,
+    fmt: str,
 ) -> None:
     """Gate a change on the health findings it introduces (no index needed, built for CI).
 
@@ -77,6 +91,9 @@ def health_check(
     nesting, size, duplication, error handling) decide; git history, coverage
     and file scores never do. Rules in .repowise/health-rules.json are read
     as the change's base has them, so a change cannot loosen its own gate.
+    Diff-risk rules also warn on a change that adds a suppression comment,
+    skips or removes tests, loosens a coverage threshold, or adds a
+    test-environment branch to production code.
 
     REVSPEC is the change: ``origin/main...HEAD`` (the pull-request view),
     ``base..head``, or one commit. Without it, the base comes from the CI's
@@ -86,6 +103,7 @@ def health_check(
 
         repowise health check origin/main...HEAD
         repowise health check --fail-on worsened --fail-at medium
+        repowise health check --diff-risk error --diff-risk test-only-branch=off
         repowise health check --format github
         repowise health check --format sarif > health.sarif
         repowise health check --format gitlab > gl-code-quality-health.json
@@ -94,8 +112,9 @@ def health_check(
         silence_logs_for_machine_output_until_close()
     else:
         configure_cli_logging(verbose=False)
+    levels = _diff_risk_levels(diff_risk)
     try:
-        verdict = _evaluate(revspec, fail_on, fail_at, repo)
+        verdict = _evaluate(revspec, fail_on, fail_at, repo, levels)
     except (click.exceptions.Exit, click.ClickException, click.Abort):
         raise
     except CannotEvaluateError as exc:
@@ -117,41 +136,64 @@ class _Verdict:
     label: str
 
 
-def _evaluate(revspec: str | None, fail_on: str, fail_at: str, repo: str | None) -> _Verdict:
+def _diff_risk_levels(values: tuple[str, ...]) -> dict[str, str]:
+    """``{rule: level}`` from ``--diff-risk`` values; later values win."""
+    from repowise.core.analysis.diff_risk import RULES
+
+    levels: dict[str, str] = {}
+    for value in values:
+        rule, _, level = value.rpartition("=")
+        if level not in ("warn", "error", "off") or (rule and rule not in RULES):
+            raise click.BadParameter(
+                f"{value!r}: expected warn, error or off, or RULE=LEVEL with RULE one of "
+                f"{', '.join(RULES)}.",
+                param_hint="--diff-risk",
+            )
+        levels.update({rule: level} if rule else dict.fromkeys(RULES, level))
+    return levels
+
+
+def _evaluate(
+    revspec: str | None, fail_on: str, fail_at: str, repo: str | None, levels: dict[str, str]
+) -> _Verdict:
     from repowise.core.analysis.change_health.service import (
         ChangeHealthDeltaService,
         DeltaRequest,
     )
     from repowise.core.analysis.change_health.sources import GitRevisionSource
-    from repowise.core.analysis.health_gate import NotEvaluatedError, evaluate
+    from repowise.core.analysis.diff_risk import diff_risk_for_change
+    from repowise.core.analysis.health_gate import (
+        NotEvaluatedError,
+        diff_risk_findings,
+        evaluate,
+    )
 
     root = str(repo_root(repo))
     label = ci_revspec(root, revspec)
     source = GitRevisionSource(root)
-    rules = _base_rules(source, label)
-    delta = ChangeHealthDeltaService(source, repo_path=root, health_config=rules).compare(
-        DeltaRequest(root, label)
-    )
     try:
-        result = evaluate(delta, fail_on=fail_on, fail_at=fail_at)
+        pair = source.resolve(label)
+    except ValueError as exc:
+        raise _not_evaluated("unsupported_range", str(exc)) from exc
+    rules = _base_rules(source, pair.base_sha)
+    service = ChangeHealthDeltaService(source, repo_path=root, health_config=rules)
+    # One resolution serves the comparison and the diff-risk rules.
+    delta = service.compare(DeltaRequest(root, label), pair=pair)
+    risks = diff_risk_findings(diff_risk_for_change(source, pair, severities=levels))
+    try:
+        result = evaluate(delta, fail_on=fail_on, fail_at=fail_at, extra=risks)
     except NotEvaluatedError as exc:
         raise _not_evaluated(exc.code, str(exc)) from exc
     return _Verdict(result, delta, label)
 
 
-def _base_rules(source: GitRevisionSource, label: str) -> HealthConfig:
-    """``.repowise/health-rules.json`` as the change's base has it; defaults when absent.
+def _base_rules(source: GitRevisionSource, base: str) -> HealthConfig:
+    """``.repowise/health-rules.json`` at the change's *base*; defaults when absent.
 
-    Read at the base so a change cannot loosen its own gate. The revision is
-    resolved here and again by the comparison: one extra diff, kept so the
-    service stays the single owner of what it compares.
+    Read at the base so a change cannot loosen its own gate.
     """
     from repowise.core.analysis.health.config import HEALTH_RULES_PATH, HealthConfig
 
-    try:
-        base = source.resolve(label).base_sha
-    except ValueError as exc:
-        raise _not_evaluated("unsupported_range", str(exc)) from exc
     raw = source.read(base, [HEALTH_RULES_PATH]).get(HEALTH_RULES_PATH)
     if raw is None:
         return HealthConfig()

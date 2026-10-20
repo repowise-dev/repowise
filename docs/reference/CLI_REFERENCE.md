@@ -1201,8 +1201,11 @@ Gate a change on the code-health findings it introduces. Built for CI: it needs 
 |------|-------------|
 | `--fail-on` | `introduced` (default) or `worsened` |
 | `--fail-at` | Lowest severity that can fail: `medium`, `high` (default), `critical` |
+| `--diff-risk` | Level of the diff-risk rules: `warn` (default), `error` or `off`. `LEVEL` sets all three, `RULE=LEVEL` one; repeatable |
 | `--path` | A path inside the repository (defaults to cwd) |
 | `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
+
+Three diff-risk rules read the changed text in any supported language and warn by default: `added-suppression` (a new lint, type-check, coverage or repowise suppression comment or attribute, or a biomarker newly disabled in `.repowise/health-rules.json`), `weakened-tests` (a new unconditional skip or focus marker, fewer test cases or assertions, a loosened coverage threshold) and `test-only-branch` (a new test-environment check in production code). A marker that moved to another file with its code does not count.
 
 REVSPEC is the change, resolved as for [`security check`](#repowise-security-check-revspec). Rules in `.repowise/health-rules.json` are read as the change's base has them and apply to both sides, so a change cannot loosen its own gate; an invalid file there exits `2`. A changed code file left unread (unparsable, or over 1.5 MB) warns; a change touching no file health reads passes with a note.
 

@@ -25,6 +25,7 @@ from repowise.core.ci.markdown import ROW_LIMIT, cell, details, more_line, plura
 from ..test_paths import is_test_related_path
 from .change_health.identity import severity_rank
 from .change_health.models import INCIDENTAL_BASES, ChangeFinding, ChangeHealthDelta
+from .diff_risk import DiffRiskFinding
 from .health.biomarker_labels import biomarker_label
 from .health.scoring import is_code_shape
 
@@ -249,6 +250,24 @@ def _message(f: ChangeFinding) -> str:
     if f.change_kind == "worsened" and f.severity_before:
         return f"{what} (worsened from {f.severity_before} to {f.severity})"
     return f"{what} ({f.change_kind}, {f.severity})"
+
+
+def diff_risk_findings(findings: Iterable[DiffRiskFinding]) -> list[GateFinding]:
+    """Diff-risk findings (added suppressions, weakened tests, test-only branches)
+    as gate findings, for :func:`evaluate`'s *extra*. ``off`` rules never get here."""
+    return [
+        GateFinding(
+            source="diff-risk",
+            rule=f.rule,
+            level=ERROR if f.severity == "error" else WARNING,
+            path=f.path,
+            line=f.line,
+            message=f.message,
+            fingerprint=f.finding_id,
+            extra={"kind": f.kind, "evidence": f.evidence},
+        )
+        for f in findings
+    ]
 
 
 def _unread_files(skipped: Mapping[str, str]) -> list[GateFinding]:

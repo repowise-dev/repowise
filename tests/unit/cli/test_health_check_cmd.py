@@ -163,3 +163,36 @@ def test_fail_at_moves_the_severity_floor(repo):
     repo.commit("tame", {"app.py": SIMPLE + "\n\n" + python_complex("tangle", 6)})
     assert check(repo).exit_code == 0
     assert check(repo, "--fail-at", "medium").exit_code == 1
+
+
+def test_an_added_suppression_warns_and_can_fail(repo):
+    repo.commit("silence", {"app.py": SIMPLE + "import os  # noqa: F401\n"})
+    result = check(repo, "--format", "json")
+    assert result.exit_code == 0, result.output
+    doc = json.loads(result.stdout)
+    assert doc["gate"]["verdict"] == "warn"
+    (row,) = [f for f in doc["findings"] if f["source"] == "diff-risk"]
+    assert (row["rule"], row["level"], row["line_number"]) == ("added-suppression", "warning", 3)
+    assert row["fingerprint"].startswith("drf_")
+
+    result = check(repo, "--format", "json", "--diff-risk", "added-suppression=error")
+    assert result.exit_code == 1, result.output
+    result = check(repo, "--format", "json", "--diff-risk", "off")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["gate"]["verdict"] == "pass"
+
+
+def test_a_loosened_threshold_in_a_config_only_change_warns(repo):
+    repo.commit("base cfg", {"pyproject.toml": "[tool.coverage.report]\nfail_under = 90\n"})
+    git(repo.path, "branch", "-f", "main")
+    repo.commit("loosen", {"pyproject.toml": "[tool.coverage.report]\nfail_under = 60\n"})
+    result = check(repo, "--format", "json")
+    assert result.exit_code == 0, result.output
+    rules = [f["rule"] for f in json.loads(result.stdout)["findings"]]
+    assert rules == ["weakened-tests"]
+
+
+def test_a_bad_diff_risk_level_is_a_usage_error(repo):
+    result = check(repo, "--diff-risk", "added-suppression=loud")
+    assert result.exit_code == 2
+    assert "--diff-risk" in result.stderr
