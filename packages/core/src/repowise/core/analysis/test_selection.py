@@ -483,15 +483,21 @@ def is_runnable_test(
     path: str,
     roots: PytestRoots | None = None,
     phpunit_roots: PhpunitRoots | None = None,
+    *,
+    is_test: bool | None = None,
 ) -> bool:
     """A test-shaped file name with an extension a runner collects tests from.
 
     With *roots*, a Python file pytest's config leaves out of collection
     (``core/test_paths.py``) is not one: the same rule that stamps ``is_test``.
     With *phpunit_roots*, a PHP file PHPUnit leaves out of collection is not runnable.
+    *is_test* is the stored flag when the caller has it: a file ingestion did
+    not classify as a test is not runnable whatever its name. Test support
+    (``conftest.py``, fixtures, helpers) never is.
     """
     return (
-        _runnable_name(path)
+        is_test is not False
+        and _runnable_name(path)
         and (roots is None or is_test_path(path, roots=roots))
         and (phpunit_roots is None or is_test_path(path, phpunit_roots=phpunit_roots))
     )

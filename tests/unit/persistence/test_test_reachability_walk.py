@@ -699,7 +699,7 @@ _KY_LIKE = {
         "import ky from '../src/index';\nimport {pool} from '../src/pool';\n"
         "ky('https://example.com');\n"
     ),
-    # Source imports pool.ts too and it is no barrel, so it passes nothing on.
+    # Source imports pool.ts too and it is no barrel, so the helper hop stops there.
     "src/pool.ts": "import {retry} from './retry';\nexport const pool = [retry];\n",
     "src/retry.ts": "export const retry = 1;\n",
     "src/agent.ts": "import {pool} from './pool';\nexport const agent = pool;\n",
@@ -723,11 +723,13 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     found = await any_tests_reaching(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
     assert found["src/core/Ky.ts"].tests == ["test/x.test.ts"]
     assert found["src/core/Ky.ts"].via == "import-graph"
-    assert "src/retry.ts" not in found
+    # The helper hop stops at pool.ts (source imports it too), but the import
+    # closure does not: a test importing pool.ts runs retry.ts, so it is not unreached.
+    assert found["src/retry.ts"].entries == {"test/x.test.ts": frozenset({"src/pool.ts"})}
 
 
 async def test_reached_files_are_walked_once_per_index_state(async_session, monkeypatch):
-    import repowise.core.analysis.test_reachability as tr
+    import repowise.core.analysis.test_reach.db as tr
 
     repo = await insert_repo(async_session)
     await _seed(
@@ -783,7 +785,7 @@ async def test_reads_over_more_files_than_one_statement_can_bind(async_session):
 async def test_a_node_listed_twice_across_batches_reads_its_edges_once(async_session):
     """A repeated input landing in two batches must not repeat its pairs: one
     ``IN`` list matches a node once however often it is listed."""
-    from repowise.core.analysis.test_reachability import (
+    from repowise.core.analysis.test_reach.db import (
         _IN_BATCH,
         _edges_from,
         _edges_into,
@@ -815,7 +817,7 @@ async def test_the_capped_list_keeps_the_closest_tests_and_a_changed_test(
 ):
     """Ranked before the cap: a direct caller survives many path-earlier far ones,
     and a test that is itself a target leads."""
-    from repowise.core.analysis import test_reachability as tr
+    from repowise.core.analysis.test_reach import model as tr
 
     monkeypatch.setattr(tr, "MAX_TESTS_PER_TARGET", 2)
     far = [f"tests/a/test_far_{i}.py" for i in range(3)]
@@ -847,7 +849,7 @@ async def test_the_capped_list_keeps_the_closest_tests_and_a_changed_test(
 
 
 async def test_the_import_tier_keeps_a_direct_importer_before_the_cap(async_session, monkeypatch):
-    from repowise.core.analysis import test_reachability as tr
+    from repowise.core.analysis.test_reach import model as tr
 
     monkeypatch.setattr(tr, "MAX_TESTS_PER_TARGET", 1)
     repo = await insert_repo(async_session)
@@ -869,3 +871,54 @@ async def test_the_import_tier_keeps_a_direct_importer_before_the_cap(async_sess
     found = await by_tier(async_session, repo.id, ["src/core.py"], call_depth=0, import_depth=2)
     assert found["src/core.py"].tests == ["tests/z/test_direct.py"]
     assert found["src/core.py"].total == 2
+
+
+_PARITY = {
+    **_KY_LIKE,
+    "app/__init__.py": "from .core import run\n",
+    "app/core.py": "from .util import helper\n\ndef run():\n    return helper()\n",
+    "app/util.py": "def helper():\n    return 1\n",
+    "app/deep.py": "from app.util import helper\n\ndef deep():\n    return helper()\n",
+    "app/lonely.py": "def alone():\n    return 2\n",
+    "tests/test_core.py": "from app.core import run\n\ndef test_run():\n    assert run() == 1\n",
+    "tests/test_pkg.py": "import app\n\ndef test_pkg():\n    assert app.run()\n",
+}
+
+
+async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_path, async_session):
+    """One walk, two graph sources: the rows must match for every file."""
+    from repowise.core.analysis.test_reachability import (
+        build_walk_maps,
+        clear_test_map_cache,
+        load_test_files,
+        reach_states,
+        reach_states_from_db,
+        reaching_by_tier,
+    )
+    from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
+    from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
+    from tests.unit.analysis.test_public_api_flag import build_fixture
+
+    builder = build_fixture(tmp_path, _PARITY)
+    repo = await insert_repo(async_session)
+    await persist_graph_nodes(async_session, repo.id, builder, ep_scores={})
+    edges = [_edge_row(u, v, d) for u, v, d in builder.graph().edges(data=True)]
+    await batch_upsert_graph_edges(async_session, repo.id, edges)
+    clear_test_map_cache()
+
+    maps = build_walk_maps(builder.graph())
+    assert maps.test_files == await load_test_files(async_session, repo.id)
+    paths = sorted(_PARITY)
+    stored = await by_tier(async_session, repo.id, paths)
+    assert stored == reaching_by_tier(maps, paths, helpers=False)
+    assert stored  # the fixture exercises the walk at all
+    asked = [*paths, "app/added.py", "app/types.py"]
+    evidence = {
+        "changed_tests": ["tests/test_lonely.py"],
+        "contents": {"app/types.py": "from typing import TypedDict\nclass R(TypedDict):\n    a: int\n"},
+    }
+    in_memory = reach_states(maps, asked, **evidence)
+    assert await reach_states_from_db(async_session, repo.id, asked, **evidence) == in_memory
+    assert in_memory["app/lonely.py"].reached.via == "changed-test"
+    assert in_memory["app/types.py"].state == "type_only"
+    assert {in_memory[p].state for p in in_memory} >= {"reached", "unreached", "new"}

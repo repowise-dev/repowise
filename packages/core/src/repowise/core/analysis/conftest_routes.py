@@ -84,7 +84,7 @@ from ..ingestion.framework_edges.pytest_edges import (
 )
 from ..ingestion.languages.python_modules import module_parts
 from ..ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
-from .test_reachability import _in_clause
+from .test_reach.db import _in_clause
 from .test_selection import BROADCAST_VIA, is_runnable_test, scope_kind
 
 # The call whose first argument is the object an attribute is patched on:

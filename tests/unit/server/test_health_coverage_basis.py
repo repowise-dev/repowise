@@ -560,9 +560,9 @@ async def test_the_file_endpoint_says_when_the_list_was_cut(
     the evidence. Measured on this repository, one file is reached by 124 tests
     and would have rendered as 50.
     """
-    import repowise.core.analysis.test_reachability as tr
+    from repowise.core.analysis.test_reach import model
 
-    monkeypatch.setattr(tr, "MAX_TESTS_PER_TARGET", 2)
+    monkeypatch.setattr(model, "MAX_TESTS_PER_TARGET", 2)
     repo = await create_test_repo(client, tmp_path)
     tests = [f"tests/test_{i}.py" for i in range(5)]
     edges = [e for t in tests for e in _calls(t, "src/a.py")]

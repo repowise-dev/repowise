@@ -353,7 +353,8 @@ async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(as
     assert (core.tests_reaching, core.tests_reaching_via) == (1, "import-graph")
 
     # Once production code imports the middle file it is a hub, not test
-    # support, and the second hop no longer counts.
+    # support, and the second hop no longer counts; the import closure still
+    # does, so the file is not claimed untested.
     async_session.add(GraphNode(repository_id=rid, node_id="src/app.py", node_type="file"))
     async_session.add(
         GraphEdge(repository_id=rid, source_node_id="src/app.py",
@@ -362,7 +363,7 @@ async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(as
     await async_session.commit()
     clear_test_map_cache()
     facts = await load_repo_facts(async_session, rid)
-    assert facts.files["src/core.py"].tests_reaching == 0
+    assert facts.files["src/core.py"].tests_reaching == 1
 
 
 async def test_a_failed_test_map_walk_is_unknown_not_zero(async_session, monkeypatch) -> None:
