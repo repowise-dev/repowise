@@ -120,103 +120,60 @@ def _run_index_for_repo(
     base commit), saves provider/model into ``config.yaml`` when docs ran,
     and re-runs cross-repo hooks so contracts/co-changes are fresh.
     """
-    from repowise.cli.helpers import ensure_repowise_dir, save_config
+    from repowise.cli.commands.init_cmd.workspace import _RepoDocs
+    from repowise.cli.helpers import ensure_repowise_dir
 
     console.print(f"  Indexing [cyan]{alias}[/cyan]…")
 
     # Reuse the primary repo's provider/embedder/exclude settings when the
     # caller hasn't overridden them.
     primary_cfg = _load_primary_config(ws_root, ws_config)
-    embedder_name = primary_cfg.get("embedder", "mock")
-    exclude_patterns = list(primary_cfg.get("exclude_patterns") or [])
-    commit_limit = primary_cfg.get("commit_limit")
-
     # ``provider`` is None exactly when no model runs.
     provider = None
     if docs_mode == "llm":
-        provider = _resolve_docs_provider(
-            repo_path,
-            provider_name or primary_cfg.get("provider"),
-            model or primary_cfg.get("model"),
-        )
-        if provider is None:
-            docs_mode = "deterministic"
+        provider = _resolve_docs_provider(repo_path, primary_cfg, provider_name, model)
+        docs_mode = "llm" if provider is not None else "deterministic"
 
     ensure_repowise_dir(repo_path)
     _inherit_distill_verdict(repo_path, primary_cfg)
 
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
-
-    resolved_commit_limit = int(commit_limit) if commit_limit else _DEFAULT_COMMIT_LIMIT
-    try:
-        index = _index_added_repo(repo_path, resolved_commit_limit, exclude_patterns)
-        result = index.result
-        console.print(
-            f"  [green]✓[/green] {result.file_count} files, {result.symbol_count:,} symbols"
-        )
-    except Exception as exc:
-        warn(f"Indexing failed for '{alias}': {exc}")
+    ctx = _added_repo_ctx(provider, ws_config, primary_cfg, concurrency=concurrency, save_key=save_key)
+    index = _index_added_repo(repo_path, alias, ctx)
+    if index is None:
         return
+    docs = _RepoDocs(docs_mode=docs_mode, skip_reason=docs_skip_reason)
+    _document_added_repo(repo_path, ctx, index, docs)
+    _save_added_repo_config(repo_path, ctx, primary_cfg)
+    head, state = _save_added_repo_state(repo_path, ctx, index, docs)
+    _record_in_workspace(ws_root, ws_config, alias, head)
+    _note_missing_docs(alias, state, docs.skip_reason)
 
-    generated_pages: list = []
-    resolved_reasoning = resolve_reasoning(config=primary_cfg)
-    if docs_mode != "none":
-        generated_pages, error = _build_added_repo_docs(
+
+def _document_added_repo(repo_path: Path, ctx: Any, index: Any, docs: Any) -> None:
+    """Build the documentation *docs* asks for into the index result; never raises."""
+    pages: list[Any] = []
+    if docs.docs_mode != "none":
+        pages, error = _build_added_repo_docs(repo_path, ctx)
+        if error is not None:
+            docs.skip_reason = error
+            # A model run keeps its provider state so `update --docs` retries it.
+            if ctx.provider is None:
+                docs.docs_mode = "none"
+    index.result.generated_pages = pages
+    docs.pages_generated = len(pages)
+
+
+def _build_added_repo_docs(repo_path: Path, ctx: Any) -> tuple[list[Any], str | None]:
+    """Generate the added repo's documentation as ``(pages, error)``; never raises."""
+    provider = ctx.provider
+    try:
+        pages = _generate_docs_for_added_repo(
             repo_path=repo_path,
             provider=provider,
-            embedder_name=embedder_name,
-            concurrency=concurrency,
-            reasoning=resolved_reasoning,
-            exclude_patterns=exclude_patterns,
+            concurrency=ctx.concurrency,
+            reasoning=ctx.resolved_reasoning,
+            exclude_patterns=ctx.exclude_patterns,
         )
-        if error is not None:
-            docs_skip_reason = error
-            # A model run keeps its provider state so `update --docs` retries it.
-            if provider is None:
-                docs_mode = "none"
-    result.generated_pages = generated_pages
-
-    # Persist provider settings into the added repo's config.yaml so future
-    # `repowise update` runs don't have to re-prompt.
-    if provider is not None:
-        save_config(
-            repo_path,
-            provider.provider_name,
-            provider.model_name,
-            embedder_name,
-            exclude_patterns=exclude_patterns or None,
-            commit_limit=int(commit_limit) if commit_limit else None,
-            reasoning=resolved_reasoning,
-            save_key=save_key,
-        )
-
-    ctx = _added_repo_ctx(
-        provider,
-        ws_config,
-        exclude_patterns,
-        concurrency=concurrency,
-        reasoning=resolved_reasoning,
-        commit_limit=resolved_commit_limit,
-        save_key=save_key,
-    )
-    head, state = _save_added_repo_state(repo_path, ctx, index, docs_mode)
-
-    _record_in_workspace(ws_root, ws_config, alias, head)
-
-    # Honest completion notice — exact remediation command for the
-    # docs-skipped case.
-    if resolve_docs_mode(state) == "none":
-        reason = docs_skip_reason or "docs disabled"
-        console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
-        console.print(
-            f"  Run [bold]{fast_to_full_command(alias)}[/bold] to build its documentation."
-        )
-
-
-def _build_added_repo_docs(*, provider: object | None, **kwargs: object) -> tuple[list, str | None]:
-    """Generate the added repo's documentation as ``(pages, error)``; never raises."""
-    try:
-        pages = _generate_docs_for_added_repo(provider=provider, **kwargs)  # type: ignore[arg-type]
     except Exception as exc:
         console.print(f"  [yellow]Documentation failed: {exc}[/yellow]")
         return [], f"generation error: {exc}"
@@ -227,6 +184,34 @@ def _build_added_repo_docs(*, provider: object | None, **kwargs: object) -> tupl
     )
     console.print(f"  [green]✓[/green] Documentation: {len(pages)} pages, {source}")
     return pages, None
+
+
+def _save_added_repo_config(repo_path: Path, ctx: Any, primary_cfg: dict) -> None:
+    """Save the model settings into config.yaml when a model ran, so `update` need not ask."""
+    if ctx.provider is None:
+        return
+    from repowise.cli.helpers import save_config
+
+    commit_limit = primary_cfg.get("commit_limit")
+    save_config(
+        repo_path,
+        ctx.provider.provider_name,
+        ctx.provider.model_name,
+        primary_cfg.get("embedder", "mock"),
+        exclude_patterns=ctx.exclude_patterns or None,
+        commit_limit=int(commit_limit) if commit_limit else None,
+        reasoning=ctx.resolved_reasoning,
+        save_key=ctx.save_key,
+    )
+
+
+def _note_missing_docs(alias: str, state: dict, skip_reason: str | None) -> None:
+    """Honest completion notice, with the exact command, when no docs were built."""
+    if resolve_docs_mode(state) != "none":
+        return
+    reason = skip_reason or "docs disabled"
+    console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
+    console.print(f"  Run [bold]{fast_to_full_command(alias)}[/bold] to build its documentation.")
 
 
 def _load_primary_config(
@@ -250,17 +235,22 @@ def _load_primary_config(
 
 
 def _resolve_docs_provider(
-    repo_path: Path, provider_name: str | None, model: str | None
+    repo_path: Path, primary_cfg: dict, provider_name: str | None, model: str | None
 ) -> object | None:
     """The model provider, or None (with a notice) when it does not resolve.
 
-    The caller then builds the documentation from code rather than leave the
+    An unset *provider_name* or *model* falls back to the primary repo's. On
+    None the caller builds the documentation from code rather than leave the
     repo with none.
     """
     from repowise.cli.helpers import resolve_provider
 
     try:
-        provider = resolve_provider(provider_name, model, repo_path=repo_path)
+        provider = resolve_provider(
+            provider_name or primary_cfg.get("provider"),
+            model or primary_cfg.get("model"),
+            repo_path=repo_path,
+        )
     except Exception as exc:
         console.print(
             f"  [yellow]Provider unavailable ({exc}); building documentation from code.[/yellow]"
@@ -273,8 +263,8 @@ def _resolve_docs_provider(
     return provider
 
 
-def _index_added_repo(repo_path: Path, commit_limit: int, exclude_patterns: list[str]) -> Any:
-    """Full-index the repo, returning init's per-repo ``_RepoIndex``.
+def _index_added_repo(repo_path: Path, alias: str, ctx: Any) -> Any:
+    """Full-index the repo into init's per-repo ``_RepoIndex``; None (warned) on failure.
 
     Shared full-index step (run pipeline, persist, export the curated KG
     artifact so doc generation can load curated module grouping) — the same
@@ -286,31 +276,39 @@ def _index_added_repo(repo_path: Path, commit_limit: int, exclude_patterns: list
     from repowise.core.pipeline.full_index import index_repo_full
 
     recorder = PhaseTimingRecorder()
-    result = run_async(
-        index_repo_full(
-            repo_path,
-            commit_depth=commit_limit,
-            exclude_patterns=exclude_patterns,
-            progress=recorder,
+    try:
+        result = run_async(
+            index_repo_full(
+                repo_path,
+                commit_depth=ctx.resolved_commit_limit,
+                exclude_patterns=ctx.exclude_patterns,
+                progress=recorder,
+            )
         )
-    )
+    except Exception as exc:
+        warn(f"Indexing failed for '{alias}': {exc}")
+        return None
+    console.print(f"  [green]✓[/green] {result.file_count} files, {result.symbol_count:,} symbols")
     return _RepoIndex(result=result, callback=recorder, provider=None)
 
 
 def _added_repo_ctx(
     provider: object | None,
     ws_config: WorkspaceConfig,  # type: ignore[name-defined]
-    exclude_patterns: list[str],
+    primary_cfg: dict,
     *,
     concurrency: int,
-    reasoning: str,
-    commit_limit: int,
     save_key: bool,
 ) -> Any:
-    """Workspace init's run settings for this one repo, so its state is init's."""
+    """Workspace init's run settings for this one repo, so its state is init's.
+
+    Exclude patterns, reasoning and the commit limit come from the primary repo.
+    """
     from repowise.cli.commands.init_cmd.workspace import _WorkspaceCtx
     from repowise.core.generation.styles import DEFAULT_STYLE
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 
+    commit_limit = primary_cfg.get("commit_limit")
     return _WorkspaceCtx(
         provider=provider,
         ws_config=ws_config,
@@ -320,7 +318,7 @@ def _added_repo_ctx(
         force=False,
         follow_renames=False,
         include_submodules=False,
-        exclude_patterns=exclude_patterns,
+        exclude_patterns=list(primary_cfg.get("exclude_patterns") or []),
         skip_tests=False,
         skip_infra=False,
         concurrency=concurrency,
@@ -330,29 +328,27 @@ def _added_repo_ctx(
         onboarding=True,
         wiki_style=DEFAULT_STYLE,
         language="en",
-        resolved_reasoning=reasoning,
+        resolved_reasoning=resolve_reasoning(config=primary_cfg),
         # Pages go to full-text search only; none are embedded.
         embedder_name_resolved=None,  # type: ignore[arg-type]
         embedder_was_requested=False,
-        resolved_commit_limit=commit_limit,
+        resolved_commit_limit=int(commit_limit) if commit_limit else _DEFAULT_COMMIT_LIMIT,
         save_key=save_key,
     )
 
 
 def _save_added_repo_state(
-    repo_path: Path, ctx: Any, index: Any, docs_mode: DocsMode
+    repo_path: Path, ctx: Any, index: Any, docs: Any
 ) -> tuple[str | None, dict]:
     """Write the state workspace init writes for a repo; returns ``(head, state)``.
 
     Called after the add's config writes, which the config fingerprint reads.
     """
     from repowise.cli.commands.init_cmd.persistence import stamp_fresh_index
-    from repowise.cli.commands.init_cmd.workspace import _repo_state, _RepoDocs
+    from repowise.cli.commands.init_cmd.workspace import _repo_state
     from repowise.cli.helpers import get_head_commit, save_state
 
     head = get_head_commit(repo_path)
-    pages = index.result.generated_pages or []
-    docs = _RepoDocs(docs_mode=docs_mode, pages_generated=len(pages))
     state = _repo_state(head, repo_path, ctx, index, docs, [])
     stamp_fresh_index(state, repo_path, index.result)
     # Freshly full-indexed, so stamp the terminal store format.
@@ -388,11 +384,10 @@ def _generate_docs_for_added_repo(
     *,
     repo_path: Path,
     provider: object | None,
-    embedder_name: str,
     concurrency: int,
     reasoning: str,
     exclude_patterns: list[str],
-) -> list:
+) -> list[Any]:
     """Generate wiki pages for a newly-added workspace repo; returns them.
 
     With no *provider* the pages are built from code: templates, no model call.
@@ -450,7 +445,7 @@ def _generate_docs_for_added_repo(
         provider, assembler, config, language=config.language, repo_path=repo_path
     )
 
-    async def _do() -> list:
+    async def _do() -> list[Any]:
         pages = await generator.generate_all(
             parsed_files,
             source_map,

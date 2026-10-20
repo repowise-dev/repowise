@@ -92,6 +92,14 @@ def test_docs_on_records_the_provider(ws, monkeypatch, capsys):
     assert state["provider"] == "fake"
     assert state["model"] == "fake-1"
     assert resolve_docs_mode(state) == "llm"
+    # The scope names the docs model; add mines no decisions, so lanes stay pending.
+    from repowise.core.decision_lanes import PENDING_DECISION_LANES_KEY, lanes_needing_model
+    from repowise.core.index_scope import resolve_index_scope
+
+    scope_provider = resolve_index_scope(state)["provider"]
+    assert (scope_provider["name"], scope_provider["model"]) == ("fake", "fake-1")
+    assert lanes_needing_model(ws_root / "added")
+    assert state[PENDING_DECISION_LANES_KEY] == list(lanes_needing_model(ws_root / "added"))
     (args, kwargs), = calls["save_config"]
     assert args[1:3] == ("fake", "fake-1")
     assert kwargs["save_key"] is False

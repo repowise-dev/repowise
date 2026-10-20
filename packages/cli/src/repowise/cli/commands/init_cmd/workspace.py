@@ -624,6 +624,8 @@ def _stamp_repo_scope(
     from repowise.core.index_scope import dropped_files_scope, stamp_index_scope
 
     result, repo_provider, docs_mode = index.result, index.provider, docs.docs_mode
+    # A model can write the docs without mining decisions (workspace add).
+    scope_provider = ctx.provider if repo_provider is None and docs_mode == "llm" else repo_provider
     scope_config = load_config(repo_path)
     configured_cap = resolve_max_file_pages(config=scope_config)
     scope_embedder = _scope_embedder(ctx, docs)
@@ -651,8 +653,8 @@ def _stamp_repo_scope(
             "skipped": ["generation"] if ctx.run_mode == "fast" else [],
         },
         provider={
-            "name": repo_provider.provider_name if repo_provider is not None else None,
-            "model": repo_provider.model_name if repo_provider is not None else None,
+            "name": scope_provider.provider_name if scope_provider is not None else None,
+            "model": scope_provider.model_name if scope_provider is not None else None,
             "embedder": scope_embedder,
             "reused": False,
             "model_cost_possible": docs_mode == "llm",
