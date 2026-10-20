@@ -167,3 +167,49 @@ def test_an_expanded_scope_ranks_by_the_walk_distance() -> None:
         "tests/z/test_near.py",
         "tests/a/test_core.py",
     ]
+
+
+_AGGREGATE = {"file_count": 40, "ingested_commit_sha": "old", "freshness": {"status": "stale"}}
+
+
+def test_stored_line_coverage_without_a_per_test_map_is_named() -> None:
+    impact = assemble_test_impact(
+        ["src/a.py"],
+        {},
+        {},
+        {"pair_count": 0},
+        repository_id="r1",
+        aggregate_summary=_AGGREGATE,
+    )
+    assert impact["coverage"]["status"] == "unavailable"
+    assert impact["coverage"]["reason"] == "no_per_test_map_aggregate_available"
+    assert impact["coverage"]["aggregate"] == {
+        "file_count": 40,
+        "ingested_commit": "old",
+        "freshness": "stale",
+    }
+
+
+def test_measured_rows_match_the_file_and_carry_a_stale_test_file() -> None:
+    impact = _assemble(stale_tests={"tests/test_a.py": "test_file_changed"})
+    measured, inferred = impact["recommendations"]
+    assert measured["evidence"][0]["match"] == "file"
+    assert (measured["stale"], measured["stale_reason"]) == (True, "test_file_changed")
+    # Only a measured row is a claim about a past run; an inferred one is read live.
+    assert (inferred["stale"], inferred["stale_reason"]) == (False, None)
+
+
+def test_a_row_the_graph_also_backs_is_never_stale() -> None:
+    impact = _assemble(stale_tests={"tests/test_b.py": "test_file_missing"})
+    assert not any(row["stale"] for row in impact["recommendations"])
+    both = assemble_test_impact(
+        ["src/a.py"],
+        {"src/a.py": [{"test_id": "tests/test_a.py::t", "test_file": "tests/test_a.py"}]},
+        {"src/a.py": {"tests": ["tests/test_a.py::t"], "via": "call-graph"}},
+        _SUMMARY,
+        repository_id="r1",
+        indexed_commit="head",
+        stale_tests={"tests/test_a.py": "test_file_changed"},
+    )
+    assert both["recommendations"][0]["bases"] == ["measured", "inferred"]
+    assert both["recommendations"][0]["stale"] is False

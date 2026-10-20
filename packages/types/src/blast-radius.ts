@@ -52,6 +52,8 @@ export interface TestImpactEvidence {
   basis: TestRecommendationBasis;
   source_file: string;
   via: "coverage-map" | "call-graph" | "import-graph";
+  /** `file` on measured evidence: a test ran the changed file, not necessarily its changed lines. */
+  match?: "file" | null;
   source_format: string | null;
 }
 
@@ -66,6 +68,9 @@ export interface TestRecommendation {
   bases: TestRecommendationBasis[];
   source_files: string[];
   evidence: TestImpactEvidence[];
+  /** A measured row whose test file is gone or changed since the coverage run. */
+  stale?: boolean;
+  stale_reason?: "test_file_missing" | "test_file_changed" | null;
 }
 
 export interface TestImpactResponse {
@@ -111,6 +116,12 @@ export interface TestImpactResponse {
       ingested_commit: string | null;
       indexed_commit: string | null;
     };
+    /** Stored per-file line coverage, when there is no per-test map. */
+    aggregate?: {
+      file_count: number;
+      ingested_commit: string | null;
+      freshness: "current" | "stale" | "unknown";
+    } | null;
   };
   inference: {
     status: "available" | "degraded";

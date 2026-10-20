@@ -4204,6 +4204,12 @@ export interface SymbolResponse {
   fix_count?: number | null;
 }
 
+export interface TestImpactAggregate {
+  file_count: number;
+  ingested_commit?: string | null;
+  freshness: "current" | "stale" | "unknown";
+}
+
 export interface TestImpactAnalysis {
   status: "available" | "partial" | "degraded";
   stale: boolean;
@@ -4225,12 +4231,14 @@ export interface TestImpactCoverage {
   ingested_at?: string | null;
   source_format?: string | null;
   freshness: TestImpactFreshness;
+  aggregate?: TestImpactAggregate | null;
 }
 
 export interface TestImpactEvidence {
   basis: "measured" | "inferred";
   source_file: string;
   via: "coverage-map" | "call-graph" | "import-graph";
+  match?: "file" | null;
   source_format?: string | null;
 }
 
@@ -4286,6 +4294,8 @@ export interface TestRecommendation {
   bases: ("measured" | "inferred")[];
   source_files: string[];
   evidence: TestImpactEvidence[];
+  stale?: boolean;
+  stale_reason?: "test_file_missing" | "test_file_changed" | null;
 }
 
 export interface TransitiveEntry {

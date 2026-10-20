@@ -66,7 +66,7 @@ def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
         if out.get("source_files") == sources:
             out.pop("source_files", None)
         out["evidence"] = [
-            {k: v for k, v in e.items() if not (k == "source_format" and v is None)}
+            {k: v for k, v in e.items() if not (k in {"source_format", "match"} and v is None)}
             if isinstance(e, dict)
             else e
             for e in evidence
@@ -75,6 +75,9 @@ def _project_recommendation(row: dict[str, Any]) -> dict[str, Any]:
         out.pop("bases", None)
     if out.get("test_file") in (out.get("test_id"), None):
         out.pop("test_file", None)
+    if not out.get("stale"):
+        out.pop("stale", None)
+        out.pop("stale_reason", None)
     return out
 
 
@@ -196,6 +199,11 @@ def missing_tests(
         }
         population = [path for path in changed_files if path in gap_paths]
         summary = f"Showing {len(population[:3])} of {len(population)} changed-file test gap(s)."
+    elif coverage.get("reason") == "no_per_test_map_aggregate_available":
+        summary = (
+            "No per-test coverage map; aggregate line coverage is available, but it "
+            "cannot say which test ran a file, so test gaps are not listed."
+        )
     else:
         summary = (
             f"Coverage analysis is {coverage.get('status', 'unavailable')}, so test gaps "
@@ -220,15 +228,18 @@ def coverage_fields(test_impact: dict[str, Any], coverage: dict[str, Any]) -> di
     if coverage.get("status", "unavailable") != "unavailable":
         return {
             "test_analysis": test_impact.get("analysis") or {"status": "unavailable"},
-            "coverage_analysis": coverage,
+            "coverage_analysis": {
+                k: v for k, v in coverage.items() if not (k == "aggregate" and v is None)
+            },
             "test_inference_analysis": test_impact.get("inference") or {"status": "unavailable"},
         }
-    return {
-        "coverage": {
-            "status": coverage.get("status") or "unavailable",
-            "reason": coverage.get("reason") or "no_per_test_coverage_map",
-        }
+    block = {
+        "status": coverage.get("status") or "unavailable",
+        "reason": coverage.get("reason") or "no_per_test_coverage_map",
     }
+    if coverage.get("aggregate"):
+        block["aggregate"] = coverage["aggregate"]
+    return {"coverage": block}
 
 
 def cross_repo_fields(relationships: dict[str, Any]) -> dict[str, Any]:
