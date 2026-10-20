@@ -34,6 +34,16 @@ MAX_TEST_COVERAGE_ROWS = 250_000
 _BULK_ROWS = 5_000
 
 
+def map_is_truncated(summary: dict[str, Any]) -> bool:
+    """Whether a :func:`get_test_coverage_summary` describes a map cut at its row cap.
+
+    A cut keeps whole tests up to and past the cap (:func:`cap_test_map`), so a
+    truncated map stores at least the cap's rows. Its readers take a file's
+    missing tests as unknown then, never as untested.
+    """
+    return summary.get("pair_count", 0) >= MAX_TEST_COVERAGE_ROWS
+
+
 @dataclass(frozen=True)
 class TestMapWrite:
     """What :func:`save_test_coverage` stored."""

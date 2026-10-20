@@ -22,6 +22,7 @@ from repowise.core.analysis.health.coverage.freshness import coverage_freshness
 from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET, rank_reaching
 from repowise.core.analysis.test_selection import expand_test_scopes
 from repowise.core.exclusion import is_excluded
+from repowise.core.persistence.crud.analysis.coverage_map import map_is_truncated
 from repowise.core.persistence.models import CoverageFile, Repository
 
 _BASIS_ORDER = {"measured": 0, "inferred": 1}
@@ -511,6 +512,11 @@ def assemble_test_impact(
             if aggregate_summary
             else "no_per_test_coverage_map"
         )
+    elif map_is_truncated(summary):
+        # Whole tests were cut at the row cap: a file without measured tests
+        # may have had them, so its gaps are withheld rather than reported.
+        coverage_status = "degraded"
+        coverage_reason = "per_test_coverage_map_truncated"
     elif 0 < matched_files < len(changed):
         coverage_status = "partial"
         coverage_reason = "coverage_map_matches_only_part_of_change"

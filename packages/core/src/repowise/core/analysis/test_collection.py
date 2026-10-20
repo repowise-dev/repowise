@@ -247,7 +247,7 @@ async def collect(
     lets that narrowing read the modules a conftest takes names from.
     """
     from ..persistence.crud import get_health_metrics, get_test_coverage_summary
-    from ..persistence.crud.analysis.coverage_map import MAX_TEST_COVERAGE_ROWS
+    from ..persistence.crud.analysis.coverage_map import map_is_truncated
 
     out = empty_result(len(change.files) + len(change.deleted))
     if not out["changed_files"]:
@@ -256,7 +256,7 @@ async def collect(
 
     summary = await get_test_coverage_summary(session, repo_id)
     out["map_empty"] = summary.get("pair_count", 0) == 0
-    out["map_truncated"] = summary.get("pair_count", 0) >= MAX_TEST_COVERAGE_ROWS
+    out["map_truncated"] = map_is_truncated(summary)
     out["measured_commit"] = measured = summary.get("ingested_commit_sha")
     out["map_current"] = out["map_empty"] or measured in {change.base, change.head} - {None}
 
