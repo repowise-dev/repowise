@@ -282,24 +282,6 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     if total < 2:
         for meta in code_metas:
             meta["churn_percentile"] = 0.0
-    elif total == 2:
-        keys = [
-            (
-                float(m.get("temporal_hotspot_score") or 0.0),
-                int(m.get("commit_count_90d") or 0),
-            )
-            for m in code_metas
-        ]
-        if keys[0] == keys[1]:
-            for meta in code_metas:
-                meta["churn_percentile"] = 0.0
-        else:
-            min_k = min(keys)
-            for meta, key in zip(code_metas, keys, strict=True):
-                churn_pct = 0.0 if key == min_k else 0.5
-                meta["churn_percentile"] = churn_pct
-                if churn_pct >= 0.75 and meets_hotspot_floors(meta):
-                    meta["is_hotspot"] = True
     else:
         # Group keys to mirror SQL PERCENT_RANK() with tie-awareness:
         # (RANK() - 1) / (total - 1)
