@@ -13,6 +13,7 @@ import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
 import { useChatDockHidden } from "./use-chat-dock-hidden";
 import { config, setChatDockHidden } from "@/lib/config";
+import { useTranslations } from "next-intl";
 
 // Sigma's worst-case bottom-right stack is ~197px tall (layout status plus
 // five controls and spacing). Keep a small measured clearance above it.
@@ -63,6 +64,7 @@ export function RepositoryChatDock() {
 type RepositoryChatValue = ReturnType<typeof useRepositoryChat>;
 
 function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
+  const t = useTranslations("chat");
   const router = useRouter();
   const searchParams = useSearchParams();
   // Read after mount so SSR and the first client render agree.
@@ -118,17 +120,20 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
       )}
       {...(collisionInset ? { collisionInset } : {})}
       onDismiss={() => setChatDockHidden(true)}
+      unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
       sendDisabledReason={
         <span>
-          No chat provider is configured. Add an API key in{" "}
-          <Link
-            href="/settings"
-            className="text-[var(--color-accent-primary)] hover:underline"
-          >
-            settings
-          </Link>
-          .
+          {t.rich("noProviderShort", {
+            link: (chunks) => (
+              <Link
+                href="/settings"
+                className="text-[var(--color-accent-primary)] hover:underline"
+              >
+                {chunks}
+              </Link>
+            ),
+          })}
         </span>
       }
       modelSelectorSlot={<ModelSelector repoId={chat.repoId} activeProvider={chat.selectedProvider} activeModel={chat.selectedModel} onSelect={chat.selectModel} />}

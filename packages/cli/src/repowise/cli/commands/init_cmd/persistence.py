@@ -27,6 +27,8 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.index_scope import (
@@ -34,6 +36,7 @@ from repowise.core.index_scope import (
     file_page_scope,
     stamp_index_scope,
 )
+from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.repo_config import config_dependency_fingerprints
 
 logger = structlog.get_logger(__name__)
@@ -139,7 +142,12 @@ async def persist_result(
     """
     from datetime import UTC, datetime
 
-    from repowise.core.persistence import FullTextSearch, get_session, upsert_repository
+    from repowise.core.persistence import (
+        FullTextSearch,
+        get_session,
+        refresh_planner_stats,
+        upsert_repository,
+    )
     from repowise.core.persistence.crud import upsert_generation_job
     from repowise.core.pipeline import (
         persist_analysis,
@@ -169,6 +177,7 @@ async def persist_result(
             session,
             name=result.repo_name,
             local_path=str(repo_path),
+            stamp_head=True,
         )
         # Persist the detected tech stack into the repository's settings
         # blob. Merge into any pre-existing settings so we don't clobber
@@ -294,6 +303,8 @@ async def persist_result(
         if result.generated_pages:
             await ledger.mark_completed(ResumePhase.GENERATION)
 
+    with timed(timings, "persist.planner_stats"):
+        await refresh_planner_stats(engine)
     await engine.dispose()
     # Closed here rather than after the indexing loop: the preserved-page
     # backfill and the ledger stamp are persistence too, and a phase that
@@ -317,6 +328,45 @@ def git_tier_for_run_mode(run_mode: str) -> str:
     return "essential" if run_mode == "fast" else "full"
 
 
+#: The ``index_scope`` sections that describe documentation.
+_DOCS_SCOPE_KEYS = ("content_provenance", "file_pages", "provider", "search")
+
+
+def keep_prior_documentation(
+    state: dict[str, Any], prior_state: dict[str, Any], run_mode: str
+) -> None:
+    """Restore the documentation stamps a fast run would otherwise clear from *state*.
+
+    Fast mode writes and removes no pages, so over an index that has them the
+    pages stay and so must what state says about them. The git tier stays
+    this run's: fast re-indexed git at the essential tier.
+    """
+    from repowise.core.docs_mode import resolve_docs_mode
+
+    prior_mode = resolve_docs_mode(prior_state)
+    if run_mode != "fast" or prior_mode == "none":
+        return
+    state.update(docs_mode_state_fields(prior_mode))
+    state["total_pages"] = prior_state.get("total_pages", 0)
+    for key in ("provider", "model"):
+        if prior_state.get(key):
+            state[key] = prior_state[key]
+    _restore_docs_scope(state["index_scope"], prior_state, prior_mode)
+
+
+def _restore_docs_scope(scope: dict[str, Any], prior_state: dict[str, Any], prior_mode: str) -> None:
+    """Put the prior run's documentation sections back into this run's *scope*."""
+    from repowise.core.index_scope import resolve_index_scope
+
+    prior_scope = resolve_index_scope(prior_state)
+    for key in _DOCS_SCOPE_KEYS:
+        scope[key] = prior_scope[key]
+    if scope["content_provenance"] in ("none", "unknown"):
+        # A state older than index_scope records only the docs mode.
+        scope["content_provenance"] = "model" if prior_mode == "llm" else "template"
+    scope["analysis"]["skipped"] = [s for s in scope["analysis"]["skipped"] if s != "generation"]
+
+
 def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) -> str:
     """On ``--resume``, continue the git tier the prior run used.
 
@@ -338,10 +388,15 @@ def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) 
 
 
 def apply_git_history_coverage_state(state: dict[str, Any], result: Any) -> None:
-    """Replace achieved Git coverage, clearing stale data when unavailable."""
+    """Replace achieved Git coverage, clearing stale data when unavailable.
+
+    A run that walked git also wrote every row under the current history
+    rules, so it stamps their version and the next update does not walk again.
+    """
     summary = getattr(result, "git_summary", None)
     if summary is None:
         return
+    state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     coverage = getattr(summary, "history_coverage", None)
     if coverage is None:
         state.pop("git_history_coverage", None)
@@ -357,6 +412,7 @@ def _stamp_full_init_scope(
     resolved_commit_limit: int,
     max_file_pages: int | None,
     embedder_name_resolved: str,
+    repo_path: Path,
 ) -> None:
     """Attach the canonical scope receipt for a successful model-backed init."""
     from repowise.core.generation.selection import count_documentable_files
@@ -372,7 +428,7 @@ def _stamp_full_init_scope(
         )
     else:
         pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
-    from repowise.cli.providers import semantic_search_status
+    from repowise.cli.providers import semantic_search_command, semantic_search_status
 
     semantic = semantic_search_status(
         embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
@@ -397,7 +453,11 @@ def _stamp_full_init_scope(
         search={
             "full_text": "available",
             "semantic": semantic,
-            "next_command": "repowise reindex" if semantic == "unavailable" else None,
+            "next_command": (
+                semantic_search_command(repo_path, embedder_name_resolved)
+                if semantic == "unavailable"
+                else None
+            ),
         },
         upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
     )
@@ -458,6 +518,8 @@ def save_full_state_and_config(
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
     apply_git_history_coverage_state(state, result)
+    # The docs model ran every decision lane, so none is left for a later run.
+    record_decision_lanes(state, repo_path, ran_with_model=True)
     _stamp_full_init_scope(
         state,
         result,
@@ -465,6 +527,7 @@ def save_full_state_and_config(
         resolved_commit_limit=resolved_commit_limit,
         max_file_pages=max_file_pages,
         embedder_name_resolved=embedder_name_resolved,
+        repo_path=repo_path,
     )
     # Same pattern as git_tier: `repowise update` reads this back so its
     # graph rebuild keeps the init run's submodule boundary semantics.
@@ -525,6 +588,15 @@ def save_full_state_and_config(
     # tracking it here — otherwise a fresh install carries no stamp and the
     # first analyzer change after it cannot tell it needs a re-score.
     state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    # Same reasoning for the security scanner (#3072): this run just scanned
+    # every file, so start tracking its version here too.
+    state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    # The pages were just rendered by this release's structural renderer.
+    # Unstamped, the first update would read the index as pre-stamp and
+    # re-render the whole wiki it had only just written.
+    from repowise.cli.commands.update_cmd.command import _current_renderer_fingerprint
+
+    state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
     # This run just scored every file, so the periodic re-score cadence starts
     # now. Without the stamp the gate reads "never re-scored" and the very next
     # update re-scores the whole repo that init had only just finished scoring.

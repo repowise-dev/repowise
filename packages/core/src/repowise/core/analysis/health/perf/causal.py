@@ -17,6 +17,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
 from repowise.core.code_origin import path_origin
@@ -100,6 +101,25 @@ def execution_context(file_path: str) -> ExecutionContext:
     normalized = file_path.replace("\\", "/").lower()
     if context in ("production", "unknown") and "/cli/" in f"/{normalized}/":
         return "tooling"
+    return context
+
+
+def settled_context(
+    context: ExecutionContext, files: Iterable[str], origins: Mapping[str, str | None]
+) -> ExecutionContext:
+    """The context a cause is stored and queued in; never a kernel input.
+
+    ``unknown`` under a directory is an example, demo or docs token somewhere
+    in the path, and a JVM package (``com/example/...``) matches one. The
+    stored ``code_origin`` read the file and reads those tokens near the
+    module root only, so its ``production`` for every file settles it. A
+    root-level file stays ``unknown``.
+    """
+    if context != "unknown":
+        return context
+    paths = list(files)
+    if paths and all("/" in path and origins.get(path) == "production" for path in paths):
+        return "production"
     return context
 
 
@@ -291,6 +311,7 @@ __all__ = [
     "model_state",
     "opportunity_id_for_finding",
     "opportunity_id_model_version",
+    "settled_context",
     "shared_helper",
     "shared_path_suffix",
     "stable_id",

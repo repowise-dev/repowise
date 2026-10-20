@@ -52,8 +52,8 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     rows, summary = run_async(_fetch())
     if not rows:
         console.print(
-            "[yellow]No health snapshots yet. Run `repowise init` or `repowise health` "
-            "to populate history.[/yellow]"
+            "[yellow]No health snapshots yet. Run `repowise init` or `repowise health "
+            "--recompute` to populate history.[/yellow]"
         )
         return
 
@@ -92,7 +92,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     for r in rows:
         table.add_row(
             (r["taken_at"] or "—")[:19],
-            f"{r['hotspot_health']:.2f}",
+            f"{r['hotspot_health']:.2f}" if r["hotspot_health"] is not None else "—",
             f"{r['average_health']:.2f}",
             f"{r['worst_performer_score']:.2f}" if r["worst_performer_score"] is not None else "—",
             r["worst_performer_path"] or "—",

@@ -34,7 +34,15 @@ def _source_lines(source: bytes) -> list[str]:
     return lines
 
 
-def _is_docstring_stmt(node: Node) -> bool:
+def is_string_stmt(node: Node) -> bool:
+    """True for a bare string-literal statement (a docstring wherever it sits)."""
+    if node.type != "expression_statement":
+        return False
+    named = [c for c in node.children if c.is_named]
+    return len(named) == 1 and "string" in named[0].type
+
+
+def is_docstring_stmt(node: Node) -> bool:
     """True for a docstring: a bare string statement opening a function/class.
 
     A Python docstring is an ``expression_statement`` whose sole child is a
@@ -42,10 +50,7 @@ def _is_docstring_stmt(node: Node) -> bool:
     the leading position keeps a mid-body bare string (a rare no-op, but real
     source) counted, while the documentation block is excluded from NLOC.
     """
-    if node.type != "expression_statement":
-        return False
-    named = [c for c in node.children if c.is_named]
-    if len(named) != 1 or "string" not in named[0].type:
+    if not is_string_stmt(node):
         return False
     parent = node.parent
     if parent is None:
@@ -69,7 +74,7 @@ def _code_line_numbers(node: Node, lines: list[str], *, drop_docstrings: bool) -
         cur = stack.pop()
         if "comment" in cur.type:
             continue
-        if drop_docstrings and _is_docstring_stmt(cur):
+        if drop_docstrings and is_docstring_stmt(cur):
             continue
         if not cur.children and cur.start_byte < cur.end_byte:
             for line in range(cur.start_point[0], cur.end_point[0] + 1):

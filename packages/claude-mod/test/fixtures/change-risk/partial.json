@@ -59,7 +59,6 @@
   "fix_history": {
     "available": true,
     "density": 1.14,
-    "percentile": 72.5,
     "files": [
       {
         "path": "src/requests/utils.py",
@@ -92,12 +91,13 @@
     }
   },
   "risk_percentile": 40.2,
-  "review_priority": "moderate",
-  "classification": "Typical",
   "exclude_patterns": [],
   "is_fix": false,
   "impacted_tests": {
-    "status": "inferred",
+    "status": "selected",
+    "run_all": false,
+    "reasons": [],
+    "reasons_total": 0,
     "basis": "inferred",
     "map_present": false,
     "tests_to_run": [
@@ -107,13 +107,15 @@
     "tests_to_run_kind": "test_file",
     "total": 2,
     "truncated": false,
-    "line_coverage": {
-      "untested_changes": [],
-      "stale_test_candidates": [],
-      "covered": [],
-      "no_coverage_data": []
+    "always_run_total": 0,
+    "why": {
+      "tests/test_requests.py": "src/requests/_internal_utils.py changed (import-graph)",
+      "tests/test_utils.py": "src/requests/_internal_utils.py changed (import-graph)"
     },
-    "summary": "2 test file(s) reach the changed files in the graph. Inferred from the dependency graph, not measured. For the line-precise answer build the map with `coverage run --contexts=test` then `repowise coverage add`."
+    "basis_by_file": {
+      "src/requests/_internal_utils.py": "import-graph"
+    },
+    "summary": "2 test(s) to run for this change; the rest can be skipped."
   },
   "branch_overlap": {
     "base": "origin/main",
@@ -149,7 +151,7 @@
     "truncated": false,
     "summary": "2 of 6 open branches (6 exist) edit files this change also edits."
   },
-  "diff_shape": "Diff shape: bigger than 40% of this repo's recent commits. Size and spread, not danger. Mechanics: get_change_risk(include=['diagnostics']).",
+  "diff_shape": "Size and spread: 40th percentile of recent commits (diff size, not a bug predictor). The rank is a diff-size statistic: it barely beats churn alone and cannot rank danger. Mechanics: get_change_risk(include=['diagnostics']).",
   "_meta": {
     "contract_version": 2,
     "timing_ms": 2135.0,

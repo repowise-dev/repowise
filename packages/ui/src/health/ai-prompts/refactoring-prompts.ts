@@ -6,11 +6,14 @@ import type {
   RefactoringPlan,
 } from "@repowise-dev/types/refactoring";
 
-import { typeMeta } from "../../refactoring/meta";
+import { planBlurb, typeMeta } from "../../refactoring/meta";
+import { humanizeBiomarker } from "../../refactoring/opportunity";
 import { blastFiles } from "../../refactoring/types";
 import {
+  LINE_RULE_TEXT,
   planSourceLink,
   refactoringPlanSteps,
+  SCRIPT_RULE_TEXT,
   verifySubject,
 } from "./refactoring-plan-steps";
 import {
@@ -151,6 +154,11 @@ function planFacts(plan: RefactoringPlan, blurb: string): string {
 /**
  * Hand an agent ONE precomputed refactoring plan to execute and verify, with
  * its per-type steps, blast radius and completion contract.
+ *
+ * Fallback only: the server renders this prompt in core
+ * (`/refactoring/{id}/prompt`). Kept for a host talking to a server older than
+ * that route (the VS Code extension supports servers from 0.47); remove with
+ * the opportunity builder below once no supported server lacks it.
  */
 export function buildRefactoringPlanPrompt({
   plan,
@@ -172,7 +180,7 @@ export function buildRefactoringPlanPrompt({
     "",
     `## ${meta.label}${repoSuffix(repoName)}`,
     "",
-    planFacts(plan, meta.blurb),
+    planFacts(plan, planBlurb(plan)),
     "",
     "## The plan",
     "",
@@ -199,10 +207,10 @@ export interface BuildRefactoringOpportunityPromptOptions {
 function stepApplicabilityLine(step: OpportunityStep): string {
   const classification =
     step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment";
-  const reasons = step.applicability.reasons.map((r) => r.replace(/_/g, " ")).join("; ");
+  const reasons = step.applicability.reasons.map(humanizeBiomarker).join("; ");
   const unknowns = step.applicability.unknowns.length
     ? ` Not established: ${step.applicability.unknowns
-        .map((u) => u.replace(/_/g, " "))
+        .map(humanizeBiomarker)
         .join(", ")}.`
     : "";
   return `${classification}${reasons ? ` — ${reasons}` : ""}.${unknowns}`;
@@ -345,7 +353,7 @@ function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): st
     `Opportunity: \`${opportunity.opportunity_id}\``,
     `File: \`${opportunity.file_path}\``,
     opportunity.lead_biomarker
-      ? `Leading cause: ${opportunity.lead_biomarker.replace(/_/g, " ")}.`
+      ? `Leading cause: ${humanizeBiomarker(opportunity.lead_biomarker)}.`
       : null,
     `${opportunity.step_count} step${pluralS(opportunity.step_count)}: ${opportunity.mechanical_steps} mechanical, ${opportunity.judgment_steps} judgment.`,
     opportunity.recoverable_health > 0
@@ -359,7 +367,8 @@ function opportunityFacts(opportunity: RefactoringOpportunityDetailResolved): st
 /**
  * Hand an agent ONE composed refactoring opportunity: its ordered steps with the
  * mechanical/judgment split, evidence, validation and stable id. The multi-step
- * sibling of `buildRefactoringPlanPrompt`.
+ * sibling of `buildRefactoringPlanPrompt`, and a fallback the same way: the
+ * server renders it at `/refactoring/opportunities/{id}/prompt`.
  */
 export function buildRefactoringOpportunityPrompt({
   opportunity,
@@ -369,6 +378,15 @@ export function buildRefactoringOpportunityPrompt({
   const meta = typeMeta(opportunity.lead_refactoring_type || "");
   const others = opportunity.affected_files.filter((f) => f !== opportunity.file_path);
   const anyRelocated = opportunity.steps.some((step) => Boolean(step.relocated_by));
+  // Extract Method's apply rules, only when a step is one; find-by-text only
+  // when its plan carries anchors.
+  const plans = new Map(opportunity.plans.map((plan) => [plan.id, plan]));
+  const extracts = opportunity.steps
+    .filter((step) => step.refactoring_type === "extract_method")
+    .map((step) => plans.get(step.plan_id));
+  const anchored = extracts.some(
+    (plan) => Boolean(((plan?.plan ?? {}) as Record<string, unknown>).anchors),
+  );
 
   const constraintList = [
     "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
@@ -377,6 +395,8 @@ export function buildRefactoringOpportunityPrompt({
       ? "Where a step says to locate its symbol again, do that before touching it: an earlier step moves it, so the recorded path and lines go stale mid-run."
       : null,
     "A step marked Judgment has an unproven obligation. Read the real code and decide before applying it; do not treat it like a mechanical one.",
+    extracts.length > 0 ? SCRIPT_RULE_TEXT : null,
+    anchored ? LINE_RULE_TEXT : null,
     "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
     "If, after reading the real code, a step looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
     others.length > 0 ? `Keep these co-affected files consistent: ${codeList(others)}.` : null,

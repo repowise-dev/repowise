@@ -1,52 +1,84 @@
 "use client";
 
 import * as React from "react";
-import { Info, X } from "lucide-react";
-import { cn } from "../lib/cn";
+import { DismissibleNotice } from "./dismissible-notice";
 
 const STORAGE_PREFIX = "repowise:release-notice-dismissed:";
 
 export interface ReleaseNoticeProps {
   /** Stable id for this notice, e.g. `"health-scoring"`. Combined with
    *  `version` to key the dismissal, so a later release that changes the same
-   *  thing again shows its notice once more. */
-  id: string;
+   *  thing again shows its notice once more. Not needed when the host owns
+   *  dismissal through `onDismiss`. */
+  id?: string;
   /** The release this notice belongs to. Omit only if the notice is not tied
    *  to one, in which case dismissal is permanent. */
   version?: string | null;
+  /** Bold lead sentence, e.g. "Savings accounting has been upgraded." */
+  title?: React.ReactNode;
+  /** The body copy. */
   children: React.ReactNode;
+  /** The longer explanation, behind a "What changed" toggle. */
+  detail?: React.ReactNode;
+  /** The toggle's words, for hosts that localize. */
+  detailLabel?: string;
+  hideLabel?: string;
+  /** Optional link or disclosure, e.g. "See what changed". */
+  action?: React.ReactNode;
+  /** Host-owned dismissal (for example scoped per repository). When given the
+   *  notice stays visible until the host unmounts it and nothing is stored. */
+  onDismiss?: (() => void) | undefined;
+  dismissLabel?: string;
   className?: string;
 }
 
 /**
- * A one-time, dismissible "this changed in the release you just installed"
- * notice. Lives in the shared package so both the web app and hosted can show
- * it; the web app's `UpgradeBanner` does a different job (an upgrade is
- * *available*) and is not what this replaces.
+ * The one "this changed in the release you installed" announcement, used on
+ * every surface that explains a release-driven change. Warnings and status
+ * belong in `Callout`; an upgrade that is merely available is not this either
+ * (the web app's `UpgradeBanner` does that job).
+ *
+ * One line, so it does not outrank the page it sits on; the explanation opens
+ * in place. The visual is the shared {@link DismissibleNotice}; this owns only
+ * whether the reader has dismissed it.
  *
  * Dismissal is best-effort `localStorage`: blocked site data leaves the notice
  * showing rather than throwing, which is the right failure for something whose
  * purpose is to be read once.
  */
-export function ReleaseNotice({ id, version, children, className }: ReleaseNoticeProps) {
-  const storageKey = STORAGE_PREFIX + id + (version ? `:v${version}` : "");
+export function ReleaseNotice({
+  id,
+  version,
+  title,
+  children,
+  detail,
+  detailLabel = "What changed",
+  hideLabel = "Hide",
+  action,
+  onDismiss,
+  dismissLabel,
+  className,
+}: ReleaseNoticeProps) {
+  const storageKey = dismissalKey(id, version);
+  const hostOwned = !!onDismiss || !storageKey;
   // Start dismissed so it does not flash in before the stored answer is read.
-  const [dismissed, setDismissed] = React.useState(true);
+  const [dismissed, setDismissed] = React.useState(!hostOwned);
 
   React.useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (hostOwned || !storageKey) return;
     try {
       setDismissed(!!window.localStorage.getItem(storageKey));
     } catch {
       setDismissed(false);
     }
-  }, [storageKey]);
+  }, [hostOwned, storageKey]);
 
   if (dismissed) return null;
 
   const dismiss = () => {
+    if (onDismiss) return onDismiss();
     try {
-      window.localStorage.setItem(storageKey, "1");
+      if (storageKey) window.localStorage.setItem(storageKey, "1");
     } catch {
       /* localStorage unavailable - hide for this session only. */
     }
@@ -54,27 +86,51 @@ export function ReleaseNotice({ id, version, children, className }: ReleaseNotic
   };
 
   return (
-    <div
-      role="status"
-      className={cn(
-        "flex items-start gap-3 rounded-md border border-[var(--color-border-default)]",
-        "bg-[var(--color-bg-elevated)] px-4 py-3 text-sm",
-        className,
-      )}
+    <DismissibleNotice
+      tone="info"
+      onDismiss={dismiss}
+      {...(dismissLabel ? { dismissLabel } : {})}
+      {...(action ? { action } : {})}
+      {...(className ? { className } : {})}
     >
-      <Info
-        className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]"
-        aria-hidden="true"
-      />
-      <div className="flex-1 text-[var(--color-text-secondary)]">{children}</div>
-      <button
-        type="button"
-        onClick={dismiss}
-        aria-label="Dismiss"
-        className="rounded p-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
-      >
-        <X className="h-4 w-4" />
-      </button>
-    </div>
+      {renderBody(title, children, detail, detailLabel, hideLabel)}
+    </DismissibleNotice>
+  );
+}
+
+function dismissalKey(id: string | undefined, version: string | null | undefined): string | null {
+  return id ? STORAGE_PREFIX + id + (version ? `:v${version}` : "") : null;
+}
+
+function renderBody(
+  title: React.ReactNode,
+  children: React.ReactNode,
+  detail: React.ReactNode,
+  detailLabel: string,
+  hideLabel: string,
+) {
+  const lead = title ? (
+    <>
+      <span className="font-medium text-[var(--color-text-primary)]">{title}</span>{" "}
+    </>
+  ) : null;
+
+  return detail ? (
+    <details className="group/release">
+      <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+        {lead}
+        {children}{" "}
+        <span className="text-[var(--color-accent-primary)] underline-offset-2 hover:underline">
+          <span className="group-open/release:hidden">{detailLabel}</span>
+          <span className="hidden group-open/release:inline">{hideLabel}</span>
+        </span>
+      </summary>
+      <div className="mt-1.5">{detail}</div>
+    </details>
+  ) : (
+    <>
+      {lead}
+      {children}
+    </>
   );
 }

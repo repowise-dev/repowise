@@ -90,13 +90,20 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
     discrete = [
         item for item in candidates if row_field(item, "biomarker_type") not in continuous
     ]
+    # A function worth breaking up leads its file, the largest one first: worth
+    # is complexity removed, and impact cannot say so because a file's
+    # deduction is shared out. A CCN 279 brain method scored 0.37 and lost the
+    # lead to one 7-operator condition inside it at 0.98.
+    pool = discrete or candidates
+    break_up = _break_up_ccn(pool)
     # A total order: equal impacts are common (two biomarkers on one file can
     # quantise to the same deduction), and a bare ``max`` let input order pick
     # the lead, so two indexes of one tree disagreed. Severity breaks the tie
     # first; the rest only makes it stable.
     return min(
-        discrete or candidates,
+        pool,
         key=lambda item: (
+            -break_up.get(id(item), -1),
             -float(row_field(item, "health_impact") or 0.0),
             _severity_rank(row_field(item, "severity")),
             str(row_field(item, "biomarker_type") or ""),
@@ -104,6 +111,32 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
             str(row_field(item, "function_name") or ""),
         ),
     )
+
+
+def _break_up_ccn(findings: Sequence[Any]) -> dict[int, int]:
+    """The measured CCN of each size finding, by ``id``, whose function is worth
+    breaking up first by the shared rule (:func:`worth.low_priority`, at the
+    break-up bar). A function a constant-false flag switches off is left out."""
+    from .rows import field as row_field
+    from .worth import (
+        SIZE_MARKERS,
+        WORTH_MAGNITUDE,
+        by_function,
+        dormant,
+        low_priority,
+        measure,
+        worth_size,
+    )
+
+    sized = [f for f in findings if row_field(f, "biomarker_type") in SIZE_MARKERS]
+    out: dict[int, int] = {}
+    for rows in by_function(sized).values():
+        shape = measure(rows)
+        if dormant(shape) or worth_size(shape) < WORTH_MAGNITUDE:
+            continue
+        if low_priority(row_field(rows[0], "biomarker_type"), shape) is None:
+            out.update(dict.fromkeys((id(f) for f in rows), shape.get("ccn", 0)))
+    return out
 
 
 def _severity_rank(severity: Any) -> int:
@@ -238,3 +271,15 @@ class HealthReport:
     # against the merged stored set, and need this configuration to get there.
     # Typed ``Any`` for the same reason as ``refactoring_suggestions``.
     performance_plan_policy: Any | None = None
+    # ``execution_roles.ExecutionRoles`` over the whole graph, so the writer can
+    # restamp stored performance findings this run did not rescan. Typed ``Any``
+    # for the same reason as ``refactoring_suggestions``.
+    execution_roles: Any | None = None
+    # One dict per walked function symbol, for the ``function_facts`` store
+    # (``HealthAnalyzer._function_fact_rows``). None when there was no graph to
+    # key rows on: the writers then leave the stored rows alone.
+    function_facts: list[dict] | None = None
+    # Each function's nearest tests over the whole graph
+    # (``function_test_map.function_test_map``), restamped onto every stored
+    # row. None without a graph, like ``function_facts``.
+    function_tests: dict[str, tuple] | None = None

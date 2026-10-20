@@ -9,6 +9,7 @@ import type {
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
 } from "@repowise-dev/types/chat";
+import { VIEW_TOOLS, parseViewParts } from "@repowise-dev/api-client/views";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { toChatUiMessages } from "@/lib/chat/to-chat-ui-messages";
 
@@ -273,7 +274,8 @@ export function useChat(repoId: string) {
                           ...tc,
                           result: data,
                           summary: ev.summary,
-                          artifact: ev.artifact,
+                          // A view tool's receipt is not evidence; the view itself renders inline.
+                          ...(VIEW_TOOLS.has(ev.tool_name) ? {} : { artifact: ev.artifact }),
                           status: failed ? ("error" as const) : ("done" as const),
                         }
                       : tc,
@@ -281,8 +283,19 @@ export function useChat(repoId: string) {
                 };
               }
 
+              case "view": {
+                // Wire data: only a part that validates, once per id, renders.
+                const views = parseViewParts([...(m.views ?? []), ev.view]);
+                return views.length > (m.views?.length ?? 0) ? { ...m, views } : m;
+              }
+
               case "truncated":
                 return { ...m, truncated: true };
+
+              case "diagnostics":
+                return ev.unverified_figures.length
+                  ? { ...m, unverifiedFigures: ev.unverified_figures }
+                  : m;
 
               case "suggestions":
                 return { ...m, followUps: ev.suggestions };

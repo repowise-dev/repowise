@@ -43,13 +43,22 @@ still worth extracting but ranks ``medium``.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
+
+import structlog
 
 from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ..duplication.detector import clone_ranges, union_line_count
+from ..effort import effort_bucket
+from .graph_signals import defined_symbols
+from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
+from .reuse import find_reuse
+
+log = structlog.get_logger(__name__)
 
 # The biomarker this detector answers — the recovered impact is read off it.
 _SOURCE_BIOMARKER = "dry_violation"
@@ -130,8 +139,25 @@ _DECL_LINE = re.compile(
         | (async\s+)?(def|function|fn|func|class|interface|type|struct)\s+[\w<>]+\s*[(<{:]?\s*
         | (async\s+)?(def|function|fn|func|class|interface|type|struct)\s+[\w<>]+\s*
             \( (?: [^()] | \([^()]*\) )* \)      # its parameter list, and nothing past it
-            \s* (->[^:{;]*)? \s* [:{]? \s*     # a signature joined back whole
+            \s* (->[^:{;]*)? \s*               # a signature joined back whole,
+            (: \s* \.\.\. | [:{])? \s*          # or a stub whose whole body is `...`
         | @[\w.]+ \s* \(?                       # decorator / annotation
+    )$""",
+    re.VERBOSE,
+)
+# A declaration head whose parameter list is still open where the block ends: a
+# clone window can stop at the last parameter two signatures share, before the
+# closing `) -> T:` line. Only the parameters themselves may follow the `(`.
+_OPEN_DECL_HEAD = re.compile(
+    r"^\s*(async\s+)?(def|function|fn|func|class|interface)\s+[\w<>]+\s*\((?P<params>.*)$"
+)
+# One parameter: `name`, `name: type`, `name: type = default`, `*args`, `**kw`,
+# a bare `*` or `/`, an optional `name?: type`, or Go's `name type`.
+_PARAM = re.compile(
+    r"""^(
+        (\.\.\.)? \*{0,2} &? (mut\s+)? [\w$]+ \?? \s* (: [^=]*)? (= .+)?
+        | [\w$]+ \s+ [\w.*\[\]&]+
+        | [*/]
     )$""",
     re.VERBOSE,
 )
@@ -182,6 +208,50 @@ def _continuation_depth(line: str) -> int:
     return sum(bare.count(o) - bare.count(c) for o, c in ("()", "[]"))
 
 
+def _is_open_declaration_head(line: str) -> bool:
+    """True when *line* is a ``def``/``class``/... head cut off inside its
+    parameter list, with nothing but parameters after the ``(``.
+
+    Only a line still open at the end of the block qualifies, so a statement
+    folded into it by ``_logical_lines`` (``def f( emit(a)``) has to read as a
+    parameter to pass, and does not.
+    """
+    if _continuation_depth(line) <= 0:
+        return False
+    m = _OPEN_DECL_HEAD.match(line)
+    if m is None:
+        return False
+    params = _split_top_level(m.group("params"))
+    return all(_PARAM.match(p) for p in params if p)
+
+
+def _strip_trailing_comment(line: str) -> str:
+    """*line* without a trailing ``#``/``//`` comment; one inside a string stays."""
+    masked = _STRING_LITERAL.sub(lambda s: "_" * len(s.group(0)), line)
+    found = re.search(r"#|//", masked)
+    return line[: found.start()].rstrip() if found else line
+
+
+def _split_top_level(text: str) -> list[str]:
+    """*text* split on the commas outside any bracket or string, each piece
+    stripped. A string's contents are blanked first (``"a,b"`` -> ``""``), so
+    a comma or bracket in a default value is not read as syntax."""
+    text = _STRING_LITERAL.sub('""', text)
+    pieces: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append(text[start:i].strip())
+            start = i + 1
+    pieces.append(text[start:].strip())
+    return pieces
+
+
 def _code_lines(block: list[str]) -> list[str]:
     """*block* minus blanks and whole-line comments.
 
@@ -229,10 +299,14 @@ def _is_declaration_only(block: list[str]) -> bool:
     and the defect here is the advice, not the measurement. The block still
     counts as duplication; it just no longer produces a plan to extract it.
     """
-    lines = _logical_lines(_code_lines(block))
+    code = _code_lines(block)
+    lines = _logical_lines(code)
     if not lines:
         return True
-    for line in lines:
+    # Only the last logical line can still be open. It is read for parameters
+    # without its trailing comments, whose commas do not separate anything.
+    open_tail = _logical_lines([_strip_trailing_comment(c) for c in code])[-1]
+    for i, line in enumerate(lines):
         if _CONTROL_FLOW.search(line):
             return False
         if line.startswith(_IMPORT_PREFIXES) or line in ("(", ")", "):", "}", "];", "{"):
@@ -240,6 +314,8 @@ def _is_declaration_only(block: list[str]) -> bool:
         if _TABLE_DECL.match(line) or _DUNDER_ATTR.match(line):
             continue
         if _DECL_LINE.match(line):
+            continue
+        if i == len(lines) - 1 and _is_open_declaration_head(open_tail):
             continue
         # An assignment is a declaration only by what it assigns. A constant
         # RHS is inert either way; an annotated line may additionally use a
@@ -319,17 +395,7 @@ def _symbol_spans(graph: Any, file_path: str, cache: dict[str, list[tuple[int, i
     hit = cache.get(file_path)
     if hit is not None:
         return hit
-    spans: list[tuple[int, int]] = []
-    if graph is not None and file_path in graph:
-        for _u, target, data in graph.out_edges(file_path, data=True):
-            if data.get("edge_type") != "defines":
-                continue
-            node = graph.nodes[target]
-            if node.get("node_type") != "symbol" or node.get("kind") == "module":
-                continue
-            start, end = node.get("start_line"), node.get("end_line")
-            if isinstance(start, int) and isinstance(end, int) and end >= start:
-                spans.append((start, end))
+    spans = [(n["start_line"], n["end_line"]) for _id, n in defined_symbols(graph, file_path)]
     cache[file_path] = spans
     return spans
 
@@ -371,10 +437,12 @@ class ExtractHelperDetector(RefactoringDetector):
 
         impact_lookup = self._impact_for_dry_violation(ctx)
         spans_cache: dict[str, list[tuple[int, int]]] = {}
+        read = _cached_reader(ctx)
         out: list[RefactoringSuggestion] = []
         for block in blocks:
             suggestion = self._build_suggestion(ctx, block, impact_lookup, spans_cache)
             if suggestion is not None:
+                suggestion.plan.update(_reuse_fields(ctx, suggestion.plan["occurrences"], read))
                 out.append(suggestion)
 
         # Stable order: biggest recovery first, then — because dry_violation
@@ -431,10 +499,15 @@ class ExtractHelperDetector(RefactoringDetector):
         # then coalesce the overlapping windows the clone detector emits for one
         # physical block into a single site per region (without merging, the
         # same import/parse block reads as "5 sites" when it is really one).
-        # Clones are detected within a language, so every occurrence in a block
-        # shares ``ctx.language`` — which the ambiguous ``spec/`` rule needs.
+        # The clone index hashes token shapes across every language, so a site
+        # in another language family is dropped too: no shared helper can serve
+        # it. What is left shares ``ctx.language``'s family, which the
+        # ambiguous ``spec/`` rule needs.
         kept = [
-            o for o in block.occurrences if not _is_skippable_occurrence(o[0], ctx.language)
+            o
+            for o in block.occurrences
+            if same_language_family(ctx.file_path, o[0])
+            and not _is_skippable_occurrence(o[0], ctx.language)
         ]
         occurrences = [
             o
@@ -622,6 +695,39 @@ class ExtractHelperDetector(RefactoringDetector):
             if start <= f_end and end >= f_start and impact > best:
                 best = impact
         return best
+
+
+def _cached_reader(ctx: RefactoringContext) -> Callable[[str], list[str] | None] | None:
+    """``ctx.read_lines`` reading each file once per pass, this file from the
+    lines already held; None when no reader was provided."""
+    read_lines = ctx.read_lines
+    if read_lines is None:
+        return None
+    cache: dict[str, list[str] | None] = {ctx.file_path: ctx.source_lines}
+
+    def read(path: str) -> list[str] | None:
+        if path not in cache:
+            cache[path] = read_lines(path)
+        return cache[path]
+
+    return read
+
+
+def _reuse_fields(
+    ctx: RefactoringContext,
+    occurrences: list[dict[str, Any]],
+    read: Callable[[str], list[str] | None] | None,
+) -> dict[str, Any]:
+    """``{"reuse": ...}`` when one site already is a function the others can
+    call (no second copy of it is asked for), else ``{}``."""
+    if read is None:
+        return {}
+    sites = [(o["file"], o["line_start"], o["line_end"]) for o in occurrences]
+    verdict = find_reuse(ctx.graph, ctx.language, sites, read)
+    if verdict.refused:
+        # Counted in the log, not the plan: a refusal changes nothing it serves.
+        log.debug("extract_helper_reuse_refused", file=ctx.file_path, reason=verdict.refused)
+    return {"reuse": verdict.plan} if verdict.plan else {}
 
 
 def _cross_file_lines(ctx: RefactoringContext) -> int:

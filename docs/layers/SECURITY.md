@@ -1,15 +1,15 @@
 # Security signals
 
 Repowise records security signals while it indexes: matches from a registry of
-22 patterns over source text, plus a scan for security-relevant symbol names.
+25 patterns over source text, plus a scan for security-relevant symbol names.
 It also scans git history for leaked credentials, and gates pull requests on
 what a change adds.
 
-It is a pattern registry, not a security scanner. There is no taint analysis,
-no framework model and no dependency lookup. Run a real SAST tool and a secret
+It works as a pattern registry: it marks places to read, without taint analysis,
+framework models or dependency lookup. Run a SAST tool and a dedicated secret
 scanner alongside it.
 
-No LLM key, no network. Working-tree signals cost a regex pass during
+It needs no LLM key and no network. Working-tree signals cost a regex pass during
 indexing; the CI check needs only git.
 
 ## Quick start
@@ -33,24 +33,28 @@ repowise security check origin/main...HEAD     # CI gate on what a change adds
 ```
 
 From an agent, `get_risk(targets=["src/api/"])` includes a `security_signals`
-block. In the dashboard, findings are on the Security tab of the Code Health
-page, and over REST at `GET /api/repos/{repo_id}/security`.
+block, without the informational `security_sensitive_symbol` rows. In the
+dashboard, findings are on the Security tab of the Code Health page, and over REST
+at `GET /api/repos/{repo_id}/security`.
 
 ## Reading the results
 
 ### What the registry catches
 
-22 pattern kinds plus the symbol-name scan: 23 kinds in all, in three
+25 pattern kinds plus the symbol-name scan: 26 kinds in all, in three
 severities. Severity is fixed per kind, with one exception: a finding in test
 material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 `fixtures`, `__fixtures__`, `spec`, `specs`, `mock`, `mocks`, `__mocks__`,
-`example` or `examples`, is recorded at `low`. Nothing is scored or ranked.
+`example` or `examples`, is recorded at `low`. A non-secret finding in a
+script, tool, benchmark, migration or docs example is `low` too; a secret there
+keeps its severity. Nothing is scored or ranked. `security_sensitive_symbol` is
+informational: it marks where security code lives, not a problem.
 
 | Kind | Severity | Matches |
 |------|----------|---------|
 | `eval_call` | high | `eval(...)`, including a receiver chain (`vm.eval(`) |
-| `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execFile`, `execSync`) |
-| `pickle_loads` | high | `pickle.loads` |
+| `exec_call` | high | `exec(...)`. Outside Python, only a call through a name bound to `child_process` (`exec`, `execSync`). `execFile` runs no shell and does not fire |
+| `pickle_loads` | high | `pickle.loads`, except a round trip of an own object (`pickle.loads(pickle.dumps(x))`) |
 | `subprocess_shell_true` | high | `subprocess.*` with `shell=True`, also across lines |
 | `os_system` | high | `os.system` |
 | `hardcoded_password` | high | a quoted literal assigned to a name containing `password`, any case |
@@ -60,53 +64,44 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 | `slack_token` | high | `xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-` tokens |
 | `google_api_key` | high | `AIza` + 35 chars, not from inside a base64 run |
 | `stripe_key` | high | `sk_` or `rk_` then `live_`/`test_`/`prod_`. Publishable `pk_` keys do not fire |
+| `gitlab_token` | high | `glpat-` (classic and routable), `gldt-`, `glrt-`, `glptt-`, `gloas-`, `glimt-`, `glcbt-` and `GR1348941` runner registration tokens |
+| `azure_devops_pat` | high | the 84-char Azure DevOps PAT with `AZDO` at offset 76. The legacy 52-char PAT is only caught by `hardcoded_secret` |
+| `git_url_credentials` | high | a password in a git remote URL (`https://user:password@host/repo`): a GitHub, GitLab, Bitbucket or Azure DevOps host, or a path ending in `.git`. Database URLs, local and `example.*` hosts, `$VAR`/`${VAR}`/`%VAR%`/`<slot>` and word-like passwords do not fire |
 | `private_key_pem` | high | a `-----BEGIN ... PRIVATE KEY-----` header followed by a base64 body line (an escaped `\n` counts) |
 | `public_env_secret` | high | `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD` behind `NEXT_PUBLIC_` or `VITE_`, excluding `..._ANON_...` |
 | `new_function_call` | high | `new Function(...)` |
-| `fstring_sql` | med | a Python f-string with `SELECT` and an interpolation |
+| `fstring_sql` | med | a Python f-string query (`SELECT` with `FROM`) that interpolates a value after a comparison or `LIKE` (`WHERE id = {uid}`). A table, column, fragment or placeholder list cannot be bound, so interpolating one does not fire |
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `template_literal_sql` | med | a JS/TS template literal with `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
-| `tls_verify_false` | med | `verify = False` |
+| `tls_verify_false` | med | `verify=False` passed to an HTTP client call or set as `verify`, in a file that imports an HTTP client library (`requests`, `httpx`, `aiohttp`, `urllib3`, boto3). A call through a plain name must go through that import or a value built from it |
 | `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML`) assigned a non-literal |
-| `weak_hash` | low | the words `md5` or `sha1` |
-| `security_sensitive_symbol` | low | a symbol named with `auth`, `token`, `password`, `jwt`, `session` or `crypto` |
+| `weak_hash` | low | MD5 or SHA-1 in use in code: a call (`hashlib.md5(`), a type (`MD5.Create()`) or the algorithm named to a hashing call (`createHash("sha1")`). A call passing `usedforsecurity=False` does not fire |
+| `security_sensitive_symbol` | low | a symbol named `auth`, `password`, `jwt` or `crypto`. A bare `session` or `token` is usually a database session or a lexer token and does not fire |
 
-`security_sensitive_symbol` is informational: it marks where security code
-lives, not a problem.
-
-The eight **secret kinds** are `hardcoded_password`, `hardcoded_secret` and
-the six vendor shapes (AWS, GitHub, Slack, Google, Stripe, PEM). History mode
-and the in-change commit scan report only these by default.
+The eleven secret kinds are `hardcoded_password`, `hardcoded_secret`,
+`git_url_credentials` and the eight vendor shapes (AWS, GitHub, GitLab, Azure
+DevOps, Slack, Google, Stripe, PEM). History mode and the in-change commit scan
+report only these by default.
 
 ### What fires and what does not
 
-- **`eval` and `exec` in Python** are found by walking the AST, so a match is
-  a real call. Other languages use source with comments and strings masked out.
-- **Text describing code is not code.** `pickle_loads`, `os_system`,
-  `subprocess_shell_true` and `new_function_call` match over masked source, so a
-  comment naming the call does not fire. The keyword secret kinds need the name
-  to be code, so `password = "..."` in a doctest does not fire.
-- **Vendor key shapes match anywhere**, comments included: a real key in a
-  comment is still a leak.
-- **Prose files** (`.md`, `.mdx`, `.rst`, `.txt`, `.adoc`) are scanned for the
-  secret kinds only.
-- **Placeholders are skipped**: a keyword value that is elided or templated
-  (`...`, `<your key>`, `xxx`, `example`, `placeholder`, `dummy`, `fake`,
-  `changeme`, `{{ }}`, `${}`), shorter than eight characters, a short
-  single-case word, or a snake_case key name. A value a vendor kind already
-  reports is not reported twice.
-- **`weak_hash`, the SQL kinds, the TLS kinds and `unsafe_inner_html`** run on
-  raw source, comments included.
+Python `eval` and `exec` are found from the AST. Most other kinds match over
+source with comments and strings masked out, so text describing a call does not
+fire. Vendor key shapes match anywhere, comments included: a real key in a comment
+is still a leak. Prose, generated and vendored files are scanned for the secret
+kinds only, and placeholder values (`<your key>`, `changeme`, `${}`) are skipped.
+The full rules per kind are in
+[architecture/security.md](../architecture/security.md#matching-rules).
 
 ### Working tree versus history
 
-**Working tree** runs during `repowise init` and `repowise update`. Rows have
-an empty `commit_sha`. `repowise security scan` without `--history` only
+The working-tree scan runs during `repowise init` and `repowise update`. Rows
+have an empty `commit_sha`. `repowise security scan` without `--history` only
 prints a hint, since indexing already did this.
 
-**History** runs on `repowise security scan --history` and walks every tracked
-revision. Rows carry the SHA and author date of the commit that introduced the
+The history scan runs on `repowise security scan --history` and walks every
+tracked revision. Rows carry the SHA and author date of the commit that introduced the
 match. This finds a credential committed in March and removed in April: absent
 from HEAD, present in every clone. By default it reports only the secret kinds.
 A committed secret stays valid until rotated; an `eval` that was later removed
@@ -139,7 +134,7 @@ its first four characters and `****`. The raw value is never stored.
 2. High working-tree kinds, as places to read. The layer found a call; you
    decide whether it is reachable.
 3. `security_sensitive_symbol`, as a map of where auth and crypto code lives.
-4. Low findings last. `weak_hash` is a word match.
+4. Low findings last. `weak_hash` cannot tell a checksum from a password hash.
 
 A low finding count means the registry did not match. On most repos, in most
 languages, that is all it means.
@@ -157,10 +152,10 @@ repowise security check --format sarif > security.sarif
 
 It judges what the change adds:
 
-- **At the head**, every touched file is scanned, and a finding counts only
+- At the head, every touched file is scanned, and a finding counts only
   when a line it spans was added or edited. In documentation files only the
   secret kinds count.
-- **Inside the change**, every non-merge commit in the range is scanned for the
+- Inside the change, every non-merge commit in the range is scanned for the
   secret kinds. A key added in one commit and deleted in the next is reported
   with the commit that added it.
 
@@ -186,19 +181,38 @@ upload are in [Repowise in CI](../start/CI.md).
 Put `repowise-security-ignore` on the finding's own line in any comment
 syntax; `repowise-security-ignore: aws_access_key` silences only the kinds it
 lists. There is no next-line or whole-file form. A silenced finding never fails
-the gate and is still reported as suppressed. Exact rules are in the
-[CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
+the gate and is still reported there as suppressed. The scan that indexing
+stores leaves it out, so it does not reach the dashboard, `get_risk` or REST.
+Exact rules are in the [CLI reference](../reference/CLI_REFERENCE.md#repowise-security-check-revspec).
+
+The scanner also honours other scanners' comments: `# pragma: allowlist secret`
+on the finding's line, or `# pragma: allowlist nextline secret` on the line
+above it (detect-secrets), and `gitleaks:allow`, `trufflehog:ignore`, `nosec`
+(Bandit, gosec) and `noqa: S105`/`S106`/`S107` (Ruff) on the finding's line
+(`//` and `/*` comments work too). Unlike the Repowise gate-only marker,
+allowlisted secret findings are excluded from the stored scan and the gate; they
+do not appear in the gate's suppressed count. Non-secret findings on the same line
+still report. A marker inside a string does not silence a finding.
+
+### A repository's `.gitleaks.toml`
+
+A path the root `.gitleaks.toml` allowlists has no secret findings, in the
+stored scan, the history scan or the gate. The scanner reads the `paths` of
+`[allowlist]` and `[[allowlists]]` as gitleaks matches them, plus gitleaks'
+default allowlist paths under `[extend] useDefault = true`. Entries scoped by
+`targetRules`, or by `condition = "AND"` with `regexes`, `stopwords` or
+`commits`, are not applied. The file is read from the checked-out tree, as
+gitleaks does, so a change's own allowlist entries apply to it.
 
 ### Baselines
 
 `--write-baseline FILE` records the change's findings in a committed JSON file
-and exits 0; `--baseline FILE` accepts what it lists, so only new findings
-fail. An entry is keyed on file, kind and masked line, so it survives line
-shifts. Vendor shapes also key on a one-way hash of the matched text, so a new
-key on an identical line is a new finding. Keyword kinds do not, since a short
-password could be guessed back from its hash. Writing to an existing baseline
-adds entries; remove one by deleting it. `sarif` marks accepted findings
-suppressed; `gitlab` leaves them out.
+and exits 0; `--baseline FILE` accepts what it lists, so only new findings fail.
+An entry is keyed on file, kind and masked line, so it survives line shifts; a
+new vendor-shaped key on an identical line is still a new finding
+([how entries are keyed](../architecture/security.md#baseline-keys)). Writing to
+an existing baseline adds entries; remove one by deleting it. `sarif` marks
+accepted findings suppressed; `gitlab` leaves them out.
 
 ### Custom patterns: `security.patterns`
 
@@ -218,40 +232,38 @@ blocks a commit on a finding at or above `high`. Skip it once with
 
 ## Accuracy and limits
 
-This is a registry of regular expressions with a little parsing. Read every
-result with that in mind.
+Each result is a regular-expression match with a little parsing. Read every
+result as a place to look.
 
-- **No taint analysis or dataflow.** Whether attacker input reaches a call is
-  not computed. `eval_call` fires the same on a constant and on a request
-  parameter.
-- **No framework semantics.** Missing authorization, permissive CORS,
-  unvalidated redirects and missing ownership checks are out of reach.
-- **Mostly Python and JS/TS.** `pickle_loads`, `os_system`,
+- No taint analysis or dataflow. Whether attacker input reaches a call is not
+  computed: `eval_call` fires the same on a constant and on a request parameter.
+- No framework semantics. Missing authorization, permissive CORS, unvalidated
+  redirects and missing ownership checks are out of reach.
+- The registry is shaped around Python and JS/TS. `pickle_loads`, `os_system`,
   `subprocess_shell_true`, `tls_verify_false` and `fstring_sql` are Python
   idioms. On Go, Rust or Java, `eval`/`exec` and the secret kinds are most of
   what can fire, and a quiet report reflects the registry's shape.
-- **Secret detection is shallow.** No entropy scoring; providers outside the
-  six vendor shapes are invisible unless you add custom patterns. Use gitleaks
-  or trufflehog for secret scanning proper.
-- **No dependency or CVE scanning.**
-- **False positives happen.** `weak_hash` fires on `md5` in a comment.
-  `unsafe_inner_html` ships at `med` because it cannot tell a name pointing at
-  a pinned constant from a dynamic value.
-- **The five JS/TS kinds were checked by hand** on a 17-repository, 1,109-file
-  corpus. After tightening: `unsafe_inner_html` 4 hits, `template_literal_sql`
-  2 of 2 real, `public_env_secret` 3 of 3 real, `new_function_call` and
-  `reject_unauthorized_false` 0.
-- **A CI pass means no pattern matched a changed line**, nothing more.
+- Secret detection matches shapes, with no entropy scoring. Providers outside
+  the eight vendor shapes are caught only through custom patterns. Use gitleaks
+  or trufflehog for full secret scanning.
+- No dependency or CVE scanning.
+- `weak_hash` fires on an MD5 checksum unless the call passes
+  `usedforsecurity=False`. `unsafe_inner_html` ships at `med` because it cannot
+  tell a name pointing at a pinned constant from a dynamic value.
+- The five JS/TS kinds are hand-checked on a 17-repository, 1,109-file corpus;
+  per-kind results are in
+  [architecture/security.md](../architecture/security.md#precision-checks).
+- A CI pass means no pattern matched a changed line, nothing more.
 
 ## Where it shows up
 
-- **CLI**: `repowise security scan --history`, `repowise security check`,
-  `repowise hook install --security`.
-- **MCP**: the `security_signals` block on `get_risk`.
-- **Dashboard**: the Security tab of the Code Health page.
-- **REST**: `GET /api/repos/{repo_id}/security`.
-- **CI**: the GitHub Action's `security` gate (annotations, SARIF) and the
-  GitLab template (Code Quality).
+| Surface | Where |
+|---|---|
+| CLI | `repowise security scan --history`, `repowise security check`, `repowise hook install --security` |
+| MCP | The `security_signals` block on `get_risk` |
+| Dashboard | The Security tab of the Code Health page |
+| REST | `GET /api/repos/{repo_id}/security` |
+| CI | The GitHub Action's `security` gate (annotations, SARIF) and the GitLab template (Code Quality) |
 
 ## Reference
 

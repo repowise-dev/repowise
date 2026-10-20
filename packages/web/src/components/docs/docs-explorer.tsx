@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import useSWR from "swr";
 import { useSearchParams, useRouter } from "next/navigation";
 import { BookOpen, PanelLeftClose, PanelLeft, Search } from "lucide-react";
@@ -37,6 +37,7 @@ import { search as searchPages } from "@/lib/api/search";
 import { getPageById, listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { useTranslations } from "next-intl";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import type { PageSummary } from "@/lib/api/types";
 
@@ -45,6 +46,8 @@ interface DocsExplorerProps {
 }
 
 export function DocsExplorer({ repoId }: DocsExplorerProps) {
+  const t = useTranslations("docs");
+  const tc = useTranslations("common");
   const { pages, isLoading, mutate } = usePages(repoId);
   // The list carries no bodies, so the reader's page is fetched on its own.
   // Only the id is state; the page itself is whatever that id resolves to,
@@ -61,18 +64,20 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     // and retrying a 404 just delays the empty state.
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
-  const [treePanelOpen, setTreePanelOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.matchMedia("(min-width: 768px)").matches;
-  });
-  // The rail defaults to whether the layout can afford it, not to `true`.
-  // Mirrors the 2xl breakpoint the reader uses to place its sections; a manual
-  // toggle wins from then on, same contract as the app sidebar's route-based
-  // collapse.
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.matchMedia("(min-width: 1536px)").matches;
-  });
+  // Both panels default to whether the layout can afford them, not to `true`:
+  // the tree from md, the rail from the 2xl breakpoint the reader uses to place
+  // its sections. A manual toggle wins from then on, same contract as the app
+  // sidebar's route-based collapse. The server cannot see the viewport, so the
+  // default is CSS until hydration: `null` renders the tree hidden below md and
+  // as a column from md (the rail is already `hidden 2xl:block`), and a phone
+  // never paints an open drawer. The layout effect then takes the breakpoint
+  // as state before paint; reading it during render failed hydration.
+  const [treePanelOpen, setTreePanelOpen] = useState<boolean | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  useLayoutEffect(() => {
+    setTreePanelOpen(window.matchMedia("(min-width: 768px)").matches);
+    setSidebarOpen(window.matchMedia("(min-width: 1536px)").matches);
+  }, []);
   const [searchOpen, setSearchOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const searchParams = useSearchParams();
@@ -243,9 +248,11 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     <div
       className={cn(
         "bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0 overflow-y-auto",
-        treePanelOpen
-          ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]"
-          : "w-0 overflow-hidden",
+        treePanelOpen === null
+          ? "absolute inset-y-0 left-0 z-30 w-full hidden md:static md:block md:w-[288px]"
+          : treePanelOpen
+            ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]"
+            : "w-0 overflow-hidden",
       )}
     >
       {isLoading ? (
@@ -287,10 +294,10 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
         </div>
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            No documentation yet
+            {t("explorer.emptyTitle")}
           </h3>
           <p className="text-xs text-[var(--color-text-secondary)] max-w-sm">
-            Run a generation job to create AI-powered documentation for this codebase.
+            {t("explorer.emptyBody")}
           </p>
         </div>
       </div>
@@ -332,14 +339,23 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
 
       <button
         onClick={() => setTreePanelOpen((o) => !o)}
-        aria-label={treePanelOpen ? "Hide pages tree" : "Show pages tree"}
-        aria-expanded={treePanelOpen}
+        aria-label={treePanelOpen ? t("explorer.hideTree") : t("explorer.showTree")}
+        aria-expanded={treePanelOpen ?? undefined}
         className={cn(
           "absolute top-3.5 z-20 rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors",
-          treePanelOpen ? "hidden md:block left-[292px]" : "left-1",
+          treePanelOpen === null
+            ? "left-1 md:left-[292px]"
+            : treePanelOpen
+              ? "hidden md:block left-[292px]"
+              : "left-1",
         )}
       >
-        {treePanelOpen ? (
+        {treePanelOpen === null ? (
+          <>
+            <PanelLeft className="h-3.5 w-3.5 md:hidden" />
+            <PanelLeftClose className="hidden h-3.5 w-3.5 md:block" />
+          </>
+        ) : treePanelOpen ? (
           <PanelLeftClose className="h-3.5 w-3.5" />
         ) : (
           <PanelLeft className="h-3.5 w-3.5" />
@@ -364,8 +380,8 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
                 target: selectedPage.id,
                 targetKind: "documentation",
               }}
-              question={`Explain "${selectedPage.title}" using the source code, and name the files it rests on.`}
-              label={`Ask about ${selectedPage.title}`}
+              question={t("explorer.askQuestion", { title: selectedPage.title })}
+              label={t("explorer.askLabel", { title: selectedPage.title })}
               className="shrink-0"
             />
           )}
@@ -382,7 +398,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
           >
             <Search className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Search</span>
+            <span className="hidden sm:inline">{tc("search")}</span>
             <kbd className="hidden rounded border border-[var(--color-border-default)] px-1 py-0.5 text-[10px] sm:inline">
               ⌘K
             </kbd>

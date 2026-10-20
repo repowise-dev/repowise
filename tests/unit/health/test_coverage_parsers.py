@@ -10,7 +10,6 @@ import pytest
 from repowise.core.analysis.health.coverage import (
     detect_format,
     is_test_file,
-    paired_test_file,
     parse,
     parse_clover,
     parse_cobertura,
@@ -304,7 +303,3 @@ def test_is_test_file_uses_source_imports() -> None:
     assert is_test_file("weird/path/name.py", src) is True
 
 
-def test_paired_test_file_finds_partner() -> None:
-    all_paths = {"src/foo.py", "tests/test_foo.py", "src/bar.py"}
-    assert paired_test_file("src/foo.py", all_paths) == "tests/test_foo.py"
-    assert paired_test_file("src/bar.py", all_paths) is None

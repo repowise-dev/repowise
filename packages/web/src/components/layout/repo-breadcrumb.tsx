@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { MessageSquare } from "lucide-react";
 import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
 import type { BreadcrumbSegment } from "@repowise-dev/ui/shared/breadcrumb";
 import { DocsModeBadge, type DocsMode } from "@repowise-dev/ui/docs/docs-mode-badge";
-import { getRepoBreadcrumbSegmentLabel } from "./repo-breadcrumb-label";
+import { getRepoBreadcrumbSegmentLabel, SEGMENT_MESSAGE_KEYS } from "./repo-breadcrumb-label";
 import { showsRouteBreadcrumb } from "./repo-breadcrumb-route";
+import { commitsViewHref } from "@/lib/changes";
 
 export function RepoBreadcrumb({
   repoName,
@@ -17,6 +19,9 @@ export function RepoBreadcrumb({
   /** Provenance of the repo's wiki, from the repos API `docs_mode`. */
   docsMode?: DocsMode;
 }) {
+  const t = useTranslations("nav");
+  const tb = useTranslations("breadcrumb");
+  const ts = useTranslations("shell");
   const pathname = usePathname();
   const match = pathname.match(/^\/repos\/([^/]+)(.*)/);
   if (!match) {
@@ -31,16 +36,20 @@ export function RepoBreadcrumb({
   const rest = match[2]?.replace(/^\//, "").split("/").filter(Boolean) ?? [];
 
   const segments: BreadcrumbSegment[] = [
-    { label: "Dashboard", href: "/" },
+    { label: t("dashboard"), href: "/" },
     { label: repoName, href: `/repos/${repoId}` },
   ];
 
   let currentPath = `/repos/${repoId}`;
   for (const seg of rest) {
     currentPath += `/${seg}`;
+    const messageKey = SEGMENT_MESSAGE_KEYS[seg];
     segments.push({
-      label: getRepoBreadcrumbSegmentLabel(seg),
-      href: currentPath,
+      // A configured segment is translated; anything else (a dynamic id, a
+      // path we do not know) keeps the decoded value it always had.
+      label: messageKey ? tb(messageKey) : getRepoBreadcrumbSegmentLabel(seg),
+      // `/changes` has no page of its own: the change list is a Commits view.
+      href: currentPath === `/repos/${repoId}/changes` ? commitsViewHref(repoId, "changes") : currentPath,
     });
   }
 
@@ -63,7 +72,7 @@ export function RepoBreadcrumb({
             className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
           >
             <MessageSquare className="h-3.5 w-3.5" aria-hidden />
-            Ask
+            {ts("ask")}
           </Link>
         )}
       </div>

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ....ingestion.cohesion import is_cohesion_edge
+from ....ingestion.cohesion import cannot_close_cycle
 from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
 # File->file edge types that constitute a structural dependency cycle.
@@ -39,14 +39,19 @@ from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 # ``imports`` and ``type_use`` edges to express that two files are one
 # compilation unit (Go package siblings, C# partial fragments, a C++
 # header/impl pair). Those are not dependencies and must not close a cycle, so
-# both definitions additionally reject ``is_cohesion_edge``. See
+# both definitions additionally reject ``cannot_close_cycle``, which also drops
+# type-only and deferred imports and ``dynamic_uses`` hints. See
 # repowise.core.ingestion.cohesion.
 _CYCLE_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
 
 
 def _is_cycle_edge(data: Any) -> bool:
-    """True if *data* is a file-level edge that can legitimately close a cycle."""
-    return data.get("edge_type") in _CYCLE_EDGE_TYPES and not is_cohesion_edge(data)
+    """True if *data* is a file-level edge that can close a runtime cycle.
+
+    ``framework``, ``dynamic_imports`` and ``dynamic_url_route`` stay in: they
+    were not the edge types the measured false positives came from.
+    """
+    return data.get("edge_type") in _CYCLE_EDGE_TYPES and not cannot_close_cycle(data)
 
 
 def build_file_scc_index(graph: Any) -> dict[str, tuple[str, ...]]:
@@ -139,4 +144,23 @@ def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
         methods = edge_map.get(file_path) or prefix_map.get(file_path) or set()
         if methods:
             out[file_path] = tuple(sorted(methods))
+    return out
+
+
+def defined_symbols(graph: Any, file_path: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(id, node)`` for each declaration *file_path* defines (``defines``
+    edges), the synthetic module symbol left out, with a whole line span.
+    Empty when the graph has no node for the file."""
+    if graph is None or file_path not in graph:
+        return []
+    out = []
+    for _u, target, data in graph.out_edges(file_path, data=True):
+        if data.get("edge_type") != "defines":
+            continue
+        node = graph.nodes[target]
+        if node.get("node_type") != "symbol" or node.get("kind") == "module":
+            continue
+        start, end = node.get("start_line"), node.get("end_line")
+        if isinstance(start, int) and isinstance(end, int) and end >= start:
+            out.append((target, node))
     return out

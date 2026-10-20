@@ -21,17 +21,8 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import console
+from repowise.core.analysis.health.effort import EFFORT_WEIGHT, effort_bucket
 from repowise.core.analysis.health.models import primary_finding
-
-
-def _effort_bucket(nloc: int) -> tuple[str, int]:
-    if nloc <= 40:
-        return "S", 1
-    if nloc <= 150:
-        return "M", 2
-    if nloc <= 400:
-        return "L", 3
-    return "XL", 5
 
 
 def _suggestion_to_dict(s: object) -> dict[str, Any]:
@@ -73,20 +64,22 @@ def _render_refactoring_targets(
             serialize_recommendations,
         )
 
-        ranked_plans = serialize_recommendations(build_recommendations(suggestions))[:limit]
+        ranked_plans = serialize_recommendations(
+            build_recommendations(suggestions, findings=findings)
+        )[:limit]
     else:
-        ranked_plans = [_suggestion_to_dict(s) for s in suggestions][:limit]
+        ranked_plans = [_list_row(_suggestion_to_dict(s)) for s in suggestions][:limit]
 
     # The composed unit. One opportunity per file, ranked, with its plans as
     # ordered steps - the same vocabulary the board, the drawer and the agent
     # contract speak. The type-grouped dump this replaced made type the
     # organizing principle, so a file needing a split and two extractions
     # appeared three times in three sections.
+    from repowise.core.analysis.health.refactoring.opportunity import claimed_plan_ids
+
     opportunities, _leads = _compose(findings, suggestions)
     plan_by_id = _plans_by_public_id(suggestions, ranked_plans)
-    claimed = {s.plan_id for o in opportunities for s in o.steps} | {
-        e.plan_id for o in opportunities for e in o.evidence
-    }
+    claimed = claimed_plan_ids(opportunities)
     unattached = [row for pid, row in plan_by_id.items() if pid not in claimed]
     rows = [_opportunity_row(o) for o in opportunities]
 
@@ -156,7 +149,11 @@ def _render_stored_refactoring_targets(
             findings = [
                 f
                 for f in await crud.get_health_findings(
-                    session, repo_id, exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS))
+                    session,
+                    repo_id,
+                    exclude_dimensions=tuple(sorted(ZERO_IMPACT_DIMENSIONS)),
+                    # The targets table weighs history itself, as the web queue does.
+                    hold_history=False,
                 )
                 if keep(f.file_path)
             ]
@@ -164,6 +161,7 @@ def _render_stored_refactoring_targets(
                 "summary": summary,
                 "total": page.total,
                 "hidden": page.hidden,
+                "counts": page.counts,
                 "details": details,
                 "metrics": metrics,
                 "findings": findings,
@@ -180,11 +178,14 @@ def _render_stored_refactoring_targets(
     analyzed_commit = stored["summary"].get("analyzed_commit")
     if fmt == "table":
         commit = f" at {analyzed_commit[:7]}" if analyzed_commit else ""
-        hidden = (stored["hidden"] or {}).get("total") or 0
+        counts = stored["counts"]
+        # Each number names its level, so "of N" never mixes the eligible
+        # queue with the inventory.
         scope = (
-            f"{stored['total']} worth doing ({hidden} more in the full inventory)"
+            f"{stored['total']:,} eligible plans ({counts['inventory']:,} open, "
+            f"{counts['due']:,} due now or next)"
             if stored["hidden"] is not None
-            else f"{stored['total']} open opportunities"
+            else f"{stored['total']:,} open plans ({counts['eligible']:,} eligible)"
         )
         console.print(
             f"[dim]Read from the index{commit}. Showing {len(rows)} of {scope}. "
@@ -202,13 +203,50 @@ def _render_stored_refactoring_targets(
             "source": "index",
             "analyzed_commit": analyzed_commit,
             "opportunities_total": stored["total"],
+            # Restated by ``counts.excluded``; kept for scripts, remove next major.
             "opportunities_hidden": stored["hidden"],
+            "counts": stored["counts"],
             "targets": targets,
             "refactoring_opportunities": rows,
-            "refactoring_plans": plans,
+            "refactoring_plans": [_list_row(plan) for plan in plans],
         },
     )
     return True
+
+
+def _render_plan_recipe(repo_path: Path, plan_id: str, *, fmt: str) -> bool:
+    """One stored plan: its recipe as JSON, else the prompt an agent starts
+    from. False when no index or no plan answers *plan_id*."""
+    from repowise.cli.helpers import repo_index_session, run_async
+    from repowise.core.agent_prompts import render_plan
+    from repowise.core.analysis.health.refactoring.recipe import build_recipe
+    from repowise.server.services.refactoring_health import RefactoringHealthService
+
+    async def _read() -> dict[str, Any] | None:
+        async with repo_index_session(Path(repo_path)) as opened:
+            if opened is None:
+                return None
+            session, repo_id = opened
+            service = RefactoringHealthService(session, repo_id, Path(repo_path).name)
+            return (await service.plan_detail(plan_id)).get("plan")
+
+    plan = run_async(_read())
+    if plan is None:
+        return False
+    if fmt == "json":
+        click.echo(json.dumps(build_recipe(plan), indent=2))
+    else:
+        click.echo(render_plan(plan, repo_name=Path(repo_path).name))
+    return True
+
+
+def _list_row(plan: dict) -> dict:
+    """A plan as a list row: the rendered Extract Method texts stay on plan
+    detail, as on every other list."""
+    from repowise.core.analysis.health.refactoring.render import list_plan
+
+    body = plan.get("plan")
+    return {**plan, "plan": list_plan(body)} if isinstance(body, dict) else plan
 
 
 def _rankable(findings: list, metrics: list) -> list:
@@ -245,7 +283,7 @@ def _build_targets(
         if primary is None:
             continue
         total_impact = round(sum(x.health_impact for x in fs), 3)
-        bucket, weight = _effort_bucket(nloc)
+        bucket = effort_bucket(nloc)
         file_sugg = sugg_by_file.get(path, [])
         targets.append(
             {
@@ -257,7 +295,7 @@ def _build_targets(
                 "primary_reason": primary.reason,
                 "total_impact": total_impact,
                 "effort_bucket": bucket,
-                "impact_per_effort": round(total_impact / weight, 3),
+                "impact_per_effort": round(total_impact / EFFORT_WEIGHT[bucket], 3),
                 "finding_count": len(fs),
                 "plans": [_suggestion_to_dict(s) for s in file_sugg],
             }
@@ -284,8 +322,8 @@ def _emit(
         for t in targets:
             click.echo(
                 f"- **{t['file_path']}** ({t['effort_bucket']}, "
-                f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}) "
-                f"— {t['primary_biomarker']}: {t['primary_reason']}"
+                f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}), "
+                f"{t['primary_biomarker']}: {t['primary_reason']}"
             )
         _render_opportunities_md(opportunities, plan_by_id)
         _render_unattached_md(unattached)
@@ -310,6 +348,22 @@ def _emit(
     console.print(table)
     _render_opportunities_console(opportunities, plan_by_id)
     _render_unattached_console(unattached)
+    _render_preview_lines(opportunities, unattached)
+
+
+def _render_preview_lines(opportunities: list[dict], plans: list[dict]) -> None:
+    """The measurement behind refactoring rows listed on a preview language."""
+    from repowise.core.analysis.finding_registry import preview_lines
+
+    def get(row: dict, key: str) -> Any:
+        return row.get(key)
+
+    lines = [
+        *preview_lines("refactoring", opportunities, kind="lead_refactoring_type", get=get),
+        *preview_lines("refactoring", plans, kind="refactoring_type", get=get),
+    ]
+    for line in dict.fromkeys(lines):
+        console.print(f"[dim]{line}[/dim]")
 
 
 def _compose(findings: list, suggestions: list) -> tuple[list, dict]:
@@ -537,22 +591,38 @@ def _render_opportunities_md(opportunities: list[dict], plan_by_id: dict) -> Non
 def _render_unattached_console(plans: list[dict]) -> None:
     """Plans no opportunity claims.
 
-    A file whose only plans are demoted clones publishes no opportunity, so
-    without this the CLI would print a smaller number than the analyzer found
-    and call it the total. They are listed as observations, under their own
-    heading, rather than folded back in as work.
+    A file whose only plans are demoted clones, advisory cycles or splits
+    with an unnamed group publishes no opportunity, so without this the CLI
+    would print a smaller number than the analyzer found and call it the
+    total. They are listed as observations, under their own heading, rather
+    than folded back in as work.
     """
     if not plans:
         return
     console.print(f"\n[bold]Unattached observations ({len(plans)})[/bold]")
     console.print(
-        "[dim]Real duplication, not ranked work: no file's opportunity is built "
-        "on them.[/dim]"
+        "[dim]Duplication, import cycles and splits with unnamed groups, not "
+        f"ranked work: no file's opportunity is built on them.{_design_note(plans)}[/dim]"
     )
     for p in plans:
-        console.print(f"\n[cyan]{p['target_symbol']}[/cyan] [dim]({p['file_path']})[/dim]")
+        console.print(
+            f"\n[cyan]{p['target_symbol']}[/cyan] [dim]({p['file_path']}){_design_tag(p)}[/dim]"
+        )
         for line in _plan_detail_console(p):
             console.print(line)
+
+
+def _design_note(plans: list[dict]) -> str:
+    from repowise.core.analysis.health.refactoring_summary import needs_design
+
+    held = sum(needs_design(p) for p in plans)
+    return f" {held} need design: a group has no name yet." if held else ""
+
+
+def _design_tag(plan: dict) -> str:
+    from repowise.core.analysis.health.refactoring_summary import needs_design
+
+    return " needs design" if needs_design(plan) else ""
 
 
 def _render_unattached_md(plans: list[dict]) -> None:
@@ -560,12 +630,17 @@ def _render_unattached_md(plans: list[dict]) -> None:
         return
     click.echo("\n## Unattached observations\n")
     click.echo(
-        "Real duplication, not ranked work: no file's opportunity is built on them.\n"
+        "Duplication, import cycles and splits with unnamed groups, not ranked "
+        f"work: no file's opportunity is built on them.{_design_note(plans)}\n"
     )
     for p in plans:
-        click.echo(f"- **{p['target_symbol']}** ({p['file_path']})")
+        click.echo(f"- **{p['target_symbol']}** ({p['file_path']}){_design_tag(p)}")
         for line in _plan_detail_md(p):
             click.echo(line)
+
+
+# An Extract Method span that awaits lifts into an async helper.
+_ASYNC_NOTE = "async helper, call awaited"
 
 
 def _plan_detail_console(p: dict) -> list[str]:
@@ -615,7 +690,10 @@ def _plan_detail_console(p: dict) -> list[str]:
             f"    [dim]extract lines {span.get('start')}-{span.get('end')} "
             f"({ev.get('slice_nloc')} lines, -{ev.get('ccn_removed')} CCN)[/dim]"
         )
-        out.append(f"    [dim]in:[/dim] {params}    [dim]out:[/dim] {returns}")
+        out.append(
+            f"    [dim]in:[/dim] {params}    [dim]out:[/dim] {returns}"
+            + (f"    [dim]{_ASYNC_NOTE}[/dim]" if pl.get("needs_async") else "")
+        )
     elif kind == "move_method":
         to_file = pl.get("to_file")
         dest = f"{pl.get('to_class')}" + (f" [dim]({to_file})[/dim]" if to_file else "")
@@ -687,6 +765,7 @@ def _plan_detail_md(p: dict) -> list[str]:
             f"    - extract lines {span.get('start')}-{span.get('end')} "
             f"({ev.get('slice_nloc')} lines, -{ev.get('ccn_removed')} CCN)  ·  "
             f"in: {params}  ·  out: {returns}"
+            + (f"  ·  {_ASYNC_NOTE}" if pl.get("needs_async") else "")
         )
     elif kind == "move_method":
         dest = pl.get("to_class")

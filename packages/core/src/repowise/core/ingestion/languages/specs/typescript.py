@@ -58,7 +58,11 @@ SPEC = LanguageSpec(
     import_support="full",
     # ``.test-d.`` is the type-test convention tsd and vitest's typecheck mode
     # collect (``index.test-d.ts``): assertions on types, run by the test runner.
-    test_infixes=(".test.", ".spec.", ".test-d."),
+    # ``.suite.`` holds ``describe`` blocks a ``.test.ts`` file registers.
+    # Infixes apply to every source extension, so a benchmark.js
+    # ``array.suite.js`` reads as test too: accepted, none seen in the corpora.
+    # ``.e2e.`` names end-to-end suites and their helpers (``gateway.e2e.ts``).
+    test_infixes=(".test.", ".spec.", ".test-d.", ".suite.", ".e2e."),
     extensions=frozenset({".ts", ".tsx", ".mts", ".cts"}),
     grammar_package="tree_sitter_typescript",
     grammar_loader="language_typescript",

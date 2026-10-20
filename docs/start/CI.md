@@ -55,7 +55,8 @@ target branch from the CI's own variables (`GITHUB_BASE_REF`,
 does so with `--fail-above-percentile` or `--format markdown` / `github`;
 otherwise an omitted range still means your uncommitted work, else `HEAD`. Doc
 drift has no range: it checks the whole working tree, and a baseline limits it
-to new findings.
+to new findings. The variables each CI is detected by and read from, Azure
+Pipelines included, are in [GIT_HOSTS.md](GIT_HOSTS.md#ci-systems).
 
 **History.** CI checkouts are usually shallow, which leaves no merge-base.
 Fetch full history (`fetch-depth: 0` on GitHub Actions, `GIT_DEPTH: 0` on
@@ -252,15 +253,30 @@ a per-test coverage map (`repowise coverage add`) makes it more precise.
 
 - It exits `0` for a subset or for everything, and `2` only when it cannot read the change or the `tests.*` config.
 - Branch on the run-all flag, never on `:all`: jest and vitest read it as a pattern and run nothing.
-- It runs everything for: an empty change; a lockfile, manifest, build, test or CI config change; `.repowise/config.yaml`; a production package's `__init__.py`.
-- It also runs everything for: non-code files in a test tree; a changed file with no known test or only a filename guess; a route through a test helper no test imports; any Python test helper while a conftest or pytest config loads plugins by name.
-- It also runs everything for: a missing, out-of-date or unreadable index; a per-test map at its row cap; a deleted file no known test used.
-- Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped, and only when no code names them (a test that reads `README.md` names it); an empty line means only those changed.
-- Tests the graph cannot see into (not indexed, or importing nothing it resolves, such as a test that only runs a subprocess) run with every subset. With `--runner pytest`, test-named modules outside `testpaths` and outside test directories are left out, as a bare `pytest` leaves them out.
+- It runs everything for: an empty change; a Cargo, Make, CMake, Docker or CI file; tool and runtime config (dotfiles, `.tool-versions`, root-level `*.toml`, `*.yaml` and `*.json`, shell scripts); `.repowise/config.yaml`.
+- A lockfile, manifest or test runner config runs its own ecosystem's tests: for a nested `package.json`, lockfile or `go.mod`, the tests under its directory and those reaching code there; at the root, and for Python, Ruby, PHP and Gradle or Maven files (pip requirements included), `tsconfig` and jest or vitest configs, the whole ecosystem. Tests whose code names the file from outside that scope run too (a Python test reading `package.json`); a mention written with a directory names only the files its path can mean (`packages/web/package.json` does not name `packages/ui/package.json`), a bare name, `../package.json` or a path built from parts names every file of that name. A file under a fixture tree (`tests/fixtures/<name>/`) stands for the test code that names that tree or the fixtures directory; when none does, or code outside the test trees names the tree's path, everything runs. If more than 200 non-test files outside the scope name it, everything runs.
+- A production package's `__init__.py` selects the tests reaching any module under it.
+- A doc, template, query, stylesheet, image or nested data file selects the tests reaching the code that names it, outside comments and docstrings. When no code names it, a doc, template, stylesheet or image selects its package's tests (Markdown, reST or AsciiDoc in no package and in a top-level directory without code needs none), and a query or data file runs everything. Ceiling: a test that globs docs or templates in another package is not seen.
+- It also runs everything for: non-code files in a test tree; a changed file with no known test or only a filename guess; a route through a test helper no test imports, unless every known test is selected anyway (the reasons then say so); any Python test helper while a conftest or pytest config loads plugins by name.
+- It also runs everything for: a missing or unreadable index; a per-test map at its row cap; a deleted file no known test used.
+- An index built at an older commit than the change's base is used as is. Files changed in between whose imports or module-name strings moved (any change beyond whitespace, outside Python and JavaScript/TypeScript) add the tests reaching them. It runs everything instead when that commit is not in the clone, or more than 1,000 files changed in between, or one of them is a lockfile, manifest, build or test config or `.repowise/config.yaml`. CI config and test data changed in between no longer force a full run: neither is imported.
+- Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped, and only when no code names them (a test that reads `README.md` names it, and then runs); an empty line means only those changed.
+- Tests the graph cannot see into run with every subset, and the reasons say how many and why: a test not indexed or importing nothing it resolves; a Python, JavaScript or TypeScript test that lists and reads files under a source directory (the working directory, a module's location, or its own location climbed out of the test directory; never its fixtures, sibling data or a temporary directory); one that runs the project's own command, `python -m` module, code importing the project, or package `bin` in a child process; a Java or Kotlin `@SpringBootTest`, which loads the whole application context (a slice such as `@WebMvcTest` is selected through its imports). A test that inherits `@SpringBootTest` from a base class or carries it through a custom meta-annotation is not detected and is selected through its imports only. The indexer finds them once from each test's source and stores the reason, so selection reads it without opening test files. An index built before this check runs everything until `repowise update` checks its tests. A Python module named like a test but outside every test directory is not a test when the nearest pytest config's `testpaths` or `python_files` leaves it out, as a bare `pytest` does: it is selected through like any other code. The rule follows a bare `pytest` run, so a test that CI only names explicitly on the command line outside `testpaths` is not seen as one: list it in `tests.always_run`.
 - A changed `conftest.py`, test package `__init__.py` or imported test helper selects the tests under or importing it, not everything.
+- A change that reaches a `conftest.py` only through its imports selects the tests that ask for a fixture using that change (directly, through other fixtures, `usefixtures` or `getfixturevalue`), plus one test under the conftest as an import check.
+  - Every test under the conftest still runs when an autouse fixture, a `pytest_*` hook or module-level code uses the change, or when the conftest imports it only for side effects.
+  - Reading a literal constant of an imported module, or calling one of its functions that uses nothing the module imports beyond standard modules that cannot load code by name (emptying a `functools` cache or a standard container counts), reaches only a change in that module itself. Ceiling: such a function that reads or runs repo files by path (`open`, `Path.read_text`, `os.system`) is judged by its imports only.
+  - It also runs everything there when a fixture request cannot be read from the code (a computed name, a mark kept in a variable, a config `usefixtures`), when the conftest loads plugins or cannot be read, and on an index built before this was recorded. The reasons name the cause.
+  - Ceiling: a change that only alters what the changed module does at import time, seen by a test that does not import it, is caught by the import check alone.
+- Wiring no import states counts as a use: a JS/TS setup file named under `setupFiles`, `setupFilesAfterEnv`, `globalSetup` or `globalTeardown` in a `vitest.*`, `jest.*`, `vite.*` or `playwright.*` config or a `package.json` stands for the tests in that config's package, and a helper a test names by a path relative to itself (`Path(__file__).parent / "server.py"`, `path.join(__dirname, "server.ts")`) stands for that test. A `conftest.py` links only the files pytest collects (its `python_files`), so a helper beside the tests is not on every route the conftest reaches.
 - Without a range, in CI it reads the pull request's change; locally, the staged changes.
-- `tests.full_run_on` (gitignore patterns) adds run-everything paths; `tests.always_run` is appended to every selection as written.
-- Ceiling: on the JVM and .NET, a same-package test linked only by an unresolved call is missed. A test that reaches the change only through a subprocess, a plugin or registry loaded by a string name, or a directory it globs, while importing something else, is missed too: list such tests in `tests.always_run`, and run the full suite on the default branch.
+- `tests.full_run_on` (gitignore patterns) adds run-everything paths, and a path it matches is never scoped; `tests.always_run` is appended to every selection as written, for the runner whose language each entry is in.
+- With `--runner pytest`, `go` or `jest`, the arguments hold only that runner's tests, `tests.always_run` included. A repository with tests in several languages needs one job per runner: the tests a job leaves out are counted on stderr, and listed per runner under `left_out` with `--format json`. `--runner files` gets every test.
+- Selected tests come likeliest to fail first ([run order](../reference/CLI_REFERENCE.md#repowise-impacted-tests-revspec)).
+  `--prioritize` prints the whole suite with the selection first, so a job can run the
+  head with `-x` and the rest after; it skips nothing.
+- `--explain <test>` says why one test file was or was not selected: the first changed file that reached it, the evidence (coverage, call graph, import graph) and the import route from the test to that file when there is one, or the rule that runs it. With `--format json` the same answer is added as `explain`, and `selected.why` holds it for every selected test.
+- Ceiling: on the JVM and .NET, a same-package test linked only by an unresolved call is missed. So is a test that reaches the change through a plugin or registry loaded by a string name, a tree walk or child process done inside a shared helper it calls, or one in another language: list such tests in `tests.always_run`, and run the full suite on the default branch.
 
 **What to expect.** The subset is only as small as the code is loosely coupled.
 On tightly coupled code the graph alone picks most tests (over 80% of test
@@ -284,7 +300,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
       - run: pip install repowise
-      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
+      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
       - uses: actions/cache/save@v4
         with: {path: .repowise, key: "repowise-${{ github.sha }}"}
 ```
@@ -318,7 +334,7 @@ repowise-index:
   variables: {GIT_DEPTH: "0"}
   script:
     - pip install repowise
-    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
+    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
   cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

@@ -43,8 +43,9 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .iterables import IterableSources, text_of
 from .java import (
+    _JAVA_TYPE_NAME,
     AMBIGUOUS_DB,
     FILES_METHODS,
     FS_CONSTRUCTORS,
@@ -62,6 +63,9 @@ from .java import (
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from ..loop_facts import SinkProbe
+    from .iterables import Source
 
 # Full-iteration combinators (the shared block-iteration definition — see
 # ``BasePerfDialect.block_loop_body``). Early-exit searches (``find`` /
@@ -200,7 +204,85 @@ def _callee(call_node: Node) -> Node | None:
     return next((c for c in call_node.children if c.is_named), None)
 
 
-class KotlinPerfDialect(BasePerfDialect):
+_KT_FN_KINDS: frozenset[str] = frozenset(
+    {
+        "function_declaration", "lambda_literal", "anonymous_function", "secondary_constructor",
+        "getter", "setter", "anonymous_initializer",
+    }
+)
+# Collections that keep the size the call spells out.
+_KT_READ_ONLY: frozenset[str] = frozenset(
+    {
+        "listOf", "setOf", "mapOf", "arrayOf", "sequenceOf", "listOfNotNull", "intArrayOf",
+        "longArrayOf", "doubleArrayOf", "charArrayOf", "booleanArrayOf",
+    }
+)
+_KT_FACTORIES: frozenset[str] = _KT_READ_ONLY | frozenset(
+    {
+        "mutableListOf", "mutableSetOf", "mutableMapOf", "arrayListOf", "hashSetOf", "hashMapOf",
+        "linkedSetOf", "linkedMapOf", "sortedSetOf", "sortedMapOf",
+    }
+)
+# Exposed reads: ``Users.selectAll()``, and ``Users.select(..)`` / ``User.all()`` /
+# ``User.find { .. }`` on a table or entity object.
+_EXPOSED_READS: frozenset[str] = frozenset({"selectAll", "selectAllBatched", "selectBatched"})
+_EXPOSED_TYPE_READS: frozenset[str] = frozenset({"select", "all", "find", "wrapRows"})
+
+
+def _kt_bindings(node: Node) -> list[tuple[bytes, Node]]:
+    """What *node* binds: ``val x = v`` / ``var x = v`` / ``x = v``."""
+    if node.type == "assignment":
+        op, left = node.child_by_field_name("operator"), node.child_by_field_name("left")
+        right = node.child_by_field_name("right")
+        plain = op is not None and op.text == b"=" and left is not None and right is not None
+        return [(left.text, right)] if plain and left.type == "identifier" and left.text else []
+    return _kt_property_value(node) if node.type == "property_declaration" else []
+
+
+def _is_enum(node: Node) -> bool:
+    """``enum class Role { .. }``."""
+    if node.type != "class_declaration":
+        return False
+    mods = next((c for c in node.named_children if c.type == "modifiers"), None)
+    return mods is not None and any(c.text == b"enum" for c in mods.named_children)
+
+
+def _kt_member_name(member: Node) -> list[bytes]:
+    """The name a ``class_parameter`` or ``property_declaration`` declares."""
+    if member.type == "property_declaration":
+        member = next((c for c in member.named_children if c.type == "variable_declaration"), member)
+    ident = next((c for c in member.named_children if c.type == "identifier"), None)
+    return [ident.text] if ident is not None and ident.text else []
+
+
+def _kt_property_value(node: Node) -> list[tuple[bytes, Node]]:
+    named = node.named_children
+    binder = next((i for i, c in enumerate(named) if c.type == "variable_declaration"), None)
+    if binder is None or binder + 1 >= len(named):
+        return []
+    ident = next((c for c in named[binder].named_children if c.type == "identifier"), None)
+    value = named[binder + 1]
+    if ident is None or not ident.text or value.type == "property_delegate":
+        return []
+    return [(ident.text, value)]
+
+
+def _kt_range(node: Node | None) -> tuple[str, Node | None]:
+    """The header of ``for (i in ..)``: ``0..n`` / ``0 until n`` / ``n downTo 0``
+    (``step k`` dropped) count to ``n``; anything else is walked."""
+    if node is not None and node.type == "range_expression" and node.named_child_count == 2:
+        return "counted", node.named_children[1]
+    if node is None or node.type != "infix_expression" or node.named_child_count != 3:
+        return "each", node
+    left, op, right = node.named_children
+    if op.text == b"step":
+        return _kt_range(left)
+    if op.text == b"until":
+        return "counted", right
+    return ("counted", left) if op.text == b"downTo" else ("each", node)
+
+
+class KotlinPerfDialect(IterableSources):
     language = "kotlin"
     lock_acquire_functions = JAVA_LOCK_ACQUIRE_FUNCTIONS
     spin_loop_header = JAVA_SPIN_LOOP_HEADER
@@ -238,6 +320,9 @@ class KotlinPerfDialect(BasePerfDialect):
         if fn.type == "identifier":
             return _decode(fn)
         return None
+
+    def callee_text(self, call_node: Node) -> str:
+        return _decode(_callee(call_node)) or ""
 
     def callee_root_name(self, call_node: Node) -> str | None:
         node = _callee(call_node)
@@ -532,6 +617,165 @@ class KotlinPerfDialect(BasePerfDialect):
         if inner is None or inner.type not in _STRING_KINDS or inner.text is None:
             return False
         return not _TEMPLATE_RE.search(inner.text.decode("utf-8", "replace"))
+
+    # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
+
+    function_kinds = _KT_FN_KINDS
+    member_scope_kinds = frozenset({"class_declaration", "object_declaration"})
+
+    int_kinds = frozenset({"number_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression"})
+    pass_through = frozenset(
+        {
+            "asSequence", "asIterable", "filter", "filterNot", "filterNotNull", "filterIsInstance",
+            "map", "mapNotNull", "flatMap", "flatten", "sorted", "sortedBy", "sortedDescending",
+            "sortedByDescending", "sortedWith", "distinct", "distinctBy", "reversed", "asReversed",
+            "withIndex", "toList", "toMutableList", "toSet", "toMutableSet", "toTypedArray",
+            "keys", "values", "entries", "indices", "iterator", "chunked", "windowed", "drop",
+            "dropWhile", "takeWhile", "onEach", "shuffled",
+        }
+    )
+    caps = frozenset({"take"})
+    size_names = frozenset({"size", "count", "length", "lastIndex"})
+    # ``while (rs.next())`` (JDBC), ``while (it.hasNext())``.
+    cursor_advances = frozenset({"next", "hasNext"})
+    listings = frozenset({"listFiles", "walk", "walkTopDown", "walkBottomUp"})
+    recursive_listings = frozenset({"walk", "walkTopDown", "walkBottomUp"})
+    streams = frozenset({"readLines", "useLines", "lineSequence", "lines"})
+    query_caps = frozenset({"limit"})
+    member_kinds = frozenset({"navigation_expression"})
+    # ``n++`` is a ``unary_expression``; so is ``!x``, which only costs a constant.
+    change_kinds = frozenset({"assignment", "unary_expression"})
+    grow_methods = frozenset(
+        {"add", "addAll", "put", "putAll", "plusAssign", "addFirst", "addLast", "push", "offer"}
+    )
+    conditional_kinds = frozenset(
+        {
+            "if_expression", "when_expression", "when_entry", "for_statement", "while_statement",
+            "do_while_statement", "try_expression", "catch_block", "finally_block", "elvis_expression",
+        }
+    )
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type == "for_statement":
+            return _kt_range(self._for_iterable(loop))
+        if loop.type in ("while_statement", "do_while_statement"):
+            cond = loop.child_by_field_name("condition")
+            return ("cursor", cond) if cond is not None else ("each", None)
+        if loop.type == "call_expression" and self.block_loop_body(loop) is not None:
+            parts = self.call_parts(loop)
+            return "each", parts[1] if parts is not None else None
+        return "each", None
+
+    def is_literal(self, node: Node) -> bool:
+        """An enum class declared in the file: ``Role.entries`` / ``Role.values()``
+        walk its constants, spelled out in the declaration."""
+        return _is_enum(node)
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type != "call_expression":
+            return None
+        fn = _callee(node)
+        args = next((c for c in node.children if c.type == "value_arguments"), None)
+        arg_nodes = [
+            inner
+            for arg in (args.named_children if args is not None else ())
+            if (inner := next((c for c in arg.named_children if "comment" not in c.type), None))
+        ]
+        if fn is not None and fn.type == "navigation_expression":
+            named = fn.named_children
+            return text_of(named[-1]), named[0], arg_nodes
+        return (text_of(fn), None, arg_nodes) if fn is not None and fn.type == "identifier" else None
+
+    def member_parts(self, node: Node) -> tuple[str, Node] | None:
+        if node.type != "navigation_expression" or node.named_child_count < 2:
+            return None
+        return text_of(node.named_children[-1]), node.named_children[0]
+
+    def special_call(
+        self,
+        call: Node,
+        parts: tuple[str, Node | None, list[Node]],
+        loop: Node,
+        probe: SinkProbe,
+    ) -> Source | None:
+        method, receiver, args = parts
+        if receiver is None and method in _KT_FACTORIES:
+            # ``listOf(a, b)``; an empty ``mutableListOf()`` is filled later.
+            spread = any(arg.type == "spread_expression" for arg in args)
+            return ("constant", "bounded") if args and not spread else None
+        if receiver is None and method in ("enumValues", "enumEntries") and not args:
+            return "constant", "bounded"  # the type argument must be an enum
+        return None
+
+    def query_chain(self, node: Node) -> bool:
+        """``Users.selectAll().where { … }`` / ``User.find { … }``: an Exposed read
+        anywhere down the chain, on a table or entity object."""
+        parts = self.call_parts(node)
+        while parts is not None:
+            method, receiver, _args = parts
+            if method in _EXPOSED_READS:
+                return True
+            on_type = receiver is not None and bool(_JAVA_TYPE_NAME.match(text_of(receiver)))
+            if on_type and method in _EXPOSED_TYPE_READS:
+                return True
+            parts = self.call_parts(receiver) if receiver is not None else None
+        return False
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        return _kt_bindings(node)
+
+    def declared_names(self, node: Node) -> list[bytes]:
+        """``val x`` / ``for (x in ..)`` / ``(a, b) ->`` / ``catch (e: ..)`` / a parameter."""
+        if node.type not in ("variable_declaration", "parameter", "catch_block"):
+            return []
+        ident = next((c for c in node.named_children if c.type == "identifier"), None)
+        return [ident.text] if ident is not None and ident.text else []
+
+    def escaped_names(self, node: Node) -> list[bytes]:
+        """``xs`` of ``fill(xs)``: a callee that may add to a mutable list."""
+        parts = self.call_parts(node)
+        args = parts[2] if parts is not None else []
+        return [arg.text for arg in args if arg.type == "identifier" and arg.text]
+
+    def file_bindings_of(self, item: Node) -> list[tuple[bytes, Node]]:
+        """An enum class, or a ``val`` of a read-only list (``listOf(..)``)."""
+        if _is_enum(item):
+            name = item.child_by_field_name("name")
+            return [(name.text, item)] if name is not None and name.text else []
+        if item.type != "property_declaration" or not any(c.type == "val" for c in item.children):
+            return []
+        return [
+            (bound, value)
+            for bound, value in _kt_bindings(item)
+            if (parts := self.call_parts(value)) is not None and parts[0] in _KT_READ_ONLY
+        ]
+
+    def member_names(self, owner: Node) -> set[bytes]:
+        """Constructor parameters and properties, read bare in a method."""
+        names: set[bytes] = set()
+        for part in owner.named_children:
+            if part.type == "primary_constructor":
+                params = next((c for c in part.named_children if c.type == "class_parameters"), None)
+                members = params.named_children if params is not None else []
+            elif part.type == "class_body":
+                members = [c for c in part.named_children if c.type == "property_declaration"]
+            else:
+                continue
+            for member in members:
+                names.update(_kt_member_name(member))
+        return names
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        kinds = ("function_value_parameters", "lambda_parameters")
+        params = next((c for c in scope.children if c.type in kinds), None) if scope else None
+        names: set[bytes] = set()
+        for param in params.named_children if params is not None else ():
+            ident = next((c for c in param.named_children if c.type == "identifier"), None)
+            if ident is not None and ident.text:
+                names.add(ident.text)
+        return names
 
     def is_lock_scope(self, node: Node) -> bool:
         # ``synchronized(x) { … }`` / ``lock.withLock { … }`` — the trailing

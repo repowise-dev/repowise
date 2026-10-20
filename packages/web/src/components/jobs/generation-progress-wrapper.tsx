@@ -2,21 +2,33 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { GenerationProgress } from "@repowise-dev/ui/jobs/generation-progress";
+import {
+  GenerationProgress,
+  jobOutcome,
+  providerIssue,
+  type GenerationProgressLabels,
+  type JobOutcome,
+} from "@repowise-dev/ui/jobs";
 import { useJob } from "@/lib/hooks/use-job";
 import { cancelJob } from "@/lib/api/jobs";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { computeElapsedMs } from "@/lib/jobs/progress";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { providerSetupHref } from "@/lib/utils/page-href";
+import { useIssueText } from "@/lib/jobs/use-issue-text";
+import { useTranslations } from "next-intl";
 
 interface Props {
   jobId: string;
   repoName?: string;
-  /** Fired once the job reaches a terminal state, with which one it reached
-   *  so the host can tell "finished" from "failed" without re-reading the job. */
-  onDone?: (status: "completed" | "failed" | "cancelled") => void;
+  /** Fired once the job reaches a terminal state, with how it turned out so
+   *  the host can tell "finished" from "finished with problems" or "failed"
+   *  without re-reading the job. */
+  onDone?: (outcome: JobOutcome) => void;
   /** Start a fresh run after a failure or cancellation. */
   onRetry?: () => void;
+  /** Offered on a finished panel; hosts that keep failures on screen clear it here. */
+  onDismiss?: () => void;
   /** Suppress the completion/failure toasts (when the host surface renders
    * its own completion moment). */
   quiet?: boolean;
@@ -24,8 +36,17 @@ interface Props {
 
 const PENDING_STUCK_THRESHOLD_MS = 30_000;
 
-export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, quiet }: Props) {
-  const { job, sse, messages, phase } = useJob(jobId);
+export function GenerationProgressWrapper({
+  jobId,
+  repoName,
+  onDone,
+  onRetry,
+  onDismiss,
+  quiet,
+}: Props) {
+  const t = useTranslations("jobs");
+  const { job, sse, messages, phase, isActive } = useJob(jobId);
+  const issueText = useIssueText();
   const [elapsed, setElapsed] = useState(0);
   const [actualCost, setActualCost] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -48,34 +69,52 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
     [messages],
   );
 
+  // Settle on the fetched job, not the stream's "done" frame: only the fetch
+  // carries the run summary that says whether pages failed.
+  const outcome = isActive ? null : jobOutcome(job);
   useEffect(() => {
-    if (notifiedRef.current) return;
-    if (job?.status === "completed") {
-      notifiedRef.current = true;
-      if (!quiet) {
-        toast.success(`Documentation updated${repoName ? ` — ${repoName}` : ""}`, {
-          description: `${formatNumber(job.completed_pages)} pages generated`,
+    if (notifiedRef.current || !outcome || !job) return;
+    notifiedRef.current = true;
+    const issue = providerIssue(job);
+    if (!quiet) {
+      if (outcome === "completed") {
+        toast.success(t("completed", { name: repoName ? ` — ${repoName}` : "" }), {
+          description: t("pagesGenerated", { count: formatNumber(job.completed_pages) }),
         });
-      }
-      onDone?.("completed");
-    } else if (job?.status === "failed") {
-      notifiedRef.current = true;
-      if (!quiet) {
-        toast.error("Generation failed", {
-          description: job.error_message ?? "Unknown error",
+      } else if (outcome === "warning") {
+        toast.warning(t("completedWithProblems", { name: repoName ? ` (${repoName})` : "" }), {
+          description: issue
+            ? issueText(issue)
+            : t("pagesFailed", { count: formatNumber(job.failed_pages) }),
         });
-      }
-      onDone?.("failed");
-    } else if (job?.status === "cancelled") {
-      notifiedRef.current = true;
-      if (!quiet) {
-        toast.info("Job cancelled", {
-          description: "The pipeline was stopped before completion.",
+      } else if (outcome === "failed") {
+        toast.error(t("failed"), {
+          description: issue ? issueText(issue) : (job.error_message ?? t("unknownError")),
         });
+      } else {
+        toast.info(t("cancelled"), { description: t("cancelledDescription") });
       }
-      onDone?.("cancelled");
     }
-  }, [job?.status, job?.completed_pages, job?.error_message, repoName, onDone, quiet]);
+    onDone?.(outcome);
+  }, [outcome, job, repoName, onDone, quiet, t, issueText]);
+
+  const labels = useMemo<Partial<GenerationProgressLabels>>(
+    () => ({
+      warningTitle: t("progress.warningTitle"),
+      noPagesWritten: t("progress.noPagesWritten"),
+      somePagesFailed: (failed, total) =>
+        t("progress.somePagesFailed", {
+          failed: formatNumber(failed),
+          total: formatNumber(total),
+        }),
+      docsSkipped: t("progress.docsSkipped"),
+      retry: t("progress.retry"),
+      startAgain: t("progress.startAgain"),
+      providerSettings: t("progress.providerSettings"),
+      dismiss: t("progress.dismiss"),
+    }),
+    [t],
+  );
 
   const isPending = job?.status === "pending";
   const stuckPending =
@@ -91,7 +130,7 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
       // The stream/poll flips the job to "cancelled"; the status effect above
       // owns the toast so cancel-from-button and cancel-from-elsewhere match.
     } catch (e) {
-      toast.error("Couldn't cancel job", {
+      toast.error(t("cancelFailed"), {
         description: toFriendlyMessage(e),
       });
     } finally {
@@ -110,7 +149,10 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
       onCancel={handleCancel}
       phase={phase}
       onRetry={onRetry}
-      settingsHref="/settings"
+      onDismiss={onDismiss}
+      settingsHref={job ? providerSetupHref(job.repository_id) : undefined}
+      labels={labels}
+      formatIssue={issueText}
     />
   );
 }

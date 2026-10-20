@@ -16,6 +16,18 @@ it.
 
 from __future__ import annotations
 
+# A search row for an indexed file that has no wiki page: its ``target_path``
+# is the file, and there is no page behind its id to read.
+PAGELESS_FILE = "file"
+
+# Rows that are one whole file, with or without a page behind them.
+FILE_ROW_TYPES = ("file_page", PAGELESS_FILE)
+
+
+def pageless_path(page_id: str) -> str:
+    """The file a pageless row's id (``file:<path>``) names."""
+    return page_id.partition(":")[2]
+
 # Page types whose ``target_path`` is a real repository-relative file path.
 #
 # ``symbol_spotlight`` is included because its target_path is ``file.py::Sym``:
@@ -28,6 +40,7 @@ from __future__ import annotations
 FILE_BACKED_PAGE_TYPES: frozenset[str] = frozenset(
     {
         "file_page",
+        PAGELESS_FILE,
         "symbol_spotlight",
         "api_contract",
         "infra_page",
@@ -85,15 +98,16 @@ def add_row_paths(rows: list[dict]) -> list[dict]:
 
     The last step before a search response leaves. A row naming no file (a
     module page's group key, an onboarding slot) gets no ``path`` at all.
-    Transition aliases until the next minor release: ``file`` stays where it
-    was, and a page's ``target_path`` stays only where it is not the same
-    string as ``path``.
+    ``path`` is the one place a row names its file, so the deprecated ``file``
+    alias is removed here once ``path`` has been read from it, and a page's
+    ``target_path`` stays only where it is not the same string as ``path``.
     """
     for row in rows:
         path = hit_file_path(row)
         if not path:
             continue
         row["path"] = path
+        row.pop("file", None)
         if row.get("page_type") and row.get("target_path") == path:
             del row["target_path"]
     return rows

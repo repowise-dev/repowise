@@ -91,7 +91,8 @@ inputs:
   risk-fail-above-percentile:
     description: >-
       Fail when the change ranks above this percentile of the repository's
-      recent commits by size and spread. Empty reports the rank without gating.
+      recent commits by size and spread: a size gate, not a bug predictor.
+      Empty reports the rank without gating.
     default: ""
   upload-sarif:
     description: >-

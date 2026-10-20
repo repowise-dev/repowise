@@ -10,11 +10,15 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.health.signals import HISTORY_MIN_COMMITS as _HISTORY_MIN_COMMITS
+from ...analysis.health.signals import history_basis as _history_basis
+from ...co_change import CoChangePartner, parse_partners
 from ..models import (
+    Change,
     FixEvent,
     GitCommit,
     GitCommitFile,
@@ -22,6 +26,7 @@ from ..models import (
     GitCommitHealthFinding,
     GitFunctionBlame,
     GitMetadata,
+    Repository,
     _new_uuid,
     _now_utc,
 )
@@ -33,6 +38,7 @@ from ._shared import (
     _row_inserter,
     _row_updater,
 )
+from .history import CommitFilter, commit_filter_clauses
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
@@ -118,6 +124,25 @@ async def get_git_metadata_bulk(
     return out
 
 
+async def get_co_change_partners(
+    session: AsyncSession, repository_id: str, file_paths: Sequence[str]
+) -> dict[str, list[CoChangePartner]]:
+    """``{file: its stored co-change partners}`` for *file_paths*, reading only that column."""
+    out: dict[str, list[CoChangePartner]] = {}
+    unique_paths = list(dict.fromkeys(file_paths))
+    for i in range(0, len(unique_paths), _BATCH_SIZE):
+        result = await session.execute(
+            select(GitMetadata.file_path, GitMetadata.co_change_partners_json).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.file_path.in_(unique_paths[i : i + _BATCH_SIZE]),
+            )
+        )
+        for file_path, raw in result.all():
+            if partners := parse_partners(raw):
+                out[file_path] = partners
+    return out
+
+
 async def get_all_git_metadata(session: AsyncSession, repository_id: str) -> dict[str, GitMetadata]:
     """Return all GitMetadata rows for a repository."""
     result = await session.execute(
@@ -143,6 +168,19 @@ async def get_hotspot_file_paths(session: AsyncSession, repository_id: str) -> s
         )
     )
     return {row[0] for row in result.all() if row[0] is not None}
+
+
+async def get_short_history_paths(session: AsyncSession, repository_id: str) -> set[str]:
+    """The files whose recorded history ``signals.history_basis`` reads as short."""
+    result = await session.execute(
+        select(
+            GitMetadata.file_path, GitMetadata.commit_count_total, GitMetadata.history_only
+        ).where(
+            GitMetadata.repository_id == repository_id,
+            GitMetadata.commit_count_total < _HISTORY_MIN_COMMITS,
+        )
+    )
+    return {row.file_path for row in result.all() if _history_basis(row)}
 
 
 #: The only git fields dead-code confidence is scored from
@@ -718,50 +756,69 @@ async def get_author_commit_counts(session: AsyncSession, repository_id: str) ->
     return [tuple(row) for row in result.all()]
 
 
-def _commit_authorship_clause(authorship: str | None):
-    """Optional authorship predicate: ``agent`` keeps agent-attributed commits,
-    ``human`` keeps the rest. ``None`` / ``"all"`` means no filtering."""
-    if authorship == "agent":
-        return GitCommit.agent_name.is_not(None)
-    if authorship == "human":
-        return GitCommit.agent_name.is_(None)
-    return None
+async def clear_attribution(session: AsyncSession, repository_id: str) -> None:
+    """Delete every AI attribution value derived into the index for a repository.
 
-
-def _commit_kind_clause(kind: str | None, high_cut: float | None):
-    """Optional predicate for the review-priority band or bug-fix commits.
-
-    ``high`` compares against the repo's own moderate/high boundary on the
-    score axis, which is where the tercile actually falls; deriving it per row
-    would mean ranking every commit before paging any of them.
+    Commit labels, the per-file rollups and change provenance go; git
+    history, trailers and notes in the repository are untouched. ``repowise attribution purge`` and the
+    ``attribution.enabled: false`` sweep below both use this.
     """
-    if kind == "fixes":
-        return GitCommit.is_fix.is_(True)
-    if kind == "high":
-        if high_cut is None:
-            return None
-        return GitCommit.change_risk_score >= high_cut
-    return None
+    await session.execute(
+        update(GitCommit)
+        .where(GitCommit.repository_id == repository_id)
+        .values(
+            agent_name=None,
+            agent_autonomy_tier=None,
+            agent_channel=None,
+            agent_confidence=None,
+            agent_model_id=None,
+            attribution=None,
+        )
+    )
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.repository_id == repository_id)
+        .values(
+            agent_commit_count=0,
+            attribution_known_count=0,
+            agent_authored_pct=None,
+            agent_tier_counts_json="{}",
+            agent_line_count=0,
+            agent_line_model_json="{}",
+        )
+    )
+    await session.execute(
+        update(Change)
+        .where(Change.repository_id == repository_id)
+        .values(provenance=None, provenance_agent=None, provenance_known=None)
+    )
+
+
+async def clear_attribution_if_disabled(session: AsyncSession, repository_id: str) -> bool:
+    """Run :func:`clear_attribution` when ``attribution.enabled`` is false.
+
+    Called after every git write, so switching attribution off and running
+    ``repowise update`` leaves nothing about AI in the index, including rows
+    an earlier index wrote. Returns whether it cleared.
+    """
+    from ...attribution import attribution_enabled
+
+    repo = await session.get(Repository, repository_id)
+    if attribution_enabled(repo.local_path if repo is not None else None):
+        return False
+    await clear_attribution(session, repository_id)
+    return True
 
 
 async def count_git_commits(
     session: AsyncSession,
     repository_id: str,
-    *,
-    authorship: str | None = None,
-    kind: str | None = None,
-    high_cut: float | None = None,
+    where: CommitFilter | None = None,
 ) -> int:
     """Count persisted commits for a repository, under the same filters."""
-    stmt = (
-        select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repository_id)
+    stmt = select(func.count()).select_from(GitCommit).where(
+        GitCommit.repository_id == repository_id, *commit_filter_clauses(where)
     )
-    for clause in (
-        _commit_authorship_clause(authorship),
-        _commit_kind_clause(kind, high_cut),
-    ):
-        if clause is not None:
-            stmt = stmt.where(clause)
     result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
 
@@ -813,27 +870,20 @@ async def get_git_commits(
     limit: int = 50,
     offset: int = 0,
     sort: str = "risk",
-    authorship: str | None = None,
-    kind: str | None = None,
-    high_cut: float | None = None,
+    where: CommitFilter | None = None,
 ) -> list[GitCommit]:
     """Return a page of commits, sorted by change-risk (default) or recency.
 
     ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
     priority order); ``sort="date"`` ranks by ``committed_at`` descending.
-    ``authorship`` narrows to ``agent`` / ``human``; ``kind`` narrows to the
-    ``high`` review-priority band or to ``fixes``. Both filter the repository
-    rather than the page, so a filter still answers when the page it would
-    have filtered is uniform.
+    *where* (:class:`~repowise.core.persistence.crud.history.CommitFilter`)
+    filters the repository rather than the page, so a filter still answers
+    when the page it would have filtered is uniform.
     """
     order = GitCommit.committed_at.desc() if sort == "date" else GitCommit.change_risk_score.desc()
-    stmt = select(GitCommit).where(GitCommit.repository_id == repository_id)
-    for clause in (
-        _commit_authorship_clause(authorship),
-        _commit_kind_clause(kind, high_cut),
-    ):
-        if clause is not None:
-            stmt = stmt.where(clause)
+    stmt = select(GitCommit).where(
+        GitCommit.repository_id == repository_id, *commit_filter_clauses(where)
+    )
     result = await session.execute(stmt.order_by(order).limit(limit).offset(offset))
     return list(result.scalars().all())
 
@@ -1044,6 +1094,22 @@ async def prune_fix_events_for_missing_paths(
         delete(FixEvent).where(
             FixEvent.repository_id == repository_id,
             FixEvent.file_path.in_(stale),
+        )
+    )
+    await session.flush()
+    return int(deleted.rowcount or 0)
+
+
+async def prune_fix_events_for_shas(
+    session: AsyncSession, repository_id: str, shas: set[str]
+) -> int:
+    """Drop the fix events of commits the fix rule no longer names a fix."""
+    if not shas:
+        return 0
+    deleted = await session.execute(
+        delete(FixEvent).where(
+            FixEvent.repository_id == repository_id,
+            FixEvent.fix_sha.in_(sorted(shas)),
         )
     )
     await session.flush()

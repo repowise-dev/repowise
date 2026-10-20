@@ -70,11 +70,22 @@ function queue(items: FixItem[]): FixFirstQueue {
         vendored: 0,
         docs_example: 0,
         deprecated: 0,
+        gated_off: 0,
+        cold_path: 0,
+        unreachable: 0,
         inherent_dispatch: 0,
         small_function: 0,
         no_concrete_step: 0,
         low_value_kind: 0,
+        kind_unaudited: 0,
+        terminal_flow: 0,
+        moderate_quiet: 0,
+        unmeasured_cost: 0,
+        cold_role: 0,
+        background_unproven: 0,
+        unconfirmed_cost: 0,
       },
+      dormant: 0,
     },
     by_improves: { defect: 4, maintainability: 0, performance: 0 },
     model_version: 1,
@@ -100,13 +111,22 @@ describe("fixPlanHref", () => {
       fixPlanHref("r1", item({ kind: "finding", source: { opportunity_id: null, plan_ids: [], finding_ids: ["f"] } })),
     ).toBeNull();
   });
+  it("opens the stored plan of a plan-led finding by id, and offers nothing without one", () => {
+    expect(
+      fixPlanHref("r1", item({ kind: "finding", source: { opportunity_id: null, plan_ids: ["refac2_big", "refac2_b"], finding_ids: ["f"] } })),
+    ).toBe("/repos/r1/refactoring?plan=refac2_big");
+    expect(
+      fixPlanHref("r1", item({ kind: "finding", source: { opportunity_id: null, plan_ids: ["a/b c"], finding_ids: ["f"] } })),
+    ).toBe("/repos/r1/refactoring?plan=a%2Fb%20c");
+  });
 });
 
 describe("FixFirstSection", () => {
   it("asks for the production queue first, and the whole one when tests are included", async () => {
     getFixFirst.mockResolvedValue(queue([item({})]));
     renderSection();
-    expect(await screen.findByText(/1 of 4 eligible items\. Excluded: 3 in tests/)).toBeTruthy();
+    expect(await screen.findByText("1 of 4 eligible items.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "6 excluded" })).toBeTruthy();
     expect(getFixFirst).toHaveBeenCalledWith("r1", { limit: 10, scope: "production" });
     fireEvent.click(screen.getByLabelText("Include tests"));
     await waitFor(() => expect(getFixFirst).toHaveBeenCalledWith("r1", { limit: 10, scope: "all" }));
@@ -129,7 +149,7 @@ describe("FixFirstSection", () => {
     getFixFirstItemPrompt.mockResolvedValue({ flavor: "generic", text: "Core prompt text" });
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy prompt for an agent" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Copy prompt for your agent" })[0]!);
     expect(await screen.findByText("Core prompt text")).toBeTruthy();
     expect(getFixFirstItemPrompt).toHaveBeenCalledWith("r1", "fix1_a", {
       flavor: expect.any(String),

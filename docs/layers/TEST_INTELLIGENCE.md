@@ -1,57 +1,36 @@
 # Test Intelligence
 
-Test intelligence answers two questions your CI cannot: which files are risky
-*and* untested, and which tests a given change exercises. The second turns a
-4,000-test suite into the few dozen tests that guard the change you just made.
+Test intelligence answers two questions your CI cannot: which files are risky *and*
+untested, and which tests a given change exercises. The second turns a 4,000-test suite
+into the few dozen tests that guard the change you just made.
 
 It works at two levels of evidence. Ingest a coverage report and the answers are
-**measured**: this test ran these lines. Without one, repowise still answers
-from the dependency graph, which records which tests reach which files; those
-answers are **inferred**, always labelled as such, and never turned into a
-percentage.
-
-No LLM key, no network. Ingesting a report is a parse and a database write;
-every question after that is an index lookup. The patch-coverage gate for pull
-requests needs only git and a report (see [Patch coverage in CI](#patch-coverage-in-ci)).
+**measured**: this test ran these lines. Without one, Repowise still answers from the
+dependency graph, which records which tests reach which files; those answers are
+**inferred**, always labelled as such, and never turned into a percentage. No LLM key,
+no network. Ingesting a report is a parse and a database write; every question after
+that is an index lookup. The patch-coverage gate for pull requests needs only git and a
+report (see [Patch coverage in CI](#patch-coverage-in-ci)).
 
 ## Quick start
 
 ```bash
 # 1. Produce a report. Any supported format works.
 pytest --cov --cov-report=lcov:coverage.lcov
-coverage run --contexts=test -m pytest      # also records which test ran each line
-
+pytest --cov=<package> --cov-context=test   # also records which test ran each line (needs pytest-cov)
 # 2. Ingest it.
 repowise coverage add coverage.lcov
 repowise coverage add .coverage             # per-file coverage + per-test map
-repowise coverage status
-
+repowise coverage status                    # files, line and branch %, map counts
 # 3. Use it.
 repowise health                             # untested hotspots now light up
 repowise impacted-tests main...HEAD         # the tests guarding this branch
 repowise impacted-tests main...HEAD --format list | xargs pytest
 ```
 
-From an agent: `get_change_risk(revspec="main...HEAD")` returns `impacted_tests`
-and `patch_coverage`; `get_risk(changed_files=[...])` returns test
-recommendations. In the dashboard, coverage is the **Tests** tab of a
-repository's health page.
-
-```
-repowise coverage status
-
-  Coverage (lcov)
-    Files:  412
-    Lines:  71.4%
-    Branch: 63.9%
-
-  Test-to-code map (coverage.py)
-    Tests:   1,204
-    Files:   388
-    Records: 19,551
-```
-
-Longer walkthrough: [examples/health-coverage/](../../examples/health-coverage/).
+Agents read the same answers through MCP ([From an agent](#from-an-agent)); the
+dashboard shows coverage on the **Tests** tab of a repository's health page. Longer
+walkthrough: [examples/health-coverage/](../../examples/health-coverage/).
 
 ## Measured and inferred
 
@@ -65,96 +44,68 @@ Longer walkthrough: [examples/health-coverage/](../../examples/health-coverage/)
 | Labelled | `measured` | `measured` | `inferred` |
 | Powers | Code-health coverage findings, the Tests tab | `impacted-tests`, `impacted_tests`, `tests_to_run` | The fallback under every row, when nothing measured answers |
 
-The two kinds are shown side by side and never averaged. Inference errs in one
-known direction: a call edge says control *can* reach a file, not that a run
-did. So it is safe as a floor ("something reaches this, do not call it
-untested") and unsafe as a quantity.
-
-Each ingest replaces the previous per-file and per-test rows. Ingest at the
-commit you intend to query so line numbers match. The repo-wide totals of the
-newest 50 ingests are kept as history and drawn as a trend on the Tests tab
-once there are three; partial ingests are left out of the trend.
+The two kinds are shown side by side and never averaged. A call edge says control *can*
+reach a file, not that a run did, so inference is safe as a floor ("something reaches
+this, do not call it untested") and unsafe as a quantity. Refactoring plans name the
+test functions nearest each function in the call graph as runnable selectors
+([how](../architecture/test-intelligence.md#nearest-tests-per-function)).
 
 ## Supported formats
 
-| Format | Detected by | Per-test map |
-|--------|-------------|--------------|
-| **LCOV** | `TN:` / `SF:` / `DA:` style lines | Yes, when each record carries a non-blank `TN:` test name |
-| **Cobertura** XML | `<coverage` plus `<packages` or `line-rate` | No |
-| **Clover** XML | `<coverage` plus `<project` | No |
-| **JaCoCo** XML | The JaCoCo doctype, or a `<report` root | No |
-| **Go coverprofile** (`go test -coverprofile`) | Leading `mode:` line | No |
-| **coverage.py `.coverage`** | SQLite file | Yes, when written with `--contexts` |
-| **Normalized JSON** (`repowise-coverage-v1`) | Leading `{` plus `repowise-coverage` or `line_coverage_pct` | No |
+| Format | Per-test map |
+|--------|--------------|
+| **LCOV** | Yes, when each record carries a non-blank `TN:` test name |
+| **Cobertura**, **Clover** and **JaCoCo** XML | No |
+| **Go coverprofile** (`go test -coverprofile`) | No |
+| **coverage.py `.coverage`** | Yes, when recorded with per-test contexts |
+| **Normalized JSON** (`repowise-coverage-v1`) | No |
 
-Force a parser with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco`.
-Go percentages are line-based, not the statement percentage `go tool cover`
-prints. Any other runner can be fed through the normalized JSON:
+The format is sniffed from the file
+([detection rules](../architecture/test-intelligence.md#report-formats-and-discovery));
+force one with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco`. Go
+percentages are line-based, not the statement percentage `go tool cover` prints. Any
+other runner can be fed through the normalized JSON:
 
 ```json
 { "format": "repowise-coverage-v1",
-  "files": { "src/foo.py": { "line_coverage_pct": 87.5,
-                             "total_coverable_lines": 40,
-                             "covered_lines": [1, 2, 5],
-                             "coverable_lines": [1, 2, 3, 5] } } }
+  "files": { "src/foo.py": { "line_coverage_pct": 87.5, "total_coverable_lines": 40,
+    "covered_lines": [1, 2, 5], "coverable_lines": [1, 2, 3, 5] } } }
 ```
 
 `covered_lines` and `coverable_lines` are optional. Patch coverage needs
 `coverable_lines`; without it a file reads as having no line data, never as 0%.
 
-**Discovery.** With no path, `coverage add` looks for the usual locations:
-`coverage/lcov.info`, `lcov.info`, `coverage.lcov`, `coverage.xml`,
-`**/cobertura.xml`, `**/clover.xml`, `target/llvm-cov/**/*.lcov`,
-`coverage.out`, `cover.out`, `**/target/site/jacoco*/jacoco.xml`,
-`build/reports/jacoco/**/*.xml`, a repo-root `.coverage`, and a few more.
-Multiple reports merge: covered and coverable lines are each unioned.
+With no path, `coverage add` finds reports in the
+[usual locations](../architecture/test-intelligence.md#report-formats-and-discovery);
+multiple reports merge. Report paths map to indexed files by path suffix, and a tie is
+reported, never guessed
+([rules](../architecture/test-intelligence.md#report-path-matching)). If a whole report
+comes back unmatched, set `coverage.strip_prefix`; `--strict` fails when any report file
+did not map. The coverage summary (`get_health`, the REST coverage route) reports how
+each report mapped and whether it was measured at the indexed commit.
 
-**Path matching.** Report paths are matched to indexed files by exact path,
-then by the longest matching tail. A tie is reported as ambiguous, never
-guessed. A relative path is tried under the report's own directory first, so
-`packages/web/coverage/lcov.info` naming `src/index.ts` maps to
-`packages/web/src/index.ts`. Cobertura paths are joined to each `<source>`
-root. If a whole report comes back unmatched, set `coverage.strip_prefix`.
-`coverage add --strict` fails when any report file did not map. The coverage
-summary (`get_health`, the REST coverage route) reports how each report mapped
-and whether it was measured at the indexed commit.
-
-### Building a per-test map
-
-The per-test map needs a report that records which test covered each line.
-
-**coverage.py dynamic contexts** (the main path):
-
-```bash
-coverage run --contexts=test -m pytest
-repowise coverage add .coverage
-```
-
-Repowise reads the `.coverage` SQLite file directly and has no runtime
-dependency on coverage.py. Contexts like
-`tests/test_auth.py::TestLogin::test_ok|run` become test ids.
-
-**Per-test LCOV**: each record carries a distinct `TN:` name. Blank `TN:`
-records are skipped.
-
-If the report has no contexts, `coverage add` says so; the per-file aggregate
-is still stored. The map is capped at 250,000 rows and the CLI reports how many
-were dropped.
+**Building a per-test map.** The main path is coverage.py dynamic contexts:
+`pytest --cov=<package> --cov-context=test` (needs pytest-cov), then `repowise coverage add .coverage`.
+Contexts like `tests/test_auth.py::TestLogin::test_ok|run` become test ids, with no
+runtime dependency on coverage.py. Per-test LCOV works too: each record carries a
+distinct `TN:` name, and blank `TN:` records are skipped. If the report has no contexts,
+`coverage add` says so and still stores the per-file aggregate. The map is capped at
+250,000 rows and the CLI reports how many were dropped.
 
 ## Impacted tests
 
-`repowise impacted-tests` diffs a change, looks up the changed lines in the
-per-test map, and returns the tests whose recorded coverage touches them.
+`repowise impacted-tests` diffs a change, looks up the changed lines in the per-test
+map, and returns the tests whose recorded coverage touches them.
 
 ```bash
 repowise impacted-tests                        # staged changes (the default outside CI)
 repowise impacted-tests main...HEAD            # a branch or PR, from the merge-base
-repowise impacted-tests main..HEAD             # a plain range
-repowise impacted-tests abc123                 # a single commit
 repowise impacted-tests main...HEAD --format args --runner pytest   # for CI
 ```
 
-Each result says how it was found, and a guess never passes for evidence:
+`base...head` diffs from the merge-base, so it is what a pull request changed;
+`base..head` is the plain range, and a single SHA is one commit. Change risk follows the
+same rule. Each result says how it was found, and a guess never passes for evidence:
 
 | Situation | Reported as |
 |-----------|-------------|
@@ -165,27 +116,28 @@ Each result says how it was found, and a guess never passes for evidence:
 | None of the above | "unknown, run the full suite to be safe" |
 | No map ingested at all | A prompt to run `coverage add` on a report with contexts |
 
-With `--format list` the caveats go to stderr so the pipe stays clean. The
-command exits `0` in every case: it reports, it does not gate. `--format args`
-prints runner arguments, or `:all` whenever any part of the answer is unknown.
-Rules, `tests.*` config keys and CI recipes:
-[Selecting the tests a change needs](../start/CI.md#selecting-the-tests-a-change-needs).
+The graph also links tests to wiring no import states: runner setup files, helpers a
+test starts by path, `conftest.py` files and the fixtures a test requests
+([details](../architecture/test-intelligence.md#test-wiring-edges)).
 
-`base...head` diffs from the merge-base, so it is what a pull request changed.
-`base..head` is the plain range. Change risk follows the same rule.
+With `--format list` the caveats go to stderr so the pipe stays clean. The command exits
+`0` in every case: it reports, it does not gate. `--format args` prints runner
+arguments, or `:all` whenever any part of the answer is unknown. Rules, `tests.*` config
+keys and CI recipes:
+[Selecting the tests a change needs](../start/CI.md#selecting-the-tests-a-change-needs).
 
 ## Patch coverage in CI
 
-`repowise coverage check [REVSPEC]` gates a change on patch coverage: of the
-changed lines the report marks executable, what share did the tests run?
+`repowise coverage check [REVSPEC]` gates a change on patch coverage: of the changed
+lines the report marks executable, what share did the tests run?
 
 ```bash
 repowise coverage check origin/main...HEAD --report coverage/lcov.info --fail-under 80
 ```
 
-It needs git and a report, nothing else: no index, no ingest, no LLM key. The
-same figure appears in `get_change_risk`'s `patch_coverage` block and in the
-REST patch-coverage route the editor reads.
+It needs git and a report, nothing else: no index, no ingest, no LLM key. The same
+figure appears in `get_change_risk`'s `patch_coverage` block and in the REST
+patch-coverage route the editor reads.
 
 | File status | Meaning | Counts in the % |
 |-------------|---------|-----------------|
@@ -193,124 +145,100 @@ REST patch-coverage route the editor reads.
 | `no_coverable_changes` | The report names the file, but no changed line is executable | No |
 | `not_in_report` | The report does not name the file (e.g. a new file no test loaded) | No; listed, never 0% |
 | `no_line_data` | The report names the file but gives no executable-line set | No |
+| `stale_file` | Stored coverage only: the file changed since the commit the coverage was measured at | No; listed, no figures |
 
-Exit `0` passes or had nothing to judge, `1` is below a gate, `2` means the
-check could not run (no usable report, unknown revision, shallow clone without
-a merge-base, bad config). With an index, each uncovered range also names the
-test file to extend.
-
-Everything else lives in [Repowise in CI](../start/CI.md): the GitHub Action
-and GitLab template, the per-language report commands,
-[path-scoped gates](../start/CI.md#path-scoped-gates),
-[risk-weighted gates](../start/CI.md#risk-weighted-patch-coverage),
-[branches on changed lines](../start/CI.md#branches-on-changed-lines),
-[project coverage and coverage outside the change](../start/CI.md#project-coverage-and-coverage-outside-the-change),
-and [monorepos and matrix jobs](../start/CI.md#monorepos-and-matrix-jobs). All
-flags and JSON fields: the [`coverage check` reference](../reference/CLI_REFERENCE.md#repowise-coverage-check-revspec).
+Exit `0` passes or had nothing to judge, `1` is below a gate, `2` means the check could
+not run (no usable report, unknown revision, shallow clone without a merge-base, bad
+config). With an index, each uncovered range also names the test file to extend. The
+GitHub Action, GitLab template, per-language reports, path-scoped and risk-weighted
+gates, branches, project coverage and monorepos: [Repowise in CI](../start/CI.md). All
+flags and JSON fields: the
+[`coverage check` reference](../reference/CLI_REFERENCE.md#repowise-coverage-check-revspec).
 
 ## Untested hotspots
 
 Coverage feeds the [code health](CODE_HEALTH.md) layer. The sharpest finding is
-`untested_hotspot`, the "write tests before you refactor" case. It fires only
-when a file is all three of:
+`untested_hotspot`, the "write tests before you refactor" case. It fires only when a
+file is all three of:
 
-1. **A hotspot**: flagged by the git layer, 8+ commits in 90 days, or a
-   temporal hotspot score of 0.8 or more.
-2. **Depended on**: at least 4 dependents.
-3. **Under-tested**: line coverage below 40%. With no coverage ingested, it
-   fires only when *nothing* says a test touches the file: no paired test file
-   by name and no test reaching it in the graph.
+| Condition | Threshold |
+|---|---|
+| A hotspot | Flagged by the git layer, which means top-quartile churn in this repository plus absolute activity floors |
+| Depended on | At least 4 dependents |
+| Under-tested | Line coverage below 40%. With no coverage ingested, only when *nothing* says a test touches the file: no paired test file by name and no test reaching it in the graph |
 
-Severity is `CRITICAL` at 15% coverage or less with 10+ dependents, `HIGH` at
-one of those two, `MEDIUM` otherwise. `coverage_gap` covers thin-but-present
-coverage, and `coverage_gradient` deducts in proportion to the uncovered share.
+The file must also be code with at least one function (a config file or a
+module of constants has nothing a test could exercise) and must not itself be
+a test file.
 
-Why the graph matters here: a filename convention fails both ways. On this
-repository, five of the six worst bug-magnet files have no test named for them
-yet are reached by 3 to 23 test files in the graph, and the sixth was paired
-with a different subsystem's `test_engine.py` by basename alone.
+Severity is `CRITICAL` at 15% coverage or less with 10+ dependents, `HIGH` at one of
+those two, `MEDIUM` otherwise. `coverage_gap` covers thin-but-present coverage, and
+`coverage_gradient` deducts in proportion to the uncovered share. The graph check
+matters because a filename convention misses tests in both directions
+([examples](../architecture/test-intelligence.md#why-a-graph-signal)).
 
 ## From an agent
 
-**`get_risk(changed_files=[...])`** leads with a `directive` whose
-`test_recommendations` names up to ten tests for the changed files. Each row
-keeps its `basis`:
+`get_risk(changed_files=[...], include=["tests"])` leads with a `directive` whose
+`test_recommendations` names up to ten tests for the changed files. Each row keeps its
+`basis`:
 
 | `basis` | Holds | Means |
 |---|---|---|
 | `measured` | A test node id | The per-test map shows the test covering a changed file |
 | `inferred` | A test file path | The graph shows the test reaching the change; a candidate, not proof |
 
-`tests_to_run` is the older flat id list, measured first. `coverage_analysis`
-says whether coverage is available, partial, degraded or stale.
+`tests_to_run`, sent without the include, is the run list `repowise impacted-tests`
+makes, with `tests_to_run_basis`, `tests_to_run_why`, `tests_run_all` and
+`tests_run_all_reasons` ([PR mode](CHANGE_RISK.md#pr-mode-get_risk-with-changed_files)).
+`coverage_analysis` says whether coverage is available, partial, degraded or stale;
+without a coverage map the directive carries `coverage: {status, reason}`.
 
-**`get_change_risk(revspec=...)`** returns `impacted_tests`, computed from the
-changed *lines*, so it is narrower:
+`get_change_risk(revspec=...)` returns `impacted_tests`, the same selection over the
+change's diff, so a measured map at either end of it matches by line
+([payload](../architecture/test-intelligence.md#the-impacted_tests-payload)). In its
+`line_coverage` block, `untested_changes` is the strong signal: the file is in the map
+but nothing covers the lines you touched. `stale_test_candidates` flags covered lines
+whose guarding test is absent from the diff. `no_coverage_data`: the file is not in the
+map.
 
-```json
-{
-  "status": "map_present",
-  "map_present": true,
-  "tests": ["tests/test_auth.py::test_login", "..."],
-  "total": 23,
-  "truncated": true,
-  "line_coverage": {
-    "untested_changes": [{"source_file": "...", "uncovered_lines": [...]}],
-    "stale_test_candidates": [...],
-    "covered": [...],
-    "no_coverage_data": [...]
-  },
-  "summary": "23 test(s) cover the changed lines; showing first 10."
-}
-```
+**Self-check before a push.** `get_change_risk` without a `revspec` measures
+`patch_coverage` over everything a push would bring: the working tree (untracked files
+included) or `HEAD`, diffed from the merge-base with the branch CI compares against.
+Uncommitted code is `current` when the last ingest came after the newest edit of the
+changed files, else `stale`. When changed lines are uncovered, the directive adds one
+`next_actions` line naming the tests to extend, or saying to rerun tests with coverage.
 
-`untested_changes` is the strong signal: the file is in the map but nothing
-covers the lines you touched. `stale_test_candidates` flags covered lines whose
-guarding test is absent from the diff. `no_coverage_data` means the file is not
-in the map. `get_change_risk` leaves out the CLI's filename-pattern guess.
-
-**Self-checking before a push.** `get_change_risk` without a `revspec` measures
-`patch_coverage` over everything a push would bring: the working tree
-(untracked files included) or `HEAD`, diffed from the merge-base with the
-branch CI compares against. Uncommitted code is `current` when the last ingest
-came after the newest edit of the changed files, else `stale`. When changed
-lines are uncovered, the directive adds one `next_actions` line naming the
-tests to extend, or saying to re-run tests with coverage first.
-
-**Re-ingest after a test run** (opt-in). Set `hooks.coverage_reingest: true`
-in `.repowise/config.yaml` (or `REPOWISE_HOOK_COVERAGE_REINGEST=1` for one
-session). After the agent runs a whole test suite (`pytest`, `go test ./...`,
-`npm test`, `cargo test`, `mvn test`, `./gradlew test` and similar), the hook
-re-ingests any watched report that is newer than the last ingest, in the
-background, and says so in one transcript line. It acts only in a repository
-that has ingested coverage before, never on a run that targets some tests (a
-path, `::`, `-k`, `-run`, `--filter`, `-p` and the like), never on a
-`.coverage` database alone, and never on a report only a `**` glob finds. It
-costs a process start after each shell command in that repository. Claude Code
-runs it from repo-local hook entries ([what gets written where](../agent/HOOKS.md#what-gets-written-where));
-Codex only after a successful command.
+**Re-ingest after a test run** (opt-in). With `hooks.coverage_reingest: true` in
+`.repowise/config.yaml` (or `REPOWISE_HOOK_COVERAGE_REINGEST=1` for one session), a
+whole-suite test run by the agent re-ingests any watched report newer than the last
+ingest, in the background, with one transcript line
+([trigger rules](../architecture/test-intelligence.md#coverage-re-ingest-hook)). It
+costs a process start after each shell command in that repository. Claude Code runs it
+from [repo-local hook entries](../agent/HOOKS.md#what-gets-written-where); Codex only
+after a successful command.
 
 ## Empty means unknown
 
-**An empty test list never means the change is untested.** Every surface
-carries a discriminator beside the list:
+**An empty test list never means the change is untested.** Every surface carries a
+discriminator beside the list. For `get_change_risk`, `impacted_tests.status` is one of:
 
-- `get_change_risk` `impacted_tests.status`:
+| `status` | Meaning |
+|---|---|
+| `selected` | The selection vouches for `tests_to_run`. Empty here means the change needs no test (documentation, a deleted test) |
+| `run_all` | Every test must run; `reasons` says why, and `tests_to_run` is what to run first |
+| `no_index` | Nothing indexed yet |
+| `unknown` | The git or index read failed |
+| `config_invalid` | `tests.*` in `.repowise/config.yaml` does not parse |
+| `timeout` | The selection took over 30 seconds; `repowise impacted-tests` gives the same answer |
+| `busy` | A selection for this repository is still running |
+| `no_source_line_changes` | No changed source lines to map |
 
-  | `status` | Meaning |
-  |---|---|
-  | `map_present` | A per-test map exists. An empty `tests` list here is a real finding: nothing in the map covers this change |
-  | `inferred` | No map; the graph names candidate test files. Passing them does not clear the change |
-  | `no_map` | No map and no graph answer. The summary says to run the full suite |
-  | `no_index` | Nothing indexed yet |
-  | `unknown` | The git read failed |
-  | `no_source_line_changes` | No changed source lines to map |
-
-- `get_risk` keeps coverage availability, freshness and map presence explicit
-  in `test_impact.coverage`. An empty list under unavailable analysis is
-  unknown, never "no tests needed".
-- The CLI prints "unknown, run the full suite", and the per-file lookups report
-  a file with no data as `no_coverage_data`, not as uncovered.
+Every status but `selected` carries `run_all: true`: nothing vouches for a subset.
+`get_risk` keeps coverage availability, freshness and map presence explicit in
+`test_impact.coverage`; an empty list under unavailable analysis is unknown, never "no
+tests needed". The CLI prints "unknown, run the full suite", and the per-file lookups
+report a file with no data as `no_coverage_data`, not as uncovered.
 
 ## Configuration
 
@@ -319,8 +247,7 @@ The `coverage:` block in `.repowise/config.yaml`:
 ```yaml
 coverage:
   auto_discover: true
-  artifacts:                     # override the discovery globs
-    - "coverage/lcov.info"
+  artifacts: ["coverage/lcov.info"]          # override the discovery globs
   paths:                         # explicit reports or globs (skip discovery)
     - "coverage/lcov.info"
     - {path: "web/coverage/*.info", path_prefix: web}   # per-report prefix
@@ -335,63 +262,43 @@ coverage:
     - {name: api, paths: ["/services/api/"], fail_under: 85}
 ```
 
-Coverage is also auto-discovered and ingested during `init` and `update`, and
+`init` and `update` also discover and ingest coverage;
 `repowise init --coverage-report <path>` takes explicit reports (repeatable).
-`--coverage-report` is test coverage; `--coverage` controls documentation
-breadth. Full block: [CONFIG.md](../reference/CONFIG.md).
+`--coverage-report` is test coverage; `--coverage` controls documentation breadth. Full
+block: [CONFIG.md](../reference/CONFIG.md).
 
 ## Accuracy and limits
 
-Inferred tier, dogfooded on this repository against a real
-`coverage run --contexts=test` over a slice with complete per-test attribution
-(37 test files, 159 production files provably executed):
+The inferred tier is measured on the Repowise repository against a real
+`coverage run --contexts=test`, over a slice with complete per-test attribution (37 test
+files, 159 production files provably executed):
 
-- **"What reaches this file"** (suppresses `untested_hotspot`): **95.7%
-  precision**, 27.7% recall (46 claims, 44 correct).
-- **"Which tests do I run"** (`tests_to_run`, `impacted_tests`): **97.5%
-  precision**, 100% of targets answered (47 targets).
-- Recall reads low because coverage counts a file as run when it was merely
-  imported. Among files where over three quarters of what ran was inside
-  function bodies, recall is 77%.
-- Framework-invoked code with no static caller (migrations run by naming
-  convention, for example) is not reached by the graph.
+| Question | Precision | Reach |
+|---|---:|---:|
+| "What reaches this file" (suppresses `untested_hotspot`) | 95.7% (44 of 46 claims) | 27.7% recall |
+| "Which tests do I run" (`tests_to_run`, `impacted_tests`) | 97.5% | 100% of 47 targets answered |
+
+- Recall reads low because coverage counts a file as run when it was merely imported.
+  Among files where over three quarters of what ran was inside function bodies, recall
+  is 77%.
+- Framework-invoked code with no static caller (migrations run by naming convention, for
+  example) is not reached by the graph.
 - Inferred answers are file-level; only measured data is line-level.
-- Measured data is only as current as the last ingest; rows are tied to their
-  commit and read `stale` once the index moves past it.
+- Measured data is only as current as the last ingest: each ingest replaces the previous
+  rows, so ingest at the commit you intend to query. Rows read `stale` once the index
+  moves past their commit. The Tests tab trends the repo-wide totals of the newest 50
+  ingests once there are three, leaving partial ingests out.
 
-How these were measured and why the walk is shaped this way:
-[architecture/test-intelligence.md](../architecture/test-intelligence.md).
-Benchmark method across layers: [BENCHMARKS.md](../BENCHMARKS.md).
-
-## Where it shows up
-
-| Surface | What you get |
-|---------|--------------|
-| CLI | `repowise coverage add/status/check/suggest-gates`, `repowise impacted-tests` |
-| MCP | `get_change_risk` (`impacted_tests`, `patch_coverage`), `get_risk` (`test_recommendations`, `tests_to_run`), `get_health` (coverage summary) |
-| Dashboard | The Tests tab on the health page; coverage findings in code health |
-| CI | The GitHub Action and GitLab template run `coverage check`; `impacted-tests --format args` selects tests |
-| Editor | The branch-risk view reads patch coverage |
-| Hooks | Optional re-ingest after an agent's full test run |
+Method: [architecture/test-intelligence.md](../architecture/test-intelligence.md) and,
+across layers, [BENCHMARKS.md](../BENCHMARKS.md).
 
 ## Reference
 
-| Command | What it does | Flags |
-|---------|--------------|-------|
-| `repowise coverage add [PATHS...]` | Ingest reports; auto-discovers with no path; builds the per-test map when contexts are present | `--path`, `--format`, `--strict`, `--verbose` |
-| `repowise coverage status` | Coverage summary plus per-test map counts | `--path` |
-| `repowise coverage check [REVSPEC]` | Patch-coverage gate, no index needed | `--report`, `--report-format`, `--fail-under`, `--min-coverable-lines`, `--fail-under-risky`, `--fail-under-branches`, `--base-report`, `--max-drop`, `--path`, `--format` |
-| `repowise coverage suggest-gates` | Propose `coverage.gates` YAML; writes nothing | `--path`, `--format` |
-| `repowise impacted-tests [REVSPEC]` | The tests a change exercises, or runner arguments | `--path`, `--staged`, `--format table\|json\|list\|args`, `--runner auto\|pytest\|go\|jest\|files` |
-
-Full reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage).
-MCP: [`get_change_risk`](../agent/MCP_TOOLS.md#get_change_risk),
+Commands: `repowise coverage add [PATHS...]` (ingest; auto-discovers with no path),
+`coverage status` (summary plus per-test map counts), `coverage check [REVSPEC]`
+(patch-coverage gate, no index needed), `coverage suggest-gates` (proposes
+`coverage.gates` YAML, writes nothing) and `repowise impacted-tests [REVSPEC]` (the
+tests a change exercises, or runner arguments). Every flag:
+[CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-coverage). MCP:
+[`get_change_risk`](../agent/MCP_TOOLS.md#get_change_risk),
 [`get_risk`](../agent/MCP_TOOLS.md#get_risk).
-
-## See also
-
-- [architecture/test-intelligence.md](../architecture/test-intelligence.md): the inferred tier's walks, measurements and storage choice.
-- [Repowise in CI](../start/CI.md): gates, the GitHub Action, per-language reports.
-- [CODE_HEALTH.md](CODE_HEALTH.md): coverage findings and how they deduct.
-- [CHANGE_RISK.md](CHANGE_RISK.md): the review signal `impacted_tests` rides alongside.
-- [CONFIG.md](../reference/CONFIG.md): the `coverage:` block.

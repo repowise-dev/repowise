@@ -11,6 +11,11 @@ const FILE_PAGE_PREFIX = filePageId("");
  * inside the docs SPA (`/docs?page=`) instead of the standalone wiki route,
  * so navigation keeps the tree/reading context.
  */
+/** Where a repo's LLM provider and model are set up. */
+export function providerSetupHref(repoId: string): string {
+  return `/repos/${repoId}/settings#provider`;
+}
+
 export function pageHref(repoId: string, pageId: string): string {
   const prefix = `/repos/${repoId}`;
   if (pageId.startsWith(FILE_PAGE_PREFIX)) {

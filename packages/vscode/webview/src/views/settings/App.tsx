@@ -324,7 +324,7 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
   return (
     <div className="mx-auto flex min-h-full max-w-3xl flex-col gap-6 bg-[var(--color-bg-root)] px-6 py-6 sm:gap-8">
       <header className="flex items-center gap-2.5">
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-bg-selected)] text-[var(--color-text-secondary)]">
           <Settings2 className="h-4 w-4" />
         </span>
         <div className="min-w-0 flex-1">
@@ -568,7 +568,7 @@ function MultiSelect({
             className={
               "rounded-full border px-2 py-0.5 text-xs transition-colors disabled:cursor-not-allowed " +
               (on
-                ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                ? "border-[var(--color-border-hover)] bg-[var(--color-bg-selected)] text-[var(--color-text-primary)]"
                 : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]")
             }
           >

@@ -42,15 +42,18 @@ module-level helpers plus ``result.record`` / ``result.note`` on a collector it
 was handed looked like it envied the collector.
 
 The ``calls`` graph does not see field reads, so own-class use is also read
-off the class's cohesion components: a method that shares a component holding
-fields works on its own class's state and stays. A method that fulfils a
+off the class analysis: a method that reads one of its class's fields (a
+service method using the repository injected into its constructor) or shares
+a component holding fields works on its own class's state and stays. A method that fulfils a
 contract (``@Override``, an ``override`` / ``virtual`` / ``abstract``
 modifier, a member its base class or interface declares, a runtime contract
 name such as ``toString``) cannot move either, since the type it overrides for
 is the reason it exists. Building the target through a static factory
 (``OperationResult.Ok()``, any target member returning the target type) counts
 as instantiating it, and an interface, an exception type, a ``*Util``/``*Helper``
-class or a C# ``static class`` is never a home for instance behaviour. The
+class or a C# ``static class`` is never a home for instance behaviour, and
+neither is a class in another language family (a Swift call the graph resolved
+onto a Kotlin class of the same name). The
 other ``partial`` fragments of the method's own class are its own class.
 """
 
@@ -61,10 +64,13 @@ from typing import Any
 
 from repowise.core.analysis.dead_code.contract_methods import is_contract_method
 from repowise.core.analysis.execution_graph import is_reliable_call_edge
+from repowise.core.analysis.graph_view import heritage_ancestors
 
 from ....test_paths import is_test_related_path
+from ..effort import effort_bucket
+from .language_family import same_language_family
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 # Distinct foreign members the method must access for the envy to be real
 # (a single shared call is incidental, not envy).
@@ -135,18 +141,6 @@ def _file_is_test(graph: Any, path: str) -> bool:
     return is_test_related_path(path)
 
 
-def _ancestors(graph: Any, class_id: str) -> set[str]:
-    """Every class *class_id* inherits from, transitively."""
-    seen: set[str] = set()
-    stack = [class_id]
-    while stack:
-        for _u, base, data in graph.out_edges(stack.pop(), data=True):
-            if data.get("edge_type") in ("extends", "implements") and base not in seen:
-                seen.add(base)
-                stack.append(base)
-    return seen
-
-
 def _partial_fragments(graph: Any, file_path: str, class_name: str) -> set[str]:
     """The class ids of *class_name*'s ``partial`` fragments in other files.
 
@@ -189,11 +183,11 @@ def _overrides(graph: Any, data: dict, own_class_id: str, language: str) -> bool
         return True
     if _CONTRACT_MODIFIERS.intersection(data.get("modifiers") or ()):
         return True
-    if is_contract_method(name, data.get("kind"), language):
+    if is_contract_method(name, data.get("kind"), language, modifiers=data.get("modifiers")):
         return True
     declared = {
         (_node(graph, member) or {}).get("name")
-        for base in _ancestors(graph, own_class_id)
+        for base in heritage_ancestors(graph, own_class_id)
         for member in _class_members(graph, base, {})
     }
     return name in declared
@@ -247,15 +241,21 @@ def _never_a_target(graph: Any, class_id: str) -> bool:
     if _is_static_holder(graph, class_id):
         return True
     names = [_class_name(graph, class_id)]
-    names += [b.rsplit("::", 1)[-1] for b in _ancestors(graph, class_id)]
+    names += [b.rsplit("::", 1)[-1] for b in heritage_ancestors(graph, class_id)]
     return any(n.endswith(_NON_TARGET_SUFFIXES) for n in names)
 
 
-def _is_target(graph: Any, class_id: str, accessed: set[str], home: set[str]) -> bool:
+def _is_target(
+    graph: Any, class_id: str, accessed: set[str], home: set[str], home_file: str
+) -> bool:
     """A foreign class the method could move to: not its own class or an
-    ancestor (*home*), not a class it builds, not a non-target kind."""
+    ancestor (*home*), not a class it builds, not a non-target kind, and in a
+    file *home_file*'s code can move into (a call resolved across languages
+    names a class the method cannot live in)."""
+    target_file = (_node(graph, class_id) or {}).get("file_path") or class_id.rpartition("::")[0]
     return (
         class_id not in home
+        and same_language_family(home_file, target_file)
         and not _builds(graph, class_id, accessed)
         and not _never_a_target(graph, class_id)
     )
@@ -280,9 +280,17 @@ def _uses_own_state(classes: list[Any], parent: str, name: str, line: int | None
 
 
 def _binds_method(cls: Any, name: str) -> bool:
-    """Whether *cls* holds method *name* in place: a contract impl, or a
-    cohesion component with fields or outside calls that contains it."""
+    """Whether *cls* holds method *name* in place: a contract impl, a method
+    that uses an instance field of the class (an injected repository or
+    client, read by bare name in Java), or a cohesion component with fields or
+    outside calls that contains it."""
     if getattr(cls, "contract_impl", False):
+        return True
+    # ``getattr``: a walk cached before the field existed reads as no signal.
+    # Ceiling: only languages with class analysis fill it (Go emits no classes,
+    # so a Go receiver's fields are not read here); static fields such as a
+    # ``static final`` logger never count, being no instance's state.
+    if name in getattr(cls, "field_readers", ()):
         return True
     groups = getattr(cls, "components", None) or ()
     return any(name in g.methods and (g.fields or g.calls) for g in groups)
@@ -411,11 +419,11 @@ class MoveMethodDetector(RefactoringDetector):
 
         # Nearest foreign class by Jaccard distance (tie-break on class id).
         # A constructor call lands the class id in its own member set.
-        own_and_inherited = _ancestors(graph, own_class_id) | own_ids
+        own_and_inherited = heritage_ancestors(graph, own_class_id) | own_ids
         foreign = [
             (c, m)
             for c, m in accessed_by_class.items()
-            if _is_target(graph, c, m, own_and_inherited)
+            if _is_target(graph, c, m, own_and_inherited, ctx.file_path)
         ]
         if not foreign:
             return None

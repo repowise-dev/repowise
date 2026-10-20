@@ -25,7 +25,14 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from ....ingestion.python_overload import is_python_overload
 from ....test_paths import is_test_related_path
-from .ast_utils import _IDENTIFIER_SUFFIX, _find_name, is_function_node, is_misread_scope
+from .ast_utils import (
+    _find_name,
+    is_function_node,
+    is_misread_scope,
+    member_name,
+    member_object,
+    self_member_name,
+)
 from .languages import LanguageNodeMap, get_language_map
 from .models import ClassComplexity, CohesionGroup, FunctionComplexity
 from .nloc import CodeLineIndex
@@ -36,10 +43,6 @@ if TYPE_CHECKING:
 
     from tree_sitter import Node
 
-_PROP_FIELD_NAMES = ("property", "attribute", "field", "name")
-# ``expression`` is C#'s receiver field on ``member_access_expression`` (its
-# ``this`` token is unnamed, so the positional fallback would pick the member).
-_OBJECT_FIELD_NAMES = ("object", "value", "argument", "operand", "expression")
 # Fields of a binding node that hold the bound name, in probe order.
 _BINDING_NAME_FIELDS = ("name", "declarator", "left", "parameters")
 # A method's signature children: names there declare, they do not reference.
@@ -127,6 +130,12 @@ def _collect_class_body(
                 body.methods.append(node)
         elif node.type in lmap.field_decl_kinds:
             body.field_decls.append(node)
+            # A Swift property holds its own function units: a computed
+            # property's body, a ``willSet`` / ``didSet`` block. They are
+            # members like any method. The unit carries the property's name, so
+            # a reference to it is a reference to a method, not to a field.
+            units = [child for child in node.children if is_function_node(child, lmap)]
+            body.methods.extend(u for u in units if _is_own_method(u, lmap, language, source))
         elif node.type not in lmap.nested_type_kinds:
             stack.extend(node.children)
     return body
@@ -224,43 +233,6 @@ def _bound_names(node: Node, lmap: LanguageNodeMap) -> list[str]:
     return [_text(c) for c in named if c.type in lmap.identifier_kinds]
 
 
-def _receiver(node: Node) -> Node | None:
-    """The receiver child of a member-access node."""
-    for field_name in _OBJECT_FIELD_NAMES:
-        obj = node.child_by_field_name(field_name)
-        if obj is not None:
-            return obj
-    return next((c for c in node.children if c.is_named), None)
-
-
-def _member(node: Node) -> Node | None:
-    """The member-name child of a member-access node."""
-    for field_name in _PROP_FIELD_NAMES:
-        prop = node.child_by_field_name(field_name)
-        if prop is not None:
-            return prop
-    named = [c for c in node.children if c.is_named]
-    return next((c for c in reversed(named) if c.type.endswith(_IDENTIFIER_SUFFIX)), None)
-
-
-def _self_member_name(node: Node, lmap: LanguageNodeMap) -> str | None:
-    """Extract ``member`` from a ``self.member`` / ``this.member`` access.
-
-    Returns the member name when the receiver token is one of the
-    language's ``self_identifiers``; otherwise ``None`` (so ``other.x`` and
-    ``a.b.c``'s outer hops are ignored — only direct instance access
-    counts toward cohesion).
-    """
-    obj, prop = _receiver(node), _member(node)
-    if obj is None or prop is None or obj is prop:
-        return None
-    if obj.text is None or prop.text is None:
-        return None
-    if obj.text.decode("utf-8", errors="replace") not in lmap.self_identifiers:
-        return None
-    return prop.text.decode("utf-8", errors="replace")
-
-
 def _is_callee(node: Node, lmap: LanguageNodeMap) -> bool:
     """Whether *node* is the function a call invokes (``self.x()``)."""
     parent = node.parent
@@ -283,7 +255,7 @@ def _self_member_nodes(method_node: Node, lmap: LanguageNodeMap) -> Iterator[tup
         if node.type in lmap.class_kinds:
             continue  # nested class has its own self
         if node.type in lmap.member_access_kinds:
-            name = _self_member_name(node, lmap)
+            name = self_member_name(node, lmap.self_identifiers)
             if name:
                 yield node, name
         stack.extend(node.children)
@@ -324,9 +296,13 @@ def _foreign_member_id(node: Node, lmap: LanguageNodeMap) -> int | None:
     to another object, never to the enclosing class."""
     if node.type not in lmap.member_access_kinds:
         return None
-    obj, prop = _receiver(node), _member(node)
+    obj, prop = member_object(node), member_name(node)
     if obj is None or prop is None or obj.id == prop.id:
         return None  # a bare call (``id()``) has no receiver
+    # The child of *node* that holds the name: the name itself, or the
+    # wrapper around it (Swift's ``navigation_suffix``).
+    while prop.parent is not None and prop.parent.id != node.id:
+        prop = prop.parent
     return prop.id
 
 
@@ -641,7 +617,11 @@ def _compute_lcom4(
     names field declarations (implicit receivers), overloads are one node and
     only ``_stateful_groups`` count toward LCOM4; a map that sets
     ``cohesion_counts_state_only`` gets the same count without the implicit
-    references.
+    references. Otherwise every access is a visible ``self.x``, so a
+    component touching one field is a real cluster, but one touching none is
+    a static helper or a hook override (a Move Method or a function, never a
+    class to extract): it stays in ``components``, where ``move_method``
+    reads the inherited members it calls, and does not count.
     """
     if not method_nodes:
         return 1, 0, [], 1.0
@@ -667,7 +647,8 @@ def _compute_lcom4(
     if implicit or lmap.cohesion_counts_state_only:
         groups = _stateful_groups(indexed, refs.contracts)
         return max(len(groups), 1), field_count, groups, tcc
-    return len(indexed), field_count, [g for _, g in indexed], tcc
+    components = [g for _, g in indexed]
+    return max(sum(1 for g in components if g.fields), 1), field_count, components, tcc
 
 
 def _collect_classes(
@@ -699,10 +680,10 @@ def _collect_classes(
         # A partial class's other parts live in files this pass does not see;
         # a trait impl's methods are the trait's, so none can move out.
         contract_impl = is_trait_impl(class_node, lmap)
+        refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
         if "partial" in _decl_words(class_node) or contract_impl:
             lcom4, field_count, components, tcc = 1, 0, [], 1.0
         else:
-            refs = _class_member_refs(body, method_fcs, lmap, _class_name(class_node))
             lcom4, field_count, components, tcc = _compute_lcom4(
                 body.methods, method_fcs, lmap, refs
             )
@@ -720,6 +701,18 @@ def _collect_classes(
                 components=components,
                 tcc=tcc,
                 contract_impl=contract_impl,
+                # A partial fragment's own fields still bind the methods that use them.
+                field_readers=_field_readers(method_fcs, refs),
             )
         )
     return classes
+
+
+def _field_readers(method_fcs: list[FunctionComplexity], refs: _MemberRefs) -> frozenset[str]:
+    """Names of the methods whose references include a field, not a method."""
+    methods = {fc.name for fc in method_fcs} | refs.call_targets
+    return frozenset(
+        fc.name
+        for fc, members in zip(method_fcs, refs.per_method, strict=True)
+        if members - methods
+    )

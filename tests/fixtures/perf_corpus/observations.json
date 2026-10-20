@@ -680,16 +680,16 @@
       "boundary_kind": "db",
       "case": "one_loop_many_sinks",
       "extra": {},
-      "file_path": "src/app/migrate.py",
+      "file_path": "src/app/ledger.py",
       "finding_ref": "one_loop_many_sinks-00",
       "function_name": "apply",
       "line_end": 587,
       "line_start": 587,
       "path": [
-        "src/app/migrate.py::apply",
-        "src/app/migrate.py::_move"
+        "src/app/ledger.py::apply",
+        "src/app/ledger.py::_move"
       ],
-      "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:587 repeats work per iteration.",
+      "reason": "one_loop_many_sinks: io_in_loop at src/app/ledger.py:587 repeats work per iteration.",
       "reliable_entry_reachability": true,
       "resolution_basis": "call-site"
     },
@@ -698,16 +698,16 @@
       "boundary_kind": "db",
       "case": "one_loop_many_sinks",
       "extra": {},
-      "file_path": "src/app/migrate.py",
+      "file_path": "src/app/ledger.py",
       "finding_ref": "one_loop_many_sinks-01",
       "function_name": "apply",
       "line_end": 590,
       "line_start": 590,
       "path": [
-        "src/app/migrate.py::apply",
-        "src/app/migrate.py::_fold_one"
+        "src/app/ledger.py::apply",
+        "src/app/ledger.py::_fold_one"
       ],
-      "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:590 repeats work per iteration.",
+      "reason": "one_loop_many_sinks: io_in_loop at src/app/ledger.py:590 repeats work per iteration.",
       "reliable_entry_reachability": true,
       "resolution_basis": "call-site"
     },
@@ -716,16 +716,16 @@
       "boundary_kind": "db",
       "case": "one_loop_many_sinks",
       "extra": {},
-      "file_path": "src/app/migrate.py",
+      "file_path": "src/app/ledger.py",
       "finding_ref": "one_loop_many_sinks-02",
       "function_name": "apply",
       "line_end": 591,
       "line_start": 591,
       "path": [
-        "src/app/migrate.py::apply",
-        "src/app/migrate.py::_write_alias"
+        "src/app/ledger.py::apply",
+        "src/app/ledger.py::_write_alias"
       ],
-      "reason": "one_loop_many_sinks: io_in_loop at src/app/migrate.py:591 repeats work per iteration.",
+      "reason": "one_loop_many_sinks: io_in_loop at src/app/ledger.py:591 repeats work per iteration.",
       "reliable_entry_reachability": true,
       "resolution_basis": "call-site"
     },

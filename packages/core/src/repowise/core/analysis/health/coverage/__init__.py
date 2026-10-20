@@ -17,7 +17,7 @@ from .decay import (
     decay_since,
     measurement_ref,
 )
-from .detector import PARSERS, detect_format, is_test_file, paired_test_file, parse
+from .detector import PARSERS, detect_format, is_test_file, parse
 from .discovery import (
     CoverageConfig,
     CoverageProvenance,
@@ -76,7 +76,6 @@ __all__ = [
     "is_test_file",
     "measurement_ref",
     "normalize_report_path",
-    "paired_test_file",
     "parse",
     "parse_clover",
     "parse_cobertura",

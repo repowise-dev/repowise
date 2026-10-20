@@ -32,6 +32,7 @@ from repowise.core.analysis.decisions.policy import (
     resolve_policy,
 )
 from repowise.core.analysis.decisions.scope import resolve_module_nodes
+from repowise.core.forges import detect_forge, get_forge
 
 from .adr import _ADR_STATUS_MAP, bullets, find_adr_files, read_front_matter, split_headings
 from .commit_mining import (
@@ -129,6 +130,12 @@ _COMMENT_RATIONALE_CUES = (
     "intentionally",
 )
 _MAX_COMMENT_NODES = 30
+
+# Items per model call for the three model-only sources.
+_GIT_BATCH = 5
+_PR_BATCH = 5
+_COMMENT_BATCH = 4
+_MAX_SIGNAL_COMMITS = 20
 
 # Inline markers sent to the model per call. Caps prompt length only; a file
 # with more markers is sent in several calls rather than truncated.
@@ -407,19 +414,11 @@ class DecisionExtractor:
     async def mine_git_archaeology(self) -> list[ExtractedDecision]:
         """Extract decisions from significant git commits."""
         provider = self._llm("git_archaeology")
-        if not provider or not self._git_meta_map:
+        if not provider:
             return []
-
-        commit_map, commit_files = signal_commits(self._git_meta_map)
-        if not commit_map:
+        ranked, commit_files = self._git_archaeology_candidates()
+        if not ranked:
             return []
-
-        # Rank by signal count, take top 20
-        ranked = sorted(
-            commit_map.values(),
-            key=lambda c: c["signal_count"],
-            reverse=True,
-        )[:20]
 
         # Batch LLM calls (5 commits per batch)
         async def _process_batch(batch: list[dict]) -> list[ExtractedDecision]:
@@ -450,7 +449,15 @@ class DecisionExtractor:
 
             return extracted
 
-        return await _run_batches("git_archaeology", ranked, 5, _process_batch)
+        return await _run_batches("git_archaeology", ranked, _GIT_BATCH, _process_batch)
+
+    def _git_archaeology_candidates(self) -> tuple[list[dict], dict[str, list[str]]]:
+        """The commits git archaeology sends, strongest signal first, and their files."""
+        if not self._git_meta_map:
+            return [], {}
+        commit_map, commit_files = signal_commits(self._git_meta_map)
+        ranked = sorted(commit_map.values(), key=lambda c: c["signal_count"], reverse=True)
+        return ranked[:_MAX_SIGNAL_COMMITS], commit_files
 
     # ------------------------------------------------------------------
     # Source 3: ADR auto-discovery (deterministic-first)
@@ -558,21 +565,19 @@ class DecisionExtractor:
     async def mine_pr_bodies(self) -> list[ExtractedDecision]:
         """Extract decisions from PR / squash-merge commit bodies."""
         provider = self._llm("pr")
-        if not provider or not self._git_meta_map:
+        if not provider:
             return []
-
-        candidates, files_by_sha = pr_candidates(self._git_meta_map)
-        if not candidates:
+        ranked, files_by_sha = self._pr_body_candidates()
+        if not ranked:
             return []
-
-        ranked = list(candidates.values())[:_MAX_PR_BODIES]
+        forge = get_forge(detect_forge(self._repo_path))
 
         async def _process_batch(batch: list[dict]) -> list[ExtractedDecision]:
             bodies_block = ""
             source_by_sha: dict[str, str] = {}
             for c in batch:
                 # The file list is what lets the model answer "affected_files".
-                bodies_block += pr_commit_block(c, files_by_sha.get(c["sha"], []))
+                bodies_block += pr_commit_block(c, files_by_sha.get(c["sha"], []), forge)
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
             # Not caught: _run_batches counts a failed batch, so an outage is
@@ -589,7 +594,14 @@ class DecisionExtractor:
                 d.affected_modules = self._infer_modules(d.affected_files)
             return extracted
 
-        return await _run_batches("pr", ranked, 5, _process_batch)
+        return await _run_batches("pr", ranked, _PR_BATCH, _process_batch)
+
+    def _pr_body_candidates(self) -> tuple[list[dict], dict[str, list[str]]]:
+        """The PR bodies the PR source sends, and the files each one touched."""
+        if not self._git_meta_map:
+            return [], {}
+        candidates, files_by_sha = pr_candidates(self._git_meta_map)
+        return list(candidates.values())[:_MAX_PR_BODIES], files_by_sha
 
     # ------------------------------------------------------------------
     # Source 5: Comment archaeology (centrality-bounded)
@@ -604,18 +616,9 @@ class DecisionExtractor:
         ``scan_inline_markers``.
         """
         provider = self._llm("comment")
-        if not provider or self._graph is None:
+        if not provider:
             return []
-
-        top_files = self._top_central_files(_MAX_COMMENT_NODES)
-        if not top_files:
-            return []
-
-        snippets: list[tuple[str, str]] = []
-        for fp in top_files:
-            prose = extract_leading_prose(self._repo_path, fp)
-            if prose and any(cue in prose.lower() for cue in _COMMENT_RATIONALE_CUES):
-                snippets.append((fp, prose))
+        snippets = self._comment_snippets()
         if not snippets:
             return []
 
@@ -640,7 +643,36 @@ class DecisionExtractor:
                 d.affected_modules = self._infer_modules([best_fp])
             return extracted
 
-        return await _run_batches("comment", snippets, 4, _process_batch)
+        return await _run_batches("comment", snippets, _COMMENT_BATCH, _process_batch)
+
+    def _comment_snippets(self) -> list[tuple[str, str]]:
+        """Leading rationale prose on the most central files, as ``(path, prose)``."""
+        if self._graph is None:
+            return []
+        snippets: list[tuple[str, str]] = []
+        for fp in self._top_central_files(_MAX_COMMENT_NODES):
+            prose = extract_leading_prose(self._repo_path, fp)
+            if prose and any(cue in prose.lower() for cue in _COMMENT_RATIONALE_CUES):
+                snippets.append((fp, prose))
+        return snippets
+
+    def planned_model_calls(self, sources: Collection[str]) -> int:
+        """Model calls the named model-only sources would make; calls none.
+
+        Reads the same candidates the miners send, so the estimate and the run
+        cannot drift apart.
+        """
+        planned = {
+            "git_archaeology": lambda: (len(self._git_archaeology_candidates()[0]), _GIT_BATCH),
+            "pr": lambda: (len(self._pr_body_candidates()[0]), _PR_BATCH),
+            "comment": lambda: (len(self._comment_snippets()), _COMMENT_BATCH),
+        }
+        calls = 0
+        for source in sources:
+            if source in planned:
+                items, size = planned[source]()
+                calls += -(-items // size)
+        return calls
 
     # ------------------------------------------------------------------
     # Source 6: Conventions (deterministic, graph-counted)
@@ -684,7 +716,7 @@ class DecisionExtractor:
     ) -> tuple[list[ExtractedDecision], int]:
         """Run the shared anti-hallucination gate over extracted decisions.
 
-        Thin wrapper around :func:`decision_gate.apply_substring_gate`, which
+        Thin wrapper around :func:`gate.apply_substring_gate`, which
         the docs harvest path shares so both enforce the same grounding rules.
         """
         return apply_substring_gate(decisions)

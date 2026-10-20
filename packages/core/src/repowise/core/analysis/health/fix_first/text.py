@@ -11,18 +11,26 @@ from __future__ import annotations
 
 import posixpath
 
+from ..perf.actionability import BOUNDARY_NOUN
+from ..refactoring.render import brief
+
 TITLE_MAX = 90
+
+#: What splitting a large function or class buys. Readability and the cost
+#: of the next change, not defects: that is the claim a split can keep.
+SPLIT_GAIN = "easier to read and change once split"
 
 #: What the finding says about the code, completing "<subject> ...". The
 #: fallback when no measured fact is stored; each phrase must hold for every
 #: finding of its kind, so none claims coverage or callers it was not given.
+#: A shape a split fixes ends on what the split buys.
 PROBLEM: dict[str, str] = {
-    "brain_method": "is long, branchy and widely depended on",
-    "complex_method": "has many independent paths through it",
-    "nested_complexity": "nests its control flow deeply",
-    "bumpy_road": "repeats nested blocks side by side, a sign it does several jobs",
-    "large_method": "is long",
-    "god_class": "holds too much of its subsystem in one class",
+    "brain_method": f"is long and branchy; {SPLIT_GAIN}",
+    "complex_method": f"has many paths; {SPLIT_GAIN}",
+    "nested_complexity": f"nests deeply; {SPLIT_GAIN}",
+    "repeated_nesting": f"does several jobs side by side; {SPLIT_GAIN}",
+    "large_method": f"is long; {SPLIT_GAIN}",
+    "god_class": f"holds much of its subsystem; {SPLIT_GAIN}",
     "low_cohesion": "holds groups of methods that share little state",
     "complex_conditional": "packs several boolean operators into one condition",
     "primitive_obsession": "takes a long list of parameters",
@@ -40,7 +48,7 @@ FINDING_TITLE: dict[str, str] = {
     "brain_method": "Split {where} into smaller functions",
     "complex_method": "Reduce the branching in {where}",
     "nested_complexity": "Flatten the nesting in {where}",
-    "bumpy_road": "Split {where} into stages",
+    "repeated_nesting": "Split {where} into stages",
     "large_method": "Shorten {where}",
     "god_class": "Break up the {where} class",
     "low_cohesion": "Split {where} along its unrelated method groups",
@@ -56,7 +64,7 @@ FINDING_TITLE: dict[str, str] = {
 #: Imperative title for a composed refactoring, by its lead step's type.
 REFACTOR_TITLE: dict[str, str] = {
     "extract_method": "Extract a helper from {sym}",
-    "extract_method_span": "Extract lines {start}-{end} of {sym} into {name}",
+    "extract_method_span": "Extract lines {start}-{end} of {sym}",
     "extract_helper": "Replace the duplicated code in {sym} with one shared helper",
     "extract_class": "Extract a class from {sym}",
     "split_file": "Split {file} into smaller modules",
@@ -65,14 +73,7 @@ REFACTOR_TITLE: dict[str, str] = {
 }
 
 #: Appended to a why when a duplicate sits in the function being split.
-CLONED = "and part of it is duplicated, so splitting it also removes a copy"
-
-BOUNDARY_NOUN = {
-    "db": "database",
-    "filesystem": "file system",
-    "network": "network",
-    "subprocess": "subprocess",
-}
+CLONED = "which also removes a duplicate"
 
 #: Performance causes whose cost is not a boundary call: (title, problem, gain).
 PERF_SHAPE: dict[str, tuple[str, str, str]] = {
@@ -124,13 +125,21 @@ def loop_size(magnitude: str | None) -> str:
     return humanize(magnitude) if magnitude else "unknown"
 
 
-def imports_it(dependents: int) -> str:
-    """``1 file imports it`` / ``7 files import it``."""
+def imports_it(dependents: int, *, function: bool = False) -> str:
+    """``1 file imports it`` / ``7 files import it``; for a function or class,
+    which no file imports on its own, ``its file is imported by 7 files``."""
+    if function:
+        return f"its file is imported by {plural(dependents, 'file')}"
     return f"{plural(dependents, 'file')} import{'s' if dependents == 1 else ''} it"
 
 
 def plural(n: int, noun: str) -> str:
     return f"{n:,} {noun}" if n == 1 else f"{n:,} {noun}s"
+
+
+def held_back(n: int) -> str:
+    """Steps of a refactoring kind not yet audited, kept out of the item."""
+    return f"{n} (move or extract-class, not yet audited; in the full plan)"
 
 
 def short_symbol(symbol: str | None) -> str | None:
@@ -230,12 +239,18 @@ def size_brief(shape: dict[str, int]) -> str:
     return ", ".join(parts) or "large"
 
 
-def exposure(dependents: int | None, commits: int, coverage: float | None = None) -> str:
+def exposure(
+    dependents: int | None,
+    commits: int,
+    coverage: float | None = None,
+    *,
+    function: bool = False,
+) -> str:
     """``; 7 files import it, changed 15 times in 90 days, tests run 40% of
     its lines``, or nothing. Coverage only when a report measured the file."""
     parts = []
     if dependents:
-        parts.append(imports_it(dependents))
+        parts.append(imports_it(dependents, function=function))
     if commits:
         parts.append(f"changed {plural(commits, 'time')} in 90 days")
     if coverage is not None:
@@ -258,6 +273,12 @@ def scope_name(symbol: str | None, path: str) -> str | None:
     return short
 
 
+def own_changes(commits: int) -> str:
+    """``function changed in 14 commits``: blame's count, the same one
+    :func:`history_fact` quotes for a hotspot."""
+    return f"function changed in {plural(commits, 'commit')}"
+
+
 def changes(commits: int, people: int | None) -> str:
     """``changed 13 times in 90 days; 3 people have worked on it``."""
     out = f"changed {plural(commits, 'time')} in 90 days"
@@ -274,7 +295,7 @@ HISTORY_LABEL: dict[str, str] = {
     "hidden_coupling": "hidden coupling",
     "churn_risk": "churn",
     "ownership_risk": "ownership",
-    "knowledge_loss": "knowledge loss",
+    "knowledge_loss": "fading ownership",
     "developer_congestion": "many hands",
     "prior_defect": "past bugs",
     "function_hotspot": "keeps changing",
@@ -335,11 +356,14 @@ def history_fact(marker: str, details: dict, function: str | None = None) -> str
     return None
 
 
-def signature(name: str | None, params: list[str], returns: list[str]) -> str:
-    """``compute_x(a, b) -> c``; a long parameter list is cut with its count."""
-    shown = ", ".join(params[:4]) + (f", +{len(params) - 4} more" if len(params) > 4 else "")
-    out = f"{name}({shown})" if name else "a helper" + (f" taking ({shown})" if params else "")
-    return out + (f" -> {', '.join(returns[:3])}" if returns else "")
+def signature(
+    name: str | None, params: list[str], returns: list[str], *, is_async: bool = False
+) -> str:
+    """``_load(path) -> config``, as the plan's renderer phrases it
+    (``refactoring.render.brief``); a helper with no name reads ``<name>(...)``
+    and asks the reader to name it."""
+    out = brief(name, params, returns, is_async=is_async)
+    return out if name else f"{out}; name it for what the lines do"
 
 
 def first_sentence(text: str) -> str:
@@ -371,6 +395,7 @@ __all__ = [
     "loop_size",
     "marker_label",
     "measured",
+    "own_changes",
     "plural",
     "problem",
     "scope_name",

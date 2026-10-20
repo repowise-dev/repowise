@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from repowise.core.support_paths import DOC_EXTENSIONS
 
-from ..context import RepoContext
+from ..context import HISTORY_TOO_SHORT, RepoContext
 from ..facts import RepoFacts
 from ..model import Action, ActionCommand, ActionDetail, RuleOutcome, WhyFact, fingerprint
 from ._text import code, plural
@@ -93,6 +93,8 @@ def live_secret(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             title = f"Rotate the {kind} in {code(path)}"
             impact = "A credential sits in the working tree; anyone who can read the repository can use it."
             done = "Rotate the credential with its provider, then remove it from the file."
+            # The only critical action: a usable credential is exposed until it
+            # is rotated, whatever else the week holds.
             tier, severity = "act_now", "critical"
         actions.append(
             Action(
@@ -340,6 +342,8 @@ def knowledge_loss(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     rule = "knowledge_loss"
     if "files" in facts.unavailable:
         return RuleOutcome(rule, "unavailable", facts.unavailable["files"])
+    if ctx.history_too_short:
+        return RuleOutcome(rule, "not_applicable", HISTORY_TOO_SHORT)
     if not ctx.is_team:
         return RuleOutcome(
             rule,

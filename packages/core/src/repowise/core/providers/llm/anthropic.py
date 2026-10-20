@@ -5,9 +5,9 @@ prompts — Anthropic's API caches prompts > 1024 tokens and charges ~10% of
 the normal input price on cache hits.
 
 Recommended models (as of 2026):
-    - claude-haiku-4-5   — fastest and cheapest (default; ample for doc pages)
-    - claude-sonnet-4-6  — best quality/cost ratio
-    - claude-opus-4-6    — highest quality, most expensive
+    - claude-haiku-5-5   — fastest and cheapest (default; ample for doc pages)
+    - claude-sonnet-5-5  — best quality/cost ratio
+    - claude-opus-5-5    — highest quality, most expensive
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from repowise.core.providers.llm.base import (
     temperature_kwargs,
     translate_sdk_errors,
 )
+from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
@@ -109,7 +110,7 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
 
     Args:
         api_key:      Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
-        model:        Model identifier. Defaults to claude-haiku-4-5.
+        model:        Model identifier. Defaults to the spec's default_model.
         base_url:     Optional custom API base URL (for proxies/self-hosted endpoints).
         rate_limiter: Optional pre-configured RateLimiter. If None, no rate limiting
                       is applied (useful when the caller manages concurrency via semaphore).
@@ -118,7 +119,7 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-haiku-4-5",
+        model: str = PROVIDER_SPECS["anthropic"].default_model,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
@@ -286,6 +287,13 @@ class AnthropicProvider(SdkClientOwner, BaseProvider):
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in _iter_anthropic_stream_events(stream):
                     yield event
+                final = await stream.get_final_message()
+                blocks = _thinking_turn_blocks(final)
+                if blocks:
+                    yield ChatStreamEvent(type="assistant_content", content_blocks=blocks)
+                usage = _final_usage(final)
+                if usage is not None:
+                    yield usage
 
 
 def _translate_anthropic_errors() -> AbstractContextManager[None]:
@@ -294,6 +302,19 @@ def _translate_anthropic_errors() -> AbstractContextManager[None]:
         rate_limit_error=_AnthropicRateLimitError,
         status_error=_AnthropicAPIStatusError,
     )
+
+
+def _thinking_turn_blocks(message: Any) -> list[dict[str, Any]] | None:
+    """The turn's content blocks as params, when it holds thinking to replay.
+
+    Models that think by default (Haiku 5.5 and later) lose their reasoning
+    mid tool loop unless the tool-calling turn is sent back unmodified, so
+    the whole turn is kept rather than rebuilt from its text and tool calls.
+    """
+    content = message.content
+    if not any(block.type in ("thinking", "redacted_thinking") for block in content):
+        return None
+    return [block.to_dict(exclude_none=True) for block in content]
 
 
 def _to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -345,21 +366,30 @@ async def _iter_anthropic_stream_events(stream: Any) -> AsyncIterator[ChatStream
 
 
 def _message_delta_events(event: Any) -> list[ChatStreamEvent]:
-    """Usage and stop events carried by a ``message_delta``, in that order."""
-    events: list[ChatStreamEvent] = []
-    usage = getattr(event, "usage", None)
-    if usage:
-        events.append(
-            ChatStreamEvent(
-                type="usage",
-                input_tokens=getattr(usage, "input_tokens", 0) or 0,
-                output_tokens=getattr(usage, "output_tokens", 0) or 0,
-            )
-        )
+    """The stop event carried by a ``message_delta``; usage is read once, at the end."""
     stop = getattr(event.delta, "stop_reason", None)
-    if stop:
-        events.append(ChatStreamEvent(type="stop", stop_reason=stop))
-    return events
+    return [ChatStreamEvent(type="stop", stop_reason=stop)] if stop else []
+
+
+def _final_usage(message: Any) -> ChatStreamEvent | None:
+    """The call's ``usage`` event from the final message, cache reads and writes
+    counted as input as ``generate`` does; None when the SDK reported none."""
+    usage = getattr(message, "usage", None)
+    counts = [
+        getattr(usage, key, None)
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    ]
+    if not isinstance(counts[0], int) or not isinstance(counts[1], int):
+        return None
+    cached = sum(c for c in counts[2:] if isinstance(c, int))
+    return ChatStreamEvent(
+        type="usage", input_tokens=counts[0] + cached, output_tokens=counts[1]
+    )
 
 
 def _build_cached_payload(
@@ -432,6 +462,8 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                     ],
                 }
             )
+        elif role == "assistant" and msg.get("provider_content"):
+            result.append({"role": "assistant", "content": msg["provider_content"]})
         elif role == "assistant":
             content_blocks: list[dict[str, Any]] = []
             # Text content

@@ -538,8 +538,8 @@ def test_crossfn_hit_carries_the_owning_loops_magnitude(tmp_path):
     count travels with the cross-function hit into the finding."""
     source = _SCHEDULER.replace(
         "        for repo in repos:",
-        "        repos = self.session.execute(select(Repo)).scalars().all()\n"
-        "        for repo in repos:",
+        "        orders = self.session.execute(select(Order)).scalars().all()\n"
+        "        for repo in orders:",
     )
     walked, graph = _build(tmp_path, {"scheduler.py": source})
     (hit,) = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
@@ -554,6 +554,30 @@ def test_crossfn_hit_carries_the_owning_loops_magnitude(tmp_path):
     )
     (finding,) = IoInLoopDetector().detect(ctx)
     assert finding.details["loop_magnitude"] == "grows_with_data"
+
+
+def test_crossfn_keyed_call_is_not_key_unused_beside_a_key_free_call(tmp_path):
+    """``load(i)`` reaches ``requests.get`` and ``ping`` does not. Sharing the
+    loop line must not mark the keyed hit ``loop_key_unused`` in either order."""
+    source = (
+        "import requests\n"
+        "def load(i):\n"
+        "    return requests.get(i)\n"
+        "def ping():\n"
+        "    return 1\n"
+        "def run(ids):\n"
+        "    for i in ids:\n"
+        "        {body}\n"
+    )
+    for name, body in (
+        ("keyed-first", "load(i); ping()"),
+        ("key-free-first", "ping(); load(i)"),
+    ):
+        walked, graph = _build(tmp_path / name, {"client.py": source.format(body=body)})
+        hits = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
+        (hit,) = [h for h in hits if h.path[-1].endswith("::load")]
+        assert "loop_key_unused" not in hit.loop_facts()
+        assert hit.loop_facts()["loop_iterates"] == "parameter"
 
 
 def test_crossfn_hit_carries_the_owning_loops_chunking(tmp_path):

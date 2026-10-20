@@ -1,9 +1,9 @@
 """CI renderings of a change's risk: markdown, GitHub annotations, the gate.
 
-The gate reads only ``risk_percentile``, the repo-relative rank the risk
-authority names as primary (``risk_semantics.change_risk_authority``), never
-the 0-10 diff-shape score. A change with no rank cannot be gated, which is the
-caller's cue to exit "could not evaluate" with :func:`unranked_reason`.
+The gate is a size gate: it reads only ``risk_percentile``, the change's
+repo-relative rank by diff size and spread (``risk_semantics.change_risk_authority``),
+never the 0-10 diff-shape score. A change with no rank cannot be gated, which is
+the caller's cue to exit "could not evaluate" with :func:`unranked_reason`.
 
 Workflow-command and markdown mechanics come from :mod:`repowise.core.ci`,
 shared with every other CI gate.
@@ -11,6 +11,7 @@ shared with every other CI gate.
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 from ...ci import github
@@ -18,6 +19,9 @@ from ...ci.markdown import ROW_LIMIT, cell, more_line, plural
 from .service import _MIN_BASELINE, ChangeRiskResult
 
 PercentileGate = Literal["pass", "fail", "no_data", "not_set"]
+
+#: What the rank cannot say, from docs/layers/CHANGE_RISK.md "Accuracy and limits".
+LIMITS = "The rank is a diff-size statistic: it barely beats churn alone and cannot rank danger."
 
 
 def percentile_gate(result: ChangeRiskResult, threshold: float | None) -> PercentileGate:
@@ -65,7 +69,10 @@ def _rank_text(value: float) -> str:
 
 def percentile_number(result: ChangeRiskResult, threshold: float | None = None) -> str | None:
     """The change's rank as a number, rounded unless rounding would contradict the gate."""
-    pct = result.percentile
+    return _percentile_number(result.percentile, threshold)
+
+
+def _percentile_number(pct: float | None, threshold: float | None) -> str | None:
     if pct is None:
         return None
     shown = round(pct)
@@ -75,12 +82,16 @@ def percentile_number(result: ChangeRiskResult, threshold: float | None = None) 
     return str(shown)
 
 
-def percentile_text(result: ChangeRiskResult, threshold: float | None = None) -> str:
-    """:func:`percentile_number` as an ordinal (``97th``, ``95.4th``), or ``unranked``."""
-    number = percentile_number(result, threshold)
+def size_text(percentile: float | None, threshold: float | None = None) -> str:
+    """The lead line every surface shows: the one percentile, named for what it ranks.
+
+    The rank reads as an ordinal (``97th``, or ``95.4th`` beside a 95 gate).
+    """
+    number = _percentile_number(percentile, threshold)
     if number is None:
-        return "unranked"
-    return f"{number}th" if "." in number else ordinal(int(number))
+        return "Size and spread: unranked (no baseline to rank it against)"
+    rank = f"{number}th" if "." in number else ordinal(int(number))
+    return f"Size and spread: {rank} percentile of recent commits (diff size, not a bug predictor)"
 
 
 def headline(result: ChangeRiskResult, threshold: float | None, *, markdown: bool = True) -> str:
@@ -89,39 +100,40 @@ def headline(result: ChangeRiskResult, threshold: float | None, *, markdown: boo
     number = percentile_number(result, threshold)
     if number is None:
         # True for --baseline 0 and for a history of fewer than the minimum.
-        return f"{bold}Change risk: unranked{bold} · too few recent commits to rank it"
+        return f"{bold}Size and spread: unranked{bold} · no baseline to rank it against"
+    if "." not in number:
+        # "Larger than N%" is a lower bound: floor it, and never claim all 100%.
+        number = str(min(math.floor(result.percentile), 99))
     rank = f"larger and more spread out than {number}% of recent commits"
     gate = percentile_gate(result, threshold)
     if gate == "fail":
-        return f"{bold}Above the {_rank_text(threshold)} percentile gate{bold}: {rank}"
+        return f"{bold}Above the {_rank_text(threshold)} percentile size gate{bold}: {rank}"
     if gate == "pass":
-        return f"{bold}Within the {_rank_text(threshold)} percentile gate{bold}: {rank}"
-    return f"{bold}Change risk{bold}: {rank}"
+        return f"{bold}Within the {_rank_text(threshold)} percentile size gate{bold}: {rank}"
+    return f"{bold}Size and spread{bold}: {rank}"
 
 
 def gate_text(result: ChangeRiskResult, threshold: float | None) -> str:
-    """``"above the 95th percentile gate"``, ``"within ..."``, or ``""`` ungated."""
+    """``"above the 95th percentile size gate"``, ``"within ..."``, or ``""`` ungated."""
     gate = percentile_gate(result, threshold)
     if gate == "fail":
-        return f"above the {_rank_text(threshold)} percentile gate"
+        return f"above the {_rank_text(threshold)} percentile size gate"
     if gate == "pass":
-        return f"within the {_rank_text(threshold)} percentile gate"
+        return f"within the {_rank_text(threshold)} percentile size gate"
     return ""
 
 
 def fix_history_text(result: ChangeRiskResult) -> str:
-    """Where the change lands: the bug-fix record of the files it touches."""
+    """Where the change lands: the bug-fix record of the files it touches.
+
+    No percentile: the size rank is the one percentile on screen, and the fix
+    record reads plainest as the files and their recency-weighted fix counts.
+    """
     if not result.fix_history_available:
         return "fix history unavailable (the git history walk failed)"
     if not result.hot_files:
         return "no bug-fix history in the files it touches"
-    where = (
-        f" ({ordinal(round(result.fix_percentile))} percentile of recent commits "
-        "by bug-fix history)"
-        if result.fix_percentile is not None
-        else ""
-    )
-    return f"touches files that have broken before{where}"
+    return "touches files with prior bug fixes"
 
 
 def scope_line(result: ChangeRiskResult, *, markdown: bool = True) -> str:
@@ -152,6 +164,7 @@ def render_markdown(result: ChangeRiskResult, threshold: float | None = None) ->
         if len(hot) > ROW_LIMIT:
             out += ["", more_line(len(hot) - ROW_LIMIT, "files with bug-fix history")]
         out += ["", "Bug fixes are recency-weighted: one from a year earlier counts a half."]
+    out += ["", LIMITS]
     return "\n".join(out) + "\n"
 
 

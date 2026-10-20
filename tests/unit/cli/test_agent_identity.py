@@ -5,8 +5,8 @@ same reason ``test_agent_targets.py`` is: the property under test is that the
 seam holds for *every* registered target, and a per-agent test file would
 quietly not have that property for the next one added.
 
-``INTEGRATIONS.md`` promises adding an agent costs one descriptor file and one
-registry line. The tests at the bottom are what stops savings attribution from
+``INTEGRATIONS.md`` promises adding an agent costs one identity record, one
+descriptor file and one registry line. The tests at the bottom are what stops savings attribution from
 silently not being included in that promise.
 """
 
@@ -72,6 +72,7 @@ def test_a_descriptor_does_not_restate_what_its_identity_says(target_id: str) ->
     assert target.display_name == agent.display_name
     assert target.hook_adapter == agent.hook_adapter
     assert target.session_adapter == agent.session_adapter
+    assert target.capture_adapter == agent.capture_adapter
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -120,6 +121,7 @@ class _WindsurfTarget:
     docs_url = None
     hook_adapter = SEVENTH.hook_adapter
     session_adapter = SEVENTH.session_adapter
+    capture_adapter = SEVENTH.capture_adapter
     methods = ()
     project_file_id = "windsurf_rules"
 

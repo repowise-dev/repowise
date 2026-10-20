@@ -111,6 +111,23 @@ class TestJvmFileReachable:
         # Helper.java has no direct importer but its sibling User.java does.
         assert is_jvm_file_reachable("app/svc/Helper.java", graph, pkgs) is True
 
+    def test_co_change_is_not_an_importer(self) -> None:
+        # Committed together is history: neither the file nor its sibling is imported.
+        graph = _build_graph(
+            {
+                "app/svc/User.java": _java_file(),
+                "app/svc/Helper.java": _java_file(),
+                "app/web/Controller.java": _java_file(),
+            },
+            edges=[
+                ("app/web/Controller.java", "app/svc/User.java", {"edge_type": "co_changes"}),
+                ("app/web/Controller.java", "app/svc/Helper.java", {"edge_type": "co_changes"}),
+            ],
+        )
+        pkgs = build_jvm_package_files(graph)
+        assert is_jvm_file_reachable("app/svc/User.java", graph, pkgs) is False
+        assert is_jvm_file_reachable("app/svc/Helper.java", graph, pkgs) is False
+
     def test_stereotype_annotated_class_is_reachable(self) -> None:
         graph = _build_graph(
             {
@@ -152,6 +169,7 @@ class TestJvmFileReachable:
                     symbols=[{
                         "name": "main",
                         "kind": "method",
+                        "signature": "main(String[] args) -> void",
                         "visibility": "public",
                         "language": "java",
                     }],
@@ -289,6 +307,14 @@ class TestJvmContractMethods:
     def test_unrelated_language_not_protected(self) -> None:
         assert not is_contract_method("equals", "method", "python")
 
+    def test_kotlin_operator_modifier_protected(self) -> None:
+        assert is_contract_method("plus", "function", "kotlin", modifiers=("operator",))
+        assert is_contract_method("plus", "method", "kotlin", modifiers=("operator",))
+        assert not is_contract_method("plus", "function", "kotlin")
+        assert not is_contract_method("plus", "function", "kotlin", modifiers=())
+        assert not is_contract_method("plus", "method", "java", modifiers=("operator",))
+
+
 
 # ---------------------------------------------------------------------------
 # Framework decorators recognised
@@ -380,6 +406,73 @@ class TestJvmEndToEnd:
         # The init method should not surface as unused_internal.
         kinds = [(f.kind, f.symbol_name) for f in report.findings]
         assert (DeadCodeKind.UNUSED_INTERNAL, "init") not in kinds
+
+    def test_kotlin_public_operator_capped_at_risk_cap(self) -> None:
+        graph = _build_graph(
+            {
+                "src/MultipartApp.kt": _kt_file(
+                    symbols=[{
+                        "name": "plus",
+                        "kind": "function",
+                        "visibility": "public",
+                        "modifiers": ("operator",),
+                        "language": "kotlin",
+                    }],
+                ),
+            },
+        )
+        analyzer = DeadCodeAnalyzer(graph)
+        report = analyzer.analyze({"min_confidence": 0.0})
+        findings = [f for f in report.findings if f.symbol_name == "plus"]
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.kind == DeadCodeKind.UNUSED_EXPORT
+        assert finding.confidence == 0.4
+        assert not finding.safe_to_delete
+
+    def test_kotlin_private_operator_skipped_from_unused_internal(self) -> None:
+        graph = _build_graph(
+            {
+                "src/Delegate.kt": _kt_file(
+                    symbols=[{
+                        "name": "getValue",
+                        "kind": "function",
+                        "visibility": "private",
+                        "modifiers": ("operator",),
+                        "language": "kotlin",
+                    }],
+                ),
+            },
+        )
+        analyzer = DeadCodeAnalyzer(graph)
+        report = analyzer.analyze({"min_confidence": 0.0})
+        internal_names = {
+            f.symbol_name
+            for f in report.findings
+            if f.kind == DeadCodeKind.UNUSED_INTERNAL
+        }
+        assert "getValue" not in internal_names
+
+    def test_kotlin_plain_function_without_operator_modifier_unaffected(self) -> None:
+        graph = _build_graph(
+            {
+                "src/Utils.kt": _kt_file(
+                    symbols=[{
+                        "name": "concat",
+                        "kind": "function",
+                        "visibility": "public",
+                        "modifiers": (),
+                        "language": "kotlin",
+                    }],
+                ),
+            },
+        )
+        analyzer = DeadCodeAnalyzer(graph)
+        report = analyzer.analyze({"min_confidence": 0.0})
+        findings = [f for f in report.findings if f.symbol_name == "concat"]
+        assert len(findings) == 1
+        assert findings[0].kind == DeadCodeKind.UNUSED_EXPORT
+        assert findings[0].confidence == 0.6
 
 
 # ---------------------------------------------------------------------------

@@ -10,10 +10,12 @@ import {
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
+import { useWatchedJob } from "@/lib/hooks/use-watched-job";
 import { regeneratePage } from "@/lib/api/pages";
 import { generateEstimate } from "@/lib/api/repos";
 import { formatEstimateCost } from "@/lib/generate-format";
 import type { PageResponse, GenerateEstimate } from "@/lib/api/types";
+import { useTranslations } from "next-intl";
 
 /**
  * Reader-side "Write with AI" / "Regenerate" for a single page. Owns the
@@ -37,6 +39,7 @@ export function PageGenerateButton({
   // "Write" on a stub concept page, "Regenerate" on a written one. Callers only
   // mount this on the model-written page types, so a stub here is genuinely a
   // page awaiting its first prose, never a structural file page.
+  const t = useTranslations("docs");
   const mode = isStubPage(page) ? "write" : "regenerate";
   const settingsHref = `/repos/${repoId}/settings#provider`;
 
@@ -46,7 +49,8 @@ export function PageGenerateButton({
   const [estimateLoading, setEstimateLoading] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const { watched, watch, settle, dismiss } = useWatchedJob<"page">();
+  const jobId = watched?.id ?? null;
 
   // Cache estimates per cascade so toggling the choice back doesn't refetch the
   // heavy /generate/estimate endpoint.
@@ -102,10 +106,12 @@ export function PageGenerateButton({
     setLaunching(true);
     try {
       const res = await regeneratePage(page.id, { cascade, repoId });
-      setJobId(res.job_id);
+      watch(res.job_id, "page");
       setConfirmOpen(false);
     } catch (e) {
-      toast.error("Couldn't start generation", { description: toFriendlyMessage(e) });
+      toast.error(t("pageGenerate.failed"), {
+        description: toFriendlyMessage(e),
+      });
     } finally {
       setLaunching(false);
     }
@@ -121,12 +127,21 @@ export function PageGenerateButton({
         onRegenerate={openConfirm}
         isLoading={launching && !jobId}
         isInProgress={jobId != null}
-        onDialogClose={() => setJobId(null)}
+        onDialogClose={dismiss}
         jobSlot={
           jobId != null ? (
             <GenerationProgressWrapper
+              key={jobId}
               jobId={jobId}
-              onDone={() => onGenerated?.()}
+              onDone={(outcome) => {
+                settle(outcome);
+                onGenerated?.();
+              }}
+              onRetry={() => {
+                dismiss();
+                openConfirm();
+              }}
+              onDismiss={dismiss}
             />
           ) : null
         }

@@ -78,9 +78,12 @@ def test_markdown_renders_both_plans_as_opportunity_steps(capsys):
     assert "## Break Cycle plans" not in text
     # Every step says which kind of change it is, and keeps its own detail.
     assert "move_method **C.envious**" in text and "`T (t.py)`" in text
-    assert "break_cycle **cycle[2]: b.py->a.py**" in text
-    assert "invert b.py -> a.py" in text
     assert "judgment" in text
+    # A cycle is advisory: never a numbered step, still listed with its cut.
+    assert "break_cycle **cycle[2]: b.py->a.py**" not in text
+    assert "## Unattached observations" in text
+    assert "- **cycle[2]: b.py->a.py** (a.py)" in text
+    assert "invert b.py -> a.py" in text
 
 
 def test_markdown_states_the_unknown_primary_problem_rather_than_denying_it(capsys):
@@ -95,7 +98,9 @@ def test_json_carries_the_opportunities_beside_the_plans(capsys):
     _render_refactoring_targets([], [], [_move_method(), _break_cycle()], fmt="json")
     out = json.loads(capsys.readouterr().out)
     opportunities = out["refactoring_opportunities"]
-    assert {o["file_path"] for o in opportunities} == {"a.py", "c.py"}
+    # The cycle-only file publishes no opportunity; its plan stays listed.
+    assert {o["file_path"] for o in opportunities} == {"c.py"}
+    assert "break_cycle" in {p["refactoring_type"] for p in out["refactoring_plans"]}
     assert all(o["opportunity_id"].startswith("refop") for o in opportunities)
     # The step ids are the plan ids, so the CLI and the server address one thing.
     step_ids = [s["plan_id"] for o in opportunities for s in o["steps"]]
@@ -245,3 +250,53 @@ def test_an_idiomatic_cycle_is_marked_optional_in_the_detail(capsys):
     _render_refactoring_targets([], [], [cycle], fmt="md")
     text = capsys.readouterr().out
     assert "(same directory, idiomatic; optional)" in text
+
+
+def test_an_unattached_split_with_an_unnamed_group_says_it_needs_design(capsys):
+    split = RefactoringSuggestion(
+        refactoring_type="split_file",
+        file_path="pkg/big.py",
+        target_symbol="big.py -> 2 files",
+        line_start=None,
+        line_end=None,
+        plan={
+            "groups": [
+                {"name": "walk", "symbols": ["walk"], "suggested_file": "pkg/walk.py"},
+                {"name": None, "symbols": ["a", "b"], "suggested_file": None},
+            ],
+            "shim_required": True,
+        },
+        evidence={"group_count": 2},
+        impact_delta=0.0,
+        effort_bucket="L",
+        blast_radius={"dependent_count": 0},
+        confidence="high",
+    )
+    _render_refactoring_targets([], [], [split], fmt="md")
+    text = capsys.readouterr().out
+    assert "1 need design: a group has no name yet." in text
+    assert "- **big.py -> 2 files** (pkg/big.py) needs design" in text
+
+
+def _size_finding(target: str, ccn: int, line: int) -> HealthFindingData:
+    return HealthFindingData(
+        biomarker_type="complex_method",
+        severity=Severity.HIGH,
+        file_path=f"pkg/{target}.py",
+        function_name=target,
+        line_start=line,
+        line_end=line + 200,
+        details={"ccn": ccn, "nloc": 150},
+        health_impact=1.0,
+    )
+
+
+def test_raw_plans_carry_the_above_the_bar_mark_and_rank_by_it(capsys):
+    from tests.unit.health.test_worth_after_plan import _plan
+
+    big, small = _plan("big", 10, 10, impact=3.0), _plan("small", 10, 10, impact=1.0)
+    findings = [_size_finding("big", 90, 10), _size_finding("small", 30, 10)]
+    _render_refactoring_targets([], findings, [big, small], fmt="json")
+    plans = json.loads(capsys.readouterr().out)["refactoring_plans"]
+    assert [plan["target_symbol"] for plan in plans] == ["small", "big"]
+    assert plans[1]["leaves_above_bar"].startswith("leaves big at CCN 80")

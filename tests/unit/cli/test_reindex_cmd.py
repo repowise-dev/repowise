@@ -319,25 +319,82 @@ async def test_reindex_auto_honours_the_repo_pinned_embedder(
     assert built["name"] == "ollama"
 
 
-async def test_reindex_does_not_abort_on_a_deliberately_pinned_mock_embedder(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """`embedder: mock` in config.yaml is a choice, not a missing embedder.
+_EMBEDDER_KEYS = (
+    "REPOWISE_EMBEDDER",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OLLAMA_EMBEDDING_MODEL",
+    "EDENAI_API_KEY",
+)
 
-    The abort exists for the fallback case — nothing configured, so build_embedder
-    quietly hands back a MockEmbedder and a real reindex would write meaningless
-    vectors. A repo that pins mock has said what it wants, the same as passing
-    --embedder mock, and must not be treated as unconfigured.
-    """
+
+def _pin_mock(tmp_path: Path, monkeypatch) -> str:
+    """A repo a keyless init left pinned to mock, in a shell with no embedder."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}"
     (tmp_path / ".repowise").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".repowise" / "config.yaml").write_text(
-        "embedder: mock\n", encoding="utf-8"
+    (tmp_path / ".repowise" / "config.yaml").write_text("embedder: mock\n", encoding="utf-8")
+    for var in _EMBEDDER_KEYS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        "repowise.core.providers.embedding.resolve.global_config_path",
+        lambda: tmp_path / "no-global.yaml",
     )
-
-    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     monkeypatch.setattr(reindex_cmd, "get_db_url_for_repo", lambda _repo_path: db_url)
+    return db_url
+
+
+async def test_auto_replaces_a_mock_pin_with_a_detected_embedder(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A keyless init pins mock on its way out; that is no choice to keep.
+
+    Keeping it meant ``repowise reindex`` never added semantic search, while
+    every surface said it would.
+    """
+    _pin_mock(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    built: dict[str, str] = {}
+
+    def fake_build_embedder(name: str, _repo_path: object):
+        built["name"] = name
+        raise click.Abort()
+
+    monkeypatch.setattr("repowise.cli.providers.embedders.build_embedder", fake_build_embedder)
+
+    with pytest.raises(click.Abort):
+        await reindex_cmd._reindex(tmp_path, "auto", batch_size=20)
+
+    assert built["name"] == "openai"
+
+
+async def test_auto_on_a_mock_pin_with_no_embedder_prints_the_command(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Rebuilding test vectors adds nothing: stop, exit 1, name the way on."""
+    _pin_mock(tmp_path, monkeypatch)
+
+    def fail_build(*_args: object):
+        raise AssertionError("no embedder should be built")
+
+    monkeypatch.setattr("repowise.cli.providers.embedders.build_embedder", fail_build)
+
+    with pytest.raises(click.exceptions.Exit) as exc:
+        await reindex_cmd._reindex(tmp_path, "auto", batch_size=20)
+
+    assert exc.value.exit_code == 1
+    said = " ".join(capsys.readouterr().out.split())
+    assert "semantic search stays off" in said
+    assert "repowise reindex --embedder ollama" in said
+    assert "GEMINI_API_KEY" in said
+    assert not (tmp_path / ".repowise" / "lancedb").exists()
+
+
+async def test_an_explicit_mock_still_means_mock(monkeypatch, tmp_path: Path) -> None:
+    """``--embedder mock`` is a request for test vectors, honoured as asked."""
+    _pin_mock(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         "repowise.core.persistence.database.create_engine", lambda _url: _DummyEngine()
     )
@@ -348,5 +405,5 @@ async def test_reindex_does_not_abort_on_a_deliberately_pinned_mock_embedder(
     monkeypatch.setattr("repowise.core.persistence.database.init_db", fake_init_db)
     monkeypatch.setattr("sqlalchemy.ext.asyncio.async_sessionmaker", _sessionmaker)
 
-    # No Abort: reaches the normal empty-database path and returns.
-    await reindex_cmd._reindex(tmp_path, "auto", batch_size=20)
+    # No Abort and no Exit: reaches the normal empty-database path and returns.
+    await reindex_cmd._reindex(tmp_path, "mock", batch_size=20)

@@ -5,18 +5,20 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
-    effective_safe_to_delete,
 )
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.routers._unverified import UnverifiedQuery
 from repowise.server.schemas import (
     DeadCodeAnalyzeResponse,
     DeadCodeFindingResponse,
     DeadCodePatchRequest,
     DeadCodeSummaryResponse,
 )
+from repowise.server.services.analysis_ran_at import dead_code_analyzed_at
 
 router = APIRouter(
     tags=["dead-code"],
@@ -35,6 +37,7 @@ async def list_dead_code(
     status: str = Query("open"),
     safe_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[DeadCodeFindingResponse]:
     """List dead code findings for a repository."""
@@ -44,6 +47,7 @@ async def list_dead_code(
         kind=kind,
         min_confidence=min_confidence,
         status=status,
+        include_unverified=include_unverified,
     )
     if safe_only:
         findings = [
@@ -108,11 +112,15 @@ async def analyze_dead_code(
 )
 async def dead_code_summary(
     repo_id: str,
+    include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
-    summary = await crud.get_dead_code_summary(session, repo_id)
-    return DeadCodeSummaryResponse(**summary)
+    summary = await crud.get_dead_code_summary(
+        session, repo_id, include_unverified=include_unverified
+    )
+    analyzed_at = await dead_code_analyzed_at(session, repo_id)
+    return DeadCodeSummaryResponse(**summary, analyzed_at=analyzed_at)
 
 
 @router.patch("/api/dead-code/{finding_id}", response_model=DeadCodeFindingResponse)

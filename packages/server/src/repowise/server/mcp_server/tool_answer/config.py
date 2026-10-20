@@ -77,6 +77,21 @@ _HOMONYM_UNION_BODY_MAX_LINES = 120
 # cases is wide, so this is not tuned to an exact count.
 _HOMONYM_UNION_PROSE_DEF_CEILING = 6
 
+# Exact-identifier trust. On a prose question, a definition named by the
+# question but outside these top retrieved files must earn its anchor: its
+# location shares a word with the question, or the identifier is specific.
+_ANCHOR_TOPICAL_FILES = 5
+# An identifier written in more production files than this names a role many
+# files share (a field, a parameter, a local), not one definition. Both the
+# trust rule above and the literal leg below read it.
+_SPECIFIC_TOKEN_MAX_FILES = 3
+# Identifier-shaped words naming no indexed symbol (a string literal, a key, an
+# environment variable) are scanned for in live source, and the definitions
+# holding them anchored, up to the inline-body cap. Scans per question:
+_LITERAL_SCAN_MAX_TOKENS = 3
+# Definition kinds an exact question name may anchor.
+_ANCHOR_KINDS = ("function", "method", "class", "interface")
+
 # Data-shape grounding: "what fields does each entry in <blob> contain" is
 # answered by mining the field set from source, precision-ordered:
 #   * a documented {...} shape near the identifier (confidence high);
@@ -124,6 +139,12 @@ _AGREEMENT_TOP_RANK_MAX = 1
 _SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail by at least this many ranks in at least one source.
 _AGREEMENT_RANK_GAP = 1
+
+# A keyless answer whose lead file sits below this many files of the unreranked
+# hybrid retrieval grades "low". On 225 keyless questions over 11 repos, leads
+# in the top 4 were right 38-60% of the time per rank, leads below it 17%, under
+# the 27% the "low" tier already scored.
+_LEAD_HYBRID_TOP_K = 4
 
 # Phrases that mean the LLM declined to answer despite dominant retrieval.
 # A match downgrades confidence to "low" and drops the retrieval payload, since
@@ -264,6 +285,14 @@ _DOMAIN_PENALTY = 0.5
 # weak retrieval, so it grades "medium". Useful wiki hits routinely score >1.5.
 _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 
+# Share of the question's words, weighted by rarity across the retrieved hits,
+# the answering hit must mention before confidence may rest on it. Dominance
+# only compares hits with each other, so an off-topic page beating a worse one
+# still dominates. Chosen on one repo's questions, where it kept every top hit
+# that answered and dropped most off-topic and wrong-file ones, then checked on
+# repos in other languages.
+_ANSWER_COVERAGE_FLOOR = 0.5
+
 # Schema version stamped on every cached payload. Bump whenever the synthesised
 # response shape or the meaning of a field (including `confidence` and `note`)
 # changes: a cached row at a lower version is a miss and re-synthesises, since
@@ -272,7 +301,20 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # confined to them need no bump; a needless bump costs every keyed install a
 # round of provider spend.
 # 18: rows carry ``candidate_files``, the ranked paths-only list.
-_ANSWER_SCHEMA_VERSION = 18
+# 19: rows carry ``_candidate_file_facts``; low answers serve slim best_guesses rows.
+# 20: caller questions carry ``graph_callers`` and synthesise with them.
+# 21: impact questions carry ``graph_neighbors``, the users of the lead file.
+# 22: ``confidence`` also asks whether the top hit covers the question's words.
+# 23: bodies include the function holding a literal the question writes, and an
+#     exact name off the topic no longer anchors its definition; a question-named
+#     body grounds the answer only when it carries what else was asked;
+#     constructors fold into their class and a file the question rules out is
+#     dropped.
+_ANSWER_SCHEMA_VERSION = 23
+
+# Above this a whole-file Read costs more than the answer, so the low-confidence
+# hint names a ranged Read or a skeleton instead.
+_LARGE_FILE_BYTES = 40_000
 
 # How many paths ``candidate_files`` serves: the knee of measured coverage
 # gained per extra file, past which each path mostly costs precision. A high
@@ -313,14 +355,15 @@ _MAX_RICH_SIG_LINES = 4
 
 # Synthesis sampling. Answers target 150-400 words, so for a non-reasoning model
 # the token cap is headroom. A reasoning model spends the budget on hidden
-# thinking first and can come back empty with a ``length`` finish_reason, so the
-# env override lets such a model be given room. Low temperature: the answer
-# must track the excerpts, not embellish.
+# thinking first and can come back empty with a ``length`` finish_reason, so it
+# gets a larger default, and the env override sets both. Low temperature: the
+# answer must track the excerpts, not embellish.
 _SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
 _SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
+_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT = 4096
 
 
-def _synthesis_max_tokens() -> int:
+def _synthesis_max_tokens(default: int = _SYNTHESIS_MAX_TOKENS_DEFAULT) -> int:
     """The synthesis token budget, from env or the hosted-model default.
 
     An unparseable or non-positive value warns and keeps the default instead
@@ -328,18 +371,19 @@ def _synthesis_max_tokens() -> int:
     """
     raw = os.environ.get(_SYNTHESIS_MAX_TOKENS_ENV, "").strip()
     if not raw:
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     try:
         value = int(raw)
     except ValueError:
         value = 0
     if value <= 0:
         _log.warning("Ignoring unusable %s=%r", _SYNTHESIS_MAX_TOKENS_ENV, raw)
-        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+        return default
     return value
 
 
 _SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
+_SYNTHESIS_REASONING_MAX_TOKENS = _synthesis_max_tokens(_SYNTHESIS_REASONING_MAX_TOKENS_DEFAULT)
 _SYNTHESIS_TEMPERATURE = 0.2
 
 _SYSTEM_PROMPT = (

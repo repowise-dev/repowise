@@ -67,16 +67,21 @@
   /* TIER 2 — Semantic tokens (LIGHT defaults; `.dark` overrides below) */
   /* ================================================================== */
 
-  /* Core surfaces — warm paper / pure-white cards */
+  /* Core surfaces — warm paper root / pure-white cards. Elevated and inset
+     are near-neutral so raised rows and wells don't stack peach on peach. */
   --color-bg-root: #fbf6f1;
   --color-bg-surface: #ffffff;
-  --color-bg-elevated: #fbf4ee;
+  --color-bg-elevated: #f7f4f1;
   --color-bg-overlay: #ffffff;
-  --color-bg-inset: #f4eae1;
+  --color-bg-inset: #f0ebe6;
   /* A well measured from the overlay plane rather than from root. Light mode
-     needs no separate value: overlay is white, so the same warm inset already
+     needs no separate value: overlay is white, so the same inset already
      recesses correctly inside a dialog. See the dark block for why it exists. */
-  --color-bg-inset-on-overlay: #f4eae1;
+  --color-bg-inset-on-overlay: #f0ebe6;
+  /* Selected row / tab / chip ground. Neutral ink alpha: orange belongs on
+     the indicator (bar, underline, dot), not on the whole ground. */
+  --color-bg-selected: rgba(36, 27, 44, 0.06);
+  --color-bg-selected-hover: rgba(36, 27, 44, 0.09);
 
   /* Borders — plum-tinted hairlines */
   --color-border-default: rgba(88, 67, 108, 0.12);
@@ -95,7 +100,7 @@
   --color-accent-fill: #f59520;
   --color-accent-fill-hover: #e0850f;
   --color-accent-hover: #824f10;
-  --color-accent-muted: rgba(245, 149, 32, 0.12);
+  --color-accent-muted: rgba(245, 149, 32, 0.07);
   --color-accent-secondary: #58436c;
 
   /* Model work — the plum accent doing one named job.
@@ -114,34 +119,54 @@
   --color-model-hover: var(--color-plum-600);
   --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
 
-  /* Accent ramp — the one sanctioned way to colour a proportion: ordered
-     shares of a whole (a stacked bar, a histogram, an area chart), stepped
-     from the accent toward the page ground. Sequential, so position in the
-     ramp means magnitude; NOT for unrelated categories, which want either the
-     accent/secondary pair or plain neutrals.
-
-     Defined per theme rather than as one set of color-mix percentages,
-     because the mix that recedes gracefully into near-black disappears
-     entirely into cream. Light also starts a step down from full #f59520,
-     which is louder than it needs to be on a warm paper ground. */
-  --color-ramp-1: #e08a12;
-  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 76%, var(--color-bg-inset));
-  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 56%, var(--color-bg-inset));
-  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 40%, var(--color-bg-inset));
-  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 26%, var(--color-bg-inset));
-  /* Supporting cast beside an accent series. Same idea, no hue. */
+  /* Series — the one categorical palette for every chart (seriesColor in
+     shared/series.ts): orange, plum, blue, olive, rose, gold, brick, slate,
+     ordered so neighbours stay apart. The community hues' values, set here
+     and in `.dark` so they theme in this layer; plum, blue and brick alias
+     tokens with the same values in both themes. Each clears 3:1 on the page
+     and a card in both themes (contrast-check.py). `share-tail` is the grey
+     for an unnamed remainder ("Other"). Verdicts (health bands, risk) keep
+     their own tokens. */
+  --color-series-1: #c0641a;
+  --color-series-2: var(--color-accent-secondary);
+  --color-series-3: var(--color-info);
+  --color-series-4: #6b7a3d;
+  --color-series-5: #b06a86;
+  --color-series-6: #a8821f;
+  --color-series-7: var(--color-error);
+  --color-series-8: #4a5d7a;
+  --color-share-tail: color-mix(in srgb, var(--color-text-primary) 20%, var(--color-bg-inset));
+  /* Heat steps — a heatmap cell's fill, light to dark: the accent stepped
+     into the card. Steps 1-3 carry ink text, 4-5 card-coloured text; each
+     pairing clears 4.5:1 in both themes (contrast-check.py). Per theme
+     because the light accent darkens and the dark one lightens. */
+  --color-heat-1: color-mix(in srgb, var(--color-accent-primary) 10%, var(--color-bg-surface));
+  --color-heat-2: color-mix(in srgb, var(--color-accent-primary) 26%, var(--color-bg-surface));
+  --color-heat-3: color-mix(in srgb, var(--color-accent-primary) 50%, var(--color-bg-surface));
+  --color-heat-4: var(--color-accent-primary);
+  --color-heat-5: var(--color-accent-hover);
+  /* Release moment (What's new) — a deeper ground than the overlay plane and
+     a low-opacity orange-to-plum glow band behind the version heading, and
+     the card a linked highlight sits on. Solid values so ink on them is
+     checked (contrast-check.py). */
+  --color-release-ground: var(--color-bg-root);
+  --color-release-card: var(--color-bg-surface);
+  --color-release-glow-1: #f8dfc2;
+  --color-release-glow-2: #e8deef;
+  /* Supporting cast beside an accent series: tertiary ink stepped into the well. */
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 22%, var(--color-bg-inset));
 
   /* Confidence system */
   --color-confidence-fresh: #1d8155;
-  --color-confidence-stale: #9a6614;
+  --color-confidence-stale: #856700;
   --color-confidence-outdated: #b23a2e;
 
   /* Semantic status */
   --color-success: #1d8155;
-  --color-warning: #9a6614;
+  /* Yellower than the accent so a warning never reads as a selected state. */
+  --color-warning: #856700;
   --color-error: #b23a2e;
   --color-info: #3f6ea5; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #a8821f; /* between warning and success; medium severity / fair score band */
@@ -230,7 +255,7 @@
      the kg-node "blueprint" tokens so the C4 view that consumes those is
      untouched. LIGHT: white cards on warm paper; DARK overrides below. */
   --color-zoom-card-fill: #ffffff; /* leaf (file) card */
-  --color-zoom-card-fill-2: #fbf4ee; /* container (folder/group/layer) card */
+  --color-zoom-card-fill-2: #f7f4f1; /* container (folder/group/layer) card */
   --color-zoom-card-text: #241b2c;
   --color-zoom-card-border: rgba(88, 67, 108, 0.14); /* hairline */
   --color-zoom-card-border-hover: rgba(88, 67, 108, 0.28);
@@ -247,14 +272,7 @@
   --color-zoom-grid: rgba(36, 27, 44, 0.045);
   --color-zoom-grid-strong: rgba(36, 27, 44, 0.08);
 
-  /* Language colors (canonical brand hues — theme-independent) */
-  --color-lang-python: #3776ab;
-  --color-lang-typescript: #3178c6;
-  --color-lang-go: #00add8;
-  --color-lang-rust: #dea584;
-  --color-lang-java: #ed8b00;
-  --color-lang-cpp: #00599c;
-  --color-lang-config: #6b7280;
+  /* The "Other" provider in the costs comparison (theme-independent). */
   --color-lang-other: #8b5cf6;
 
   /* Edge colors (graph edges) — remapped to the new palette */
@@ -294,6 +312,7 @@
      paper-theme green sitting on the dark ramp. */
   --color-success-muted: color-mix(in srgb, var(--color-success) 12%, transparent);
   --color-error-muted: color-mix(in srgb, var(--color-error) 14%, transparent);
+  --color-warning-muted: color-mix(in srgb, var(--color-warning) 8%, transparent);
   --color-border-subtle: var(--color-border-default);
   /* Faint hairline for table row dividers — half the weight of a normal
      border so rows whisper while the header rule still reads. References the
@@ -307,10 +326,9 @@
   --color-viz-diff-affected: var(--color-warning);
 
   /* Savings surfaces — two categorical hues distinguishing the distill ledger
-     from MCP-tool answers in the Costs savings card. Plum + brand-orange so the
-     split reads in both themes without a third brand color. */
-  --color-savings-distill: var(--color-accent-fill);
-  --color-savings-mcp: var(--color-accent-secondary);
+     from MCP-tool answers in the Costs savings card: the first two series. */
+  --color-savings-distill: var(--color-series-1);
+  --color-savings-mcp: var(--color-series-2);
 
   /* ================================================================== */
   /* Signature gradients (theme-independent)                            */
@@ -323,10 +341,8 @@
   /* Soft saturated -> pale warm gradient (the "smooth two-tone" style):
      brand orange melting into a warm peach. For brand chips, icon blobs,
      small accent panels, avatars, selected/active art. Dark text reads on
-     the whole sweep. `--gradient-warm-wash` is the ultra-subtle background
-     version (theme-aware) for empty-states, hero washes, and section bands. */
+     the whole sweep. Product empty states stay on the neutral planes. */
   --gradient-warm: linear-gradient(135deg, #f59520 0%, #ffd9b0 100%);
-  --gradient-warm-wash: linear-gradient(160deg, #fff4ea 0%, #ffe6cf 55%, #ffd9bd 100%);
 
   /* ================================================================== */
   /* Elevation — warm/plum-tinted shadows (LIGHT; `.dark` overrides)    */
@@ -466,6 +482,8 @@
   --color-bg-overlay: #1f1f23;
   --color-bg-inset: #0a0a0b;
   --color-bg-inset-on-overlay: #141417;
+  --color-bg-selected: rgba(255, 255, 255, 0.06);
+  --color-bg-selected-hover: rgba(255, 255, 255, 0.09);
 
   /* Neutral hairlines so card / sidebar / table edges read on the gray base.
      Lighter than before: the same alpha reads considerably louder against
@@ -494,23 +512,32 @@
      and need no override; see the light block for the family. */
   --color-model-hover: var(--color-plum-200);
 
-  /* Accent ramp — see the light block. Steeper here: mixing toward #0a0a0b
-     loses luminance fast, so the same percentages would bottom out invisible. */
-  --color-ramp-1: #f59520;
-  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 64%, var(--color-bg-inset));
-  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 42%, var(--color-bg-inset));
-  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 27%, var(--color-bg-inset));
-  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 16%, var(--color-bg-inset));
+  /* Series, the tail and heat steps — see the light block. */
+  --color-series-1: #f59520;
+  --color-series-4: #a9bb6f;
+  --color-series-5: #d795b1;
+  --color-series-6: #d9b04a;
+  --color-series-8: #8fa3c0;
+  --color-share-tail: color-mix(in srgb, var(--color-text-primary) 18%, var(--color-bg-inset));
+  --color-heat-1: color-mix(in srgb, var(--color-accent-primary) 12%, var(--color-bg-surface));
+  --color-heat-2: color-mix(in srgb, var(--color-accent-primary) 26%, var(--color-bg-surface));
+  --color-heat-3: color-mix(in srgb, var(--color-accent-primary) 42%, var(--color-bg-surface));
+  --color-heat-4: color-mix(in srgb, var(--color-accent-primary) 75%, var(--color-bg-surface));
+  --color-heat-5: var(--color-accent-primary);
+  --color-release-ground: #111013;
+  --color-release-card: #1b191e;
+  --color-release-glow-1: #2b1c0e;
+  --color-release-glow-2: #1f1729;
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));
 
   --color-confidence-fresh: #34d399;
-  --color-confidence-stale: #f2a03d;
+  --color-confidence-stale: #e8b339;
   --color-confidence-outdated: #e06a5a;
 
   --color-success: #34d399;
-  --color-warning: #f2a03d;
+  --color-warning: #e8b339;
   --color-error: #e06a5a;
   --color-info: #7da7d9; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #d9b04a;
@@ -610,10 +637,6 @@
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
-
-  /* Dark soft wash — neutral graphite with a faint lift at the end. Tracks the
-     surface ramp: the wash reads as a lit panel only if it starts at the base. */
-  --gradient-warm-wash: linear-gradient(160deg, #101012 0%, #16161a 55%, #1f1f23 100%);
 }
 
 /* -------------------------------------------------------------------- */
@@ -732,9 +755,15 @@ body {
 /* Selection                                                             */
 /* -------------------------------------------------------------------- */
 
+/* Own value rather than accent-muted: that ground is deliberately faint now
+   and a selection has to stay visible over it. */
 ::selection {
-  background-color: var(--color-accent-muted);
+  background-color: rgba(245, 149, 32, 0.22);
   color: var(--color-text-primary);
+}
+
+.dark ::selection {
+  background-color: rgba(245, 149, 32, 0.28);
 }
 
 /* -------------------------------------------------------------------- */

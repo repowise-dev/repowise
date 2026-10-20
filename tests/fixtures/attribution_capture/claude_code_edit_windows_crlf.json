@@ -1,0 +1,25 @@
+{
+  "session_id": "6f1c2b9e-0000-4000-8000-00000000c1a0",
+  "transcript_path": "C:\\Users\\dev\\.claude\\projects\\C--work-demo\\6f1c2b9e.jsonl",
+  "cwd": "C:\\work\\demo",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_use_id": "toolu_01EXAMPLE",
+  "duration_ms": 41,
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "C:\\work\\demo\\src\\billing.py",
+    "old_string": "def total(items):\r\n    return 0\r\n",
+    "new_string": "def total(items):\r\n    subtotal = sum(item.price for item in items)\r\n    return round(subtotal * 1.2, 2)\r\n",
+    "replace_all": false
+  },
+  "tool_response": {
+    "filePath": "C:\\work\\demo\\src\\billing.py",
+    "oldString": "def total(items):\r\n    return 0\r\n",
+    "newString": "def total(items):\r\n    subtotal = sum(item.price for item in items)\r\n    return round(subtotal * 1.2, 2)\r\n",
+    "originalFile": "def total(items):\r\n    return 0\r\n",
+    "replaceAll": false,
+    "userModified": false,
+    "structuredPatch": []
+  }
+}

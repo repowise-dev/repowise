@@ -53,6 +53,13 @@ async def _seed(session) -> str:
                       committed_at=ANCHOR - timedelta(days=2), subject="feat: build step"),
             GitCommit(repository_id=rid, sha="older", author_name="Cy", author_email="cy@x.io",
                       committed_at=ANCHOR - timedelta(days=20), subject="fix: things"),
+            # Older history, outside every window: enough commits to rank by.
+            *(
+                GitCommit(repository_id=rid, sha=f"old{i}", author_name="Ada",
+                          author_email="ada@x.io", committed_at=ANCHOR - timedelta(days=200 + i),
+                          subject="chore: old")
+                for i in range(2)
+            ),
         ]
     )
     add([GitCommitFile(repository_id=rid, sha="older", file_path="src/old.py")])
@@ -99,6 +106,16 @@ async def _seed(session) -> str:
                                    biomarker_type="change_entropy", severity="high",
                                    file_path="src/hist.py", symbol=None,
                                    attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c4",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/repo.py", symbol="load",
+                                   attribution_basis="added_lines"),
+            GitCommitHealthFinding(repository_id=rid, sha="recent", change_finding_id="c5",
+                                   change_kind="introduced", dimension="performance",
+                                   biomarker_type="n_plus_one", severity="medium",
+                                   file_path="src/other.py", symbol="f",
+                                   attribution_basis="added_lines"),
             HealthFinding(repository_id=rid, file_path="src/new.py", biomarker_type="complex_method",
                           severity="high", function_name="build", health_impact=1.0,
                           line_start=10, line_end=60, details_json=DEEP),
@@ -115,9 +132,10 @@ async def _seed(session) -> str:
                 plan_state="available", fix_strategy="batch_or_prefetch_io",
                 boundary_kind="db", biomarker_type="n_plus_one", file_path="src/repo.py",
                 intervention_symbol="src/repo.py::Repo.load", affected_call_sites_total=4,
-                affected_files_total=2,
+                affected_files_total=2, queue_eligible=True,
                 details_json=json.dumps(
                     {"facets": {"exposure": "entry_reachable", "loop_magnitude": "grows_with_data",
+                                "growth_source": "loop",
                                 "actionability_confidence": "medium"},
                      "plan": {"effort_bucket": "S"}}
                 ),
@@ -184,12 +202,12 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     rules = _by_rule(view)
 
     # Fix first names the busy bug magnet by its code-shape finding, not the
-    # higher-impact history marker, and the plan-ready loop; the fragile-file
-    # rule does not repeat the file it already names.
+    # higher-impact history marker; the fragile-file rule does not repeat the
+    # file it already names. The plan-ready loop this week's commit added is a
+    # fresh regression (below), so Fix first does not list it again.
     fixes = {a["target"]["path"]: a for a in rules["fix_first"]}
     assert fixes["src/core.py"]["title"] == "Break up run (CCN 44)"
-    assert fixes["src/repo.py"]["title"] == "Batch the database calls loops make through Repo.load"
-    assert fixes["src/repo.py"]["effort"] == "S"
+    assert "src/repo.py" not in fixes
     assert "fragile_file" not in rules
 
     (secret,) = rules["live_secret"]
@@ -200,9 +218,15 @@ async def test_load_actions_view_composes_every_store(async_session) -> None:
     assert dead["evidence_total"] == 3
 
     week = _by_rule(view, "week")
-    (fresh,) = week["fresh_regressions"]
-    assert fresh["title"] == "Simplify `build` in `src/new.py` while the change is fresh"
-    assert fresh["evidence_ids"] == ["recent"]
+    # The proven performance cause acts now; the unproven one is left out, and
+    # the code-shape finding is one item to plan.
+    perf, shape = sorted(week["fresh_regressions"], key=lambda a: a["tier"])
+    assert (perf["tier"], perf["target"]["path"]) == ("act_now", "src/repo.py")
+    assert perf["title"] == "Fix the performance regression in `load` in `src/repo.py`"
+    assert (shape["tier"], shape["severity"], shape["target"]["path"]) == (
+        "plan", "medium", "src/new.py"
+    )
+    assert shape["evidence_ids"] == ["recent"]
 
 
 async def test_a_missing_store_is_reported_and_the_rest_still_load(async_session) -> None:
@@ -292,3 +316,93 @@ async def test_coverage_state_reads_the_ingest_record(async_session) -> None:
     # The row's sha sorts after "head", which `max()` over rows would have picked.
     assert (state.status, state.partial, state.files_measured) == ("measured", True, 1)
     assert (await _coverage(async_session, rid, "newer"))["coverage"].status == "stale"
+
+
+async def test_a_test_reaching_through_a_helper_turns_add_tests_into_simplify(async_session) -> None:
+    """openclaw's attempt.ts: tests load it through a support module two imports away."""
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
+    from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    rid = await _seed(async_session)
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.history_commits == 5
+    assert facts.files["src/core.py"].tests_reaching == 0
+
+    for path, is_test in (
+        ("src/core.py", False),
+        ("src/core.test-support.py", False),
+        ("tests/test_core.py", True),
+    ):
+        async_session.add(
+            GraphNode(repository_id=rid, node_id=path, node_type="file", is_test=is_test)
+        )
+    for src, dst in (
+        ("tests/test_core.py", "src/core.test-support.py"),
+        ("src/core.test-support.py", "src/core.py"),
+    ):
+        async_session.add(
+            GraphEdge(repository_id=rid, source_node_id=src, target_node_id=dst, edge_type="imports")
+        )
+    await async_session.commit()
+    # The graph changed without an index run, which is what moves the cache stamp.
+    clear_test_map_cache()
+
+    facts = await load_repo_facts(async_session, rid)
+    core = facts.files["src/core.py"]
+    assert (core.tests_reaching, core.tests_reaching_via) == (1, "import-graph")
+
+    # Once production code imports the middle file it is a hub, not test
+    # support, and the second hop no longer counts.
+    async_session.add(GraphNode(repository_id=rid, node_id="src/app.py", node_type="file"))
+    async_session.add(
+        GraphEdge(repository_id=rid, source_node_id="src/app.py",
+                  target_node_id="src/core.test-support.py", edge_type="imports")
+    )
+    await async_session.commit()
+    clear_test_map_cache()
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.files["src/core.py"].tests_reaching == 0
+
+
+async def test_a_failed_test_map_walk_is_unknown_not_zero(async_session, monkeypatch) -> None:
+    from repowise.core.persistence.crud.analysis import actions as loader
+
+    rid = await _seed(async_session)
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("graph_edges unreadable")
+
+    monkeypatch.setattr(loader, "any_tests_reaching", broken)
+    facts = await loader.load_repo_facts(async_session, rid)
+    assert "test_map" in facts.unavailable
+    assert facts.files["src/core.py"].tests_reaching is None
+
+
+async def test_an_index_without_git_has_no_history_count(async_session) -> None:
+    from repowise.core.persistence.crud.analysis.actions import load_repo_facts
+
+    rid = await _seed(async_session)
+    await async_session.execute(text("DELETE FROM git_commits"))
+    await async_session.commit()
+    assert (await load_repo_facts(async_session, rid)).history_commits == 0
+
+    await async_session.execute(text("DELETE FROM git_metadata"))
+    await async_session.commit()
+    facts = await load_repo_facts(async_session, rid)
+    assert facts.history_commits is None
+
+
+async def test_a_one_commit_index_is_flagged_and_history_rules_stand_down(async_session) -> None:
+    rid = await _seed(async_session)
+    await async_session.execute(text("DELETE FROM git_commits WHERE sha != 'head'"))
+    await async_session.commit()
+
+    view = await load_actions_view(async_session, rid, now=NOW)
+    assert view["context"]["history_too_short"] is True
+    status = {r["rule"]: (r["status"], r["reason"]) for r in view["rules"]}
+    for rule in ("fragile_file", "fix_concentration", "knowledge_loss"):
+        assert status[rule][0] == "not_applicable"
+        assert "too few commits" in status[rule][1]
+    # Rules that do not rank by history still run.
+    assert status["live_secret"][0] == "evaluated"

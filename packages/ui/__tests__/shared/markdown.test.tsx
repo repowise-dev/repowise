@@ -115,4 +115,32 @@ describe("Markdown", () => {
     expect(container.querySelectorAll("ul").length).toBeGreaterThan(1);
     expect(container.querySelector('input[type="checkbox"]')).toBeChecked();
   });
+
+  it("steps down to 14px for the dock without forcing a 640px table", () => {
+    const { container } = render(
+      <Markdown content={"Dock text.\n\n| File | Score |\n|---|---|\n| a.py | 4 |"} density="narrow" />,
+    );
+    expect(screen.getByText("Dock text.").className).toContain("text-sm");
+    const table = container.querySelector("table");
+    expect(table?.className).not.toContain("min-w-[640px]");
+    expect(table?.parentElement?.className).toContain("overflow-x-auto");
+  });
+
+  it("fills the host column when asked instead of capping prose at 72ch", () => {
+    const view = render(<Markdown content="Capped." />);
+    expect(screen.getByText("Capped.").className).toContain("max-w-[72ch]");
+    view.rerender(<Markdown content="Capped." fill />);
+    expect(screen.getByText("Capped.").className).toContain("max-w-full");
+  });
+
+  it("keeps a streamed code block mounted in its final frame when the answer completes", async () => {
+    const content = "```ts\nconst kept = true\n```";
+    const view = render(<Markdown content={content} streaming />);
+    const frame = view.container.querySelector("[data-chat-selection]");
+    expect(frame).not.toBeNull();
+    view.rerender(<Markdown content={content} />);
+    expect(view.container.querySelector("[data-chat-selection]")).toBe(frame);
+    await waitFor(() => expect(view.container.querySelector(".shiki")).not.toBeNull());
+    expect(view.container.querySelector("[data-chat-selection]")).toBe(frame);
+  });
 });

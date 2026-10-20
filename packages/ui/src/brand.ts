@@ -28,8 +28,8 @@ export const BRAND = {
 export const LIGHT = {
   bgRoot: "#fbf6f1",
   bgSurface: "#ffffff",
-  bgElevated: "#fbf4ee",
-  bgInset: "#f4eae1",
+  bgElevated: "#f7f4f1",
+  bgInset: "#f0ebe6",
   textPrimary: "#241b2c",
   textSecondary: "#5e5360",
   textTertiary: "#8c7f88",
@@ -37,7 +37,7 @@ export const LIGHT = {
   accentFill: "#f59520",
   accentSecondary: "#58436c",
   success: "#1d8155",
-  warning: "#9a6614",
+  warning: "#856700",
   error: "#b23a2e",
 } as const;
 
@@ -54,7 +54,7 @@ export const DARK = {
   accentFill: "#f59520",
   accentSecondary: "#a98fc4",
   success: "#34d399",
-  warning: "#f2a03d",
+  warning: "#e8b339",
   error: "#e06a5a",
 } as const;
 

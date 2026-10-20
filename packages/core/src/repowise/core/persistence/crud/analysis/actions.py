@@ -6,6 +6,11 @@ built before a detector shipped, or an older schema, costs that store's rules
 
 The reads here only narrow; the row-to-fact rule is the pure builder in
 ``repowise.core.analysis.actions.build``.
+
+Index and update store the rules' output as a read snapshot
+(:func:`write_actions_snapshot`), kept only until a store the facts come from
+is written (``persistence.read_snapshots``); a read that finds it ranks the
+stored actions and skips the facts and the rules.
 """
 
 from __future__ import annotations
@@ -15,20 +20,23 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.actions import (
+    ACTIONS_MODEL_VERSION,
     Action,
     ActionStateRecord,
     RepoFacts,
-    compose_actions,
     find_action,
+    rank_actions,
+    rule_actions,
 )
 from repowise.core.analysis.actions.build import (
     ABSENT,
     AUTHORED_BASES,
     QUARTER,
+    SERIOUS,
     WEEK,
     build_authors,
     build_coverage,
@@ -39,13 +47,16 @@ from repowise.core.analysis.actions.build import (
     build_recent,
     build_secrets,
     lead_paths,
+    reach_paths,
     with_leads,
+    with_test_reach,
 )
 from repowise.core.analysis.actions.facts import FileFacts
 from repowise.core.analysis.actions.rules.code import FIX_FIRST_ACTIONS
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.test_reachability import any_tests_reaching
 
 from ...models import (
     ActionState,
@@ -61,9 +72,11 @@ from ...models import (
     GraphMetric,
     HealthFileMetric,
     HealthFinding,
+    PerformanceOpportunity,
     SecurityFinding,
 )
-from .fix_first import load_fix_first
+from ...read_snapshots import mark_current, read_snapshot, refresh_snapshot, snapshot_key
+from .fix_first import load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +206,7 @@ async def _recent(
                 GitCommitHealthFinding.line_start,
                 GitCommitHealthFinding.reason,
                 GitCommitHealthFinding.attribution_basis,
+                GitCommitHealthFinding.dimension,
                 GitCommit.subject,
                 GitCommit.committed_at,
             )
@@ -205,27 +219,90 @@ async def _recent(
                 GitCommitHealthFinding.repository_id == repo_id,
                 GitCommit.committed_at >= since,
                 GitCommitHealthFinding.change_kind.in_(("introduced", "worsened")),
-                GitCommitHealthFinding.severity.in_(("critical", "high")),
+                or_(
+                    GitCommitHealthFinding.severity.in_(SERIOUS),
+                    GitCommitHealthFinding.dimension == "performance",
+                ),
                 GitCommitHealthFinding.attribution_basis.in_(AUTHORED_BASES),
             )
         )
     ).all()
     open_findings: list[Any] = []
+    performance: list[Any] = []
     if rows:
         open_findings = (
             await session.execute(
                 select(*_HEALTH_FINDING_COLUMNS).where(
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
+                    HealthFinding.severity.in_(SERIOUS),
                     HealthFinding.file_path.in_({r.file_path for r in rows}),
                 )
             )
         ).all()
-    return build_recent(rows, week=since, open_findings=open_findings, files=files)
+        perf_paths = {r.file_path for r in rows if r.dimension == "performance"}
+        if perf_paths:
+            performance = await _proven_performance(session, repo_id, perf_paths)
+    return build_recent(
+        rows, week=since, open_findings=open_findings, files=files, performance=performance
+    )
+
+
+async def _proven_performance(session: AsyncSession, repo_id: str, paths: set[str]) -> list[Any]:
+    """The queue's open causes in ``paths``, with what ``perf_confident_verdict``
+    reads; none when the store cannot be read, which costs only the
+    performance regressions, not the week's rest."""
+    p = PerformanceOpportunity
+    try:
+        async with session.begin_nested():
+            return (
+                await session.execute(
+                    select(
+                        p.file_path,
+                        p.biomarker_type,
+                        p.status,
+                        p.queue_eligible,
+                        p.execution_context,
+                        p.actionability_state,
+                        p.execution_role,
+                        p.details_json,
+                    ).where(
+                        p.repository_id == repo_id,
+                        p.status == "open",
+                        p.queue_eligible.is_(True),
+                        p.file_path.in_(paths),
+                    )
+                )
+            ).all()
+    except Exception as exc:  # an index from before the performance store
+        logger.warning("actions: performance causes unavailable: %s", exc)
+        return []
+
+
+async def _history(session: AsyncSession, repo_id: str) -> dict[str, Any]:
+    count = select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repo_id)
+    commits = (await session.execute(count)).scalar_one()
+    if not commits:
+        # No commit rows and no per-file history: git was never indexed, which
+        # is unknown, not a short history.
+        indexed = select(GitMetadata.file_path).where(GitMetadata.repository_id == repo_id)
+        if (await session.execute(indexed.limit(1))).first() is None:
+            return {"history_commits": None}
+    return {"history_commits": commits}
+
+
+async def _test_map(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
+    """Only a file no test reaches may be told to add tests, so only those few are walked."""
+    paths = reach_paths(files)
+    if not paths:
+        return {}
+    return {"files": with_test_reach(files, await any_tests_reaching(session, repo_id, paths))}
 
 
 async def _fix_first(session: AsyncSession, repo_id: str) -> dict[str, Any]:
-    return {"fix_first": (await load_fix_first(session, repo_id, limit=FIX_FIRST_ACTIONS)).items}
+    # An action names the item and links to its full read; it carries no tests.
+    queue = await load_fix_first(session, repo_id, limit=FIX_FIRST_ACTIONS, verify=False)
+    return {"fix_first": queue.items}
 
 
 async def _secrets(session: AsyncSession, repo_id: str, files: dict[str, FileFacts]) -> dict:
@@ -389,7 +466,10 @@ async def load_repo_facts(session: AsyncSession, repo_id: str) -> RepoFacts:
             logger.warning("actions: %s unavailable: %s", store, exc)
             unavailable[store] = ABSENT
 
+    await read("history", lambda: _history(session, repo_id))
     await read("files", lambda: _files(session, repo_id, since))
+    if "files" in values:
+        await read("test_map", lambda: _test_map(session, repo_id, values["files"]))
     files: dict[str, FileFacts] = values.get("files") or {}
     await read("authors", lambda: _authors(session, repo_id, since))
     await read("commit_health", lambda: _recent(session, repo_id, week, files))
@@ -421,7 +501,11 @@ async def set_action_state(
     fingerprint: str = "",
     until: datetime | None = None,
 ) -> None:
-    """Record, replace, or (``state=None``) clear a person's answer to one action."""
+    """Record, replace, or (``state=None``) clear a person's answer to one action.
+
+    Not a stored view's input (``read_snapshots.UNRELATED_TABLES``): answers
+    apply on every read, so writing one keeps the stored views.
+    """
     row = (
         await session.execute(
             select(ActionState).where(
@@ -447,18 +531,112 @@ async def set_action_state(
         row.state, row.fingerprint, row.until = state, fingerprint, until
 
 
+#: The stored rules' output's ``read_snapshots.kind``.
+SNAPSHOT_KIND = "actions"
+_KEY = snapshot_key(SNAPSHOT_KIND, ACTIONS_MODEL_VERSION)
+
+
+async def _ruled(session: AsyncSession, repo_id: str) -> dict[str, Any]:
+    """The rules' output from the facts as stored now, and what could not be read."""
+    facts = await load_repo_facts(session, repo_id)
+    return {**rule_actions(facts), "unavailable": dict(facts.unavailable)}
+
+
+async def write_actions_snapshot(session: AsyncSession, repo_id: str) -> bool:
+    """Store the rules' output for the next reader; ``False`` when the stored
+    one is still current."""
+    return await refresh_snapshot(
+        session, repo_id, SNAPSHOT_KIND, _KEY, lambda: _ruled(session, repo_id)
+    )
+
+
+async def write_read_snapshots(
+    session: AsyncSession, repo_id: str
+) -> list[tuple[str, Exception]]:
+    """Store the Fix first queue, then the actions view that quotes its head,
+    then the run's component snapshot (:mod:`repowise.core.events`).
+
+    For a writer whose stores are final for this run, on the session that
+    wrote them or a later one. Best-effort, each in its own savepoint: a view
+    that fails to build is built live on read instead. Returns
+    ``(snapshot, error)`` per snapshot not written, for a caller whose output
+    the core log level hides.
+    """
+    failed: list[tuple[str, Exception]] = []
+    for kind, write in (
+        ("fix_first", write_fix_first_snapshot),
+        (SNAPSHOT_KIND, write_actions_snapshot),
+    ):
+        try:
+            async with session.begin_nested():
+                await write(session, repo_id)
+        except Exception as exc:  # a reader builds live instead
+            logger.warning("read snapshot %s not written: %s", kind, exc)
+            failed.append((kind, exc))
+    written = not failed
+    # Built after this session's own writes, so its commit may keep them; a
+    # kind that failed may have left an older row, which the commit drops.
+    if written:
+        await mark_current(session)
+    # The run's component snapshot and its events read the same final stores.
+    try:
+        from repowise.core.events.store import record_snapshot
+
+        async with session.begin_nested():
+            await record_snapshot(session, repo_id)
+    except Exception as exc:  # history skips a run; the index is unaffected
+        logger.warning("component snapshot not written: %s", exc)
+        failed.append(("component", exc))
+        try:  # so the next snapshot is a baseline, not a diff across the gap
+            from repowise.core.events.store import record_gap
+
+            async with session.begin_nested():
+                await record_gap(session, repo_id, "failed")
+        except Exception as gap_exc:
+            logger.warning("component snapshot gap not recorded: %s", gap_exc)
+    return failed
+
+
+def _view(ruled: dict[str, Any], states: dict[str, ActionStateRecord], now: datetime) -> dict:
+    view = rank_actions(ruled, states, now=now)
+    view["unavailable"] = dict(ruled["unavailable"])
+    return view
+
+
+def _stored_view(
+    ruled: dict[str, Any] | None, states: dict[str, ActionStateRecord], now: datetime
+) -> dict[str, Any] | None:
+    """The view from the stored rules' output; ``None`` when there is none or
+    the ranking cannot read it. Fields the ranking does not read pass through
+    as stored: a change to an action's shape bumps ``ACTIONS_MODEL_VERSION``,
+    which is in the key."""
+    if ruled is None:
+        return None
+    try:
+        return _view(ruled, states, now)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        logger.info("stored actions no longer fit the model: %s", exc)
+        return None
+
+
 async def load_actions_view(
     session: AsyncSession, repo_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
-    """The one entry point: facts, the person's answers, and the ranked view."""
-    facts = await load_repo_facts(session, repo_id)
+    """The one entry point: the rules' output, the person's answers, and the ranked view.
+
+    The rules' output is the stored snapshot while it is current, else built
+    from the facts here. Never writes.
+    """
     try:
         async with session.begin_nested():
             states = await get_action_states(session, repo_id)
     except Exception:
         states = {}
-    view = compose_actions(facts, states, now=now or datetime.now(UTC))
-    view["unavailable"] = dict(facts.unavailable)
+    when = now or datetime.now(UTC)
+    stored = await read_snapshot(session, repo_id, SNAPSHOT_KIND, _KEY)
+    view = _stored_view(stored, states, when)
+    if view is None:
+        view = _view(await _ruled(session, repo_id), states, when)
     return view
 
 

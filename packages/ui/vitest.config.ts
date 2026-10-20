@@ -31,6 +31,11 @@ export default defineConfig({
       "@repowise-dev/types/doc-drift": path.resolve(__dirname, "../types/src/doc-drift.ts"),
       "@repowise-dev/types/symbols": path.resolve(__dirname, "../types/src/symbols.ts"),
       "@repowise-dev/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
+      "@repowise-dev/types/cards": path.resolve(__dirname, "../types/src/cards.ts"),
+      "@repowise-dev/types/changes": path.resolve(__dirname, "../types/src/changes.ts"),
+      "@repowise-dev/types/history": path.resolve(__dirname, "../types/src/history.ts"),
+      "@repowise-dev/types/events": path.resolve(__dirname, "../types/src/events.ts"),
+      "@repowise-dev/types/views": path.resolve(__dirname, "../types/src/views.ts"),
       "@repowise-dev/types/workspace": path.resolve(__dirname, "../types/src/workspace.ts"),
       "@repowise-dev/types/blast-radius": path.resolve(__dirname, "../types/src/blast-radius.ts"),
       "@repowise-dev/types/jobs": path.resolve(__dirname, "../types/src/jobs.ts"),
@@ -41,6 +46,7 @@ export default defineConfig({
       "@repowise-dev/types/overview": path.resolve(__dirname, "../types/src/overview.ts"),
       "@repowise-dev/types/actions": path.resolve(__dirname, "../types/src/actions.ts"),
       "@repowise-dev/types/fix-first": path.resolve(__dirname, "../types/src/fix-first.ts"),
+      "@repowise-dev/types/queue": path.resolve(__dirname, "../types/src/queue.ts"),
       "@repowise-dev/types/agent-prompts": path.resolve(
         __dirname,
         "../types/src/agent-prompts.ts",
@@ -51,6 +57,7 @@ export default defineConfig({
         "../types/src/external-systems.ts",
       ),
       "@repowise-dev/types/health": path.resolve(__dirname, "../types/src/health.ts"),
+      "@repowise-dev/types/areas": path.resolve(__dirname, "../types/src/areas.ts"),
       "@repowise-dev/types/refactoring": path.resolve(
         __dirname,
         "../types/src/refactoring.ts",

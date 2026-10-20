@@ -2,11 +2,12 @@
 
 import { useCallback, useState, type ElementType, type ReactNode } from "react";
 import { ArrowUpRight, BellOff, Check, X } from "lucide-react";
-import type {
-  ActionDetail,
-  ActionStateValue,
-  ActionSurface,
-  NextAction,
+import {
+  ACTION_TIER_LABELS,
+  type ActionDetail,
+  type ActionStateValue,
+  type ActionSurface,
+  type NextAction,
 } from "@repowise-dev/types/actions";
 
 import { AiPromptBlock } from "../health/ai-prompt-modal";
@@ -16,12 +17,6 @@ import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
-
-const TIER_LABEL: Record<NextAction["tier"], string> = {
-  act_now: "Do now",
-  plan: "Worth planning",
-  improve_signal: "Improve what Repowise can see",
-};
 
 /** What the evidence link opens, named for the place it lands. */
 const EVIDENCE_LABEL: Record<ActionSurface, string> = {
@@ -102,7 +97,7 @@ export function ActionDrawer({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      eyebrow={action ? TIER_LABEL[action.tier] : "Next action"}
+      eyebrow={action ? ACTION_TIER_LABELS[action.tier] : "Next action"}
       title={action ? renderTitle(action.title) : "Next action"}
       widthClassName="md:max-w-[680px]"
     >

@@ -105,9 +105,11 @@ class LanguageSpec:
 
     # Single-segment test-dir tokens that are UNAMBIGUOUS for this
     # language's files. The generic table treats "spec(s)/" as ambiguous
-    # (OpenAPI specs, language specs) and demands a test-shaped filename —
-    # but a Ruby file under spec/ is RSpec material whatever its name
-    # (support helpers, vendored fixtures like okjson.rb included).
+    # (OpenAPI specs, language specs) and "t/" as ambiguous (a single
+    # letter) and demands a test-shaped filename — but a Ruby file under
+    # spec/ is RSpec material whatever its name (support helpers, vendored
+    # fixtures like okjson.rb included), and a Python file under t/ is test
+    # material whatever its name.
     test_dir_tokens: tuple[str, ...] = ()
 
     # Case-sensitive directory-segment suffixes that mark a test project
@@ -136,6 +138,10 @@ class LanguageSpec:
     # -- Ecosystem -------------------------------------------------------
     entry_point_patterns: tuple[str, ...] = ()  # ("main.py", "app.py")
     manifest_files: tuple[str, ...] = ()  # ("pyproject.toml",)
+    # Package manifests whose name varies per package, as globs matched
+    # case-insensitively by the package-root scan only. Exact-name readers of
+    # ``manifest_files`` never see them.
+    manifest_globs: tuple[str, ...] = ()  # ("*.csproj",)
     # The subset of ``manifest_files`` that configures a build rather than
     # declaring a distributable unit. Every name in ``manifest_files`` and not
     # here is a *package root*: it marks its directory as a package boundary

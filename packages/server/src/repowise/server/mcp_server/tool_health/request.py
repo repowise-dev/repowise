@@ -22,6 +22,22 @@ _ONLY_ALIASES = {
     "refactoring": "refactoring_plans",
 }
 
+DEFAULT_LIMIT = 20
+"""Rows per ranked list when the caller passes no ``limit``."""
+
+PLANS_PAGE_CAP = 25
+"""Refactoring plans one response emits; ``cursor`` pages on."""
+
+FIX_FIRST_CAP = 5
+"""Items in the bare dashboard's ``fix_first`` block, however large ``limit`` is.
+The rest are one ``only=["fix_first"]`` page or ``get_health(fix_id=...)`` away."""
+
+FIX_FIRST_PAGE_CAP = 25
+"""Items one ``only=["fix_first"]`` page emits when ``limit`` is passed: up to
+this, ``cursor`` for the next page. With no ``limit`` a page is
+:data:`FIX_FIRST_CAP`, so the call costs what the dashboard block does. Measured at about 16k chars for 25 items on a large
+repository, inside the default 24k budget; the budget trims the tail beyond."""
+
 _RANKED_DIMENSIONS_DEFAULT = {"defect", "maintainability"}
 """Dimensions the impact-ranked findings list carries when none is asked for."""
 
@@ -39,10 +55,15 @@ _KNOWN_INCLUDES = frozenset(
         "defect",
         "maintainability",
         "advisory",
-        # Opts into provisional finding types, each labelled "unverified".
+        # Opts into provisional finding types, each labelled "unverified", and
+        # into the layers a language gate holds back.
         "unverified",
         # The shared legend for deficit points and percentiles, in ``_meta``.
         "semantics",
+        # With ``plan_id``: the plan as preconditions, steps and postconditions.
+        "recipe",
+        # Points each fix would recover, per worst file and for the repo.
+        "what_if",
     }
 )
 
@@ -59,7 +80,8 @@ class HealthRequest:
     include: list[str] | None
     only: list[str] | None
     repo: str | None
-    limit: int
+    #: ``None`` when the caller passed none; resolved to :data:`DEFAULT_LIMIT`.
+    limit: int | None
     cursor: int
     refactoring_view: str
     refactoring_type: str | None
@@ -84,10 +106,14 @@ class HealthRequest:
     module_targets: list[str] = field(init=False)
     file_targets: list[str] = field(init=False)
     withheld_types: frozenset[str] = field(init=False)
+    #: The caller passed ``limit``: a response grows past a default only when asked.
+    limit_explicit: bool = field(init=False)
+    include_unverified: bool = field(init=False)
 
     def __post_init__(self) -> None:
+        self.limit_explicit = self.limit is not None
         # ``0`` means totals and no rows, as on the REST coverage route.
-        self.limit = max(self.limit, 0)
+        self.limit = max(DEFAULT_LIMIT if self.limit is None else self.limit, 0)
         self.cursor = max(self.cursor, 0)
         if self.refactoring_view not in _REFACTORING_VIEWS:
             self.refactoring_view = _REFACTORING_VIEW_DEFAULT
@@ -99,8 +125,10 @@ class HealthRequest:
         # eligible for the impact cap rather than filtering an already-capped list.
         self.dimension_filter = self.include_set & set(ALL_DIMENSIONS)
         # Finding types the registry keeps off this surface, dropped at the read
-        # so no list, lead or total counts one.
-        self.withheld_types = excluded_types(include_provisional="unverified" in self.include_set)
+        # so no list or total counts one; ``read_withheld_rows`` reads them back
+        # only for the deduction the score took from them.
+        self.include_unverified = "unverified" in self.include_set
+        self.withheld_types = excluded_types(include_provisional=self.include_unverified)
         # Performance findings carry zero impact, so an impact-ranked list
         # leaves them out unless asked for; the performance blocks rank them.
         self.ranked_dimensions = self.dimension_filter or _RANKED_DIMENSIONS_DEFAULT
@@ -116,8 +144,28 @@ class HealthRequest:
 
     @property
     def plans_cap(self) -> int:
-        """How many refactoring plans one response emits, whatever ``limit`` says."""
-        return min(self.limit, 6)
+        """How many refactoring plans one response emits: ``limit``, up to
+        :data:`PLANS_PAGE_CAP`. Plans are compact rows, so a full page fits the budget."""
+        return min(self.limit, PLANS_PAGE_CAP)
+
+    @property
+    def pages_fix_first(self) -> bool:
+        """``fix_first`` named in ``only``: the queue pages by ``limit`` and
+        ``cursor`` instead of the bare dashboard's fixed head."""
+        return "fix_first" in self.only_set
+
+    @property
+    def fix_first_cap(self) -> int:
+        """Fix-first items this response emits: a named page takes ``limit`` up
+        to :data:`FIX_FIRST_PAGE_CAP` when one was passed, else the dashboard's head."""
+        if self.pages_fix_first and self.limit_explicit:
+            return min(self.limit, FIX_FIRST_PAGE_CAP)
+        return min(self.limit, FIX_FIRST_CAP)
+
+    @property
+    def fix_first_cursor(self) -> int:
+        """Where the Fix-first page starts: the bare dashboard always leads."""
+        return self.cursor if self.pages_fix_first else 0
 
     def wants(self, block: str) -> bool:
         """True when ``block`` survives the ``only`` projection.
@@ -160,6 +208,21 @@ class HealthRequest:
             or self.wants("metrics")
             or ("refactoring" in self.include_set and self.wants("suggestion_legend"))
         )
+
+    @property
+    def ranks_findings(self) -> bool:
+        """Whether the dashboard prints findings, so their tier order matters.
+
+        The bare dashboard turns its finding lists into calls, so there only
+        ``biomarkers`` and the suggestion legend print one. Every other block
+        reads totals, which need no order.
+        """
+        listed = bool(self.only) and (self.wants("top_findings") or self.wants("test_findings"))
+        biomarkers = "biomarkers" in self.include_set and (
+            self.wants("findings") or self.wants("test_findings")
+        )
+        legend = "refactoring" in self.include_set and self.wants("suggestion_legend")
+        return listed or biomarkers or legend
 
     @property
     def plans_requested(self) -> bool:

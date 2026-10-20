@@ -5,7 +5,13 @@
  */
 
 import type { Hotspot } from "./git.js";
-import type { DefectAccuracy, HealthSeverity } from "./health.js";
+import type {
+  DefectAccuracy,
+  HealthBand,
+  HealthSeverity,
+  PerformanceCauses,
+} from "./health.js";
+import type { QueueCounts } from "./queue.js";
 
 export interface OverviewRepoMeta {
   id: string;
@@ -71,11 +77,19 @@ export interface OverviewStats {
 export interface OverviewHealthHistoryPoint {
   taken_at: string | null;
   average_health: number;
-  hotspot_health: number;
+  /** Null on a snapshot whose repo had no scored hotspot file. */
+  hotspot_health: number | null;
 }
 
 export interface OverviewHealth {
   average_health: number | null;
+  /** Files health has no dialect for, left out of every figure. */
+  unanalysed_file_count?: number;
+  /** Scored files over all code files, 0-1; `null` with no code files. */
+  analysed_share?: number | null;
+  /** Band for `average_health`; `null` when too few code files were analysed
+   *  to grade the repo. Absent on an older server. */
+  band?: HealthBand | null;
   /** Backtested precision of the defect ranking — the "can you trust this
    *  score?" panel on the health card. Optional so an older server payload
    *  simply omits the panel. */
@@ -84,14 +98,16 @@ export interface OverviewHealth {
   worst_performer_path: string | null;
   worst_performer_score: number | null;
   open_findings: number;
+  /** The findings' count vocabulary; the same numbers the Code Health page shows. */
+  finding_counts?: QueueCounts;
   /** Co-equal maintainability pillar headline (NLOC-weighted). `null` when no
    *  file carries a maintainability score yet. */
   maintainability_average?: number | null;
   /** Co-equal performance pillar headline: static performance RISK (I/O-in-loop
    *  / N+1). `null` when not yet measured. */
   performance_average?: number | null;
-  /** Open findings homing under the performance pillar — the actionable count. */
-  performance_findings?: number;
+  /** Open performance causes: worth fixing now, in production code, overall. */
+  performance_causes?: PerformanceCauses | null;
   /** Lowest-scoring file by performance risk, surfaced only when score < 10. */
   worst_performance_path?: string | null;
   worst_performance_score?: number | null;
@@ -242,8 +258,26 @@ export interface OverviewSyncStatus {
   last_sync_model: string | null;
   active_job_id: string | null;
   page_count: number;
-  /** Total on-disk size of the repo's `.repowise/` directory (bytes). */
+  /** @deprecated Not sent by the OSS server; read `StatsHighlights.index_storage_bytes`. */
   index_storage_bytes?: number;
+}
+
+/**
+ * Figures Overview shares with the pages it links to, each read through the
+ * function that page leads with. A block is `null` when its store is absent.
+ */
+export interface OverviewExploreCounts {
+  /** The Decisions page lanes: accepted of total recorded, candidates
+   *  awaiting review, and accepted ones drifting from the code. */
+  decisions: { total: number; accepted: number; candidates: number; needs_review: number } | null;
+  /** The Refactoring page lede: open opportunities, one per file. */
+  refactoring: { opportunities_total: number; files_total: number } | null;
+  /** The Contributors page: files with one author and no second reader. */
+  ownership: { sole_owned_files: number } | null;
+  /** The Security page lede: matches in shipped source versus tests and docs. */
+  security: { total: number; source: number; source_high: number; elsewhere: number } | null;
+  /** The Tests page lede; `null` until a coverage report is ingested. */
+  coverage: { line_coverage_pct: number; ingested_at: string | null } | null;
 }
 
 export interface OverviewSummaryResponse {
@@ -263,4 +297,6 @@ export interface OverviewSummaryResponse {
   recent_decisions: OverviewDecisionSlim[];
   savings: OverviewSavings;
   sync: OverviewSyncStatus;
+  /** Optional: a server predating it omits the block. */
+  explore?: OverviewExploreCounts;
 }

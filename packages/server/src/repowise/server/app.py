@@ -17,12 +17,12 @@ limit_blas_threads()
 # ruff: noqa: E402 — the BLAS pin above is only effective before these run.
 import logging
 import os
-import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from repowise.core.persistence.database import (
@@ -35,11 +35,14 @@ from repowise.core.persistence.search import FullTextSearch
 from repowise.core.providers.embedding import is_semantic_embedder
 from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.providers.embedding.registry import DEFAULT_EMBEDDER
 from repowise.server import __version__
 from repowise.server.routers import (
     actions,
+    areas,
     blast_radius,
     c4,
+    changes,
     chat,
     claude_md,
     code_health,
@@ -49,6 +52,7 @@ from repowise.server.routers import (
     decisions,
     doc_drift,
     episodes,
+    events,
     external_systems,
     feedback,
     files,
@@ -72,6 +76,7 @@ from repowise.server.routers import (
     stats,
     symbols,
     webhooks,
+    wins,
     workspace,
 )
 from repowise.server.scheduler import setup_scheduler
@@ -86,63 +91,24 @@ from repowise.server.workspace_startup import (
 logger = logging.getLogger(__name__)
 
 
-def _gemini_embedder():
-    from repowise.core.providers.embedding.gemini import GeminiEmbedder
-
-    dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-    dims = 768
-    if dims_raw:
-        try:
-            parsed = int(dims_raw)
-        except (ValueError, OverflowError):
-            parsed = 0
-        if parsed > 0:
-            dims = parsed
-        else:
-            print(
-                f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer; using {dims}.",
-                file=sys.stderr,
-            )
-    # Honour the indexed embedding model so serve doesn't silently rebuild
-    # the embedder with a different default than init used (issue #426).
-    model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
-    if model:
-        return GeminiEmbedder(model=model, output_dimensionality=dims)
-    return GeminiEmbedder(output_dimensionality=dims)
-
-
 def _build_embedder():
-    """Build an embedder from REPOWISE_EMBEDDER env var (default: mock).
+    """Build the server's embedder from ``REPOWISE_EMBEDDER`` (default: mock).
 
-    Supported values:
-        mock       — deterministic 8-dim SHA-256 embedder (default, no API key needed)
-        gemini     — GeminiEmbedder via GEMINI_API_KEY / GOOGLE_API_KEY env var
-        openai     — OpenAIEmbedder via OPENAI_API_KEY env var
-        openrouter — OpenRouterEmbedder via OPENROUTER_API_KEY env var
-        edenai     — EdenAIEmbedder via EDENAI_API_KEY env var
+    Name, credential and kwargs come from the resolver the CLI and the MCP
+    server share, so every registered embedder works here, including custom
+    ones. ``repowise serve`` seeds ``REPOWISE_EMBEDDER`` and
+    ``REPOWISE_EMBEDDING_MODEL`` from the repo's pin before startup, so the
+    query vectors match the index.
     """
-    name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
-    if name == "ollama":
-        from repowise.core.providers.embedding.ollama import OllamaEmbedder
+    from repowise.core.providers.embedding import get_embedder, list_embedders
+    from repowise.core.providers.embedding.resolve import (
+        embedder_kwargs,
+        resolve_embedder_name,
+    )
 
-        return OllamaEmbedder()
-    if name == "gemini":
-        return _gemini_embedder()
-    if name == "openai":
-        from repowise.core.providers.embedding.openai import OpenAIEmbedder
-
-        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
-        return OpenAIEmbedder(model=model)
-    if name == "openrouter":
-        from repowise.core.providers.embedding.openrouter import OpenRouterEmbedder
-
-        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "google/gemini-embedding-001")
-        return OpenRouterEmbedder(model=model)
-    if name == "edenai":
-        from repowise.core.providers.embedding.edenai import EdenAIEmbedder
-
-        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "amazon/amazon.titan-embed-text-v2:0")
-        return EdenAIEmbedder(model=model)
+    name, _source = resolve_embedder_name(detect=False)
+    if name in list_embedders() and name != DEFAULT_EMBEDDER:
+        return get_embedder(name, **embedder_kwargs(name))
     logger.warning(
         "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, "
         "ollama, or edenai for real RAG"
@@ -364,6 +330,9 @@ _ROUTERS = (
     c4,
     webhooks,
     git,
+    changes,
+    wins,
+    events,
     dead_code,
     doc_drift,
     code_health,
@@ -383,6 +352,7 @@ _ROUTERS = (
     workspace,
     owners,
     modules,
+    areas,
     overview,
     stats,
     files,
@@ -395,6 +365,9 @@ _ROUTERS = (
 
 def create_app() -> FastAPI:
     """Build and return the configured FastAPI application."""
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()
     app = FastAPI(
         title="repowise API",
         description="REST API for repowise — codebase documentation engine",
@@ -410,6 +383,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Whole-repo JSON (the map, area trees, file lists) compresses 10:1 or better.
+    # Starlette leaves ``text/event-stream`` alone, so chat and job streams still
+    # flush per event; below 1 KB the header costs more than it saves. Level 5
+    # keeps most of level 9's ratio at a fraction of its CPU on 600 KB bodies.
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
     # Exception handlers
     @app.exception_handler(LookupError)

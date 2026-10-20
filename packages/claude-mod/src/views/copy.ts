@@ -154,7 +154,23 @@ export function testsBasis(measured: boolean): string {
   return measured ? "measured by stored coverage" : "inferred from the dependency graph, not measured";
 }
 
-export function testsLine(t: { tests: string[]; total: number; truncated: boolean; files: boolean; measured: boolean }): string {
+/** `Run every test: <reason>`, the line a selection that vouches for no subset gets. */
+export function runAllLine(reason: string): string {
+  return reason ? `Run every test: ${reason}` : "Run every test";
+}
+
+export function testsLine(t: {
+  tests: string[];
+  total: number;
+  truncated: boolean;
+  files: boolean;
+  measured: boolean;
+  runAll?: string | null;
+}): string {
+  if (t.runAll != null) {
+    const first = t.tests.length ? `; first: ${t.tests.join(", ")}` : "";
+    return `${runAllLine(t.runAll)}${first}`;
+  }
   const count = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
   const shown = t.truncated ? ` (first ${t.tests.length.toLocaleString("en-US")} shown)` : "";
   return `Tests to run: ${count}, ${testsBasis(t.measured)}${shown}: ${t.tests.join(", ")}`;
@@ -179,7 +195,17 @@ export function directiveLines(d: { status: string; headline: string; reasons?: 
 }
 
 /** The prompt `Run tests` submits, visible in the transcript. */
-export function runTestsPrompt(t: { tests: string[]; truncated: boolean; total: number; measured: boolean }): string {
+export function runTestsPrompt(t: {
+  tests: string[];
+  truncated: boolean;
+  total: number;
+  measured: boolean;
+  runAll?: string | null;
+}): string {
+  if (t.runAll != null) {
+    const first = t.tests.length ? `, starting with ${t.tests.join(" ")}` : "";
+    return `Run the whole test suite for this change${first}. Repowise cannot vouch for a smaller set: ${t.runAll}`;
+  }
   const rest = t.truncated ? ` (the first ${t.tests.length} of ${t.total})` : "";
   return `Run the tests Repowise names for this change${rest}, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
 }
@@ -405,7 +431,13 @@ export function findingsCounts(resolved: number, total: number): string {
   return `${formatNumber(resolved)} resolved · ${countOf(total, "new finding", "new findings")}`;
 }
 
-export function testsToRunCount(t: { total: number; files: boolean; measured: boolean }): string {
+export function testsToRunCount(t: {
+  total: number;
+  files: boolean;
+  measured: boolean;
+  runAll?: string | null;
+}): string {
+  if (t.runAll != null) return "every test";
   const count = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
   return `${count}, ${t.measured ? "measured" : "inferred"}`;
 }
@@ -442,7 +474,8 @@ export function briefDecision(title: string, reviewed: boolean): string {
   return reviewed ? `${title} (standing decision)` : `${title} (found in the code, not yet reviewed)`;
 }
 
-export function briefTests(t: { tests: string[]; measured: boolean }): string {
+export function briefTests(t: { tests: string[]; measured: boolean; runAll?: string | null }): string {
+  if (t.runAll != null) return runAllLine(t.runAll).replace(/^Run/, "run");
   return `tests to run, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
 }
 

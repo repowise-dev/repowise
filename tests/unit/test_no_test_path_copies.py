@@ -84,10 +84,6 @@ _KNOWN: frozenset[str] = frozenset(
         # config-shaped names, because fixing `vitest.config.ts` is a toolchain
         # fix rather than a defect.
         "packages/core/src/repowise/core/ingestion/git_indexer/fix_shape.py",
-        # Excludes singular `test/`, `spec/` and `e2e/` on purpose: a route
-        # handler under an OpenAPI `spec/` is a real service contract, and
-        # over-excluding drops it from the workspace contract map entirely.
-        "packages/core/src/repowise/core/workspace/extractors/base.py",
         # pytest's own `python_files` rule, not ours: a fixture is injected
         # only into a file pytest collects, so this asks "does pytest run
         # this?" rather than "is this test-related code". The shared rules also

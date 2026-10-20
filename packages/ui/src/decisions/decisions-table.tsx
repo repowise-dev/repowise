@@ -110,43 +110,7 @@ export function DecisionsTable({
       header: "Title",
       priority: 1,
       cellClassName: "min-w-[200px] max-w-[520px]",
-      render: (d) => (
-        <div className="min-w-0">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <Link
-              href={`${prefix}/decisions/${d.id}`}
-              className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline truncate"
-              title={stripMarkdown(d.title)}
-            >
-              {stripMarkdown(d.title)}
-            </Link>
-            {d.verification && d.verification !== "exact" && (
-              <VerificationBadge verification={d.verification} iconOnly />
-            )}
-          </span>
-          {d.evidence_preview?.source_quote && (
-            <p
-              className="mt-0.5 truncate text-xs italic text-[var(--color-text-tertiary)]"
-              title={`${d.evidence_preview.source_quote}${
-                d.evidence_preview.evidence_file
-                  ? ` — ${d.evidence_preview.evidence_file}${
-                      d.evidence_preview.evidence_line != null
-                        ? `:${d.evidence_preview.evidence_line}`
-                        : ""
-                    }`
-                  : ""
-              }`}
-            >
-              “{d.evidence_preview.source_quote}”
-              {(d.evidence_count ?? 0) > 1 && (
-                <span className="ml-1 not-italic">
-                  +{(d.evidence_count ?? 0) - 1} more
-                </span>
-              )}
-            </p>
-          )}
-        </div>
-      ),
+      render: (d) => renderTitleCell(d, `${prefix}/decisions/${d.id}`, Link),
     },
     {
       key: "status",
@@ -181,26 +145,7 @@ export function DecisionsTable({
       key: "tags",
       header: "Tags",
       priority: 3,
-      render: (d) => (
-        <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-          {d.tags.slice(0, 3).map((tag) => (
-            <span
-              key={tag}
-              className="font-mono text-[11px] text-[var(--color-text-tertiary)]"
-            >
-              {tag}
-            </span>
-          ))}
-          {d.tags.length > 3 && (
-            <span
-              className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]"
-              title={d.tags.slice(3).join(", ")}
-            >
-              +{d.tags.length - 3}
-            </span>
-          )}
-        </div>
-      ),
+      render: renderTagsCell,
     },
     {
       key: "staleness",
@@ -219,37 +164,13 @@ export function DecisionsTable({
       // expired because the files they cite happened to change. Red is
       // reserved for health bands; this is a count, so it reads as one, in
       // mono like every other machine-produced figure.
-      render: (d) => {
-        const s = describeRecordStaleness(d);
-        return (
-          <span
-            className={
-              s.kind === "moved"
-                ? "font-mono text-xs tabular-nums text-[var(--color-text-secondary)]"
-                : "font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]"
-            }
-            title={s.sentence}
-          >
-            {s.short}
-          </span>
-        );
-      },
+      render: renderStalenessCell,
     },
   ];
 
-  const empty =
-    isLoading ? undefined : error ? (
-      <ApiError
-        title="Couldn't load decisions"
-        message="An error occurred while fetching decisions."
-        {...(onRetry ? { onRetry } : {})}
-      />
-    ) : (
-      <EmptyState
-        title="No decisions found"
-        description="No architectural decisions match the current filters."
-      />
-    );
+  const empty = isLoading
+    ? undefined
+    : renderEmpty(error, filters, onFiltersChange, onRetry);
 
   return (
     <div className="space-y-4">
@@ -305,5 +226,119 @@ export function DecisionsTable({
         empty={empty}
       />
     </div>
+  );
+}
+
+function renderTitleCell(d: DecisionRecord, href: string, Link: React.ElementType) {
+  return (
+    <div className="min-w-0">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <Link
+          href={href}
+          className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline truncate"
+          title={stripMarkdown(d.title)}
+        >
+          {stripMarkdown(d.title)}
+        </Link>
+        {d.verification && d.verification !== "exact" && (
+          <VerificationBadge verification={d.verification} iconOnly />
+        )}
+      </span>
+      {d.evidence_preview?.source_quote && (
+        <p
+          className="mt-0.5 truncate text-xs italic text-[var(--color-text-tertiary)]"
+          title={`${d.evidence_preview.source_quote}${
+            d.evidence_preview.evidence_file
+              ? ` — ${d.evidence_preview.evidence_file}${
+                  d.evidence_preview.evidence_line != null
+                    ? `:${d.evidence_preview.evidence_line}`
+                    : ""
+                }`
+              : ""
+          }`}
+        >
+          “{d.evidence_preview.source_quote}”
+          {(d.evidence_count ?? 0) > 1 && (
+            <span className="ml-1 not-italic">
+              +{(d.evidence_count ?? 0) - 1} more
+            </span>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function renderTagsCell(d: DecisionRecord) {
+  return (
+    <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+      {d.tags.slice(0, 3).map((tag) => (
+        <span
+          key={tag}
+          className="font-mono text-xs text-[var(--color-text-tertiary)]"
+        >
+          {tag}
+        </span>
+      ))}
+      {d.tags.length > 3 && (
+        <span
+          className="font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]"
+          title={d.tags.slice(3).join(", ")}
+        >
+          +{d.tags.length - 3}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function renderStalenessCell(d: DecisionRecord) {
+  const s = describeRecordStaleness(d);
+  return (
+    <span
+      className={
+        s.kind === "moved"
+          ? "font-mono text-xs tabular-nums text-[var(--color-text-secondary)]"
+          : "font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]"
+      }
+      title={s.sentence}
+    >
+      {s.short}
+    </span>
+  );
+}
+
+function renderEmpty(
+  error: unknown,
+  filters: DecisionsTableFilters,
+  onFiltersChange: (filters: DecisionsTableFilters) => void,
+  onRetry: (() => void) | undefined,
+) {
+  const filtersActive =
+    filters.status !== "all" ||
+    filters.source !== "all" ||
+    (filters.scope ?? "all") !== "all";
+
+  return error ? (
+    <ApiError
+      title="Couldn't load decisions"
+      message="An error occurred while fetching decisions."
+      {...(onRetry ? { onRetry } : {})}
+    />
+  ) : filtersActive ? (
+    <EmptyState
+      tone="filtered"
+      title="No decisions match these filters"
+      action={{
+        label: "Clear filters",
+        onClick: () =>
+          onFiltersChange({ ...filters, status: "all", source: "all", scope: "all" }),
+      }}
+    />
+  ) : (
+    <EmptyState
+      title="No decisions yet"
+      description="Decisions are inferred from pull requests, commits and agent sessions, or you can record one yourself."
+    />
   );
 }

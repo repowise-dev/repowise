@@ -219,7 +219,7 @@ class AnalysisIndexStore(ABC):
         self,
         repository_id: str,
         *,
-        hotspot_health: float,
+        hotspot_health: float | None,
         average_health: float,
         worst_performer_path: str | None,
         worst_performer_score: float | None,

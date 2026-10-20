@@ -6,7 +6,6 @@ Reads the same stored actions the web app's "Do next" and ``get_overview``'s
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +23,6 @@ from repowise.cli.output import (
 #: Rows shown by default and with ``--all``. The stored view keeps 20 a horizon.
 PREVIEW = 5
 ALL = 20
-
-TIER_HEADING = {
-    "act_now": "Now",
-    "plan": "Worth planning",
-    "improve_signal": "Improve what Repowise can see",
-}
 
 _TIER_COLOUR = {"act_now": "red", "plan": "yellow", "improve_signal": "cyan"}
 
@@ -58,59 +51,25 @@ def load_view(root: Path) -> dict[str, Any] | None:
         return None
 
 
-def work(view: dict[str, Any], horizon: str) -> tuple[int, int]:
-    """``(act_now + plan, act_now)`` for *horizon*: the part that is real work."""
-    by_tier = view["horizons"][horizon].get("by_tier", {})
-    now = int(by_tier.get("act_now", 0))
-    return now + int(by_tier.get("plan", 0)), now
-
-
 def default_horizon(view: dict[str, Any]) -> str:
     """The week, unless it holds no work and the quarter does (as the UI opens)."""
-    if work(view, "week")[0] == 0 and work(view, "quarter")[0] > 0:
-        return "quarter"
-    return "week"
+    from repowise.core.analysis.actions.summary import work
+
+    week, quarter = (work(view["horizons"][h]) for h in ("week", "quarter"))
+    return "quarter" if week == 0 and quarter > 0 else "week"
 
 
-def _plural(n: int, noun: str) -> str:
-    return f"{n:,} {noun}{'' if n == 1 else 's'}"
+def sentence(view: dict[str, Any], horizon: str) -> str:
+    """The view's own sentence; worded by core here for a view that predates it."""
+    found = (view.get("summary") or {}).get(horizon)
+    if found:
+        return found
+    from datetime import datetime
 
+    from repowise.core.analysis.actions.summary import summarize
 
-def _day(iso: str | None) -> str | None:
-    if not iso:
-        return None
-    try:
-        d = datetime.fromisoformat(iso)
-    except ValueError:
-        return None
-    return f"{d:%b} {d.day}"
-
-
-def status_sentence(view: dict[str, Any], horizon: str) -> str:
-    """Where things stand, in one sentence. Mirrors the web app's ``actionsStatus``.
-
-    It names the window because "this week" means the repository's last week
-    of commits, which is not always the calendar's.
-    """
-    total, now = work(view, horizon)
-    until = _day(view.get("anchor"))
-    if horizon == "week":
-        window = f"in the week to {until}, the last indexed commit" if until else "this week"
-    else:
-        window = "this quarter"
-    if total == 0:
-        other = "quarter" if horizon == "week" else "week"
-        other_total = work(view, other)[0]
-        if other_total == 0:
-            return f"Nothing stands out {window}."
-        if horizon == "week":
-            verb = "is" if other_total == 1 else "are"
-            tail = f"{verb} worth planning this quarter"
-        else:
-            tail = "came up this week"
-        return f"Nothing needs you {window}. {_plural(other_total, 'thing')} {tail}."
-    now_part = f", {now} of them now" if now else ""
-    return f"{_plural(total, 'thing')} worth doing {window}{now_part}."
+    anchor = view.get("anchor")
+    return summarize(view["horizons"], datetime.fromisoformat(anchor) if anchor else None)[horizon]
 
 
 def render_title(title: str) -> str:
@@ -141,10 +100,13 @@ def _render_action(action: dict[str, Any]) -> None:
 def render(view: dict[str, Any], horizon: str, limit: int) -> None:
     from rich.markup import escape
 
+    from repowise.core.analysis.actions import TIER_LABELS
+    from repowise.core.analysis.actions.rules._text import plural
+
     h = view["horizons"][horizon]
-    console.print(f"[bold]{escape(status_sentence(view, horizon))}[/bold]")
+    console.print(f"[bold]{escape(sentence(view, horizon))}[/bold]")
     shown = h["actions"][:limit]
-    for tier, heading in TIER_HEADING.items():
+    for tier, heading in TIER_LABELS.items():
         rows = [a for a in shown if a["tier"] == tier]
         if not rows:
             continue
@@ -160,7 +122,7 @@ def render(view: dict[str, Any], horizon: str, limit: int) -> None:
         more = "" if limit >= ALL else " [bold]--all[/bold] shows up to 20."
         console.print(f"[dim]Showing {len(shown)} of {total}.{more}[/dim]")
     if h.get("hidden"):
-        console.print(f"[dim]{_plural(h['hidden'], 'action')} dismissed, snoozed or done.[/dim]")
+        console.print(f"[dim]{plural(h['hidden'], 'action')} dismissed, snoozed or done.[/dim]")
     unavailable = sorted(view.get("unavailable") or {})
     if unavailable:
         console.print(

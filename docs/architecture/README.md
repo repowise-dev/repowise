@@ -10,10 +10,13 @@ curious; you don't need them to *use* repowise (start with
 | [deep-dives.md](deep-dives.md) | Algorithm-level treatment of the hard parts: dead-code detection, the decision/ADR system, search & vector-store internals, incremental updates & webhooks, the change-cascade algorithm |
 | [code-health.md](code-health.md) | The code-health layer as a full vertical slice: pipeline, the 53 registered detectors, scoring, trends, persistence schema, and extension points |
 | [change-risk.md](change-risk.md) | The change-risk model: features, offline calibration and why the score is reported as a size statistic, PR structural impact, and the public risk-scale inventory |
-| [bug-history.md](bug-history.md) | Bug-fix history internals: fix-shape classification, the `fix_events` table, the bug-magnet rollup, and the inducing-commit (SZZ) work that was measured and not shipped |
+| [bug-history.md](bug-history.md) | Bug-fix history internals: fix-shape classification, the `fix_events` table, the bug-magnet rollup, the inducing-commit (SZZ) work that was measured and not shipped, and the suspects ranking measurement |
 | [decisions.md](decisions.md) | Decision capture internals: the source registry, evidence verification, confidence, currency, session mining and hook delivery |
+| [security.md](security.md) | Security signals internals: per-kind matching rules, placeholder skipping, baseline keys, and the JS/TS precision checks |
 | [test-intelligence.md](test-intelligence.md) | The inferred test tier: call and import walks, their measured precision and recall, the resolution-origin filter, and why nothing is stored |
 | [language-support.md](language-support.md) | The language pipeline internals and the step-by-step recipe for adding a new language |
+| [forges.md](forges.md) | Git host support: the forges package, its invariants, and the recipes for adding a host or a CI system |
+| [agent-platform.md](agent-platform.md) | Agent identities, provider specs, integration targets and adapters, and the recipes for adding an agent integration or an agent CLI indexing backend |
 | [graph-algorithms.md](graph-algorithms.md) | The graph algorithms (PageRank, betweenness, Tarjan SCC, Leiden/Louvain community detection, shortest path) with the math and complexity |
 | [refactoring.md](refactoring.md) | Refactoring intelligence internals: detector registration, plan shape, ranking, REST routes, and code generation |
 | [savings-accounting.md](savings-accounting.md) | The savings accounting contract: what counts as a measured reduction versus an inferred avoidance, and what a total may claim |

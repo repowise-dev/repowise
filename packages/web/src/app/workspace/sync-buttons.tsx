@@ -2,10 +2,14 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { removeWorkspaceRepo, syncWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceSyncResult } from "@/lib/api/types";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+
+/** The minimal translator shape `summarizeResults` needs; next-intl's `t` fits. */
+type Translator = (key: string, values?: Record<string, string | number>) => string;
 
 type SyncState =
   | { kind: "idle" }
@@ -31,6 +35,7 @@ export function SyncButton({
   variant = "ghost",
   fullResync = false,
 }: SyncButtonProps) {
+  const t = useTranslations("views.workspace");
   const [state, setState] = useState<SyncState>({ kind: "idle" });
   const [, startTransition] = useTransition();
   const router = useRouter();
@@ -53,7 +58,7 @@ export function SyncButton({
   };
 
   const buttonText =
-    label ?? (alias ? "Sync this repo" : "Sync workspace");
+    label ?? (alias ? t("syncThisRepo") : t("syncWorkspace"));
 
   const baseClass =
     "inline-flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
@@ -74,11 +79,11 @@ export function SyncButton({
         <RefreshCw
           className={`h-3 w-3 ${state.kind === "running" ? "motion-safe:animate-spin" : ""}`}
         />
-        {state.kind === "running" ? "Syncing…" : buttonText}
+        {state.kind === "running" ? t("syncing") : buttonText}
       </button>
       {state.kind === "ok" && (
         <span className="text-xs text-[var(--color-text-tertiary)]">
-          {summarizeResults(state.results)}
+          {summarizeResults(t, state.results)}
         </span>
       )}
       {state.kind === "error" && (
@@ -90,15 +95,15 @@ export function SyncButton({
   );
 }
 
-function summarizeResults(results: WorkspaceSyncResult[]): string {
-  if (results.length === 0) return "no repos";
+function summarizeResults(t: Translator, results: WorkspaceSyncResult[]): string {
+  if (results.length === 0) return t("syncNoRepos");
   const accepted = results.filter((r) => r.status === "accepted").length;
   const skipped = results.filter((r) => r.status === "skipped").length;
   const errored = results.filter((r) => r.status === "error").length;
   const parts: string[] = [];
-  if (accepted) parts.push(`${accepted} queued`);
-  if (skipped) parts.push(`${skipped} skipped`);
-  if (errored) parts.push(`${errored} error`);
+  if (accepted) parts.push(t("syncQueued", { count: accepted }));
+  if (skipped) parts.push(t("syncSkipped", { count: skipped }));
+  if (errored) parts.push(t("syncErrors", { count: errored }));
   return parts.join(", ");
 }
 
@@ -111,6 +116,7 @@ export function RemoveWorkspaceRepoButton({
   alias,
   repoName,
 }: RemoveWorkspaceRepoButtonProps) {
+  const t = useTranslations("views.workspace");
   const [removing, setRemoving] = useState(false);
   const [, startTransition] = useTransition();
   const router = useRouter();
@@ -120,9 +126,7 @@ export function RemoveWorkspaceRepoButton({
     e.stopPropagation();
     if (
       typeof window !== "undefined" &&
-      !window.confirm(
-        `Remove '${repoName || alias}' from .repowise-workspace.yaml?`,
-      )
+      !window.confirm(t("removeConfirm", { name: repoName || alias }))
     ) {
       return;
     }
@@ -132,7 +136,7 @@ export function RemoveWorkspaceRepoButton({
       startTransition(() => router.refresh());
     } catch (e) {
       if (typeof window !== "undefined") {
-        window.alert(`Failed to remove: ${toFriendlyMessage(e)}`);
+        window.alert(t("removeFailed", { message: toFriendlyMessage(e) }));
       }
     } finally {
       setRemoving(false);
@@ -145,10 +149,10 @@ export function RemoveWorkspaceRepoButton({
       onClick={handleRemove}
       disabled={removing}
       className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs font-medium text-[var(--color-error)] hover:bg-[var(--color-bg-elevated)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      aria-label={`Remove ${alias} from workspace`}
+      aria-label={t("removeAria", { alias })}
     >
       <Trash2 className="h-3 w-3" />
-      {removing ? "Removing…" : "Remove"}
+      {removing ? t("removing") : t("remove")}
     </button>
   );
 }

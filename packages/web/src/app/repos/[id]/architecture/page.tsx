@@ -44,8 +44,9 @@
 
 import { use, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useQueryState, parseAsStringLiteral } from "nuqs";
-import { Code2 } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useQueryState, useQueryStates, parseAsStringLiteral } from "nuqs";
+import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { ErrorBoundary } from "@repowise-dev/ui/shared";
 import { GraphView } from "@/components/architecture/graph-view";
@@ -54,6 +55,7 @@ import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-t
 import { SymbolIndexHeader } from "@repowise-dev/ui/symbols";
 import { COUPLING_DISCLAIMER } from "@repowise-dev/ui/coupling";
 import { CouplingTab } from "@/components/coupling/coupling-tab";
+import { couplingUrlParsers } from "@/components/coupling/coupling-url";
 
 // The curated layered view now lives under the dedicated Knowledge Graph route.
 const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers"]);
@@ -100,13 +102,6 @@ const TAB_FOR_VIEW: Record<CanonicalView, string> = {
 
 const TAB_PANEL_ID = "architecture-tab-panel";
 
-const TABS: { id: string; label: string }[] = [
-  { id: "map", label: "Map" },
-  { id: "coupling", label: "Coupling" },
-  { id: "packages", label: "Third-party" },
-  { id: "symbols", label: "Symbols" },
-];
-
 /** Landing view when a tab is clicked, and for the page with no `?view=`.
  *
  * Map opens on Files. It used to open on Communities, because Files was 1,500
@@ -130,6 +125,8 @@ export default function ArchitecturePage({
 }) {
   const { id: repoId } = use(params);
   const router = useRouter();
+  const t = useTranslations("views.architecture");
+  const tCoupling = useTranslations("coupling");
   const [rawView, setView] = useQueryState(
     "view",
     parseAsStringLiteral(VIEWS).withDefault(DEFAULT_VIEW),
@@ -141,6 +138,7 @@ export default function ArchitecturePage({
   const [, setShow] = useQueryState("show");
   const [, setFocus] = useQueryState("focus");
   const [, setNode] = useQueryState("node");
+  const [, setCouplingUrl] = useQueryStates(couplingUrlParsers);
 
   // The curated layers view now lives at /knowledge-graph. `?view=layers`
   // redirects there so shared links keep working.
@@ -165,6 +163,12 @@ export default function ArchitecturePage({
   const view: CanonicalView =
     legacy?.view ?? VIEW_ALIASES[rawView] ?? (rawView as CanonicalView);
   const activeTab = TAB_FOR_VIEW[view] ?? "map";
+  const tabs: { id: string; label: string }[] = [
+    { id: "map", label: t("tabs.map") },
+    { id: "coupling", label: t("tabs.coupling") },
+    { id: "packages", label: t("tabs.packages") },
+    { id: "symbols", label: t("tabs.symbols") },
+  ];
 
   // Leaving a tab drops the params that only meant something inside it, so the
   // URL never carries a `signal=hot` into the Packages table where nothing
@@ -183,8 +187,9 @@ export default function ArchitecturePage({
         void setShow(null);
         void setNode(null);
       }
+      if (id !== "coupling") void setCouplingUrl(null);
     },
-    [setView, setFocus, setSignal, setModule, setCommunity, setShow, setNode],
+    [setView, setFocus, setSignal, setModule, setCommunity, setShow, setNode, setCouplingUrl],
   );
 
   const handleScopeChange = useCallback(
@@ -200,9 +205,9 @@ export default function ArchitecturePage({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 px-4 pt-3 sm:px-6">
+      <div className="shrink-0 px-[var(--page-pad)] pt-3">
         <ViewTabs
-          tabs={TABS}
+          tabs={tabs}
           value={activeTab}
           onValueChange={handleTabChange}
           panelId={TAB_PANEL_ID}
@@ -227,30 +232,24 @@ export default function ArchitecturePage({
         )}
         {activeTab === "packages" && <DependenciesView repoId={repoId} />}
         {activeTab === "symbols" && (
-          <div className="max-w-[1600px] space-y-6 p-4 sm:p-6">
+          <PageFrame maxWidth="wide">
             <SymbolIndexHeader />
             <SymbolTable repoId={repoId} />
-          </div>
+          </PageFrame>
         )}
         {activeTab === "coupling" && (
-          <div className="mx-auto max-w-[1500px] p-4 sm:p-6">
-            {/* Wider than the other tabs: the pairs table carries a sentence
-                per row plus both modules. The ring keeps its own 820px cap. */}
-            <div className="mb-2">
-              <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
-                <Code2 className="h-5 w-5 text-[var(--color-accent-primary)]" />
-                Change coupling
-              </h1>
-              <p className="text-sm text-[var(--color-text-secondary)]">
-                {COUPLING_DISCLAIMER}
-              </p>
-            </div>
+          <PageFrame maxWidth="wide">
+            {/* The tab is already named Coupling, so the page carries the
+                disclaimer alone rather than a second page title. */}
+            <p className="max-w-[68ch] text-sm text-[var(--color-text-secondary)]">
+              {COUPLING_DISCLAIMER}
+            </p>
             {/* Contain a render throw to the tab instead of letting it reach
                 the route boundary and blank the page. */}
-            <ErrorBoundary title="Couldn't load change coupling">
+            <ErrorBoundary title={tCoupling("loadFailed")}>
               <CouplingTab repoId={repoId} />
             </ErrorBoundary>
-          </div>
+          </PageFrame>
         )}
       </div>
     </div>

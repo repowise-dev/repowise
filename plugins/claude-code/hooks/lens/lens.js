@@ -836,8 +836,8 @@ var BRAND = {
 var LIGHT = {
   bgRoot: "#fbf6f1",
   bgSurface: "#ffffff",
-  bgElevated: "#fbf4ee",
-  bgInset: "#f4eae1",
+  bgElevated: "#f7f4f1",
+  bgInset: "#f0ebe6",
   textPrimary: "#241b2c",
   textSecondary: "#5e5360",
   textTertiary: "#8c7f88",
@@ -845,7 +845,7 @@ var LIGHT = {
   accentFill: "#f59520",
   accentSecondary: "#58436c",
   success: "#1d8155",
-  warning: "#9a6614",
+  warning: "#856700",
   error: "#b23a2e"
 };
 var DARK = {
@@ -860,7 +860,7 @@ var DARK = {
   accentFill: "#f59520",
   accentSecondary: "#a98fc4",
   success: "#34d399",
-  warning: "#f2a03d",
+  warning: "#e8b339",
   error: "#e06a5a"
 };
 var DARK_CANVAS = {
@@ -1444,7 +1444,6 @@ function riskFacts(r) {
     ...fact("targets", targets.length),
     ...fact("dependents", sumOver(targets, (t) => num(t["dependents_count"]))),
     ...fact("coChange", sumOver(targets, (t) => num(t["co_change_partners_total"]) ?? count2(t["co_change_partners"]))),
-    ...fact("contributors", sumOver(targets, (t) => num(t["contributor_count"]))),
     ...fact("hotspots", flagged(targets, "is_hotspot") || null)
   ];
 }
@@ -2073,7 +2072,14 @@ function diffShape(percentile) {
 function testsBasis(measured) {
   return measured ? "measured by stored coverage" : "inferred from the dependency graph, not measured";
 }
+function runAllLine(reason) {
+  return reason ? `Run every test: ${reason}` : "Run every test";
+}
 function testsLine(t) {
+  if (t.runAll != null) {
+    const first = t.tests.length ? `; first: ${t.tests.join(", ")}` : "";
+    return `${runAllLine(t.runAll)}${first}`;
+  }
   const count3 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
   const shown = t.truncated ? ` (first ${t.tests.length.toLocaleString("en-US")} shown)` : "";
   return `Tests to run: ${count3}, ${testsBasis(t.measured)}${shown}: ${t.tests.join(", ")}`;
@@ -2094,6 +2100,10 @@ function directiveLines(d) {
   return out;
 }
 function runTestsPrompt(t) {
+  if (t.runAll != null) {
+    const first = t.tests.length ? `, starting with ${t.tests.join(" ")}` : "";
+    return `Run the whole test suite for this change${first}. Repowise cannot vouch for a smaller set: ${t.runAll}`;
+  }
   const rest = t.truncated ? ` (the first ${t.tests.length} of ${t.total})` : "";
   return `Run the tests Repowise names for this change${rest}, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
 }
@@ -2248,6 +2258,7 @@ function findingsCounts(resolved, total2) {
   return `${formatNumber(resolved)} resolved · ${countOf(total2, "new finding", "new findings")}`;
 }
 function testsToRunCount(t) {
+  if (t.runAll != null) return "every test";
   const count3 = countOf(t.total, t.files ? "test file" : "test", t.files ? "test files" : "tests");
   return `${count3}, ${t.measured ? "measured" : "inferred"}`;
 }
@@ -2272,6 +2283,7 @@ function briefDecision(title, reviewed) {
   return reviewed ? `${title} (standing decision)` : `${title} (found in the code, not yet reviewed)`;
 }
 function briefTests(t) {
+  if (t.runAll != null) return runAllLine(t.runAll).replace(/^Run/, "run");
   return `tests to run, ${testsBasis(t.measured)}: ${t.tests.join(" ")}`;
 }
 var FLOW_COPY = {
@@ -3263,13 +3275,23 @@ async function analyzeBlastRadius(repoId, body) {
   );
 }
 
+// ../api-client/src/areas.ts
+function holdParams(opts = {}) {
+  if (opts.hold !== "map") return {};
+  return { hold: "map", include: opts.include?.length ? [...opts.include].sort().join(",") : void 0 };
+}
+
 // ../api-client/src/code-health.ts
 async function getHealthMap(repoId, opts = {}) {
   return apiGet(`/api/repos/${repoId}/health/map`, {
     cap: opts.cap,
     active: opts.active?.length ? opts.active.join(",") : void 0,
     scope: opts.scope,
-    counts: opts.counts
+    counts: opts.counts,
+    include_held: opts.include_held || void 0,
+    q: opts.q?.trim() || void 0,
+    area: opts.area || void 0,
+    ...holdParams(opts)
   });
 }
 
@@ -3752,13 +3774,15 @@ function isRetryable(action) {
 function testsToRun(risk) {
   const block = risk.impacted_tests;
   const tests = block?.tests_to_run ?? [];
-  if (block === void 0 || tests.length === 0) return null;
+  const runAll = block?.run_all === true ? block.reasons?.[0] ?? block.summary ?? "" : null;
+  if (block === void 0 || tests.length === 0 && runAll === null) return null;
   return {
     tests,
     total: block.total ?? tests.length,
     truncated: block.truncated === true,
     files: block.tests_to_run_kind === "test_file",
-    measured: block.basis === "measured"
+    measured: block.basis === "measured",
+    runAll
   };
 }
 
@@ -3903,7 +3927,7 @@ function isClear(risk) {
   return risk.directive?.status === "clear_in_analyzed_scope";
 }
 function header2(risk, changed) {
-  return `Change review (${reviewScope(risk.ref ?? "working tree", risk.working_tree !== false, changed)})`;
+  return `Change review (${reviewScope(risk.ref ?? "working tree", risk.working_tree === true, changed)})`;
 }
 function findingSegments(hd) {
   const rows = hd?.top_findings ?? [];

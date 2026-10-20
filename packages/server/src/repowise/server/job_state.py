@@ -42,9 +42,14 @@ def _load_state(repo_path: Path) -> dict:
 
 
 def _save_state(repo_path: Path, state: dict) -> None:
+    from repowise.core.workspace.update import read_state_commit, restamp_changed_sync_commit
+
+    previous = read_state_commit(repo_path)
     state_path = repo_path / ".repowise" / "state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    # The job's persist never moves the row's head_commit; keep it on the sync commit.
+    restamp_changed_sync_commit(repo_path, previous, state.get("last_sync_commit"))
 
 
 def _stamp_last_sync_commit(repo_path: Path) -> None:
@@ -75,6 +80,7 @@ def _persist_initial_index_state(
     and style the run used, so later CLI ``update`` runs and server jobs
     resolve the same configuration.
     """
+    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
     from repowise.core.repo_config import config_fingerprint
 
     # config.yaml is written first: the fingerprint below covers it.
@@ -95,6 +101,8 @@ def _persist_initial_index_state(
         state["docs_skip_reason"] = docs_skip_reason
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
+    # The full index just walked git under the current history rules.
+    state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
     state["include_submodules"] = False
     state["total_pages"] = total_pages
     if llm_client is not None:

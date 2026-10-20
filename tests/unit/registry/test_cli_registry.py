@@ -49,6 +49,15 @@ def test_apply_is_idempotent_per_root(registry, root):
     assert list(root.commands.keys()) == ["once"]
 
 
+def test_apply_attaches_entries_registered_after_the_first_call(registry, root):
+    """Plugins discovered after startup reach a root that was already applied."""
+    registry.register(_make_command("builtin"))
+    registry.apply(root)
+    registry.register(_make_command("from-plugin"))
+    registry.apply(root)
+    assert list(root.commands.keys()) == ["builtin", "from-plugin"]
+
+
 def test_apply_supports_multiple_roots(registry):
     registry.register(_make_command("shared"))
 

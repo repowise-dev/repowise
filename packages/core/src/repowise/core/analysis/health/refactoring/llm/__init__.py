@@ -14,7 +14,6 @@ from __future__ import annotations
 from .enrich import (
     EnrichmentResult,
     SourceSpan,
-    build_enrichment_provider,
     enrich_suggestion,
     llm_enrichment_enabled,
 )
@@ -22,7 +21,6 @@ from .enrich import (
 __all__ = [
     "EnrichmentResult",
     "SourceSpan",
-    "build_enrichment_provider",
     "enrich_suggestion",
     "llm_enrichment_enabled",
 ]

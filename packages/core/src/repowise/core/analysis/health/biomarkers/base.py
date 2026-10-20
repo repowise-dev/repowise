@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ....ingestion.git_indexer.function_blame import BlameIndex
+from ....test_paths import is_test_related_path
 from ...graph_view import HasEdge
 from ..complexity import ClassComplexity, ErrorHandlingHit, FunctionComplexity, PerfHit
 from ..duplication import ClonePair
@@ -26,6 +27,10 @@ class FileContext:
     nloc: int
     has_test_file: bool
     module: str | None
+    # The ``is_test`` flag ingestion stamped (path, language and pytest config).
+    # ``None`` for a context built without it, which falls back to the path
+    # rules; read it through :attr:`is_test_material`.
+    is_test: bool | None = None
     # Every walked function in this file, in document order. Not keyed by
     # name: a name key drops all but one of a file's anonymous ``it``
     # callbacks, and every same-named method on a second class beside it.
@@ -65,6 +70,8 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # Only a docstring, imports and export lists: no code for coverage to measure.
+    reexport_only: bool = False
     # Duplication signals (populated when the engine ran the
     # duplication detector for this analyze() call). ``clones`` is the
     # list of clone pairs this file participates in; ``duplication_pct``
@@ -123,6 +130,13 @@ class FileContext:
     # Empty without a call graph, which leaves the marker as it was.
     cross_file_oracle_lines: frozenset[int] = frozenset()
 
+    @property
+    def is_test_material(self) -> bool:
+        """The stored ``is_test`` flag, or the path rules when none was given."""
+        if self.is_test is not None:
+            return self.is_test
+        return is_test_related_path(self.file_path, self.language)
+
 
 # A repo whose trailing-90-day window has at most this many active human
 # contributors is a "small team": concentrated ownership there is the normal
@@ -151,6 +165,15 @@ class BiomarkerResult:
     # carried for display/filtering. Stays fully per-finding attributable, so
     # the linear ``health_impact`` contract holds.
     deduction: float | None = None
+
+
+def shape_details(fn: FunctionComplexity) -> dict[str, Any]:
+    """The shape facts every function-size marker stores beside its numbers:
+    the dispatch share always, the terminal share only when there is one."""
+    out: dict[str, Any] = {"dispatch_share": fn.dispatch_share}
+    if fn.terminal_share:
+        out["terminal_share"] = fn.terminal_share
+    return out
 
 
 class Biomarker(Protocol):

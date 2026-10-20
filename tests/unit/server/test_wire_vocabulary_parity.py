@@ -85,6 +85,18 @@ def test_action_vocabularies_match_python() -> None:
         assert _union_members(alias, "actions.ts") == set(values), alias
 
 
+def test_action_tier_labels_match_python() -> None:
+    from repowise.core.analysis.actions import TIER_LABELS
+
+    text = (_TYPES_SRC / "actions.ts").read_text(encoding="utf-8")
+    match = re.search(r"export const ACTION_TIER_LABELS[^=]*= \{(.*?)\};", text, re.DOTALL)
+    assert match, "ACTION_TIER_LABELS is not declared in actions.ts"
+    assert dict(re.findall(r'(\w+): "([^"]+)"', match.group(1))) == TIER_LABELS
+    order = re.search(r"export const ACTION_TIER_ORDER[^=]*= \[(.*?)\];", text, re.DOTALL)
+    assert order, "ACTION_TIER_ORDER is not declared in actions.ts"
+    assert re.findall(r'"(\w+)"', order.group(1)) == list(TIER_LABELS)
+
+
 def test_fix_first_vocabularies_match_python() -> None:
     from repowise.core.analysis.health.fix_first import (
         FIX_EFFORTS,
@@ -115,6 +127,37 @@ def test_fix_first_vocabularies_match_python() -> None:
     assert match and set(re.findall(r'"([A-Z]+)"', match.group(1))) == set(FIX_EFFORTS)
 
 
+def test_performance_queue_exclusions_match_python() -> None:
+    from repowise.core.analysis.health.queue.eligibility import DEFAULT_QUEUE_EXCLUSIONS
+
+    assert _union_members("PerformanceQueueExclusion", "health.ts") == set(DEFAULT_QUEUE_EXCLUSIONS)
+
+
+def test_every_surface_counts_in_the_one_reason_vocabulary() -> None:
+    from repowise.core.analysis.health.fix_first import FIX_EXCLUSIONS
+    from repowise.core.analysis.health.queue.eligibility import (
+        DEFAULT_QUEUE_EXCLUSIONS,
+        REASONS,
+    )
+
+    assert set(FIX_EXCLUSIONS) | set(DEFAULT_QUEUE_EXCLUSIONS) == set(REASONS)
+
+
+def test_performance_cost_proofs_match_python() -> None:
+    from repowise.core.analysis.health.queue.eligibility import QUEUE_PROOFS
+
+    assert _union_members("PerformanceCostProof", "health.ts") == set(QUEUE_PROOFS)
+
+
+def test_performance_execution_roles_match_python() -> None:
+    from repowise.core.analysis.execution_roles import EXECUTION_ROLES
+
+    text = (_TYPES_SRC / "health.ts").read_text(encoding="utf-8")
+    match = re.search(r"export const PERFORMANCE_EXECUTION_ROLES = \[(.*?)\] as const;", text, re.S)
+    assert match, "PERFORMANCE_EXECUTION_ROLES is not declared in health.ts"
+    assert re.findall(r'"([a-z_]+)"', match.group(1)) == list(EXECUTION_ROLES)
+
+
 def test_agent_prompt_flavors_match_python() -> None:
     from repowise.core.agent_prompts import FLAVORS
 
@@ -127,6 +170,33 @@ def test_agent_prompt_flavors_match_python() -> None:
         assert match, f"{alias} is not declared in {module}"
         assert set(re.findall(r'"([a-z-]+)"', match.group(1))) == set(FLAVORS), alias
 
+
+def test_refactoring_recipe_vocabularies_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.recipe import (
+        PRECONDITION_KINDS,
+        RECIPE_ACTIONS,
+    )
+
+    assert _union_members("RecipeAction", "refactoring.ts") == set(RECIPE_ACTIONS)
+    assert _union_members("RecipePreconditionKind", "refactoring.ts") == set(PRECONDITION_KINDS)
+
+
+def test_anchor_scopes_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.anchors import ANCHOR_SCOPES
+
+    assert _union_members("AnchorScope", "refactoring.ts") == set(ANCHOR_SCOPES)
+
+
+def test_refactoring_payoff_outcomes_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.payoff import PAYOFF_OUTCOMES
+
+    assert _union_members("RefactoringPayoffOutcome", "refactoring.ts") == set(PAYOFF_OUTCOMES)
+
+
+def test_reuse_site_actions_match_python() -> None:
+    from repowise.core.analysis.health.refactoring.reuse import REUSE_SITE_ACTIONS
+
+    assert _union_members("ReuseSiteAction", "refactoring.ts") == set(REUSE_SITE_ACTIONS)
 
 
 def _interface_body(name: str, module: str) -> str:
@@ -156,3 +226,16 @@ def test_next_call_shapes_match_python() -> None:
     for name in ("FixItem", "FixItemCompact"):
         body = _interface_body(name, "fix-first.ts")
         assert re.search(r"^  next_call: ActionCommand;", body, re.MULTILINE), name
+
+
+def test_queue_count_vocabulary_matches_python() -> None:
+    """The count object every queue unit carries, and the reasons it counts."""
+    from dataclasses import fields
+
+    from repowise.core.analysis.health.queue.counts import STORED_REASONS, QueueCounts
+    from repowise.core.analysis.health.queue.eligibility import REASONS
+    from repowise.core.persistence.crud.analysis.queue_counts import UNITS
+
+    assert _union_members("QueueReason", "queue.ts") == {*REASONS, *STORED_REASONS}
+    assert _union_members("QueueUnit", "queue.ts") == set(UNITS)
+    assert _interface_fields("QueueCounts", "queue.ts") == {f.name for f in fields(QueueCounts)}

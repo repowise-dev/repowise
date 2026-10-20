@@ -1,6 +1,7 @@
 import { Sparkles } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { formatCost, formatTokens } from "../lib/format";
+import { ProportionBar } from "../shared/proportion-bar";
 
 /** Structural slice of the savings report this tile renders — the full
  *  savings payload and the overview-summary headline both fit. */
@@ -45,8 +46,6 @@ export function SavingsMini({ data, repoId, trackable = true }: SavingsMiniProps
   const hasData = !!data?.available && total > 0;
   const costsHref = `/repos/${repoId}/costs`;
 
-  const measuredPct = total > 0 ? Math.round((measured / total) * 100) : 0;
-  const inferredPct = 100 - measuredPct;
 
   return (
     <Card>
@@ -85,48 +84,15 @@ export function SavingsMini({ data, repoId, trackable = true }: SavingsMiniProps
               ) : null}
             </p>
 
-            <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-              {measured > 0 && (
-                <div
-                  className="h-full"
-                  style={{ width: `${measuredPct}%`, background: "var(--color-accent-fill)" }}
-                  title={`Measured — ${formatTokens(measured)}`}
-                />
-              )}
-              {inferred > 0 && (
-                <div
-                  className="h-full"
-                  style={{ width: `${inferredPct}%`, background: "var(--color-accent-secondary)" }}
-                  title={`Inferred — ${formatTokens(inferred)}`}
-                />
-              )}
-            </div>
-            <div className="space-y-1 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-1.5 text-[var(--color-text-secondary)] whitespace-nowrap">
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0"
-                    style={{ background: "var(--color-accent-fill)" }}
-                  />{" "}
-                  Measured
-                </span>
-                <span className="tabular-nums text-[var(--color-text-tertiary)] shrink-0">
-                  {formatTokens(measured)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-1.5 text-[var(--color-text-secondary)] whitespace-nowrap">
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0"
-                    style={{ background: "var(--color-accent-secondary)" }}
-                  />{" "}
-                  Inferred
-                </span>
-                <span className="tabular-nums text-[var(--color-text-tertiary)] shrink-0">
-                  {formatTokens(inferred)}
-                </span>
-              </div>
-            </div>
+            {/* Measured leads in either order: it is the stronger claim. */}
+            <ProportionBar
+              label="Tokens saved by evidence"
+              sort={false}
+              segments={[
+                { key: "measured", label: "Measured", value: measured, detail: formatTokens(measured) },
+                { key: "inferred", label: "Inferred", value: inferred, detail: formatTokens(inferred) },
+              ]}
+            />
           </div>
         ) : (
           <div className="space-y-2 py-1">

@@ -17,9 +17,9 @@ import structlog
 from repowise.core.ids import is_external
 from repowise.core.ingestion.package_roots import package_roots_from_paths
 
+from ...analysis.public_api import compute_public_api
 from .. import onboarding as _onboarding
 from ..concept_tree.grouping import package_file_counts
-from ..context.public_api import compute_public_api
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
 from .helpers import _is_infra_file, decisions_for_files, rank_decisions

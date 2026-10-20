@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ActionsResponse, NextAction } from "@repowise-dev/types/actions";
 
-import { NextActions, actionsStatus } from "../../src/overview/next-actions.js";
+import { NextActions, groupByTier } from "../../src/overview/next-actions.js";
 import { actionHref } from "../../src/overview/action-href.js";
 
 function action(overrides: Partial<NextAction> = {}): NextAction {
@@ -22,6 +22,8 @@ function action(overrides: Partial<NextAction> = {}): NextAction {
     surface: "file",
     effort: "M",
     confidence: "high",
+    value: 3,
+    priority: 1.5,
     done_when: "Line coverage on this file reaches 80%.",
     command: null,
     marker: null,
@@ -56,6 +58,7 @@ function response(week: NextAction[], quarter: NextAction[]): ActionsResponse {
       fix_commits_90d: 40,
       busy_threshold: 8,
       coverage: "unknown",
+      history_too_short: false,
     },
     horizons: { week: horizon(week), quarter: horizon(quarter) },
     rules: [
@@ -111,6 +114,31 @@ describe("NextActions", () => {
     expect(onSetState.mock.calls[0]?.[0].fingerprint).toBe("fp1");
   });
 
+  it("still says everything is answered once the re-read view drops the row", async () => {
+    const onSetState = vi.fn().mockResolvedValue(undefined);
+    const before = response([], [action()]);
+    const { rerender } = render(
+      <NextActions data={before} hrefFor={() => null} onSetState={onSetState} />,
+    );
+    const chip = () => screen.getByRole("radio", { name: /This quarter/ });
+    expect(chip()).toHaveTextContent("1");
+    fireEvent.click(screen.getByRole("button", { name: /More for Raise test coverage/ }));
+    fireEvent.click(await screen.findByText("Dismiss"));
+    // Until the re-read lands, the count stays with the view, as the sentence does.
+    expect(chip()).toHaveTextContent("1");
+    await waitFor(() => expect(onSetState).toHaveBeenCalledTimes(1));
+
+    const after = response([], []);
+    after.horizons.quarter.hidden = 1;
+    rerender(<NextActions data={after} hrefFor={() => null} onSetState={onSetState} />);
+    expect(screen.getByText(/You have answered everything listed here/)).toBeInTheDocument();
+    expect(screen.queryByText(/none of them produced work/)).toBeNull();
+    expect(chip()).toHaveTextContent("0");
+    // The other time frame held nothing to answer, so it reads as empty.
+    fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
+    expect(screen.getByText(/none of them produced work/)).toBeInTheDocument();
+  });
+
   it("brings a row back when the write fails", async () => {
     const onSetState = vi.fn().mockRejectedValue(new Error("nope"));
     render(
@@ -124,6 +152,58 @@ describe("NextActions", () => {
   it("renders nothing for a server that predates actions", () => {
     const { container } = render(<NextActions data={null} hrefFor={() => null} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders open with the time frame in the header by default", () => {
+    const { container } = render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    expect(container.querySelector("details")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Do next" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /This quarter/ })).toBeInTheDocument();
+    expect(screen.queryByText(/suggested/)).toBeNull();
+  });
+
+  it("folds behind its heading with a count when defaultOpen is false", () => {
+    const now = action({ id: "act_now", tier: "act_now", horizons: ["week"], title: "Clean up `b.ts`" });
+    const { container } = render(
+      <NextActions
+        data={response([now], [action(), action({ id: "act_2" })])}
+        hrefFor={() => null}
+        defaultOpen={false}
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    // The count is the default time frame's, the same one its chip shows.
+    expect(within(details!.querySelector("summary")!).getByRole("heading", { name: "Do next · 1" })).toBeInTheDocument();
+
+    details!.open = true;
+    fireEvent.click(within(details!).getByRole("radio", { name: /This quarter/ }));
+    expect(within(details!).getByRole("radio", { name: /This quarter/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "Do next · 2" })).toBeInTheDocument();
+    // React only writes `open` when the prop changes, so a rerender keeps a
+    // section the user opened open.
+    expect(details!.open).toBe(true);
+  });
+});
+
+describe("the row prompt", () => {
+  it("opens the agent prompt from the row without opening the drawer", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} loadPrompt={loadPrompt} />);
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt for your agent: Raise test coverage/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Why it is on the list")).toBeNull();
+    expect(loadPrompt).toHaveBeenCalledWith(action(), expect.any(String));
+  });
+
+  it("is absent when the host has no prompt", () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    expect(screen.queryByRole("button", { name: /Copy prompt for your agent/ })).toBeNull();
   });
 });
 
@@ -159,21 +239,47 @@ describe("the action drawer", () => {
   });
 });
 
-describe("actionsStatus", () => {
-  it("names the window by its last indexed commit and counts work only", () => {
-    const now = action({ tier: "act_now", horizons: ["week"] });
-    const signal = action({ id: "s", tier: "improve_signal", horizons: ["week"] });
-    const text = actionsStatus(response([now, signal], []), "week");
-    expect(text).toMatch(/^1 thing worth doing in the week to /);
-    expect(text).toMatch(/1 of them now\.$/);
+describe("the status sentence", () => {
+  it("renders the sentence core wrote for the open time frame", () => {
+    const data = {
+      ...response([], [action()]),
+      summary: { week: "Core wording, week.", quarter: "Core wording, quarter." },
+    };
+    render(<NextActions data={data} hrefFor={() => null} />);
+    expect(screen.getByText("Core wording, quarter.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
+    expect(screen.getByText("Core wording, week.")).toBeInTheDocument();
   });
 
-  it("points to the other time frame when this one is clear", () => {
-    expect(actionsStatus(response([], [action()]), "week")).toBe(
-      "Nothing needs you in the week to " +
-        new Date("2026-09-28T09:45:08").toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-        ", the last indexed commit. 1 thing is worth planning this quarter.",
-    );
+  it("words the sentence locally for a view that carries no summary", () => {
+    const now = action({ id: "n", tier: "act_now", horizons: ["week"] });
+    render(<NextActions data={response([now], [action()])} hrefFor={() => null} />);
+    expect(
+      screen.getByText("1 thing worth doing in the week to Sep 28, the last indexed commit, 1 of them now."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /This quarter/ }));
+    expect(screen.getByText("1 thing worth doing this quarter.")).toBeInTheDocument();
+  });
+
+  it("names the anchor's own day whatever the offset or the viewer's timezone", () => {
+    for (const anchor of ["2026-09-28T23:30:00-07:00", "2026-09-28T00:15:00Z"]) {
+      const data = { ...response([action({ horizons: ["week"] })], []), anchor };
+      const { unmount } = render(<NextActions data={data} hrefFor={() => null} />);
+      expect(
+        screen.getByText("1 thing worth doing in the week to Sep 28, the last indexed commit."),
+      ).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("points to the other time frame when the open one is clear and no summary is sent", () => {
+    render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
+    fireEvent.click(screen.getByRole("radio", { name: /This week/ }));
+    expect(
+      screen.getByText(
+        "Nothing needs you in the week to Sep 28, the last indexed commit. 1 thing is worth planning this quarter.",
+      ),
+    ).toBeInTheDocument();
   });
 });
 
@@ -304,5 +410,30 @@ describe("host-configurable hints", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).queryByText("repowise get-risk src/a.py")).toBeNull();
     expect(within(dialog).getByText(/get_risk\(src\/a\.py\)/)).toBeInTheDocument();
+  });
+});
+
+describe("groupByTier", () => {
+  it("gives each tier one heading, in tier order, whatever the row order", () => {
+    const rows = [
+      action({ id: "p1", tier: "plan" }),
+      action({ id: "n1", tier: "act_now" }),
+      action({ id: "p2", tier: "plan" }),
+    ];
+    expect(groupByTier(rows).map(([tier, items]) => [tier, items.map((a) => a.id)])).toEqual([
+      ["act_now", ["n1"]],
+      ["plan", ["p1", "p2"]],
+    ]);
+  });
+
+  it("keeps rows of a tier it does not know, in a trailing group", () => {
+    const rows = [
+      action({ id: "x1", tier: "someday" as NextAction["tier"] }),
+      action({ id: "p1", tier: "plan" }),
+    ];
+    expect(groupByTier(rows).map(([tier, items]) => [tier, items.map((a) => a.id)])).toEqual([
+      ["plan", ["p1"]],
+      ["someday", ["x1"]],
+    ]);
   });
 });

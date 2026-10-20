@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from repowise.core.ingestion.call_resolver import CallResolver
-from repowise.core.ingestion.models import FileInfo, ParsedFile
+from repowise.core.ingestion.models import CallReceiver, FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
 
@@ -427,6 +427,145 @@ class TestPyChainedFieldCalls:
             },
         )
         assert [(c.receiver_name, c.target_name) for c in parsed["m.py"].calls] == [(None, "make")]
+
+
+# --- py_property_and_returned_receivers ---------------------------------------
+
+
+def _py_returned(store: str, app: str) -> dict[str, tuple[str, str]]:
+    return {
+        "pkg/users.py": (
+            "python",
+            "class Users:\n    def get(self, slug):\n        return slug\n",
+        ),
+        "pkg/store.py": ("python", "from pkg.users import Users\n\n" + store),
+        "pkg/app.py": ("python", "from pkg.store import Store\n\n" + app),
+    }
+
+
+_PY_GET = ("pkg/app.py::run", "pkg/users.py::Users::get")
+
+
+def _typed(edges: list[tuple[str, str, float, str]]) -> set[tuple[str, str, str]]:
+    """Edges into ``Users.get`` a receiver type proved, bare-name guesses left out."""
+    prefixes = ("receiver_chain_", "receiver_typed_", "return_type_")
+    return {
+        (e[0], e[1], e[3]) for e in edges if e[1] == _PY_GET[1] and e[3].startswith(prefixes)
+    }
+
+
+class TestPyPropertyAndReturnedReceivers:
+    def test_a_property_getter_annotation_types_the_hop(self, tmp_path: Path) -> None:
+        store = (
+            "class Store:\n"
+            "    @property\n"
+            "    def users(self) -> Users:\n"
+            "        return Users()\n\n"
+            "    @users.setter\n"
+            "    def users(self, value):\n"
+            "        pass\n"
+        )
+        app = "def run(store: Store):\n    return store.users.get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+        assert (*_PY_GET, "receiver_chain_import") in _typed(edges)
+
+    def test_a_cached_property_types_the_hop(self, tmp_path: Path) -> None:
+        store = (
+            "import functools\n\n"
+            "class Store:\n"
+            "    @functools.cached_property\n"
+            "    def users(self) -> 'Users':\n"
+            "        return Users()\n"
+        )
+        app = "def run(store: Store):\n    return store.users.get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+        assert (*_PY_GET, "receiver_chain_import") in _typed(edges)
+
+    def test_an_unannotated_or_optional_property_types_nothing(self, tmp_path: Path) -> None:
+        for annotation in ("", " -> Optional[Users]", " -> Users | None"):
+            store = (
+                "class Store:\n"
+                "    @property\n"
+                f"    def users(self){annotation}:\n"
+                "        return Users()\n"
+            )
+            app = "def run(store: Store):\n    return store.users.get('x')\n"
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_a_plain_method_is_not_a_property(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def users(self) -> Users:\n        return Users()\n"
+        app = "def run(store: Store):\n    return store.users.get('x')\n"
+        assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_an_assigned_call_types_the_local(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def lookup(self) -> Users:\n        return Users()\n"
+        for value in ("store.lookup()", "await store.lookup()"):
+            app = f"async def run(store: Store):\n    u = {value}\n    return u.get('x')\n"
+            edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+            assert (*_PY_GET, "receiver_typed_import") in _typed(edges)
+
+    def test_a_chained_call_types_the_outer_receiver(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def lookup(self) -> Users:\n        return Users()\n"
+        app = "def run(store: Store):\n    return store.lookup().get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, app), _PY_LINKS)
+        assert (*_PY_GET, "return_type_import") in _typed(edges)
+
+    def test_an_unannotated_return_types_nothing(self, tmp_path: Path) -> None:
+        store = "class Store:\n    def lookup(self):\n        return Users()\n"
+        app = (
+            "def run(store: Store):\n"
+            "    u = store.lookup()\n"
+            "    u.get('x')\n"
+            "    return store.lookup().get('y')\n"
+        )
+        assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_a_rebound_local_types_nothing(self, tmp_path: Path) -> None:
+        store = (
+            "class Store:\n"
+            "    def lookup(self) -> Users:\n"
+            "        return Users()\n\n"
+            "    def other(self):\n"
+            "        return None\n"
+        )
+        for rebind in ("u = None", "u = store.other()", "for u in []: pass"):
+            app = (
+                "def run(store: Store):\n"
+                "    u = store.lookup()\n"
+                f"    {rebind}\n"
+                "    return u.get('x')\n"
+            )
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+        same_line = "def run(store: Store):\n    u = store.lookup(); u = 3\n    return u.get('x')\n"
+        assert not _typed(_edges(tmp_path, _py_returned(store, same_line), _PY_LINKS))
+
+    def test_an_async_def_types_only_an_awaited_call(self, tmp_path: Path) -> None:
+        store = "class Store:\n    async def lookup(self) -> Users:\n        return Users()\n"
+        awaited = "async def run(store: Store):\n    u = await store.lookup()\n    u.get('x')\n"
+        edges = _edges(tmp_path, _py_returned(store, awaited), _PY_LINKS)
+        assert (*_PY_GET, "receiver_typed_import") in _typed(edges)
+        for app in (
+            "async def run(store: Store):\n    u = store.lookup()\n    u.get('x')\n",
+            "async def run(store: Store):\n    store.lookup().get('x')\n",
+        ):
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_a_property_called_as_a_method_types_nothing(self, tmp_path: Path) -> None:
+        store = (
+            "class Store:\n    @property\n    def users(self) -> Users:\n        return Users()\n"
+        )
+        for app in (
+            "def run(store: Store):\n    return store.users().get('x')\n",
+            "def run(store: Store):\n    u = store.users()\n    return u.get('x')\n",
+        ):
+            assert not _typed(_edges(tmp_path, _py_returned(store, app), _PY_LINKS))
+
+    def test_an_inner_call_keeps_only_a_dotted_receiver(self, tmp_path: Path) -> None:
+        source = "def run(items):\n    self.client.get(1).close()\n    items[0].get(2).close()\n"
+        parsed = _parse_all(tmp_path, {"m.py": ("python", source)})
+        receivers = {c.line: c.receiver_call for c in parsed["m.py"].calls if c.target_name == "close"}
+        assert receivers[2] == CallReceiver("get", "self.client", 1)
+        assert receivers[3] is None
 
 
 # --- go_chained_field_calls --------------------------------------------------

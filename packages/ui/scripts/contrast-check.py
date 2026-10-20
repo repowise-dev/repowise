@@ -101,9 +101,9 @@ def contrast(fg: str, bg: str) -> float:
 LIGHT = {
     "bg-root": "#FBF6F1",
     "bg-surface": "#FFFFFF",
-    "bg-elevated": "#FBF4EE",
-    "bg-inset": "#F4EAE1",
-    "bg-canvas": "#F4EAE1",  # --color-bg-canvas → var(--color-bg-inset)
+    "bg-elevated": "#F7F4F1",
+    "bg-inset": "#F0EBE6",
+    "bg-canvas": "#F0EBE6",  # --color-bg-canvas → var(--color-bg-inset)
     "text-primary": "#241B2C",
     "text-secondary": "#5E5360",
     "text-tertiary": "#8C7F88",
@@ -115,9 +115,9 @@ LIGHT = {
     "border-default": "rgba(88,67,108,0.12)",
     "border-active": "rgba(176,107,18,0.90)",
     "success": "#1D8155",
-    "warning": "#9A6614",
+    "warning": "#856700",
     "error": "#B23A2E",
-    "info": "#58436C",
+    "info": "#3F6EA5",
     # Blueprint diagram ink (light) — KG canvas + mermaid.
     "diagram-node-fill": "#241B2C",
     "diagram-node-fill-2": "#4A4152",
@@ -138,14 +138,25 @@ LIGHT = {
     "community-4": "#6B7A3D",  "community-5": "#B06A86",  "community-6": "#4A5D7A",
     "community-7": "#A8821F",  "community-8": "#8A7A66",  "community-9": "#7A2F4A",
     "community-10": "#B85A38", "community-11": "#2F6B66", "community-12": "#5E5360",
+    # Series (light): the community 1, 2, info, 4, 5, 7, 3 and 6 values.
+    # The share tail is exempt: it is always named.
+    "series-1": "#C0641A", "series-2": "#58436C", "series-3": "#3F6EA5",
+    "series-4": "#6B7A3D", "series-5": "#B06A86", "series-6": "#A8821F",
+    "series-7": "#B23A2E", "series-8": "#4A5D7A",
+    # Heat steps (light): --color-accent-primary mixed into --color-bg-surface
+    # at 10/26/50%, then accent-primary and accent-hover.
+    "heat-1": "#F6EFE8", "heat-2": "#E7D6C2", "heat-3": "#D0B08A",
+    "heat-4": "#A16215", "heat-5": "#824F10",
+    # Release moment ground and glow band (What's new dialog).
+    "release-ground": "#FBF6F1", "release-card": "#FFFFFF", "release-glow-1": "#F8DFC2", "release-glow-2": "#E8DEEF",
 }
 
 DARK = {
-    "bg-root": "#17131D",
-    "bg-surface": "#211B29",
-    "bg-elevated": "#2A2335",
-    "bg-inset": "#110D17",
-    "bg-canvas": "#110D17",  # --color-bg-canvas → var(--color-bg-inset)
+    "bg-root": "#0E0E0F",
+    "bg-surface": "#141416",
+    "bg-elevated": "#191A1C",
+    "bg-inset": "#0A0A0B",
+    "bg-canvas": "#0A0A0B",  # --color-bg-canvas → var(--color-bg-inset)
     "text-primary": "#EEEAF4",
     "text-secondary": "#A79DB3",
     "text-tertiary": "#786F84",
@@ -157,9 +168,9 @@ DARK = {
     "border-default": "rgba(213,197,232,0.10)",
     "border-active": "rgba(245,149,32,0.55)",
     "success": "#34D399",
-    "warning": "#F2A03D",
+    "warning": "#E8B339",
     "error": "#E06A5A",
-    "info": "#A98FC4",
+    "info": "#7DA7D9",
     # Blueprint diagram ink (dark) — border carries canvas separation.
     "diagram-node-fill": "#322A3E",
     "diagram-node-fill-2": "#261F30",
@@ -179,6 +190,15 @@ DARK = {
     "community-4": "#A9BB6F",  "community-5": "#D795B1",  "community-6": "#8FA3C0",
     "community-7": "#D9B04A",  "community-8": "#B8A68E",  "community-9": "#C4708F",
     "community-10": "#EBA585", "community-11": "#6FB3AB", "community-12": "#A79DB3",
+    # Series (dark): the same hues' dark values.
+    "series-1": "#F59520", "series-2": "#A98FC4", "series-3": "#7DA7D9",
+    "series-4": "#A9BB6F", "series-5": "#D795B1", "series-6": "#D9B04A",
+    "series-7": "#E06A5A", "series-8": "#8FA3C0",
+    # Heat steps (dark): --color-accent-primary mixed into the dark card at
+    # 12/26/42/75%, then accent-primary.
+    "heat-1": "#2F2317", "heat-2": "#4E3619", "heat-3": "#724A1A",
+    "heat-4": "#BD751E", "heat-5": "#F59520",
+    "release-ground": "#111013", "release-card": "#1B191E", "release-glow-1": "#2B1C0E", "release-glow-2": "#1F1729",
 }
 
 # (fg, bg, floor, label)  — floor is the WCAG ratio the pair must meet.
@@ -196,6 +216,8 @@ CHECKS = [
     ("text-inverse", "accent-primary", 4.5, "Text on accent-primary fill"),
     ("success", "bg-surface", 4.5, "Success text on card"),
     ("warning", "bg-surface", 4.5, "Warning text on card"),
+    ("warning", "bg-root", 4.5, "Warning text on page"),
+    ("warning", "bg-elevated", 4.5, "Warning text on elevated"),
     ("error", "bg-surface", 4.5, "Error text on card"),
     ("info", "bg-surface", 4.5, "Info text on card"),
     ("border-active", "bg-surface", 3.0, "Active border on card"),
@@ -215,6 +237,29 @@ CHECKS = [
         (f"community-{n}", "bg-canvas", 3.0, f"Community {n} hub on canvas")
         for n in range(1, 13)
     ],
+    # Chart series (bars, wedges, legend swatches) are non-text UI on page and card.
+    *[
+        (f"series-{n}", bg, 3.0, f"Series {n} on {where}")
+        for n in range(1, 9)
+        for bg, where in (("bg-root", "page"), ("bg-surface", "card"))
+    ],
+    # Heatmap cells print their value: ink on the light steps, card colour on the dark.
+    *[("text-primary", f"heat-{n}", 4.5, f"Value on heat step {n}") for n in (1, 2, 3)],
+    *[("bg-surface", f"heat-{n}", 4.5, f"Value on heat step {n}") for n in (4, 5)],
+    # What's new: ink on the ground and both glow stops (the band carries the
+    # heading only, so links sit on the ground), and the series accents
+    # beside the release figures.
+    *[
+        (fg, bg, floor, f"{fg} on {bg}")
+        for bg in ("release-ground", "release-glow-1", "release-glow-2")
+        for fg, floor in (("text-primary", 7.0), ("text-secondary", 4.5))
+    ],
+    ("accent-primary", "release-ground", 4.5, "accent-primary on release-ground"),
+    *[
+        (fg, "release-card", floor, f"{fg} on release-card")
+        for fg, floor in (("text-primary", 7.0), ("text-secondary", 4.5), ("accent-primary", 4.5))
+    ],
+    *[(f"series-{n}", "release-ground", 3.0, f"Series {n} on release ground") for n in range(1, 6)],
 ]
 
 

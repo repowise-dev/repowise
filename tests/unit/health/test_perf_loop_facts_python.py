@@ -86,23 +86,41 @@ def test_a_read_capped_in_the_query_does_not_grow():
     assert facts.magnitude == "unknown"
 
 
-def test_magnitude_range_all_caps_constant_bounded():
-    """B1: ``range(N)`` where N is an ALL_CAPS identifier."""
+def test_magnitude_range_all_caps_parameter_is_unknown():
+    """``range(N)`` where N is an ALL_CAPS parameter: no literal proves it."""
     facts = _loop(
         b"from sqlalchemy import select\n"
         b"async def f(session, MAX_RETRIES):\n"
         b"    for i in range(MAX_RETRIES):\n"
         b"        await session.execute(select(i))\n"
     )
-    assert facts.magnitude == "bounded"
+    assert facts is None or facts.magnitude == "unknown"
 
 
-def test_magnitude_range_attempts_name_bounded():
-    """B1: the last dotted segment matches ``retr|attempt`` (case-insensitive)."""
+@pytest.mark.parametrize(
+    "src",
+    [
+        b"async def f(session, cfg):\n    for i in range(cfg.max_attempts):\n",
+        b"from config import MAX_RETRIES\nasync def f(session):\n"
+        b"    for i in range(MAX_RETRIES):\n",
+        b"class C:\n    async def f(self, session):\n        for i in range(self.max_retries):\n"
+        b"    ",
+    ],
+)
+def test_a_retry_name_alone_never_proves_a_loop_bounded(src):
+    """A bounded loop is hidden as expected, so the name needs the proof a number has."""
+    facts = _loop(
+        b"from sqlalchemy import select\n" + src + b"        await session.execute(select(i))\n"
+    )
+    assert facts is None or facts.magnitude == "unknown"
+
+
+def test_magnitude_range_retry_constant_bound_to_a_literal_bounded():
     facts = _loop(
         b"from sqlalchemy import select\n"
-        b"async def f(session, cfg):\n"
-        b"    for i in range(cfg.max_attempts):\n"
+        b"MAX_RETRIES = 3\n"
+        b"async def f(session):\n"
+        b"    for i in range(MAX_RETRIES):\n"
         b"        await session.execute(select(i))\n"
     )
     assert facts.magnitude == "bounded"
@@ -120,12 +138,58 @@ def test_magnitude_slice_constant_upper_bound_bounded():
 
 
 def test_magnitude_slice_named_constant_bounded():
-    """B1: ``xs[:LIMIT]``."""
+    """B1: ``xs[:LIMIT]`` where the module binds ``LIMIT`` to an integer literal."""
     facts = _loop(
         b"from sqlalchemy import select\n"
-        b"async def f(session, xs, LIMIT):\n"
+        b"LIMIT = 50\n"
+        b"async def f(session, xs):\n"
         b"    for x in xs[:LIMIT]:\n"
         b"        await session.execute(select(x))\n"
+    )
+    assert facts.magnitude == "bounded"
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # A parameter spelled in capitals is still a parameter.
+        b"async def f(session, xs, LIMIT):\n    for x in xs[:LIMIT]:\n"
+        b"        await session.execute(select(x))\n",
+        # Bound, but not to a literal: the user count grows.
+        b"NUM_USERS = load_users()\nasync def f(session):\n    for i in range(NUM_USERS):\n"
+        b"        await session.execute(select(i))\n",
+        # Never bound in this module.
+        b"from config import NUM_USERS\nasync def f(session):\n"
+        b"    for i in range(NUM_USERS):\n        await session.execute(select(i))\n",
+        # Rebound later in the module.
+        b"MAX = 5\nMAX = load()\nasync def f(session):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Augmented.
+        b"MAX = 5\nMAX += extra()\nasync def f(session):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Written through ``global`` by some function.
+        b"MAX = 5\ndef grow(n):\n    global MAX\n    MAX = n\nasync def f(session):\n"
+        b"    for i in range(MAX):\n        await session.execute(select(i))\n",
+        # Shadowed by a local of the loop's function.
+        b"MAX = 5\nasync def f(session):\n    MAX = count_rows()\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+        # Shadowed by a parameter.
+        b"MAX = 5\nasync def f(session, MAX):\n    for i in range(MAX):\n"
+        b"        await session.execute(select(i))\n",
+    ],
+)
+def test_capitals_alone_never_prove_a_loop_bounded(src):
+    facts = _loop(b"from sqlalchemy import select\n" + src)
+    assert facts is None or facts.magnitude == "unknown"
+
+
+def test_magnitude_range_module_int_constant_bounded():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"MAX_PAGES = 5\n"
+        b"async def f(session):\n"
+        b"    for i in range(MAX_PAGES):\n"
+        b"        await session.execute(select(i))\n"
     )
     assert facts.magnitude == "bounded"
 
@@ -145,11 +209,12 @@ def test_magnitude_parameter_iterable_is_unknown():
     """Parameters are unknown on purpose — no reaching assignment to resolve."""
     facts = _loop(
         b"from sqlalchemy import select\n"
-        b"async def f(session, repos):\n"
-        b"    for r in repos:\n"
+        b"async def f(session, items):\n"
+        b"    for r in items:\n"
         b"        await session.execute(select(r))\n"
     )
-    assert facts is None  # unknown magnitude + no batch/bound -> no LoopFacts at all
+    assert facts is not None and facts.magnitude == "unknown"
+    assert facts.iterates == "parameter"
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +276,7 @@ def test_batch_none_when_loop_var_used_twice_in_chain():
         b"        await client.table('t').select('*')"
         b".eq('repo_id', r.id).eq('name', r.name).execute()\n"
     )
-    assert facts is None
+    assert facts is None or facts.batch is None
 
 
 def test_batch_supabase_limit_makes_not_equivalent():
@@ -242,7 +307,7 @@ def test_batch_second_sink_in_body_makes_not_equivalent():
         b"        session.execute(select(r))\n"
         b"        await client.table('t').select('*').eq('repo_id', r.id).execute()\n"
     )
-    supabase_hit = next(h for h in hits if h.loop is not None)
+    supabase_hit = next(h for h in hits if h.line == 5)
     assert supabase_hit.loop.batch.equivalent is False
 
 
@@ -266,7 +331,7 @@ def test_batch_none_when_iterable_appended_in_body():
         b"        repos.append(r)\n"
         b"        await client.table('t').select('*').eq('repo_id', r.id).execute()\n"
     )
-    assert facts is None
+    assert facts is None or facts.batch is None
 
 
 def test_batch_none_for_while_loop():
@@ -321,7 +386,7 @@ def test_concurrency_bound_none_when_loop_has_break():
         b"        async with self._sem:\n"
         b"            await session.execute(select(x))\n"
     )
-    assert facts is None
+    assert facts is None or facts.concurrency_bound is None
 
 
 def test_concurrency_bound_none_when_loop_has_return():
@@ -334,7 +399,7 @@ def test_concurrency_bound_none_when_loop_has_return():
         b"        async with self._sem:\n"
         b"            await session.execute(select(x))\n"
     )
-    assert facts is None
+    assert facts is None or facts.concurrency_bound is None
 
 
 def test_concurrency_bound_none_for_sync_with():
@@ -346,7 +411,7 @@ def test_concurrency_bound_none_for_sync_with():
         b"        with self._sem:\n"
         b"            await session.execute(select(x))\n"
     )
-    assert facts is None
+    assert facts is None or facts.concurrency_bound is None
 
 
 def test_batch_none_when_the_key_is_computed_from_the_element():
@@ -577,6 +642,42 @@ def test_a_read_filtered_to_a_chunk_loops_element_does_not_grow():
         b"            await session.execute(select(H).where(H.id == g.id))\n"
     )
     assert facts.magnitude != "grows_with_data"
+
+
+def test_a_read_filtered_to_a_set_of_keys_does_not_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session, paths):\n"
+        b"    result = await session.execute(select(G).where(G.path.in_(paths)))\n"
+        b"    for g in result.scalars().all():\n"
+        b"        await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude != "grows_with_data"
+
+
+@pytest.mark.parametrize("values", ['("a", "b")', "SOURCES", "sources"])
+def test_a_fixed_set_of_values_is_a_state_filter_that_grows(values):
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session):\n"
+        b"    sources = ('a', 'b')\n"
+        b"    result = await session.execute(select(G).where(G.source.in_(" + values.encode() + b")))\n"
+        b"    for g in result.scalars().all():\n"
+        b"        await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude == "grows_with_data"
+
+
+def test_keys_a_subquery_yields_still_grow():
+    facts = _loop(
+        b"from sqlalchemy import select\n"
+        b"async def f(session):\n"
+        b"    ids = select(R.id).subquery()\n"
+        b"    result = await session.execute(select(G).where(G.repo_id.in_(ids)))\n"
+        b"    for g in result.scalars().all():\n"
+        b"        await session.execute(select(H).where(H.id == g.id))\n"
+    )
+    assert facts.magnitude == "grows_with_data"
 
 
 def test_a_limit_on_a_statement_built_before_the_loop_caps_the_read():

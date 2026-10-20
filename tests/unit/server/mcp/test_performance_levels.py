@@ -37,7 +37,9 @@ def _row(repo_id: str, caller: str, line: int) -> HealthFinding:
                 "cross_function": True,
                 "path": [f"{caller}::run", "src/shared.py::load", "src/db.py::fetch"],
                 "resolution_basis": "call-site",
+                "loop_magnitude": "grows_with_data",
                 "dataflow_verified": True,
+                "execution_role": "request",
             }
         ),
         health_impact=0.0,
@@ -51,8 +53,9 @@ def _row(repo_id: str, caller: str, line: int) -> HealthFinding:
 async def materialized(session, health_data: str) -> str:
     """Five callers behind one shared helper, plus the base fixture's own row.
 
-    The fixture contributes a second production cause, which is why the totals
-    below are two rather than one.
+    The fixture contributes a second production cause whose loop nobody
+    measured, so the default queue holds one and counts the other as
+    ``unmeasured_cost``.
     """
     for index, caller in enumerate(_CALLERS, start=10):
         session.add(_row(health_data, caller, index))
@@ -86,14 +89,24 @@ async def _lead_id(get_health) -> str:
 
 
 @pytest.mark.asyncio
-async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materialized):
+async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materialized, factory):
     """Performance carries no defect impact, so it used to lead nowhere.
 
-    Fix first ranks the intervention beside the code-shape work, with the call
-    that opens its plan.
+    Fix first ranks a plan-ready intervention beside the code-shape work, with
+    the call that opens its plan; an advisory one stays in the performance queue.
     """
+    from sqlalchemy import update
+
+    from repowise.core.persistence.crud.analysis.fix_first import clear_fix_first_cache
+    from repowise.core.persistence.models import PerformanceOpportunity
     from repowise.server.mcp_server import get_health
 
+    advisory = await get_health()
+    assert not [i for i in advisory["fix_first"]["items"] if i["kind"] == "perf_fix"]
+    async with factory() as s:
+        await s.execute(update(PerformanceOpportunity).values(actionability_state="plan_ready"))
+        await s.commit()
+    clear_fix_first_cache()
     result = await get_health()
     assert "performance_directive" not in result
     perf = [i for i in result["fix_first"]["items"] if i["kind"] == "perf_fix"]
@@ -102,8 +115,10 @@ async def test_a_bare_dashboard_leads_with_something_to_do(setup_mcp, materializ
     # it points at the loop of its first caller, so its title names the helper.
     shared = [i for i in perf if i["title"].endswith(" load")]
     assert len(shared) == 1, perf
-    assert shared[0]["next_call"]["arguments"]["opportunity_id"].startswith("perf")
-    assert 0 < len(json.dumps(shared[0])) <= 1500
+    # A list item's next call is one fix_id away; only the lead carries it inline.
+    item = (await get_health(fix_id=shared[0]["id"]))["item"]
+    assert item["next_call"]["arguments"]["opportunity_id"].startswith("perf")
+    assert 0 < len(json.dumps(shared[0])) <= 1000
 
 
 @pytest.mark.asyncio
@@ -140,7 +155,7 @@ async def test_the_queue_filters_before_it_caps(setup_mcp, materialized):
         performance_context="production",
         performance_boundary="db",
     )
-    assert result["performance_opportunities_total"] == 2
+    assert result["performance_opportunities_total"] == 1
     assert {
         item["execution_context"] for item in result["performance_opportunities"]
     } == {"production"}
@@ -185,6 +200,7 @@ async def test_performance_actionability_threads_through_and_defaults_off_expect
                     "cross_function": True,
                     "path": ["src/fs.py::run", "src/fs.py::read"],
                     "resolution_basis": "reliable-edge",
+                    "loop_magnitude": "grows_with_data",
                 }
             ),
             health_impact=0.0,
@@ -225,7 +241,7 @@ async def test_an_unrecognized_filter_value_is_named_not_silently_empty(
         only=["performance_opportunities"],
         performance_context="staging",
     )
-    assert result["performance_opportunities_total"] == 2
+    assert result["performance_opportunities_total"] == 1
     assert result["ignored_arguments"] == {
         "performance_context": "staging (accepted: production, tooling, test, unknown, all)"
     }
@@ -272,7 +288,9 @@ async def test_one_id_returns_the_cause_its_plan_and_its_rank_rationale(
     assert result["confidence"] == "high"
     assert result["fix"]["safety"] == "advisory"
     assert [step["order"] for step in result["plan_steps"]] == [1, 2, 3, 4, 5]
-    assert result["validation"]["commands"]
+    # No test reaches the fixture's code: no command, and the plan says so.
+    assert result["validation"]["commands"] == []
+    assert "add a characterization test" in result["validation"]["prerequisite"]
     assert result["facets"]["leverage"] == "shared"
     assert result["why_ranked"]
     assert len(json.dumps(result)) <= 20_000
@@ -456,9 +474,15 @@ async def test_rest_and_the_agent_surface_project_the_same_rows(
             actionability=None,
             view="detail",
             sort="rank",
+            proof=None,
+            role=None,
+            queue=False,
+            area=None,
+            area_depth=None,
             file_paths=None,
             limit=6,
             offset=0,
+            include_unverified=False,
             session=session,
         )
 
@@ -509,3 +533,38 @@ async def test_a_plan_is_validated_by_a_test_named_for_its_file_when_no_edge_rea
     assert "tests/test_a.py" in opportunity["validation"]["tests"]
     assert plan["validation"]["via"] == "name-match"
     assert "pytest tests/test_a.py" in plan["validation"]["commands"]
+
+
+@pytest.mark.asyncio
+async def test_the_mcp_queue_shapes_do_not_grow(setup_mcp, materialized):
+    """The dashboard's summary rows carry fix, gain and effort; the agent
+    surface's do not, and its default rows keep exactly their keys."""
+    from repowise.server.mcp_server import get_health
+
+    default = await get_health(include=["performance"], only=["performance_opportunities"])
+    summary = await get_health(
+        include=["performance"],
+        only=["performance_opportunities"],
+        performance_view="summary",
+    )
+    assert set(default["performance_opportunities"][0]) == {
+        "actionability_reason", "actionability_state", "affected_call_sites_total",
+        "affected_files_total", "biomarker_type", "biomarker_types",
+        "biomarker_types_emitted", "biomarker_types_total", "boundary_kind", "confidence",
+        "evidence", "evidence_emitted", "evidence_next_cursor", "evidence_reduced_reason",
+        "evidence_total", "evidence_truncated", "execution_context", "facets", "file_path",
+        "fix", "gain_text", "intervention_kind", "intervention_symbol", "lower_priority",
+        "may_lead", "observations_total", "opportunity_id", "performance_model_version",
+        "plan_economics", "plan_id", "plan_reason", "plan_reference", "plan_status",
+        "plan_steps", "plan_steps_emitted", "plan_steps_total", "prerequisites",
+        "prerequisites_emitted", "prerequisites_total", "provenance", "rank_factors",
+        "rank_position", "rank_score", "reliable_entry_reachability",
+        "resource_fingerprints", "resource_fingerprints_emitted",
+        "resource_fingerprints_total", "shared_path_suffix", "shared_path_suffix_emitted",
+        "shared_path_suffix_total", "siblings", "siblings_emitted", "siblings_total",
+        "terminal_sink", "terminal_sinks", "terminal_sinks_emitted", "terminal_sinks_total",
+        "validation", "why_ranked", "why_ranked_emitted", "why_ranked_total",
+    }
+    assert not {"fix", "gain_text", "plan_economics"} & set(
+        summary["performance_opportunities"][0]
+    )

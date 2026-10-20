@@ -5,7 +5,6 @@ from __future__ import annotations
 from repowise.core.analysis.health.biomarkers.base import BiomarkerResult
 from repowise.core.analysis.health.models import HealthFileMetricData, Severity
 from repowise.core.analysis.health.scoring import (
-    CATEGORY_CAPS,
     compute_kpis,
     remap_severities,
     score_file,
@@ -67,24 +66,22 @@ def test_score_clean_file_is_ten():
 
 
 def test_score_clamps_floor_at_one():
-    # Twenty critical findings in the same category — should hit the cap
-    # but never go below 1.0.
+    # Twenty critical findings in one category saturate toward 3.09 x its
+    # 1.5 cap and never take the score below 1.0.
     results = [_r("complex_method", Severity.CRITICAL) for _ in range(20)]
     scores, _ = score_file(results)
     assert scores["defect"] >= 1.0
-    # Cap on size_and_complexity is 1.5 (post-recalibration) → score 8.5.
-    assert scores["defect"] == 8.5
+    assert round(scores["defect"], 3) == 5.365
 
 
-def test_category_cap_applied():
-    # Two structural-complexity hits that together would deduct 4.0 raw,
-    # but the category cap is 3.5.
+def test_category_curve_applied():
+    # Two structural-complexity hits, 3.68 weighted, saturate to 2.928.
     results = [
-        _r("brain_method", Severity.CRITICAL),  # 2.0 raw
-        _r("nested_complexity", Severity.CRITICAL),  # 2.0 raw
+        _r("low_cohesion", Severity.CRITICAL),  # 2.0 x 0.5
+        _r("nested_complexity", Severity.CRITICAL),  # 2.0 x 1.34
     ]
     scores, _ = score_file(results)
-    assert scores["defect"] == 10.0 - CATEGORY_CAPS["structural_complexity"]
+    assert round(scores["defect"], 3) == 7.072
 
 
 def test_compute_kpis_uses_nloc_weighting():
@@ -104,7 +101,7 @@ def test_compute_kpis_uses_nloc_weighting():
 
 def test_compute_kpis_empty_returns_defaults():
     kpis = compute_kpis([], hotspot_paths=set())
-    assert kpis["average_health"] == 10.0
+    assert kpis["average_health"] is None
     assert kpis["file_count"] == 0
     assert kpis["maintainability_average"] is None
     assert kpis["performance_average"] is None

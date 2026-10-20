@@ -11,19 +11,25 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 from .analysis.change_risk.features import _git, split_revspec
+from .forges import parse_remote
 
 __all__ = [
     "BranchRef",
+    "PathRemoval",
     "ahead_behind",
     "ahead_behind_many",
+    "branch_with_path",
     "change_base",
     "changed_files",
     "commit_file_sets",
     "current_branch",
     "default_base",
     "files_by_ref",
+    "find_path_removal",
+    "is_ancestor",
     "is_shallow",
     "list_branches",
     "refs_containing",
@@ -76,10 +82,14 @@ def remote_name(repo_path: str) -> str:
     """The repository's name on its ``origin`` remote, ``""`` when it has none.
 
     The checkout folder is not the name in a worktree or a renamed clone; the
-    remote URL's last segment is, for every host's URL shape.
+    remote's repo is. A remote no forge parses (a local path) falls back to
+    its last segment.
     """
-    url = _read(repo_path, ["config", "--get", "remote.origin.url"]).rstrip("/")
-    name = url.replace("\\", "/").replace(":", "/").rsplit("/", 1)[-1]
+    url = _read(repo_path, ["config", "--get", "remote.origin.url"])
+    ref = parse_remote(url)
+    if ref is not None:
+        return ref.repo
+    name = url.rstrip("/").replace("\\", "/").replace(":", "/").rsplit("/", 1)[-1]
     return name[: -len(".git")] if name.endswith(".git") else name
 
 
@@ -291,3 +301,86 @@ def ahead_behind(repo_path: str, base: str, head: str) -> tuple[int, int]:
     except ValueError:
         return (0, 0)
     return (ahead, behind)
+
+
+def is_ancestor(repo_path: str, older: str, newer: str) -> bool | None:
+    """Whether *older* is *newer* or one of its ancestors; ``None`` when git cannot answer."""
+    try:
+        _git(["merge-base", "--is-ancestor", "--end-of-options", older, newer], cwd=repo_path)
+    except subprocess.CalledProcessError as exc:
+        # Exit 1 is git's "no"; anything else is an unknown sha or no repository.
+        return False if exc.returncode == 1 else None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return True
+
+
+@dataclass(frozen=True)
+class PathRemoval:
+    """The most recent commit that removed a path, and where it likely went."""
+
+    commit: str
+    #: The rename target, or the files a same-named directory split into.
+    #: Empty when the deletion is not explainable either way.
+    moved_to: list[str]
+
+
+def find_path_removal(repo_path: str, path: str) -> PathRemoval | None:
+    """Where *path* went, from the newest commit that removed it. ``None`` if git never had it.
+
+    Only the newest deleting commit is inspected — an older rename chain is a
+    rarer shape than "renamed once, then left alone", and a caller asking
+    "where did this go" wants a redirect, not a full history walk.
+
+    A pathspec cannot find a rename directly: git prunes the diff to it before
+    rename detection runs, so ``-- old.py`` would see only a deletion. The
+    commit is instead read whole with ``-M``, then filtered to the line whose
+    old side is *path*. When that finds nothing, the commit is checked for a
+    split into a same-named directory (``shell.py`` -> ``shell/``, `#1929's`
+    shape): every file the commit added under ``<path without extension>/``.
+    """
+    if not path or path.startswith("/") or ".." in PurePosixPath(path).parts:
+        return None
+    sha = _read(repo_path, ["log", "-1", "--diff-filter=D", "--format=%H", "--", path])
+    if not sha:
+        return None
+
+    renames = _read(repo_path, ["show", "-M", "--diff-filter=R", "--name-status", "--format=", sha])
+    for line in renames.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].startswith("R") and parts[1] == path:
+            return PathRemoval(commit=sha, moved_to=[parts[2]])
+
+    stem_dir = f"{PurePosixPath(path).with_suffix('').as_posix()}/"
+    added = _read(repo_path, ["show", "--diff-filter=A", "--name-only", "--format=", sha])
+    split_into = sorted(
+        {line.strip() for line in added.splitlines() if line.strip().startswith(stem_dir)}
+    )
+    return PathRemoval(commit=sha, moved_to=split_into)
+
+
+def branch_with_path(repo_path: str, path: str) -> str | None:
+    """The newest other local branch whose tip has *path*, ``None`` when none does.
+
+    Worktrees share the repository's branches, so this finds a file that exists
+    only in another worktree's branch. Two git calls whatever the branch count.
+    Ceiling: a detached worktree HEAD is not a branch and is not looked at.
+    """
+    from .analysis.doc_drift.suggest import git_run
+
+    # A path that escapes the tree (``../x``, ``/x``) is simply missing in every
+    # tree, and the read only reads, so no guard is needed here.
+    listing = _read(
+        repo_path,
+        ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)", "refs/heads"],
+    )
+    # ``*`` marks the checked-out branch, whose tree the caller already read.
+    rows = (line.partition("\t") for line in listing.splitlines())
+    names = [name for name, _, mark in rows if mark.strip() != "*"]
+    # No other branch sends an empty request, which answers with no lines: None.
+    request = "".join(f"refs/heads/{name}:{path}\n" for name in names).encode("utf-8")
+    ran = git_run(Path(repo_path), "cat-file", "--batch-check=%(objecttype)", stdin=request)
+    lines = ran[1].decode("utf-8", "replace").splitlines() if ran and ran[0] == 0 else []
+    if len(lines) != len(names):
+        return None
+    return next((name for name, kind in zip(names, lines, strict=True) if kind == "blob"), None)

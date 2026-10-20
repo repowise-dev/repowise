@@ -47,6 +47,11 @@ class FileFacts:
     owner_pct: float | None
     dependents: int | None
     lead: LeadFinding | None = None
+    #: Test files the code graph says reach this file; ``None`` when not looked
+    #: up (only fragile files with no measured coverage are) or the map failed.
+    tests_reaching: int | None = None
+    #: Which walk found them (``call-graph`` or ``import-graph``).
+    tests_reaching_via: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +68,13 @@ class RecentFinding:
     change_kind: str
     line: int | None
     reason: str = ""
+    #: ``performance`` or ``coverage`` for a defect-class
+    #: finding; ``shape`` for a code-shape marker (a long or nested method).
+    kind: str = "shape"
+
+    @property
+    def defect(self) -> bool:
+        return self.kind != "shape"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,5 +151,7 @@ class RepoFacts:
     author_last_commit: Mapping[str, datetime] = field(default_factory=dict)
     active_authors_90d: int = 0
     coverage: CoverageState = CoverageState("unknown")
+    #: Commits the index holds; ``None`` when not counted.
+    history_commits: int | None = None
     #: Store name -> why it could not be read.
     unavailable: Mapping[str, str] = field(default_factory=dict)

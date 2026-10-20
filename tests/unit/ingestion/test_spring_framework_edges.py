@@ -140,6 +140,81 @@ class TestSpringKotlin:
         assert graph.number_of_nodes() == 2
 
 
+class TestServletInitializer:
+    """A class the servlet container bootstraps is a root; no source names it."""
+
+    def _graph(self, tmp_path: Path, files: dict[str, str]) -> nx.DiGraph:
+        for rel, text in files.items():
+            (tmp_path / rel).write_text(text)
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed), tech_stack=["spring"])
+        return graph
+
+    def test_spring_boot_servlet_initializer_is_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "ServletInitializer.java": (
+                    "import org.springframework.boot.builder.SpringApplicationBuilder;\n"
+                    "import org.springframework.boot.web.servlet.support"
+                    ".SpringBootServletInitializer;\n"
+                    "public class ServletInitializer extends SpringBootServletInitializer {\n"
+                    "  @Override\n"
+                    "  protected SpringApplicationBuilder configure("
+                    "SpringApplicationBuilder application) {\n"
+                    "    return application.sources(AdminApplication.class);\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            },
+        )
+        node = graph.nodes["ServletInitializer.java"]
+        assert node.get("is_entry_point") is True
+        assert node.get("framework_role") == "spring_servlet_initializer"
+
+    def test_mvc_dispatcher_initializer_is_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "WebInit.java": (
+                    "import org.springframework.web.servlet.support"
+                    ".AbstractAnnotationConfigDispatcherServletInitializer;\n"
+                    "public class WebInit\n"
+                    "    extends AbstractAnnotationConfigDispatcherServletInitializer {}\n"
+                ),
+            },
+        )
+        assert graph.nodes["WebInit.java"].get("is_entry_point") is True
+
+    def test_kotlin_servlet_initializer_is_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "ServletInitializer.kt": (
+                    "import org.springframework.boot.web.servlet.support"
+                    ".SpringBootServletInitializer\n"
+                    "class ServletInitializer : SpringBootServletInitializer()\n"
+                ),
+            },
+        )
+        assert graph.nodes["ServletInitializer.kt"].get("is_entry_point") is True
+
+    def test_another_base_is_not_an_entry_point(self, tmp_path: Path) -> None:
+        graph = self._graph(
+            tmp_path,
+            {
+                "Widget.java": (
+                    "import org.springframework.stereotype.Component;\n"
+                    "public class Widget extends BaseWidget {}\n"
+                ),
+            },
+        )
+        assert not graph.nodes["Widget.java"].get("is_entry_point")
+
+
 class TestSpringGate:
     def test_non_spring_unaffected(self, tmp_path: Path) -> None:
         (tmp_path / "Plain.java").write_text("public class Plain {}\n")
@@ -262,3 +337,68 @@ class TestSpringSymbolEdges:
         bound = _bound(_build_graph(tmp_path))
         assert ("UserResource.java::UserResource", "MailService.java::MailService") in bound
         assert ("UserResource.java::UserResource", "User.java::User") not in bound
+
+
+class TestSpringRouteHandlers:
+    def test_each_mapped_method_is_bound_from_its_module(self, tmp_path: Path) -> None:
+        (tmp_path / "OwnerController.java").write_text(
+            "import org.springframework.web.bind.annotation.*;\n"
+            "@RestController\n"
+            '@RequestMapping("/owners")\n'
+            "public class OwnerController {\n"
+            "  @GetMapping\n"
+            "  public String list() { return \"\"; }\n"
+            '  @PostMapping(value = {"/new", "/create"})\n'
+            '  @PreAuthorize("hasRole(\'ADMIN\')")\n'
+            "  public String create(@RequestBody String body) { return body; }\n"
+            '  @RequestMapping(path = "/{id}", method = RequestMethod.DELETE)\n'
+            "  public void delete() {}\n"
+            "  private void helper() {}\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        module = "OwnerController.java::__module__"
+        handlers = {t.rsplit("::", 1)[-1] for s, t in bound if s == module}
+        assert handlers == {"list", "create", "delete"}
+
+    def test_a_kotlin_handler_and_a_commented_mapping(self, tmp_path: Path) -> None:
+        (tmp_path / "PetController.kt").write_text(
+            "import org.springframework.web.bind.annotation.*\n"
+            "@RestController\n"
+            "class PetController {\n"
+            '    // @GetMapping("/old")\n'
+            "    fun old(): String = \"\"\n"
+            '    @GetMapping(value = ["/pets"])\n'
+            "    fun pets(): String = \"\"\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        assert bound == {("PetController.kt::__module__", "PetController.kt::PetController::pets")}
+
+    def test_a_one_line_kotlin_expression_body(self, tmp_path: Path) -> None:
+        (tmp_path / "Ping.kt").write_text(
+            "import org.springframework.web.bind.annotation.*\n"
+            "@RestController\n"
+            "class Ping {\n"
+            '    @GetMapping("/ping") fun ping() = "pong"\n'
+            '    @GetMapping("/pong")\n'
+            '    fun pong() = "ping"\n'
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        assert bound == {
+            ("Ping.kt::__module__", "Ping.kt::Ping::ping"),
+            ("Ping.kt::__module__", "Ping.kt::Ping::pong"),
+        }
+
+    def test_a_feign_client_serves_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "Owners.java").write_text(
+            "import org.springframework.web.bind.annotation.GetMapping;\n"
+            '@FeignClient("owners")\n'
+            'public interface Owners { @GetMapping("/owners") String all(); }\n'
+        )
+
+        assert not _bound(_build_graph(tmp_path))

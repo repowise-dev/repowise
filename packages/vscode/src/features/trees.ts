@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import type { RepowiseContext } from "../core/context";
 import { registerFindingsTree } from "./trees/findings";
 import { registerRefactoringTree } from "./trees/refactoring";
+import { retryMountedTrees } from "./trees/shared";
+import { InternalCommands } from "../constants";
 
 /**
  * Instantiates the two activity-bar tree views (Findings, Refactoring) and
@@ -15,5 +17,6 @@ export function registerTrees(ctx: RepowiseContext): vscode.Disposable {
   return vscode.Disposable.from(
     registerFindingsTree(ctx),
     registerRefactoringTree(ctx),
+    vscode.commands.registerCommand(InternalCommands.retryTrees, retryMountedTrees),
   );
 }

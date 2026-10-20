@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 
 from repowise.cli.helpers import (
@@ -20,6 +22,7 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     resolve_repo_path,
     run_async,
+    save_config,
     save_state,
     validate_provider_config,
     warn,
@@ -295,6 +298,95 @@ class TestSaveConfigPartial:
         cfg = load_config(tmp_path)
         assert cfg["commit_limit"] == 500
         assert cfg["embedder"] == "minilm"
+
+
+class TestStaleEmbeddingModelIsNotCarriedOver:
+    """A re-init that resolves no model must not keep a previous one (#2627)."""
+
+    def test_save_config_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_save_config_partial_drops_a_stale_pin_on_the_new_embedder(self, tmp_path):
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="gemini", embedding_model=None)
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedder"] == "gemini"
+        assert "embedding_model" not in cfg
+
+    def test_serve_does_not_export_the_dropped_pin(self, tmp_path, monkeypatch):
+        from repowise.cli.commands import serve_cmd
+        from repowise.cli.helpers import save_config
+
+        save_config(
+            tmp_path,
+            "openai",
+            "gpt-5",
+            "openai",
+            embedding_model="text-embedding-3-large",
+            save_key=False,
+        )
+        save_config(
+            tmp_path, "gemini", "gemini-2.5-flash", "gemini", embedding_model=None, save_key=False
+        )
+
+        monkeypatch.chdir(tmp_path)
+        # _load_local_provider_config only sets these when unset, and it writes
+        # straight to os.environ, which monkeypatch cannot undo unless it made
+        # the write itself. Pre-set the ones this test does not care about so
+        # the function leaves them alone, and only clear the one under test.
+        monkeypatch.setenv("REPOWISE_PROVIDER", "unrelated")
+        monkeypatch.setenv("REPOWISE_MODEL", "unrelated")
+        monkeypatch.setenv("REPOWISE_EMBEDDER", "unrelated")
+        monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+        serve_cmd._load_local_provider_config()
+
+        assert os.environ.get("REPOWISE_EMBEDDING_MODEL") is None
+
+    def test_embedder_alone_does_not_clear_a_pin_it_was_never_told_changed(self, tmp_path):
+        """Regression from review on #2654: reindex passes only ``embedder=`` every run.
+
+        The first cut of the fix cleared the pin whenever ``embedder`` was
+        passed without ``embedding_model``, which reads reindex's silence
+        (it has never had a model to pass) as "the model is gone" and wiped a
+        real pin on every routine reindex. Clearing now needs an explicit
+        ``embedding_model=None``, not merely the absence of the keyword.
+        """
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text(
+            "embedder: openai\nembedding_model: text-embedding-3-large\n", encoding="utf-8"
+        )
+
+        save_config_partial(tmp_path, embedder="openai")
+
+        cfg = load_config(tmp_path)
+        assert cfg["embedding_model"] == "text-embedding-3-large"
 
 
 class TestConfigFingerprint:
@@ -723,13 +815,73 @@ class TestResolveProviderConfigModel:
         assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
         assert captured["kwargs"].get("model") == "anthropic/claude-sonnet-5"
 
-    def test_env_model_overrides_config_model(self, monkeypatch, tmp_path):
+    def test_config_model_overrides_env_model(self, monkeypatch, tmp_path):
+        """config.yaml outranks REPOWISE_MODEL, the order every entry point shares."""
         captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
         monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
         monkeypatch.setenv("REPOWISE_MODEL", "anthropic/claude-opus-5")
 
         assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
-        assert captured["kwargs"].get("model") == "anthropic/claude-opus-5"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_config_provider_overrides_env_provider(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "openrouter", "model": "google/gemini-3.1"}
+        )
+        monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+        monkeypatch.setenv("REPOWISE_MODEL", "claude-opus-4-6")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["name"] == "openrouter"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_flag_provider_does_not_inherit_another_providers_model(
+        self, monkeypatch, tmp_path
+    ):
+        captured = self._capture(
+            monkeypatch, tmp_path, {"provider": "gemini", "model": "gemini-3.1-pro-preview"}
+        )
+
+        assert resolve_provider("openrouter", None, repo_path=tmp_path) == "provider"
+        from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+        assert captured["kwargs"].get("model") == PROVIDER_SPECS["openrouter"].default_model
+
+    def test_config_base_url_beats_env_base_url(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "model": "qwen", "openai": {"base_url": "http://localhost:1234/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://other:4000/v1")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "http://localhost:1234/v1"
+
+    def test_unconfirmed_remote_base_url_is_refused_with_its_url(self, monkeypatch, tmp_path):
+        self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://collector.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+
+        with pytest.raises(click.ClickException, match=r"collector\.example") as info:
+            resolve_provider(None, None, repo_path=tmp_path)
+        assert "repowise init" in info.value.message
+
+    def test_init_confirms_the_base_url_it_saves(self, monkeypatch, tmp_path):
+        captured = self._capture(
+            monkeypatch,
+            tmp_path,
+            {"provider": "openai", "openai": {"base_url": "https://gateway.example/v1"}},
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-shell")
+        save_config(tmp_path, "openai", "gpt-x", "mock", save_key=False)
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"]["base_url"] == "https://gateway.example/v1"
 
     def test_explicit_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
         captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})

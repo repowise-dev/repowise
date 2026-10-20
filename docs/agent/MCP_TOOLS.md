@@ -87,14 +87,14 @@ Every tool returns a JSON object with a `_meta` envelope. Most fields appear onl
 
 | Field | What to do with it |
 |-------|--------------------|
-| `stale_warning` | Present only when the index is behind in a way that changed served files. Run `repowise update` before trusting file-level detail. Its absence means current. |
+| `stale_warning` | Present only when the index is behind in a way that changed served files, or a served file has uncommitted edits or was indexed from edits since reverted (`working_tree_dirty` counts the edited ones; run `repowise update --working-tree`). Run `repowise update` before trusting file-level detail. Its absence means current. |
 | `indexed_commit`, `live_head`, `index_behind` | Which commit the answer describes and whether HEAD has moved since. |
 | `complete` | Symbol bodies or whole files served verified against the live file. Do not re-read them. |
 | `state` | `degraded`, `partial` or `truncated` when something fired, with reasons. A degraded empty result is a failed read, not an empty repository. |
 | `omitted` | Refs to content cut for size. Restore with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. |
 | `response_budget` | The character ceiling that applied and the size delivered. Present when the budget cut something. |
 
-`get_answer` adds a top-level `confidence` (rates the prose) and `retrieval_quality` (rates the evidence). Diagnostics such as `timing_ms` and `contract_version` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere. Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
+`get_answer` adds a top-level `confidence`, its one trust signal, graded from the retrieval and from whether the top hit covers what the question asks; `include=["diagnostics"]` adds `retrieval_quality`, the rating of the retrieval alone. Diagnostics such as `timing_ms` and `contract_version` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere. Full envelope: [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope).
 
 ### Reversible truncation: `_meta.omitted`
 
@@ -147,9 +147,9 @@ Answers a how, where or why question in one call: it runs hybrid retrieval over 
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 | `include` | list[string] | none | `["evidence"]` returns the full evidence projection with a larger budget |
 
-**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`, rates the prose), `retrieval_quality` (`high` / `partial` / `weak`, rates the evidence), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
+**Key return fields:** `answer`, `confidence` (`high` / `medium` / `low`), `citations`, `symbol_bodies` (live bodies of symbols the answer names), `retrieval`, `best_guesses` and `fallback_targets` (on low confidence; a low `best_guesses` row carries `functions`, `lines` and `size_bytes` instead of a page excerpt), `candidate_files` (ranked file paths the citations do not already name: up to 3 at `high`, 5 otherwise), `episodes` (dated facts bearing on the question), `degraded` (synthesis could not run), `_meta.scope_hint` (areas the answer did not touch).
 
-A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`.
+A `high` answer can be cited directly. On `low`, read the rows the reply names, then `candidate_files`, before searching again. Without an LLM provider the tool still answers from retrieval, marked `degraded`. When retrieval is also `weak`, the reply serves `best_guesses` and `candidate_files` with one guidance line in `answer`, and no `citations`.
 
 ```
 get_answer(question="How does the authentication flow work?")
@@ -161,16 +161,31 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `targets` | list[string] | required | File paths, module paths, or `"path::Symbol"` ids |
-| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols` |
+| `targets` | list[string] | required | File paths, module paths, `"path::Symbol"` ids, `"component:<name>"`, `"change:<id>"`, or `"package:<name>"` |
+| `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported (returns an error) |
+| `symptom` | string | none | Issue text, an error message or a pasted stack trace for `include=["suspects"]` to rank against, in place of the words in the target paths |
 
 **Key return fields:** `targets` keyed by target, each with title, summary, symbols, `hotspot`, `fix_history` (files with counted bug fixes), `episodes`, decision titles, `file_preview` (for files with no symbols), `resolved_to` (a symbol miss falling back to its file); `dropped_targets` and `recovery` when the budget forced targets out; `_meta.complete` for whole files served.
+
+A `component:<name>` target returns the component's declared context (owner, system, criticality, tags) and `facts` rolled up over its files: health, hotspots, bus factor, test reach and dead code, each with a `basis` (`measured`, `inferred` or `unavailable`). Components come from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or are derived from the index. With `include=["ownership"]` a component card adds `ownership`: declared teams with their activity over the last 90 days, a count of individual owners, and findings (`critical_no_active_owner`, `declared_owner_inactive`, `critical_bus_factor_one`, `catalog_entry_no_code`). An owner with no identity in the indexed history is `unknown` and raises no finding, so `critical_no_active_owner` does not fire when every owner is unknown; individuals match only by exact git email or forge noreply login. No other `include` applies to component targets. Health and dead code leave out files in gated languages and say how many.
+
+A `change:<id>` target (`change:pr-123`, or a commit sha the change landed) returns the [Change Record](../reference/CLI_REFERENCE.md#repowise-changes): title, forge ref, `merged_at`, category, files and provenance with its coverage. On a file target, `changes` lists the newest Change Records that touched it, and `provenance` gives the file's commits by source (agent, human-attested, unknown) with coverage; the agent share is withheld below 30% coverage. With attribution off, `provenance` reads `{"unavailable": "attribution_off"}` and change rows carry none. `suspects` adds one top-level block: the changes merged in the last 14 days ranked against the targets' files and the words in their paths, or the `symptom` text when one is given, at most 5 rows, each with the signals that fired and their evidence, plus the candidate count and window; an order to read changes in, never a cause.
+
+A `package:<name>` target (`package:requests`, or `package:npm:lodash`) returns where that third-party package is imported: its manifest declarations, a summary, the components and declared owner teams, and up to 25 import sites with line, `mapping` (`declared` or `inferred`) and `reachability` (`reachable`, `unreachable`, `test` or `unknown`, with a basis). See [PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md).
 
 A file's compact symbol list holds its top 15 symbols: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules) first, then functions and methods, then the rest, each group by centrality. `symbols_truncated` gives the total, and `include=["symbols"]` lists them all. When the response budget trims the list further, it keeps symbols by kind and name match, not centrality. A row without `symbol_id` is `path::name`; methods and overload variants carry theirs, so pass a row's id to `get_symbol` when it has one.
 
 `full_doc` returns the page as `content_md`, plus `digest_md` on pages that carry an agent digest: the questions the page answers, its concept index, public API and git signals. Both are dropped first when the response is over budget. `skeleton` renders a file with bodies elided: every signature, the imports, and the bodies of its most central symbols, with line ranges on every elision. `doc_drift` lists the documents that name the file and whether they carry drift. An empty `callers` or `callees` list comes with a `*_basis` saying how much of that language's calls the graph resolved; read it before concluding nothing calls a symbol.
+
+`references` is the edit set for a symbol target: every live line naming it, as `{path, line, kind, text}` with kind `definition`, `import`, `call` or `reference`. For a rename, a `complete` list is the whole edit set. Otherwise `reasons` says why. It is never complete for:
+
+- languages other than Python, TypeScript and JavaScript (same-package use needs no import)
+- more than 200 sites, a stale call line, an unreadable file, or an uncommitted edit outside the scanned files
+- a rename on import, export or destructure, a default export, or a CommonJS export
+- a dynamic use the graph recorded; access built from strings is otherwise not seen
+- more than 3 plain `reference` sites in one file: the rest are counted in `sites_omitted_by_file`, recoverable from `_meta.omitted`
 
 ```
 get_context(targets=["src/auth/middleware.ts", "src/api/routes.ts"], include=["callers"])
@@ -188,10 +203,10 @@ Returns verified, line-numbered source for one symbol, a live line range, or an 
 | `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted; pass it unchanged |
 | `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
 | `depth` | int | `1` | 2 or 3 also returns the bodies it calls, transitively |
-| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring |
+| `query` | string | none | Omission refs only: keep stored lines matching this regex or substring. With no `symbol_id` or `id`, it is read as `symbol_id` |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss.
+**Key return fields:** `source` (up to about 600 lines, each prefixed with its line number), start and end lines, `kind`, `truncated` with a continuation to pass back, `ambiguous` and `candidates` when several symbols match, `callee_bodies` (with `depth` above 1), `not_rendered` (bodies past the budget, each with a range read to fetch it), fallback lines from a live grep on a miss. A class or other container too large to serve whole returns `outlined: true`, its header in `source` and `members` (each member's `symbol_id`, signature and lines, with `members_total` when the list is capped) in place of the body, and no `_meta.complete`.
 
 ```
 get_symbol(symbol_id="src/auth/service.py::login", depth=2)
@@ -204,7 +219,8 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `query` | string | required | Identifier, path or natural-language text |
+| `query` | string | `""` | Identifier, path or natural-language text. Required unless `pattern` is given |
+| `pattern` | string | none | Alias for `query`. When both are given, `query` is used and `pattern` is named in `ignored_arguments` |
 | `limit` | int | `5` | Max results. Outside `symbol` mode, at most this many distinct files: same-file hits share one row |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path` or `hybrid`. An unknown mode runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
@@ -212,7 +228,11 @@ Hybrid search that routes by the shape of the query: identifiers search the symb
 | `page_type` | string | none | One page type, usually `file_page` or `module_page` |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` to search every repo |
 
-**Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score`, `snippet` and `sources`; `file` on symbol and file hits is a deprecated alias of `path`, removed in the next minor release, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
+**Key return fields:** `results` (every row that names a file carries it in `path`, and a row naming no file has no `path`; symbol hits carry `symbol_id`, line bounds and `signature`, plus `symbols` (`name:line` of up to five other matches in that file, then `+N more`) when several matched; concept hits carry `relevance_score` and `snippet`, plus `sources` unless it would be `["fts"]` on an index without embeddings; a row leaves off `page_id` and a structural `title` (`File: <path>`) where `page_type` plus `symbol_id` or `path` rebuild them; the old `file` alias is gone, and a page keeps `target_path` only where it differs from `path`), `candidates` (up to `limit` distinct openable file paths, best first). If your next move is a Read, read `candidates`: some `results` are pages that are not files.
+
+**Page rows** also carry `symbols`: up to three `name:line` entries (`Owner.member` for members) in that file whose names match the query's words. The first three page rows whose file has a matching line also carry `matched_lines`: a sample of up to three `{line, text}` source lines read from the live file that share the most query words, code lines before comments and imports. Unlike `lines`, it is never every match.
+
+An identifier or literal query also returns `lines` (`{path, line, kind, text}`, definitions first, at most 50): the `get_context` `references` of one to three exact symbols, else a live scan for the token (kind `definition` or `match`). `complete` is true only when they are every match (see `references` above); otherwise `reasons` says why. Past 3 plain `reference` lines in one file, and past 50 lines, rows are counted in `lines_omitted_by_file` and recoverable from `_meta.omitted`; test files sort after production files. A query of several words caps `lines` at 15 (definitions, then calls, then imports) and lists the 5 files with the most omitted rows, with `lines_omitted_by_file_total` counting all of them.
 
 ```
 search_codebase(query="GitIndexer index_repo")
@@ -227,12 +247,12 @@ What history says about touching a file: hotspot score, bug-fix record, owners, 
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `scales` (units and calibration, identical per call) |
+| `include` | list[string] | none | `graph` (typed dependents, consumers, cross-repo links), `churn`, `owners` (owner percentages, bus factor, contributor count), `tests` (typed `test_recommendations` in PR mode), `blast` (`pr_blast_radius` in PR mode), `scales` (units and calibration, identical per call), `changes` (each file's newest Change Records) |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
-**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners`, owners, test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `may_break_tests`, `missing_cochanges`, `test_recommendations` (each `measured` or `inferred`), `tests_to_run`, `tests_to_run_basis`, `next_calls`, and the 0 to 10 `structural_impact_score`. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
+**Key return fields:** per file: `hotspot_score` (0 to 1), `health_score` (0 to 10), `dependents_count`, `co_change_partners` (`file_path`, `support`, `conf_ab`, `has_import_link`), `primary_owner` (detailed owner metrics are opt-in under `include=["owners"]`), test gaps, `security_signals`. In PR mode, `directive` with `may_break`, `missing_cochanges`, `tests_to_run` (the same selection `repowise impacted-tests` makes), `tests_to_run_basis` (`measured`, `inferred` or `none`), `tests_run_all` (with `tests_run_all_reasons` when every test must run), `tests_to_update` (test files to edit, each with a `name_pair`, `imports` or `co_change` reason), `coverage`, `recommended_reviewers`, `next_calls`, and `reach` (`localized`, `moderate` or `broad`; `null` when no structural score was computed). `include=["blast"]` adds `pr_blast_radius`; the raw 0 to 10 `structural_impact_score` and its scale appear there only with `include=["blast", "scales"]`. `missing_tests` appears only when coverage can back it. A target naming no indexed file returns `resolved: false` with a reason, never zeroed counts.
 
-Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `structural_impact_score` is an uncalibrated heuristic, not a probability.
+Dependent counts are a floor over the indexed graph, and structural reach is not proof of runtime breakage. `reach` bands an uncalibrated heuristic that never sees the diff; it is not a probability.
 
 ```
 get_risk(targets=["src/auth/middleware.ts"])
@@ -248,15 +268,15 @@ Reviews one commit, a `base..head` range, or uncommitted work by comparing the t
 | `revspec` | string | uncommitted work | A commit, `base..head`, or `base...head` (from the merge-base). Pass `HEAD` when the tree is clean |
 | `extensions` | list[string] | all | File suffixes to count, e.g. `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit; combined with a root `.riskignore` |
-| `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string |
+| `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string. Like `exclude_patterns`, it scopes the score, the health delta and every per-file block; `impacted_tests` still selects over the whole change, less only repowise's own output |
 | `baseline` | int | `200` | Recent commits sampled for percentile ranking; `0` disables percentiles |
-| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics), `scales` (units) |
+| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units), `evidence` (the change's evidence checklist, the same record `repowise changes show` prints), `tests` (why each listed test runs and the evidence per changed file) |
 | `finding_id` | string | none | Expand one `health_delta` finding |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
 **Key return fields:** `directive` (`status` of `review_required`, `review_recommended`, `clear_in_analyzed_scope` or `unknown`, with reasons and next actions), `health_delta` (introduced, worsened and resolved findings with `status` and `top_findings`), `impacted_tests`, `patch_coverage` (when coverage is stored), `fix_history`, `branch_overlap`, `independent_changes`, `diff_shape`, `risk_percentile`, `cross_repo` (workspace mode).
 
-Trust `health_delta.status`: `partial` means files were skipped and the change is not cleared. `diff_shape` describes size and spread, never danger. An empty diff returns `status: "nothing_to_score"`.
+`directive.status` is the verdict. `health_delta.status` `partial` means files that may hold code were skipped, so the change is not cleared; docs and config files never cause it. `review_priority`, `classification` and `diff_shape` describe diff size and spread, never danger. An empty diff returns `status: "nothing_to_score"`.
 
 ```
 get_change_risk()
@@ -288,14 +308,14 @@ get_why()
 
 ### `get_overview`
 
-The architecture map: summary, key modules, entry points, layers, code and git health, and the next actions for the week and quarter. Call it once, first, in an unfamiliar repo. Skip it afterwards; it does not change within a session.
+Orientation for an unfamiliar repo: summary, key modules, entry points, layers, code health, the riskiest files and this week's top actions. Call it once, first. Skip it afterwards; it does not change within a session.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners) |
+| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts), `changes` (Change Records by category and week, and the agent share of changes with coverage), `actions` (the quarter's actions too, with `done_when`), `tools` (`tool_surface`: enabled tools, opt-ins and recipes), `scope` (the whole `_meta.index_scope`) |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` for the cross-repo topology |
 
-**Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture` (layers in stack order, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health`, `next_actions`, `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
+**Key return fields:** `title`, `content_md` (summary section by default), `key_modules` (one row per package or top-level directory), `entry_points`, `commands` (build, test, lint and similar commands from manifests), `architecture` (layers in stack order with their `root`, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health` (`riskiest_files`), `next_actions` (top three for the week, or the quarter when the week is empty), `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
 
 ```
 get_overview()
@@ -309,32 +329,35 @@ Code-health scores and findings from the stored analysis, across defect risk, ma
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | none (dashboard) | File paths or `module:<name>`. Misses are named in `unresolved` |
-| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `doc_drift`, `semantics`, `unverified`. Dimension filters: `performance`, `defect`, `maintainability`, `advisory` |
-| `only` | list[string] | none | Keep just these top-level keys; identity, totals and recovery fields always survive |
-| `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none |
-| `cursor` | int | `0` | Offset into a ranked list; the `recovery` block names the next call |
-| `fix_id` | string | none | Open one `fix_first` item in full |
-| `finding_id`, `plan_id` | string | none | Open one finding or refactoring plan by id |
+| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe` (with `plan_id`), `what_if`. Dimension filters: `performance`, `defect`, `maintainability`, `advisory` |
+| `only` | list[string] | none | Keep just these top-level keys; identity, totals and recovery fields always survive. An unknown key is named in `unknown_only_keys` with `unknown_only_keys_hint` |
+| `limit` | int | `20` | Max rows in every ranked list, capped at 50; `0` for none. `fix_first` shows five unless `limit` is passed with `only=["fix_first"]`, which pages up to 25; `refactoring_plans` up to 25 |
+| `cursor` | int | `0` | Offset into a ranked list (and into `fix_first` when named in `only`); the `recovery` block names the next call |
+| `fix_id` | string | none | Open one `fix_first` item (`fix1_...`) in full, or one `get_overview` `next_actions` action (`act_...`) with its `details` and `commands` (`mode: "action"`) |
+| `finding_id`, `plan_id` | string | none | Open one finding or refactoring plan by id. With `plan_id`, `include=["recipe"]` adds `plan.recipe`: the plan's preconditions, ordered steps, postconditions and what it must not do |
 | `opportunity_id` | string | none | Open one opportunity: `perf...` for performance, `refop...` for a refactoring |
 | `refactoring_view` | string | `"diversified"` | `diversified`, `canonical` or `file_spread` |
-| `refactoring_scope` | string | `fix_first` without targets, `all` with | Which open refactoring opportunities to list |
+| `refactoring_scope` | string | `fix_first` without targets, `all` with | Which open refactoring opportunities, and their plans, to list |
 | `refactoring_type`, `refactoring_confidence`, `refactoring_effort` | string | none | Refactoring queue filters |
 | `performance_view` | string | `detail` | `detail` or `summary` |
 | `performance_context` | string | `production` | `production`, `tooling`, `test`, `unknown` or `all` |
-| `performance_boundary`, `performance_confidence`, `performance_actionability`, `performance_sort` | string | none | Performance queue filters |
+| `performance_boundary`, `performance_confidence`, `performance_actionability`, `performance_sort` | string | none | Performance queue filters. The queue lists causes whose cost is measured; unproven ones (loop size unknown) are counted in the `proof` facet and `default_queue.excluded.unmeasured_cost` |
 | `scope` | string | `"all"` | `production` drops test files from every figure |
 | `counts` | string | `"everything"` | `code_shape` drops the git-derived half of the score |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
 Only one of `fix_id`, `finding_id`, `plan_id`, `opportunity_id` per call; passing two returns `mode: "conflict"`.
 
-**Key return fields:** `mode`, `fix_first` (`lead`, up to five `items` each with a `next_call`, `totals`), `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files` (ranked by `weighted_deficit`), `top_findings`, `unresolved`, and the opt-in blocks you named. `_meta.health_analysis` says whether stored analysis exists and which commit it describes.
+**Key return fields:** `mode`, `fix_first` (`lead` with its `next_call`, up to five `items`, `counts`, `totals`; a due lead carries its `first_step` and `verify` command, so it can be started without a `fix_id` call; `only=["fix_first"]` adds them to the other due items on the page), `kpis`, `gap_analysis`, `worst_files`, `high_leverage_files` (ranked by `weighted_deficit`), `top_findings`, `unresolved`, and the opt-in blocks you named. `_meta.health_analysis` says whether stored analysis exists and which commit it describes.
 
 The response is bounded. Pair `include` with `only` to keep one block, e.g. `get_health(include=["refactoring"], only=["refactoring_opportunities"])`.
 
 ```
-get_health(only=["fix_first"])
+get_health(only=["fix_first"], limit=25)
+get_health(only=["fix_first"], limit=25, cursor=25)
 get_health(fix_id="fix1_...")
+get_health(fix_id="act_...")
+get_health(include=["refactoring"], only=["refactoring_plans"], limit=15, refactoring_scope="all")
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(include=["performance"], only=["performance_summary"])
 get_health(include=["coverage"], only=["coverage"])
@@ -422,7 +445,7 @@ get_execution_flows(entry_point="src/cli/main.py::main", max_depth=4)
 
 Turns one refactoring plan from `get_health(include=["refactoring"])` into generated code and a unified diff, grounded on the plan and the source spans it names. Extract Class results include an LCOM4 before-and-after check. It calls the repo's configured LLM provider, and caches by content hash so an unchanged plan never regenerates.
 
-Adding the tool to the surface is the opt-in step. Generation then runs unless `.repowise/config.yaml` sets `refactoring.llm.enabled: false`, in which case the plan is returned with `generation.available: false` and `reason: "disabled"`. With no provider configured it returns `error: "no_provider"`.
+Adding the tool to the surface is the opt-in step. Generation then runs only when `.repowise/config.yaml` sets `refactoring.llm.enabled: true` (off by default); otherwise the plan is returned with `generation.available: false` and `reason: "disabled"`. With no provider configured it returns `error: "no_provider"`.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
@@ -508,6 +531,12 @@ Only four tools answer across every repo with `repo="all"`. The rest return an e
 | `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, `set_finding_status` | No |
 | `get_conformance` | No `"all"` value; it covers the whole workspace when `repo` is omitted |
 | `get_blast_radius`, `get_architecture`, `list_repos` | No `repo` parameter; they always read the whole workspace |
+
+With `repo` omitted, `get_context`, `get_symbol`, `get_risk` and `get_health` route each path or `path::Name` target to its repo: the default repo when the file exists there, else the one other repo whose checkout has it. Write `<alias>:<target>` (for example `web:src/app.ts::App`) to name the repo outright. A path found in several other repos returns its `candidates`. A path in no repo gets the default repo's usual not-found answer plus a `hint` naming `search_codebase(repo="all")` and the `<alias>:<path>` form; routed results carry `repo`. `get_context` takes a batch spanning repos, while `get_risk` and `get_health` answer one repo per call and name the per-repo calls when a batch spans several.
+
+`get_context` and `get_symbol` route a bare symbol name (`render`, `Client.send`) the same way, through the workspace store's symbol index: the default repo keeps a name it has, one other repo that has it gets the call, and several return `candidates`. A `repowise#<ref>` omission ref is found in whichever repo's omission store holds it.
+
+A `repo="all"` call queries up to 4 repos at a time and gives each 60 seconds (`REPOWISE_WORKSPACE_CONCURRENCY`, `REPOWISE_WORKSPACE_REPO_TIMEOUT_S`). A repo that fails to open, errors or times out is listed in `repos_failed` with its reason while the other repos still answer. A repo whose index is behind its checkout is listed in `repos_stale` with `indexed_commit` and `live_head`, and its rows carry `stale: true`. Both keys appear only when non-empty.
 
 Single-repo tools also gain cross-repo evidence in workspace mode:
 

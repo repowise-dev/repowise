@@ -3,8 +3,8 @@
 The single entry point for coverage. ``coverage add`` populates per-file
 line/branch coverage (which clears ``untested_hotspot`` for tested files) and,
 when a report carries contexts (a coverage.py ``.coverage`` or a per-test
-lcov), also builds the per-test "test-to-code" map. ``repowise health`` then
-folds in whatever was ingested here - it no longer takes a coverage flag of
+lcov), also builds the per-test "test-to-code" map. ``repowise health
+--recompute`` (or the next ``repowise update``) then folds in whatever was ingested here - it no longer takes a coverage flag of
 its own.
 """
 
@@ -27,6 +27,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.workspace.update import get_head_commit
 
 
@@ -110,7 +111,7 @@ def coverage_add(
 
     Stores per-file line/branch coverage, and additionally the per-test
     "test-to-code" map when a report carries contexts - a coverage.py
-    ``.coverage`` written with ``coverage run --contexts=test``, or a per-test
+    ``.coverage`` recorded with ``pytest --cov --cov-context=test``, or a per-test
     lcov. The map is what answers "which tests exercise this change"; reports
     without contexts ingest per-file coverage only.
 
@@ -158,7 +159,8 @@ def coverage_add(
             console.print(
                 "[yellow]No coverage report found.[/yellow] Looked for "
                 "coverage/lcov.info, .coverage, **/cobertura.xml, and similar.\n"
-                "Generate one (e.g. [cyan]coverage run --contexts=test -m pytest[/cyan] "
+                f"Generate one (e.g. [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], "
+                "which needs pytest-cov, "
                 "or [cyan]cargo llvm-cov --lcov --output-path coverage/lcov.info[/cyan]) "
                 "then re-run, or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
@@ -195,15 +197,13 @@ def coverage_add(
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
                 console.print(
-                    "[yellow]No index yet — run `repowise init` once before "
+                    "[yellow]No index yet. Run `repowise init` once before "
                     "adding coverage.[/yellow]"
                 )
                 return False
             repo_keys = await _repo_file_keys(session, repo_row.id)
             if not repo_keys:
-                console.print(
-                    "[yellow]No indexed files found — run `repowise init` first.[/yellow]"
-                )
+                console.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
                 return False
 
             # Stamp the *live* HEAD, not ``repo_row.head_commit``. The stored
@@ -267,7 +267,7 @@ def coverage_add(
                         console.print(
                             "[red]More than half the report did not map to the repo "
                             "tree.[/red] The stored coverage describes only a fragment "
-                            "of the repository — fix [cyan]coverage.strip_prefix[/cyan] "
+                            "of the repository. Fix [cyan]coverage.strip_prefix[/cyan] "
                             "or [cyan]coverage.path_prefix[/cyan] in "
                             ".repowise/config.yaml and re-run."
                         )
@@ -284,7 +284,7 @@ def coverage_add(
                     if _is_sqlite(report_path):
                         console.print(
                             f"[yellow]{report_path.name}: no per-test contexts "
-                            f"(ran without --contexts=test); per-test map "
+                            f"(recorded without per-test contexts); per-test map "
                             f"skipped.[/yellow]"
                         )
                     continue
@@ -334,12 +334,12 @@ def coverage_add(
                     "not map to the repo tree.[/red] The stored numbers describe only "
                     "the mapped fragment, not the repository. Fix "
                     "[cyan]coverage.strip_prefix[/cyan] / [cyan]coverage.path_prefix[/cyan] "
-                    "in .repowise/config.yaml and re-run — this run exits non-zero so "
+                    "in .repowise/config.yaml and re-run. This run exits non-zero so "
                     "scripts cannot mistake a fragment for complete coverage."
                 )
                 return False
             console.print(
-                "Run [cyan]repowise health[/cyan] to fold coverage into the defect "
+                "Run [cyan]repowise health --recompute[/cyan] to fold coverage into the defect "
                 "scores, or [cyan]repowise coverage status[/cyan] to review it."
             )
             return True
@@ -411,7 +411,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                notices.print("[yellow]No index yet — run `repowise init`.[/yellow]")
+                notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
                 if fmt == "json":
                     emit_json({"repo": str(repo_path), "indexed": False})
                 return
@@ -435,8 +435,8 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
                     "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
-                    "recorded with [cyan]--contexts=test[/cyan] also builds the "
-                    "per-test map."
+                    f"recorded with [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) "
+                    "also builds the per-test map."
                 )
                 return
 
@@ -447,7 +447,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 partial = summary.get("mapping_partial")
                 partial_suffix = (
                     " [red](partial: stored numbers cover a fragment of the repo "
-                    "— fix coverage.strip_prefix and re-ingest)[/red]"
+                    "; fix coverage.strip_prefix and re-ingest)[/red]"
                     if partial
                     else ""
                 )
@@ -479,7 +479,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             else:
                 console.print(
                     "[dim]No test-to-code map yet - record one with "
-                    "[cyan]coverage run --contexts=test -m pytest[/cyan], then "
+                    f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov), then "
                     "[cyan]repowise coverage add .coverage[/cyan].[/dim]"
                 )
 

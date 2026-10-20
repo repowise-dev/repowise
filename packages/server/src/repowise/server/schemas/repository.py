@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, field_validator
 
 from repowise.core.docs_mode import DocsMode
+from repowise.core.forges import strip_credentials
 from repowise.core.index_scope import load_index_scope
 
 
@@ -84,7 +85,7 @@ class RepoResponse(BaseModel):
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             name=obj.name,  # type: ignore[attr-defined]
-            url=obj.url,  # type: ignore[attr-defined]
+            url=strip_credentials(obj.url or ""),  # type: ignore[attr-defined]
             local_path=local_path,
             default_branch=obj.default_branch,  # type: ignore[attr-defined]
             head_commit=obj.head_commit,  # type: ignore[attr-defined]

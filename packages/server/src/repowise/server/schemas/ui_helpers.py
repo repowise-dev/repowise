@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -18,9 +20,14 @@ class OkResponse(BaseModel):
 
 class SetActiveProviderRequest(BaseModel):
     provider: str
+    #: Any model id the provider accepts, not only a catalog model.
     model: str | None = None
-    # When set, the selection is scoped to this repo (so picking a model for
-    # one repo never shadows another in a workspace). Omit for the global default.
+    #: An ``http(s)://`` endpoint (an OpenAI-compatible server such as LM
+    #: Studio). Omit to keep the current one; ``""`` or ``null`` clears it.
+    base_url: str | None = None
+    # When set, the selection is written to this repo's .repowise/config.yaml
+    # (so picking a model for one repo never shadows another in a workspace).
+    # Omit for the global default.
     repo_id: str | None = None
 
 
@@ -42,6 +49,32 @@ class ProviderEntry(BaseModel):
     default_model: str | None = None
     #: Has a key, or needs none.
     configured: bool = False
+    #: Takes an API key; ``False`` hides the key field.
+    requires_key: bool = True
+    #: Takes a custom endpoint (an OpenAI-compatible local server, a proxy).
+    accepts_base_url: bool = False
+    #: Can point at a local OpenAI-compatible server (LM Studio) with no key.
+    local_server: bool = False
+    #: Env vars a user sets to make the provider usable.
+    env_vars: list[str] = []
+    #: One line on how to install or set it up.
+    setup_hint: str = ""
+
+
+class EmbedderEntry(BaseModel):
+    """One registered embedder, as the settings picker renders it."""
+
+    id: str
+    #: Env vars a user sets to make the embedder usable.
+    env_vars: list[str] = []
+    #: ``False`` for the keyless embedder, whose vectors carry no signal.
+    semantic: bool = True
+
+
+class SelectionProvenance(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
 
 
 class ActiveProviderSelection(BaseModel):
@@ -49,11 +82,45 @@ class ActiveProviderSelection(BaseModel):
 
     provider: str | None = None
     model: str | None = None
+    #: The endpoint requests go to; ``None`` means the provider's own default.
+    base_url: str | None = None
+    #: Where each value came from, per field: ``request``, ``config.yaml``,
+    #: ``global``, ``env:<VAR>``, ``default`` or ``autodetect``; ``None`` if unset.
+    provenance: SelectionProvenance = SelectionProvenance()
+    #: The repo's config.yaml base URL is refused until the user confirms it
+    #: here, so a cloned repo cannot send stored keys to its own host.
+    base_url_unconfirmed: bool = False
+    #: USD per 1K tokens for ``model``; ``None`` when no model resolves.
+    input_cost_per_1k: float | None = None
+    output_cost_per_1k: float | None = None
+    #: The embedder this server runs with.
+    embedder: str | None = None
 
 
 class ProviderStatusResponse(BaseModel):
     active: ActiveProviderSelection
     providers: list[ProviderEntry] = []
+    #: Registerable providers the catalog leaves out (picker_rank ``None``).
+    flag_only_providers: list[str] = []
+    embedders: list[EmbedderEntry] = []
+
+
+class ProviderModelEntry(BaseModel):
+    id: str
+    label: str | None = None
+
+
+class ProviderModelsResponse(BaseModel):
+    """Models a provider offers, newest-looking first after the default.
+
+    ``source`` is ``live`` when the provider listed them and ``catalog`` when
+    the built-in list stands in, with ``error`` saying why.
+    """
+
+    models: list[ProviderModelEntry]
+    source: Literal["live", "catalog"]
+    default_model: str
+    error: str | None = None
 
 
 class ProviderValidationResponse(BaseModel):

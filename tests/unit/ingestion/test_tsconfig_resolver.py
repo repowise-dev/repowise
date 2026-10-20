@@ -558,3 +558,62 @@ class TestMtsCtsAliasResolution:
         resolver = self._resolver(tmp_path, {"src/pkg/index.mts"})
         result = resolver.resolve("@/pkg", _importer(tmp_path, "src/app.ts"))
         assert result == "src/pkg/index.mts"
+
+
+# ---------------------------------------------------------------------------
+# Commented tsconfig.json (JSONC) support
+# ---------------------------------------------------------------------------
+
+
+class TestCommentedTsconfig:
+    def test_single_line_and_block_comments_in_tsconfig(self, tmp_path: Path) -> None:
+        """TypeScript allows // and /* */ comments in tsconfig.json."""
+        config_content = """\
+        {
+          // Top-level comment
+          "compilerOptions": {
+            "baseUrl": ".",
+            /* Multi-line
+               block comment */
+            "paths": {
+              // aliases for app code
+              "@/*": ["./src/*"],
+            },
+          },
+        }
+        """
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(config_content, encoding="utf-8")
+
+        resolver = TsconfigResolver(
+            repo_path=tmp_path,
+            path_set={"src/components/ui/button.tsx", "src/app/page.tsx"},
+        )
+        result = resolver.resolve("@/components/ui/button", _importer(tmp_path, "src/app/page.tsx"))
+        assert result == "src/components/ui/button.tsx"
+
+    def test_wildcards_and_string_literals_with_slashes_preserved(self, tmp_path: Path) -> None:
+        """String literals with /* or // (like @/* or http://) must not be corrupted."""
+        config_content = """\
+        {
+          "$schema": "https://json.schemastore.org/tsconfig",
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": {
+              "@/*": ["./src/*"],
+              "lib/*": ["./packages/*"], // inline comment
+            }
+          }
+        }
+        """
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(config_content, encoding="utf-8")
+
+        data = TsconfigResolver._parse_json_lenient(tsconfig)
+        assert data is not None
+        assert data["$schema"] == "https://json.schemastore.org/tsconfig"
+        assert data["compilerOptions"]["paths"] == {
+            "@/*": ["./src/*"],
+            "lib/*": ["./packages/*"],
+        }
+

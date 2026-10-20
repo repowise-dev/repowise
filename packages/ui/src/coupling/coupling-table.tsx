@@ -54,6 +54,11 @@ interface CouplingTableProps {
   LinkComponent?: LinkLike | undefined;
   /** DOM id for the table wrapper, so the diagram can name it as its equivalent. */
   id?: string;
+  /** Files with commit history. Zero or absent reads as not-yet, not as an all-clear. */
+  historyFiles?: number | undefined;
+  /** The empty list comes from a search or segment, not from the repo. */
+  filtered?: boolean;
+  onClearFilters?: () => void;
 }
 
 type SortKey = "strength" | "last" | "together";
@@ -103,6 +108,9 @@ export function CouplingTable({
   linkForPath,
   LinkComponent,
   id,
+  historyFiles,
+  filtered,
+  onClearFilters,
 }: CouplingTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("together");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -185,10 +193,28 @@ export function CouplingTable({
   };
 
   if (edges.length === 0) {
+    if (filtered) {
+      return (
+        <EmptyState
+          tone="filtered"
+          title="No couplings match these filters"
+          {...(onClearFilters ? { action: { label: "Clear filters", onClick: onClearFilters } } : {})}
+        />
+      );
+    }
+    if (historyFiles && historyFiles > 0) {
+      return (
+        <EmptyState
+          tone="positive"
+          title="No couplings detected"
+          description={`No files change together often enough to flag, across ${historyFiles.toLocaleString()} files with commit history.`}
+        />
+      );
+    }
     return (
       <EmptyState
-        title="No couplings detected"
-        description="No files in this repository have a history of changing together yet."
+        title="No couplings yet"
+        description="Couplings come from commit history. Index a repository with git history to see which files change together."
       />
     );
   }
@@ -206,7 +232,7 @@ export function CouplingTable({
           {fileCell(e.target, e, "↔ ")}
           {/* Lead with the claim, not the score: what the two shares actually
               say about this pair, and whether the graph explains it. */}
-          <p className="mt-0.5 text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+          <p className="mt-0.5 text-xs leading-snug text-[var(--color-text-tertiary)]">
             {couplingClaim(e, labelFor)}
           </p>
         </div>
@@ -357,7 +383,7 @@ export function CouplingTable({
         rowClassName={(e) =>
           isSamePair(e, pinnedPair) ||
           (pinnedPath != null && (pinnedPath === e.source || pinnedPath === e.target))
-            ? "bg-[var(--color-accent-muted)]/30"
+            ? "bg-[var(--color-bg-selected)]"
             : undefined
         }
         {...(rowClick ? { onRowClick: rowClick } : {})}

@@ -3,6 +3,7 @@
  * Backend: packages/server/src/repowise/server/routers/refactoring.py
  */
 
+import type { AgentPromptFlavor, AgentPromptResponse } from "@repowise-dev/types/agent-prompts";
 import { apiGet, apiPatch, apiPost, apiPut } from "./client";
 import type {
   GeneratedCode,
@@ -10,7 +11,6 @@ import type {
   RefactoringOpportunityPage,
   RefactoringOpportunityStatusUpdate,
   RefactoringOrder,
-  RefactoringPlanPage,
   RefactoringPlan,
   RefactoringPlanStatusUpdate,
   RefactoringScope,
@@ -27,6 +27,7 @@ export type {
   RefactoringTriageStatus,
 };
 
+/** The code-generation switch and the provider/model chat resolves (read-only). */
 export interface RefactoringSettings {
   enabled: boolean;
   provider: string | null;
@@ -46,17 +47,6 @@ export interface RefactoringTargetsParams {
   view?: "canonical" | "file_spread";
 }
 
-export type RefactoringSort = "canonical" | "health" | "effort" | "blast" | "file";
-
-export interface RefactoringPageParams extends RefactoringTargetsParams {
-  search?: string;
-  confidence?: string;
-  effort?: string;
-  sort?: RefactoringSort;
-  limit?: number;
-  offset?: number;
-}
-
 export async function getRefactoringTargets(
   repoId: string,
   params: RefactoringTargetsParams = {},
@@ -69,30 +59,23 @@ export async function getRefactoringTargets(
   });
 }
 
-/** Bounded server-filtered list for product surfaces. */
-export async function getRefactoringPlansPage(
-  repoId: string,
-  params: RefactoringPageParams = {},
-): Promise<RefactoringPlanPage> {
-  return apiGet<RefactoringPlanPage>(`/api/repos/${repoId}/refactoring/targets/page`, {
-    refactoring_type: params.refactoringType,
-    min_confidence: params.minConfidence,
-    file_path: params.filePath,
-    view: params.view,
-    search: params.search,
-    confidence: params.confidence,
-    effort: params.effort,
-    sort: params.sort,
-    limit: params.limit,
-    offset: params.offset,
-  });
-}
-
 export async function getRefactoringPlan(
   repoId: string,
   suggestionId: string,
 ): Promise<RefactoringPlan> {
   return apiGet<RefactoringPlan>(`/api/repos/${repoId}/refactoring/${suggestionId}`);
+}
+
+/** One plan as the prompt an agent starts from, rendered by core for `flavor`. */
+export async function getRefactoringPlanPrompt(
+  repoId: string,
+  suggestionId: string,
+  opts: { flavor?: AgentPromptFlavor } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/refactoring/${encodeURIComponent(suggestionId)}/prompt`,
+    { flavor: opts.flavor },
+  );
 }
 
 /** Opt-in: generate the refactored code + a diff for one plan (Phase-5 endpoint). */
@@ -111,11 +94,12 @@ export async function getRefactoringSettings(repoId: string): Promise<Refactorin
   return apiGet<RefactoringSettings>(`/api/repos/${repoId}/refactoring/settings`);
 }
 
+/** Write `refactoring.llm.enabled`, the only writable setting. */
 export async function updateRefactoringSettings(
   repoId: string,
-  settings: RefactoringSettings,
+  enabled: boolean,
 ): Promise<RefactoringSettings> {
-  return apiPut<RefactoringSettings>(`/api/repos/${repoId}/refactoring/settings`, settings);
+  return apiPut<RefactoringSettings>(`/api/repos/${repoId}/refactoring/settings`, { enabled });
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +174,18 @@ export async function getRefactoringOpportunity(
       evidence_limit: opts.evidenceLimit,
       evidence_offset: opts.evidenceOffset,
     },
+  );
+}
+
+/** One opportunity, its ordered steps and their plans, as an agent prompt core renders. */
+export async function getRefactoringOpportunityPrompt(
+  repoId: string,
+  opportunityId: string,
+  opts: { flavor?: AgentPromptFlavor } = {},
+): Promise<AgentPromptResponse> {
+  return apiGet<AgentPromptResponse>(
+    `/api/repos/${repoId}/refactoring/opportunities/${encodeURIComponent(opportunityId)}/prompt`,
+    { flavor: opts.flavor },
   );
 }
 

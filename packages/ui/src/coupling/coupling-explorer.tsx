@@ -379,7 +379,7 @@ export function CouplingExplorer({
                     className={cn(
                       "h-8 shrink-0 whitespace-nowrap border-r border-[var(--color-border-default)] px-2.5 text-xs last:border-r-0",
                       selected
-                        ? "bg-[var(--color-accent-muted)]/40 font-medium text-[var(--color-text-primary)]"
+                        ? "bg-[var(--color-bg-selected)] font-medium text-[var(--color-text-primary)] shadow-[inset_0_-2px_0_var(--color-accent-primary)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
                     )}
                   >
@@ -459,6 +459,12 @@ export function CouplingExplorer({
           }
           moduleFor={moduleFor}
           hasDetails
+          historyFiles={data.total_files}
+          filtered={edges.length > 0}
+          onClearFilters={() => {
+            setQuery("");
+            setSegment("all");
+          }}
           linkForPath={linkForPath}
           LinkComponent={LinkComponent}
         />

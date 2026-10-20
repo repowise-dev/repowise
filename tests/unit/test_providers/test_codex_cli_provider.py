@@ -6,6 +6,7 @@ All tests mock the Codex subprocess; no real Codex CLI calls are made.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -417,12 +418,19 @@ async def test_generate_respects_configured_concurrency(monkeypatch, tmp_path):
     monkeypatch.setenv("REPOWISE_CODEX_CLI_CONCURRENCY", "2")
     active = 0
     max_active = 0
+    # A barrier, not a sleep: on a loaded runner the first call could finish
+    # before the last one starts. The timeout keeps a serialised regression
+    # failing fast instead of hanging.
+    all_in = asyncio.Event()
 
     async def on_communicate() -> None:
         nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
-        await asyncio.sleep(0.01)
+        if active == 2:
+            all_in.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(all_in.wait(), timeout=2)
         active -= 1
 
     async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
@@ -446,12 +454,19 @@ async def test_generate_fans_out_to_the_default_concurrency(monkeypatch, tmp_pat
     monkeypatch.delenv("REPOWISE_CODEX_CLI_CONCURRENCY", raising=False)
     active = 0
     max_active = 0
+    # A barrier, not a sleep: on a loaded runner the first call could finish
+    # before the last one starts. The timeout keeps a serialised regression
+    # failing fast instead of hanging.
+    all_in = asyncio.Event()
 
     async def on_communicate() -> None:
         nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
-        await asyncio.sleep(0.01)
+        if active == 4:
+            all_in.set()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(all_in.wait(), timeout=2)
         active -= 1
 
     async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:

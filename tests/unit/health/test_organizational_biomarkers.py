@@ -97,6 +97,27 @@ def test_developer_congestion_skips_quiet_files_for_this_repo():
     assert DeveloperCongestionDetector().detect(_ctx(meta)) == []
 
 
+def _quiet_hotspot_meta(commits_90d: int) -> dict:
+    return {
+        "contributor_count": 5,
+        "churn_percentile": 0.9,
+        "commit_count_90d": commits_90d,
+        "primary_owner_commit_pct": 0.3,
+    }
+
+
+def test_developer_congestion_skips_files_with_no_recent_commits():
+    """A high percentile alone does not mean the file changed in the window."""
+    assert DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(0))) == []
+
+
+def test_developer_congestion_needs_the_hotspot_commit_floor():
+    assert DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(2))) == []
+    out = DeveloperCongestionDetector().detect(_ctx(_quiet_hotspot_meta(3)))
+    assert len(out) == 1
+    assert out[0].severity == "low"
+
+
 # ---- knowledge_loss ------------------------------------------------------
 
 
@@ -167,6 +188,38 @@ def test_knowledge_loss_skips_without_owner_data():
     assert KnowledgeLossDetector().detect(_ctx({"commit_count_90d": 3})) == []
 
 
+def test_knowledge_loss_skips_a_pure_rename_with_no_authored_activity():
+    """A file whose only recent commit is a pure rename has no authored
+    activity in the window: ``recent_owner_commit_pct`` is None (#2957), not
+    a real 0% share, so the quiet-owner check must not fire. The rename
+    itself still counts toward ``commit_count_90d``, keeping the file out of
+    ``is_stable`` and past the activity gate."""
+    meta = {
+        "bus_factor": 1,
+        "primary_owner_name": "Alice",
+        "commit_count_90d": 1,
+        "is_hotspot": False,
+    }
+    assert KnowledgeLossDetector().detect(_ctx(meta)) == []
+
+
+def test_knowledge_loss_still_fires_when_someone_else_authored_the_recent_commits():
+    """Contrast with the rename-only case: real authored commits by another
+    person, even a genuine 0% share for the primary owner, still flags the
+    quiet owner."""
+    meta = {
+        "bus_factor": 1,
+        "primary_owner_name": "Alice",
+        "recent_owner_name": "Bob",
+        "recent_owner_commit_pct": 0.0,
+        "commit_count_90d": 2,
+        "is_hotspot": False,
+    }
+    out = KnowledgeLossDetector().detect(_ctx(meta))
+    assert len(out) == 1
+    assert out[0].details["primary_owner"] == "Alice"
+
+
 # ---- ownership_risk ------------------------------------------------------
 
 
@@ -212,6 +265,27 @@ def test_ownership_risk_skips_clear_single_owner():
 def test_ownership_risk_skips_low_commit_files():
     meta = {"top_authors_json": _authors(("Alice", 2), ("Bob", 1))}
     assert OwnershipRiskDetector().detect(_ctx(meta)) == []
+
+
+def test_ownership_risk_no_clear_owner_names_the_share_arm():
+    # Under 20 commits nobody can hold <5%, so only the share arm fires.
+    meta = {"top_authors_json": _authors(("a", 3), ("b", 3), ("c", 2), ("d", 2))}
+    out = OwnershipRiskDetector().detect(_ctx(meta))
+    assert len(out) == 1
+    assert out[0].severity == "low"
+    assert out[0].details["minor_contributors"] == 0
+    assert out[0].reason == (
+        "no clear owner: the top author holds 30% of 10 commits across 4 contributors"
+    )
+
+
+def test_ownership_risk_caps_a_small_file_at_low():
+    ctx = _ctx(dict(_FRAGMENTED, is_hotspot=True))
+    ctx.nloc = 9  # a bodyless Spring Data interface
+    out = OwnershipRiskDetector().detect(ctx)
+    assert len(out) == 1
+    assert out[0].severity == "low"  # high on a 120-line file
+    assert out[0].reason.endswith("(low: only 9 code lines)")
 
 
 # ---- small-team calibration (issue #361) ---------------------------------

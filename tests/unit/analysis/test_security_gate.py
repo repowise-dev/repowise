@@ -29,6 +29,8 @@ from repowise.core.ci.baseline import read_baseline, read_entries
 
 KEY = "AKIA" + "QZXNRTVYWMPKLBHG"
 PEM_BODY = "MIIEpAIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gunVTLw"
+# A key shape that can sit inside base64, so a finding lands on a body line.
+STRAY = "AKIAQ2Z7RT4WXY5BCDFG"  # pragma: allowlist secret
 
 
 def _git(cwd, *args: str) -> str:
@@ -112,6 +114,22 @@ def test_a_document_reports_secrets_but_not_code_smells(repo):
     _write(repo, "README.md", f"Call `pickle.loads` and `os.system`.\n\nkey: {KEY}\n")
     _commit(repo, "docs")
     assert [f["kind"] for f in _scan(repo).findings] == ["aws_access_key"]
+
+
+def test_a_gitleaks_allowlisted_path_drops_its_secrets_at_head_and_in_history(repo):
+    _write(repo, ".gitleaks.toml", "[allowlist]\npaths = ['''^rules/''']\n")
+    _write(repo, "rules/sample.py", f"AWS = '{KEY}'\nos.system(cmd)\n")
+    _write(repo, "rules/gone.py", f"AWS = '{KEY}'\n")
+    _write(repo, "deploy.py", f"AWS = '{KEY}'\n")
+    _commit(repo, "samples")
+    (repo / "rules" / "gone.py").unlink()
+    _commit(repo, "drop one")
+    scan = _scan(repo)
+    assert sorted((f["file_path"], f["kind"]) for f in scan.findings) == [
+        ("deploy.py", "aws_access_key"),
+        ("rules/sample.py", "os_system"),
+    ]
+    assert scan.suppressed == []
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +342,12 @@ def test_every_gating_kind_has_a_sarif_rule():
     assert kinds == set(security_gate._RULE_TEXT)
 
 
+def test_only_high_entropy_shapes_hash_their_material():
+    # A URL password can be weak enough to guess back from its hash.
+    assert "git_url_credentials" not in security_gate._KEY_SHAPE_KINDS
+    assert {"gitlab_token", "azure_devops_pat"} <= security_gate._KEY_SHAPE_KINDS
+
+
 # ---------------------------------------------------------------------------
 # Review regressions
 # ---------------------------------------------------------------------------
@@ -332,11 +356,11 @@ def test_every_gating_kind_has_a_sarif_rule():
 @pytest.mark.parametrize(
     ("line", "raw"),
     [
-        ("PASSWORD = 'Tr0ub4dor\"TAILSECRET9876'  # md5\n", "TAILSECRET9876"),
-        ('secret = "token = \'RAWVALUE12345678\'"  # md5\n', "RAWVALUE12345678"),
-        ('ENV["NEXT_PUBLIC_API_KEY"] = "RAWVALUE12345678"  # md5\n', "RAWVALUE12345678"),
-        ("ENV NEXT_PUBLIC_API_KEY RAWVALUE12345678 md5\n", "RAWVALUE12345678"),
-        ('k = process.env.NEXT_PUBLIC_API_KEY ?? "RAWVALUE12345678" // md5\n', "RAWVALUE12345678"),
+        ("PASSWORD = 'Tr0ub4dor\"TAILSECRET9876'; md5(b)\n", "TAILSECRET9876"),
+        ('secret = "token = \'RAWVALUE12345678\'"; md5(b)\n', "RAWVALUE12345678"),
+        ('ENV["NEXT_PUBLIC_API_KEY"] = "RAWVALUE12345678"; md5(b)\n', "RAWVALUE12345678"),
+        ("ENV NEXT_PUBLIC_API_KEY RAWVALUE12345678 md5(b)\n", "RAWVALUE12345678"),
+        ('k = process.env.NEXT_PUBLIC_API_KEY ?? "RAWVALUE12345678"; md5(b)\n', "RAWVALUE12345678"),
     ],
 )
 def test_no_raw_value_escapes_the_mask(line, raw):
@@ -349,9 +373,9 @@ def test_no_raw_value_escapes_the_mask(line, raw):
 @pytest.mark.parametrize(
     "source",
     [
-        f"key: |\n  -----BEGIN RSA PRIVATE KEY-----\n  {PEM_BODY}md5\n  -----END RSA PRIVATE KEY-----\n",
-        f"-----BEGIN RSA PRIVATE KEY-----\n{PEM_BODY}\n{PEM_BODY[::-1]}md5\n",
-        f"KEY=-----BEGIN RSA PRIVATE KEY----- {PEM_BODY} md5 -----END RSA PRIVATE KEY-----\n",
+        f"key: |\n  -----BEGIN RSA PRIVATE KEY-----\n  {PEM_BODY}+{STRAY}\n  -----END RSA PRIVATE KEY-----\n",
+        f"-----BEGIN RSA PRIVATE KEY-----\n{PEM_BODY}\n{PEM_BODY[::-1]}+{STRAY}\n",
+        f"KEY=-----BEGIN RSA PRIVATE KEY----- {PEM_BODY} {STRAY} -----END RSA PRIVATE KEY-----\n",
     ],
 )
 def test_pem_body_lines_never_reach_a_snippet(source):
@@ -415,6 +439,28 @@ def test_a_path_git_does_not_have_raises():
         security_gate._read_blobs(".", ["HEAD:no/such/file-anywhere.py"])
 
 
+def test_read_blobs_missing_object_raises():
+    """security_gate._read_blobs fails closed with MissingObjectError on a missing object."""
+    with pytest.raises(security_gate.MissingObjectError, match=r"git has no object for 'HEAD:nope\.py'"):
+        security_gate._read_blobs(".", ["HEAD:nope.py"])
+
+
+def test_read_blobs_ambiguous_object_raises(monkeypatch: pytest.MonkeyPatch):
+    """security_gate._read_blobs fails closed with MissingObjectError on an ambiguous object."""
+    def _mock_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=b"deadbeef ambiguous\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
+    with pytest.raises(security_gate.MissingObjectError, match=r"unparseable header"):
+        security_gate._read_blobs(".", ["deadbeef"])
+
+
+
 def test_sarif_suppresses_the_baseline_and_drops_history_lines():
     head = _row()
     old = _row("aws_access_key", snippet="AWS = 'AKIA****'", commit="a" * 40)
@@ -428,9 +474,9 @@ def test_sarif_suppresses_the_baseline_and_drops_history_lines():
 @pytest.mark.parametrize(
     ("line", "raw"),
     [
-        ("ENV NEXT_PUBLIC_API_KEY p@ssw0rd!Xy#Zq9 md5\n", "p@ssw0rd!Xy#Zq9"),
-        ('ENV["NEXT_PUBLIC_TOKEN"] = "Ab$9!kLm@2#Qr%zz"  # md5\n', "Ab$9!kLm@2#Qr%zz"),
-        ('x = NEXT_PUBLIC_SECRET ?? "p@ss:w0rd!2024x" // md5\n', "p@ss:w0rd!2024x"),
+        ("ENV NEXT_PUBLIC_API_KEY p@ssw0rd!Xy#Zq9 md5(b)\n", "p@ssw0rd!Xy#Zq9"),
+        ('ENV["NEXT_PUBLIC_TOKEN"] = "Ab$9!kLm@2#Qr%zz"; md5(b)\n', "Ab$9!kLm@2#Qr%zz"),
+        ('x = NEXT_PUBLIC_SECRET ?? "p@ss:w0rd!2024x"; md5(b)\n', "p@ss:w0rd!2024x"),
         ("password = \"ab'SuperSecretPassword123\"; eval(x)\n", "SuperSecretPassword123"),
     ],
 )

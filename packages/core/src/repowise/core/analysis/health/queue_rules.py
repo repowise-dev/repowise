@@ -1,4 +1,4 @@
-"""Queue filter and sort rules as data, read over rows in memory.
+"""Queue filter, sort and facet rules as data, read over rows in memory.
 
 A materialized queue (refactoring, performance) declares its filters as
 :class:`FilterRule` rows and its orders as ``(field, descending)`` keys. The
@@ -13,7 +13,7 @@ through ``rows.field``.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -25,6 +25,10 @@ FilterOp = Literal["eq", "in", "contains", "prefix", "positive", "is", "eq_or_nu
 NULL_VALUE = "none"
 
 SortKeys = tuple[tuple[str, bool], ...]
+
+#: A facet: its name, the field it counts, and the filter parameter that
+#: narrows that field (``None``: none does).
+Facet = tuple[str, str, str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,12 +94,47 @@ def sort_key(keys: SortKeys, row: Any) -> tuple[Any, ...]:
     return tuple(-field(row, name) if descending else field(row, name) for name, descending in keys)
 
 
+def fold_facets(
+    groups: Iterable[Sequence[Any]],
+    facets: Sequence[Facet],
+    *,
+    rules: Iterable[FilterRule] = (),
+    selection: Mapping[str, Any] | None = None,
+    null: str | None = None,
+) -> dict[str, dict[str, int]]:
+    """Fold ``(*facet fields, count)`` groups into ``{facet: {value: count}}``.
+
+    With a *selection*, each facet is cross-filtered by the *other* selections
+    under *rules*: counting a facet under its own filter would leave every
+    alternative at zero, so choosing one value would erase the others from the
+    control. A NULL (or, with *null* set, any empty) value counts as *null*;
+    without *null* it is skipped. A string *null* relabels any falsy value
+    (``""`` and ``0`` too); ``None`` skips NULLs only.
+    """
+    fields = tuple(column for _, column, _ in facets)
+    rows = [dict(zip((*fields, "count"), group, strict=True)) for group in groups]
+    facet_rules = tuple(rule for rule in rules if rule.field in fields)
+    folded: dict[str, dict[str, int]] = {}
+    for name, column, own in facets:
+        others = {param: value for param, value in (selection or {}).items() if param != own}
+        counts: dict[str, int] = {}
+        for row in rows:
+            value = row[column] if null is None else (row[column] or null)
+            if value is None or not keep(facet_rules, row, others):
+                continue
+            counts[str(value)] = counts.get(str(value), 0) + int(row["count"])
+        folded[name] = counts
+    return folded
+
+
 __all__ = [
     "NULL_VALUE",
+    "Facet",
     "FilterOp",
     "FilterRule",
     "SortKeys",
     "active_filters",
+    "fold_facets",
     "keep",
     "matches",
     "sort_key",

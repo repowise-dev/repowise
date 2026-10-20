@@ -22,21 +22,6 @@ from .models import CONFIDENCE_LEVELS, RefactoringContext, RefactoringSuggestion
 log = structlog.get_logger(__name__)
 
 
-def effort_bucket(nloc: int) -> str:
-    """Map a target's NLOC to a coarse effort bucket.
-
-    Shared by every detector so the effort label is consistent across
-    refactoring types (matches the CLI's refactoring-targets thresholds).
-    """
-    if nloc <= 40:
-        return "S"
-    if nloc <= 150:
-        return "M"
-    if nloc <= 400:
-        return "L"
-    return "XL"
-
-
 class RefactoringDetector(ABC):
     """Detector contract. Each concrete detector sets a unique ``name`` and
     implements ``detect`` over a single file's ``RefactoringContext``.

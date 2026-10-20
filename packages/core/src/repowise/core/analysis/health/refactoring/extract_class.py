@@ -36,8 +36,9 @@ from __future__ import annotations
 
 from ..complexity.class_analysis import cohesion_applies, holds_state
 from ..complexity.models import CohesionGroup
+from ..effort import effort_bucket
 from .models import RefactoringContext, RefactoringSuggestion
-from .registry import RefactoringDetector, effort_bucket, register
+from .registry import RefactoringDetector, register
 
 # The cohesion biomarkers this detector answers. A class is only suggested
 # for splitting if one of these flagged it, so the suggestion list never

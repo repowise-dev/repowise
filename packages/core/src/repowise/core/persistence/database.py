@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import structlog
-from sqlalchemy import event, inspect, literal
+from sqlalchemy import String, event, inspect, literal
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,6 +32,7 @@ from sqlalchemy.pool import NullPool, StaticPool
 from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.sql import text
 
+from . import read_snapshots  # noqa: F401  (a write to a view's input drops the stored view)
 from .models import Base
 
 log = structlog.get_logger(__name__)
@@ -164,7 +168,9 @@ __all__ = [
     "get_repo_db_path",
     "get_session",
     "init_db",
+    "refresh_planner_stats",
     "resolve_db_url",
+    "schema_behind",
 ]
 
 DB_FILENAME = "wiki.db"
@@ -446,7 +452,11 @@ def _run_data_step(step: Callable[[object], object], connection: object) -> None
 #: additive reconciler below never does. Leaf tables only, since nothing may
 #: reference a table that is copied, dropped and renamed. Each holds derived
 #: rows, so an interrupted rebuild costs a recompute, never source data.
-_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset({"health_file_metrics"})
+#: ``health_snapshots`` is history rather than derived, but small, and an
+#: interrupted rebuild leaves its rows in the staging table.
+_SQLITE_REBUILD_FOR_NULLABLE: frozenset[str] = frozenset(
+    {"health_file_metrics", "health_snapshots"}
+)
 
 
 def _relax_not_null(connection: object, table: object) -> None:
@@ -478,6 +488,77 @@ def _relax_not_null(connection: object, table: object) -> None:
     log.info("schema_table_rebuilt_for_nullable", table=name)
 
 
+def _is_widened(model_type: object, live_type: object) -> bool:
+    """True when the model's string column is longer than the live one."""
+    if not isinstance(model_type, String) or not isinstance(live_type, String):
+        return False
+    live_length = live_type.length
+    if live_length is None:
+        return False
+    return model_type.length is None or model_type.length > live_length
+
+
+def _loosen_postgres_columns(table: object, live: dict[str, dict], dialect: object) -> list:
+    """``(label, ALTER)`` pairs bringing live PostgreSQL columns up to the model.
+
+    Only ever loosens: drops a NOT NULL the model no longer declares and widens
+    a VARCHAR the model made longer or unbounded. Both are catalog-only changes
+    on PostgreSQL and match what migrations 0062, 0064, 0086, 0094 and 0108 do,
+    so a database that never ran Alembic (the Docker image's path) still accepts
+    what the current code writes. Tightening stays an explicit migration.
+    """
+    statements = []
+    for column in table.columns:  # type: ignore[attr-defined]
+        found = live.get(column.name)
+        if found is None:
+            continue
+        what = f"{table.name}.{column.name}:loosen"  # type: ignore[attr-defined]
+        target = f'ALTER TABLE "{table.name}" ALTER COLUMN "{column.name}"'  # type: ignore[attr-defined]
+        if _is_widened(column.type, found["type"]):
+            kind = column.type.compile(dialect=dialect)
+            statements.append((what, text(f"{target} TYPE {kind}")))
+        if column.nullable and not found["nullable"]:
+            statements.append((what, text(f"{target} DROP NOT NULL")))
+    return statements
+
+
+def _reconcile_columns(
+    connection: object,
+    inspector: Any,
+    table: Any,
+    run: Callable[[str, Callable[[], object]], None],
+    failures: list[tuple[str, Exception]],
+) -> None:
+    """Loosen and add one existing table's columns (see :func:`_reconcile_schema`)."""
+    dialect = connection.dialect  # type: ignore[attr-defined]
+    # Render the column DDL fragment exactly as SQLAlchemy would emit
+    # it inside CREATE TABLE — preserves type, server_default, and
+    # nullability. We deliberately do NOT enforce FK constraints on
+    # back-filled columns: SQLite can't add an enforced FK after the
+    # fact, and write-time enforcement is sufficient for our purposes.
+    # The Alembic-only pgvector column triggers an unknown-type warning.
+    with warnings.catch_warnings():
+        if dialect.name == "postgresql":  # type: ignore[attr-defined]
+            warnings.filterwarnings("ignore", message="Did not recognize type 'vector'")
+        db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
+    if dialect.name == "postgresql":  # type: ignore[attr-defined]
+        for what, statement in _loosen_postgres_columns(table, db_cols, dialect):
+            run(what, lambda statement=statement: statement)
+    for column in table.columns:
+        if column.name in db_cols:
+            continue
+        what = f"{table.name}.{column.name}"
+        run(
+            what,
+            lambda table=table, column=column: text(
+                f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
+            ),
+        )
+        data_step = _DATA_STEPS_ON_ADD.get(what)
+        if data_step is not None and not any(name == what for name, _ in failures):
+            run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+
+
 def _reconcile_schema(connection: object) -> None:
     """Bring an existing database up to ``Base.metadata`` (additive only).
 
@@ -495,11 +576,16 @@ def _reconcile_schema(connection: object) -> None:
     that follows the additive-only convention is picked up automatically
     on the next ``init_db`` call — no per-migration code required here.
 
+    Existing columns are only ever loosened: on PostgreSQL a NOT NULL the
+    model dropped is dropped and a VARCHAR the model widened is widened in
+    place; on SQLite the tables in ``_SQLITE_REBUILD_FOR_NULLABLE`` are rebuilt
+    for nullability, and VARCHAR length is not enforced there.
+
     Limitations (intentional — these need explicit migrations):
-      * column **removals**, **renames**, or **type changes** are NOT
-        reconciled (SQLite can't ALTER COLUMN safely anyway);
-      * **constraint changes** (UNIQUE, CHECK, FK) on existing columns
-        are NOT reconciled;
+      * column **removals**, **renames**, and narrowing or cross-kind **type
+        changes** are NOT reconciled (SQLite can't ALTER COLUMN safely anyway);
+      * **constraint changes** (UNIQUE, CHECK, FK) and new NOT NULLs on
+        existing columns are NOT reconciled;
       * Postgres extensions / functions (e.g. pgvector) are NOT created
         here — those still belong in Alembic migrations.
 
@@ -560,26 +646,7 @@ def _reconcile_schema(connection: object) -> None:
             # reconcile a brand-new table column-by-column.
             continue
 
-        # --- Columns ---------------------------------------------------
-        # Render the column DDL fragment exactly as SQLAlchemy would emit
-        # it inside CREATE TABLE — preserves type, server_default, and
-        # nullability. We deliberately do NOT enforce FK constraints on
-        # back-filled columns: SQLite can't add an enforced FK after the
-        # fact, and write-time enforcement is sufficient for our purposes.
-        db_cols = {c["name"] for c in inspector.get_columns(table.name)}
-        for column in table.columns:
-            if column.name in db_cols:
-                continue
-            what = f"{table.name}.{column.name}"
-            _run(
-                what,
-                lambda table=table, column=column: text(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
-                ),
-            )
-            data_step = _DATA_STEPS_ON_ADD.get(what)
-            if data_step is not None and not any(name == what for name, _ in failures):
-                _run(f"{what}:data", lambda data_step=data_step: _run_data_step(data_step, connection))
+        _reconcile_columns(connection, inspector, table, _run, failures)
 
         # --- Nullability (SQLite only) -----------------------------------
         # After the columns, so the copy carries every one of them, and before
@@ -639,3 +706,89 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+
+
+# A table whose row count moved past this factor of the count ANALYZE recorded
+# has statistics too old to plan by.
+_STATS_DRIFT = 2
+
+
+def _planner_stats_stale(conn: Any) -> bool:
+    """Whether a table with rows has no statistics, or its count left the band."""
+    # ANALYZE skips virtual tables (the full-text index), so they never count.
+    names = [
+        r[0]
+        for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'"
+        )
+    ]
+    if "sqlite_stat1" not in names:
+        return True
+    recorded = dict(
+        conn.exec_driver_sql(
+            "SELECT tbl, MAX(CAST(stat AS INTEGER)) FROM sqlite_stat1 GROUP BY tbl"
+        ).all()
+    )
+    for name in names:
+        if name.startswith("sqlite_"):
+            continue
+        # One statement per table on purpose: SQLite answers a bare COUNT(*)
+        # from the b-tree, but scans the rows when the count sits inside a
+        # subquery, which made one UNION ALL about 25x slower.
+        rows = conn.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar() or 0
+        before = recorded.get(name)
+        if before is None:
+            if rows:
+                return True
+        elif not before / _STATS_DRIFT <= rows <= before * _STATS_DRIFT:
+            return True
+    return False
+
+
+async def refresh_planner_stats(engine: AsyncEngine) -> None:
+    """Refresh SQLite's planner statistics at the end of a write to the index.
+
+    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
+    a wide covering index over the selective one (a full edge-table scan in
+    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
+    index leads with ``repository_id``, which a sample (``analysis_limit``, and
+    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
+    keeps the wrong index. It runs only when the statistics are missing or a
+    table's size has drifted, since a full pass reads the whole store. Other
+    backends keep their own statistics. A failure costs only a slower plan, so
+    it never fails the write.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    try:
+        async with engine.begin() as conn:
+            if await conn.run_sync(_planner_stats_stale):
+                await conn.execute(text("ANALYZE"))
+    except DBAPIError as exc:  # a locked or read-only store
+        log.warning("sqlite.analyze_failed", error=str(exc))
+
+
+async def schema_behind(engine: AsyncEngine) -> bool:
+    """Whether a table or column the models declare is missing from the store.
+
+    One catalogue read, so a reader can skip the reconcile ``init_db`` runs and
+    pay for it only on a store an older repowise wrote. SQLite only; another
+    backend is migrated by Alembic and reads as current.
+    """
+    if engine.dialect.name != "sqlite":
+        return False
+    async with engine.connect() as conn:
+        rows = await conn.execute(
+            text(
+                "SELECT m.name, p.name FROM sqlite_master AS m "
+                "JOIN pragma_table_info(m.name) AS p WHERE m.type = 'table'"
+            )
+        )
+        live: dict[str, set[str]] = {}
+        for table, column in rows:
+            live.setdefault(table, set()).add(column)
+    return any(
+        not {c.name for c in table.columns} <= live.get(name, set())
+        for name, table in Base.metadata.tables.items()
+    )

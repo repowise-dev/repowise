@@ -234,7 +234,7 @@ def ledger_key(surface: str, category: str, text: str) -> str:
     the emitted text is what lets a transcript firing find the row the live
     hook wrote for it.
     """
-    digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    digest = hashlib.sha1(text.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12]
     return f"{surface}:{category}:{digest}"
 
 

@@ -121,7 +121,7 @@ describe("ChatDock handoff receiver", () => {
       screen.getByRole("button", { name: "Explain the main architectural boundaries" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Where should a new contributor start?" }),
+      screen.getByRole("button", { name: "Give me a one-slide health summary with charts" }),
     ).toBeInTheDocument();
   });
 

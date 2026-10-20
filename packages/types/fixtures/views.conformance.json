@@ -1,0 +1,363 @@
+{
+  "about": "Shared conformance cases for chat view parts. The TypeScript validator (packages/api-client/src/views.test.ts) and the server models (tests/unit/server/test_view_parts_contract.py) both run every case, so they accept and reject the same payloads. An invalid case copies a valid part (from), then applies drop (paths), set (path to value) and grow (path to length, repeating the array's first item). Paths are dotted; numeric segments index arrays. error is the substring the TypeScript validator reports. valid_variants are accepted by both sides but not round-tripped (JSON writes -0 as 0). Strings have no maximum length, only non-empty, so UTF-16 units and code points agree; ids and column keys are ASCII patterns. Numbers stay within +/-(2^53 - 1). Valid parts are written at schema version 1, as parts stored before version 2 are, so both sides prove those still validate.",
+  "vocabulary": {
+    "schema_version": 2,
+    "schema_versions": [1, 2],
+    "max_wire_number": 9007199254740991,
+    "view_kinds": ["table", "chart", "section"],
+    "chart_types": ["bar", "horizontal_bar", "stacked_bar", "line", "area", "donut", "scatter", "treemap", "heatmap"],
+    "coverage_metrics": ["attribution", "test_reach"],
+    "sort_orders": ["asc", "desc"],
+    "basis_kinds": ["measured", "inferred", "declared", "unresolved"],
+    "ref_types": ["repo", "file", "symbol", "module", "component", "commit", "change", "decision"]
+  },
+  "limits": {
+    "parts": 50,
+    "columns": 20,
+    "rows": 500,
+    "chart_points": 100,
+    "chart_series": 8,
+    "donut_min_parts": 2,
+    "donut_max_parts": 8,
+    "treemap_groups": 3,
+    "narrative_blocks": 50,
+    "section_views": 20
+  },
+  "fields": {
+    "CardBasis": ["kind", "source"],
+    "CardRef": ["type", "id", "start_line", "end_line"],
+    "ViewSource": ["artifact_id", "tool_name", "args_hash"],
+    "ViewCoverage": ["metric", "ratio"],
+    "ViewColumn": ["key", "label", "unit", "basis"],
+    "ViewTableData": ["columns", "rows", "total_rows", "truncated"],
+    "NarrativeBlock": ["text", "cites"],
+    "TableView": ["schema_version", "kind", "id", "title", "summary", "source", "basis", "coverage", "stale", "as_of", "columns", "rows", "total_rows", "truncated"],
+    "ChartView": ["schema_version", "kind", "id", "title", "summary", "source", "basis", "coverage", "stale", "as_of", "chart_type", "data", "x", "series", "sort", "groups", "color"],
+    "SectionView": ["schema_version", "kind", "id", "title", "summary", "narrative", "view_ids"]
+  },
+  "valid": {
+    "t1": {
+      "schema_version": 1,
+      "kind": "table",
+      "id": "t1",
+      "title": "Hotspots",
+      "summary": "Two of three hotspots shown.",
+      "source": { "artifact_id": "a1", "tool_name": "get_health", "args_hash": "3f2a9c1b7d4e5f60" },
+      "basis": { "kind": "measured", "source": "git history" },
+      "coverage": { "metric": "test_reach", "ratio": 0.75 },
+      "stale": false,
+      "as_of": "4c1e31f",
+      "columns": [
+        { "key": "path", "label": "File" },
+        { "key": "churn", "label": "Commits, 90 days", "unit": "commits" },
+        { "key": "health", "label": "Health", "unit": "score", "basis": { "kind": "inferred", "source": "health engine" } }
+      ],
+      "rows": [
+        { "path": { "type": "file", "id": "auth/session.py" }, "churn": 41, "health": 4.2 },
+        { "path": { "type": "file", "id": "billing/invoice.py", "start_line": 10, "end_line": 42 }, "churn": 17, "health": null }
+      ],
+      "total_rows": 3,
+      "truncated": true
+    },
+    "c1": {
+      "schema_version": 1,
+      "kind": "chart",
+      "id": "c1",
+      "title": "Changes by component",
+      "summary": "Payments changed most this month.",
+      "source": { "artifact_id": "a2", "tool_name": "get_overview", "args_hash": "0011aabbccddeeff" },
+      "basis": { "kind": "measured", "source": "git history" },
+      "stale": false,
+      "as_of": "4c1e31f",
+      "chart_type": "bar",
+      "data": {
+        "columns": [
+          { "key": "component", "label": "Component" },
+          { "key": "changes", "label": "Changes", "unit": "changes" }
+        ],
+        "rows": [
+          { "component": { "type": "component", "id": "payments" }, "changes": 12 },
+          { "component": "auth", "changes": 7 },
+          { "component": "search", "changes": 3 }
+        ],
+        "total_rows": 3,
+        "truncated": false
+      },
+      "x": "component",
+      "series": ["changes"],
+      "sort": "desc"
+    },
+    "c2": {
+      "schema_version": 1,
+      "kind": "chart",
+      "id": "c2",
+      "title": "Test reach by component",
+      "summary": "Auth has more inferred than measured reach.",
+      "source": { "artifact_id": "a3", "tool_name": "get_risk", "args_hash": "deadbeef" },
+      "basis": { "kind": "measured", "source": "coverage report" },
+      "coverage": { "metric": "test_reach", "ratio": 0.62 },
+      "stale": false,
+      "as_of": "4c1e31f2a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4",
+      "chart_type": "stacked_bar",
+      "data": {
+        "columns": [
+          { "key": "component", "label": "Component" },
+          { "key": "measured", "label": "Measured", "unit": "files" },
+          { "key": "inferred", "label": "Inferred", "unit": "files", "basis": { "kind": "inferred", "source": "import graph" } }
+        ],
+        "rows": [
+          { "component": "payments", "measured": 4, "inferred": 2 },
+          { "component": "auth", "measured": 3, "inferred": 5 }
+        ],
+        "total_rows": 2,
+        "truncated": false
+      },
+      "x": "component",
+      "series": ["measured", "inferred"],
+      "sort": "asc"
+    },
+    "c3": {
+      "schema_version": 1,
+      "kind": "chart",
+      "id": "c3",
+      "title": "Commits per week",
+      "summary": "Commit volume peaked in week 40.",
+      "source": { "artifact_id": "a4", "tool_name": "get_overview", "args_hash": "abcdef0123456789" },
+      "basis": { "kind": "measured", "source": "git history" },
+      "stale": true,
+      "as_of": null,
+      "chart_type": "line",
+      "data": {
+        "columns": [
+          { "key": "week", "label": "Week" },
+          { "key": "commits", "label": "Commits", "unit": "commits" }
+        ],
+        "rows": [
+          { "week": "2026-W39", "commits": 10 },
+          { "week": "2026-W40", "commits": 14.5 },
+          { "week": "2026-W41", "commits": null }
+        ],
+        "total_rows": 3,
+        "truncated": false
+      },
+      "x": "week",
+      "series": ["commits"]
+    },
+    "c4": {
+      "schema_version": 1,
+      "kind": "chart",
+      "id": "c4",
+      "title": "Dead code by tier",
+      "summary": "Most findings are low confidence.",
+      "source": { "artifact_id": "a5", "tool_name": "get_dead_code", "args_hash": "0123abcd" },
+      "basis": { "kind": "inferred", "source": "reachability graph" },
+      "stale": false,
+      "as_of": "4c1e31f",
+      "chart_type": "donut",
+      "data": {
+        "columns": [
+          { "key": "tier", "label": "Tier" },
+          { "key": "files", "label": "Files", "unit": "files" }
+        ],
+        "rows": [
+          { "tier": "high", "files": 12 },
+          { "tier": "medium", "files": 30 },
+          { "tier": "low", "files": 0 }
+        ],
+        "total_rows": 3,
+        "truncated": false
+      },
+      "x": "tier",
+      "series": ["files"]
+    },
+    "c5": {
+      "schema_version": 1,
+      "kind": "chart",
+      "id": "c5",
+      "title": "Complexity against churn",
+      "summary": "40 rows of files.",
+      "source": { "artifact_id": "a6", "tool_name": "get_health", "args_hash": "0123abcd" },
+      "basis": { "kind": "measured", "source": "get_health" },
+      "stale": false,
+      "as_of": null,
+      "chart_type": "scatter",
+      "data": {
+        "columns": [
+          { "key": "file_path", "label": "File path" },
+          { "key": "max_ccn", "label": "Max ccn" },
+          { "key": "commits", "label": "Commits" }
+        ],
+        "rows": [
+          { "file_path": { "type": "file", "id": "src/a.py" }, "max_ccn": 279, "commits": 41 },
+          { "file_path": { "type": "file", "id": "src/b.py" }, "max_ccn": 12.5, "commits": null }
+        ],
+        "total_rows": 2,
+        "truncated": false
+      },
+      "x": "max_ccn",
+      "series": ["commits"]
+    },
+    "c6": {
+      "schema_version": 1,
+      "kind": "chart",
+      "id": "c6",
+      "title": "Lines by package and directory",
+      "summary": "Core holds most lines.",
+      "source": { "artifact_id": "a7", "tool_name": "chart", "args_hash": "0123abcd" },
+      "basis": { "kind": "inferred", "source": "health engine" },
+      "stale": false,
+      "as_of": null,
+      "chart_type": "treemap",
+      "data": {
+        "columns": [
+          { "key": "package", "label": "Package" },
+          { "key": "directory", "label": "Directory" },
+          { "key": "file", "label": "File" },
+          { "key": "nloc", "label": "Lines", "unit": "lines" },
+          { "key": "health_band", "label": "Health band" }
+        ],
+        "rows": [
+          { "package": "core", "directory": "core/a", "file": "x.py", "nloc": 120, "health_band": "good" },
+          { "package": "core", "directory": "core/b", "file": "y.py", "nloc": 40, "health_band": "at risk" },
+          { "package": "web", "directory": "web/src", "file": "z.ts", "nloc": 0, "health_band": "excellent" }
+        ],
+        "total_rows": 3,
+        "truncated": false
+      },
+      "x": "file",
+      "series": ["nloc"],
+      "groups": ["package", "directory"],
+      "color": "health_band"
+    },
+    "c7": {
+      "schema_version": 1,
+      "kind": "chart",
+      "id": "c7",
+      "title": "Changes by week and category",
+      "summary": "Fixes lead every week.",
+      "source": { "artifact_id": "a8", "tool_name": "chart", "args_hash": "0123abcd" },
+      "basis": { "kind": "measured", "source": "git history" },
+      "stale": false,
+      "as_of": null,
+      "chart_type": "heatmap",
+      "data": {
+        "columns": [
+          { "key": "week", "label": "Week" },
+          { "key": "s1", "label": "fix", "unit": "changes" },
+          { "key": "s2", "label": "feature", "unit": "changes" }
+        ],
+        "rows": [
+          { "week": "2026-09-28", "s1": 4, "s2": 1 },
+          { "week": "2026-10-05", "s1": 6, "s2": null }
+        ],
+        "total_rows": 2,
+        "truncated": false
+      },
+      "x": "week",
+      "series": ["s1", "s2"]
+    },
+    "s1": {
+      "schema_version": 1,
+      "kind": "section",
+      "id": "s1",
+      "title": "Where change concentrates",
+      "summary": "Payments leads on change volume.",
+      "narrative": [
+        { "text": "Payments had the most changes this month.", "cites": ["c1"] },
+        { "text": "The table lists the files behind it.", "cites": [] }
+      ],
+      "view_ids": ["t1", "c1"]
+    }
+  },
+  "invalid": [
+    { "name": "unknown kind", "from": "t1", "set": { "kind": "pie" }, "error": "view.kind" },
+    { "name": "missing kind", "from": "t1", "drop": ["kind"], "error": "view.kind" },
+    { "name": "wrong schema version", "from": "t1", "set": { "schema_version": 3 }, "error": "view.schema_version" },
+    { "name": "boolean schema version", "from": "s1", "set": { "schema_version": true }, "error": "view.schema_version" },
+    { "name": "missing source", "from": "t1", "drop": ["source"], "error": "view.source: required" },
+    { "name": "missing basis", "from": "c1", "drop": ["basis"], "error": "view.basis: required" },
+    { "name": "source without args hash", "from": "t1", "drop": ["source.args_hash"], "error": "view.source.args_hash: required" },
+    { "name": "args hash not hex", "from": "t1", "set": { "source.args_hash": "XYZ" }, "error": "view.source.args_hash" },
+    { "name": "unknown basis kind", "from": "t1", "set": { "basis.kind": "guessed" }, "error": "view.basis.kind" },
+    { "name": "person field", "from": "t1", "set": { "author": "someone@example.com" }, "error": "view.author: unknown field" },
+    { "name": "person field on a column", "from": "t1", "set": { "columns.0.owner": "someone" }, "error": "view.columns[0].owner: unknown field" },
+    { "name": "optional field sent as null", "from": "t1", "set": { "summary": null }, "error": "view.summary" },
+    { "name": "as_of not a sha", "from": "t1", "set": { "as_of": "HEAD" }, "error": "view.as_of" },
+    { "name": "as_of missing", "from": "t1", "drop": ["as_of"], "error": "view.as_of: required" },
+    { "name": "stale not a boolean", "from": "t1", "set": { "stale": "no" }, "error": "view.stale" },
+    { "name": "coverage above one", "from": "t1", "set": { "coverage.ratio": 1.5 }, "error": "view.coverage.ratio" },
+    { "name": "unknown coverage metric", "from": "t1", "set": { "coverage.metric": "ownership" }, "error": "view.coverage.metric" },
+    { "name": "bad part id", "from": "t1", "set": { "id": "has space" }, "error": "view.id" },
+    { "name": "bad column key", "from": "t1", "set": { "columns.0.key": "Path Name" }, "error": "view.columns[0].key" },
+    { "name": "row missing a column", "from": "t1", "drop": ["rows.0.churn"], "error": "view.rows[0].churn: required" },
+    { "name": "row with an extra column", "from": "t1", "set": { "rows.0.author": "x" }, "error": "view.rows[0].author: unknown column" },
+    { "name": "boolean cell", "from": "t1", "set": { "rows.0.churn": true }, "error": "view.rows[0].churn" },
+    { "name": "object cell that is not a ref", "from": "t1", "set": { "rows.0.path": { "url": "https://example.com" } }, "error": "view.rows[0].path" },
+    { "name": "ref cell with lines on a commit", "from": "t1", "set": { "rows.0.path": { "type": "commit", "id": "abc1234", "start_line": 1 } }, "error": "line numbers only apply" },
+    { "name": "duplicate column key", "from": "t1", "set": { "columns.1.key": "path" }, "error": "duplicate key path" },
+    { "name": "no columns", "from": "t1", "set": { "columns": [], "rows": [], "total_rows": 0, "truncated": false }, "error": "at least one column" },
+    { "name": "truncated that does not match the totals", "from": "t1", "set": { "truncated": false }, "error": "view.truncated" },
+    { "name": "total below the rows given", "from": "t1", "set": { "total_rows": 1 }, "error": "view.total_rows" },
+    { "name": "rows over the cap", "from": "t1", "grow": { "rows": 501 }, "set": { "total_rows": 501, "truncated": false }, "error": "view.rows: more than 500 items" },
+    { "name": "columns over the cap", "from": "t1", "grow": { "columns": 21 }, "error": "view.columns: more than 20 items" },
+    { "name": "series naming a missing column", "from": "c1", "set": { "series": ["nope"] }, "error": "view.series[0]: not a column of data" },
+    { "name": "x naming a missing column", "from": "c1", "set": { "x": "nope" }, "error": "view.x: not a column of data" },
+    { "name": "series that is the x column", "from": "c1", "set": { "series": ["component"] }, "error": "is the x column" },
+    { "name": "stacked bar with one series", "from": "c2", "set": { "series": ["measured"] }, "error": "a stacked_bar chart plots 2 to 8 series" },
+    { "name": "series over the cap", "from": "c1", "set": { "series": ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }, "error": "view.series: more than 8 items" },
+    { "name": "unknown chart type", "from": "c1", "set": { "chart_type": "pie" }, "error": "view.chart_type" },
+    { "name": "chart without a summary", "from": "c1", "drop": ["summary"], "error": "view.summary: required" },
+    { "name": "string plotted as a value", "from": "c1", "set": { "data.rows.0.changes": "12" }, "error": "plotted values must be numbers" },
+    { "name": "null x value", "from": "c1", "set": { "data.rows.0.component": null }, "error": "x is null" },
+    { "name": "sort that the rows contradict", "from": "c1", "set": { "sort": "asc" }, "error": "view.sort: rows are not in asc order" },
+    { "name": "negative stacked value", "from": "c2", "set": { "data.rows.0.measured": -1 }, "error": "cannot be negative" },
+    { "name": "series in different units", "from": "c2", "set": { "data.columns.2.unit": "lines" }, "error": "share one unit" },
+    { "name": "chart points over the cap", "from": "c3", "grow": { "data.rows": 101 }, "set": { "data.total_rows": 101 }, "error": "a chart plots at most 100 rows" },
+    { "name": "donut with nine parts", "from": "c4", "grow": { "data.rows": 9 }, "set": { "data.total_rows": 9 }, "error": "a donut has 2 to 8 parts" },
+    { "name": "donut over truncated data", "from": "c4", "set": { "data.total_rows": 10, "data.truncated": true }, "error": "a donut must show the whole" },
+    { "name": "groups on a bar chart", "from": "c1", "set": { "groups": ["component"] }, "error": "groups and color apply to a treemap only" },
+    { "name": "treemap group naming a missing column", "from": "c6", "set": { "groups": ["nope"] }, "error": "view.groups[0]: not a column of data" },
+    { "name": "treemap group that is the x column", "from": "c6", "set": { "groups": ["file"] }, "error": "is the x or a series column" },
+    { "name": "treemap coloured by its x", "from": "c6", "set": { "color": "file" }, "error": "view.color: not a column of data other than x" },
+    { "name": "treemap coloured by a missing column", "from": "c6", "set": { "color": "nope" }, "error": "view.color: not a column of data other than x" },
+    { "name": "treemap with two series", "from": "c6", "set": { "series": ["nloc", "health_band"] }, "error": "a treemap chart plots 1 series" },
+    { "name": "negative treemap cell", "from": "c6", "set": { "data.rows.0.nloc": -1 }, "error": "cannot be negative" },
+    { "name": "string in a heatmap cell", "from": "c7", "set": { "data.rows.0.s1": "4" }, "error": "plotted values must be numbers" },
+    { "name": "scatter with a text x", "from": "c5", "set": { "data.rows.0.max_ccn": "high" }, "error": "a scatter x is a number" },
+    { "name": "donut with a null part", "from": "c4", "set": { "data.rows.0.files": null }, "error": "a donut part is null" },
+    { "name": "empty section", "from": "s1", "set": { "narrative": [], "view_ids": [] }, "error": "a section needs narrative or views" },
+    { "name": "section repeating a view", "from": "s1", "set": { "view_ids": ["t1", "t1"] }, "error": "view.view_ids: duplicate t1" },
+    { "name": "citation that is not a part id", "from": "s1", "set": { "narrative.0.cites": ["bad id"] }, "error": "view.narrative[0].cites[0]" },
+    { "name": "section carrying provenance", "from": "s1", "set": { "stale": false }, "error": "view.stale: unknown field" },
+    {"name": "as_of an impossible date", "from": "t1", "set": {"as_of": "2026-02-30T09:30:00Z"}, "error": "view.as_of"},
+    {"name": "args hash with a trailing newline", "from": "t1", "set": {"source.args_hash": "3f2a9c1b7d4e5f60\n"}, "error": "view.source.args_hash"},
+    {"name": "id with a non-BMP character", "from": "t1", "set": {"id": "t😀"}, "error": "view.id"},
+    {"name": "cell beyond 2^53 - 1", "from": "t1", "set": {"rows.0.churn": 9007199254740992}, "error": "view.rows[0].churn"},
+    {"name": "total_rows beyond 2^53 - 1", "from": "t1", "set": {"total_rows": 9007199254740992}, "error": "view.total_rows"},
+    {"name": "line number beyond 2^53 - 1", "from": "t1", "set": {"rows.1.path.end_line": 9007199254740992}, "error": "view.rows[1].path.end_line"},
+    {"name": "null in a sorted series", "from": "c1", "set": {"data.rows.2.changes": null}, "error": "a sorted chart has no nulls"},
+    {"name": "donut with a zero total", "from": "c4", "set": {"data.rows.0.files": 0, "data.rows.1.files": 0}, "error": "a donut needs a positive total"},
+    {"name": "stacked bar of all zeros", "from": "c2", "set": {"data.rows.0.measured": 0, "data.rows.0.inferred": 0, "data.rows.1.measured": 0, "data.rows.1.inferred": 0}, "error": "a stacked_bar needs a positive total"}
+  ],
+  "valid_variants": [
+    { "name": "a part at the current schema version", "from": "c6", "set": { "schema_version": 2 } },
+    { "name": "treemap coloured by one of its group levels", "from": "c6", "set": { "color": "package" } },
+    { "name": "non-BMP title and summary", "from": "t1", "set": { "title": "😀", "summary": "Payments 💳 leads" } },
+    { "name": "negative zero in a line", "from": "c3", "set": { "data.rows.0.commits": -0 } },
+    { "name": "negative zero donut part", "from": "c4", "set": { "data.rows.2.files": -0.0 } },
+    { "name": "largest wire integer", "from": "t1", "set": { "rows.0.churn": 9007199254740991, "rows.1.path.end_line": 9007199254740991 } },
+    { "name": "smallest wire integer", "from": "c3", "set": { "data.rows.0.commits": -9007199254740991 } },
+    { "name": "line chart with a null and no sort", "from": "c3", "set": { "data.rows.0.commits": null } }
+  ],
+  "valid_lists": [
+    { "name": "every valid part together", "items": [{ "from": "t1" }, { "from": "c1" }, { "from": "c2" }, { "from": "c3" }, { "from": "c4" }, { "from": "c5" }, { "from": "c6" }, { "from": "c7" }, { "from": "s1" }] },
+    { "name": "no parts", "items": [] }
+  ],
+  "invalid_lists": [
+    { "name": "duplicate ids", "items": [{ "from": "t1" }, { "from": "c1", "set": { "id": "t1" } }], "error": "views: duplicate id t1" },
+    { "name": "section naming a part not in the list", "items": [{ "from": "t1" }, { "from": "s1" }], "error": "no data part with id c1" },
+    { "name": "section naming a section", "items": [{ "from": "t1" }, { "from": "c1" }, { "from": "s1" }, { "from": "s1", "set": { "id": "s2", "view_ids": ["s1"], "narrative": [] } }], "error": "views[3].view_ids[0]: no data part with id s1" },
+    { "name": "an invalid part", "items": [{ "from": "t1", "set": { "kind": "pie" } }], "error": "views[0].kind" },
+    { "name": "parts over the cap", "items": [{ "from": "t1" }], "repeat": 51, "error": "views: more than 50 items" }
+  ]
+}

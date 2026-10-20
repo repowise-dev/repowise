@@ -135,6 +135,8 @@ def test_display_only_fields_are_outside_the_opportunity_kernel(field, value) ->
         ("dataflow_verified", True),
         ("resource_invariant", True),
         ("reliable_entry_reachability", True),
+        ("execution_role", "request"),
+        ("role_owner", "src/app.py::run"),
         ("resolution_basis", "name-fallback"),
     ],
 )
@@ -372,6 +374,9 @@ def test_the_public_finding_id_ignores_prose_and_derived_details() -> None:
     )
     assert finding_public_id(base) == finding_public_id(
         _row(details={**base["details"], "reliable_entry_reachability": True})
+    )
+    assert finding_public_id(base) == finding_public_id(
+        _row(details={**base["details"], "execution_role": "cli"})
     )
     # Structural coordinates are in the kernel, so a real move is a new id.
     assert finding_public_id(base) != finding_public_id(_row(line_start=999))

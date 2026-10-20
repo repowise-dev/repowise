@@ -193,18 +193,21 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         name="performance plus refactoring",
         call=(
             'get_health(include=["performance", "refactoring"], '
-            'only=["performance_opportunities", "refactoring_plans"], limit=1)'
+            'only=["performance_opportunities", "refactoring_plans"], limit=1, '
+            'refactoring_scope="all")'
         ),
         kwargs=_frozen(
             include=("performance", "refactoring"),
             only=("performance_opportunities", "refactoring_plans"),
             limit=1,
+            refactoring_scope="all",
         ),
         comparison="independent performance and refactoring projections",
         comparison_kwargs=_frozen(
             include=("performance", "refactoring"),
             only=("performance_opportunities", "refactoring_plans"),
             limit=1,
+            refactoring_scope="all",
         ),
         plans_requested=True,
         expected_plan_count=1,
@@ -340,6 +343,7 @@ def _path(result: dict[str, Any], dotted: str) -> Any:
 
 async def _seed_case_evidence(case: HealthSemanticsCase, session, repository_id: str) -> None:
     from repowise.core.persistence.crud import (
+        finalize_refactoring_opportunities,
         save_coverage_files,
         save_health_findings,
         save_health_snapshot,
@@ -416,6 +420,8 @@ async def _seed_case_evidence(case: HealthSemanticsCase, session, repository_id:
             )
             plans.append({**plans[0], "file_path": "src/db/models.py", "target_symbol": "load_rows"})
         await save_refactoring_suggestions(session, repository_id, plans)
+        # The plan list is a view of the opportunity queue the finalizer composes.
+        await finalize_refactoring_opportunities(session, repository_id)
     await session.commit()
 
 

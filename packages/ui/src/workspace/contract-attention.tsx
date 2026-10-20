@@ -25,7 +25,8 @@ import {
   buildUnmatchedConsumersAiPrompt,
   providerNoun,
 } from "./contract-ai-prompt";
-import { ContractIdentity, FilePathText } from "./contract-identity";
+import { ContractIdentity } from "./contract-identity";
+import { FilePath } from "../shared/file-path";
 import { sortUnmatchedReasons, unmatchedReasonCopy, type OrphanGroup } from "./contract-facts";
 import type { ContractRef } from "./contract-drawer";
 
@@ -210,7 +211,7 @@ function UnmatchedGroup({
               >
                 <ContractIdentity contractId={u.contract_id} />
                 <span className="text-xs text-[var(--color-text-secondary)]">{u.repo}</span>
-                <FilePathText path={u.file_path} />
+                <FilePath path={u.file_path} fold />
               </button>
             </li>
           ))}

@@ -93,7 +93,7 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
 const LINE_CLASS: Record<DiffLineKind, string> = {
   add: "bg-[var(--color-success)]/10 text-[var(--color-text-primary)]",
   del: "bg-[var(--color-error)]/10 text-[var(--color-text-primary)]",
-  hunk: "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]",
+  hunk: "bg-[var(--color-bg-inset)] text-[var(--color-text-tertiary)]",
   meta: "text-[var(--color-text-tertiary)]",
   context: "text-[var(--color-text-secondary)]",
 };
@@ -122,12 +122,12 @@ export function DiffView({ diff, emptyFallback }: DiffViewProps) {
             <span className="truncate font-mono text-xs text-[var(--color-text-primary)]" title={file.path}>
               {file.path || "(diff)"}
             </span>
-            <span className="shrink-0 font-mono text-[11px] tabular-nums">
+            <span className="shrink-0 font-mono text-xs tabular-nums">
               <span className="text-[var(--color-success)]">+{file.added}</span>{" "}
               <span className="text-[var(--color-error)]">-{file.removed}</span>
             </span>
           </div>
-          <pre className="overflow-x-auto px-0 py-1 text-[12px] leading-[1.5]">
+          <pre className="overflow-x-auto px-0 py-1 text-xs leading-[1.5]">
             <code className="block">
               {file.lines.map((line, j) => (
                 <span key={j} className={`block px-3 ${LINE_CLASS[line.kind]}`}>

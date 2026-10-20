@@ -40,7 +40,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ._shared import _find_repo_root, _relativize
+from repowise.core.fsutils import repo_relative
+
+from ._shared import _find_repo_root
 
 _SERVED_COVERAGE = 0.8  # served share of a Read window that counts as covered
 _MAX_SERVED_FILES = 50  # served-range bookkeeping caps (state-file hygiene)
@@ -69,7 +71,7 @@ def _log_read_after_served(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return
-    rel = _relativize(file_path, repo_path)
+    rel = repo_relative(file_path, repo_path, resolve=True)
     if rel is None:
         return
     window = _read_window(tool_input, tool_output)

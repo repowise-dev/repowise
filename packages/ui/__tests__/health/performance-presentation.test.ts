@@ -5,6 +5,7 @@ import {
   affectedSummary,
   agentHandoffCall,
   boundaryLabel,
+  causeStandingText,
   facetValueLabel,
   humanizeToken,
   moduleScopeLabel,
@@ -15,7 +16,6 @@ import {
   whyRankedLabel,
   whyRankedPhrase,
 } from "../../src/health/performance/presentation";
-import { contiguousSections } from "../../src/health/performance/queue";
 import { opportunity } from "./fixtures/performance";
 
 describe("performance presentation", () => {
@@ -110,6 +110,14 @@ describe("performance presentation", () => {
     expect(none.label).toBe("No safe plan");
   });
 
+  it("names a stored plan apart from the plan-ready actionability state", () => {
+    // The row mark counts with the "With a stored plan" tile; "Plan ready" is
+    // the actionability state its own tile counts.
+    expect(planPresentation(opportunity()).label).toBe("Stored plan");
+    expect(facetValueLabel("plan_state", "available")).toBe("Stored plan");
+    expect(facetValueLabel("actionability", "plan_ready")).toBe("Plan ready");
+  });
+
   it("never calls a plan actionable without an id to fetch it with", () => {
     expect(planPresentation(opportunity({ plan_id: null })).actionable).toBe(false);
   });
@@ -146,40 +154,6 @@ describe("performance presentation", () => {
   });
 });
 
-describe("queue sections", () => {
-  it("splits the page into runs without moving a single row", () => {
-    const items = [
-      opportunity({ opportunity_id: "a", actionability_state: "plan_ready" }),
-      opportunity({ opportunity_id: "b", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "c", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "d", actionability_state: "investigate" }),
-    ];
-    const sections = contiguousSections(items);
-    expect(sections.map((s) => s.state)).toEqual(["plan_ready", "advisory", "investigate"]);
-    expect(sections.flatMap((s) => s.items.map((i) => i.opportunity_id))).toEqual([
-      "a",
-      "b",
-      "c",
-      "d",
-    ]);
-  });
-
-  it("keeps an interleaved order intact rather than regrouping it", () => {
-    const items = [
-      opportunity({ opportunity_id: "a", actionability_state: "advisory" }),
-      opportunity({ opportunity_id: "b", actionability_state: "investigate" }),
-      opportunity({ opportunity_id: "c", actionability_state: "advisory" }),
-    ];
-    const sections = contiguousSections(items);
-    expect(sections).toHaveLength(3);
-    expect(sections.flatMap((s) => s.items.map((i) => i.opportunity_id))).toEqual(["a", "b", "c"]);
-  });
-
-  it("returns nothing for an empty page", () => {
-    expect(contiguousSections([])).toEqual([]);
-  });
-});
-
 describe("module scope", () => {
   it("reads `<file>::__module__` as the module scope of that file", () => {
     expect(moduleScopeLabel("src/jobs.py::__module__")).toBe("module scope of src/jobs.py");
@@ -192,5 +166,22 @@ describe("module scope", () => {
     expect(opportunityTitle(top)).toBe("Database call inside a loop in module scope of jobs.py");
     expect(opportunityEvidenceLine(top)).toBe("module scope of src/jobs.py");
   });
-});
 
+  it("phrases a row's secondary facts as sentences from the server's values", () => {
+    const text = causeStandingText(
+      opportunity({
+        actionability_state: "advisory",
+        actionability_reason: "strategy_requires_validation",
+        plan_status: "no_safe_plan",
+        plan_id: null,
+        plan_reason: "No stored plan addresses this cause",
+        confidence: "medium",
+      }),
+    );
+    expect(text).toBe(
+      "Advisory: Strategy requires validation. No safe plan: No stored plan addresses this cause. The call path resolved with medium confidence.",
+    );
+    // A reason that already ends a sentence is not given a second stop.
+    expect(causeStandingText(opportunity({ plan_reason: "Stored." }))).toContain("Stored plan: Stored. ");
+  });
+});

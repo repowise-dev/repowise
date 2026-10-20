@@ -33,7 +33,8 @@ export function ValidationSummary({ validation, fileHref }: ValidationSummaryPro
         </p>
         {validation.basis === "unknown" ? (
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            No measured or inferred guarding test was found. Treat this as explicit validation work.
+            {validation.prerequisite ??
+              "No measured or inferred guarding test was found. Treat this as explicit validation work."}
           </p>
         ) : null}
       </div>

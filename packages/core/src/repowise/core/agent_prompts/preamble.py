@@ -34,6 +34,18 @@ OPENINGS: dict[str, dict[str, str]] = {
         "claude-code-mcp": 'Repowise ranked the change below first among the work it found. Call the MCP lookup under "Look closer" for the full record before reading files by hand, then confirm each fact against the code.',
         "cursor": "ranked the change below first among the work it found. Open the target with @file, confirm each fact, then make the change.",
     },
+    "refactoring_plan": {
+        "generic": "planned the refactoring below from its static analysis. Repowise does not edit code: the steps are a spec for you to apply. Read the code each step names and confirm it before you change it.",
+        "claude-code": "planned the refactoring below from its static analysis. Repowise does not edit code: the steps are a spec for you to apply. Read each span with Read and Grep before editing, and track the steps with TodoWrite.",
+        "claude-code-mcp": 'Repowise planned the refactoring below from its static analysis. It does not edit code: the steps are a spec for you to apply. Use the MCP lookup under "Look closer" and `get_symbol` on each span before reading files by hand.',
+        "cursor": "planned the refactoring below from its static analysis. Repowise does not edit code: the steps are a spec for you to apply. Open each span with @file and confirm it before editing.",
+    },
+    "refactoring_opportunity": {
+        "generic": "composed the ordered refactoring steps below for one file from its static analysis. Repowise does not edit code: the steps are a spec for you to apply. Read the code each step names and confirm it before you change it.",
+        "claude-code": "composed the ordered refactoring steps below for one file from its static analysis. Repowise does not edit code: the steps are a spec for you to apply. Read each span with Read and Grep before editing, and track the steps with TodoWrite.",
+        "claude-code-mcp": "Repowise composed the ordered refactoring steps below for one file from its static analysis. It does not edit code: the steps are a spec for you to apply. Pull the record with the call at the end and `get_symbol` each span before reading files by hand.",
+        "cursor": "composed the ordered refactoring steps below for one file from its static analysis. Repowise does not edit code: the steps are a spec for you to apply. Open each span with @file and confirm it before editing.",
+    },
 }
 
 

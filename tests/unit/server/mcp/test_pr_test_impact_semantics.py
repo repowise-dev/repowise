@@ -88,7 +88,9 @@ async def test_sealed_pr_payload_is_directive_first_typed_and_count_exact(setup_
     )
     await session.flush()
 
-    payload = await get_risk(["src/measured.py"], changed_files=changed, include=["graph"])
+    payload = await get_risk(
+        ["src/measured.py"], changed_files=changed, include=["graph", "tests", "blast"]
+    )
     external = json.loads(json.dumps(payload))
     directive = external["directive"]
     full = external["pr_blast_radius"]["test_impact"]
@@ -101,11 +103,8 @@ async def test_sealed_pr_payload_is_directive_first_typed_and_count_exact(setup_
     assert directive["test_recommendations_emitted"] == len(directive["test_recommendations"]) == 10
     assert directive["test_recommendations_truncated"] is True
     assert directive["test_recommendations_omitted"] == 6
-    assert directive["tests_to_run"] == [
-        row["test_id"] for row in directive["test_recommendations"]
-    ]
-    assert directive["tests_to_run_total"] == 14
-    assert directive["tests_to_run_basis"] == "measured"
+    # tests_to_run is the selection's run list (test_change_test_selection.py);
+    # the typed rows here are the analyzer's own population.
     assert directive["missing_tests"] == ["src/no_match.py"]
     assert directive["missing_tests_total"] == directive["missing_tests_emitted"] == 1
     assert directive["missing_tests_truncated"] is False

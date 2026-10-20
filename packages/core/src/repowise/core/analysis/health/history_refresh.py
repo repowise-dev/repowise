@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .biomarker_names import canonical_biomarker
 from .biomarkers.base import BiomarkerResult, FileContext
 from .biomarkers.registry import registered_biomarkers
 from .complexity.languages import has_health_dialect
@@ -83,7 +84,7 @@ def as_biomarker_result(finding: Any) -> BiomarkerResult:
     details = detail_map(finding)
     raw = details.get("deduction")
     return BiomarkerResult(
-        biomarker_type=field(finding, "biomarker_type", ""),
+        biomarker_type=canonical_biomarker(field(finding, "biomarker_type", "")),
         severity=Severity(field(finding, "severity", Severity.LOW)),
         function_name=field(finding, "function_name"),
         line_start=field(finding, "line_start"),
@@ -126,6 +127,8 @@ def refresh_history(
             nloc=int(field(metric, "nloc", 0) or 0),
             has_test_file=bool(field(metric, "has_test_file", False)),
             module=field(metric, "module"),
+            # The stored row's flag; ``None`` on an older row falls back to the path.
+            is_test=field(metric, "is_test", None),
             git_meta=git_meta,
             repo_active_contributors_90d=repo_active_contributors_90d,
         )

@@ -27,14 +27,63 @@ export interface ProviderInfo {
   models: string[];
   default_model: string;
   configured: boolean;
+  /** `false` for providers that authenticate without an API key. */
+  requires_key?: boolean;
+  /** Takes a custom endpoint (an OpenAI-compatible local server, a proxy). */
+  accepts_base_url?: boolean;
+  /** Can point at a local OpenAI-compatible server (LM Studio) with no key. */
+  local_server?: boolean;
+  /** Env vars a user sets to make the provider usable. */
+  env_vars?: string[];
+  /** One line on how to install or set it up. */
+  setup_hint?: string;
+}
+
+export interface EmbedderInfo {
+  id: string;
+  /** Env vars a user sets to make the embedder usable. */
+  env_vars?: string[];
+  /** `false` for the keyless embedder, whose vectors carry no signal. */
+  semantic?: boolean;
+}
+
+/** Where a resolved value came from: `request`, `config.yaml`, `global`,
+ *  `env:<VAR>`, `default` or `autodetect`; null when the value is unset. */
+export interface SelectionProvenance {
+  provider: string | null;
+  model: string | null;
+  base_url: string | null;
 }
 
 export interface ProvidersResponse {
   active: {
     provider: string | null;
     model: string | null;
+    /** Endpoint requests go to; null means the provider's own default. */
+    base_url?: string | null;
+    provenance?: SelectionProvenance;
+    /** The repo's config.yaml base URL is refused until confirmed in Settings
+     *  (re-saving it there confirms it). */
+    base_url_unconfirmed?: boolean;
+    /** USD per 1K tokens for `model`; null when no model resolves. */
+    input_cost_per_1k?: number | null;
+    output_cost_per_1k?: number | null;
+    /** The embedder this server runs with. */
+    embedder?: string | null;
   };
   providers: ProviderInfo[];
+  /** Registerable providers the catalog leaves out. */
+  flag_only_providers?: string[];
+  embedders?: EmbedderInfo[];
+}
+
+/** Models a provider offers. `source: "catalog"` means the live list could
+ *  not be fetched and `error` says why; the built-in list stands in. */
+export interface ProviderModels {
+  models: { id: string; label?: string | null }[];
+  source: "live" | "catalog";
+  default_model: string;
+  error?: string | null;
 }
 
 /** Result of a live provider smoke test. `ok: false` carries the reason in

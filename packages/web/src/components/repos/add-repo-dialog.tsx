@@ -12,6 +12,7 @@ import {
   AddRepoWizard,
   type AddRepoWizardAdapter,
 } from "@repowise-dev/ui/onboarding/add-repo-wizard";
+import { useTranslations } from "next-intl";
 
 interface Props {
   /** Render as a sidebar button (icon + label) vs standalone button */
@@ -31,6 +32,7 @@ export function AddRepoDialog({
 }: Props) {
   const { mutate } = useSWRConfig();
   const router = useRouter();
+  const t = useTranslations("repos");
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
@@ -59,12 +61,14 @@ export function AddRepoDialog({
       },
       settingsHref: "/settings",
       onDone: (repoId, jobId) => {
-        toast.success(jobId ? "Repository added, indexing started" : "Repository added");
+        toast.success(
+          jobId ? t("addDialog.toastStarted") : t("addDialog.toastAdded"),
+        );
         router.push(`/repos/${repoId}/overview`);
         router.refresh();
       },
     }),
-    [mutate, router],
+    [mutate, router, t],
   );
 
   return (
@@ -76,12 +80,12 @@ export function AddRepoDialog({
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors"
         >
           <Plus className="h-3.5 w-3.5 shrink-0" />
-          <span>Add Repository</span>
+          <span>{t("addDialog.trigger")}</span>
         </button>
       ) : (
         <Button variant="default" size="sm" onClick={() => setOpen(true)}>
           <Plus className="h-4 w-4 mr-1" />
-          Add Repository
+          {t("addDialog.trigger")}
         </Button>
       )}
 

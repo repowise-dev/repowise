@@ -10,7 +10,12 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
+from repowise.core.analysis.health.queue.order import priority as queue_priority
 from repowise.core.analysis.next_call import ActionCommand
+
+#: Bumped when a rule's output changes meaning or shape; stored views built
+#: under another version are rebuilt.
+ACTIONS_MODEL_VERSION = 2
 
 ActionRule = Literal[
     "live_secret",
@@ -35,6 +40,13 @@ HORIZONS: tuple[str, ...] = get_args(Horizon)
 #: worth scheduling; ``improve_signal`` makes the other two more accurate.
 ActionTier = Literal["act_now", "plan", "improve_signal"]
 ACTION_TIERS: tuple[str, ...] = get_args(ActionTier)
+
+#: The heading each tier is listed under, on every surface.
+TIER_LABELS: dict[str, str] = {
+    "act_now": "Now",
+    "plan": "Worth planning",
+    "improve_signal": "Improve what Repowise can see",
+}
 
 #: Where a fact came from. ``unknown`` is a fact too: "coverage unknown" is
 #: printed, never read as zero.
@@ -70,6 +82,24 @@ TIER_RANK: dict[str, int] = {"act_now": 0, "plan": 1, "improve_signal": 2}
 #: Tie-break between rules inside one tier: a claim that code is wrong or got
 #: worse outranks a claim that it is costly, which outranks tidiness.
 RULE_RANK: dict[str, int] = {rule: i for i, rule in enumerate(ACTION_RULES)}
+
+#: An action's value (0-4, as the Fix first queue values work) when its rule
+#: has none of its own: what its severity says.
+SEVERITY_VALUE: dict[str, int] = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+
+def effective_value(value: int | None, severity: str) -> int:
+    """An action's value: its own, else its severity's (also for a view
+    stored before actions carried one)."""
+    return value if value is not None else SEVERITY_VALUE.get(severity, 1)
+
+
+def shared_priority(
+    value: int | None, severity: str, confidence: str, effort: str
+) -> float:
+    """The number Do next orders a tier on: the queue's ``value x confidence /
+    effort`` (``queue.order.priority``)."""
+    return queue_priority(effective_value(value, severity), confidence, effort)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +149,9 @@ class Action:
     rule: ActionRule
     tier: ActionTier
     horizons: tuple[Horizon, ...]
+    #: Critical is for work that is both urgent and certain enough to drop
+    #: other work for: a credential in the working tree. Code-health work tops
+    #: out at high however many of its findings a detector tags critical.
     severity: str
     #: Verb first. Paths and symbols are wrapped in backticks, which every
     #: renderer sets in mono: "Raise test coverage on `a/b.py` from 62%".
@@ -133,6 +166,11 @@ class Action:
     done_when: str
     #: Rule-local ordering weight, comparable only within its rule.
     weight: float = 0.0
+    #: The shared value every rule ranks on; ``None`` reads :data:`SEVERITY_VALUE`.
+    value: int | None = None
+    #: The number Do next orders the tier on; ``None`` reads :func:`shared_priority`.
+    #: Set by a rule whose own queue already orders its actions (Fix first).
+    priority: float | None = None
     target_symbol: str | None = None
     #: What makes this action the same action next time, when the target alone
     #: does not: two performance opportunities can share a symbol, and a
@@ -155,10 +193,20 @@ class Action:
     commands: tuple[ActionCommand, ...] = ()
 
     @property
+    def effective_value(self) -> int:
+        return effective_value(self.value, self.severity)
+
+    @property
+    def effective_priority(self) -> float:
+        if self.priority is not None:
+            return self.priority
+        return shared_priority(self.value, self.severity, self.confidence, self.effort)
+
+    @property
     def action_id(self) -> str:
         identity = self.identity or f"{self.target_path}:{self.target_symbol or ''}"
         key = f"{self.rule}:{identity}"
-        return "act_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        return "act_" + hashlib.sha1(key.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -178,6 +226,8 @@ class Action:
             "surface": self.surface,
             "effort": self.effort,
             "confidence": self.confidence,
+            "value": self.effective_value,
+            "priority": round(self.effective_priority, 4),
             "done_when": self.done_when,
             "command": self.command,
             "marker": self.marker,
@@ -209,4 +259,4 @@ class RuleOutcome:
 
 def fingerprint(*parts: object) -> str:
     raw = "|".join(str(p) for p in parts)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]

@@ -127,6 +127,43 @@ def test_large_cut_is_dropped():
     assert out == []
 
 
+def test_dynamic_uses_edges_do_not_form_a_cycle():
+    # Only dynamic_uses hint edges, both ways: a hint match (#2886), not a
+    # resolved dependency, so no structural cycle and no break_cycle plan.
+    g = nx.DiGraph()
+    g.add_node("CmdPal/UnsupportedSettingsHelper.cs", node_type="file")
+    g.add_node("PTRun/UnsupportedSettingsHelper.cs", node_type="file")
+    g.add_edge(
+        "CmdPal/UnsupportedSettingsHelper.cs",
+        "PTRun/UnsupportedSettingsHelper.cs",
+        edge_type="dynamic_uses",
+    )
+    g.add_edge(
+        "PTRun/UnsupportedSettingsHelper.cs",
+        "CmdPal/UnsupportedSettingsHelper.cs",
+        edge_type="dynamic_uses",
+    )
+    assert build_file_scc_index(g) == {}
+    assert _detect(g, "CmdPal/UnsupportedSettingsHelper.cs") == []
+
+
+def test_a_real_import_cycle_still_reports_when_a_third_file_only_shares_a_dynamic_uses_edge():
+    # a.py<->b.py is a real import cycle; b.py<->c.py is hint-only. The real
+    # cycle must still be found, scoped to {a.py, b.py} and not widened to c.py.
+    g = nx.DiGraph()
+    for f in ("a.py", "b.py", "c.py"):
+        g.add_node(f, node_type="file")
+    g.add_edge("a.py", "b.py", edge_type="imports")
+    g.add_edge("b.py", "a.py", edge_type="imports")
+    g.add_edge("b.py", "c.py", edge_type="dynamic_uses")
+    g.add_edge("c.py", "b.py", edge_type="dynamic_uses")
+    idx = build_file_scc_index(g)
+    assert idx == {"a.py": ("a.py", "b.py"), "b.py": ("a.py", "b.py")}
+    out = _detect(g, "a.py")
+    assert len(out) == 1
+    assert out[0].plan["cycle"] == ["a.py", "b.py"]
+
+
 def test_co_change_edges_do_not_form_a_cycle():
     # Only a co_changes edge between the pair → not a structural cycle.
     g = nx.DiGraph()
@@ -271,3 +308,16 @@ def test_same_directory_python_cycle_is_not_demoted():
     # A Python import cycle fails at import time; it is never an idiom.
     out = _detect_lang(_import_graph([("pkg/a.py", "pkg/b.py"), ("pkg/b.py", "pkg/a.py")]), "pkg/a.py", "python")
     assert out[0].confidence == "high"
+
+
+def test_type_only_import_edges_suppress_break_cycle():
+    g = nx.DiGraph()
+    g.add_node("a.ts", node_type="file")
+    g.add_node("b.ts", node_type="file")
+    # Mutually type-only imports
+    g.add_edge("a.ts", "b.ts", edge_type="imports", type_only=True)
+    g.add_edge("b.ts", "a.ts", edge_type="imports", type_only=True)
+
+    assert build_file_scc_index(g) == {}
+    assert _detect(g, "a.ts") == []
+    assert _detect(g, "b.ts") == []

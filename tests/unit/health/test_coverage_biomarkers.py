@@ -166,6 +166,13 @@ def test_coverage_gap_skips_test_files() -> None:
     assert CoverageGapDetector().detect(ctx) == []
 
 
+def test_coverage_gap_reads_the_stored_flag_over_the_path() -> None:
+    """A test-named production module (pytest does not collect it) is still scored."""
+    ctx = _ctx(path="src/pkg/test_selection.py", line_cov=10.0, total_lines=200)
+    ctx.is_test = False
+    assert CoverageGapDetector().detect(ctx)
+
+
 def test_coverage_gap_skips_when_no_coverage_data() -> None:
     ctx = _ctx(line_cov=None, total_lines=0)
     assert CoverageGapDetector().detect(ctx) == []

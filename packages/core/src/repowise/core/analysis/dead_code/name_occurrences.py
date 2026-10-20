@@ -48,11 +48,18 @@ from __future__ import annotations
 import posixpath
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
 
+from ...ingestion.extractors.visibility import (
+    _TS_EXPORT_ASSIGN_RE,
+    _TS_EXPORT_DEFAULT_NAME_RE,
+    _TS_EXPORT_LIST_SOURCE_RE,
+)
+from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
 from ...ingestion.languages.registry import REGISTRY
+from ...ingestion.source_mask import can_mask, mask_source
 from .constants import (
     _BARE_NAME_USE_LANGUAGES,
     _NON_CODE_LANGUAGES,
@@ -196,29 +203,84 @@ def _uses_in_own_file(
 def demote_used_in_own_file(
     findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
 ) -> None:
-    """Cap *findings* whose name their own file writes outside their span.
+    """Mark *findings* whose name their own file writes outside their span export-only.
 
-    For an unused export no other file names: a use beside it (a request type
-    its endpoint takes, a helper the class below calls) means it is used and
-    at most exported wider than it needs to be. Kept below the review floor
-    with the line that uses it, rather than dropped, since a same-file use by
-    a symbol that is itself dead keeps it alive. Mutates in place.
+    For an unused export: a use beside it (a request type its endpoint takes,
+    a constant the function below reads) means it is used and at most
+    exported wider than it needs to be. Kept below the review floor with the
+    line that uses it, never deletion-ready, rather than dropped, since a
+    same-file use by a symbol that is itself dead keeps it alive. Mutates in
+    place.
     """
     by_file: dict[str, list[DeadCodeFindingData]] = {}
     for finding in findings:
-        if finding.symbol_name and finding.file_path in source_map:
+        # Already marked by another reading of the same file: one verdict, one line.
+        if finding.symbol_name and finding.file_path in source_map and not finding.export_only:
             by_file.setdefault(finding.file_path, []).append(finding)
     for path, pending in by_file.items():
         verdicts = _uses_in_own_file(source_map, path, pending)
         for finding in pending:
             verdict = verdicts[id(finding)]
-            if verdict.answer is not _Answer.USED:
-                continue
-            finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
-            finding.safe_to_delete = False
-            finding.evidence.append(
-                f"Used in its own file at {verdict.used_at}; at most it need not be public"
-            )
+            if verdict.answer is _Answer.USED:
+                _mark_export_only(finding, verdict.used_at)
+
+
+def _mark_export_only(finding: DeadCodeFindingData, used_at: str | None) -> None:
+    finding.export_only = True
+    finding.confidence = min(finding.confidence, UNVERIFIED_INTERNAL_CONFIDENCE)
+    finding.safe_to_delete = False
+    finding.reason = f"'{finding.symbol_name}' is used in its own file; only its export is unused"
+    finding.evidence.append(f"Used in its own file at {used_at}; at most it need not be public")
+
+
+def demote_exports_used_in_own_code(
+    findings: list[DeadCodeFindingData], source_map: dict[str, bytes]
+) -> list[DeadCodeFindingData]:
+    """:func:`demote_used_in_own_file` for Python and JS-family unused exports.
+
+    Read with comments and string bodies blanked, so a name listed in
+    ``__all__`` or mentioned in a docstring is not a use, while a template
+    literal's ``${NAME}`` still is. A JS/TS export clause (``export { X }``,
+    ``export default X``) only publishes the name, so it is blanked too.
+    Ceiling: a Python f-string's ``{NAME}`` is blanked as well, so such a use
+    is missed and the finding stays as it was.
+    Other languages are left to :func:`clamp_unverified_absence`. Each file is
+    masked once. Returns the same list.
+    """
+    exports = [
+        f
+        for f in findings
+        if f.kind is DeadCodeKind.UNUSED_EXPORT
+        and f.file_path in source_map
+        and can_mask(PurePosixPath(f.file_path).suffix)
+    ]
+    masked = {path: _own_code(path, source_map[path]) for path in {f.file_path for f in exports}}
+    demote_used_in_own_file(exports, masked)
+    return findings
+
+
+#: Statements that only publish a name the file declares, never use it.
+_EXPORT_CLAUSES = (_TS_EXPORT_LIST_SOURCE_RE, _TS_EXPORT_DEFAULT_NAME_RE, _TS_EXPORT_ASSIGN_RE)
+
+
+def _own_code(path: str, blob: bytes) -> bytes:
+    """*blob*'s code with comments, string bodies and JS/TS export clauses blanked.
+
+    Lines are kept, so a match still reports its real line number.
+    """
+    suffix = PurePosixPath(path).suffix
+    text = mask_source(blob.decode("utf-8", "replace"), suffix, strings=True)
+    if suffix.lower() != ".py":
+        for clause in _EXPORT_CLAUSES:
+            text = clause.sub(_blank, text)
+    return text.encode("utf-8")
+
+
+def _blank(match: re.Match[str]) -> str:
+    return _NOT_NEWLINE.sub(" ", match.group())
+
+
+_NOT_NEWLINE = re.compile(r"[^\n]")
 
 
 def searchable_token(name: str) -> bytes:
@@ -618,7 +680,8 @@ def clamp_path_mentions(
         return findings
 
     named_in = _files_naming({f.file_path for f in in_scope}, source_map)
-    run = {id(f) for f in in_scope if _loaded(f, named_in.get(f.file_path, ()), source_map)}
+    loads = _ConfigLoads(source_map)
+    run = {id(f) for f in in_scope if _loaded(f, named_in.get(f.file_path, ()), loads)}
     kept = [f for f in findings if id(f) not in run]
     for finding in kept:
         if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
@@ -626,44 +689,47 @@ def clamp_path_mentions(
     return kept
 
 
-def _loaded(
-    finding: DeadCodeFindingData, namers: Iterable[str], source_map: dict[str, bytes]
-) -> bool:
+def _loaded(finding: DeadCodeFindingData, namers: Iterable[str], loads: _ConfigLoads) -> bool:
     """Whether *namers* load the file of *finding* in the way the finding denies.
 
-    A tool config is read only through its load keys, even when it is also a
+    A tool config is read only through its load keys and plugin path
+    arguments, even when it is also a
     runner by name (a bundler config is a build file): a path it mentions in a
     comment or an ignore list is not loaded.
     """
     path = finding.file_path
     configs = [n for n in namers if is_tool_config(n)]
-    loaders = [n for n in configs if _config_loads(n, path, source_map)]
+    loaders = [n for n in configs if loads.loads(n, path)]
     if finding.kind is DeadCodeKind.UNREACHABLE_FILE:
         others = (n for n in namers if n not in configs)
         return bool(loaders) or any(map(is_runner_file, others))
-    return bool(loaders) and "default" in export_shape(path, frozenset(), source_map.get(path))
+    source = loads.source_map.get(path)
+    return bool(loaders) and "default" in export_shape(path, frozenset(), source)
 
 
-#: ``<load key>: <value>`` in a tool config, the key quoted or bare; the value a
-#: string, a list or an object (``input: { main: "src/a.ts" }``).
-_LOAD_VALUE_RE = re.compile(
-    rb"""["']?\b(?:"""
-    + b"|".join(k.encode() for k in _TOOL_CONFIG_LOAD_KEYS)
-    + rb""")\b["']?\s*[:=]\s*(\[[^\]]*\]|\{[^}]*\}|"[^"]*"|'[^']*')"""
-)
-# Comments, so a path a config only mentions in one is not loaded. A ``//``
-# after ``:`` is a URL (``https://``), not a comment.
-_LINE_COMMENT_RE = re.compile(rb"(?<![:\w])//[^\n]*")
-_BLOCK_COMMENT_RE = re.compile(rb"/\*.*?\*/", re.DOTALL)
+@dataclass
+class _ConfigLoads:
+    """What each tool config loads, read once per config for the whole pass."""
 
+    source_map: dict[str, bytes]
+    _values: dict[str, bytes] = field(default_factory=dict)
 
-def _config_loads(config: str, target: str, source_map: dict[str, bytes]) -> bool:
-    """Whether *config* names *target* under one of its load keys."""
-    text = _LINE_COMMENT_RE.sub(b"", _BLOCK_COMMENT_RE.sub(b"", source_map.get(config, b"")))
-    values = b"\n".join(m.group(1) for m in _LOAD_VALUE_RE.finditer(text))
-    wanted = {key: {target} for key in _path_keys(target)}
-    tails = {key.rpartition("/")[2] for key in wanted}
-    return target in _targets_in(values, wanted, tails, config.rpartition("/")[0])
+    def loads(self, config: str, target: str) -> bool:
+        """Whether *config* names *target* under a load key or as a plugin's path."""
+        wanted = {key: {target} for key in _path_keys(target)}
+        tails = {key.rpartition("/")[2] for key in wanted}
+        base = config.rpartition("/")[0]
+        return target in _targets_in(self._load_values(config), wanted, tails, base)
+
+    def _load_values(self, config: str) -> bytes:
+        if config not in self._values:
+            text = self.source_map.get(config, b"")
+            # Re-quoted so _targets_in reads each as the one path token it is;
+            # a bare word argument is a name, not a file, so it needs a "/".
+            paths = [f'"{s}"'.encode() for s in plugin_path_arguments(text) if "/" in s]
+            spans = value_spans(text, _TOOL_CONFIG_LOAD_KEYS)
+            self._values[config] = b"\n".join([*spans, *paths])
+        return self._values[config]
 
 
 def _cap_named_by_path(finding: DeadCodeFindingData, namers: list[str] | None) -> None:

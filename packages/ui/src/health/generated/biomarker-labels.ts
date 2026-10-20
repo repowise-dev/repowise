@@ -5,19 +5,19 @@
 
 export const BIOMARKER_LABELS = {
   brain_method: "Brain method",
-  nested_complexity: "Nested complexity",
-  bumpy_road: "Bumpy road",
+  nested_complexity: "Deep nesting",
+  repeated_nesting: "Repeated nesting",
   complex_method: "Complex method",
-  large_method: "Large method",
+  large_method: "Long function",
   primitive_obsession: "Long parameter list",
   dry_violation: "DRY violation",
   untested_hotspot: "Untested hotspot",
   coverage_gap: "Coverage gap",
   coverage_gradient: "Coverage gradient",
-  developer_congestion: "Developer congestion",
-  knowledge_loss: "Knowledge loss",
+  developer_congestion: "Many authors",
+  knowledge_loss: "Fading ownership",
   hidden_coupling: "Hidden coupling",
-  complex_conditional: "Complex conditional",
+  complex_conditional: "Compound condition",
   function_hotspot: "Function hotspot",
   code_age_volatility: "Code age volatility",
   low_cohesion: "Low cohesion",
@@ -55,3 +55,12 @@ export const BIOMARKER_LABELS = {
   sql_update_delete_without_where: "UPDATE/DELETE without WHERE",
   sql_cartesian_join: "Cartesian join",
 } as const;
+
+/** Renamed ids (old -> current), so rows stored under an old id get the current label. */
+export const LEGACY_BIOMARKER_NAMES: Readonly<Record<string, string>> = {
+  bumpy_road: "repeated_nesting",
+};
+
+export function canonicalBiomarker(name: string): string {
+  return LEGACY_BIOMARKER_NAMES[name] ?? name;
+}

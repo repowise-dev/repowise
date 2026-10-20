@@ -13,10 +13,12 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.agent_prompts import Flavor, render_fix_item
+from repowise.core.analysis.finding_registry import GateLayer, preview_label
 from repowise.core.analysis.health.fix_first import FIX_SCOPES, FixItem
 from repowise.core.analysis.health.fix_first.model import FixTotals
+from repowise.core.analysis.health.queue.counts import QueueCounts
 from repowise.core.persistence import crud
-from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
+from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
 from repowise.core.persistence.models import Repository
 from repowise.server.deps import get_db_session
 from repowise.server.schemas.agent_prompts import AgentPromptResponse
@@ -33,6 +35,8 @@ class FixFirstQueueResponse(BaseModel):
     by_improves: dict[str, int]
     model_version: int
     basis: dict[str, str | None]
+    #: The items' count vocabulary; ``totals`` stays for clients that read it.
+    counts: QueueCounts
 
 
 def _scope(scope: str) -> str:
@@ -62,8 +66,9 @@ async def get_fix_first(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """The ranked queue, its lead, and how many units each rule excluded."""
-    queue = await load_fix_first(session, repo_id, limit=limit, scope=_scope(scope))
-    return queue.as_dict()
+    full = await load_fix_first(session, repo_id, limit=None, scope=_scope(scope))
+    queue = queue_view(full, limit=limit)
+    return {**queue.as_dict(), "counts": full.counts(len(queue.items)).as_dict()}
 
 
 @router.get("/api/repos/{repo_id}/health/fix-first/{fix_id}", response_model=FixItem)
@@ -91,7 +96,18 @@ async def get_fix_first_item_prompt(
 ) -> AgentPromptResponse:
     """One item as the prompt an agent starts from, worded for its harness."""
     repo, item = await _item(session, repo_id, fix_id, scope)
-    return AgentPromptResponse(flavor=flavor, text=render_fix_item(item.as_dict(), flavor, repo.name))
+    text = render_fix_item(item.as_dict(), flavor, repo.name)
+    layer = _FIX_KIND_LAYER.get(item.kind)
+    note = preview_label(layer, item.target.file_path) if layer else None
+    return AgentPromptResponse.labelled(flavor, text, note)
+
+
+#: A Fix-first item's kind, as the layer it was built from.
+_FIX_KIND_LAYER: dict[str, GateLayer] = {
+    "finding": "health",
+    "refactor": "refactoring",
+    "perf_fix": "performance",
+}
 
 
 __all__ = ["get_fix_first", "get_fix_first_item", "get_fix_first_item_prompt"]

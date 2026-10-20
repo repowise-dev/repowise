@@ -3,6 +3,7 @@
 import { GenerateConfirmDialog } from "@repowise-dev/ui/wiki/regenerate-button";
 import { formatEstimateCost } from "@/lib/generate-format";
 import { type useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
+import { useTranslations } from "next-intl";
 
 /**
  * Maps a `useBulkGenerate` flow onto the shared, presentational
@@ -19,6 +20,7 @@ export function BulkGenerateConfirm({
   /** Dialog title, e.g. "Write the subsystem pages". */
   title?: string;
 }) {
+  const t = useTranslations("docs");
   const { estimate, noProvider } = flow;
   const pages = estimate?.total_pages ?? 0;
 
@@ -27,10 +29,14 @@ export function BulkGenerateConfirm({
       open={flow.confirmOpen}
       onOpenChange={flow.setConfirmOpen}
       mode="write"
-      title={title ?? "Write the subsystem pages"}
+      title={title ?? t("bulk.title")}
       cascadeScope="selection"
-      description="Write every subsystem page still generated from structure, with your configured model."
-      confirmLabel={pages > 0 ? `Write ${pages} ${pages === 1 ? "page" : "pages"}` : "Write with AI"}
+      description={t("bulkConfirm.description")}
+      confirmLabel={
+        pages > 0
+          ? t("bulkConfirm.writePages", { count: pages })
+          : t("bulkConfirm.writeWithAi")
+      }
       cascade={flow.cascade}
       onCascadeChange={flow.changeCascade}
       estimate={

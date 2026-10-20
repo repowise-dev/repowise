@@ -128,52 +128,6 @@ def _entry_repo_target(entry: dict) -> str | None:
     return str(args[1])
 
 
-def describe_mcp_registration_change(repo_path: Path) -> str | None:
-    """Warn when registering would repoint an existing ``repowise`` MCP entry.
-
-    Both Claude configs hold a single ``repowise`` key, so an ``init`` from a
-    second repo *replaces* the entry rather than adding one alongside it. That
-    write is silent, and only surfaces later when the binary or repo it points
-    at is gone and the MCP server stops loading. This is a read-only probe run
-    before registration; it returns a one-line notice when the stored command
-    or repo target differs from what is about to be written, else None.
-    """
-    new_entry = generate_mcp_config(
-        _resolve_mcp_target(repo_path), command=resolve_repowise_command()
-    )["mcpServers"]["repowise"]
-    new_command = new_entry.get("command")
-    new_target = _entry_repo_target(new_entry)
-
-    for config_path in (_claude_code_settings_path(), _claude_desktop_config_path()):
-        stored = _stored_repowise_entry(config_path)
-        if stored is None:
-            continue
-        # Both fields are reported when both move, which is the usual shape of
-        # the mistake: a second repo indexed by a second install. Naming only
-        # one would hide half of what is about to change.
-        changes = [
-            (label, was, now)
-            for label, was, now in (
-                ("repo", _entry_repo_target(stored), new_target),
-                ("command", stored.get("command"), new_command),
-            )
-            if was != now
-        ]
-        if not changes:
-            continue
-        fields = " and ".join(label for label, _was, _now in changes)
-        lines = [f"Replacing the existing repowise MCP {fields} in {config_path}:"]
-        for label, was, now in changes:
-            # A hand-edited entry can be missing either field outright.
-            lines.append(f"    {label} was: {was if was is not None else '(not set)'}")
-            lines.append(f"    {label} now: {now}")
-        lines.append(
-            "  There is one 'repowise' entry per config; pass --no-editor-setup to leave it alone."
-        )
-        return "\n".join(lines)
-    return None
-
-
 def enable_tool_search_in_claude_code() -> Path | None:
     """Set ``env.ENABLE_TOOL_SEARCH=true`` in ~/.claude/settings.json.
 
@@ -404,11 +358,8 @@ def _failure_entry() -> dict:
 
 #: The repo-local coverage re-ingest entry (shell tools). ``--coverage-only``
 #: runs that one surface, so it never revives the shell notices the narrowed
-#: :data:`_AUGMENT_MATCHER` dropped.
-_COVERAGE_HOOK_COMMAND = (
-    "if command -v repowise-augment >/dev/null 2>&1; "
-    "then exec repowise-augment --coverage-only; fi"
-)
+#: :data:`_AUGMENT_MATCHER` dropped. Its command is defined in core, which
+#: tells it from a user's hook in a working-tree score.
 _COVERAGE_HOOK_EVENTS = ("PostToolUse", "PostToolUseFailure")
 
 
@@ -418,12 +369,15 @@ def claude_code_local_settings_path(repo_path: Path) -> Path:
 
 
 def _coverage_entry() -> dict:
+    # Imported here: the hook's self-heal loads this module and must stay light.
+    from repowise.core.owned_paths import COVERAGE_HOOK_COMMAND
+
     return {
         "matcher": SHELL_TOOL_MATCHER,
         "hooks": [
             {
                 "type": "command",
-                "command": _COVERAGE_HOOK_COMMAND,
+                "command": COVERAGE_HOOK_COMMAND,
                 "timeout": 10,
             }
         ],

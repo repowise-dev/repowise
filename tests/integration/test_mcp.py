@@ -389,7 +389,10 @@ async def test_mcp_git_intelligence_flow(mcp_env):
     t = ctx["targets"]["src/auth/login.py"]
     assert t["ownership"]["primary_owner"] == "Alice"
     assert t["ownership"]["owner_pct"] == 0.70
-    assert t["last_change"]["days_ago"] == 443
+    assert t["last_change"]["date"].startswith("2026-03-18")
+    # Days to the repository's newest commit, not the file's age (443): this
+    # is the only git row in the repo, so nothing has changed since.
+    assert t["last_change"]["days_ago"] == 0
 
     # Risk assessment
     risk = await get_risk(["src/auth/login.py", "src/auth/jwt.py"])

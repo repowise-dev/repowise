@@ -57,6 +57,14 @@ _TEARDOWN_ERRORS = (OSError, ValueError, subprocess.TimeoutExpired)
 # one case this check exists to name. Wait briefly for the exit status first.
 _EXIT_GRACE_S = 5.0
 
+# The child having exited does not mean the stderr reader has consumed the
+# pipe's last lines yet; on a busy runner the ring can still be empty when the
+# detail is built, losing the traceback that names the fault. The pipe hits
+# EOF when the child exits, so joining the reader returns as soon as the last
+# line lands. Bounded anyway, so a grandchild that inherits and holds the pipe
+# open cannot stall doctor.
+_STDERR_DRAIN_GRACE_S = 2.0
+
 CHECK_NAME = "MCP server responds"
 
 
@@ -125,11 +133,15 @@ def _initialize(proc: subprocess.Popen, deadline: float) -> dict | None:
     return holder[0]
 
 
-def _drain_stderr(proc: subprocess.Popen) -> collections.deque:
-    """Start draining the child's stderr immediately; return the ring it fills.
+def _drain_stderr(proc: subprocess.Popen) -> tuple[collections.deque, threading.Thread]:
+    """Start draining the child's stderr immediately; return the ring it fills
+    and the reader thread filling it.
 
     Started before the handshake, not after, so the child can never block
-    writing into a full pipe while we wait for its reply.
+    writing into a full pipe while we wait for its reply. The thread comes
+    back with the ring because the process exiting does not mean the reader
+    has finished draining the pipe - the caller joins it, bounded, before
+    reading the ring.
     """
     ring: collections.deque = collections.deque(maxlen=_STDERR_RING_LINES)
 
@@ -140,8 +152,9 @@ def _drain_stderr(proc: subprocess.Popen) -> collections.deque:
         except _TEARDOWN_ERRORS:
             pass
 
-    threading.Thread(target=_drain, daemon=True).start()
-    return ring
+    thread = threading.Thread(target=_drain, daemon=True)
+    thread.start()
+    return ring, thread
 
 
 def _stderr_tail(ring: collections.deque) -> str:
@@ -182,7 +195,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
     except OSError as exc:
         return _check(CHECK_NAME, False, f"could not launch {command}: {exc}")
 
-    stderr_ring = _drain_stderr(proc)
+    stderr_ring, stderr_reader = _drain_stderr(proc)
     try:
         response = _initialize(proc, started + _SMOKE_TIMEOUT_S)
         elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -194,9 +207,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
             )
         if response is not None:
             error = response.get("error") or {}
-            return _check(
-                CHECK_NAME, False, f"initialize failed: {error.get('message', response)}"
-            )
+            return _check(CHECK_NAME, False, f"initialize failed: {error.get('message', response)}")
 
         # No response. Whether the process is gone (the crash-loop case) or up
         # and mute changes the remedy, so the detail says which.
@@ -211,6 +222,9 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
                 f"no initialize response within {int(_SMOKE_TIMEOUT_S)}s (still running)",
             )
         detail = f"server exited with code {exit_code}"
+        # The child has exited; give the reader a moment to drain the pipe's
+        # last lines before deciding what its stderr said.
+        stderr_reader.join(timeout=_STDERR_DRAIN_GRACE_S)
         stderr = _stderr_tail(stderr_ring)
         if stderr:
             detail += f": {stderr}"

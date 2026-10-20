@@ -60,6 +60,8 @@ _NODE_FIELDS = (
     "is_test",
     "is_entry_point",
     "is_reachability_root",
+    "always_run_reason",
+    "public_api",
     "pagerank",
     "betweenness",
     "betweenness_commit",
@@ -92,6 +94,12 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     call_lines = edge_data.get("call_lines_json")
     if call_lines is not None:
         existing.call_lines_json = call_lines
+    type_only = edge_data.get("type_only")
+    if type_only is not None:
+        existing.type_only = bool(type_only)
+    deferred = edge_data.get("deferred")
+    if deferred is not None:
+        existing.deferred = bool(deferred)
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -118,6 +126,8 @@ def _edge_values(repository_id: str, e: dict) -> dict:
         "hint_source": e.get("hint_source"),
         "resolution_origin": e.get("resolution_origin"),
         "call_lines_json": e.get("call_lines_json", "[]"),
+        "type_only": bool(e.get("type_only", False)),
+        "deferred": bool(e.get("deferred", False)),
     }
 
 
@@ -232,10 +242,14 @@ async def reconcile_edges_for_files(
     symbols the change deleted whose node rows the incremental path never prunes
     — then inserts the fresh set. Edges *into* a changed file from an unchanged
     one are owned by that other file and left untouched, the same file-scoping
-    the symbol reconciler uses; a full reindex reconciles those.
+    the symbol reconciler uses; a full reindex reconciles those. The exception
+    is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``), which
+    the target's file owns too.
 
     Returns the number of deleted rows.
     """
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
     scoped = [p for p in dict.fromkeys(source_file_paths) if p]
     if not scoped:
         return 0
@@ -280,7 +294,13 @@ async def reconcile_edges_for_files(
         res = await session.execute(
             delete(GraphEdge).where(
                 GraphEdge.repository_id == repository_id,
-                GraphEdge.source_node_id.in_(batch),
+                or_(
+                    GraphEdge.source_node_id.in_(batch),
+                    and_(
+                        GraphEdge.hint_source.in_(TARGET_OWNED_HINTS),
+                        GraphEdge.target_node_id.in_(batch),
+                    ),
+                ),
             )
         )
         deleted += res.rowcount or 0
@@ -480,6 +500,8 @@ async def get_all_graph_nodes(
             "is_test": row.is_test,
             "is_entry_point": row.is_entry_point,
             "is_reachability_root": row.is_reachability_root,
+            "always_run_reason": row.always_run_reason,
+            "public_api": row.public_api,
             "kind": row.kind,
             "name": row.name,
             "qualified_name": row.qualified_name,
@@ -527,6 +549,8 @@ async def get_all_graph_edges(
                 "hint_source": row.hint_source,
                 "resolution_origin": row.resolution_origin,
                 "call_lines": call_lines,
+                "type_only": bool(row.type_only),
+                "deferred": bool(row.deferred),
             }
         )
     return edges
@@ -821,6 +845,8 @@ async def get_cross_community_edges(
             GraphEdge.__table__.c.repository_id == repository_id,
             source_node.c.community_id == community_id,
             target_node.c.community_id != community_id,
+            # External code is stored with no community (-1); it is not a target.
+            target_node.c.community_id >= 0,
             # Only count file-level edges for meaningful community crossing
             source_node.c.node_type == "file",
             target_node.c.node_type == "file",

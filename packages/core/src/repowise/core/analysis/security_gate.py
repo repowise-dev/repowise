@@ -15,12 +15,14 @@ Only the masked snippet (:func:`~.security_scan._snippet`) leaves this module,
 and the fingerprint is taken over it too, so neither a CI log nor the committed
 baseline holds a raw value.
 
-Two repository-owned inputs shape a scan. ``security.patterns`` in
+Three repository-owned inputs shape a scan. ``security.patterns`` in
 ``.repowise/config.yaml`` adds secret kinds (``custom:<name>``, see
 :func:`custom_patterns`), treated like the built-in ones. A
 ``repowise-security-ignore`` marker on a finding's own line silences it (all
 kinds, or only the ``: kind, kind`` it lists); a silenced finding never fails
 the gate or enters a baseline, but every output still counts and lists it.
+A path the repo's ``.gitleaks.toml`` allowlists has no secret findings at all
+(:mod:`~.secret_allowlist`).
 """
 
 from __future__ import annotations
@@ -28,8 +30,7 @@ from __future__ import annotations
 import hashlib
 import re
 import string
-import subprocess
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -41,15 +42,29 @@ from repowise.core.support_paths import DOC_EXTENSIONS
 
 from .change_risk.features import GIT_TIMEOUT_SECONDS, _git, revspec_head, split_revspec
 from .changed_lines import DIFF_ARGS, parse_unified_diff
-from .security_scan import SECRET_KINDS, masked_snippet, scan_source, source_lines
+from .git_cat_file import cat_file_batch
+from .secret_allowlist import secret_path_allowlist
+from .security_scan import (
+    SECRET_KINDS,
+    _allowlisted_lines,
+    marker_silences,
+    masked_snippet,
+    scan_source,
+    source_lines,
+)
 
 #: Severities from least to most severe; ``--fail-on`` names the lowest that fails.
 SEVERITIES = ("low", "med", "high")
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}
 
 #: Secret kinds matched by the value's own vendor format rather than a variable
-#: name; see :func:`fingerprint_of`.
-_KEY_SHAPE_KINDS = SECRET_KINDS - {"hardcoded_password", "hardcoded_secret"}
+#: name; see :func:`fingerprint_of`. A remote URL password can be as weak as
+#: any other, so it stays out.
+_KEY_SHAPE_KINDS = SECRET_KINDS - {
+    "hardcoded_password",
+    "hardcoded_secret",
+    "git_url_credentials",
+}
 
 
 class ShallowHistoryError(ValueError):
@@ -81,7 +96,7 @@ _BINARY_SNIFF = 8000
 #: is absent on purpose: it needs parsed symbols and never gates.
 _RULE_TEXT: dict[str, str] = {
     "eval_call": "A call to eval.",
-    "exec_call": "A call to exec (outside Python, in a file that names child_process).",
+    "exec_call": "A call to exec (outside Python, child_process exec or execSync).",
     "pickle_loads": "pickle.loads, which runs code from the data it loads.",
     "subprocess_shell_true": "A subprocess call with shell=True.",
     "os_system": "os.system, which runs its argument through a shell.",
@@ -92,11 +107,17 @@ _RULE_TEXT: dict[str, str] = {
     "slack_token": "A Slack token.",
     "google_api_key": "A Google API key.",
     "stripe_key": "A Stripe secret or restricted key.",
+    "gitlab_token": "A GitLab token (personal, deploy, runner, trigger, CI job or OAuth).",
+    "azure_devops_pat": "An Azure DevOps personal access token.",
+    "git_url_credentials": "A password or token embedded in a git remote URL.",
     "private_key_pem": "A PEM private key with its body.",
-    "fstring_sql": "An f-string holding SQL and an interpolation.",
+    "fstring_sql": "An f-string query that interpolates a value where a bound parameter belongs.",
     "concat_sql": "SQL built by string concatenation.",
-    "tls_verify_false": "TLS certificate verification turned off (verify=False).",
-    "weak_hash": "The words md5 or sha1.",
+    "tls_verify_false": "TLS certificate verification turned off (verify=False on an HTTP client).",
+    "weak_hash": (
+        "MD5 or SHA-1 used in code: a call, a type, or the algorithm named to a hashing "
+        "call. A call passing usedforsecurity=False is exempt."
+    ),
     "unsafe_inner_html": "__html set from a non-literal value.",
     "template_literal_sql": "A template literal holding SQL and an interpolation.",
     "public_env_secret": "A secret-shaped name behind a NEXT_PUBLIC_ or VITE_ prefix.",
@@ -123,14 +144,6 @@ _CUSTOM_PREFIX = "custom:"
 #: lookaround such as ``(?=z)``) matches somewhere in it.
 _ZERO_WIDTH_PROBE = string.printable
 _QUANTIFIERS = ("*", "+", "{")
-
-_IGNORE_TOKEN = "repowise-security-ignore"
-_IGNORE_RE = re.compile(
-    rf"{_IGNORE_TOKEN}(?![\w-])"
-    r"(?:[ \t]*:[ \t]*([\w:-]+(?:[ \t]*,[ \t]*[\w:-]+)*))?"
-    # A colon no kind list follows is a malformed scope, which silences nothing.
-    r"(?P<stray>[ \t]*:)?"
-)
 
 
 @dataclass(frozen=True)
@@ -296,18 +309,6 @@ def _class_end(regex: str, start: int) -> int:
     return i + 1
 
 
-def _silenced(line: str, kind: str) -> bool:
-    """Whether a marker on *line* silences *kind*: the bare token all kinds, ``: a, b`` those."""
-    if _IGNORE_TOKEN not in line:
-        return False
-    match = _IGNORE_RE.search(line)
-    if match is None or match.group("stray"):
-        return False
-    if not match.group(1):
-        return True
-    return kind in {k.strip() for k in match.group(1).split(",")}
-
-
 # ---------------------------------------------------------------------------
 # Scan
 # ---------------------------------------------------------------------------
@@ -363,31 +364,17 @@ def _read_blobs(root: str, specs: Sequence[str]) -> list[str | None]:
     """
     if not specs:
         return []
-    proc = subprocess.run(
-        ["git", "cat-file", "--batch"],
-        cwd=root,
-        input=("\n".join(specs) + "\n").encode("utf-8"),
-        capture_output=True,
-        timeout=GIT_TIMEOUT_SECONDS,
-        check=True,
-    )
-    out, pos, texts = proc.stdout, 0, []
-    for spec in specs:
-        nl = out.index(b"\n", pos)
-        header = out[pos:nl].split()
-        pos = nl + 1
-        # "<sha> <type> <size>", "<sha> submodule" for a gitlink, else
-        # "<spec> missing" (the spec may hold spaces).
-        if len(header) == 2 and header[1] == b"submodule":
-            texts.append(None)
-            continue
-        if len(header) != 3 or not header[2].isdigit():
-            raise MissingObjectError(f"git has no object for {spec!r}")
-        size = int(header[2])
-        body = out[pos : pos + size]
-        pos += size + 1
-        texts.append(_text(body) if header[1] == b"blob" else None)
-    return texts
+    try:
+        read = cat_file_batch(
+            root, specs, on_missing="raise", timeout=GIT_TIMEOUT_SECONDS, check=True
+        )
+    except ValueError as exc:
+        raise MissingObjectError(str(exc)) from exc
+    if read is None or len(read) != len(specs):
+        raise MissingObjectError(
+            f"git cat-file returned incomplete batch for {len(specs)} specs"
+        )
+    return [_text(blob) if blob is not None else None for _, blob in read]
 
 
 def _custom_spans(
@@ -415,6 +402,7 @@ def _scoped(
     *,
     secrets_only: bool,
     patterns: Sequence[CustomPattern] = (),
+    path_allowlisted: bool = False,
 ) -> tuple[list[dict], set[tuple[str, str]]]:
     """Findings in *source* that span a line in *lines*, as gate rows, and the long lines skipped.
 
@@ -422,7 +410,8 @@ def _scoped(
     call, but a key pasted into a README is still a leak. Custom patterns are
     secret kinds, matched on the lines in *lines* only; a custom match is also
     masked in a built-in finding's snippet on its line, while that finding keeps
-    the fingerprint it has without patterns.
+    the fingerprint it has without patterns. *path_allowlisted* drops every
+    secret kind, as an allow marker on each line would.
     """
     secrets_only = secrets_only or PurePosixPath(path).suffix.lower() in DOC_EXTENSIONS
     text = _Text(path, source_lines(source), patterns)
@@ -432,7 +421,13 @@ def _scoped(
         if (entry := _builtin_entry(text, f, lines, secrets_only)) is not None
     ]
     custom, long_lines = _custom_entries(text, lines)
-    return [_row(text, entry) for entry in [*found, *custom]], long_lines
+    allowed = _allowlisted_lines(path, source)
+    return [
+        _row(text, entry)
+        for entry in [*found, *custom]
+        if (entry[1] not in SECRET_KINDS and not entry[1].startswith("custom:"))
+        or not (path_allowlisted or entry[0] in allowed)
+    ], long_lines
 
 
 #: ``(line, kind, severity, snippet shown, fingerprint)``
@@ -516,7 +511,7 @@ def _row(text: _Text, entry: _Entry) -> dict:
         "fingerprint": fingerprint,
         "commit": None,
     }
-    if _silenced(text.line(lineno), kind):
+    if marker_silences(text.line(lineno), kind):
         row[_SUPPRESSED] = True
     return row
 
@@ -547,7 +542,10 @@ def _log_range(root: str, revspec: str) -> list[str]:
 
 
 def _history_secrets(
-    root: str, revspec: str, patterns: Sequence[CustomPattern]
+    root: str,
+    revspec: str,
+    patterns: Sequence[CustomPattern],
+    allowlisted: Callable[[str], bool],
 ) -> tuple[list[dict], int, set[tuple[str, str]]]:
     """Secret rows on the lines each commit in the change added, oldest first.
 
@@ -574,7 +572,11 @@ def _history_secrets(
                 "clone, so every line it holds would read as added. Fetch the full "
                 "history (fetch-depth: 0)."
             )
-        added = {p: d.new_lines for p, d in parse_unified_diff(diff).items() if d.new_lines}
+        added = {
+            p: d.new_lines
+            for p, d in parse_unified_diff(diff).items()
+            if d.new_lines and not allowlisted(p)
+        }
         # One read per commit bounds memory to the files a single commit touched.
         paths = sorted(added)
         texts = _read_blobs(root, [f"{sha}:{p}" for p in paths])
@@ -636,20 +638,26 @@ def scan_change(
     rows: list[dict] = []
     scanned = 0
     skipped: set[tuple[str, str]] = set()
+    allowlisted = secret_path_allowlist(root)
     texts = _read_blobs(root, [f"{rev}:{p}" for p in paths])
     for path, text in zip(paths, texts, strict=True):
         if text is None:
             continue
         scanned += 1
         scoped, long_lines = _scoped(
-            path, text, changed[path], secrets_only=False, patterns=patterns
+            path,
+            text,
+            changed[path],
+            secrets_only=False,
+            patterns=patterns,
+            path_allowlisted=allowlisted(path),
         )
         rows += scoped
         skipped |= long_lines
     history: list[dict] = []
     commits = 0
     if not staged:
-        history, commits, long_lines = _history_secrets(root, revspec, patterns)
+        history, commits, long_lines = _history_secrets(root, revspec, patterns, allowlisted)
         skipped |= long_lines
     findings, suppressed = _merge(rows, history)
     return ChangeScan(

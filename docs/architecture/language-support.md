@@ -10,7 +10,7 @@ centralised `LanguageRegistry`; per-language extraction logic lives in
 call-resolution strategy lives behind a seam in `call_resolver.py`. Adding a
 language means dropping one file into each relevant subpackage and registering it
 in that subpackage's dispatcher. No edits are needed to `graph.py`,
-`traverser.py`, or any analysis core file. `parser.py` holds a short per-language
+`traverser.py`, or any analysis core file. The `parser/` package holds a short per-language
 block for a handful of languages whose grammar shape the generic path cannot
 read (C++ qualified definitions, Dart mixins, Object Pascal out-of-line methods,
 [Elixir](#elixir), [F#](#f)); each is a few lines calling into a helper, and a
@@ -32,7 +32,9 @@ new language needs one only when it hits the same kind of wall.
 - [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
+- [Extensions and import resolution](#extensions-and-import-resolution)
 - [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
+- [Known gaps per language](#known-gaps-per-language)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries) · [test-quality markers per language](#test-quality-markers-per-language)
 - [Workspace contract extraction](#workspace-contract-extraction)
@@ -146,10 +148,11 @@ ingestion/
   dynamic_hints/       # Per-language dynamic-edge extractors
     base.py            #   DynamicHintExtractor + DynamicEdge
     registry.py        #   HintRegistry
-    django.py  pytest_hints.py  python_imports.py  node.py  dotnet.py
+    django.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
   sfc_source.py        # Multi-language-file (SFC) projection (see below)
-  parser.py            # ASTParser (language-agnostic orchestration)
+  parser/              # ASTParser (language-agnostic orchestration), one module per pass
+  extractors/imports/  # Per-language import rules (LanguageConfig.import_extractor)
   graph.py             # GraphBuilder (import/call/heritage resolution)
 
 analysis/
@@ -308,7 +311,9 @@ receiver typing (step 9).
 
 Add a parser configuration to `LANGUAGE_CONFIGS` in
 `packages/core/src/repowise/core/ingestion/language_configs.py` (re-exported from
-`parser.py` for back-compat):
+the `parser` package for back-compat). A language whose imports need more than
+the generic shape also sets `import_extractor` to an `ImportExtractor` from
+`extractors/imports/<lang>.py`:
 
 ```python
 "mylang": LanguageConfig(
@@ -506,11 +511,12 @@ Pattern families today:
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
+| Dart | Dart | `Type name`, `Type? name`, `final name = Type(...)` |
 | Python | Python | annotations, `name = Type(...)`, target lists |
 
 Two further sets gate the harder half:
 
-- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, java, kotlin, swift}`. Only these
+- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, dart, java, kotlin, swift}`. Only these
   look up an unbound receiver among the *enclosing class's fields*. Go is
   deliberately excluded even though its locals and parameters are typed: its
   package-level `var` is a wider scope than a field, and the shape is a rounding
@@ -590,7 +596,7 @@ with different words.
 
 ## Multi-language files (the SFC pattern)
 
-Some file types hold more than one language. A `.svelte` or `.vue` component is
+Some file types hold more than one language. A `.svelte`, `.vue` or `.astro` component is
 TS/JS in its `<script>` blocks, framework-flavoured HTML in its markup, and CSS
 in `<style>`. The markup grammars parse the file but return each `<script>` body
 as one opaque `raw_text` node, so a `.scm` query against them captures no symbol,
@@ -626,8 +632,8 @@ corrupt every unit named after it in the same clause. Its sanitizer
 (`prepare_pascal_source` in `ingestion/lang_helpers/source_prep.py`) is gated on `path`'s
 extension (that syntax is invalid in a plain `.pas`/`.pp` unit file) and is a
 no-op everywhere else, same contract as the `_LOCATORS` path. Registering a
-sanitizer this way, rather than as an if-block in `parser.py`, means it stays
-"zero changes to `parser.py`" for a new language and the health walkers get the
+sanitizer this way, rather than as an if-block in the parser, means it stays
+"zero changes to the parser" for a new language and the health walkers get the
 same clean projection the ingestion parser does.
 
 ### The locator registry
@@ -639,13 +645,13 @@ the regions are found by walking the bytes. The blanking, fencing, caching
 and offset invariants are shared; adding a markup language means adding a
 `Locator`, not a second copy of the walker.
 
-| | Svelte | Vue | Razor |
-|---|---|---|---|
-| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# |
-| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors |
-| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` |
-| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` |
-| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` |
+| | Svelte | Vue | Razor | Astro |
+|---|---|---|---|---|
+| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# | none; byte scan, projected to TS |
+| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors | the `---` frontmatter and every JS `<script>` body (plain, `is:inline`, `type="module"`, `define:vars`); markup `{expr}` is blanked |
+| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` | the `>` of each `<script>` opening tag |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | markup `{expr}` |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->` or a `<script>` |
 
 There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
 anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to
@@ -662,6 +668,12 @@ component call edges, and the file becomes a symbol named after its filename. Th
 ceiling is that the C# body lands at top level with no enclosing class, so
 `@code` members are call targets rather than symbols, and every directive is
 blanked, which is why a Razor file carries no import edges.
+
+Astro has no grammar on PyPI either, so its locator is a byte scan too, projecting
+into TypeScript: the leading `---` frontmatter and every JS `<script>` body keep
+their bytes, a `<script>` whose `type` is data (`application/ld+json`) or that
+sits in an HTML comment is blanked, and PascalCase tags mint component call edges.
+Frontmatter imports are ordinary ESM, so an Astro file does carry import edges.
 
 **Plain HTML deliberately has no locator.** It reuses the same grammar but not
 the projection, and the distinction is the point: a projection exists to turn a
@@ -688,7 +700,40 @@ thing that names a component) and `<Foo />` instantiation call edges (via
 run the filename and the tag through the *same* normaliser, so `back-to-top.vue`
 and `<back-to-top />` cannot disagree about the name `BackToTop`.
 
-The same steps would fit Astro components; only the locator changes.
+---
+
+## Extensions and import resolution
+
+The file extensions each Full and Good language claims, and the build files and
+conventions its import resolver reads. Good-tier languages resolve the
+dependency surface their syntax supports.
+
+| Tier | Language | Extensions | Import resolution |
+|------|----------|-----------|-------------------|
+| Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
+| Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
+| Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |
+| Full | **Java** | `.java` | Maven and Gradle reactor discovery, JPMS, `import static`, package fan-out |
+| Full | **Kotlin** | `.kt` `.kts` | Shares the JVM index with Java, so resolution is cross-language |
+| Full | **Go** | `.go` | Multi-module `go.mod` discovery; a package import fans out to every file in the package |
+| Full | **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
+| Full | **C++** | `.cpp` `.cc` `.cxx` `.h` `.hh` `.hpp` `.hxx` `.inl` `.ipp` `.tpp` `.inc` | `#include` via `compile_commands.json` plus CMake and Bazel header maps, header/implementation pairing |
+| Full | **C#** | `.cs` | `using`, `global using` and aliases via `.csproj` / `.sln`, MSBuild project graph, `partial` class linking |
+| Full | **Scala** | `.scala` | The shared JVM index, with SBT and Mill build parsing as fallback |
+| Full | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, Rails / Zeitwerk autoloading |
+| Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
+| Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
+| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
+| Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
+| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Literal `CALL` and `PERFORM` targets; dynamic calls and `COPY` stay silent |
+| Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
+| Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
+| Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
+| Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
+| Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
 
 ---
 
@@ -735,7 +780,7 @@ type body and a member the way Elixir shares `call` across everything, so its
 per-language block is about extending and locating rather than reclassifying:
 
 - **A `let rec f ... and g ...` group is one grammar node for every clause**, so
-  `@symbol.def` sits on each clause's left-hand side and `parser.py` extends its
+  `@symbol.def` sits on each clause's left-hand side and the parser extends its
   span forward to the next clause (or the file end), stepping over a return-type
   annotation sitting between the two. The same left-hand side node also marks a
   binding local to another binding's body, which the generic callable-ancestor
@@ -921,6 +966,28 @@ both settles a name two files declare and refuses a class that merely shadows a
 framework widget. A class reached through an `export` barrel is missed, which
 costs an edge rather than inventing one.
 
+### Known gaps per language
+
+- **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
+  Handlebars, Blade and Thymeleaf parse as HTML and yield nothing.
+- **Svelte and Vue binding forms are skipped.** `{#each x as y}` and
+  `v-for="x in xs"` are not resolved, and the unused-export pass is off for
+  both, since props are set by the parent as markup attributes.
+- **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
+  vs `implements` split follows the `I`-prefix naming convention.
+- **COBOL is COBOL-85 shaped.** `COPY` does not create an edge; dynamic program
+  names and dialect extensions stay silent.
+- **Razor has no import edges**, because every directive is blanked by the
+  projection.
+- **GDScript string dispatch is unresolved**, and a script without `class_name`
+  gets no class symbol.
+- **VB.NET leaves a few constructs unparsed**, XML and tuple literals among them.
+- **C has no performance risk support.** Extract Method reuses the C++
+  def/use dialect; C carries none of the C++-only nodes, so the same plan
+  fires for both.
+- **Scala import resolution is partial**, and ScalaTest's infix DSL
+  (`x shouldBe y`) is not counted as an assertion.
+
 ---
 
 ## Optional language-specific passes
@@ -967,9 +1034,13 @@ cognitive complexity and per-function markers. Optional additions widen it:
 metrics (LCOM4, god-class); `assert_kinds` / `assert_call_kinds` add
 assertion-block smells. See `complexity/README.md`.
 
-C, F# and Objective-C have maps of their own (C separate from C++ despite the
-shared grammar), so they get complexity markers, but none of the three has a perf
-or dataflow dialect yet.
+C, Swift, F# and Objective-C have maps of their own (C separate from C++ despite
+the shared grammar), so they get complexity markers, but none of the four has a
+perf or dataflow dialect yet. Swift's map counts `guard` as a decision, a `for` /
+`catch` `where` filter as one more, and a computed property (also a subscript's
+body, and a `willSet` / `didSet` block) as a function unit named for the property;
+a struct, an enum, an extension and an actor are classes, since the grammar gives
+them all `class_declaration`.
 
 ### 2. Performance: `analysis/health/perf/dialects/` (`PERF_DIALECTS`)
 
@@ -1038,8 +1109,9 @@ language with no row produces no signal.
   and `validate` match production functions, not assertions). Oracles that are
   not plain assertion statements are counted at the broad tier too:
   `with pytest.raises(...)`, Java's split `object` + `name` call shape, chai
-  property chains (`expect(x).to.be.null`), expression-bodied test lambdas and
-  private `_assert_*` helpers.
+  property chains (`expect(x).to.be.null`), AVA's `t.is` / `t.deepEqual` /
+  `t.throwsAsync` methods on the test handle, expression-bodied test lambdas
+  and private `_assert_*` helpers.
 - **Mock saturation** (`analysis/health/mocks/lexicon.py`, `MOCK_DIALECTS`) has
   rows for Python and JS/TS only. Go has no mock vocabulary. Java is held out
   because Mockito states its checks as `verify(...)`, which counts toward

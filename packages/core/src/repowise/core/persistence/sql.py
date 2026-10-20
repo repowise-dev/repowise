@@ -10,6 +10,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from sqlalchemy import String, literal
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.functions import FunctionElement
+
 #: The escape character to pass as ``escape=`` on every ``like``/``ilike``
 #: paired with :func:`escape_like`. SQLite has no default LIKE escape
 #: character, so it has to be declared on the call for the escaping below to
@@ -26,6 +30,32 @@ def escape_like(value: str) -> str:
     quietly returns rows the caller never asked for.
     """
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+class json_text(FunctionElement):  # noqa: N801 - reads as the SQL function it renders
+    """One top-level key of a JSON text column, as text, in SQL.
+
+    SQLite and PostgreSQL spell it differently and neither indexes it, so it
+    narrows a read the caller already scoped; it never drives a filter.
+    """
+
+    type = String()
+    inherit_cache = True
+
+    def __init__(self, column: Any, key: str) -> None:
+        super().__init__(column, literal(key, String()))
+
+
+@compiles(json_text)
+def _json_text_sqlite(element: json_text, compiler: Any, **kw: Any) -> str:
+    column, key = (compiler.process(c, **kw) for c in element.clauses)
+    return f"json_extract({column}, '$.' || {key})"
+
+
+@compiles(json_text, "postgresql")
+def _json_text_postgresql(element: json_text, compiler: Any, **kw: Any) -> str:
+    column, key = (compiler.process(c, **kw) for c in element.clauses)
+    return f"(CAST({column} AS JSON) ->> {key})"
 
 
 def rule_predicate(model: Any, rule: Any, value: Any) -> Any:

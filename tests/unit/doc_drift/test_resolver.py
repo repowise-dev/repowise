@@ -6,7 +6,7 @@ import pytest
 
 from repowise.core.analysis.doc_drift.extractor import extract
 from repowise.core.analysis.doc_drift.models import DocReference, DriftKind, DriftVerdict
-from repowise.core.analysis.doc_drift.resolver import RepoIndex, resolve
+from repowise.core.analysis.doc_drift.resolver import RepoIndex, join_relative, resolve
 
 TREE = frozenset(
     {
@@ -164,6 +164,51 @@ def test_relative_link_resolves_against_its_own_document():
 
 
 # ---------------------------------------------------------------------------
+# join_relative: normalize segments, never strip characters (#4014)
+# ---------------------------------------------------------------------------
+
+
+def test_join_relative_keeps_the_leading_dot_of_a_dotfile_directory():
+    assert (
+        join_relative("docs/index.md", "../.github/workflows/ci.yml") == ".github/workflows/ci.yml"
+    )
+
+
+def test_join_relative_keeps_parent_segments_that_escape_the_root():
+    assert join_relative("docs/index.md", "../../other-repo/README.md") == "../other-repo/README.md"
+
+
+def test_a_link_into_dotgithub_resolves_instead_of_reporting_drift():
+    idx = _index(tree=TREE | {".github/workflows/ci.yml"})
+    ref = DocReference(
+        DriftKind.LINK,
+        "../.github/workflows/ci.yml",
+        "../.github/workflows/ci.yml",
+        "docs/index.md",
+        1,
+        "ctx",
+    )
+    res = resolve(idx, ref)
+    assert res.verdict is DriftVerdict.RESOLVED
+    assert res.detail == "relative-to-doc"
+    assert res.resolved_target == ".github/workflows/ci.yml"
+
+
+def test_a_link_that_escapes_the_repository_root_is_uncheckable():
+    ref = DocReference(
+        DriftKind.LINK,
+        "../../other-repo/README.md",
+        "../../other-repo/README.md",
+        "docs/index.md",
+        1,
+        "ctx",
+    )
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "unanchored"
+
+
+# ---------------------------------------------------------------------------
 # Anchors: rules 4 and 5
 # ---------------------------------------------------------------------------
 
@@ -217,6 +262,27 @@ def test_each_whitespace_character_becomes_its_own_dash():
     idx = _anchor_index("## SQL + dbt\n")
     assert resolve(idx, _anchor_ref("sql--dbt")).verdict is DriftVerdict.RESOLVED
     assert resolve(idx, _anchor_ref("sql-dbt")).verdict is DriftVerdict.MISSING
+
+
+def test_repeated_headings_get_githubs_numbered_anchors():
+    """GitHub names the second ``## Usage`` ``#usage-1`` and the third
+    ``#usage-2``; only one more suffix than there are repeats exists."""
+    idx = _anchor_index("## Usage\n\n## Usage\n\nUsage\n-----\n")
+    for fragment in ("usage", "usage-1", "usage-2"):
+        assert resolve(idx, _anchor_ref(fragment)).verdict is DriftVerdict.RESOLVED
+    res = resolve(idx, _anchor_ref("usage-3"))
+    assert res.verdict is DriftVerdict.MISSING
+    assert res.origin == "anchor_no_heading"
+
+
+def test_a_suffix_skips_a_slug_a_literal_heading_already_took():
+    """``## Usage 1`` claims ``usage-1``, so the repeated ``## Usage`` after it
+    becomes ``usage-2``, and a later repeat of ``## Usage 1`` becomes
+    ``usage-1-1``. This is github-slugger's bookkeeping, not a naive count."""
+    idx = _anchor_index("## Usage\n\n## Usage 1\n\n## Usage\n\n## Usage 1\n")
+    anchors = idx.doc_anchors("README.md")
+    assert {"usage", "usage-1", "usage-2", "usage-1-1"} <= anchors
+    assert "usage-3" not in anchors
 
 
 def test_anchor_into_a_missing_document_is_uncheckable_not_missing():

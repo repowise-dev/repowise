@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from io import StringIO
 from typing import Any
 
@@ -100,7 +101,8 @@ def test_persist_setup_saves_endpoint_and_key_with_consent(monkeypatch: Any, tmp
     contents = env_file.read_text(encoding="utf-8")
     assert "OPENAI_BASE_URL=http://localhost:20128/v1" in contents
     assert "OPENAI_API_KEY=router-secret" in contents
-    assert env_file.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert env_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_persist_setup_no_save_key_keeps_secret_out_of_repo(

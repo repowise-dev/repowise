@@ -51,6 +51,7 @@ import structlog
 
 from repowise.core.repo_config import get_repowise_dir, load_repo_config
 
+from .biomarker_names import canonical_biomarker, canonical_biomarkers
 from .models import Severity
 
 log = structlog.get_logger(__name__)
@@ -81,7 +82,7 @@ _PROFILES: dict[str, dict[str, Severity]] = {
         "change_entropy": Severity.LOW,
         "co_change_scatter": Severity.LOW,
         "primitive_obsession": Severity.LOW,
-        "bumpy_road": Severity.LOW,
+        "repeated_nesting": Severity.LOW,
     },
 }
 
@@ -128,7 +129,7 @@ def _coerce_severity_map(raw: object) -> dict[str, Severity]:
         if sev is None:
             log.warning("health_rules_bad_severity", biomarker=name, value=value)
             continue
-        out[name] = sev
+        out[canonical_biomarker(name)] = sev
     return out
 
 
@@ -333,25 +334,32 @@ class HealthConfig:
         something here would change the analysis: a disabled/severity-remapped
         biomarker, or any refactoring-layer knob set away from its default.
         """
-        return bool(
-            self.disabled_biomarkers
-            or self.rules
-            or self.severity_overrides
-            or self.profile
-            or not self.refactoring_enabled
-            or self.disabled_refactorings
-            or self.refactoring_min_confidence
+        return any(
+            (
+                self.disabled_biomarkers,
+                self.rules,
+                self.severity_overrides,
+                self.profile,
+                not self.refactoring_enabled,
+                self.disabled_refactorings,
+                self.refactoring_min_confidence,
+                self.assert_extra_names,
+            )
         )
 
     @classmethod
     def from_dict(cls, raw: object) -> HealthConfig:
         if not isinstance(raw, dict):
             return cls()
-        disabled = _string_list(raw.get("disabled_biomarkers"), field="disabled_biomarkers")
+        disabled = canonical_biomarkers(
+            _string_list(raw.get("disabled_biomarkers"), field="disabled_biomarkers")
+        )
         rules: list[HealthRule] = []
         raw_rules = raw.get("rules")
         if raw_rules is not None and not isinstance(raw_rules, list | tuple):
-            log.warning("health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__)
+            log.warning(
+                "health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__
+            )
             raw_rules = []
         for entry in raw_rules or []:
             if not isinstance(entry, dict):
@@ -362,8 +370,8 @@ class HealthConfig:
             glob = entry.get("path") or entry.get("path_glob") or entry.get("glob")
             if not isinstance(glob, str) or not glob:
                 continue
-            disabled_for = _string_list(
-                entry.get("disabled_biomarkers"), field="rules[].disabled_biomarkers"
+            disabled_for = canonical_biomarkers(
+                _string_list(entry.get("disabled_biomarkers"), field="rules[].disabled_biomarkers")
             )
             # A rule written against the old matching may now cover less than
             # its author meant, which would quietly un-silence biomarkers they

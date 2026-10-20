@@ -45,23 +45,15 @@ export const SEVERITY_CHIP: Record<Severity, string> = {
   low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
-export const SEVERITY_BAR: Record<Severity, string> = {
-  critical: "bg-[var(--color-error)]",
-  high: "bg-[var(--color-warning)]",
-  medium: "bg-[var(--color-caution)]",
-  low: "bg-[var(--color-text-tertiary)]",
-};
+/** The quiet mono label: a field name, a state word, a small tag. */
+export const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
-/**
- * Effort tint. A ramp, not a judgement: green is the cheap end, red the
- * expensive one. The badge prints the bucket letter beside it, so it belongs
- * on the semantic ramp. Here rather than in the card so it has one home.
- */
-export const EFFORT_TINT: Record<"S" | "M" | "L" | "XL", string> = {
-  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
+/** Segment fills for a severity split (ProportionBar `color`). */
+export const SEVERITY_SEGMENT: Record<Severity, string> = {
+  critical: "var(--color-error)",
+  high: "var(--color-warning)",
+  medium: "var(--color-caution)",
+  low: "var(--color-text-tertiary)",
 };
 
 /**
@@ -114,8 +106,8 @@ export const HEALTH_BAND_FILL: Record<HealthBand, string> = {
 };
 
 /**
- * Bar fills for the distribution. Good is the same green stepped down in
- * opacity, so it stays legible where it sits next to Excellent.
+ * Band fills. Good is the same green stepped down in opacity, so it stays
+ * legible where it sits next to Excellent.
  */
 export const HEALTH_BAND_BAR: Record<HealthBand, string> = {
   excellent: "bg-[var(--color-success)]",
@@ -123,6 +115,15 @@ export const HEALTH_BAND_BAR: Record<HealthBand, string> = {
   fair: "bg-[var(--color-caution)]",
   needs_work: "bg-[var(--color-warning)]",
   at_risk: "bg-[var(--color-error)]",
+};
+
+/** The same fills as CSS values, for a ProportionBar `color`. */
+export const HEALTH_BAND_SEGMENT: Record<HealthBand, string> = {
+  excellent: "var(--color-success)",
+  good: "color-mix(in srgb, var(--color-success) 55%, transparent)",
+  fair: "var(--color-caution)",
+  needs_work: "var(--color-warning)",
+  at_risk: "var(--color-error)",
 };
 
 /**
@@ -144,6 +145,55 @@ export function healthBandNodeFill(band: HealthBand): string {
 /** The canvas ramp for a 1-10 score. */
 export function healthNodeFill(score: number): string {
   return HEALTH_BAND_NODE_FILL[bandForScore(score)];
+}
+
+/**
+ * The map's fills: the five canonical bands, softened.
+ *
+ * The same bands every score pill on the page uses, so a dot and the pill
+ * beside it never disagree. Each band's node token is pulled a little toward
+ * the neutral, so a field of thousands reads as pigment rather than as light.
+ * Five fills also keep the canvas at five draw batches.
+ */
+function softened(token: string): string {
+  return `color-mix(in srgb, var(${token}) 82%, var(--color-node-neutral))`;
+}
+
+const NODE_BAND_FILL: Record<HealthBand, string> = {
+  excellent: softened("--color-node-excellent"),
+  good: softened("--color-node-good"),
+  fair: softened("--color-node-fair"),
+  needs_work: softened("--color-node-needs-work"),
+  at_risk: softened("--color-node-at-risk"),
+};
+
+/** The fill for a file that needs nothing under a banded lens. */
+export const NODE_HEALTHY_FILL = NODE_BAND_FILL.good;
+
+/** Three problem stops, for banded lenses (coverage, churn, performance). */
+export const NODE_RAMP_STOP = {
+  warning: NODE_BAND_FILL.fair,
+  serious: NODE_BAND_FILL.needs_work,
+  alert: NODE_BAND_FILL.at_risk,
+} as const;
+
+/** The map fill for a 1-10 score, on the canonical band. */
+export function healthRampFill(score: number): string {
+  return NODE_BAND_FILL[bandForScore(score)];
+}
+
+/** The map fill for a band, for keys. */
+export function healthBandMapFill(band: HealthBand): string {
+  return NODE_BAND_FILL[band];
+}
+
+/**
+ * Whether a map fill marks a file that needs attention, which is what earns a
+ * glow and a place in the "needs attention" count: the Needs work and At risk
+ * fills. Green, gold and the neutral stay quiet.
+ */
+export function isLoudFill(fill: string): boolean {
+  return fill === NODE_BAND_FILL.needs_work || fill === NODE_BAND_FILL.at_risk;
 }
 
 export function healthBandColor(band: HealthBand): string {

@@ -83,7 +83,7 @@ class Grounding:
                 "role": "tool",
                 "tool_call_id": self.tool_id,
                 "name": self.tool_name,
-                "content": json.dumps(self.result),
+                "content": json.dumps(self.result, default=str),
             },
         ]
 
@@ -129,8 +129,18 @@ def plan_grounding(
     )
 
 
-async def run_grounding(plan: GroundingPlan | None, execute: ToolExecutor) -> Grounding | None:
-    """Run the planned prefetch; a failed read is dropped, never shown."""
+async def run_grounding(
+    plan: GroundingPlan | None,
+    execute: ToolExecutor,
+    *,
+    unstamp: Callable[[dict[str, Any]], tuple[str | None, dict[str, Any]]] | None = None,
+) -> Grounding | None:
+    """Run the planned prefetch; a failed read is dropped, never shown.
+
+    ``unstamp`` splits an executor's model-facing result into the server's
+    artifact id and the tool's own data, so the stored artifact never carries
+    the stamp while the model still sees it.
+    """
     if plan is None:
         return None
     try:
@@ -142,12 +152,14 @@ async def run_grounding(plan: GroundingPlan | None, execute: ToolExecutor) -> Gr
         logger.info("chat_grounding_skipped", extra={"tool": plan.tool_name})
         return None
 
+    artifact_id, data = unstamp(result) if unstamp else (None, result)
     artifact = create_artifact_envelope(
         tool_name=plan.tool_name,
         artifact_type=plan.entry.artifact_type,
         presentation=plan.entry.presentation,
-        data=result,
+        data=data,
         title=plan.target,
+        artifact_id=artifact_id,
         evidence_basis=plan.entry.evidence_basis,
     )
     return Grounding(

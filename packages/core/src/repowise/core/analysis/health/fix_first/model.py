@@ -10,12 +10,14 @@ import hashlib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, get_args
 
+from repowise.core.analysis.health.queue.counts import QueueCounts, counts_of
+from repowise.core.analysis.health.queue.order import DUE_TIERS, Tier
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when ranking, eligibility or the item shape changes meaning.
-FIX_FIRST_MODEL_VERSION = 1
+FIX_FIRST_MODEL_VERSION = 3
 
-FixTier = Literal["now", "next", "later"]
+FixTier = Tier
 FIX_TIERS: tuple[str, ...] = get_args(FixTier)
 
 FixKind = Literal["refactor", "perf_fix", "finding"]
@@ -36,8 +38,15 @@ FIX_LEVELS: tuple[str, ...] = get_args(FixLevel)
 FixFactBasis = Literal["measured", "inferred", "unknown"]
 FIX_FACT_BASES: tuple[str, ...] = get_args(FixFactBasis)
 
-# ``unknown``, ``expected`` and ``no_strategy`` are the performance default
-# queue's own reasons (``opportunity_rank.DEFAULT_QUEUE_EXCLUSIONS``).
+# The reasons Fix first's ladders produce, from the one vocabulary in
+# ``queue.eligibility.Reason``. ``unknown``, ``gated_off``, ``cold_path``,
+# ``expected`` and ``no_strategy`` come from the performance ladder, with the
+# queue's ``unmeasured_cost``, ``cold_role``, ``background_unproven`` and
+# ``unconfirmed_cost``; ``gated_off`` also keeps out any other unit in a
+# function a constant-false flag switches off. ``unreachable``: an open
+# dead-code finding covers the target.
+# ``terminal_flow``: a print or prompt flow; ``moderate_quiet``: a function
+# under the large-size bar with no churn or bug-fix history.
 FixExclusion = Literal[
     "test",
     "tooling",
@@ -51,19 +60,25 @@ FixExclusion = Literal[
     "vendored",
     "docs_example",
     "deprecated",
+    "gated_off",
+    "cold_path",
+    "unreachable",
     "inherent_dispatch",
     "small_function",
     "no_concrete_step",
     "low_value_kind",
+    "kind_unaudited",
+    "terminal_flow",
+    "moderate_quiet",
+    "unmeasured_cost",
+    "cold_role",
+    "background_unproven",
+    "unconfirmed_cost",
 ]
 FIX_EXCLUSIONS: tuple[str, ...] = get_args(FixExclusion)
 
 FixScope = Literal["production", "all"]
 FIX_SCOPES: tuple[str, ...] = get_args(FixScope)
-
-TIER_RANK = {t: i for i, t in enumerate(FIX_TIERS)}
-LEVEL_RANK = {"high": 2, "medium": 1, "low": 0}
-EFFORT_RANK = {e: i for i, e in enumerate(FIX_EFFORTS)}
 
 _ID_PREFIX = "fix1_"
 
@@ -101,6 +116,12 @@ class FixStep:
     file_path: str
     line: int | None = None
     mechanical: bool = False
+    #: An Extract Method helper's header and the statement that replaces the
+    #: span, in the file's language, when the plan wrote them.
+    signature: str | None = None
+    call: str | None = None
+    #: The command that checks this step, when it differs from the item's.
+    command: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +171,8 @@ class FixVerify:
     tests_total: int
     command: str | None
     basis: FixFactBasis
+    #: What to do before the edit when no test reaches it.
+    prerequisite: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +209,9 @@ class FixItem:
     source: FixSource
     next_call: ActionCommand
     why_ranked: tuple[FixRankFact, ...] = ()
+    #: The value band (``queue.value``) Do next ranks the item on; ``None`` on a
+    #: snapshot stored before items carried it.
+    value: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -202,8 +228,29 @@ class FixItem:
             "gain": self.gain.text,
             "effort": self.effort.bucket,
             "confidence": self.confidence.level,
+            **(self._inline_plan() if self.tier in DUE_TIERS else {}),
             "next_call": self.next_call.as_dict(),
         }
+
+    def _inline_plan(self) -> dict[str, Any]:
+        """A due item's first edit and how to check it, so it can be started
+        without the lookup. ``file`` only when the step edits another file,
+        ``line`` only when it names one. ``verify`` is the item's: a step's
+        own, narrower command is on the step, in the full item."""
+        out: dict[str, Any] = {}
+        step = self.action.steps[0] if self.action.steps else None
+        if step is not None:
+            first: dict[str, Any] = {"action": step.text}
+            if step.line is not None:
+                first["line"] = step.line
+            if step.file_path != self.target.file_path:
+                first["file"] = step.file_path
+            out["first_step"] = first
+        if self.verify.command:
+            out["verify"] = {"command": self.verify.command}
+        elif self.verify.prerequisite:
+            out["verify"] = {"prerequisite": self.verify.prerequisite}
+        return out
 
 
 def _exclusions() -> dict[str, int]:
@@ -216,6 +263,8 @@ class FixTotals:
     eligible: int = 0
     shown: int = 0
     excluded: dict[str, int] = field(default_factory=_exclusions)
+    #: Distinct functions with work kept out as ``gated_off``: dormant, not gone.
+    dormant: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,10 +276,6 @@ class FixFirstQueue:
     basis: dict[str, str | None] = field(
         default_factory=lambda: {"analyzed_commit": None, "health_analyzed_at": None}
     )
-    #: Every open refactoring opportunity the builder read, by id: ``None``
-    #: when it is eligible, else the exclusion that kept it out. The
-    #: refactoring view's default scope reads it; never on the wire.
-    refactoring_reasons: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def lead(self) -> FixItem | None:
@@ -250,9 +295,15 @@ class FixFirstQueue:
             "basis": dict(self.basis),
         }
 
+    def counts(self, shown: int) -> QueueCounts:
+        """The count vocabulary (``queue.counts``) on the full queue
+        (``limit=None``): ``inventory`` every unit the builder considered,
+        ``due`` the items in a :data:`DUE_TIERS` tier."""
+        due = sum(1 for item in self.items if item.tier in DUE_TIERS)
+        return counts_of(self.totals.eligible, due, self.totals.excluded, shown)
+
 
 __all__ = [
-    "EFFORT_RANK",
     "FIX_EFFORTS",
     "FIX_EXCLUSIONS",
     "FIX_FACT_BASES",
@@ -263,8 +314,6 @@ __all__ = [
     "FIX_LEVELS",
     "FIX_SCOPES",
     "FIX_TIERS",
-    "LEVEL_RANK",
-    "TIER_RANK",
     "FixAction",
     "FixConfidence",
     "FixContext",

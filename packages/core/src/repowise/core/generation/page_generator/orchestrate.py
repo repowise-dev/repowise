@@ -113,6 +113,7 @@ class _GenerationRun:
         timings: Any | None = None,
         on_warning: Callable[[str], None] | None = None,
         persisted_page_ids: set[str] | None = None,
+        on_embed: Callable[[int, bool], None] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -149,6 +150,7 @@ class _GenerationRun:
         self.on_total_known = on_total_known
         self.on_subphase = on_subphase
         self.on_warning = on_warning
+        self.on_embed = on_embed
         self.git_meta_map = git_meta_map
         self.resume = resume
         self.repo_path = repo_path
@@ -750,9 +752,13 @@ class _GenerationRun:
                 # swallow here hid a 300k-token request rejection that silently lost
                 # every file-page embedding on init (`repowise reindex` repairs).
                 if embed_items and self.vector_store is not None:
+                    if self.on_embed is not None:
+                        self.on_embed(len(embed_items), False)
                     with timed(self.timings, "generation.embed"):
                         try:
                             await self.vector_store.embed_batch(embed_items)
+                            if self.on_embed is not None:
+                                self.on_embed(len(embed_items), True)
                         except Exception as e:
                             self.gen.embed_failed_pages += len(embed_items)
                             log.warning(

@@ -6,11 +6,11 @@ combination of them. This page is the map: what each layer holds, what is built 
 it, and which page has the detail.
 
 ```
-  What you use     answers · change risk · Fix first · dead code · impacted tests
-                   refactoring plans · doc drift · contracts across repositories
-                                             ▲
-  Five layers      1 Graph · 2 Git history · 3 Docs · 4 Decisions · 5 Health
-                                             ▲
+  What you use     answers, change risk, Fix first, dead code, impacted tests,
+                   refactoring plans, doc drift, contracts across repositories
+                                             ^
+  Five layers      1 Graph, 2 Git history, 3 Docs, 4 Decisions, 5 Health
+                                             ^
   One index        your source, its git history, your markdown, your coverage
 ```
 
@@ -21,7 +21,7 @@ few optional extras, and never switches a layer on.
 
 ## 1. Graph: what is connected to what
 
-Every file, symbol, import and call in the repository, parsed from an AST in 26
+Every file, symbol, import and call in the repository, parsed from an AST in 27
 languages. Each call edge is stamped with how it was resolved (one of 39 named
 resolution origins) and how far to trust it, across 17 edge types. Communities,
 centrality, cycles and execution flows from each entry point are computed on top.
@@ -36,7 +36,7 @@ code through graph edges.
 | Dead code | Unreachable files, unused exports, unused packages, by confidence tier | [DEAD_CODE.md](DEAD_CODE.md) |
 | Inferred test links | Which tests reach a file, without a coverage report | [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md) |
 | Cross-repo contracts | HTTP, gRPC, topic and OpenAPI contracts matched between repositories, with breaking-change detection | [WORKSPACES.md](../scale/WORKSPACES.md) |
-| Language coverage | What each of the 40 supported languages gets | [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) |
+| Language coverage | What each of the 41 supported languages gets | [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) |
 
 ## 2. Git history: where change and breakage concentrate
 
@@ -46,11 +46,13 @@ no import between them can still change together every week.
 
 | Built on it | What you get | Read more |
 |---|---|---|
-| Ownership and knowledge risk | Owners, bus factor, silos, knowledge loss when a main author goes quiet, suggested reviewers | [OWNERSHIP.md](OWNERSHIP.md) |
+| Ownership and knowledge risk | Owners, bus factor, silos, fading ownership when a main author goes quiet, suggested reviewers | [OWNERSHIP.md](OWNERSHIP.md) |
 | Bug history | Fix commits traced to files and symbols, bug magnets | [BUG_HISTORY.md](BUG_HISTORY.md) |
 | Hidden coupling | Files that change together with no import link | [CHANGE_RISK.md](CHANGE_RISK.md) |
 | Branch overlap | Other branches editing the same files or their co-change partners | [CHANGE_RISK.md](CHANGE_RISK.md#branch-overlap) |
 | Secrets in history | Keys and tokens anywhere in the full history, not only the working tree | [SECURITY.md](SECURITY.md) |
+| Change Records | Each merged PR, MR or commit with its commits, files and provenance, exportable as in-toto | [CHANGES.md](CHANGES.md) |
+| AI attribution | Agent, human-attested or unknown per commit, from public markers and opt-in edit capture, with coverage | [ATTRIBUTION.md](ATTRIBUTION.md) |
 
 ## 3. Docs: the codebase, readable and searchable
 
@@ -89,11 +91,26 @@ against real bug history. The same machinery judges a change before it merges.
 |---|---|---|
 | Code health score | Per-file score, bands, trends, badges | [CODE_HEALTH.md](CODE_HEALTH.md) |
 | Fix first | A ranked queue of what to fix, by impact and effort (`repowise next`) | [CODE_HEALTH.md](CODE_HEALTH.md#fix-first) |
-| Performance findings | N+1 queries, I/O in loops, blocking calls in async code, traced across functions | [CODE_HEALTH.md](CODE_HEALTH.md#performance-findings) |
+| Performance findings | N+1 queries, I/O in loops, blocking calls in async code, traced across functions | [PERFORMANCE.md](PERFORMANCE.md) |
 | Refactoring plans | Extract Class, Extract Method, Extract Helper, Move Method, Break Cycle, Split File, Performance Fix | [REFACTORING.md](REFACTORING.md) |
 | Change risk | Where a commit or range ranks against the repo's recent history, and what it made worse | [CHANGE_RISK.md](CHANGE_RISK.md) |
 | Tests and coverage gates | Impacted tests, patch coverage, untested hotspots | [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md), [CI.md](../start/CI.md) |
 | Security signals | Secrets and risky calls, with a pre-commit check and a CI gate | [SECURITY.md](SECURITY.md) |
+
+## Changes and components: where the layers roll up
+
+Two units collect the layers into things an organisation names. A Change Record is one
+merged change with its evidence from every layer: owners, reaching tests, contracts,
+decisions crossed, provenance and later outcome. A component is a declared or derived
+part of the codebase that health, hotspots, bus factor, test reach and dead code roll up
+to. Change policy and evidence reports are built on both.
+
+| Built on it | What you get | Read more |
+|---|---|---|
+| Change Records | Each merged change with its evidence checklist and outcomes, and suspects for a symptom | [CHANGES.md](CHANGES.md) |
+| Components | Backstage-shaped components, declared owners against recent activity, events, package usage | [COMPONENTS.md](COMPONENTS.md) |
+| Change policy | Rules over a change's evidence, checked locally or in CI | [POLICY.md](POLICY.md) |
+| Evidence reports | Assessment, change evidence and inventory packs | [REPORTS.md](REPORTS.md) |
 
 ## Where the layers meet
 
@@ -134,8 +151,8 @@ impact and architecture rules you can gate in CI. See
 | What is this file or symbol, who calls it? | `repowise context`, `repowise symbol` | `get_context`, `get_symbol` |
 | What breaks if I change it? | `repowise risk` | `get_risk`, `get_change_risk` |
 | Why is it built this way? | `repowise why` | `get_why` |
-| What should we fix first? | `repowise next`, `repowise health` | `get_health` |
-| What can we delete? | `repowise dead-code` | `get_dead_code` |
+| What should be fixed first? | `repowise next`, `repowise health` | `get_health` |
+| What can be deleted? | `repowise dead-code` | `get_dead_code` |
 | Which tests matter? | `repowise impacted-tests` | `get_risk(changed_files=[...])` |
 
 18 MCP tools are registered; a single-repo server exposes 10 by default and the rest

@@ -16,6 +16,7 @@ import {
 } from "@repowise-dev/ui/settings";
 import type { HealthResponse } from "@/lib/api/types";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { useTranslations } from "next-intl";
 
 /**
  * Server connection, and the page's only connection test.
@@ -26,6 +27,7 @@ import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
  * not exist. This one reports more (version and DB), so that one went.
  */
 export function ConnectionSection() {
+  const t = useTranslations("settings");
   const [apiUrl, setApiUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [testing, setTesting] = useState(false);
@@ -82,16 +84,16 @@ export function ConnectionSection() {
 
   return (
     <OverviewSection
-      title="Server"
-      description="How this dashboard reaches your repowise server. Stored in this browser, not on the server."
+      title={t("connection.title")}
+      description={t("connection.description")}
       flush
       action={<SaveIndicator state={saveState} />}
     >
       <SettingsRows>
         <SettingsRow
-          label="Server URL"
+          label={t("connection.urlLabel")}
           htmlFor="api-url"
-          hint="Leave blank to use the same origin, which is what a Next.js proxy setup wants."
+          hint={t("connection.urlHint")}
         >
           <Input
             id="api-url"
@@ -104,14 +106,14 @@ export function ConnectionSection() {
         </SettingsRow>
 
         <SettingsRow
-          label="API key"
+          label={t("connection.apiKeyLabel")}
           htmlFor="api-key"
-          hint="Only needed when REPOWISE_API_KEY is set on the server."
+          hint={t("connection.apiKeyHint")}
         >
           <Input
             id="api-key"
             type="password"
-            placeholder="Optional"
+            placeholder={t("connection.apiKeyPlaceholder")}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             onBlur={save}
@@ -120,8 +122,8 @@ export function ConnectionSection() {
         </SettingsRow>
 
         <SettingsRow
-          label="Connection"
-          hint="Checks that the server answers and reports what it is running."
+          label={t("connection.testLabel")}
+          hint={t("connection.testHint")}
         >
           <div className="flex flex-wrap items-center gap-3">
             <Button
@@ -133,17 +135,17 @@ export function ConnectionSection() {
               {testing ? (
                 <>
                   <Spinner size="sm" />
-                  Testing
+                  {t("connection.testing")}
                 </>
               ) : (
-                "Test connection"
+                t("connection.test")
               )}
             </Button>
 
             {health && (
               <StatusLine status="ok">
                 <span className="tabular-nums">
-                  Connected · v{health.version} · DB {health.db}
+                  {t("connection.status", { version: health.version, db: health.db })}
                 </span>
               </StatusLine>
             )}

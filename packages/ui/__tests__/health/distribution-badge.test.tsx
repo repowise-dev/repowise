@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { HealthDistribution } from "@repowise-dev/types/health";
 import { HealthDistributionBar } from "../../src/health/health-distribution-bar.js";
 import { HealthBadge } from "../../src/health/health-badge.js";
@@ -19,11 +19,13 @@ const DIST: HealthDistribution = {
 describe("HealthDistributionBar", () => {
   it("renders the NLOC-weighted per-band shares", () => {
     render(<HealthDistributionBar distribution={DIST} />);
-    expect(screen.getByText(/50% excellent/)).toBeInTheDocument();
-    expect(screen.getByText(/20% good/)).toBeInTheDocument();
-    expect(screen.getByText(/15% fair/)).toBeInTheDocument();
-    expect(screen.getByText(/5% needs work/)).toBeInTheDocument();
-    expect(screen.getByText(/10% at risk/)).toBeInTheDocument();
+    const legend = within(screen.getByRole("list", { name: "Code volume by health band" }));
+    const text = legend.getAllByRole("listitem").map((li) => li.textContent);
+    expect(text).toContain("Excellent50% · 4 files");
+    expect(text).toContain("Good20% · 2 files");
+    expect(text).toContain("Fair15% · 2 files");
+    expect(text).toContain("Needs work5% · 1 file");
+    expect(text).toContain("At risk10% · 1 file");
   });
 
   it("shows an empty state when no files are analyzed", () => {
@@ -51,8 +53,10 @@ describe("HealthDistributionBar", () => {
       bands: { excellent: { files: 6, nloc: 700, pct: 70 } },
     } as unknown as HealthDistribution;
     render(<HealthDistributionBar distribution={partial} />);
-    expect(screen.getByText(/70% excellent/)).toBeInTheDocument();
-    expect(screen.getByText(/0% at risk/)).toBeInTheDocument();
+    expect(screen.getByText("Excellent")).toBeInTheDocument();
+    expect(screen.getByText("70% · 6 files")).toBeInTheDocument();
+    // Absent bands are left out of the split rather than drawn as empty.
+    expect(screen.queryByText("At risk")).not.toBeInTheDocument();
   });
 
   it("does not report a repo with a three-band payload as empty in every band", () => {

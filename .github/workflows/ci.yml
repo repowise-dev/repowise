@@ -45,14 +45,21 @@ jobs:
       - name: Run provider tests (no API keys required)
         run: uv run pytest tests/providers/ -v --tb=short
 
+      # One worker per core. loadfile keeps each module on one worker, so a
+      # module-scoped fixture (an indexed sample repo, say) is built once, not
+      # once per worker that draws a test from it.
       - name: Run unit tests
         if: matrix.python-version != '3.12'
-        run: uv run pytest tests/unit/ -v --tb=short
+        run: uv run pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25
 
       # One leg measures coverage for the pull request bot's checks comment.
+      # sysmon (Python 3.12+) measures lines with far less overhead than the
+      # tracer; it cannot record per-test contexts, which this report omits.
       - name: Run unit tests with coverage
         if: matrix.python-version == '3.12'
-        run: uv run --with pytest-cov pytest tests/unit/ -v --tb=short --cov=packages --cov-report=xml
+        env:
+          COVERAGE_CORE: sysmon
+        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25 --cov=packages --cov-report=xml
 
       - name: Upload coverage to Repowise
         if: always() && matrix.python-version == '3.12'
@@ -227,6 +234,25 @@ jobs:
 
       - name: Test ui
         run: npm run test --workspace @repowise-dev/ui
+
+      # ICU compile gate: a malformed plural or stray brace in any catalog
+      # fails the build here instead of throwing on the page that renders it.
+      - name: Check message catalogs compile (ICU)
+        run: npm run i18n:icu --workspace packages/web
+
+      # Usage gate: a key a `t("...")` call asks for that `en.json` does not
+      # define renders the raw key path (or throws MISSING_MESSAGE), and key
+      # parity cannot see it — it compares key sets, not call sites. Structural
+      # error, so it fails the build.
+      - name: Check every used message key resolves
+        run: npm run i18n:usage --workspace packages/web
+
+      # Catalog freshness only warns: English is the source of truth, so a key
+      # a locale has not reached yet still renders English at runtime. The step
+      # must not fail the build (the script itself exits 0 either way).
+      - name: Report catalog key gaps (warn only)
+        run: npm run i18n:check --workspace packages/web
+        continue-on-error: true
 
       - name: Type check claude-mod
         run: npm run type-check --workspace @repowise-dev/claude-mod

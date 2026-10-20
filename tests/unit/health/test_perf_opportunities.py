@@ -556,13 +556,55 @@ def test_a_plan_lists_its_edits_and_marks_only_proven_ones_mechanical():
 )
 def test_a_lazy_load_may_lead_only_on_an_orm_that_cleared_the_bar(orms, leads):
     rows = [
-        _finding("app/views.py", 10 + index, marker="lazy_load_in_loop", orm=orm)
+        _finding(
+            "app/views.py",
+            10 + index,
+            marker="lazy_load_in_loop",
+            orm=orm,
+            loop_magnitude="grows_with_data",
+        )
         for index, orm in enumerate(orms)
     ]
     (opportunity,) = build_performance_opportunities(rows)
     assert opportunity.may_lead is leads
 
 
-def test_every_other_marker_may_lead():
-    (opportunity,) = build_performance_opportunities([_finding("a.py", 1)])
+def test_every_other_marker_may_lead_over_a_loop_that_grows():
+    (opportunity,) = build_performance_opportunities(
+        [_finding("a.py", 1, loop_magnitude="grows_with_data")]
+    )
     assert opportunity.may_lead is True
+
+
+@pytest.mark.parametrize("magnitude", [None, "bounded"])
+def test_a_loop_not_known_to_grow_never_leads(magnitude):
+    details = {"loop_magnitude": magnitude} if magnitude else {}
+    (opportunity,) = build_performance_opportunities([_finding("a.py", 1, **details)])
+    assert opportunity.may_lead is False
+
+
+@pytest.mark.parametrize(
+    ("role", "walked", "exposure"),
+    [
+        ("request", None, "entry_reachable"),
+        ("scheduled_job", False, "entry_reachable"),
+        ("unknown", None, "unknown"),
+        ("unknown", False, "not_entry_reachable"),
+        # A cold role is its own seed and never spreads: no claim beyond the walk.
+        ("cli", None, "unknown"),
+    ],
+)
+def test_a_seeded_role_is_an_entry_reaching_the_cause(role, walked, exposure):
+    """The role and the exposure facet state one fact, so the text agrees with both."""
+    row = _finding(
+        "app/views.py",
+        12,
+        marker="hot_path_sync_io",
+        boundary="filesystem",
+        execution_role=role,
+        reliable_entry_reachability=walked,
+    )
+    (opportunity,) = build_performance_opportunities([row])
+    assert opportunity.facets["execution_role"] == role
+    assert opportunity.facets["exposure"] == exposure
+    assert opportunity.reliable_entry_reachability is (True if exposure == "entry_reachable" else walked)
