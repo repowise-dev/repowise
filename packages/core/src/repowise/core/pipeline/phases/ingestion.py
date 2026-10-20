@@ -134,6 +134,7 @@ _SKIP_REASONS: tuple[tuple[str, str], ...] = (
     ("skipped_submodule", "submodule dirs"),
     ("skipped_nested_repo", "nested git repos"),
     ("skipped_unknown_language", "unknown type"),
+    ("skipped_repowise_output", "written by repowise"),
 )
 
 _TOP_LANGUAGES_SHOWN = 6

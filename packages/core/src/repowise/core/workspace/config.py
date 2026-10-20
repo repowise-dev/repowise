@@ -343,7 +343,7 @@ class WorkspaceConfig:
         dropped = previous - {e.alias for e in self.repos}
         if dropped:
             _log.warning(
-                "Writing %s with %d repo(s), down from %d — dropping: %s",
+                "Writing %s with %d repo(s), down from %d, dropping: %s",
                 config_path,
                 len(self.repos),
                 len(previous),

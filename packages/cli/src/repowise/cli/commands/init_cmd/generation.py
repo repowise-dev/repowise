@@ -29,6 +29,7 @@ from repowise.cli.cost_gate import (
     confirm_cost_gate,
     cost_gate_blocks,
     cost_gate_declined,
+    embedding_note,
     format_cost,
 )
 from repowise.cli.helpers import console, run_async
@@ -62,6 +63,7 @@ __all__ = [
     "confirm_cost_gate",
     "cost_gate_blocks",
     "cost_gate_declined",
+    "embedding_note",
     "estimate_generation",
     "format_cost",
     "page_type_label",
@@ -77,8 +79,9 @@ def estimate_generation(
     repo_path: Any,
     skip_tests: bool,
     skip_infra: bool,
+    embedder: str | None = None,
 ) -> tuple[list[Any], Any]:
-    """Build the generation plan and price it. One plan, one estimate.
+    """Build the generation plan and price it, embedding included. One plan, one estimate.
 
     Every structural page type is free, and the concept tree is a total cover of
     the production files, so there is nothing to ration and no coverage level to
@@ -88,6 +91,7 @@ def estimate_generation(
     Returns ``(plans, estimate)``.
     """
     from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
+    from repowise.cli.providers.embedders import resolve_embedding_model
 
     # Curated modules from the in-memory index result, so the plan/cost
     # estimate selects the same module set generation will (the artifact
@@ -107,6 +111,8 @@ def estimate_generation(
         provider.provider_name,
         provider.model_name,
         repo_path=repo_path,
+        embedder=embedder,
+        embedding_model=resolve_embedding_model(embedder) if embedder else None,
     )
     return plans, est
 

@@ -666,9 +666,7 @@ def _resolve_embedder_from_env() -> str:
     return global_config_embedder() or "mock"
 
 
-def print_index_only_intro(
-    console: Console, has_provider: bool = False, *, fast: bool = False
-) -> None:
+def print_index_only_intro(console: Console, *, fast: bool = False) -> None:
     """Show what index-only mode will do before starting.
 
     A forecast, so no border — nothing here is a thing to act on, and it used to
@@ -684,7 +682,7 @@ def print_index_only_intro(
         "  [dim]•[/dim] Build dependency graph (PageRank, communities)",
         "  [dim]•[/dim] Index git history (hotspots, ownership, co-changes)",
         "  [dim]•[/dim] Detect dead code",
-        "  [dim]•[/dim] Extract architectural decisions",
+        "  [dim]•[/dim] Extract architectural decisions without a model",
         "  [dim]•[/dim] Set up MCP server for AI assistants",
     ]
     if not fast:
@@ -693,16 +691,13 @@ def print_index_only_intro(
             "    cycle pages, the architecture diagram, the repo overview, API and",
             "    infra pages, and the onboarding collection",
         ]
-    if has_provider:
-        lines.append(
-            "  [dim]•[/dim] [dim]Decision extraction enhanced (provider key detected)[/dim]"
-        )
     for line in lines:
         console.print(line)
     console.print()
     if not fast:
         console.print(
-            "  [dim]The subsystem pages read as outlines. Add a key and run "
-            "[bold]repowise generate[/bold] to have a model write them.[/dim]"
+            "  [dim]The subsystem pages read as outlines, and decisions from PRs, commit "
+            "history and comments wait for a model. Add a key and run "
+            "[bold]repowise generate[/bold] to add both.[/dim]"
         )
         console.print()
