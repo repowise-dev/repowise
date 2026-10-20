@@ -54,8 +54,10 @@ def test_the_gitlab_template_parses() -> None:
         "repowise-coverage",
         "repowise-doc-drift",
         "repowise-security",
+        "repowise-health",
         "repowise-risk",
     } <= set(jobs)
+    assert '$REPOWISE_HEALTH == "true"' in jobs["repowise-health"]["rules"][0]["if"]
     risk = " ".join(jobs["repowise-risk"]["script"])
     assert "--fail-above-percentile" in risk and "--format markdown" in risk
     assert "REPOWISE_RISK_FAIL_ABOVE_PERCENTILE" in jobs["repowise-risk"]["rules"][0]["if"]
@@ -69,7 +71,7 @@ def _gitlab_jobs() -> dict:
     return yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("gate", ["doc-drift", "security"])
+@pytest.mark.parametrize("gate", ["doc-drift", "security", "health"])
 def test_the_gitlab_code_quality_report_is_the_file_the_job_writes(gate) -> None:
     job = _gitlab_jobs()[f"repowise-{gate}"]
     report = f"gl-code-quality-{gate}.json"
@@ -211,6 +213,7 @@ def fake_repowise(tmp_path: Path) -> Path:
         '  coverage) exit "${FAKE_COVERAGE:-0}" ;;\n'
         '  doc-drift) exit "${FAKE_DOC_DRIFT:-0}" ;;\n'
         '  security) exit "${FAKE_SECURITY:-0}" ;;\n'
+        '  health) exit "${FAKE_HEALTH:-0}" ;;\n'
         '  risk) exit "${FAKE_RISK:-0}" ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -259,6 +262,7 @@ def _run(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[int, str, str]:
         "SECURITY_FAIL_ON": "high",
         "SECURITY_BASELINE": "",
         "FAIL_ON_BASELINE_GROWTH": "false",
+        "HEALTH_FAIL_ON": "introduced",
         "RISK_FAIL_ABOVE_PERCENTILE": "",
         "SARIF": "false",
         "SARIF_DIR": str(tmp_path / "sarif"),
@@ -324,6 +328,20 @@ def test_baseline_growth_reaches_each_gate_with_a_baseline(tmp_path, fake_repowi
         "--fail-on-baseline-growth --format github"
     )
     assert "growth" not in security
+
+
+def test_health_inputs_reach_the_command(tmp_path, fake_repowise) -> None:
+    code, outputs, calls = _run(
+        tmp_path,
+        fake_repowise,
+        CHECKS="health",
+        BASE="origin/main...HEAD",
+        HEALTH_FAIL_ON="worsened",
+        FAKE_HEALTH="1",
+    )
+    assert code == 1
+    assert outputs.split() == ["health=1"]
+    assert calls.strip() == "health check origin/main...HEAD --fail-on worsened --format github"
 
 
 def test_base_report_inputs_reach_the_coverage_command(tmp_path, fake_repowise) -> None:

@@ -1,6 +1,6 @@
 # Repowise in CI
 
-Four gates judge a pull request, each on what the change adds rather than on
+Five gates judge a pull request, each on what the change adds rather than on
 the whole repository's past:
 
 | Gate | Question | Needs | History |
@@ -10,6 +10,7 @@ the whole repository's past:
 | `repowise coverage check --max-drop P` | Did this change lower project coverage by more than P points? | git, a coverage report, and one measured at the change's base | the merge-base with the target branch |
 | `repowise doc-drift --check` | Does the documentation still describe files, links and commands that exist? | git | none (full history only improves rename suggestions) |
 | `repowise security check` | Did this change add a secret or a risky call? | git | every commit of the change |
+| `repowise health check` | Did this change write new complex, deeply nested, oversized or duplicated code? | git | the merge-base with the target branch |
 | `repowise risk --fail-above-percentile P` | Is this change bigger and more spread out than P% of this repository's recent commits? | git | recent commits to rank against (at least 8) |
 
 None of them needs an index, a database, a model or an API key, and none
@@ -18,6 +19,7 @@ resolution, described once below. Each layer's own page has the detail:
 [test intelligence](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci),
 [documentation drift](../layers/DOC_DRIFT.md#in-ci),
 [security](../layers/SECURITY.md#in-ci-repowise-security-check),
+[code health](../layers/CODE_HEALTH.md#in-ci-repowise-health-check),
 [change risk](../layers/CHANGE_RISK.md#in-ci).
 
 Doc drift's `--check` needs no index. `--kind symbol` adds symbol references
@@ -39,14 +41,14 @@ as a pass.
 **Formats.** `--format table` (the default) for a terminal, `json` for a
 script, `markdown` for a comment or a job artifact, and `github` for GitHub
 Actions: up to ten annotations on the changed lines, a notice counting the
-rest, and the markdown report appended to the job summary. Doc drift and
-security also write `sarif` for code scanning and `gitlab`, a GitLab Code
+rest, and the markdown report appended to the job summary. Doc drift,
+security and health also write `sarif` for code scanning and `gitlab`, a GitLab Code
 Quality report (a JSON issue list; findings a baseline accepted are left out).
 When a gate cannot evaluate, `gitlab` still prints a valid list, `[]`, and the
 GitLab template writes `[]` whenever the output does not parse, so the report
 artifact is never an invalid file.
 
-**The change being judged.** Coverage, security and risk take a revision range:
+**The change being judged.** Coverage, security, health and risk take a revision range:
 `origin/main...HEAD` (three dots: what the branch did since it forked, the
 pull request's view), `base..head`, or one commit. Without one they read the
 target branch from the CI's own variables (`GITHUB_BASE_REF`,
@@ -65,7 +67,7 @@ gates exit `2` rather than guess.
 
 ## Adopting the gates on an existing repository
 
-Coverage and security judge only what a change adds, so an old untested file
+Coverage, security and health judge only what a change adds, so an old untested file
 or an old finding never fails a new pull request. Doc drift checks the whole
 tree, so on a repository whose documentation has already drifted it fails from
 the first run. Record what is there once and fail only on new drift:
@@ -113,7 +115,7 @@ jobs:
       - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
       - uses: repowise-dev/repowise@main   # pin a release tag in production
         with:
-          checks: coverage,doc-drift,security,risk
+          checks: coverage,doc-drift,security,health,risk
           coverage-report: coverage/lcov.info
           coverage-fail-under: 80
           risk-fail-above-percentile: 95
@@ -124,11 +126,11 @@ release the action installs.
 
 | Input | Default | Meaning |
 |-------|---------|---------|
-| `checks` | `doc-drift,security` | Gates to run. Coverage needs a report and risk is a policy choice, so both are opt-in. |
+| `checks` | `doc-drift,security` | Gates to run. Coverage needs a report, and health and risk are policy choices, so all three are opt-in. |
 | `version` | latest | Repowise version to install. |
 | `python-version` | `3.12` | Python to run it with (3.11 or newer). |
 | `working-directory` | `.` | Where to run from. |
-| `base` | from the pull request | Revision range for coverage, security and risk. |
+| `base` | from the pull request | Revision range for coverage, security, health and risk. |
 | `coverage-report` | config, else discovery | Reports, one per line: a path or a glob (`artifacts/**/lcov.info`), optionally `path=prefix`. |
 | `coverage-fail-under` | `coverage.fail_under` | Minimum patch coverage percent. |
 | `coverage-min-coverable-lines` | `coverage.min_coverable_lines` | Small-change tolerance: a change with fewer changed executable lines than this never fails. |
@@ -140,12 +142,13 @@ release the action installs.
 | `security-fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low`. |
 | `security-baseline` | none | Committed baseline file. |
 | `fail-on-baseline-growth` | `false` | Fail doc drift and security when their baseline gains an entry over the change's base. |
+| `health-fail-on` | `introduced` | What fails the health gate: `introduced`, or `worsened` to fail on findings the change made worse too. |
 | `risk-fail-above-percentile` | none | With `risk` in `checks`, fail when the change ranks above this percentile of recent commits. Empty reports the rank without gating. |
-| `upload-sarif` | `false` | Upload doc drift and security findings to code scanning. |
+| `upload-sarif` | `false` | Upload doc drift, security and health findings to code scanning. |
 | `impacted-tests` | `false` | Select the tests the change needs (needs a cached `.repowise` index); see [below](#selecting-the-tests-a-change-needs). |
 | `impacted-tests-runner` | `auto` | `auto`, `pytest`, `go`, `jest` or `files`. |
 
-Outputs: `coverage`, `doc-drift`, `security` and `risk` hold each gate's exit
+Outputs: `coverage`, `doc-drift`, `security`, `health` and `risk` hold each gate's exit
 code (empty when not run), and `sarif-dir` the SARIF directory.
 `impacted-tests` holds the runner arguments (or `:all`), and `run-all-tests` is
 `false` only when that subset is safe to run alone.
@@ -155,7 +158,7 @@ so at a percentile P roughly (100 - P)% of changes fail it by construction.
 A failure asks for a split or a second reviewer, not a code fix, and there is
 no baseline to accept it with.
 
-A shallow checkout still works when coverage, security or risk runs: the action
+A shallow checkout still works when coverage, security, health or risk runs: the action
 fetches the missing history and the target branch first. Checking out with
 `fetch-depth: 0` skips that step.
 
@@ -172,6 +175,7 @@ there with a warning; the gates still run and still decide the check.
 - run: repowise coverage check --report coverage/lcov.info --fail-under 80 --format github
 - run: repowise doc-drift --check --format github
 - run: repowise security check --format github
+- run: repowise health check --format github
 - run: repowise risk --fail-above-percentile 95 --format github
 ```
 
@@ -215,7 +219,9 @@ variables: `REPOWISE_VERSION`, `REPOWISE_COVERAGE_MIN_COVERABLE_LINES`,
 `REPOWISE_COVERAGE_FAIL_UNDER_RISKY`, `REPOWISE_COVERAGE_BASE_REPORT` (space
 separated, like the report list), `REPOWISE_COVERAGE_MAX_DROP`,
 `REPOWISE_DOC_DRIFT_BASELINE`,
-`REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
+`REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`, and
+`REPOWISE_HEALTH: "true"` (with `REPOWISE_HEALTH_FAIL_ON`) for a
+`repowise-health` job that also writes `gl-code-quality-health.json`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.
 
 GitLab can also draw line coverage in the merge request diff. That comes from
@@ -245,6 +251,7 @@ pip install repowise
 repowise coverage check "origin/$CHANGE_TARGET...HEAD" --report coverage/lcov.info --fail-under 80
 repowise doc-drift --check
 repowise security check "origin/$CHANGE_TARGET...HEAD"
+repowise health check "origin/$CHANGE_TARGET...HEAD"
 ```
 
 Bitbucket Pipelines and others work the same way with their own branch

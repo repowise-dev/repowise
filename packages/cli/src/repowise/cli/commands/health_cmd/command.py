@@ -72,8 +72,33 @@ from .trends import _render_trend
 #: Items the report leads with; the full queue is one REST or MCP call away.
 FIX_FIRST_ROWS = 3
 
+_SUBCOMMAND = "repowise.health.subcommand"
 
-@click.command("health")
+
+class _HealthGroup(click.Group):
+    """``repowise health [PATH]``, whose first argument may instead name a subcommand.
+
+    A first argument naming a subcommand (``check``) runs it; anything else is
+    the report's own optional PATH. A directory named like a subcommand is
+    reached as ``./check``.
+    """
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        subcommand = bool(args) and args[0] in self.commands
+        ctx.meta[_SUBCOMMAND] = subcommand
+        # The report keeps taking options after PATH, as a plain command does.
+        ctx.allow_interspersed_args = not subcommand
+        return super().parse_args(ctx, args)
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        params = super().get_params(ctx)
+        if ctx.meta.get(_SUBCOMMAND):
+            # Leaves the subcommand name for dispatch instead of reading it as PATH.
+            return [p for p in params if not isinstance(p, click.Argument)]
+        return params
+
+
+@click.group("health", cls=_HealthGroup, invoke_without_command=True)
 @click.argument("path", required=False, type=click.Path(exists=True))
 @click.option(
     "--file",
@@ -199,8 +224,9 @@ FIX_FIRST_ROWS = 3
     default=False,
     help="Show debug logs from the pipeline.",
 )
+@click.pass_context
 def health_command(
-    path: str | None,
+    ctx: click.Context,
     file_filter: str | None,
     fmt: str,
     repo_alias: str | None,
@@ -217,12 +243,16 @@ def health_command(
     score_paths: tuple[str, ...],
     against: str | None,
     verbose: bool,
+    path: str | None = None,
 ) -> None:
     """Code-health scores from markers (CCN, nesting, brain-method).
 
     Reads the analysis the index stored; no LLM, no network, no writes.
     ``--recompute`` re-runs it in-process over the working tree.
+    ``repowise health check`` gates a change on the findings it introduces.
     """
+    if ctx.invoked_subcommand is not None:
+        return
     configure_cli_logging(verbose=verbose)
     opts = _Options(
         fmt=fmt,

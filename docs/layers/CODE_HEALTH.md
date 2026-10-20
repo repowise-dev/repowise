@@ -256,6 +256,10 @@ report, run `repowise health --recompute`, which analyzes the working tree
 instead of reading the stored analysis and, on a whole-repo table run, writes the
 result to the index. `repowise health --badge` prints README badge Markdown.
 
+## In CI: `repowise health check`
+
+`repowise health check origin/main...HEAD` analyses the changed files at the base and the head, with no index, and exits `1` only on a code-shape finding the change wrote. A finding it made worse warns (`--fail-on worsened` fails on it too), and one it moved or renamed never fails. Git-history markers, coverage and file scores never decide the gate, so a squash merge cannot change its verdict. Exit codes, formats and setup are in [Repowise in CI](../start/CI.md).
+
 ## Configuration
 
 Per-file rules live in `.repowise/health-rules.json`:

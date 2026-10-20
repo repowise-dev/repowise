@@ -31,6 +31,7 @@ Grouped by what you're trying to do, not alphabetically. `PATH` and flag details
 
 **Health and risk**
 [`health`](#repowise-health-path) ·
+[`health check`](#repowise-health-check-revspec) ·
 [`risk`](#repowise-risk-revspec) ·
 [`overlap`](#repowise-overlap) ·
 [`dead-code`](#repowise-dead-code-path) ·
@@ -1184,6 +1185,33 @@ repowise health --format json | jq .kpis              # machine-readable
 no separate command needed. `repowise status` shows a one-line summary
 (`Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`).
 Health automatically folds in whatever coverage was already ingested via `repowise coverage add`, no flag needed.
+
+#### `repowise health check [REVSPEC]`
+
+Gate a change on the code-health findings it introduces. Built for CI: it needs git and nothing else (no index, no database, no API key). It analyses the changed files at the change's base and head and compares their findings by file, marker and symbol, never by line.
+
+| Finding | Default | With `--fail-on worsened` |
+|---------|---------|---------------------------|
+| Introduced on lines the change wrote | fails | fails |
+| Made worse by the change | warns | fails |
+| Either of those in a test file | warns | warns |
+| Moved or renamed with its code, away from the changed lines, or not code shape (performance, history, coverage) | context only | context only |
+
+| Flag | Description |
+|------|-------------|
+| `--fail-on` | `introduced` (default) or `worsened` |
+| `--path` | A path inside the repository (defaults to cwd) |
+| `--format` | `table` (default), `json`, `markdown`, `github`, `sarif`, `gitlab` (GitLab Code Quality report) |
+
+REVSPEC is the change, resolved as for [`security check`](#repowise-security-check-revspec). Rules in `.repowise/health-rules.json` apply to both sides. A changed code file that fails to parse warns; a change touching no file health reads passes with a note.
+
+```bash
+repowise health check origin/main...HEAD
+repowise health check --format github
+repowise health check --format sarif > health.sarif
+```
+
+Exit codes: `0` passed (warnings included), `1` gate failed, `2` could not evaluate (not a git repository, unknown revision, no merge-base in a shallow clone, more than 300 changed code files, no changed code file could be parsed, an unexpected internal error).
 
 ---
 

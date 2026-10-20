@@ -21,6 +21,7 @@ from ...test_paths import is_test_related_path
 from ..finding_registry import excluded_types, gate_for, is_served, language_label
 from ..health import HEALTH_ANALYZER_VERSION, HealthFindingData
 from ..health.biomarker_labels import biomarker_label
+from ..health.finding_identity import finding_public_id
 from ..health.perf.causal import PERFORMANCE_MODEL_VERSION
 from ..health.scoring import ADVISORY_DIMENSION, is_advisory
 from .analyzer import (
@@ -35,6 +36,7 @@ from .file_scores import file_score_deltas
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding, MatchResult
 from .models import (
+    INCIDENTAL_BASES,
     NO_CODE_GAP,
     NOT_ANALYZABLE_DATA,
     NOT_CODE,
@@ -84,9 +86,6 @@ _CLAIM_ATTEMPTS = 2
 _DIMENSION_ORDER = {"defect": 0, "maintainability": 1, "performance": 2, ADVISORY_DIMENSION: 3}
 
 _BASIS = "both_sides_analyzed"
-
-#: Bases that place a finding away from the lines the change wrote.
-_INCIDENTAL_BASES = {"file_change", "context_change", "unknown"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,6 +434,7 @@ class ChangeHealthDeltaService:
             opportunity_rank=perf.rank_score if perf else None,
             evidence=_evidence(head, perf),
             moved_from={"path": moved_from[0], "symbol": moved_from[1]} if moved_from else None,
+            finding_id=finding_public_id(head),
         )
 
 
@@ -693,7 +693,7 @@ def _authorship(finding: ChangeFinding) -> tuple[bool, bool, bool]:
     scaffolding sorts last because it is the change's own noise.
     """
     return (
-        finding.attribution_basis in _INCIDENTAL_BASES,
+        finding.attribution_basis in INCIDENTAL_BASES,
         is_test_related_path(finding.path),
         finding.change_kind != "introduced",
     )
