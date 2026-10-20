@@ -283,6 +283,10 @@ files, 159 production files provably executed):
   is 77%.
 - Framework-invoked code with no static caller (migrations run by naming convention, for
   example) is not reached by the graph.
+- The Tests tab and a file's page share one definition of reached: a test calls into the
+  file or imports it, directly or through a chain of imports.
+  The tab's unreached list is a floor, so routes, CLI commands and plugin registries a
+  framework invokes can appear there with tests behind them.
 - Inferred answers are file-level; only measured data is line-level.
 - Measured data is only as current as the last ingest: each ingest replaces the previous
   rows, so ingest at the commit you intend to query. Rows read `stale` once the index

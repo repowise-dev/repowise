@@ -993,7 +993,10 @@
       "promptAction": "Copy prompt for your agent",
       "cleanTitle": "No untested hotspots across {files} measured files",
       "cleanBody": "Every file that changes often or that much of the code depends on has tests watching it.",
-      "batchPromptAction": "Copy prompt for these {count}"
+      "batchPromptAction": "Copy prompt for these {count}",
+      "unreachedTitle": "No test reaches these through the graph",
+      "unavailableTitle": "Couldn't work out which files tests reach",
+      "unavailableBody": "The dependency graph walk failed on the server, so this page cannot say either way. The server log has the error."
     },
     "docDrift": {
       "cleanTitle": "No documentation drift found",

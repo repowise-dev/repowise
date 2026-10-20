@@ -1337,19 +1337,23 @@ export type {
  * Which signal answered "is this tested". `measured` is a coverage report: it
  * records the lines a test really executed. `inferred` is the dependency graph:
  * a test whose calls reach this file, which says control *can* flow there, not
- * that a run did. `none` is the honest unknown.
+ * that a run did. `none` is the honest unknown. `unavailable` means the graph
+ * walk failed, so nothing can be said either way until it is retried.
  *
  * The two are never merged and never averaged. They are different claims, and a
  * reader who cannot tell them apart cannot tell a measured test from a guessed
  * one. `basis` says which one answered; nothing blends them.
  */
-export type CoverageBasis = "measured" | "inferred" | "none";
+export type CoverageBasis = "measured" | "inferred" | "none" | "unavailable";
 
 /**
  * Which tier of the graph found a test. `call-graph` means a test's calls reach
- * the file, the stronger claim; `import-graph` means it only imports it.
+ * the file, the stronger claim; `import-graph` means it only imports it;
+ * `indirect-import` means it imports a file that imports it: a test-only
+ * helper, a package entry file, or a longer import chain; `mocked-only` means
+ * every test that reaches it replaces it with a double.
  */
-export type ReachedVia = "call-graph" | "import-graph";
+export type ReachedVia = "call-graph" | "import-graph" | "indirect-import" | "mocked-only";
 
 /**
  * One file on the inferred basis. `reached` is the whole of what this basis
@@ -1398,8 +1402,8 @@ export interface TestsReachingFile {
   reached: boolean;
   /**
    * Empty when `reached` is false, and capped server-side. Render `total`
-   * beside it, never `tests.length` on its own: the cut is alphabetical, so a
-   * trimmed list states a cap as if it were the answer.
+   * beside it, never `tests.length` on its own, or a trimmed list states a
+   * cap as if it were the answer.
    */
   tests: string[];
   /** Null when `reached` is false. */

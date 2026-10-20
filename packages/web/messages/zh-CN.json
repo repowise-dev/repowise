@@ -993,7 +993,10 @@
       "promptAction": "为你的智能体复制提示词",
       "cleanTitle": "{files} 个已测量文件中没有未测试的热点",
       "cleanBody": "所有频繁变更或被大量代码依赖的文件都有测试覆盖。",
-      "batchPromptAction": "为这 {count} 项复制提示词"
+      "batchPromptAction": "为这 {count} 项复制提示词",
+      "unreachedTitle": "依赖图中没有测试触及这些文件",
+      "unavailableTitle": "无法确定测试触及了哪些文件",
+      "unavailableBody": "服务器上的依赖图遍历失败，因此本页无法给出任何结论。错误详情见服务器日志。"
     },
     "docDrift": {
       "cleanTitle": "未发现文档漂移",

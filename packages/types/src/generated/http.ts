@@ -1332,13 +1332,18 @@ export interface CoverageReportPaths {
   unmatched_sample: string[];
 }
 
-/** ``GET /health/coverage``. ``basis`` is absent when the graph was not consulted. */
+/**
+ * ``GET /health/coverage``. ``basis`` is absent when the graph was not consulted.
+ *
+ * ``unavailable`` means the graph walk failed, which is not the same as ``none``
+ * (no test files to walk from).
+ */
 export interface CoverageResponse {
   summary: CoverageSummary;
   files: Record<string, unknown>[];
   modules: Record<string, unknown>[];
   modules_total: number;
-  basis?: "measured" | "inferred" | "none" | null;
+  basis?: "measured" | "inferred" | "none" | "unavailable" | null;
   inferred?: Record<string, unknown> | null;
   history?: CoverageHistoryPoint[] | null;
 }

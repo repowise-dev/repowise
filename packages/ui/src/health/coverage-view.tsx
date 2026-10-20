@@ -78,6 +78,11 @@ export interface CoverageViewCopy {
   /** "No untested hotspots across N measured files". */
   cleanTitle?: (measuredFiles: number) => string;
   cleanDescription?: string;
+  /** "No test reaches these through the graph": the inferred hero and list. */
+  unreachedTitle?: string;
+  /** Shown when the server could not compute which files tests reach. */
+  unavailableTitle?: string;
+  unavailableBody?: string;
 }
 
 /** The prompt input for one file row. */
@@ -145,6 +150,17 @@ export function CoverageView({
           message={toFriendlyMessage(error)}
           onRetry={() => void mutate()}
         />
+      ) : data?.basis === "unavailable" ? (
+        // The graph walk failed server-side. Unknown, so never the "no tests
+        // found" state below.
+        <ApiError
+          title={copy?.unavailableTitle ?? "Couldn't work out which files tests reach"}
+          message={
+            copy?.unavailableBody ??
+            "The dependency graph walk failed on the server, so this page cannot say either way. The server log has the error."
+          }
+          onRetry={() => void mutate()}
+        />
       ) : data?.basis === "inferred" && data.inferred ? (
         // No report was ever ingested, and the graph can answer anyway. This
         // branch never renders a measured field: the two bases are separate
@@ -154,6 +170,7 @@ export function CoverageView({
           data={data}
           untestedFindings={untestedFindings ?? []}
           onOpenFile={openFilePage}
+          unreachedTitle={copy?.unreachedTitle}
         />
       ) : !data || data.summary.file_count === 0 ? (
         <NoCoverageState />
@@ -591,7 +608,7 @@ function CoverageGap({
       title="Files the report didn't cover"
       description={
         map.files_total > 0
-          ? `Your coverage report named ${measured.toLocaleString()} files. The dependency graph answers for the other ${map.files_total.toLocaleString()}: ${map.files_reached.toLocaleString()} are reached by a test, ${map.files_not_reached.toLocaleString()} are not. Reaching is not executing, so treat it as a floor, not a measurement.`
+          ? `Your coverage report named ${measured.toLocaleString()} files. The dependency graph answers for the other ${map.files_total.toLocaleString()}: ${map.files_reached.toLocaleString()} are reached by a test, and it finds no test for ${map.files_not_reached.toLocaleString()}. Treat that as a floor, not a measurement: it misses code a framework invokes, such as routes, CLI commands and plugin registries.`
           : "The dependency graph could not answer for the files the coverage report left out."
       }
     >
