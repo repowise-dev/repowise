@@ -366,22 +366,37 @@ def test_q_keeps_a_repowise_dir_that_was_there_or_holds_a_key(
 # -- ETA ----------------------------------------------------------------------
 
 
-def _scan(source: int) -> RepoScanInfo:
-    return RepoScanInfo(total_files=source, language_counts={"Python": source})
+def _scan(source: int, commits: int) -> RepoScanInfo:
+    return RepoScanInfo(
+        total_files=source, language_counts={"Python": source}, total_commits=commits
+    )
+
+
+_BUILD = "to index and build the documentation."
 
 
 @pytest.mark.parametrize(
-    ("source", "run_mode", "expected"),
+    ("source", "commits", "run_mode", "expected"),
     [
-        # Measured: 16 source files, about 10 s for the whole free run.
-        (16, "standard", "Under a minute to index and build the documentation."),
-        # Measured: 1,186 source files, 1m 41s for a fast index.
-        (1186, "fast", "About 2-4 min to index."),
+        # itsdangerous: about 10 s for the whole free run.
+        (16, 677, "standard", f"Under a minute {_BUILD}"),
+        # flask: 1m 51s, nearly all of it file history and co-changes.
+        (90, 5555, "standard", f"About 1-3 min {_BUILD}"),
+        # fastapi: 1m 41s as a fast index, 1m 24s to 1m 44s as a full free run.
+        (1186, 7860, "fast", "About 1-3 min to index."),
+        (1186, 7860, "standard", f"About 1-3 min {_BUILD}"),
     ],
 )
-def test_eta_matches_measured_runs(source: int, run_mode: str, expected: str) -> None:
-    out = _render(PlanState(repo_name="r", scan=_scan(source), run_mode=run_mode))
-    assert expected in out
+def test_eta_matches_measured_runs(
+    source: int, commits: int, run_mode: str, expected: str
+) -> None:
+    state = PlanState(repo_name="r", scan=_scan(source, commits), run_mode=run_mode)
+    assert expected in _render(state)
+
+
+def test_eta_counts_only_the_commits_the_limit_lets_git_walk() -> None:
+    state = PlanState(repo_name="r", scan=_scan(90, 5555), commit_limit=500)
+    assert f"Under a minute {_BUILD}" in _render(state)
 
 
 def test_eta_never_reads_zero_minutes() -> None:
