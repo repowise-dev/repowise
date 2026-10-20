@@ -351,7 +351,7 @@ _RESCORE_LINES = {
         "Security findings came from an older scanner; the next repowise update rescans them."
     ),
     ("health", "security"): (
-        "Health and security findings came from an older analyzer; "
+        "Health and security results came from an older analyzer and scanner; "
         "the next repowise update redoes both."
     ),
 }
