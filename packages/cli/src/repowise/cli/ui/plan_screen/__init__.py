@@ -8,12 +8,13 @@ from repowise.cli.ui.plan_screen.keys import (
     EDIT,
     MODEL,
     QUIT,
+    REPOS,
     START,
     THIS_REPO,
     end_of_input_is_eof,
     read_plan_key,
 )
-from repowise.cli.ui.plan_screen.render import render_plan
+from repowise.cli.ui.plan_screen.render import render_plan, render_plan_body
 from repowise.cli.ui.plan_screen.state import (
     ModelOffer,
     ModelPrice,
@@ -28,6 +29,7 @@ __all__ = [
     "EDIT",
     "MODEL",
     "QUIT",
+    "REPOS",
     "START",
     "THIS_REPO",
     "ModelOffer",
@@ -40,4 +42,5 @@ __all__ = [
     "price_model",
     "read_plan_key",
     "render_plan",
+    "render_plan_body",
 ]

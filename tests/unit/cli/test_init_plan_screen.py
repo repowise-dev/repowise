@@ -213,7 +213,7 @@ def plan(monkeypatch: Any):
 
     monkeypatch.setattr(_plan, "agent_providers_set_up", lambda _r: ())
     monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda _r: {})
-    monkeypatch.setattr(_plan, "_outside_lines", lambda _run: _OUTSIDE)
+    monkeypatch.setattr(_plan, "outside_lines", lambda _path: _OUTSIDE)
     monkeypatch.setattr(
         "repowise.cli.editor_setup.is_editor_setup_disabled", lambda _flag=False: False
     )

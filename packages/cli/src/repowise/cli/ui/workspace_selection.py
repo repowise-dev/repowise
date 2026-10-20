@@ -11,7 +11,7 @@ from rich.table import Table
 from repowise.cli.ui.brand import BRAND_STYLE, OK, WARN
 
 
-def _display_path(repo: Any, root: Any) -> str:
+def display_path(repo: Any, root: Any) -> str:
     """Where this repo sits, relative to the workspace root.
 
     ``repo.path.name`` is the leaf directory, which for almost every repo is
@@ -57,7 +57,7 @@ def interactive_repo_select(
         status = f"[{OK}]indexed[/]" if repo.has_repowise else "[dim]new[/dim]"
         if repo.is_submodule:
             status += " [dim](submodule)[/dim]"
-        table.add_row(f"[{idx}]", repo.name, _display_path(repo, root), status)
+        table.add_row(f"[{idx}]", repo.name, display_path(repo, root), status)
 
     console.print()
     console.print(table)
@@ -151,18 +151,18 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
         hits = [
             r
             for r in repos
-            if name in (r.alias.casefold(), r.name.casefold(), _display_path(r, root).casefold())
+            if name in (r.alias.casefold(), r.name.casefold(), display_path(r, root).casefold())
         ]
         if not hits:
             unknown.append(raw)
         elif len(hits) > 1:
-            paths = ", ".join(_display_path(r, root) for r in hits)
+            paths = ", ".join(display_path(r, root) for r in hits)
             raise ValueError(f"'{raw}' matches {len(hits)} repos ({paths}). Name one by its path.")
         elif hits[0].alias not in seen:
             seen.add(hits[0].alias)
             picked.append(hits[0])
     if unknown:
-        available = ", ".join(_display_path(r, root) for r in repos)
+        available = ", ".join(display_path(r, root) for r in repos)
         raise ValueError(f"Unknown repo: {', '.join(unknown)}. Available: {available}.")
     return picked
 
@@ -170,10 +170,12 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
 def interactive_primary_select(
     console: Console,
     repos: list[Any],
+    current: str | None = None,
 ) -> str:
     """Ask which repo is the primary/default. Returns the alias.
 
-    *repos* is the list of selected :class:`DiscoveredRepo` objects.
+    *repos* is the list of selected :class:`DiscoveredRepo` objects;
+    *current* is the alias Enter keeps, when it is among them.
     """
     if len(repos) == 1:
         return repos[0].alias
@@ -190,10 +192,12 @@ def interactive_primary_select(
     console.print()
 
     choices = [str(i) for i in range(1, len(repos) + 1)]
+    aliases = [repo.alias for repo in repos]
+    default = aliases.index(current) + 1 if current in aliases else 1
     chosen = Prompt.ask(
         "  Which is your primary repo?",
         choices=choices,
-        default="1",
+        default=str(default),
         console=console,
     )
     return repos[int(chosen) - 1].alias

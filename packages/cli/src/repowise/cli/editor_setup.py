@@ -268,6 +268,34 @@ def planned_agents(repo_path: Path, options: EditorSetupOptions) -> tuple[str, .
     return tuple(row["display_name"] for row in rows if row["id"] in ticked)
 
 
+def planned_project_files(repo_path: Path, options: EditorSetupOptions) -> tuple[str, ...]:
+    """Root-relative files :func:`write_editor_project_files` may write with *options*.
+
+    A superset, as ``describe_paths`` is. The Claude Code setup also runs the
+    CLAUDE.md generator, which no target describes.
+    """
+    from repowise.cli.agent_targets.registry import get_target
+    from repowise.cli.agent_targets.targets.claude_code import ID as CLAUDE_CODE
+    from repowise.cli.agent_targets.types import Scope
+    from repowise.cli.uninstall.generated_files import generated_blocks
+
+    resolved = _resolve_configured_project_file_optouts(repo_path, options)
+    paths: list[str] = []
+    for integration in _resolve_integrations(None):
+        if integration.project_file_id in resolved.disabled_project_files:
+            continue
+        target = get_target(integration.integration_id)
+        described = target.describe_paths(Scope.PROJECT, repo_path=repo_path) if target else []
+        for raw in described:
+            try:
+                paths.append(Path(raw).relative_to(repo_path).as_posix())
+            except ValueError:
+                continue
+        if integration.integration_id == CLAUDE_CODE:
+            paths.extend(b.relative_path for b in generated_blocks() if b.id == "claude-md")
+    return tuple(dict.fromkeys(paths))
+
+
 def select_agents_interactively(
     console_obj: Any,
     repo_path: Path,

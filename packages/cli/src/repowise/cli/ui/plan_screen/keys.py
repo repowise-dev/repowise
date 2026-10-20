@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 
 import click.termui
@@ -12,8 +12,9 @@ from rich.prompt import Prompt
 from repowise.cli.ui.plan_screen.state import PlanState
 
 START, MODEL, EDIT, THIS_REPO, QUIT = "start", "model", "edit", "this_repo", "quit"
+#: Workspace only: choose the repos and the primary.
+REPOS = "repos"
 
-_KEYS = {"": START, "m": MODEL, "e": EDIT, "s": THIS_REPO, "q": QUIT}
 
 
 class _InputEndedError(Exception):
@@ -50,9 +51,14 @@ def end_of_input_is_eof() -> Iterator[None]:
 
 
 def read_plan_key(
-    console: Console, state: PlanState, ask: Callable[[], str] | None = None
+    console: Console,
+    state: PlanState,
+    ask: Callable[[], str] | None = None,
+    extra: Mapping[str, str] | None = None,
 ) -> str:
     """The action for the next key: start, model, edit, this_repo or quit.
+
+    *extra* maps further keys to actions, offered on this screen only.
 
     Line-based on purpose: a single-keypress read goes to the console device
     on Windows, so it would block an agent whose stdin is a pipe or
@@ -65,12 +71,14 @@ def read_plan_key(
         def ask() -> str:
             return Prompt.ask("  Choice", default="", show_default=False, console=console)
 
+    keys = {"": START, "m": MODEL, "e": EDIT, **(extra or {})}
+    if state.can_keep_global:
+        keys["s"] = THIS_REPO
+    keys["q"] = QUIT
+    offered = [k for k in keys if k]
+    hint = ", ".join(offered[:-1]) + f" or {offered[-1]}"
     while True:
-        raw = ask().strip().lower()
-        action = _KEYS.get(raw)
-        if action == THIS_REPO and not state.can_keep_global:
-            action = None
+        action = keys.get(ask().strip().lower())
         if action is not None:
             return action
-        offered = "m, e, s or q" if state.can_keep_global else "m, e or q"
-        console.print(f"  [dim]Press Enter to start, or {offered}.[/dim]")
+        console.print(f"  [dim]Press Enter to start, or {hint}.[/dim]")

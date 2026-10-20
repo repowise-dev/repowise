@@ -61,6 +61,9 @@ class PlanState:
     outside: tuple[str, ...] = ()
     this_repo_only: bool = False
     large_repo: bool = False
+    #: Machine-specific files git would see, and whether Enter excludes them.
+    keep_out: tuple[str, ...] = ()
+    git_exclude: bool = False
     #: Commits git history walks at most (``--commit-limit`` or config.yaml).
     commit_limit: int = 5000
 
@@ -77,19 +80,26 @@ class RunShape:
     scan: RepoScanInfo
     onboarding: bool = True
     concurrency: int = 10
+    #: The other repos of a workspace run, each planned as its own repo.
+    also: tuple[RepoScanInfo, ...] = ()
 
 
 def _plans(shape: RunShape) -> list:
     from repowise.core.cost_estimator import approximate_generation_plan
 
-    return approximate_generation_plan(shape.scan.total_files, onboarding=shape.onboarding)
+    return [
+        plan
+        for scan in (shape.scan, *shape.also)
+        if scan.total_files
+        for plan in approximate_generation_plan(scan.total_files, onboarding=shape.onboarding)
+    ]
 
 
 def model_calls_for(shape: RunShape) -> int:
     """Model calls a written run makes, from the plan the server quotes before indexing."""
     from repowise.cli.ui.subscription import model_call_count
 
-    return model_call_count(_plans(shape)) if shape.scan.total_files else 0
+    return model_call_count(_plans(shape))
 
 
 def price_model(provider: str, model: str, shape: RunShape) -> ModelPrice:

@@ -21,7 +21,7 @@ from repowise.core.index_scope import FAST_TO_FULL_COMMAND
 #: What ``e`` opens, named so the key is not a blind door.
 EDIT_PREVIEW = (
     "scope, run mode, excludes, commit limit, file pages, embedder, agents and "
-    "sync, plus concurrency, style and language with a model"
+    "sync, keeping machine-specific files out of git, plus concurrency, style and language with a model"
 )
 
 
@@ -105,6 +105,15 @@ def _connect_rows(state: PlanState) -> list[tuple[str, str]]:
     return [("Connect", agents), ("Keep in sync", sync)]
 
 
+def _keep_out_line(state: PlanState) -> str:
+    """The ``.git/info/exclude`` offer, on or off in words."""
+    files = ", ".join(escape(p) for p in state.keep_out)
+    if state.git_exclude:
+        return f"Keep out of git: {files} [dim](adds to .git/info/exclude)[/dim]"
+    them = "it" if len(state.keep_out) == 1 else "them"
+    return f"[dim]Keep out of git: off for {files} (e adds {them} to .git/info/exclude)[/dim]"
+
+
 def _plan_heading(state: PlanState) -> str:
     if state.chosen is None:
         return f"  [{BRAND}]The plan[/]  [dim]free, runs on this machine[/dim]"
@@ -157,9 +166,9 @@ def _print_outside(console: Console, state: PlanState) -> None:
     _say(console, "[dim]Press s to leave it as is and connect this repo only.[/dim]")
 
 
-def _key_line(state: PlanState) -> str:
+def _key_line(state: PlanState, extra_keys: tuple[tuple[str, str], ...]) -> str:
     model_key = "back to built from code" if state.chosen is not None else "add a model"
-    keys = [("Enter", "start"), ("m", model_key), ("e", "edit plan")]
+    keys = [("Enter", "start"), ("m", model_key), ("e", "edit plan"), *extra_keys]
     if state.can_keep_global:
         keys.append(("s", "point it here" if state.this_repo_only else "this repo only"))
     keys.append(("q", "quit"))
@@ -177,6 +186,21 @@ def render_plan(console: Console, state: PlanState) -> None:
             f"({INDEX_ONLY.lower()}) is recommended: choose run mode fast under e.[/dim]",
             indent=2,
         )
+    render_plan_body(console, state)
+
+
+def render_plan_body(
+    console: Console,
+    state: PlanState,
+    *,
+    extra_keys: tuple[tuple[str, str], ...] = (),
+    edit_preview: str = EDIT_PREVIEW,
+) -> None:
+    """The plan rows, the model opt-in, the outside line and the keys.
+
+    Shared by the single-repo and the workspace screen; each prints its own
+    header above it and may offer *extra_keys* before ``s`` and ``q``.
+    """
     console.print()
     console.print(_plan_heading(state))
     rows = [
@@ -187,8 +211,10 @@ def render_plan(console: Console, state: PlanState) -> None:
         *_connect_rows(state),
     ]
     console.print(key_value_table(rows, label_width=14, value_style=""), highlight=False)
+    if state.keep_out:
+        _say(console, _keep_out_line(state), indent=2)
     _print_model_offer(console, state)
     _print_outside(console, state)
     console.print()
-    _say(console, _key_line(state).strip(), indent=2)
-    _say(console, f"[dim]e covers {EDIT_PREVIEW}.[/dim]", indent=2)
+    _say(console, _key_line(state, extra_keys).strip(), indent=2)
+    _say(console, f"[dim]e covers {edit_preview}.[/dim]", indent=2)
