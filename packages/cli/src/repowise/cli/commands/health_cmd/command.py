@@ -591,10 +591,13 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         if production is not None and has_tests
         else ""
     )
+    # A repo with no recent churn has no hotspots, so no hotspot figure.
+    hotspot = kpis.get("hotspot_health")
+    hotspot_str = f"Hotspot: [bold]{hotspot}[/bold]/10 · " if hotspot is not None else ""
     console.print(
         f"\nCode health: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
         f"{production_str}"
-        f"Hotspot: [bold]{kpis.get('hotspot_health') or '?'}[/bold]/10 · "
+        f"{hotspot_str}"
         f"Worst: [bold]{kpis.get('worst_performer_score') or '?'}[/bold]/10 "
         f"({kpis.get('worst_performer_path') or 'n/a'})"
     )
