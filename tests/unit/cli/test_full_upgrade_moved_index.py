@@ -88,3 +88,35 @@ def test_missing_graph_is_a_clear_error(
     )
     with pytest.raises(click.ClickException, match="repowise init"):
         asyncio.run(run)
+
+
+def test_a_store_with_several_repos_is_not_rebound(
+    moved_repo: tuple[Path, str],
+) -> None:
+    repo, repo_id = moved_repo
+    other_id = _seed_store(repo, str(repo.parent / "repo-c"))
+
+    async def _open() -> str:
+        engine, _sf, opened_id = await up_mod._open_repository(repo)
+        await engine.dispose()
+        return opened_id
+
+    opened = asyncio.run(_open())
+    assert opened not in (repo_id, other_id)
+    assert (repo_id, str(repo.parent / "repo-a")) in _repo_rows(repo)
+
+
+def test_a_configured_database_is_not_rebound(
+    moved_repo: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, repo_id = moved_repo
+    monkeypatch.setattr("repowise.core.persistence.get_configured_db_url", lambda: "sqlite://")
+    monkeypatch.setattr("repowise.cli.helpers.get_db_url_for_repo", lambda _p: f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
+
+    async def _open() -> str:
+        engine, _sf, opened_id = await up_mod._open_repository(repo)
+        await engine.dispose()
+        return opened_id
+
+    assert asyncio.run(_open()) != repo_id
+    assert (repo_id, str(repo.parent / "repo-a")) in _repo_rows(repo)

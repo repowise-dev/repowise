@@ -313,7 +313,10 @@ async def _run_upgrade(
     try:
         async with get_session(sf) as session:
             graph_builder = await rehydrate_graph_builder(session, repo_id, repo_path)
-    except ValueError:
+    except ValueError as exc:
+        # Only the empty-graph case; any other ValueError is a real fault.
+        if "No persisted graph nodes" not in str(exc):
+            raise
         await engine.dispose()
         raise click.ClickException(
             f"The index at {repo_path} has no code graph. Run `repowise init` to rebuild it."
