@@ -18,6 +18,7 @@ from . import cpp as _cpp
 from . import csharp as _csharp
 from . import go as _go
 from . import java as _java
+from . import php as _php
 from . import python as _python
 from . import rust as _rust
 from . import ts_js as _ts_js
@@ -51,6 +52,7 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     # A C parse tree carries no C++-only node (``for_range_loop``, lambdas,
     # ``co_await``), so the C++ dialect reads it whole.
     ("c", _cpp.DIALECT),
+    ("php", _php.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

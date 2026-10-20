@@ -54,6 +54,7 @@ class IncrementalPersist(PersistRun):
     tombstoned_page_ids: list[str] = field(default_factory=list)
     # Same contract, for rows of a page that has been retired outright.
     swept_page_ids: list[str] = field(default_factory=list)
+    deselected_page_ids: list[str] = field(default_factory=list)
     fts_cleanup_ids: set[str] = field(default_factory=set)
     vector_cleanup_ids: set[str] = field(default_factory=set)
 
@@ -101,6 +102,7 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
     from repowise.core.pipeline.persist import (
         sweep_absent_cycle_pages,
         sweep_absent_symbol_spotlights,
+        sweep_deselected_pages,
         sweep_retired_pages,
     )
 
@@ -117,6 +119,23 @@ async def sweep_retired(ctx: IncrementalPersist) -> None:
         ctx.swept_page_ids += await sweep_absent_symbol_spotlights(
             ctx.session, ctx.repo_id, ctx.graph_builder
         )
+        # Unlike the pages above, these may carry embeddings.
+        ctx.deselected_page_ids = await sweep_deselected_pages(
+            ctx.session,
+            ctx.repo_id,
+            ctx.parsed_files,
+            ctx.graph_builder,
+            _generation_config(ctx.repo_path),
+            ctx.git_meta_map,
+        )
+        ctx.swept_page_ids += ctx.deselected_page_ids
+
+
+def _generation_config(repo_path: Any) -> Any:
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.repo_config import load_repo_config
+
+    return GenerationConfig.from_repo_config(load_repo_config(Path(repo_path)))
 
 
 async def mark_tombstones(ctx: IncrementalPersist) -> None:
@@ -584,6 +603,7 @@ async def _write(ctx: IncrementalPersist) -> None:
         create_session_factory,
         get_session,
         init_db,
+        refresh_planner_stats,
         upsert_repository,
     )
     from repowise.core.persistence.database import resolve_db_url
@@ -626,8 +646,12 @@ async def _write(ctx: IncrementalPersist) -> None:
         ctx.fts_cleanup_ids = (
             set(ctx.tombstoned_page_ids) | set(ctx.swept_page_ids) | cleanup_debt["fts"]
         )
-        ctx.vector_cleanup_ids = set(ctx.tombstoned_page_ids) | cleanup_debt["vectors"]
+        ctx.vector_cleanup_ids = (
+            set(ctx.tombstoned_page_ids) | set(ctx.deselected_page_ids) | cleanup_debt["vectors"]
+        )
         await run_steps(ctx, CLEANUP_STEPS)
+        with timed(timings, "persist.planner_stats"):
+            await refresh_planner_stats(ctx.engine)
 
         # Ceiling: retired non-file pages' *vector* embeddings survive this path.
         # There is no store here to delete them from, and building one would

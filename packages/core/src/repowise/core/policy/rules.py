@@ -4,7 +4,7 @@ A rule has the shape of a Kyverno rule (``match``, ``exclude``, then
 conditions under ``when``) and an action from an Allstar-style ladder:
 ``warn``, ``require_owner_review``, ``require_tests`` or ``fail``. A rule
 either tests conditions over a change's evidence, or wraps one of the existing
-CI gates (``gate: security|coverage|doc_drift``), which runs exactly as its
+CI gates (``gate: security|coverage|doc_drift|health``), which runs exactly as its
 own command does.
 
 Evaluation reads a plain evidence mapping, ``{schema_version, change_id,
@@ -43,7 +43,7 @@ POLICIES_FILE = ".repowise/policies.yaml"
 MAX_POLICY_BYTES = 256_000
 
 ACTIONS: tuple[str, ...] = ("warn", "require_owner_review", "require_tests", "fail")
-GATES: tuple[str, ...] = ("security", "coverage", "doc_drift")
+GATES: tuple[str, ...] = ("security", "coverage", "doc_drift", "health")
 ATTRIBUTION_STATES: tuple[str, ...] = ("agent", "human_attested", "unknown")
 CONDITIONS: tuple[str, ...] = (
     "attribution",

@@ -156,7 +156,7 @@ export function OwnerTable({
                           {displayName}
                         </span>
                       )}
-                      {o.kind !== "human" && (
+                      {o.kind && o.kind !== "human" && (
                         <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                           {kindLabel(o.kind, labels)}
                         </span>

@@ -142,8 +142,9 @@ def test_health_bands_plots_each_band_file_count():
     assert part["as_of"] == "4c1e31fe3a9b"
 
 
-def test_health_bands_reads_the_overview_distribution_too():
-    overview = {"code_health": {"distribution": HEALTH["distribution"]}}
+def test_health_bands_reads_the_overview_band_counts_too():
+    bands = HEALTH["distribution"]["bands"]
+    overview = {"code_health": {"files_by_band": {b: v["files"] for b, v in bands.items()}}}
     part = _build(overview, "overview", "get_overview", "health.bands")
     assert sum(_series(part, "files")) == 5034
     assert part["as_of"] is None

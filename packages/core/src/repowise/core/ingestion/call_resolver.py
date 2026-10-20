@@ -24,7 +24,7 @@ per strategy, and it is what the edge carries.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
@@ -204,12 +204,12 @@ _EXTENSION_KINDS = frozenset({"impl"})
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
-    {"cpp", "csharp", "dart", "go", "java", "python"}
+    {"cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
 )
 
 # Chain languages that type the inner call by the identity of the type it
 # returns (``_returned_type_id``); the rest read its type name.
-_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "python"})
+_RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "kotlin", "python"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
@@ -355,9 +355,14 @@ class CallResolver(
         # {representative: ((member id, (fewest, most) arguments), ...)}.
         self._overload_rep: dict[str, str] = {}
         self._overload_members: dict[str, tuple[tuple[str, tuple[int, int | None]], ...]] = {}
+
         # Representatives of sets with a member whose range is unknown; a count
         # cannot choose there, since that member may admit it too.
         self._unranged_overload_sets: set[str] = set()
+
+        # Build variants (``f#cfg(unix)``, ``f#cfg(not(unix))``) are not chosen by
+        # arguments: a call means every one, so an edge fans out to each.
+        self._variant_siblings: dict[str, tuple[str, ...]] = {}
         self._symbols_by_id = {
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
@@ -396,6 +401,12 @@ class CallResolver(
         # ``_build_indices``; applied to every resolved call so the edge lands
         # on the body rather than the header line that announced it.
         self._decl_to_def: dict[str, str] = {}
+
+        # Plain-name alias → the real symbol it stands for (``s`` in
+        # ``s = widget``), same-file only. Populated by ``_index_file``,
+        # applied alongside ``_decl_to_def`` in ``_redirect_to_definition``
+        # (#2791).
+        self._alias_to_target: dict[str, str] = {}
 
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
@@ -485,16 +496,34 @@ class CallResolver(
         top_level: dict[str, str] = {}
         file_methods: dict[tuple[str, str], str] = {}
         representatives = self._index_overload_sets(parsed)
+        binding_counts = Counter(
+            sym.name for sym in parsed.symbols if sym.parent_name is None
+        )
+        # (alias symbol id, the bare name it aliases) — resolved against
+        # ``file_syms`` only once the whole file is indexed, so an alias
+        # written above the name it aliases is not missed by source order.
+        aliases: list[tuple[str, str, str | None]] = []
 
         for sym in parsed.symbols:
             # An overload set is indexed once, under its representative.
             index_id = representatives.get(sym.id, sym.id)
             decl_key = (sym.parent_name, sym.name)
             if sym.is_declaration:
-                declarations.append((path, index_id, decl_key))
+                # A Go interface method spec is not a prototype: its body is
+                # never defined, and the structural implementers that carry one
+                # differ from the interface by name or package. Pairing on
+                # ``(parent, name)`` would redirect the spec onto an unrelated
+                # type's method, so it stays unlinked.
+                if sym.language != "go":
+                    declarations.append((path, index_id, decl_key))
             else:
                 definitions[decl_key].append((path, index_id))
             _index_bare_name(sym, index_id, file_syms, top_level)
+
+            if sym.alias_of is not None and (
+                binding_counts[sym.name] == 1 or "::alias@" in sym.id
+            ):
+                aliases.append((sym.id, sym.alias_of, sym.parent_name))
 
             # Method index: (class_name, method_name) → symbol_id
             if sym.parent_name:
@@ -511,6 +540,21 @@ class CallResolver(
                 extensions[(extended, sym.name)].add((path, index_id))
 
             self._index_globally(path, sym, index_id)
+
+        for alias_id, alias_of_name, parent_name in aliases:
+            # Prefer a target in the alias's own scope before falling back
+            # to a file-wide symbol with the same name.
+            target_id = (
+                file_methods.get((parent_name, alias_of_name))
+                if parent_name is not None
+                else None
+            )
+            if target_id is None:
+                target_id = file_syms.get(alias_of_name)
+
+            # No self-redirect: ``s = s`` names nothing beyond itself.
+            if target_id is not None and target_id != alias_id:
+                self._alias_to_target[alias_id] = target_id
 
         self._file_symbols[path] = file_syms
         self._file_top_level[path] = top_level
@@ -658,19 +702,30 @@ class CallResolver(
         return self._decl_to_def
 
     def _redirect_to_definition(self, resolved: ResolvedCall) -> ResolvedCall:
-        """Move a call edge off a forward declaration onto its definition.
+        """Redirect calls through aliases and declarations to the final target."""
+        original = resolved.callee_id
+        target = original
+        visited: set[str] = set()
 
-        No-op for every language but C/C++, and for the tiers that already
-        landed on a definition.
+        while target not in visited:
+            visited.add(target)
+            next_target = self._decl_to_def.get(target)
+            if next_target is None:
+                next_target = self._alias_to_target.get(target)
+            if next_target is None:
+                break
+            target = next_target
 
-        The self-edge guard carries a recursive function whose prototype sits
-        in a header: Tier 1 declines to link the call to the body it is
-        already inside, Tier 2 then finds the header declaration, and the
-        redirect would point the edge straight back at the caller.
-        """
-        target = self._decl_to_def.get(resolved.callee_id)
-        if target is None or target == resolved.caller_id:
+        # A cycle makes the redirect ambiguous; keep the original resolution.
+        if target in visited and (
+            self._decl_to_def.get(target) is not None
+            or self._alias_to_target.get(target) is not None
+        ):
             return resolved
+
+        if target == original or target == resolved.caller_id:
+            return resolved
+
         return ResolvedCall(
             resolved.caller_id,
             target,
@@ -794,9 +849,16 @@ class CallResolver(
                 # tier that answered, so it is stamped once here.
                 if call.edge_type != "calls":
                     resolved = replace(resolved, edge_type=call.edge_type)
+
                 if call.spawned:
                     resolved = replace(resolved, spawned=True)
-                results.append(resolved)
+
+                for variant in self._variant_siblings.get(
+                    resolved.callee_id, (resolved.callee_id,)
+                ):
+                    if variant != resolved.caller_id:
+                        results.append(replace(resolved, callee_id=variant))
+
 
         return results
 
@@ -821,14 +883,15 @@ class CallResolver(
             if handled:
                 return resolved
 
-        bare_fallback = self._strategies_for(file_path).member_bare_fallback
+        strategies = self._strategies_for(file_path)
+        bare_fallback = strategies.member_bare_fallback
         # --- Method call with receiver: receiver.method() ---
         if call.receiver_name:
             handled, hit = self._resolve_member_call(file_path, call, caller_id)
             if not handled and call.bare_name_fallback and bare_fallback:
                 hit = self._resolve_free_call(file_path, call, caller_id)
             return self._with_props(hit, call)
-        if receiver_call is not None and not bare_fallback:
+        if receiver_call is not None and not (bare_fallback and strategies.chain_bare_fallback):
             return None
 
         # --- Free function call: function() ---
@@ -1008,10 +1071,18 @@ class CallResolver(
             if hit is not None:
                 tier = hit.origin.removeprefix("receiver_typed_")
                 return True, self._return_typed_call(caller_id, hit.callee_id, tier, call.line)
-        if language in ("python", "dart"):
+            if language == "kotlin" and type_id is not None:
+                # A Kotlin extension function can add the method to the type the
+                # inner call returns; a member of the type still wins over it.
+                _, extension = self._extension_call(
+                    file_path, call, caller_id, self._symbols_by_id[type_id].name
+                )
+                if extension is not None:
+                    return True, extension
+        if language in ("python", "dart", "kotlin"):
             # A type name read in the caller's file is not evidence, and an
-            # inherited method is not a refusal: the bare name keeps the site
-            # where the language allows one.
+            # inherited method or an extension is not a refusal: the bare name
+            # keeps the site where the language allows one.
             return False, None
         type_name = (
             tabled
@@ -1217,11 +1288,11 @@ class CallResolver(
 
         A receiver records one hop, but the parser keeps every link of a chain
         as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. C#, Dart, Go and Java read it, so a builder chain
+        off the site *inner* names. C#, Dart, Go, Java and Kotlin read it, so a builder chain
         types each link from the one before; elsewhere an inner call is still
         typed as if nothing were chained under it.
         """
-        if language not in ("csharp", "dart", "go", "java"):
+        if language not in ("csharp", "dart", "go", "java", "kotlin"):
             return None
         sites = self._chained_sites.get(file_path)
         if sites is None:
@@ -1631,8 +1702,29 @@ class CallResolver(
 
         # Every strategy below ends in a lookup keyed on the method name, so a
         # name the repo declares nowhere cannot resolve.
-        if method_name not in self._global_symbols:
+        # A Go interface method spec is bodiless, so ``_global_symbols`` leaves it
+        # out; the method index holds it, and it is what an interface-typed
+        # receiver binds to.
+        if method_name not in self._global_symbols and not (
+            self._language_of(file_path) == "go" and method_name in self._method_names()
+        ):
             return False, None
+
+        # A Go local, parameter or ``var`` the body declares is read through its
+        # declared type, never as a type name: ``reader.Peek()`` on a
+        # ``reader text.Reader`` is the interface's method, not the unexported
+        # struct ``reader``'s. Go has no method call on a type name outside a
+        # method expression, so the variable reading is the right one.
+        if self._go_receiver_is_variable(file_path, call, caller_id):
+            hit = self._first_strategy_hit(
+                self._strategies_for(file_path).member, file_path, call, caller_id
+            )
+            if hit is not None:
+                return True, hit
+            hit = self._unclassed_receiver_call(file_path, call, caller_id)
+            if hit is None and self._receiver_type_is_external(file_path, call, caller_id):
+                return True, None
+            return hit is not None, hit
 
         # The caller's own file first, ahead of the language strategies: a
         # private inner class here outranks a same-named package sibling.
@@ -1661,6 +1753,13 @@ class CallResolver(
             # The method is the external type's: refused, not left to a name match.
             return True, None
         return hit is not None, hit
+
+    def _go_receiver_is_variable(self, file_path: str, call: CallSite, caller_id: str) -> bool:
+        """Whether a Go call's receiver is a typed local, parameter or ``var`` of the caller."""
+        receiver_name = call.receiver_name or ""
+        if "." in receiver_name or self._language_of(file_path) != "go":
+            return False
+        return receiver_name in self._declared_types_in(file_path, caller_id, "go")
 
     def _unclassed_receiver_call(
         self,

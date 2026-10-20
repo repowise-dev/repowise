@@ -100,6 +100,12 @@ class EvidenceItem:
         if data["kind"] == "reaching_tests" and data["basis"] != "unresolved":
             # Derived from the rows, so a kept checklist reads under the current rule.
             status = _tests_status(data.get("details") or [])
+        elif data["kind"] == "health_delta" and isinstance(data.get("value"), Mapping):
+            value = data["value"]
+            status = _health_status(
+                (value.get("introduced") or 0) + (value.get("worsened") or 0),
+                bool(value.get("complete")),
+            )
         return cls(
             kind=data["kind"],
             label=data["label"],
@@ -441,20 +447,29 @@ def _health(bundle: ChangeReviewBundle) -> EvidenceItem:
     ]
     if delta.status == "partial":
         details.append({"note": delta.explanation})
+    complete = delta.status == "available"
     return EvidenceItem(
         kind,
         label,
-        "attention" if worse else "ok",
+        _health_status(worse, complete),
         "measured",
         {
             "introduced": delta.introduced_total,
             "worsened": delta.worsened_total,
             "resolved": delta.resolved_total,
-            "complete": delta.status == "available",
+            "complete": complete,
         },
         details,
         source,
     )
+
+
+def _health_status(worse: int, complete: bool) -> Status:
+    """A regression found is attention either way; finding none clears the
+    change only when the comparison covered all of it."""
+    if worse:
+        return "attention"
+    return "ok" if complete else "unknown"
 
 
 def _provenance(inputs: EvidenceInputs) -> EvidenceItem:

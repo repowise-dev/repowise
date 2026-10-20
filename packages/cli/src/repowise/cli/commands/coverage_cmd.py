@@ -197,15 +197,13 @@ def coverage_add(
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
                 console.print(
-                    "[yellow]No index yet — run `repowise init` once before "
+                    "[yellow]No index yet. Run `repowise init` once before "
                     "adding coverage.[/yellow]"
                 )
                 return False
             repo_keys = await _repo_file_keys(session, repo_row.id)
             if not repo_keys:
-                console.print(
-                    "[yellow]No indexed files found — run `repowise init` first.[/yellow]"
-                )
+                console.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
                 return False
 
             # Stamp the *live* HEAD, not ``repo_row.head_commit``. The stored
@@ -269,7 +267,7 @@ def coverage_add(
                         console.print(
                             "[red]More than half the report did not map to the repo "
                             "tree.[/red] The stored coverage describes only a fragment "
-                            "of the repository — fix [cyan]coverage.strip_prefix[/cyan] "
+                            "of the repository. Fix [cyan]coverage.strip_prefix[/cyan] "
                             "or [cyan]coverage.path_prefix[/cyan] in "
                             ".repowise/config.yaml and re-run."
                         )
@@ -336,7 +334,7 @@ def coverage_add(
                     "not map to the repo tree.[/red] The stored numbers describe only "
                     "the mapped fragment, not the repository. Fix "
                     "[cyan]coverage.strip_prefix[/cyan] / [cyan]coverage.path_prefix[/cyan] "
-                    "in .repowise/config.yaml and re-run — this run exits non-zero so "
+                    "in .repowise/config.yaml and re-run. This run exits non-zero so "
                     "scripts cannot mistake a fragment for complete coverage."
                 )
                 return False
@@ -413,7 +411,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                notices.print("[yellow]No index yet — run `repowise init`.[/yellow]")
+                notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
                 if fmt == "json":
                     emit_json({"repo": str(repo_path), "indexed": False})
                 return
@@ -449,7 +447,7 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 partial = summary.get("mapping_partial")
                 partial_suffix = (
                     " [red](partial: stored numbers cover a fragment of the repo "
-                    "— fix coverage.strip_prefix and re-ingest)[/red]"
+                    "; fix coverage.strip_prefix and re-ingest)[/red]"
                     if partial
                     else ""
                 )

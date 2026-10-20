@@ -616,6 +616,41 @@ class TestUpdateWorkspace:
         updated = [r for r in results if r.updated]
         assert len(updated) == 0
 
+    @pytest.mark.parametrize("content", ["[]", '"x"', "null", "0"])
+    def test_dry_run_tolerates_a_state_file_that_is_not_an_object(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        """A member whose state.json is valid JSON but not an object must not block the workspace."""
+        _make_git_repo(tmp_path, "api")
+        web = _make_git_repo(tmp_path, "web")
+        (web / ".repowise").mkdir(exist_ok=True)
+        (web / ".repowise" / "state.json").write_text(content, encoding="utf-8")
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")],
+        )
+
+        import asyncio
+
+        results = asyncio.run(update_workspace(tmp_path, ws_config, dry_run=True, run_hooks=False))
+        assert isinstance(results, list)  # reaching here is the point: it used to raise AttributeError
+
+    def test_write_repo_state_replaces_a_state_file_that_is_not_an_object(
+        self, tmp_path: Path
+    ) -> None:
+        from repowise.core.workspace.update import RepoUpdateResult, _write_repo_state
+
+        repo = _make_git_repo(tmp_path, "web")
+        head = get_head_commit(repo)
+        (repo / ".repowise").mkdir(exist_ok=True)
+        (repo / ".repowise" / "state.json").write_text("[]", encoding="utf-8")
+
+        result = RepoUpdateResult(alias="web", updated=True)
+        _write_repo_state(repo, "web", head, False, result)
+
+        state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert state["last_sync_commit"] == head
+
     @pytest.mark.parametrize(
         "failure_stage",
         ["start", "mkdir", "lock", "index", "state", "stamp", "pending"],
@@ -1007,3 +1042,34 @@ class TestRepoUpdateResult:
         assert r.symbol_count == 0
         assert r.error is None
         assert r.skipped_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Saved exclude patterns (issue #2947)
+# ---------------------------------------------------------------------------
+
+
+class TestSavedExcludeSources:
+    def test_unreadable_shared_database_logs_a_warning(self, tmp_path: Path, caplog) -> None:
+        import asyncio
+        import logging
+
+        from repowise.core.workspace.update.repo import _configured_settings_json
+
+        caplog.set_level(logging.WARNING, logger="repowise.workspace.update")
+        with patch(
+            "repowise.core.persistence.create_engine", side_effect=RuntimeError("db unreachable")
+        ):
+            assert asyncio.run(_configured_settings_json("sqlite+aiosqlite://", tmp_path)) is None
+        assert "saved exclude patterns not applied" in caplog.text
+
+    def test_unparseable_settings_json_logs_a_warning(self, caplog) -> None:
+        import logging
+
+        from repowise.core.workspace.update.repo import _merge_settings_excludes
+
+        caplog.set_level(logging.WARNING, logger="repowise.workspace.update")
+        patterns = ["dist/**"]
+        _merge_settings_excludes(patterns, "{not json")
+        assert patterns == ["dist/**"]
+        assert "saved exclude patterns not applied" in caplog.text

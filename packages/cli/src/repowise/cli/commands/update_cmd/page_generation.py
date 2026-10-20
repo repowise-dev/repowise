@@ -6,11 +6,11 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
 
-from repowise.cli.helpers import run_async
+from repowise.cli.helpers import console, run_async
+from repowise.cli.ui import make_progress
 from repowise.core.pipeline import timed
 
 from .options import DocsPass, UpdateOptions, UpdateRun
-from .reporting import make_generation_progress
 
 
 def _generation_warning_handler(
@@ -123,10 +123,11 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
         finally:
             await checkpointer.close()
 
-    with make_generation_progress() if run.emitter is None else nullcontext() as gen_progress:
+    gen_bar = make_progress(console, cost=True) if run.emitter is None else nullcontext()
+    with gen_bar as gen_progress:
         progress.bar = gen_progress
         progress.task = (
-            gen_progress.add_task("Generating pages...", total=None, cost=0.0)
+            gen_progress.add_task("Generating pages...", total=None, cost=0.0, unit="pages")
             if gen_progress is not None
             else None
         )

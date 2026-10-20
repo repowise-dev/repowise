@@ -357,3 +357,16 @@ def test_writers_retry_while_a_reader_holds_the_file(tmp_path, monkeypatch, writ
         resolve.update_global_config(lambda config: config.update(active_provider="kimi"))
         assert resolve.read_global_config()["active_provider"] == "kimi"
     assert len(refusals) == 3
+
+
+def test_credentialed_providers_follow_autodetect_order_across_sources(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, env="GEMINI_API_KEY=g\n")
+    _global(tmp_path, keys={"openai": "sk-stored"})
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "d")
+    # Process env, the repo .env and a stored key all count, in one order.
+    assert resolve.credentialed_providers(repo) == ("openai", "gemini", "deepseek")
+    assert resolve_llm(repo).provider == resolve.credentialed_providers(repo)[0]
+
+
+def test_credentialed_providers_never_list_an_agent_cli(tmp_path):
+    assert resolve.credentialed_providers(_repo(tmp_path)) == ()

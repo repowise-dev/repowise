@@ -207,7 +207,13 @@ def test_score_breakdown_does_not_invent_a_deduction_for_an_advisory_finding():
     """
     from repowise.core.analysis.health.aggregation import score_breakdown
 
-    result = score_breakdown([_finding("mock_saturated_test", 0.0, ADVISORY_DIMENSION)])
+    result = score_breakdown(
+        [
+            _finding("mock_saturated_test", 0.0, ADVISORY_DIMENSION),
+            _finding("io_in_loop", 0.0, "performance"),
+            _finding("sql_select_star", 0.0, "maintainability"),
+        ]
+    )
     assert result["categories"] == []
     assert result["total_deduction"] == 0.0
 

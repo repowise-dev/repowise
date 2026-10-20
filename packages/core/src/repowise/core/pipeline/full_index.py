@@ -38,6 +38,7 @@ async def index_repo_full(
         create_session_factory,
         get_session,
         init_db,
+        refresh_planner_stats,
         upsert_repository,
     )
     from repowise.core.persistence.database import resolve_db_url
@@ -90,6 +91,7 @@ async def index_repo_full(
             from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
 
             await write_read_snapshots(session, repo.id)
+        await refresh_planner_stats(engine)
 
         from repowise.core.pipeline.cleanup_debt import (
             clear_cleanup_debt,

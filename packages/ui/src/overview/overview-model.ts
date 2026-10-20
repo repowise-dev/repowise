@@ -61,6 +61,12 @@ export interface OverviewRoutes {
   settings?: string;
   /** Indexing cost breakdown, listed under Explore only where the page exists. */
   costs?: string;
+  /** The tests and coverage page, `${base}/tests` by default. `null` means the
+   *  host has no such page, and the Tests card is not rendered. */
+  tests?: string | null;
+  /** The command the Tests card offers when no coverage report exists,
+   *  {@link COVERAGE_ADD_COMMAND} by default. */
+  coverageCommand?: string;
 }
 
 /** Every route in {@link OverviewRoutes}, with the shared defaults applied. */
@@ -82,6 +88,8 @@ export function resolveOverviewRoutes(routes: OverviewRoutes) {
     chat: routes.chat,
     settings: routes.settings,
     costs: routes.costs,
+    tests: routes.tests === undefined ? `${base}/tests` : routes.tests,
+    coverageCommand: routes.coverageCommand ?? COVERAGE_ADD_COMMAND,
   };
 }
 
@@ -244,8 +252,8 @@ export const COVERAGE_ADD_COMMAND = "repowise coverage add";
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 /** Coverage when a report exists; the ingest command when the server says none does. */
-function testsCard(explore: OverviewSummaryResponse["explore"], base: string): ExploreCard {
-  const card = { key: "tests", label: "Tests", href: `${base}/tests` };
+function testsCard(explore: OverviewSummaryResponse["explore"], href: string, command: string): ExploreCard {
+  const card = { key: "tests", label: "Tests", href };
   const coverage = explore?.coverage;
   if (coverage) {
     return {
@@ -259,7 +267,7 @@ function testsCard(explore: OverviewSummaryResponse["explore"], base: string): E
   return {
     ...card,
     caption: "No coverage report yet. Run your tests with coverage on, then add the report:",
-    command: COVERAGE_ADD_COMMAND,
+    command,
   };
 }
 
@@ -273,7 +281,7 @@ export function buildExploreCards(
   summary: OverviewSummaryResponse,
   routes: OverviewRoutes,
 ): ExploreCard[] {
-  const { base } = resolveOverviewRoutes(routes);
+  const { base, tests, coverageCommand } = resolveOverviewRoutes(routes);
   const { stats, explore } = summary;
   return [
     { key: "code-health", label: "Code health map", href: `${base}/code-health`, ...healthFigure(stats) },
@@ -287,7 +295,7 @@ export function buildExploreCards(
     },
     { key: "decisions", label: "Decisions", href: `${base}/decisions`, ...decisionsFigure(explore) },
     { key: "refactoring", label: "Refactoring", href: `${base}/refactoring`, ...refactoringFigure(explore) },
-    testsCard(explore, base),
+    ...(tests == null ? [] : [testsCard(explore, tests, coverageCommand)]),
   ];
 }
 

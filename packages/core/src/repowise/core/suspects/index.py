@@ -37,6 +37,11 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def repo_terms(repo_path: Path | str) -> frozenset[str]:
+    """The repo's own name as search words: they match every change."""
+    return frozenset(meaningful_terms(Path(repo_path).resolve().name.replace("-", " ")))
+
+
 def _tracked_files(repo_path: Path) -> frozenset[str]:
     return frozenset((_git(repo_path, "ls-files") or "").splitlines())
 
@@ -130,7 +135,7 @@ async def find_suspects(
     named = prepared.files
     ctx = SuspectContext(
         repo_files=repo_files,
-        repo_terms=frozenset(meaningful_terms(repo_path.resolve().name.replace("-", " "))),
+        repo_terms=repo_terms(repo_path),
         imports=await _imports(session, repo_id) if named else {},
         co_change=await get_co_change_partners(session, repo_id, list(named)) if named else {},
     )
@@ -159,4 +164,4 @@ async def find_suspects(
     }
 
 
-__all__ = ["DEFAULT_LIMIT", "DEFAULT_WINDOW_DAYS", "NOTE", "find_suspects"]
+__all__ = ["DEFAULT_LIMIT", "DEFAULT_WINDOW_DAYS", "NOTE", "find_suspects", "repo_terms"]

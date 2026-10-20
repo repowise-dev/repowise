@@ -519,12 +519,13 @@ def _default_shape(
     payload.pop("candidates", None)
     _prune_fallback_targets(payload, raw_fallbacks)
 
-    if not str(payload.get("answer") or "").strip():
-        payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
-    payload.setdefault(
-        "next_action_hint",
-        "Use the first emitted evidence row; refine the question if it does not resolve the issue.",
-    )
+    if not payload.get("error"):
+        if not str(payload.get("answer") or "").strip():
+            payload["answer"] = str(payload.get("note") or "No grounded answer was found.")
+        payload.setdefault(
+            "next_action_hint",
+            "Use the first emitted evidence row; refine the question if it does not resolve the issue.",
+        )
 
 
 _RANKED_RATIONALE_CHARS = 200

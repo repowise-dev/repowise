@@ -440,6 +440,16 @@ class PerformanceQuery:
         return None if self.role == "all" else frozenset({self.role})
 
 
+def served_position(query: PerformanceQuery, index: int, stored: int) -> int:
+    """Row *index*'s 0-based place in the ranked list *query* serves.
+
+    The stored rank counts every cause in the repository, so a filtered list
+    numbered by it skips. Another order keeps *stored*: a place by leverage is
+    no rank, and a lookup by id has no list.
+    """
+    return query.offset + index if query.sort == DEFAULT_SORT else stored
+
+
 def _resolve_context(context: str | None, ignored: dict[str, str]) -> PerformanceContext:
     if not context:
         return DEFAULT_CONTEXT
@@ -574,6 +584,9 @@ def serialize(
     ``decisions`` adds the fix, gain and effort to a ``summary`` row, for a
     list a person acts on from (the dashboard queue). The agent surface keeps
     its summary shape, so its responses do not grow.
+
+    ``rank_position`` is the stored rank; a list serves
+    :func:`served_position` in its place.
     """
     details = detail_map(row)
     payload = {
@@ -824,6 +837,7 @@ __all__ = [
     "row_sort_key",
     "scope_counts",
     "serialize",
+    "served_position",
     "sort_keys",
     "summary_payload",
     "unresolved_detail",

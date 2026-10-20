@@ -130,22 +130,6 @@ def _available_memory_bytes() -> int | None:
         return None
 
 
-def _release_repo(repo: Any) -> None:
-    """Release *repo*'s git subprocesses and pack maps, like ``Repo.close()``.
-
-    ``Repo.close()`` also runs two full ``gc.collect()`` passes on Windows so a
-    caller can delete the checkout. Nothing here deletes it, and by the end of
-    the git stage the heap holds the whole parsed graph, so each pass costs
-    seconds: one close per worker thread put ~18 s on PowerToys' critical path.
-    """
-    import gitdb.util
-
-    with contextlib.suppress(Exception):
-        repo.git.clear_cache()
-    with contextlib.suppress(Exception):
-        gitdb.util.mman.collect()
-
-
 def git_worker_count(
     pending: int,
     *,
@@ -457,7 +441,7 @@ class GitIndexer:
                 indexable_files, code_results, sample, self.commit_limit, workers
             ),
         )
-        _release_repo(repo)
+        repo.close()
 
         logger.info(
             "Git indexing complete",
@@ -695,7 +679,7 @@ class GitIndexer:
         if owner_task is not None:
             owner_task.remove_done_callback(_cleanup_executor)
         _cleanup_executor()
-        _release_repo(repo)
+        repo.close()
         return results
 
     def _wants_idle_refresh(
@@ -1109,7 +1093,7 @@ class GitIndexer:
             with timed(timings, "git.repo_totals"):
                 totals = capture_repo_totals(repo)
         finally:
-            _release_repo(repo)
+            repo.close()
         return fix_walk, prior_defects, totals
 
     def _build_fix_events(self, walk: FixWalk) -> tuple[list[dict], bool]:
@@ -1262,9 +1246,9 @@ class GitIndexer:
         def get_thread_repo() -> Any:
             repo = getattr(tls, "repo", None)
             if repo is None:
-                import git as gitpython
+                from repowise.core.git_repo import Repo
 
-                repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
+                repo = Repo(self.repo_path, search_parent_directories=True)
                 tls.repo = repo
                 with lock:
                     created.append(repo)
@@ -1274,15 +1258,15 @@ class GitIndexer:
             with lock:
                 repos, created[:] = list(created), []
             for repo in repos:
-                _release_repo(repo)
+                repo.close()
 
         return get_thread_repo, close_all
 
     def _get_repo(self) -> Any | None:
         try:
-            import git as gitpython
+            from repowise.core.git_repo import Repo
 
-            return gitpython.Repo(self.repo_path, search_parent_directories=True)
+            return Repo(self.repo_path, search_parent_directories=True)
         except Exception as exc:
             logger.warning(
                 "Git unavailable or not a repository",

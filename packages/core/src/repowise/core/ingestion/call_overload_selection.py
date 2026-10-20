@@ -236,31 +236,47 @@ class OverloadSelectionMixin:
     """Overload-set indexing and member selection."""
 
     def _index_overload_sets(self, parsed: ParsedFile) -> dict[str, str]:
-        """Record *parsed*'s overload sets; ``{member id: representative}``.
-
-        Only parameter-count members are narrowed: a build-variant member
-        (``#cfg(...)``) is not chosen by its arguments. Kotlin extensions of
-        different receivers are separate sets: the receiver chooses among them.
-        """
+        """Record overload sets and Rust build variants for one parsed file."""
         members: dict[tuple[str, str | None], list[Symbol]] = defaultdict(list)
+        variants: dict[str, list[Symbol]] = defaultdict(list)
+
         for sym in parsed.symbols:
             base, payload = split_symbol_id(sym.id)
-            if payload is not None and payload[0].isdigit():
+            if payload is None:
+                continue
+            if payload[0].isdigit():
                 members[(base, sym.extension_receiver)].append(sym)
+            else:
+                variants[base].append(sym)
+
         representatives: dict[str, str] = {}
+
         for overloads in members.values():
             overloads.sort(key=lambda sym: sym.start_line)
             rep = overloads[0].id
             ranges: dict[str, tuple[int, int | None]] = {}
+
             for sym in overloads:
                 representatives[sym.id] = rep
-                admitted = signature_parameter_range(sym.signature or "", sym.language)
+                admitted = signature_parameter_range(
+                    sym.signature or "", sym.language
+                )
                 if admitted is None:
                     self._unranged_overload_sets.add(rep)
                 else:
                     ranges.setdefault(sym.id, admitted)
+
             self._overload_members[rep] = tuple(ranges.items())
+
         self._overload_rep.update(representatives)
+
+        for group in variants.values():
+            group.sort(key=lambda sym: sym.start_line)
+            ids = tuple(sym.id for sym in group)
+            for sym_id in ids:
+                representatives[sym_id] = ids[0]
+                self._variant_siblings[sym_id] = ids
+
         return representatives
 
     def _pair_overload_members(self) -> None:

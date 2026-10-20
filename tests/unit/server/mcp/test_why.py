@@ -861,3 +861,45 @@ async def test_get_why_governed_target_reason_agrees_with_the_basis(session, set
     assert "No decision record covers" not in result["reason"]
     assert "binds it whatever the question" in result["reason"]
     assert "try_instead" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_question_naming_one_file_anchors_on_it(setup_mcp):
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why("why is Service.py shaped this way?")
+    assert result["mode"] == "search"
+    assert list(result["target_context"]) == ["src/auth/service.py"]
+    assert result["anchored_on"] == "src/auth/service.py"
+    # Passed targets are the caller's own: nothing is inferred over them.
+    passed = await get_why("why is service.py shaped this way?", targets=["src/db/models.py"])
+    assert list(passed["target_context"]) == ["src/db/models.py"]
+    assert "anchored_on" not in passed
+
+
+@pytest.mark.asyncio
+async def test_a_file_name_two_indexed_files_carry_anchors_nothing(setup_mcp, factory):
+    from repowise.core.persistence.models import GraphNode
+    from repowise.server.mcp_server import get_why
+
+    async with factory() as session:
+        session.add(
+            GraphNode(
+                id="gn-dup",
+                repository_id=setup_mcp,
+                node_id="src/billing/models.py",
+                node_type="file",
+                language="python",
+            )
+        )
+        await session.commit()
+    assert "target_context" not in await get_why("why is models.py shaped this way?")
+    exact = await get_why("why is src/db/models.py shaped this way?")
+    assert list(exact["target_context"]) == ["src/db/models.py"]
+
+
+@pytest.mark.asyncio
+async def test_a_question_naming_no_indexed_file_stays_unanchored(setup_mcp):
+    from repowise.server.mcp_server import get_why
+
+    assert "target_context" not in await get_why("why is nowhere.py shaped this way?")

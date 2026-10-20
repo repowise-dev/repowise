@@ -50,7 +50,12 @@
     "gated": {},
     "maintainability_average": 5.5,
     "performance_average": 9.5,
-    "performance_findings": 0,
+    "performance_causes": {
+      "now": 0,
+      "production": 0,
+      "all": 0,
+      "per_10k_loc": 0.0
+    },
     "worst_performance_path": "src/core.py",
     "worst_performance_score": 9.5,
     "severity_breakdown": {
@@ -140,7 +145,7 @@
       "id": "proposed-dec1",
       "type": "proposed_decision",
       "title": "Keep the engine single-threaded",
-      "description": "Auto-proposed decision awaiting review",
+      "description": "Decision recorded by hand, awaiting review",
       "severity": "medium",
       "target_id": "dec1"
     },

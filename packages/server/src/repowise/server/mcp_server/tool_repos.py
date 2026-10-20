@@ -25,9 +25,12 @@ def _workspace_repos(registry: Any) -> list[dict[str, Any]]:
     if workspace_root is not None:
         try:
             from repowise.core.workspace import WorkspaceConfig
+            from repowise.core.workspace.update import sync_workspace_state_from_disk
 
             fresh = WorkspaceConfig.load(workspace_root)
             if getattr(fresh, "repos", None):
+                # A repo updated on its own leaves the config behind its state.json.
+                sync_workspace_state_from_disk(workspace_root, fresh, save_if_changed=False)
                 ws_config = fresh
         except Exception:
             pass  # never fail discovery on a config reload hiccup (missing/locked file)

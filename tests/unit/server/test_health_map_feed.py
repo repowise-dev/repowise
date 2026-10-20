@@ -8,10 +8,12 @@ the rows it actually returned.
 from __future__ import annotations
 
 from httpx import AsyncClient
+from sqlalchemy import update
 
 from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import link_performance_findings
 from repowise.core.persistence import crud
+from repowise.core.persistence.models import PerformanceOpportunity
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -58,11 +60,12 @@ def _perf_finding(path: str, line: int, path_nodes: list[str]) -> HealthFindingD
     )
 
 
-async def _seed(app, client: AsyncClient) -> str:
+async def _seed(app, client: AsyncClient, *, queued: bool = True) -> str:
     """One big clean file, and one tiny file carrying the repository's cause.
 
     The tiny file is the whole point: a size ranking puts it last, and it is
-    where the work is.
+    where the work is. ``queued`` stores the cause as a default-queue member,
+    the verdict the finalizer writes for a production cause with a proven cost.
     """
     repo = await create_test_repo(client)
     repo_id = repo["id"]
@@ -78,6 +81,11 @@ async def _seed(app, client: AsyncClient) -> str:
         await crud.save_health_findings(session, repo_id, findings)
         await crud.finalize_performance_opportunities(
             session, repo_id, analyzed_commit="a" * 40
+        )
+        await session.execute(
+            update(PerformanceOpportunity)
+            .where(PerformanceOpportunity.repository_id == repo_id)
+            .values(queue_eligible=queued)
         )
         await session.commit()
     return repo_id
@@ -150,6 +158,19 @@ async def test_rows_carry_the_burden_the_lens_rings_by(app, client):
     # server with no read model, and it must not read that as a clear file.
     assert big["performance_opportunities"] == 0
     assert "performance_actionability" not in big
+
+
+async def test_a_cause_outside_the_default_queue_reads_clear_on_the_map(app, client):
+    """The lens colours what the performance headline leads with: the default queue."""
+    repo_id = await _seed(app, client, queued=False)
+    feed = await _feed(client, repo_id, cap=100)
+    tiny = next(f for f in feed["files"] if f["file_path"] == "src/tiny.py")
+    assert tiny["performance_opportunities"] == 0
+    assert "performance_actionability" not in tiny
+    # The repository block still counts every open cause.
+    assert feed["performance"]["opportunities_total"] >= 1
+    capped = await _feed(client, repo_id, cap=1)
+    assert capped["selection"]["performance_shown"] == 0
 
 
 async def test_a_file_with_only_expected_causes_reads_clear_on_the_map(

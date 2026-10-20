@@ -358,6 +358,10 @@ class ReceiverTypingMixin(
         found = self._typed_receiver_lookup(file_path, call, caller_id, bare, type_name)
         if found is None and self._strategies_for(file_path).inherited_typed_receiver:
             return self._inherited_typed_target(file_path, call, caller_id, bare)
+        if found is None and self._language_of(file_path) == "go":
+            promoted = self._go_embedded_method(file_path, bare, call.target_name)
+            if promoted is not None and promoted[1] != caller_id:
+                return promoted[1], "import"
         return found
 
     def _typed_receiver_lookup(

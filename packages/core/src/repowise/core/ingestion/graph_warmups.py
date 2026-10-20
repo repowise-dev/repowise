@@ -316,6 +316,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
                         break
 
     _mark_cpp_entry_point_files(parsed_files, graph, getattr(ctx, "source_map", None))
+    _stamp_cpp_build_listed(ctx, graph, index)
 
 
 # Tokens whose presence means the surrounding TU wires itself into a
@@ -793,3 +794,59 @@ def run_warmups(
             done = getattr(progress, "on_phase_done", None)
             if callable(done):
                 done(phase_name)
+
+
+def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
+    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed."""
+    import re
+
+    from repowise.core.fs_walk import glob_via
+
+    repo_path = ctx.repo_path
+    if repo_path is None:
+        return
+    root = repo_path.resolve()
+
+    # 1. CMake targets from cpp_workspace index (sources only; headers are not compiled TUs)
+    for target in getattr(index, "targets", {}).values():
+        for src in getattr(target, "sources", ()):
+            if src in graph.nodes:
+                graph.nodes[src]["build_listed"] = True
+
+    # 2. MSBuild .vcxproj files (ClCompile only; ClInclude headers are not compiled TUs)
+    item_re = re.compile(r"""<ClCompile\s+Include=["']([^"']+)["']""", re.IGNORECASE)
+    for vcxproj in glob_via(ctx.walk_snapshot, root, "*.vcxproj", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = vcxproj.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        vdir = vcxproj.parent
+        for m in item_re.finditer(content):
+            inc = m.group(1).strip()
+            if "$(" in inc or "*" in inc or "?" in inc:
+                continue
+            resolved = (vdir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass
+
+    # 3. Windows resource scripts (.rc)
+    rc_re = re.compile(r"""^[ 	]*#[ 	]*include[ 	]+["']([^"']+)["']""", re.MULTILINE)
+    for rc in glob_via(ctx.walk_snapshot, root, "*.rc", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = rc.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        rc_dir = rc.parent
+        for m in rc_re.finditer(content):
+            inc = m.group(1).strip()
+            resolved = (rc_dir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass

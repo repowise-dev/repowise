@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -247,6 +249,26 @@ def sample_repo_path(repo_root: Path) -> Path:
         f"Sample repo not found at {path}. Run 'make install' to ensure test fixtures are in place."
     )
     return path
+
+
+@pytest.fixture
+def sample_repo_copy(sample_repo_path: Path, tmp_path: Path) -> Path:
+    """A git-backed copy of sample_repo for tests that write into it.
+
+    The pipeline reads git history, so the copy gets one commit of its own.
+    """
+    dest = tmp_path / "sample_repo"
+    shutil.copytree(sample_repo_path, dest)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e.x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e.x",
+    }
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=dest, check=True, capture_output=True, env=env)
+    return dest
 
 
 @pytest.fixture(scope="session")

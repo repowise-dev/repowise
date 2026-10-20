@@ -165,12 +165,13 @@ A triage card for files, modules or symbols: summary, symbols with signatures an
 | `include` | list[string] | none | Any of `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects` |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported (returns an error) |
+| `symptom` | string | none | Issue text, an error message or a pasted stack trace for `include=["suspects"]` to rank against, in place of the words in the target paths |
 
 **Key return fields:** `targets` keyed by target, each with title, summary, symbols, `hotspot`, `fix_history` (files with counted bug fixes), `episodes`, decision titles, `file_preview` (for files with no symbols), `resolved_to` (a symbol miss falling back to its file); `dropped_targets` and `recovery` when the budget forced targets out; `_meta.complete` for whole files served.
 
 A `component:<name>` target returns the component's declared context (owner, system, criticality, tags) and `facts` rolled up over its files: health, hotspots, bus factor, test reach and dead code, each with a `basis` (`measured`, `inferred` or `unavailable`). Components come from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or are derived from the index. With `include=["ownership"]` a component card adds `ownership`: declared teams with their activity over the last 90 days, a count of individual owners, and findings (`critical_no_active_owner`, `declared_owner_inactive`, `critical_bus_factor_one`, `catalog_entry_no_code`). An owner with no identity in the indexed history is `unknown` and raises no finding, so `critical_no_active_owner` does not fire when every owner is unknown; individuals match only by exact git email or forge noreply login. No other `include` applies to component targets. Health and dead code leave out files in gated languages and say how many.
 
-A `change:<id>` target (`change:pr-123`, or a commit sha the change landed) returns the [Change Record](../reference/CLI_REFERENCE.md#repowise-changes): title, forge ref, `merged_at`, category, files and provenance with its coverage. On a file target, `changes` lists the newest Change Records that touched it, and `provenance` gives the file's commits by source (agent, human-attested, unknown) with coverage; the agent share is withheld below 30% coverage. With attribution off, `provenance` reads `{"unavailable": "attribution_off"}` and change rows carry none. `suspects` adds one top-level block: the changes merged in the last 14 days ranked against the targets as a symptom, at most 5 rows, each with the signals that fired and their evidence, plus the candidate count and window; an order to read changes in, never a cause.
+A `change:<id>` target (`change:pr-123`, or a commit sha the change landed) returns the [Change Record](../reference/CLI_REFERENCE.md#repowise-changes): title, forge ref, `merged_at`, category, files and provenance with its coverage. On a file target, `changes` lists the newest Change Records that touched it, and `provenance` gives the file's commits by source (agent, human-attested, unknown) with coverage; the agent share is withheld below 30% coverage. With attribution off, `provenance` reads `{"unavailable": "attribution_off"}` and change rows carry none. `suspects` adds one top-level block: the changes merged in the last 14 days ranked against the targets' files and the words in their paths, or the `symptom` text when one is given, at most 5 rows, each with the signals that fired and their evidence, plus the candidate count and window; an order to read changes in, never a cause.
 
 A `package:<name>` target (`package:requests`, or `package:npm:lodash`) returns where that third-party package is imported: its manifest declarations, a summary, the components and declared owner teams, and up to 25 import sites with line, `mapping` (`declared` or `inferred`) and `reachability` (`reachable`, `unreachable`, `test` or `unknown`, with a basis). See [PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md).
 
@@ -269,7 +270,7 @@ Reviews one commit, a `base..head` range, or uncommitted work by comparing the t
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit; combined with a root `.riskignore` |
 | `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or one comma-separated string. Like `exclude_patterns`, it scopes the score, the health delta and every per-file block; `impacted_tests` still selects over the whole change, less only repowise's own output |
 | `baseline` | int | `200` | Recent commits sampled for percentile ranking; `0` disables percentiles |
-| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units), `evidence` (the change's evidence checklist, the same record `repowise changes show` prints) |
+| `include` | list[string] | none | `findings` (every finding), `diagnostics` (raw score mechanics, plus the delta's analyzer, revisions and limits), `scales` (units), `evidence` (the change's evidence checklist, the same record `repowise changes show` prints), `tests` (why each listed test runs and the evidence per changed file) |
 | `finding_id` | string | none | Expand one `health_delta` finding |
 | `repo` | string | default repo | Workspace repo alias. `"all"` is not supported |
 
@@ -307,14 +308,14 @@ get_why()
 
 ### `get_overview`
 
-The architecture map: summary, key modules, entry points, layers, code and git health, and the next actions for the week and quarter. Call it once, first, in an unfamiliar repo. Skip it afterwards; it does not change within a session.
+Orientation for an unfamiliar repo: summary, key modules, entry points, layers, code health, the riskiest files and this week's top actions. Call it once, first. Skip it afterwards; it does not change within a session.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts), `changes` (Change Records by category and week, and the agent share of changes with coverage) |
+| `include` | list[string] | none | Any of `content` (full essay), `outline` (wiki page tree), `tour` (guided tour and reading order), `decisions`, `graph` (community clusters), `ownership` (top owners), `components` (declared and derived components with file counts), `changes` (Change Records by category and week, and the agent share of changes with coverage), `actions` (the quarter's actions too, with `done_when`), `tools` (`tool_surface`: enabled tools, opt-ins and recipes), `scope` (the whole `_meta.index_scope`) |
 | `repo` | string | default repo | Workspace repo alias, or `"all"` for the cross-repo topology |
 
-**Key return fields:** `title`, `content_md` (summary section by default), `key_modules`, `entry_points`, `architecture` (layers in stack order, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health`, `next_actions`, `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
+**Key return fields:** `title`, `content_md` (summary section by default), `key_modules` (one row per package or top-level directory), `entry_points`, `commands` (build, test, lint and similar commands from manifests), `architecture` (layers in stack order with their `root`, plus `dependencies`: the ten heaviest package-to-package edges with `from`, `to`, `verb` and `weight`, and `edges_total` when more exist; absent in a single-package repo), `code_health`, `git_health` (`riskiest_files`), `next_actions` (top three for the week, or the quarter when the week is empty), `more` (names the opt-in blocks), and a `workspace` footer in workspace mode.
 
 ```
 get_overview()

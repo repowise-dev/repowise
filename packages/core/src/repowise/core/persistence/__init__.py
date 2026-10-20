@@ -111,6 +111,7 @@ from .database import (
     get_repo_db_path,
     get_session,
     init_db,
+    refresh_planner_stats,
     resolve_db_url,
 )
 from .decision_graph import (
@@ -284,6 +285,7 @@ __all__ = [
     "load_stale_update_targets",
     "mark_webhook_processed",
     "recompute_decision_staleness",
+    "refresh_planner_stats",
     "resolve_db_url",
     "save_dead_code_findings",
     "store_webhook_event",

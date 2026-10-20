@@ -296,6 +296,60 @@ def test_a_gated_cause_says_a_constant_flag_switches_it_off():
 
 def test_an_unlisted_expected_reason_keeps_the_inherent_sentence():
     perf = SimpleNamespace(
-        actionability_state="expected", actionability_reason="something_new", intervention_symbol=None
+        actionability_state="expected",
+        actionability_reason="something_new",
+        intervention_symbol=None,
     )
     assert "inherent" in _suggestion(SimpleNamespace(), perf)
+
+
+# -- .repowise/health-rules.json applies when rescoring a commit --------------
+
+
+def test_repo_health_rules_silence_disabled_and_per_file_biomarkers(make_repo):
+    import json
+
+    from repowise.core.analysis.change_review import ChangeReviewRequest, ChangeReviewService
+    from repowise.core.repo_config import health_rules_fingerprint
+
+    repo = make_repo()
+    repo.commit("seed", {"src/legacy/mod.py": "x = 1\n", "src/active/app.py": "y = 1\n"})
+    per_path_rules = {
+        "rules": [
+            {"path": "src/legacy/**", "disabled_biomarkers": ["complex_method"]},
+        ],
+    }
+    repo.commit(
+        "add complex functions and per-path rule",
+        {
+            ".repowise/health-rules.json": json.dumps(per_path_rules),
+            "src/legacy/mod.py": python_complex("legacy_tangle", 18),
+            "src/active/app.py": python_complex("active_tangle", 18),
+        },
+    )
+
+    service = ChangeHealthDeltaService(repo_path=str(repo.path))
+    delta = service.compare(DeltaRequest(str(repo.path), "HEAD"))
+
+    assert delta.status == "available"
+    assert not any(
+        f.path == "src/legacy/mod.py" and f.biomarker_type == "complex_method"
+        for f in delta.findings
+    )
+    assert any(
+        f.path == "src/active/app.py" and f.biomarker_type == "complex_method"
+        for f in delta.findings
+    )
+
+    # Repo-wide disabled_biomarkers silences the marker everywhere.
+    repo.write(
+        ".repowise/health-rules.json",
+        json.dumps({"disabled_biomarkers": ["complex_method"]}),
+    )
+    review = ChangeReviewService(
+        GitRevisionSource(str(repo.path)), repo_path=str(repo.path)
+    ).review(ChangeReviewRequest(revspec="HEAD", baseline=0))
+    assert review.health is not None
+    assert review.health.fingerprint is not None
+    assert review.health.fingerprint.rules_fingerprint == health_rules_fingerprint(repo.path)
+    assert not any(f.biomarker_type == "complex_method" for f in review.health.findings)

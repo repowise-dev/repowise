@@ -200,6 +200,25 @@ describe("OverviewBody", () => {
     expect(screen.getByText("repowise coverage add")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy the command" })).toBeInTheDocument();
   });
+
+  it("takes the host's tests route and coverage command, or drops the card", () => {
+    const noReport = {
+      ...summary(),
+      explore: { decisions: null, refactoring: null, ownership: null, security: null, coverage: null },
+    } as unknown as OverviewSummaryResponse;
+    const { unmount } = render(
+      <OverviewBody
+        summary={noReport}
+        routes={{ base: "/r", tests: "/r/coverage", coverageCommand: "upload coverage.xml" }}
+      />,
+    );
+    expect(screen.getByRole("link", { name: /^Tests/ })).toHaveAttribute("href", "/r/coverage");
+    expect(screen.getByText("upload coverage.xml")).toBeInTheDocument();
+    unmount();
+    render(<OverviewBody summary={noReport} routes={{ base: "/r", tests: null }} />);
+    expect(screen.queryByRole("link", { name: /^Tests/ })).toBeNull();
+    expect(screen.queryByText("repowise coverage add")).toBeNull();
+  });
 });
 
 describe("inventoryRows", () => {

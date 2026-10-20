@@ -172,6 +172,9 @@ Now, Worth planning and Improve what Repowise can see. Within a group, rows rank
 by value times confidence over effort, and the top due Fix first item leads its
 group, so Do next and Fix first lead with the same work. Dismissing or snoozing a
 row takes effect at once.
+A fresh regression is in Now only when this week's commits added a proven
+performance cause (one in the performance queue) or lost measured coverage. The
+long, complex or nested code a week of work leaves becomes one row to plan.
 A fragile file asks for tests only when no measured coverage and no test in the
 code graph reaches it; otherwise the row asks you to simplify its lead function. A
 folder where bug fixes concentrate names its first step, the most fixed file's, or
@@ -252,6 +255,10 @@ only `untested_hotspot` runs, and no file is treated as uncovered. After adding 
 report, run `repowise health --recompute`, which analyzes the working tree
 instead of reading the stored analysis and, on a whole-repo table run, writes the
 result to the index. `repowise health --badge` prints README badge Markdown.
+
+## In CI: `repowise health check`
+
+`repowise health check origin/main...HEAD` analyses the changed files at the base and the head, with no index, and exits `1` only on a code-shape finding the change wrote at high severity or above (`--fail-at` moves the floor). A lower one warns, as does a finding it made worse (`--fail-on worsened` fails on it too), and one it moved or renamed never fails. Git-history markers, coverage and file scores never decide the gate, so a squash merge cannot change its verdict. `.repowise/health-rules.json` is read from the change's base, so a change cannot loosen its own gate. It also warns when the change adds a suppression comment, skips or removes tests, loosens a coverage threshold, or adds a test-environment branch to production code; `--diff-risk error` makes those fail. Exit codes, formats and setup are in [Repowise in CI](../start/CI.md).
 
 ## Configuration
 

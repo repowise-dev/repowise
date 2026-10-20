@@ -163,9 +163,13 @@ file is all three of:
 
 | Condition | Threshold |
 |---|---|
-| A hotspot | Flagged by the git layer, 8+ commits in 90 days, or a temporal hotspot score of 0.8 or more |
+| A hotspot | Flagged by the git layer, which means top-quartile churn in this repository plus absolute activity floors |
 | Depended on | At least 4 dependents |
 | Under-tested | Line coverage below 40%. With no coverage ingested, only when *nothing* says a test touches the file: no paired test file by name and no test reaching it in the graph |
+
+The file must also be code with at least one function (a config file or a
+module of constants has nothing a test could exercise) and must not itself be
+a test file.
 
 Severity is `CRITICAL` at 15% coverage or less with 10+ dependents, `HIGH` at one of
 those two, `MEDIUM` otherwise. `coverage_gap` covers thin-but-present coverage, and

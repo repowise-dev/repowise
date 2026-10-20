@@ -45,6 +45,9 @@ export const SEVERITY_CHIP: Record<Severity, string> = {
   low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
+/** The quiet mono label: a field name, a state word, a small tag. */
+export const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
 /** Segment fills for a severity split (ProportionBar `color`). */
 export const SEVERITY_SEGMENT: Record<Severity, string> = {
   critical: "var(--color-error)",

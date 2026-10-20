@@ -39,11 +39,10 @@ from .patterns import (
     SECRET_KINDS,
 )
 from .refinements import (
-    _NOT_FOR_SECURITY,
-    _call_text,
     _interpolates_sql_value,
     _is_html_type_annotation,
     _match_starting_in,
+    _weak_hash_is_an_id,
 )
 from .suppression import IGNORE_TOKEN, _allowlisted_lines, marker_silences
 
@@ -113,11 +112,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 if match and not _interpolates_sql_value(line, match.start(), lines, lineno):
                     match = None
             elif kind == "weak_hash":
-                # Written in code, and not declared a non-security use.
+                # Written in code, and not a declared or visible id (refinements).
                 match = _match_starting_in(pattern, line, masked_line(lineno, line))
-                if match and _NOT_FOR_SECURITY.search(
-                    _call_text(mask()[1], lineno, match.start())
-                ):
+                if match and _weak_hash_is_an_id(line, mask()[1], lineno, match.start()):
                     match = None
             elif kind in _KEYWORD_KINDS:
                 # ``password = "..."`` in a comment or docstring is an example.
