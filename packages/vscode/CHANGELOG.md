@@ -7,6 +7,34 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## 0.13.0
+
+The Overview opens on what to do next, Code Health gets a zoomable folder map,
+and findings read more calmly, each with an agent prompt ready to copy.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
+0.58.0 fills every view in this release.
+
+### Overview
+
+- A short Overview leads with what to do, and Do next folds open on request.
+- The performance headline names the causes worth fixing now.
+
+### Code Health
+
+- A zoomable folder map with lenses, a held-out scope and a context rail.
+- Each file shows what its score lost to code shape, change history and test
+  coverage.
+- Health markers carry plain display labels; bumpy road is called repeated
+  nesting.
+- Findings cards use hairline outlines with a ghost agent prompt, and the
+  performance queue follows the same treatment.
+
+### Everywhere
+
+- File paths keep the filename visible however narrow the panel.
+- Doc drift diagnostics follow your edits as you type (#2782).
+
 ## 0.12.0
 
 Every dashboard now shares one set of states, palette and controls, Code Health

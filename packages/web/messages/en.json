@@ -532,7 +532,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Several false findings are gone: classes whose methods share no state no longer read as low cohesion, chained ternaries and conditional expressions no longer count as deep nesting, import cycles count only imports that run, and expected-exception tests and noqa lines no longer flag swallowed exceptions, so many files score higher. Functions defined inside other functions are now measured, and a test-named Python module that pytest does not collect is scored as production code, so some files score lower. PHP files now get complexity, cohesion and test-assertion checks, so PHP scores move as well.",
+      "coChangeNoticeBody": "Large, well-structured code scores fairer. A file's code-shape deductions follow a saturating curve, and several findings on one function count as one group, so a single big function no longer sinks a whole file, while a critical function still costs more the further it passes its threshold. brain_method is advisory, so it no longer deducts on top of the complexity and size findings it summarises. Repeated change-history findings count the largest in full and the rest at a fraction. Parameter counts cover C, C++ and Kotlin, so primitive_obsession reaches those languages, and the bumpy-road marker is called repeated nesting. Most files score higher; functions far past their thresholds, and C, C++ and Kotlin files, can move either way.",
       "tabs": {
         "performance": "Performance",
         "findings": "Findings",
