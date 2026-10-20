@@ -369,6 +369,8 @@ class TestStatusAfterInit:
 
 class TestDoctorAfterInit:
     def test_passes_checks(self, runner, work_repo):
+        # Doctor exits 1 on any FAIL row, so the copy must be a real git repo.
+        _git(["init", "-q"], work_repo)
         runner.invoke(
             cli,
             ["init", str(work_repo), "--provider", "mock", "--yes"],
@@ -421,6 +423,8 @@ class TestStatusDoctorWithEnvDb:
         assert "Pages by Type" in result.output
 
     def test_doctor_reports_db_ok_with_env_db(self, runner, env_db_repo):
+        # Doctor exits 1 on any FAIL row, so the copy must be a real git repo.
+        _git(["init", "-q"], env_db_repo)
         runner.invoke(
             cli,
             ["init", str(env_db_repo), "--provider", "mock", "--yes"],
@@ -461,7 +465,7 @@ class TestStatusDoctorWithEnvDb:
         shutil.copytree(sample_repo_path, dest)
 
         result = runner.invoke(cli, ["doctor", str(dest)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "wiki.db not found" in result.output
 
     def test_doctor_corrupt_local_db_shows_one_fail_row(
@@ -480,7 +484,7 @@ class TestStatusDoctorWithEnvDb:
         (dest / ".repowise" / "wiki.db").write_text("this is not a database", encoding="utf-8")
 
         result = runner.invoke(cli, ["doctor", str(dest)], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         # Exactly one Database row — the real connection error, not a second
         # contradictory "wiki.db not found" row.
         assert "file is not a" in result.output
