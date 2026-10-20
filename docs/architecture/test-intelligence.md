@@ -111,6 +111,11 @@ ran was inside a function body:
 Of the 13 missed in the last group, 11 are alembic migrations the framework
 invokes by naming convention with no static caller.
 
+The tables above cover the slice. Repo-wide, against the unit suite's line coverage,
+the shipped forward walk keeps 97.7% precision at 76.5% recall over files with a
+function body run
+([numbers](../layers/TEST_INTELLIGENCE.md#accuracy-and-limits)).
+
 ## Nothing is stored
 
 The inferred map is read from `graph_edges` when asked and never written to

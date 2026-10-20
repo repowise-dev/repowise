@@ -18,7 +18,7 @@ another tool leads, that row is here too. The research behind each method is in
 | [Finding the right files](#1-finding-the-right-files) | **0.876** of the needed files found, against **0.610** for the next tool | 42 sealed instances, p = 0.00004 |
 | [Work saved in an agent loop](#2-what-changes-in-a-real-agent-loop) | **31.6% less** agent output than no tool, 3.8 tool calls against 7.2 | 43 django questions on Codex, p < 0.0001 |
 | [Health score against CodeScene](#5-code-health-predicts-defects) | **2.3x** the later-defective files inside a 20% review budget | 2,770 files, 21 repositories, p = 0.003 |
-| [Which tests cover a file, with no coverage run](#test-intelligence) | **95.7%** precision on what reaches a file, **97.5%** on the tests to run | 46 claims and 47 targets, checked against per-test coverage |
+| [Which tests cover a file, with no coverage run](#test-intelligence) | **97.7%** precision on the files tests call into; **99.9%** recall by calls or imports | 2,223 Python files, checked against the unit suite's line coverage |
 | [Largest repository indexed](#scale) | **About 15M lines of code, 58,924 files** (dotnet/runtime) in 120 minutes at 11.7 GiB peak | one keyless run on a laptop |
 | [Memory to build the call graph](#what-it-costs-to-run) | **75 MB** median against 757 MB for CodeGraph, lowest on **35 of 35** repositories | 35 repositories, 5 tools |
 
@@ -429,14 +429,16 @@ changed. On aspnetcore, an update with no changes takes about 4 seconds.
 ## Test intelligence
 
 Repowise links tests to the code they exercise from the call graph, with no
-coverage run needed. We checked those inferred links against real per-test
-coverage on this repository, over a slice with complete
-per-test attribution (37 test files, 159 production files).
+coverage run needed. We checked those inferred links against the line coverage of
+this repository's whole unit suite, over 2,223 Python production files.
 
-| Question | Precision | Sample |
-|---|---:|---|
-| Which tests reach this file | **95.7%** | 44 of 46 claims |
-| Which tests to run for a change | **97.5%** | 47 targets, all answered |
+| Question | Claims | Precision (a line ran) | Precision (a function body ran) | Recall |
+|---|---:|---:|---:|---:|
+| Which files a test calls into | 1,515 | 100% | **97.7%** | 76.5% |
+| Which files a test reaches, by calls or imports | 2,191 | 99.9% | 88.3% | **99.9%** |
+
+Recall is over the 1,935 files with a function body run. On a slice with complete per-test attribution, the tests to run for a change
+scored **97.5%** precision.
 
 Inferred answers are file-level; measured coverage, when you ingest it, is
 line-level, and repowise labels which kind each answer is. Details:

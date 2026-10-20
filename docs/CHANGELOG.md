@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Untested complexity.** The advisory `untested_complexity` finding ranks functions by CRAP score, from measured coverage or, when no report covers a function, from how directly tests reach it. Coverage-gap findings carry a prompt to add tests that names the test file to extend, plus the rule that silences the finding.
+- **Typed test reach.** Every file's inferred test reach is one of `reached`, `unreached`, `new`, `no_signal`, `type_only` or `mocked_only`, so a file of only types is never a gap and a module every test swaps out is labelled as such.
+- **A focused impacted-tests headline.** `repowise impacted-tests` leads with the tests a change reaches and counts conftest broadcasts and import-only tests apart, while still running them.
+
+### Documentation
+
+- **Test intelligence accuracy across the whole repository.** Against this repository's unit-suite coverage, the call walk is 97.7% precise at 76.5% recall, and reach by calls or imports finds 99.9% of the files whose functions the suite runs ([numbers](layers/TEST_INTELLIGENCE.md#accuracy-and-limits)).
+
 ## [0.58.0] - 2026-10-20
 
 repowise 0.58 makes the first run read like a plan. `repowise init` opens on one plan screen with the scan, an ETA and every step it will run, shows progress as a checklist of finished steps with counts and times, and ends on one finish panel that leads with `repowise serve`. A logged-in Claude Code, Codex or OpenCode is offered with its quota, agents get `--progress json`, a folder of repositories gets the same screen with `--repos`, and init, status and update share one set of mode names, with `repowise update --full` taking a fast index to a full one.

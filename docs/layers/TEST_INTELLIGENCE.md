@@ -50,6 +50,14 @@ this, do not call it untested") and unsafe as a quantity. Refactoring plans name
 test functions nearest each function in the call graph as runnable selectors
 ([how](../architecture/test-intelligence.md#nearest-tests-per-function)).
 
+Each inferred answer about a file is one of six states. `reached` names the tests and
+how they reach it; `unreached` is claimed only when the call walk, the helper and barrel
+hop and the whole import closure all miss it. `new` is a file the index has not seen,
+`no_signal` an index that holds no tests, `type_only` a file that declares only types (it
+has nothing a test could run, so it is never a gap) and `mocked_only` a file every
+reaching test replaces with a double
+([details](../architecture/test-intelligence.md#one-walk-two-graph-sources)).
+
 ## Supported formats
 
 | Format | Per-test map |
@@ -120,6 +128,13 @@ The graph also links tests to wiring no import states: runner setup files, helpe
 test starts by path, `conftest.py` files and the fixtures a test requests
 ([details](../architecture/test-intelligence.md#test-wiring-edges)).
 
+The headline count is the tests the change reaches. Two groups run too but are counted
+apart: tests a `conftest.py` broadcasts to (an autouse fixture, a hook or module-level
+code uses the change, so every test under it runs) and tests the change reaches only
+through imports, more than one file away and with no call path. Their files are listed
+in `selected.broadcast` and `selected.import_closure`
+([fields](../reference/CLI_REFERENCE.md#repowise-impacted-tests-revspec)).
+
 With `--format list` the caveats go to stderr so the pipe stays clean. The command exits
 `0` in every case: it reports, it does not gate. `--format args` prints runner
 arguments, or `:all` whenever any part of the answer is unknown. Rules, `tests.*` config
@@ -183,6 +198,15 @@ the function at complexity 30 and above) naming the nearest test file to extend,
 and the `.repowise/health-rules.json` rule that silences it for that file. The graph check
 matters because a filename convention misses tests in both directions
 ([examples](../architecture/test-intelligence.md#why-a-graph-signal)).
+
+### Untested complexity
+
+The CRAP score is `CC² × (1 − coverage)³ + CC`, flagged from 30. Without a report the
+tier is `direct` (a test calls the function), `reached` (tests reach it or its file) or
+`none`, and the finding reads `coverage_basis: estimated`. Severity is medium from 30,
+and high from 50 or critical from 100 on measured coverage only. The finding is
+advisory, so it never moves the score; its actions show in the dashboard's file drawer
+and in `get_health(finding_id=...)`.
 
 ## From an agent
 
@@ -277,18 +301,21 @@ written after the last ingest;
 
 ## Accuracy and limits
 
-The inferred tier is measured on the Repowise repository against a real
-`coverage run --contexts=test`, over a slice with complete per-test attribution (37 test
-files, 159 production files provably executed):
+The inferred tier is measured on the Repowise repository against the line coverage of
+its whole unit suite: 2,223 Python production files, 1,935 of them with a function body
+run. A claim is checked twice, against any line of the file running and against a
+function body running; recall counts the 1,935.
 
-| Question | Precision | Reach |
-|---|---:|---:|
-| "What reaches this file" (suppresses `untested_hotspot`) | 95.7% (44 of 46 claims) | 27.7% recall |
-| "Which tests do I run" (`tests_to_run`, `impacted_tests`) | 97.5% | 100% of 47 targets answered |
+| Question | Claims | A line ran | A function body ran | Recall |
+|---|---:|---:|---:|---:|
+| "A test calls into this file" (suppresses `untested_hotspot`) | 1,515 | 100% | 97.7% | 76.5% |
+| "A test reaches this file" (the Tests tab and a file's page) | 2,191 | 99.9% | 88.3% | 99.9% |
 
-- Recall reads low because coverage counts a file as run when it was merely imported.
-  Among files where over three quarters of what ran was inside function bodies, recall
-  is 77%.
+A slice with complete per-test attribution (37 test files, 159 production files) puts
+`tests_to_run` at 97.5% precision.
+
+- Files a test reaches only by importing them run their module code but often no
+  function, which is most of the gap between the two precision columns of the second row.
 - Framework-invoked code with no static caller (migrations run by naming convention, for
   example) is not reached by the graph.
 - The Tests tab and a file's page share one definition of reached: a test calls into the
