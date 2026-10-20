@@ -228,7 +228,7 @@ def test_workspace_init_on_fast_repos_names_update_full(monkeypatch) -> None:
         elapsed="1s",
     )
     out = io.StringIO()
-    Console(file=out, width=200).print(build_workspace_finish_panel(facts))
+    Console(file=out, width=200, theme=THEME).print(build_workspace_finish_panel(facts))
     printed = out.getvalue()
     assert "repowise update --repo api --full" in printed
     assert "repowise generate" not in printed
