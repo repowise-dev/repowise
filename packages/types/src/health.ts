@@ -297,6 +297,11 @@ export interface HealthFileMetric {
    */
   code_origin?: string | null;
   /**
+   * @deprecated Open performance findings on this file, as payloads from the
+   * previous release carry them. Read `performance_opportunities` instead.
+   */
+  performance_findings?: number | null;
+  /**
    * Whether a performance detector actually ran on this file (its language has a
    * registered perf dialect). `false` = unsupported language, the perf pass never
    * looked — a silent 10.0 — so the map greys the file as "not analyzed" instead
@@ -861,6 +866,11 @@ export interface HealthOverviewSummary {
   maintainability_findings?: number;
   /** Open performance causes, as every surface counts them; `null` with no files. */
   performance_causes?: PerformanceCauses | null;
+  /**
+   * @deprecated Every open performance finding, as payloads from the previous
+   * release carry it. The lede shows it only when `performance_causes` is absent.
+   */
+  performance_findings?: number;
   /** Lowest-scoring file by performance risk, surfaced only when score < 10
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
   worst_performance_path?: string | null;
