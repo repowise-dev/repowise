@@ -101,9 +101,9 @@ repowise init --provider claude_cli --model claude-opus-5-5
 
 Each page is a full CLI process, and subscription limits are per account.
 Serializing makes a 68-page wiki take about an hour; too much concurrency trips
-the account limit and fails the run. The provider bounds itself to **4**
-concurrent processes, and `init` caps `--concurrency` at 4 for CLI-backed
-providers. Override with:
+the account limit and fails the run. The provider runs at most **4** CLI
+processes at a time, whatever `--concurrency` says; a lower `--concurrency`
+still lowers it. Override with:
 
 ```bash
 REPOWISE_CLAUDE_CLI_CONCURRENCY=2 repowise generate --unwritten
@@ -116,6 +116,28 @@ allowance; it is also the fastest way to trip the account limit mid-run.
 Budget roughly **9k output tokens and a few minutes per page**, drawn from the
 same limits as your interactive Claude Code sessions. On a large repo, prefer
 `--path` to scope a run rather than regenerating everything.
+
+### Detected, never picked for you
+
+`repowise init` reads `claude auth status` (and `codex login status`,
+`opencode auth list`) to see how each CLI is billed. The interactive picker
+shows that in place of a price, for example "Claude team plan: uses your plan
+quota, about 14 model calls, 4 at a time, about 4 min" (one minute per call
+per process). A non-interactive run (`--yes`) never switches to one: it stays
+free and prints one line naming the command that would use it, Claude Code
+first. A CLI signed in without a paid plan, or with no stored credentials, is
+still listed but never recommended. Codex signed in through ChatGPT is listed
+in the picker but not offered, because its status cannot show whether the plan
+is active; Codex with an API key is offered, billed per token.
+
+### Running from inside Claude Code
+
+An agent in a Claude Code session can run `repowise init --provider
+claude_cli`; the nested `claude -p` calls work. Repowise removes the parent
+session's markers (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, the session's
+messaging socket and token, and similar) from the child's environment, so the
+child does not try to report back to the parent session. Auth and backend
+settings such as `CLAUDE_CODE_USE_BEDROCK` pass through unchanged.
 
 ### Reasoning
 

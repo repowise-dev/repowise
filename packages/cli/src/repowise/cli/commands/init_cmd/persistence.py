@@ -28,6 +28,7 @@ from repowise.cli.helpers import (
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.index_scope import (
@@ -411,6 +412,7 @@ def _stamp_full_init_scope(
     resolved_commit_limit: int,
     max_file_pages: int | None,
     embedder_name_resolved: str,
+    repo_path: Path,
 ) -> None:
     """Attach the canonical scope receipt for a successful model-backed init."""
     from repowise.core.generation.selection import count_documentable_files
@@ -426,7 +428,7 @@ def _stamp_full_init_scope(
         )
     else:
         pages = {"effective_cap": None, "eligible": None, "generated": None, "omitted": None}
-    from repowise.cli.providers import semantic_search_status
+    from repowise.cli.providers import semantic_search_command, semantic_search_status
 
     semantic = semantic_search_status(
         embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
@@ -451,7 +453,11 @@ def _stamp_full_init_scope(
         search={
             "full_text": "available",
             "semantic": semantic,
-            "next_command": "repowise reindex" if semantic == "unavailable" else None,
+            "next_command": (
+                semantic_search_command(repo_path, embedder_name_resolved)
+                if semantic == "unavailable"
+                else None
+            ),
         },
         upgrade={"status": "not_applicable", "retryable": False, "completed_stages": []},
     )
@@ -512,6 +518,8 @@ def save_full_state_and_config(
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
     apply_git_history_coverage_state(state, result)
+    # The docs model ran every decision lane, so none is left for a later run.
+    record_decision_lanes(state, repo_path, ran_with_model=True)
     _stamp_full_init_scope(
         state,
         result,
@@ -519,6 +527,7 @@ def save_full_state_and_config(
         resolved_commit_limit=resolved_commit_limit,
         max_file_pages=max_file_pages,
         embedder_name_resolved=embedder_name_resolved,
+        repo_path=repo_path,
     )
     # Same pattern as git_tier: `repowise update` reads this back so its
     # graph rebuild keeps the init run's submodule boundary semantics.

@@ -15,6 +15,8 @@ from repowise.cli.ui.workspace_selection import (
     match_repo_names,
 )
 
+from ._workspace_config import WorkspacePick
+
 #: Names shown in the all-repos line before it says "and N more".
 _NAMES_SHOWN = 10
 
@@ -38,8 +40,8 @@ def check_repos_flag(repos: str | None, *, init_all: bool, is_workspace: bool) -
 
 def select_workspace_repos(
     scan: Any, *, repo_names: list[str], select_all: bool
-) -> tuple[list[Any], str, Any] | None:
-    """The repos to index, the primary alias and repo; None when none were selected.
+) -> WorkspacePick | None:
+    """The repos to index and the primary; None when none were selected.
 
     ``--repos`` wins over everything and never prompts. Otherwise ``--yes``,
     ``--all`` or a non-terminal stdin take every detected repo (the first is
@@ -53,7 +55,8 @@ def select_workspace_repos(
         except ValueError as exc:
             raise click.UsageError(f"--repos: {exc}") from exc
         console.print(f"  Primary: [bold]{selected[0].alias}[/bold] (first in --repos)\n")
-        return selected, selected[0].alias, selected[0]
+        # The first name listed is the primary the user chose.
+        return WorkspacePick(selected, root, selected[0].alias, selected[0], True)
 
     select_all = select_all or not sys.stdin.isatty()
     if select_all:
@@ -68,7 +71,9 @@ def select_workspace_repos(
         selected[0].alias if select_all else interactive_primary_select(console, selected)
     )
     primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
-    return selected, primary_alias, primary_repo
+    # interactive_primary_select asks only when there is more than one to choose from.
+    primary_picked = not select_all and len(selected) > 1
+    return WorkspacePick(selected, root, primary_alias, primary_repo, primary_picked)
 
 
 def all_repos_line(repos: list[Any]) -> str:

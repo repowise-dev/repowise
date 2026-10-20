@@ -42,6 +42,7 @@ from repowise.cli.helpers import (
     try_acquire_update_lock,
     write_update_pending,
 )
+from repowise.cli.ui.mode_names import scope_line
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
@@ -102,7 +103,7 @@ def _fail_on_embed_failure(
     let a scripted run, or the post-commit log, read a failed write as a
     healthy index.
     """
-    from repowise.cli.providers import embed_failure_message
+    from repowise.cli.providers import embed_failure_message, semantic_search_command
     from repowise.core.index_scope import stamp_index_scope
 
     message = embed_failure_message(embedder, embed_failed_pages)
@@ -112,7 +113,10 @@ def _fail_on_embed_failure(
     stamp_index_scope(
         state,
         load_config(repo_path),
-        search={"semantic": "unavailable", "next_command": "repowise reindex"},
+        search={
+            "semantic": "unavailable",
+            "next_command": semantic_search_command(repo_path, embedder),
+        },
     )
     save_state(repo_path, state)
     if emitter is not None:
@@ -499,10 +503,10 @@ def _render_full_upgrade_dry_run(
     console.print(f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]")
     console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
     console.print(
-        f"  Persisted scope: [cyan]{scope['run_mode']} / {scope['content_provenance']}[/cyan]"
+        f"  Persisted scope: [cyan]{scope_line(scope)}[/cyan]"
     )
     console.print(
-        "  The whole-repository wiki would be generated after an explicit cost preview; "
+        "  The whole-repository documentation would be written after an explicit cost preview; "
         "completed stages are resumable. No changes made."
     )
 
@@ -953,7 +957,7 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     # A template wiki is current but has no model-written pages yet.
     if resolve_docs_mode(run.state) == "deterministic":
         console.print(
-            "[dim]The wiki is rendered from templates. "
+            "[dim]Documentation is built from code. "
             "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
         )
     if not opts.dry_run:
@@ -1589,8 +1593,8 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
         if run.head:
             run.state["last_docs_commit"] = run.head
         console.print(
-            f"  [green]✓[/green] Re-rendered [bold]{len(out.pages)}[/bold] "
-            "wiki pages from structure"
+            f"  [green]✓[/green] Rebuilt [bold]{len(out.pages):,}[/bold] "
+            "documentation pages from code"
         )
 
 

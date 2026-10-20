@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import click
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
@@ -33,10 +32,12 @@ from repowise.cli.ui import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 from repowise.core.repo_config import config_dependency_fingerprints
 
+from ._ingest import decision_llm_client
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from ._options import InitRun
 from .persistence import (
@@ -126,7 +127,15 @@ def save_run_config(run: InitRun) -> None:
 
 def register_clients(run: InitRun) -> None:
     """Global client registration, then the workspace's distill verdict."""
-    register_editor_clients(console, run.repo_path, no_editor_setup=not run.opts.editor_setup)
+    from repowise.cli.editor_integrations.global_mcp import confirm_global_mcp
+
+    if confirm_global_mcp(
+        console,
+        run.repo_path,
+        yes=run.opts.yes,
+        no_editor_setup=not run.opts.editor_setup,
+    ):
+        register_editor_clients(console, run.repo_path)
 
     # Before the config fingerprint: left unwritten, the first update writes it,
     # sees a fingerprint change and re-scores every file.
@@ -144,8 +153,27 @@ def _docs_mode(run: InitRun) -> str:
     return "deterministic"
 
 
+def _search_scope(run: InitRun) -> dict[str, Any]:
+    """The search leg of the scope: what works now, and the command that adds the rest."""
+    from repowise.cli.providers import semantic_search_command, semantic_search_status
+
+    result = run.result
+    if not result.generated_pages:
+        # Fast mode has no pages for reindex to embed.
+        return {"full_text": "unavailable", "semantic": "unavailable", "next_command": None}
+    semantic = semantic_search_status(run.scope_embedder, getattr(result, "embed_failed_pages", 0))
+    return {
+        "full_text": "available",
+        "semantic": semantic,
+        "next_command": (
+            semantic_search_command(run.repo_path, run.scope_embedder)
+            if semantic == "unavailable"
+            else None
+        ),
+    }
+
+
 def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> None:
-    from repowise.cli.providers import semantic_search_status
     from repowise.core.generation.selection import count_documentable_files
     from repowise.core.index_scope import dropped_files_scope, file_page_scope, stamp_index_scope
 
@@ -188,15 +216,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
             "reused": False,
             "model_cost_possible": docs_mode == "llm",
         },
-        search={
-            "full_text": "available" if result.generated_pages else "unavailable",
-            "semantic": (
-                semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
-                if result.generated_pages
-                else "unavailable"
-            ),
-            "next_command": "repowise reindex" if result.generated_pages else None,
-        },
+        search=_search_scope(run),
         upgrade={
             "status": "pending" if docs_mode != "llm" else "not_applicable",
             "retryable": docs_mode != "llm",
@@ -227,6 +247,9 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
     _stamp_scope(run, base_state, docs_mode)
+    record_decision_lanes(
+        base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
+    )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
     if run.phase_timings:
@@ -423,12 +446,19 @@ def complete_setup(run: InitRun) -> None:
     )
 
 
-def raise_on_embed_failure(run: InitRun) -> None:
-    """Exit non-zero when embedding failed; raised last so everything else is kept."""
+def exit_with_gaps(run: InitRun) -> None:
+    """Exit degraded when the run left a gap; last, so everything else is kept."""
     from repowise.cli.providers import embed_failure_message
 
-    embed_error = embed_failure_message(
-        run.scope_embedder, getattr(run.result, "embed_failed_pages", 0)
+    from ._exit import exit_on_gaps, run_gaps
+
+    result = run.result
+    exit_on_gaps(
+        run.gaps
+        + run_gaps(
+            failed_pages=len(getattr(result, "failed_page_ids", None) or []),
+            embed_error=embed_failure_message(
+                run.scope_embedder, getattr(result, "embed_failed_pages", 0)
+            ),
+        )
     )
-    if embed_error:
-        raise click.ClickException(embed_error)

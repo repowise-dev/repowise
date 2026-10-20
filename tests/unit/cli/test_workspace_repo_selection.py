@@ -68,13 +68,12 @@ def test_repos_flag_skips_the_picker_and_makes_the_first_primary(repos, monkeypa
     monkeypatch.setattr(_workspace_repos, "interactive_primary_select", no_prompt)
     scan = SimpleNamespace(root=ROOT, repos=repos)
 
-    selected, primary_alias, primary = select_workspace_repos(
-        scan, repo_names=["gamma", "alpha"], select_all=True
-    )
+    pick = select_workspace_repos(scan, repo_names=["gamma", "alpha"], select_all=True)
 
-    assert [r.alias for r in selected] == ["gamma", "alpha"]
-    assert primary_alias == "gamma"
-    assert primary is repos[2]
+    assert [r.alias for r in pick.selected] == ["gamma", "alpha"]
+    assert pick.primary_alias == "gamma"
+    assert pick.primary_repo is repos[2]
+    assert pick.primary_picked is True
     assert "Primary: gamma (first in --repos)" in capsys.readouterr().out
 
 
@@ -86,10 +85,10 @@ def test_repos_flag_unknown_name_is_a_usage_error(repos):
 
 def test_yes_takes_every_repo_and_says_which(repos, capsys):
     scan = SimpleNamespace(root=ROOT, repos=repos)
-    selected, primary_alias, _ = select_workspace_repos(scan, repo_names=[], select_all=True)
+    pick = select_workspace_repos(scan, repo_names=[], select_all=True)
 
-    assert selected == repos
-    assert primary_alias == "alpha"
+    assert pick.selected == repos
+    assert pick.primary_alias == "alpha"
     out = capsys.readouterr().out
     assert "Indexing all 3 repos: alpha, beta, gamma." in out
     assert "Pick some with --repos alpha,beta" in out

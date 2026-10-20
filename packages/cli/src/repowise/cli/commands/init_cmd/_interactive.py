@@ -270,7 +270,7 @@ def _offer_hook_install_prompts(
 
     console_obj.print()
     console_obj.print(
-        "[bold]Auto-sync:[/bold] Install a post-commit hook to keep the wiki "
+        "[bold]Auto-sync:[/bold] Install a post-commit hook to keep the index "
         "in sync after every commit?"
     )
 

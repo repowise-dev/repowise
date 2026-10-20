@@ -47,7 +47,8 @@ def interactive_repo_select(
         title="[bold]Discovered Repositories[/bold]",
         title_style="",
     )
-    table.add_column("#", style=BRAND_STYLE, width=4)
+    # Wide enough for the largest "[N]", so a long list never truncates to "[10…".
+    table.add_column("#", style=BRAND_STYLE, width=len(f"[{len(repos)}]"), no_wrap=True)
     table.add_column("Repository", style="bold", min_width=16)
     table.add_column("Path", style="dim", min_width=20)
     table.add_column("Status", min_width=14)
@@ -181,7 +182,7 @@ def interactive_primary_select(
     console.print("  [bold]Primary repository[/bold]")
     console.print(
         "  [dim]The primary repo is what MCP tools and the dashboard open by default.\n"
-        "  You can change it later in repowise.workspace.yaml.[/dim]"
+        "  You can change it later in .repowise-workspace.yaml.[/dim]"
     )
     console.print()
     for idx, repo in enumerate(repos, 1):

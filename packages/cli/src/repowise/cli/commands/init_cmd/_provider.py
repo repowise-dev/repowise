@@ -9,19 +9,25 @@ import click
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import console, resolve_explicit_provider_or_prompt, run_async
-from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers import resolve_embedder_choice, template_run_embedder
 from repowise.cli.ui import OK, OWL_SPINNER, VALUE, WARN, print_index_only_intro
+from repowise.cli.ui.mode_names import BUILT_FROM_CODE, INDEX_ONLY, written_by
 
 from ._options import InitRun
 
 
 def announce_index_only(run: InitRun) -> None:
-    """Tell the user this run builds the wiki from structure."""
+    """Tell the user what a run without a model builds."""
+    fast = run.opts.run_mode == "fast"
     if run.is_interactive:
-        print_index_only_intro(console)
+        print_index_only_intro(console, fast=fast)
         return
-    console.print(f"[bold]repowise index-only[/bold] — {run.repo_path}")
-    console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
+    mode = INDEX_ONLY if fast else BUILT_FROM_CODE
+    console.print(f"[bold]repowise init[/bold] · {mode} · {run.repo_path}")
+    if fast:
+        console.print("Indexing the graph and git history [dim](no documentation, no spend).[/dim]")
+    else:
+        console.print("Building documentation from code [dim](no model, no spend).[/dim]")
 
 
 def _resolve_or_fall_back(run: InitRun) -> None:
@@ -51,10 +57,10 @@ def _resolve_or_fall_back(run: InitRun) -> None:
             raise
         run.no_provider = True
         if not run.is_interactive:
-            console.print(f"[bold]repowise init[/bold] — {run.repo_path}")
+            console.print(f"[bold]repowise init[/bold] · {BUILT_FROM_CODE} · {run.repo_path}")
         console.print(
-            f"[{WARN}]No model configured.[/] Building the wiki from "
-            "structure instead — no key, no spend.\n"
+            f"[{WARN}]No model configured.[/] Building documentation from "
+            "code instead (no key, no spend).\n"
             "[dim]Set a key (or pass --provider) and run [bold]repowise "
             "update --full[/bold] to have a model write it.[/dim]"
         )
@@ -65,19 +71,53 @@ def _resolve_or_fall_back(run: InitRun) -> None:
             console.print(f"  [dim]{exc}[/dim]")
 
 
+def note_subscription_cli(run: InitRun) -> None:
+    """Name a logged-in Claude Code / Codex / OpenCode on a run no model writes.
+
+    Never switches the run to it: a subscription is spent only when asked for
+    with --provider. Interactive runs got the picker instead, and a configured
+    provider is already a choice.
+    """
+    if run.is_interactive or run.opts.provider_name or run.config.get("provider"):
+        return
+    if not (run.opts.index_only or run.no_provider):
+        return
+    from repowise.cli.ui.subscription import logged_in_agent_providers, subscription_note
+
+    offered = {n: auth for n, auth in logged_in_agent_providers().items() if auth.offer}
+    first = next(iter(offered), None)
+    note = subscription_note(tuple(offered), offered[first]) if first else None
+    if note:
+        console.print(f"  [dim]{note}[/dim]")
+
+
 def _print_provider_summary(run: InitRun) -> None:
-    if not run.is_interactive and not run.no_provider:
-        console.print(f"[bold]repowise init[/bold] — {run.repo_path}")
     provider = run.provider
+    if not run.is_interactive and not run.no_provider:
+        mode = written_by(provider.model_name if provider is not None else None)
+        console.print(f"[bold]repowise init[/bold] · {mode} · {run.repo_path}")
     if provider is not None:
         console.print(
             f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"
         )
-    console.print(f"  Embedder: [{VALUE}]{run.embedder_name_resolved}[/]")
+    console.print(f"  Embedder: [{VALUE}]{_stated_embedder(run)}[/]")
     if run.language != "en":
         console.print(f"  Language: [{VALUE}]{run.language}[/]")
     if run.resolved_reasoning != "auto":
         console.print(f"  Reasoning: [{VALUE}]{run.resolved_reasoning}[/]")
+
+
+def _stated_embedder(run: InitRun) -> str:
+    """The embedder this run will use and why, e.g. ``gemini (GEMINI_API_KEY is set)``."""
+    name, reason = run.embedder_name_resolved, run.embedder_reason
+    if run.provider is None:
+        # The template wiki keeps a free run free; the generation phase says so.
+        keyless = template_run_embedder(name, run.embedder_was_requested)
+        if keyless != name:
+            name, reason = keyless, "keyless run"
+    if name == "mock":
+        return f"mock ({reason}, semantic search off)"
+    return f"{name} ({reason})"
 
 
 def _verify_provider(provider: Any, reasoning: str) -> None:
@@ -111,7 +151,9 @@ def resolve_docs_provider(run: InitRun) -> None:
     # Provider resolution may have just set the API key in os.environ.
     # Re-resolve the embedder so the display and the embed path honor the key
     # the user just pasted, rather than the pre-prompt "mock" fallback.
-    run.embedder_name_resolved = resolve_embedder(run.opts.embedder_name)
+    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(
+        run.opts.embedder_name
+    )
     _print_provider_summary(run)
     # Nothing to verify when there is no provider: this run renders from
     # templates and never calls a model.
