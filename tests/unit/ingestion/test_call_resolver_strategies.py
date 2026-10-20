@@ -1994,6 +1994,84 @@ class TestModuleAliasReachesTopLevelOnly:
             "module_alias",
         ) in _edges(parsed, tmp_path, import_targets)
 
+    def test_rebound_alias_is_not_redirected_to_original_definition(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def _impl():\n"
+                    "    pass\n"
+                    "\n"
+                    "wrapped = _impl\n"
+                    "wrapped = cache(wrapped)\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    wrapped()\n",
+                ),
+            },
+        )
+
+        edges = _edges(parsed, tmp_path)
+
+        assert (
+            "mod.py::use_it",
+            "mod.py::wrapped",
+            0.95,
+            "same_file",
+        ) in edges
+
+        assert (
+            "mod.py::use_it",
+            "mod.py::_impl",
+            0.95,
+            "same_file",
+        ) not in edges
+
+    
+    def test_chained_alias_redirects_to_final_definition(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def real():\n"
+                    "    pass\n"
+                    "\n"
+                    "widget = real\n"
+                    "s = widget\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n",
+                ),
+            },
+        )
+
+        edges = _edges(parsed, tmp_path)
+
+        assert (
+            "mod.py::use_it",
+            "mod.py::real",
+            0.95,
+            "same_file",
+        ) in edges
+        assert (
+            "mod.py::use_it",
+            "mod.py::widget",
+            0.95,
+            "same_file",
+        ) not in edges
+        assert (
+            "mod.py::use_it",
+            "mod.py::s",
+            0.95,
+            "same_file",
+        ) not in edges
+
 
 class TestExternalReceiverType:
     """A Java receiver declared with a type the repo does not own is refused.
@@ -2167,3 +2245,193 @@ class TestExternalReceiverType:
         assert [d.type_name for d in scan_declarations("List<Foo> xs;\n", "java")] == [
             "external:List"
         ]
+class TestPythonNameAliasAssignment:
+    """A plain-name alias must redirect onto the real definition, not its own line (#2791)."""
+
+    def test_a_non_chained_alias_resolves_to_the_real_definition(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "s = widget\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n",
+                )
+            },
+        )
+        assert _edges(parsed, tmp_path) == [("mod.py::use_it", "mod.py::widget", 0.95, "same_file")]
+
+    def test_a_chained_alias_resolves_every_target_and_the_middle_name_exists(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "s = attributes = widget\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n"
+                    "    attributes()\n"
+                    "    widget()\n",
+                )
+            },
+        )
+        names = {sym.name for sym in parsed["mod.py"].symbols}
+        assert "attributes" in names  # the query alone drops this today
+
+        edges = _edges(parsed, tmp_path)
+        assert edges == [
+            ("mod.py::use_it", "mod.py::widget", 0.95, "same_file"),
+            ("mod.py::use_it", "mod.py::widget", 0.95, "same_file"),
+            ("mod.py::use_it", "mod.py::widget", 0.95, "same_file"),
+        ]
+
+    def test_a_non_name_right_hand_side_is_unaffected(self, tmp_path: Path) -> None:
+        """A call or an attribute access is a real value, not an alias of a name."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "s = widget()\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n",
+                ),
+                "attr.py": (
+                    "python",
+                    "class C:\n"
+                    "    widget = None\n"
+                    "\n"
+                    "s = C.widget\n"
+                    "\n"
+                    "def use_it():\n"
+                    "    s()\n",
+                ),
+            },
+        )
+        mod_symbol = next(sym for sym in parsed["mod.py"].symbols if sym.name == "s")
+        attr_symbol = next(sym for sym in parsed["attr.py"].symbols if sym.name == "s")
+        assert mod_symbol.alias_of is None
+        assert attr_symbol.alias_of is None
+
+        edges = _edges(parsed, tmp_path)
+        assert ("mod.py::use_it", "mod.py::s", 0.95, "same_file") in edges
+        assert ("attr.py::use_it", "attr.py::s", 0.95, "same_file") in edges
+
+    def test_class_alias_prefers_class_scoped_target_over_module_name(
+        self, tmp_path: Path
+    ) -> None:
+        from dataclasses import replace
+
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "class C:\n"
+                    "    def widget():\n"
+                    "        pass\n"
+                    "\n"
+                    "    def use_it():\n"
+                    "        s()\n",
+                )
+            },
+        )
+
+        # Python's symbol query intentionally excludes class-body assignments.
+        # Inject the equivalent alias to test resolver indexing in isolation.
+        pf = parsed["mod.py"]
+        class_widget = next(
+            sym for sym in pf.symbols if sym.id == "mod.py::C::widget"
+        )
+        pf.symbols.append(
+            replace(
+                class_widget,
+                id="mod.py::C::s::alias@100",
+                name="s",
+                qualified_name="mod.C.s",
+                alias_of="widget",
+            )
+        )
+
+        edges = _edges(parsed, tmp_path)
+
+        assert (
+            "mod.py::C::use_it",
+            "mod.py::C::widget",
+            0.95,
+            "same_file",
+        ) in edges
+        assert (
+            "mod.py::C::use_it",
+            "mod.py::widget",
+            0.95,
+            "same_file",
+        ) not in edges
+
+    def test_chained_alias_does_not_overwrite_real_definition(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "mod.py": (
+                    "python",
+                    "def attributes():\n"
+                    "    pass\n"
+                    "\n"
+                    "def widget():\n"
+                    "    pass\n"
+                    "\n"
+                    "s = attributes = widget\n"
+                    "\n"
+                    "def use_attributes():\n"
+                    "    attributes()\n"
+                    "\n"
+                    "def use_alias():\n"
+                    "    s()\n",
+                )
+            },
+        )
+
+        edges = _edges(parsed, tmp_path)
+
+        assert (
+            "mod.py::use_attributes",
+            "mod.py::widget",
+            0.95,
+            "same_file",
+        ) in edges
+
+        assert (
+            "mod.py::use_alias",
+            "mod.py::widget",
+            0.95,
+            "same_file",
+        ) in edges
+
+        attributes_symbols = [
+            symbol
+            for symbol in parsed["mod.py"].symbols
+            if symbol.name == "attributes"
+        ]
+
+        assert len(attributes_symbols) == 2
+        assert len({symbol.id for symbol in attributes_symbols}) == 2

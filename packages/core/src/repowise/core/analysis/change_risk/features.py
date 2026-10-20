@@ -20,7 +20,7 @@ import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from ...ingestion.git_indexer._constants import is_fix_commit
+from ...ingestion.git_indexer.fix_rule import is_typed_fix_commit
 from ..changed_lines import untracked_diffs
 
 # All but path_filter are re-exported: callers across the package import them from here.
@@ -302,7 +302,7 @@ def extract_commit_features(
         ns=len(subs),
         entropy=_entropy(per_file),
         exp=exp,
-        is_fix=is_fix_commit(subject),
+        is_fix=is_typed_fix_commit(subject),
         author=author,
         subject=subject,
         ref=sha,
@@ -334,7 +334,7 @@ def extract_range_features(
     author, _, subject = meta.partition("\x00")
     # Any fix commit in the range marks the change as a fix (informational).
     range_subjects = _git(["log", "--format=%s", f"{base}..{head}"], repo_path)
-    is_fix = any(is_fix_commit(s) for s in range_subjects.split("\n") if s)
+    is_fix = any(is_typed_fix_commit(s) for s in range_subjects.split("\n") if s)
     exp = _author_experience(repo_path, author, base)
     return ChangeFeatures(
         la=la,

@@ -20,7 +20,7 @@ and what evidence stands behind each change that landed.</p>
 <table align="center">
 <tr>
 <td align="center" width="250"><b>−31.6%</b><br /><sub>less agent output · <em>p&lt;0.0001</em></sub></td>
-<td align="center" width="250"><b>2.3×</b><br /><sub>defects found vs CodeScene · <em>p=0.003</em></sub></td>
+<td align="center" width="250"><b>2.3×</b><br /><sub>later-defective files surfaced vs CodeScene · <em>p=0.003</em></sub></td>
 <td align="center" width="250"><b>15M</b><br /><sub>lines of code indexed once on one laptop · <em>then incremental on every commit</em></sub></td>
 </tr>
 </table>
@@ -105,14 +105,15 @@ index, and asks you before anything costs money. Prefer to do it yourself:
 ```bash
 uv tool install repowise          # or: pipx install repowise / pip install repowise
 cd /path/to/your/repo
-repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
-repowise serve                    # local dashboard + MCP server
+repowise init --yes --no-prose    # graph, git, health, dead code, documentation. No key, no spend.
+repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
 ```
 
-`init` wires Claude Code automatically. Then ask your agent *"Use Repowise
-`get_overview` to summarize this repository"* or *"What breaks if I change
-`src/auth.py`?"*
-[Full setup, every agent, optional model-written docs →](docs/start/QUICKSTART.md)
+`init` wires Claude Code for this repo and points the global repowise MCP entry
+here (on the interactive plan screen, `s` keeps it where it is). Restart Claude Code or run `/mcp`, then ask
+*"Use Repowise `get_overview` to summarize this repository"* or *"What breaks if I
+change `src/auth.py`?"*
+[Full setup, every agent, documentation written by a model →](docs/start/QUICKSTART.md)
 
 ---
 
@@ -138,7 +139,7 @@ the page that answers it.
 | *Can I get docs for this codebase?* | A wiki for every module and file, rendered from the code's structure with no key, or written by a model when you choose. It updates incrementally after each commit. [Docs](docs/layers/WIKI.md) |
 | *Which of our docs are wrong?* | Markdown checked against the tree: every reference to a file or symbol the code no longer has, with the line to edit. [Doc drift](docs/layers/DOC_DRIFT.md) |
 | *Why is it built this way?* | Decisions mined from ADRs, `# WHY:` comments, commit and PR history and your agent sessions, each tied to the code it governs and flagged when it goes stale. [Decisions](docs/layers/DECISIONS.md) |
-| *Who knows this code?* | Owners, bus factor, knowledge-loss risk when the main author goes quiet, and suggested reviewers. [Ownership](docs/layers/OWNERSHIP.md) |
+| *Who knows this code?* | Owners, bus factor, fading ownership when the main author goes quiet, and suggested reviewers. [Ownership](docs/layers/OWNERSHIP.md) |
 | *Can I see the architecture?* | An explorable dependency map, C4 views, and a Structurizr export, no model involved. [Dashboard](docs/start/DASHBOARD.md) |
 
 ### Change it safely
@@ -327,7 +328,7 @@ repowise impacted-tests main..HEAD   # only the tests this diff exercises
 repowise health                      # untested hotspots, graph-aware
 ```
 
-<sub>Checked against a real <code>coverage run --contexts=test</code> on this repository:
+<sub>Checked against real per-test coverage on this repository:
 <strong>95.7% precision</strong> on what reaches a file and <strong>97.5% on the run
 list</strong>. Every row is stamped <code>basis: "measured"</code> or
 <code>"inferred"</code>, measured wins where both can answer, and an empty answer means
@@ -394,6 +395,9 @@ git alone cannot attest.
 
 ## ★ Know exactly what to fix
 
+Code health measures technical debt: the code shape and change history that make a
+file likely to need the next fix.
+
 A score that says *"this file is risky"* is where most tools stop. Repowise scores
 every file, finds where the risk concentrates, and names the specific fix.
 
@@ -442,7 +446,7 @@ unified diff.
 (2,826 files scored at a fixed point and checked against the following 6 months of bug
 fixes): <strong>ROC AUC 0.737</strong> [0.683, 0.787]. Against <strong>CodeScene</strong>
 on the 2,770 files both tools scored, ranking by Repowise surfaces <strong>2.3x the
-defects under a fixed review budget</strong> (paired, p = 0.003). CodeScene keeps a
+later-defective files under a fixed review budget</strong> (paired, p = 0.003). CodeScene keeps a
 shorter, slightly more precise list.
 <a href="docs/BENCHMARKS.md#5-code-health-predicts-defects">Full head-to-head and its limits →</a></sub>
 
@@ -454,8 +458,8 @@ Guides: **[code health](docs/layers/CODE_HEALTH.md)** ·
 
 ## See all of it
 
-`repowise serve` starts the full web dashboard next to the MCP server. No separate
-setup, all local.
+`repowise serve` starts the full web dashboard next to the MCP server, all local. It
+needs Node.js 20+, and the first run downloads the UI.
 
 <table>
 <tr>
@@ -945,7 +949,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 ## CLI
 
 ```bash
-repowise init [PATH]      # index a codebase (asks; --yes --no-prose needs no key)
+repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
 repowise generate [PATH]  # write wiki pages with a model, on demand
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (--workspace for every repo)

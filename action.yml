@@ -88,6 +88,12 @@ inputs:
   security-baseline:
     description: Committed security baseline file; only findings it does not list fail.
     default: ""
+  fail-on-baseline-growth:
+    description: >-
+      "true" fails doc-drift and security when their baseline lists a finding
+      the same file at the change's base does not, so a change cannot hide new
+      findings by re-saving the baseline. A baseline new in the change passes.
+    default: "false"
   risk-fail-above-percentile:
     description: >-
       Fail when the change ranks above this percentile of the repository's
@@ -180,6 +186,7 @@ runs:
         DOC_DRIFT_BASELINE: ${{ inputs.doc-drift-baseline }}
         SECURITY_FAIL_ON: ${{ inputs.security-fail-on }}
         SECURITY_BASELINE: ${{ inputs.security-baseline }}
+        FAIL_ON_BASELINE_GROWTH: ${{ inputs.fail-on-baseline-growth }}
         RISK_FAIL_ABOVE_PERCENTILE: ${{ inputs.risk-fail-above-percentile }}
         SARIF: ${{ inputs.upload-sarif }}
         SARIF_DIR: ${{ runner.temp }}/repowise-sarif

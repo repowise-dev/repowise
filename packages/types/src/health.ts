@@ -164,6 +164,9 @@ export const HEALTH_BAND_RANGE_LABEL: Record<HealthBand, string> = {
   at_risk: "under 4.0",
 };
 
+/** The lowest score a file can show. Mirror of `SCORE_FLOOR` in core scoring. */
+export const SCORE_FLOOR = 1.0;
+
 /**
  * Pure score -> band mapping. Mirror of `grading.band_for` in core. Prefer the
  * API-provided `band` where available; use this only when deriving locally.
@@ -174,6 +177,11 @@ export function bandForScore(score: number): HealthBand {
   if (score >= FAIR_MIN) return "fair";
   if (score >= NEEDS_WORK_MIN) return "needs_work";
   return "at_risk";
+}
+
+/** The two bands below Fair: where a surface calls health weak. */
+export function isWeakHealthBand(band: HealthBand): boolean {
+  return band === "needs_work" || band === "at_risk";
 }
 
 /**
@@ -289,10 +297,8 @@ export interface HealthFileMetric {
    */
   code_origin?: string | null;
   /**
-   * Open performance-risk findings on this file. The performance lens on the
-   * code-health map colors by this count (+ `performance_analyzed`), not by the
-   * [9,10]-compressed `performance_score`, so a file with 40 N+1s reads
-   * differently from one with 1. Absent on payloads predating the perf pass.
+   * @deprecated Open performance findings on this file, as payloads from the
+   * previous release carry them. Read `performance_opportunities` instead.
    */
   performance_findings?: number | null;
   /**
@@ -335,6 +341,8 @@ export interface HealthFileMetric {
    * unchanged; this is a display-only secondary distinguisher.
    */
   total_deduction?: number | null;
+  /** Git flags this file a hotspot (heavy recent change). Map feed only; absent on older servers. */
+  is_hotspot?: boolean;
 }
 
 export interface HealthFinding {
@@ -426,6 +434,13 @@ export interface PerformanceWhyRanked {
 export type PerformanceLoopMagnitude = "grows_with_data" | "bounded" | "unknown" | "n/a";
 
 /**
+ * Which member loop shows the cost grows: `loop` one outside a registry and a
+ * cold path, `registry` only loops over a registry or configuration table,
+ * `cold_path` only migration, startup or recovery loops, `none` no loop grows.
+ */
+export type PerformanceGrowthSource = "loop" | "registry" | "cold_path" | "none" | "n/a";
+
+/**
  * The facets that are not published anywhere else on the row.
  * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
  * so no value appears twice.
@@ -438,6 +453,8 @@ export interface PerformanceOpportunityFacets {
   change_risk: string;
   /** Absent on rows stored before the fact existed. */
   loop_magnitude?: PerformanceLoopMagnitude;
+  /** Absent on rows stored before the fact existed. */
+  growth_source?: PerformanceGrowthSource;
   /** Absent on rows stored before the fact existed. */
   execution_role?: PerformanceExecutionRole;
 }
@@ -529,6 +546,8 @@ export interface PerformanceOpportunity {
   actionability_reason: string;
   prerequisites: string[];
   rank_score: number;
+  /** 0-based place in the ranked list that served the row; another sort or a
+   *  lookup by id gives its rank among every cause in the repository. */
   rank_position: number;
   rank_factors: Record<string, number>;
   why_ranked: PerformanceWhyRanked[];
@@ -639,9 +658,17 @@ export type PerformanceOpportunityQuery = {
   boundary?: string;
   /** Evidence confidence, requested apart from fix safety and actionability. */
   confidence?: PerformanceOpportunityConfidence;
-  actionability?: PerformanceActionabilityState;
-  /** Absent means `proven`; `unproven` lists the causes the default queue leaves out. */
-  proof?: PerformanceCostProof;
+  /** Absent means the default queue's states; `all` lifts them. */
+  actionability?: PerformanceActionabilityState | "all";
+  /** Absent means `proven`; `unproven` lists the causes the default queue leaves out;
+   *  `all` lifts the proof filter. */
+  proof?: PerformanceCostProof | "all";
+  /** Keep to the default queue's stored verdict whatever state is chosen (REST only). */
+  queue?: boolean;
+  /** One area (a directory) at any depth (REST only). */
+  area?: string;
+  /** Group the area facet at this directory depth; absent lets the server choose (REST only). */
+  area_depth?: number;
   /** Absent means every role but startup, cli, ui, tooling and test; `all` lists every role. */
   role?: PerformanceExecutionRole | "all";
   /** `summary` drops the explanatory fields and keeps identity and counts. */
@@ -714,9 +741,38 @@ export interface PerformanceOpportunitySummary {
   gated?: GatedByLanguage;
 }
 
+/** The dashboard's three scopes: the default queue, every production cause, everything. */
+export type PerformanceScope = "now" | "production" | "all";
+
+/** One area of the queried causes, with its actionability split. */
+export interface PerformanceAreaFacetEntry {
+  area: string;
+  total: number;
+  /** The opened area's (or the root's) own files: opening it again narrows nothing. */
+  own?: boolean;
+  actionability: Partial<Record<PerformanceActionabilityState, number>>;
+}
+
+/** The queried causes by area, over the whole scope and filters, not one page. */
+export interface PerformanceAreaFacet {
+  /** The directory depth the areas are drawn at. */
+  depth: number;
+  /** Ranked by plan-ready causes, then advisory, then size. */
+  items: PerformanceAreaFacetEntry[];
+  /** Causes in areas past the response's limit. */
+  more: number;
+  total: number;
+}
+
 export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {
   summary: PerformanceOpportunitySummary;
+  /** Counted inside the requested scope and filters on the REST queue, so a
+   *  facet with no own selection sums to `total`. */
   facets: PerformanceFacets;
+  /** Causes per scope, unfiltered. Absent from a server that predates scopes. */
+  scopes?: Partial<Record<PerformanceScope, number>>;
+  /** The causes by area. Absent from a server that predates it. */
+  areas?: PerformanceAreaFacet;
   /** What a language gate held back, by language. Empty or absent when nothing was. */
   gated?: GatedByLanguage;
   /** Filter values the server did not recognize, named rather than dropped. */
@@ -746,6 +802,19 @@ export interface BiomarkerBreakdownRow {
 /* ------------------------------------------------------------------ *
  * Overview
  * ------------------------------------------------------------------ */
+
+/**
+ * The performance headline every surface prints, in the Performance view's
+ * three scopes: `now` (the default queue, worth fixing now) leads, and
+ * `production` and `all` open causes give it context.
+ */
+export interface PerformanceCauses {
+  now: number;
+  production: number;
+  all: number;
+  /** Every open cause per 10K lines a performance detector ran on. */
+  per_10k_loc: number | null;
+}
 
 export interface HealthOverviewSummary {
   file_count: number;
@@ -792,9 +861,15 @@ export interface HealthOverviewSummary {
    */
   performance_average?: number | null;
   performance_hotspot?: number | null;
-  /** Open findings homing under the maintainability / performance pillars — the
-   *  per-pillar actionable counts. Absent on payloads predating the split. */
+  /** Open findings homing under the maintainability pillar. Absent on payloads
+   *  predating the split. */
   maintainability_findings?: number;
+  /** Open performance causes, as every surface counts them; `null` with no files. */
+  performance_causes?: PerformanceCauses | null;
+  /**
+   * @deprecated Every open performance finding, as payloads from the previous
+   * release carry it. The lede shows it only when `performance_causes` is absent.
+   */
   performance_findings?: number;
   /** Lowest-scoring file by performance risk, surfaced only when score < 10
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
@@ -960,6 +1035,8 @@ export interface HealthMapPerformance {
  * caption can never disagree with the field beside it.
  */
 export interface HealthMapFeed {
+  /** The directory the field is narrowed to; `null` for the whole repository. Absent on older servers. */
+  area?: string | null;
   files: HealthFileMetric[];
   cap: number;
   shown: number;
@@ -985,6 +1062,12 @@ export interface HealthMapQuery {
   include_held?: boolean;
   /** Pin files whose path contains this substring. */
   q?: string;
+  /** Narrow the field to this directory; the cap and every count then describe it. */
+  area?: string;
+  /** `map` leaves out the origins the area map holds by default. */
+  hold?: "none" | "map";
+  /** With `hold: "map"`, held origins to bring back. */
+  include?: readonly string[];
 }
 
 /* ------------------------------------------------------------------ *
@@ -1067,6 +1150,8 @@ export interface FileSignals {
   bug_magnet: boolean | null;
   last_fix_at: string | null;
   fix_symbol_counts: Record<string, number> | null;
+  // "short": too few recorded commits for most history markers to fire.
+  history?: "short" | null;
 }
 
 /* ------------------------------------------------------------------ *

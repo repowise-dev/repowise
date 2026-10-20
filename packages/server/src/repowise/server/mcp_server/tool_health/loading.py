@@ -36,12 +36,17 @@ from repowise.core.persistence.crud import (
     get_git_metadata_bulk,
     get_hotspot_file_paths,
     get_node_degree_counts_bulk,
+    get_short_history_paths,
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
     load_coverage_history,
 )
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
+from repowise.core.persistence.crud.analysis.performance import (
+    PerformanceHeadline,
+    performance_headline,
+)
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.crud.analysis.refactoring import gated_plan_counts
 from repowise.core.persistence.models import HealthFileMetric
@@ -87,7 +92,7 @@ class HealthData:
     leads: dict[str, dict[str, Any]]
     hotspot_paths: set[str] = field(default_factory=set)
     perf_coverage: PerfCoverage | None = None
-    perf_findings_count: int = 0
+    perf_causes: PerformanceHeadline | None = None
     accuracy_rows: list[Any] = field(default_factory=list)
     #: The queue's plans, read only when ``refactoring_plans`` is named.
     refactoring_plans: RefactoringPlanPage | None = None
@@ -114,6 +119,8 @@ class HealthData:
     gated: dict[str, dict] = field(default_factory=dict)
     #: Open findings of a withheld type: never listed, but the score counted them.
     withheld_rows: list[Any] = field(default_factory=list)
+    #: Files whose recorded history is too thin for the history half to count.
+    short_history_paths: set[str] = field(default_factory=set)
 
 
 async def load_health_data(
@@ -163,8 +170,8 @@ async def load_health_data(
         ),
     )
     data.hotspot_paths = await _read_hotspot_paths(session, repository, pop, req)
-    data.perf_coverage, data.perf_findings_count = await _read_perf_headline(
-        session, repository, pop, req, findings.lead_rows
+    data.perf_coverage, data.perf_causes = await _read_perf_headline(
+        session, repository, pop, req
     )
     data.accuracy_rows = await read_accuracy_rows(session, repository, pop, req)
     data.refactoring_plans, data.refactoring_plans_ignored = await _read_refactoring_plans(
@@ -177,6 +184,8 @@ async def load_health_data(
         session, repository, pop, req
     )
     data.signals_by_path = await _read_signals(session, repository, pop, req)
+    if _lists_file_rows(req):
+        data.short_history_paths = await get_short_history_paths(session, repository.id)
     data.drift_rows, data.drift_unavailable = await _read_doc_drift(
         session, repository, pop, req
     )
@@ -220,6 +229,17 @@ async def _read_gated(session: Any, req: HealthRequest, data: HealthData) -> dic
     return {layer: counts for layer, counts in layers.items() if counts}
 
 
+def history_of(data: HealthData, path: str) -> str | None:
+    """A file row's ``history`` value: ``"short"`` or absent."""
+    return "short" if path in data.short_history_paths else None
+
+
+def _lists_file_rows(req: HealthRequest) -> bool:
+    return any(
+        req.wants(k) for k in ("metrics", "worst_files", "test_worst_files", "high_leverage_files")
+    )
+
+
 def _scope_reasons(metrics: list[HealthFileMetric]) -> dict[str, str | None]:
     """Each file's scope exclusion (``test``, ``tooling``, ``generated``...), ``None``
     in scope: Fix first's rule on Fix first's inputs, the row's flag and origin.
@@ -249,27 +269,30 @@ async def _read_test_paths(
 async def _read_hotspot_paths(
     session: Any, repository: Any, pop: Population, req: HealthRequest
 ) -> set[str]:
-    """Hotspot paths for the canonical hotspot-health KPI.
-
-    Skipped in targeted mode, which builds no ``kpis`` block."""
-    if pop.scoped or not req.wants("kpis"):
+    """Hotspot paths for the hotspot-health KPI and the what-if block's hotspot gains."""
+    what_if = "what_if" in req.include_set and req.wants("what_if")
+    if not what_if and (pop.scoped or not req.wants("kpis")):
         return set()
     return await get_hotspot_file_paths(session, repository.id)
 
 
 async def _read_perf_headline(
-    session: Any, repository: Any, pop: Population, req: HealthRequest, lead_rows: list[Any]
-) -> tuple[PerfCoverage | None, int]:
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> tuple[PerfCoverage | None, PerformanceHeadline | None]:
     """Dashboard perf headline: coverage (how much of the analyzed code the
-    perf pass ran on) + open performance-finding count. Both feed ``kpis``
-    alone, so a projection that drops kpis skips the language-map read."""
+    perf pass ran on) + the open causes, as every surface counts them. Both
+    feed ``kpis`` alone, so a projection that drops kpis skips both reads."""
     if pop.scoped or not req.wants("kpis"):
-        return None, 0
+        return None, None
     lang_by_path = await get_file_language_map(session, repository.id)
-    return (
-        coverage_for_metrics(pop.all_metrics, lang_by_path),
-        sum(1 for f in lead_rows if (f.dimension or "defect") == "performance"),
+    coverage = coverage_for_metrics(pop.all_metrics, lang_by_path)
+    causes = await performance_headline(
+        session,
+        repository.id,
+        covered_nloc=coverage.covered_nloc,
+        include_unverified=req.include_unverified,
     )
+    return coverage, causes
 
 
 async def _read_refactoring_plans(

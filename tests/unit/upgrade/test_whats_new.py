@@ -55,6 +55,30 @@ def test_last_seen_roundtrip(monkeypatch, tmp_path):
     assert wn.read_last_seen_version() is None
     wn.write_last_seen_version("0.21.0")
     assert wn.read_last_seen_version() == "0.21.0"
+    # An older install never lowers the marker; a newer one raises it.
+    wn.write_last_seen_version("0.20.0")
+    assert wn.read_last_seen_version() == "0.21.0"
+    wn.write_last_seen_version("0.22.0")
+    assert wn.read_last_seen_version() == "0.22.0"
+
+
+def test_last_seen_equal_or_suffixed_version_keeps_the_number(monkeypatch, tmp_path):
+    _redirect_global_dir(monkeypatch, tmp_path)
+    wn.write_last_seen_version("0.22.0")
+    wn.write_last_seen_version("0.22.0")
+    assert wn.read_last_seen_version() == "0.22.0"
+    # A pre-release or dev build of the same number compares equal, never lower.
+    wn.write_last_seen_version("0.22.0rc1")
+    assert wn.read_last_seen_version() == "0.22.0rc1"
+    wn.write_last_seen_version("0.21.9.dev1")
+    assert wn.read_last_seen_version() == "0.22.0rc1"
+
+
+def test_last_seen_unparsable_marker_is_replaced(monkeypatch, tmp_path):
+    _redirect_global_dir(monkeypatch, tmp_path)
+    wn.write_last_seen_version("not-a-version")
+    wn.write_last_seen_version("0.20.0")
+    assert wn.read_last_seen_version() == "0.20.0"
 
 
 def test_render_whats_new_returns_false_when_nothing_new():

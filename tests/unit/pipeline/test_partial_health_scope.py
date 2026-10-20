@@ -62,3 +62,54 @@ def test_duplication_is_narrowed_to_the_changed_files(monkeypatch, tmp_path) -> 
     assert seen["changed_files"] == {"a.py"}
     analyzer.analyze(None, changed_files={"a.py", "b.py"})
     assert seen["changed_files"] == {"a.py", "b.py"}
+
+
+def test_empty_splice_set_skips_the_clone_detector(monkeypatch) -> None:
+    import networkx as nx
+
+    from repowise.core.analysis.health import engine as engine_mod
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("detect_clones ran with nothing to splice")
+
+    monkeypatch.setattr(engine_mod, "detect_clones", fail)
+    analyzer = engine_mod.HealthAnalyzer(nx.DiGraph(), git_meta_map={}, parsed_files=[])
+    analyzer.analyze(None, changed_files={"README.md"}, duplication_files=set())
+
+
+def test_prose_changes_are_not_spliced_and_dead_code_can_be_skipped(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    from repowise.core.analysis.health import engine as engine_mod
+    from repowise.core.pipeline.incremental import analysis
+
+    seen: dict = {}
+
+    class FakeAnalyzer:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def analyze(self, config=None, **kwargs):
+            seen["duplication_files"] = kwargs.get("duplication_files")
+            return engine_mod.HealthReport(repo_id="", analyzed_at=None)
+
+    monkeypatch.setattr("repowise.core.analysis.health.HealthAnalyzer", FakeAnalyzer)
+    parsed = [
+        SimpleNamespace(file_info=SimpleNamespace(path=p, language=lang))
+        for p, lang in (("a.py", "python"), ("README.md", "markdown"))
+    ]
+    diffs = [SimpleNamespace(path=p, status="modified") for p in ("a.py", "README.md")]
+    builder = SimpleNamespace(graph=lambda: nx.DiGraph(), community_detection=lambda: {})
+    monkeypatch.setattr(
+        "repowise.core.analysis.communities.file_community_labels", lambda _b: {}
+    )
+
+    health, dead = analysis.run_partial_analysis(
+        ".", builder, {}, parsed, diffs, dead_code=False
+    )
+
+    assert seen["duplication_files"] == {"a.py"}
+    assert health is not None
+    assert dead is None

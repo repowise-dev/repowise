@@ -142,3 +142,22 @@ def test_gated_off_takes_precedence_over_cold_path() -> None:
 
     assert opportunity.actionability_reason == "gated_off"
     assert perf_queue_verdict(opportunity).reason == "gated_off"
+
+
+def test_growth_only_a_registry_or_a_migration_loop_shows_is_named_for_it() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.health.perf.opportunity_rank import growth_source
+
+    def member(path: str, function: str, iterates: str = "query"):
+        details = {"loop_magnitude": "grows_with_data", "loop_iterates": iterates}
+        return SimpleNamespace(details=details, file_path=path, function_name=function)
+
+    registry = member("app/scheduler.py", "poll", "config_table")
+    migration = member("app/db_migration.py", "backfill")
+    warm = member("app/views.py", "list_items")
+    assert growth_source("io_in_loop", [registry, migration]) == "registry"
+    assert growth_source("io_in_loop", [migration]) == "cold_path"
+    assert growth_source("io_in_loop", [registry, warm]) == "loop"
+    assert growth_source("io_in_loop", []) == "none"
+    assert growth_source("hot_path_sync_io", [warm]) == "n/a"

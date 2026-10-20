@@ -30,6 +30,9 @@
     "./git": "./src/git/index.ts",
     "./git/*": "./src/git/*.tsx",
     "./commits": "./src/commits/index.ts",
+    "./commits/health-delta": "./src/commits/health-delta.ts",
+    "./commits/period-health": "./src/commits/period-health.ts",
+    "./commits/commit-health-copy": "./src/commits/commit-health-copy.ts",
     "./commits/*": "./src/commits/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",
     "./dead-code/*": "./src/dead-code/*.tsx",
@@ -53,6 +56,9 @@
     "./symbols/normalize-calls": "./src/symbols/normalize-calls.ts",
     "./symbols/*": "./src/symbols/*.tsx",
     "./owners": "./src/owners/index.ts",
+    "./owners/offboarding": "./src/owners/offboarding.ts",
+    "./owners/knowledge-coverage": "./src/owners/knowledge-coverage.ts",
+    "./owners/labels": "./src/owners/labels.ts",
     "./owners/*": "./src/owners/*.tsx",
     "./modules": "./src/modules/index.ts",
     "./modules/*": "./src/modules/*.tsx",
@@ -126,7 +132,8 @@
     "./lib/errors": "./src/lib/errors.ts",
     "./lib/fix-history": "./src/lib/fix-history.ts",
     "./lib/format": "./src/lib/format.ts",
-    "./lib/page-types": "./src/lib/page-types.ts"
+    "./lib/page-types": "./src/lib/page-types.ts",
+    "./lib/path-parts": "./src/lib/path-parts.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

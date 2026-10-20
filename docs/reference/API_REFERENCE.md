@@ -184,7 +184,7 @@ file, every surface behaves exactly as described below.
 (`deps.py`, `client_is_local`). The known consequence is that a same-host
 reverse proxy makes every peer loopback, so that deployment shape still needs
 the key. `repowise serve --host 0.0.0.0` without a key prints a warning at
-startup (`packages/cli/src/repowise/cli/commands/serve_cmd.py`) and the
+startup (`packages/cli/src/repowise/cli/commands/serve_cmd/command.py`) and the
 requests themselves are refused as above. All three rows were exercised against
 a running app with a fabricated remote peer.
 

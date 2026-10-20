@@ -75,6 +75,7 @@ def setup_scheduler(
         """Find stale pages and log them for regeneration."""
         from sqlalchemy import func, select
 
+        from repowise.core.generation.page_selection import STALE_STATUSES
         from repowise.core.persistence.database import get_session
         from repowise.core.persistence.models import Page, Repository
 
@@ -89,7 +90,7 @@ def setup_scheduler(
                         .select_from(Page)
                         .where(
                             Page.repository_id == repo.id,
-                            Page.freshness_status.in_(["stale", "expired"]),
+                            Page.freshness_status.in_(sorted(STALE_STATUSES)),
                         )
                     )
                     stale_count = stale_result.scalar()

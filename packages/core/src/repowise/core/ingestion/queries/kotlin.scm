@@ -86,6 +86,19 @@
   ] @call.arguments
 ) @call.site
 
+; Call chained on another call: a.b().c(args), a?.b()?.c(args), B.Builder().c().
+; The inner call is captured whole as ``@call.receiver_call``; the grammar
+; names no fields on either node, so ``parser._kotlin_call_receiver`` reads its
+; target, receiver and arguments by position. The ``.`` or ``?.`` between the
+; two is an unnamed token, so one pattern serves both.
+(call_expression
+  (navigation_expression
+    (call_expression) @call.receiver_call
+    (identifier) @call.target
+  )
+  (value_arguments) @call.arguments
+) @call.site
+
 ; ---------------------------------------------------------------------------
 ; Callable references — a function named without being called
 ; ---------------------------------------------------------------------------

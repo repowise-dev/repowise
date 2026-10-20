@@ -51,8 +51,9 @@ _FILES = {
 }
 
 
-def _report(root: Path):
-    source_map = {rel: text.encode() for rel, text in _FILES.items()}
+def _report(root: Path, files: dict[str, str] | None = None):
+    files = _FILES if files is None else files
+    source_map = {rel: text.encode() for rel, text in files.items()}
     for rel, source in source_map.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,3 +144,65 @@ def test_qualified_use_matches_by_fully_qualified_name():
         assert not _is_framework_registered(["@org.sample.other.ThemeShots"], visible), path
     # In the other class's package, the bare name means the non-preview one.
     assert not _is_framework_registered(["@ThemeShots"], meta.visible_in("app/OtherPackage.kt"))
+
+
+# Glide's annotation processor generates ``GeneratedAppGlideModule``, which
+# instantiates the annotated module class. Nothing in source names it, so both
+# the file and the class were reported dead (AntennaPod's ``ApGlideModule``).
+_GLIDE_ANNOTATED = "app/src/main/java/com/example/glide/annotated"
+_GLIDE_BARE = "app/src/main/java/com/example/glide/bare"
+
+_GLIDE_FILES = {
+    f"{_GLIDE_ANNOTATED}/ApGlideModule.java": (
+        "package com.example.glide.annotated;\n"
+
+        "\n"
+
+        "@GlideModule\n"
+
+        "public class ApGlideModule extends AppGlideModule {\n"
+
+        "    @Override\n"
+
+        "    public void applyOptions(Context context, GlideBuilder builder) {\n"
+
+        "        builder.setLogLevel(6);\n"
+
+        "    }\n"
+
+        "}\n"
+
+    ),
+    f"{_GLIDE_BARE}/BareGlideModule.java": (
+        "package com.example.glide.bare;\n"
+
+        "\n"
+
+        "public class BareGlideModule extends AppGlideModule {\n"
+
+        "    @Override\n"
+
+        "    public void applyOptions(Context context, GlideBuilder builder) {\n"
+
+        "        builder.setLogLevel(6);\n"
+
+        "    }\n"
+
+        "}\n"
+
+    ),
+}
+
+
+def test_glide_module_is_instantiated_by_the_generated_component(tmp_path: Path):
+    report = _report(tmp_path, _GLIDE_FILES)
+    flagged = _of(report, DeadCodeKind.UNUSED_EXPORT) | _of(report, DeadCodeKind.UNUSED_INTERNAL)
+    assert "ApGlideModule.java" not in _of(report, DeadCodeKind.UNREACHABLE_FILE)
+    assert "ApGlideModule" not in flagged
+    # Glide ignores a module class without the annotation, so it stays reported.
+    assert "BareGlideModule.java" in _of(report, DeadCodeKind.UNREACHABLE_FILE)
+    assert "BareGlideModule" in flagged
+
+
+def test_framework_registration_accepts_the_glide_annotation():
+    assert _is_framework_registered(["@GlideModule"])

@@ -702,7 +702,8 @@ mcp = _RepowiseMCP(
         "In workspace mode, get_architecture and get_blast_radius are also "
         "available. If the tools "
         "report that the repo has no index, tell the user to run "
-        "'repowise init --yes' in the repo root; it needs no API key. Suggest it, "
+        "'repowise init --yes --no-prose' in the repo root; it needs no API key "
+        "and makes no model calls. Suggest it, "
         "do not run it yourself."
     ),
     lifespan=_lifespan,

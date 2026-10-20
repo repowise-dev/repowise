@@ -225,6 +225,7 @@ COPILOT = AgentIdentity(
     executable="copilot",
     install_hint="npm install -g @github/copilot",
     login_hint="copilot login",
+    indexing_provider="copilot_cli",
 )
 KIRO = AgentIdentity(
     slug="kiro", display_name="Kiro", executable="kiro-cli", login_hint="kiro-cli login"

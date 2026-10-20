@@ -316,6 +316,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
                         break
 
     _mark_cpp_entry_point_files(parsed_files, graph, getattr(ctx, "source_map", None))
+    _stamp_cpp_build_listed(ctx, graph, index)
 
 
 # Tokens whose presence means the surrounding TU wires itself into a
@@ -417,9 +418,32 @@ def _warmup_swift(ctx: ResolverContext) -> None:
 
 
 def _warmup_dotnet(ctx: ResolverContext) -> None:
+    """Build the .NET project index, then mark every C# file of a project that
+    ships a package as published, for the per-symbol public API flag
+    (``analysis.public_api``).
+
+    The package comes from the same reader dead code uses, so the two cannot
+    disagree about what ships. A file belongs to its innermost project: a
+    sample or test project nested in a library's folder ships nothing. With no
+    readable project file nothing is stamped.
+    """
+    from ..analysis.published_packages import BuildFacts, dotnet_published, package_of
     from .resolvers.dotnet import get_or_build_index
 
-    get_or_build_index(ctx)
+    index = get_or_build_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    if index is None or graph is None:
+        return
+    roots = dotnet_published(BuildFacts(repo_root=index.repo_path, dotnet_index=index))
+    if not any(roots.values()):
+        return
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for path, pf in parsed.items():
+        if pf.file_info.language != "csharp":
+            continue
+        node = graph.nodes.get(path)
+        if node is not None and package_of(path, roots):
+            node["package_export"] = True
 
 
 def _warmup_rust(ctx: ResolverContext) -> None:
@@ -770,3 +794,59 @@ def run_warmups(
             done = getattr(progress, "on_phase_done", None)
             if callable(done):
                 done(phase_name)
+
+
+def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
+    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed."""
+    import re
+
+    from repowise.core.fs_walk import glob_via
+
+    repo_path = ctx.repo_path
+    if repo_path is None:
+        return
+    root = repo_path.resolve()
+
+    # 1. CMake targets from cpp_workspace index (sources only; headers are not compiled TUs)
+    for target in getattr(index, "targets", {}).values():
+        for src in getattr(target, "sources", ()):
+            if src in graph.nodes:
+                graph.nodes[src]["build_listed"] = True
+
+    # 2. MSBuild .vcxproj files (ClCompile only; ClInclude headers are not compiled TUs)
+    item_re = re.compile(r"""<ClCompile\s+Include=["']([^"']+)["']""", re.IGNORECASE)
+    for vcxproj in glob_via(ctx.walk_snapshot, root, "*.vcxproj", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = vcxproj.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        vdir = vcxproj.parent
+        for m in item_re.finditer(content):
+            inc = m.group(1).strip()
+            if "$(" in inc or "*" in inc or "?" in inc:
+                continue
+            resolved = (vdir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass
+
+    # 3. Windows resource scripts (.rc)
+    rc_re = re.compile(r"""^[ 	]*#[ 	]*include[ 	]+["']([^"']+)["']""", re.MULTILINE)
+    for rc in glob_via(ctx.walk_snapshot, root, "*.rc", prune_nested_git=ctx.prune_nested_git):
+        try:
+            content = rc.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        rc_dir = rc.parent
+        for m in rc_re.finditer(content):
+            inc = m.group(1).strip()
+            resolved = (rc_dir / inc.replace("\\", "/")).resolve()
+            try:
+                rel = str(resolved.relative_to(root)).replace("\\", "/")
+                if rel in graph.nodes:
+                    graph.nodes[rel]["build_listed"] = True
+            except ValueError:
+                pass

@@ -129,7 +129,13 @@ def _fake_build(monkeypatch, seen: list[str], gate=None):
             generated_at="2026-10-14T00:00:00+00:00",
             items=[
                 EvidenceItem(
-                    "health_delta", "Health delta", "ok", "measured", {"introduced": 0}, [], "change health"
+                    "health_delta",
+                    "Health delta",
+                    "ok",
+                    "measured",
+                    {"introduced": 0, "complete": True},
+                    [],
+                    "change health",
                 )
             ],
         )
@@ -163,12 +169,12 @@ async def test_detail_carries_evidence_only_when_asked_and_keeps_it(
         "label": "Health delta",
         "status": "ok",
         "basis": "measured",
-        "value": {"introduced": 0},
+        "value": {"introduced": 0, "complete": True},
         "details": [],
         "source": "change health",
         # Worded by the client from a key and its numbers.
         "line": {
-            "key": "health_delta_partial",
+            "key": "health_delta",
             "params": {"introduced": 0, "worsened": 0, "resolved": 0},
         },
     }
@@ -405,3 +411,28 @@ async def test_suspects_rank_the_window_with_evidence(client: AsyncClient, app) 
 
     assert (await client.post(url, json={})).status_code == 422
     assert (await client.post(url, json={"symptom": "x", "until": "soon"})).status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("since", "count", "capped"), [
+    ("2026-01-01T00:00:00Z", 3, True),
+    ("2026-01-02T00:00:00Z", 2, False),
+    ("2026-01-04T00:00:00Z", 0, False),
+])
+async def test_suspects_http_preserves_candidate_cap_status(
+    client: AsyncClient, app, tmp_path: Path, since: str, count: int, capped: bool,
+) -> None:
+    from repowise.core.repo_config import save_repo_config
+
+    repo = await create_test_repo(client, tmp_path)
+    await _seed(app, repo["id"])
+    save_repo_config(repo["local_path"], {"commit_limit": 3})
+    response = await client.post(
+        f"/api/repos/{repo['id']}/suspects",
+        json={"symptom": "crash", "since": since, "until": "2026-01-10T00:00:00Z", "limit": 1},
+    )
+    assert response.status_code == 200, response.text
+    got = response.json()
+    assert got["candidates"] == count
+    assert got["candidates_capped"] is capped
+    assert len(got["suspects"]) == min(count, 1)

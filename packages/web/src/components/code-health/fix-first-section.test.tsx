@@ -80,6 +80,10 @@ function queue(items: FixItem[]): FixFirstQueue {
         kind_unaudited: 0,
         terminal_flow: 0,
         moderate_quiet: 0,
+        unmeasured_cost: 0,
+        cold_role: 0,
+        background_unproven: 0,
+        unconfirmed_cost: 0,
       },
       dormant: 0,
     },
@@ -145,7 +149,7 @@ describe("FixFirstSection", () => {
     getFixFirstItemPrompt.mockResolvedValue({ flavor: "generic", text: "Core prompt text" });
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy prompt for an agent" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Copy prompt for your agent" })[0]!);
     expect(await screen.findByText("Core prompt text")).toBeTruthy();
     expect(getFixFirstItemPrompt).toHaveBeenCalledWith("r1", "fix1_a", {
       flavor: expect.any(String),

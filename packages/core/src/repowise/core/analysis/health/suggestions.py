@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .biomarker_names import canonical_biomarker
+
 _TEMPLATES: dict[str, str] = {
     "brain_method": (
         "Split this function. It carries high cyclomatic complexity and "
@@ -48,11 +50,10 @@ _TEMPLATES: dict[str, str] = {
         "conditional axes; if it dispatches on a type tag, replace the "
         "if/elif ladder with polymorphism or a lookup table."
     ),
-    "bumpy_road": (
-        "Smooth the road. Multiple branches at the same nesting depth "
-        "usually means the function is doing several jobs — split it "
-        "into stages so each stage stays at a single level of "
-        "abstraction."
+    "repeated_nesting": (
+        "Several nested blocks side by side usually mean the function "
+        "does several jobs. Split it into stages so each stage stays at "
+        "a single level of abstraction."
     ),
     "large_method": (
         "Shorten the function. Extract paragraphs (each comment block "
@@ -316,11 +317,12 @@ _TEMPLATES: dict[str, str] = {
 def suggestion_for(biomarker_type: str) -> str:
     """Return the canonical refactoring suggestion for a biomarker.
 
-    Unknown biomarker names fall back to a generic prompt — keeps the
-    field non-null on every finding so the UI can rely on it.
+    A renamed marker's old id reads its current template, so stored findings
+    keep their advice. Unknown biomarker names fall back to a generic prompt —
+    keeps the field non-null on every finding so the UI can rely on it.
     """
     return _TEMPLATES.get(
-        biomarker_type,
+        canonical_biomarker(biomarker_type),
         "Review this finding and decide whether the underlying smell is "
         "worth refactoring or suppressing via `.repowise/health-rules.json`.",
     )

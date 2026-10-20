@@ -10,7 +10,7 @@ centralised `LanguageRegistry`; per-language extraction logic lives in
 call-resolution strategy lives behind a seam in `call_resolver.py`. Adding a
 language means dropping one file into each relevant subpackage and registering it
 in that subpackage's dispatcher. No edits are needed to `graph.py`,
-`traverser.py`, or any analysis core file. `parser.py` holds a short per-language
+`traverser.py`, or any analysis core file. The `parser/` package holds a short per-language
 block for a handful of languages whose grammar shape the generic path cannot
 read (C++ qualified definitions, Dart mixins, Object Pascal out-of-line methods,
 [Elixir](#elixir), [F#](#f)); each is a few lines calling into a helper, and a
@@ -151,7 +151,8 @@ ingestion/
     django.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
   sfc_source.py        # Multi-language-file (SFC) projection (see below)
-  parser.py            # ASTParser (language-agnostic orchestration)
+  parser/              # ASTParser (language-agnostic orchestration), one module per pass
+  extractors/imports/  # Per-language import rules (LanguageConfig.import_extractor)
   graph.py             # GraphBuilder (import/call/heritage resolution)
 
 analysis/
@@ -310,7 +311,9 @@ receiver typing (step 9).
 
 Add a parser configuration to `LANGUAGE_CONFIGS` in
 `packages/core/src/repowise/core/ingestion/language_configs.py` (re-exported from
-`parser.py` for back-compat):
+the `parser` package for back-compat). A language whose imports need more than
+the generic shape also sets `import_extractor` to an `ImportExtractor` from
+`extractors/imports/<lang>.py`:
 
 ```python
 "mylang": LanguageConfig(
@@ -629,8 +632,8 @@ corrupt every unit named after it in the same clause. Its sanitizer
 (`prepare_pascal_source` in `ingestion/lang_helpers/source_prep.py`) is gated on `path`'s
 extension (that syntax is invalid in a plain `.pas`/`.pp` unit file) and is a
 no-op everywhere else, same contract as the `_LOCATORS` path. Registering a
-sanitizer this way, rather than as an if-block in `parser.py`, means it stays
-"zero changes to `parser.py`" for a new language and the health walkers get the
+sanitizer this way, rather than as an if-block in the parser, means it stays
+"zero changes to the parser" for a new language and the health walkers get the
 same clean projection the ingestion parser does.
 
 ### The locator registry
@@ -777,7 +780,7 @@ type body and a member the way Elixir shares `call` across everything, so its
 per-language block is about extending and locating rather than reclassifying:
 
 - **A `let rec f ... and g ...` group is one grammar node for every clause**, so
-  `@symbol.def` sits on each clause's left-hand side and `parser.py` extends its
+  `@symbol.def` sits on each clause's left-hand side and the parser extends its
   span forward to the next clause (or the file end), stepping over a return-type
   annotation sitting between the two. The same left-hand side node also marks a
   binding local to another binding's body, which the generic callable-ancestor

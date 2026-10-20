@@ -1,10 +1,12 @@
 "use client";
 
 /**
- * Moving the camera: flights, zoom steps, fitting the field, and focusing one
- * galaxy. Every way out of a focused galaxy is a state change only; the effect
- * here returns the camera, so a click, Escape and the breadcrumb all take the
- * same path.
+ * Moving the camera: flights, zoom steps, and framing the selected area.
+ *
+ * The camera follows the selection. Selecting an area is a state change only
+ * (the host keeps it in the URL); the effect here flies to whatever area is
+ * selected once its disc is laid out, so a click, a breadcrumb, Backspace,
+ * Escape, a deep link and the browser's back button all take the same path.
  */
 
 import { useCallback, useEffect, useRef } from "react";
@@ -12,16 +14,20 @@ import type { MutableRefObject } from "react";
 
 import { frameRect, zoomAbout } from "../../zoom/camera";
 import { flyDuration } from "../../zoom/camera-anim";
+import { ROOT_AREA } from "../../lib/areas";
+import type { AreaGeometry } from "./area-layout";
 import { WORLD, fitCamera } from "./layout";
 import type { Cam } from "./paint";
-import type { Galaxy } from "./types";
 import { now, type Invalidate, type LoopState } from "./use-field-canvas";
 
 /** How far out and in the camera may go, relative to the fitted view. */
 const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 80;
+/** Deep enough for a leaf ten directories down. */
+const MAX_ZOOM = 20_000;
 /** One step of the zoom buttons and keys. */
 export const ZOOM_STEP = 1.6;
+/** How much of the shorter side a framed area fills. */
+const FRAME_FILL = 0.9;
 
 /** Keep the camera within zoom bounds and near the field. */
 export function clampCam(st: LoopState, c: Cam): Cam {
@@ -34,22 +40,20 @@ export function clampCam(st: LoopState, c: Cam): Cam {
 
 export interface MapCamera {
   zoomBy: (factor: number) => void;
-  fitView: () => void;
-  /** Focus a galaxy, or leave focus with `null`. */
-  focusOn: (module: string | null) => void;
-  /** Leave any focus and show the whole field. */
-  fitAll: () => void;
+  /** Frame the selected area again, after the reader panned away. */
+  reframe: () => void;
 }
 
 export function useMapCamera(opts: {
   loop: MutableRefObject<LoopState>;
   invalidate: Invalidate;
   reducedMotion: boolean;
-  galaxies: Galaxy[];
-  focusModule: string | null;
-  setFocusModule: (module: string | null) => void;
+  geo: AreaGeometry;
+  /** The selected area; the camera frames it. */
+  area: string;
+  ready: boolean;
 }): MapCamera {
-  const { loop, invalidate, reducedMotion, galaxies, focusModule, setFocusModule } = opts;
+  const { loop, invalidate, reducedMotion, geo, area, ready } = opts;
 
   /** Move the camera, flown unless the reader asked for no motion. */
   const flyTo = useCallback(
@@ -68,11 +72,32 @@ export function useMapCamera(opts: {
     [loop, invalidate, reducedMotion],
   );
 
-  const fitView = useCallback(() => {
-    const st = loop.current;
-    st.userMoved = false;
-    flyTo(fitCamera(st.view.w, st.view.h));
-  }, [loop, flyTo]);
+  const frameArea = useCallback(
+    (path: string, animate: boolean) => {
+      const st = loop.current;
+      if (st.view.w === 0) return false;
+      if (path === ROOT_AREA) {
+        st.userMoved = false;
+        flyTo(fitCamera(st.view.w, st.view.h), animate);
+        return true;
+      }
+      const c = geo.circles.get(path);
+      if (!c) return false;
+      st.userMoved = true;
+      flyTo(frameRect(st.view, { x: c.x - c.r, y: c.y - c.r, w: 2 * c.r, h: 2 * c.r }, FRAME_FILL), animate);
+      return true;
+    },
+    [geo, loop, flyTo],
+  );
+
+  // Fly to the selection whenever it changes, and once more when a deep-linked
+  // area's disc first appears. The first framing jumps rather than flies, so a
+  // shared link opens where it points instead of animating in from the root.
+  const framed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || framed.current === area) return;
+    if (frameArea(area, framed.current !== null)) framed.current = area;
+  }, [area, ready, frameArea]);
 
   const zoomBy = useCallback(
     (factor: number) => {
@@ -83,28 +108,9 @@ export function useMapCamera(opts: {
     [loop, flyTo],
   );
 
-  const focusOn = useCallback(
-    (module: string | null) => {
-      setFocusModule(module);
-      const g = module ? galaxies.find((x) => x.module === module) : null;
-      if (!g) return;
-      loop.current.userMoved = true;
-      flyTo(frameRect(loop.current.view, { x: g.cx - g.R, y: g.cy - g.R, w: 2 * g.R, h: 2 * g.R }, 0.9));
-    },
-    [galaxies, loop, flyTo, setFocusModule],
-  );
+  const reframe = useCallback(() => {
+    frameArea(area, true);
+  }, [area, frameArea]);
 
-  const fitAll = useCallback(() => {
-    if (focusModule) setFocusModule(null);
-    else fitView();
-  }, [focusModule, fitView, setFocusModule]);
-
-  // Leaving a galaxy returns the camera to the whole field.
-  const lastFocus = useRef<string | null>(null);
-  useEffect(() => {
-    if (lastFocus.current && !focusModule) fitView();
-    lastFocus.current = focusModule;
-  }, [focusModule, fitView]);
-
-  return { zoomBy, fitView, focusOn, fitAll };
+  return { zoomBy, reframe };
 }

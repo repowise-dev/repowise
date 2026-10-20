@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.actions import (
@@ -36,6 +36,7 @@ from repowise.core.analysis.actions.build import (
     ABSENT,
     AUTHORED_BASES,
     QUARTER,
+    SERIOUS,
     WEEK,
     build_authors,
     build_coverage,
@@ -71,6 +72,7 @@ from ...models import (
     GraphMetric,
     HealthFileMetric,
     HealthFinding,
+    PerformanceOpportunity,
     SecurityFinding,
 )
 from ...read_snapshots import mark_current, read_snapshot, refresh_snapshot, snapshot_key
@@ -204,6 +206,7 @@ async def _recent(
                 GitCommitHealthFinding.line_start,
                 GitCommitHealthFinding.reason,
                 GitCommitHealthFinding.attribution_basis,
+                GitCommitHealthFinding.dimension,
                 GitCommit.subject,
                 GitCommit.committed_at,
             )
@@ -216,24 +219,64 @@ async def _recent(
                 GitCommitHealthFinding.repository_id == repo_id,
                 GitCommit.committed_at >= since,
                 GitCommitHealthFinding.change_kind.in_(("introduced", "worsened")),
-                GitCommitHealthFinding.severity.in_(("critical", "high")),
+                or_(
+                    GitCommitHealthFinding.severity.in_(SERIOUS),
+                    GitCommitHealthFinding.dimension == "performance",
+                ),
                 GitCommitHealthFinding.attribution_basis.in_(AUTHORED_BASES),
             )
         )
     ).all()
     open_findings: list[Any] = []
+    performance: list[Any] = []
     if rows:
         open_findings = (
             await session.execute(
                 select(*_HEALTH_FINDING_COLUMNS).where(
                     HealthFinding.repository_id == repo_id,
                     HealthFinding.status == "open",
-                    HealthFinding.severity.in_(("critical", "high")),
+                    HealthFinding.severity.in_(SERIOUS),
                     HealthFinding.file_path.in_({r.file_path for r in rows}),
                 )
             )
         ).all()
-    return build_recent(rows, week=since, open_findings=open_findings, files=files)
+        perf_paths = {r.file_path for r in rows if r.dimension == "performance"}
+        if perf_paths:
+            performance = await _proven_performance(session, repo_id, perf_paths)
+    return build_recent(
+        rows, week=since, open_findings=open_findings, files=files, performance=performance
+    )
+
+
+async def _proven_performance(session: AsyncSession, repo_id: str, paths: set[str]) -> list[Any]:
+    """The queue's open causes in ``paths``, with what ``perf_confident_verdict``
+    reads; none when the store cannot be read, which costs only the
+    performance regressions, not the week's rest."""
+    p = PerformanceOpportunity
+    try:
+        async with session.begin_nested():
+            return (
+                await session.execute(
+                    select(
+                        p.file_path,
+                        p.biomarker_type,
+                        p.status,
+                        p.queue_eligible,
+                        p.execution_context,
+                        p.actionability_state,
+                        p.execution_role,
+                        p.details_json,
+                    ).where(
+                        p.repository_id == repo_id,
+                        p.status == "open",
+                        p.queue_eligible.is_(True),
+                        p.file_path.in_(paths),
+                    )
+                )
+            ).all()
+    except Exception as exc:  # an index from before the performance store
+        logger.warning("actions: performance causes unavailable: %s", exc)
+        return []
 
 
 async def _history(session: AsyncSession, repo_id: str) -> dict[str, Any]:

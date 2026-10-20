@@ -9,10 +9,13 @@ from repowise.core.analysis.health.grading import TARGET_SCORE, analysed_share, 
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
 from repowise.core.analysis.health.ranking import worst_kpis
+from repowise.core.analysis.health.rows import split_tests
 from repowise.core.analysis.health.scoring import (
     hotspot_health,
     nloc_weighted_attr,
+    nloc_weighted_score,
 )
+from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 from repowise.core.persistence.models import HealthFileMetric
 
 
@@ -126,18 +129,16 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     }
 
 
-def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict[str, Any]:
-    """The honest performance headline: finding count + density + coverage.
+def _perf_kpis(
+    causes: PerformanceHeadline | None, coverage: PerfCoverage | None
+) -> dict[str, Any]:
+    """The honest performance headline: the open causes + coverage.
 
     Says how much of the code the perf pass ran on, so a bare
     ``performance_average`` near 10 is not read as "fast" on thin coverage.
     """
-    density: float | None = None
-    if coverage is not None and coverage.covered_nloc > 0:
-        density = round(10000.0 * performance_findings / coverage.covered_nloc, 2)
     return {
-        "performance_findings": performance_findings,
-        "performance_findings_density_per_10k_loc": density,
+        "performance_causes": causes.as_dict() if causes is not None else None,
         "performance_coverage_pct": (
             coverage.pct_loc if (coverage and coverage.analyzed_files) else None
         ),
@@ -158,7 +159,7 @@ def _compute_kpis(
     metrics: list[HealthFileMetric],
     *,
     hotspot_paths: set[str] | None = None,
-    performance_findings: int = 0,
+    performance_causes: PerformanceHeadline | None = None,
     coverage: PerfCoverage | None = None,
     unanalysed: int = 0,
     deductions: dict[str, float],
@@ -182,14 +183,22 @@ def _compute_kpis(
             "performance_average": None,
             "structure_average": None,
             "history_average": None,
-            **_perf_kpis(0, None),
+            **_perf_kpis(None, None),
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     share = analysed_share(len(metrics), unanalysed)
+    production, tests = split_tests(metrics)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        # Production code alone, weighted the same way; only said while tests
+        # are in ``average_health``, so ``scope="production"`` omits it.
+        **(
+            {"production_average": round(nloc_weighted_score(production), 2)}
+            if production and tests
+            else {}
+        ),
         # ``None`` with no hotspot files, not an empty set averaged to 10.0.
         "hotspot_health": hotspot_health(metrics, hotspot_paths or set()),
         # Weighted vs plain mean: a gap means a few large files hold it down.
@@ -207,6 +216,6 @@ def _compute_kpis(
         # The headline's code-shape and history halves, in deduction points.
         "structure_average": _avg(metrics, "structure_deduction"),
         "history_average": _avg(metrics, "history_deduction"),
-        # Performance leads with count + density + coverage, not the diluted /10.
-        **_perf_kpis(performance_findings, coverage),
+        # Performance leads with the causes worth fixing now and coverage, not the diluted /10.
+        **_perf_kpis(performance_causes, coverage),
     }

@@ -5,6 +5,7 @@
         "key": "alice@example.com",
         "name": "Alice",
         "email": "alice@example.com",
+        "kind": "human",
         "files_owned": 2,
         "hotspots_owned": 1,
         "silo_modules": 0,
@@ -19,6 +20,7 @@
         "key": "bob@example.com",
         "name": "Bob Stone",
         "email": "bob@example.com",
+        "kind": "human",
         "files_owned": 2,
         "hotspots_owned": 1,
         "silo_modules": 0,
@@ -33,6 +35,7 @@
         "key": "name:Carol",
         "name": "Carol",
         "email": null,
+        "kind": "human",
         "files_owned": 1,
         "hotspots_owned": 0,
         "silo_modules": 0,
@@ -54,6 +57,7 @@
         "key": "alice@example.com",
         "name": "Alice",
         "email": "alice@example.com",
+        "kind": "human",
         "files_owned": 2,
         "hotspots_owned": 1,
         "silo_modules": 0,
@@ -68,6 +72,7 @@
         "key": "bob@example.com",
         "name": "Bob Stone",
         "email": "bob@example.com",
+        "kind": "human",
         "files_owned": 2,
         "hotspots_owned": 1,
         "silo_modules": 0,
@@ -82,6 +87,7 @@
         "key": "name:Carol",
         "name": "Carol",
         "email": null,
+        "kind": "human",
         "files_owned": 1,
         "hotspots_owned": 0,
         "silo_modules": 0,
@@ -102,6 +108,15 @@
       "key": "alice@example.com",
       "name": "Alice",
       "email": "alice@example.com",
+      "kind": "human",
+      "aliases": {
+        "names": [
+          "Alice"
+        ],
+        "emails": [
+          "alice@example.com"
+        ]
+      },
       "files_owned": 2,
       "hotspots_owned": 1,
       "silo_modules": 0,
@@ -182,6 +197,16 @@
       "key": "bob@example.com",
       "name": "Bob Stone",
       "email": "bob@example.com",
+      "kind": "human",
+      "aliases": {
+        "names": [
+          "Bob Stone"
+        ],
+        "emails": [
+          "bob@example.com",
+          "bob@users.noreply.github.com"
+        ]
+      },
       "files_owned": 2,
       "hotspots_owned": 1,
       "silo_modules": 0,
@@ -262,6 +287,13 @@
       "key": "name:Carol",
       "name": "Carol",
       "email": null,
+      "kind": "human",
+      "aliases": {
+        "names": [
+          "Carol"
+        ],
+        "emails": []
+      },
       "files_owned": 1,
       "hotspots_owned": 0,
       "silo_modules": 0,
@@ -375,7 +407,7 @@
         "is_silo": false,
         "decision_count": 1,
         "doc_coverage_pct": 100.0,
-        "health_score": 100.0
+        "health_score": 95.5
       }
     ],
     "total": 3,
@@ -452,7 +484,7 @@
       "is_silo": false,
       "decision_count": 1,
       "doc_coverage_pct": 100.0,
-      "health_score": 100.0,
+      "health_score": 95.5,
       "owners": [
         {
           "name": "Alice",

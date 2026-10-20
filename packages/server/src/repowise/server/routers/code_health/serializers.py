@@ -61,7 +61,7 @@ def _metric_to_dict(
     m: Any,
     lead: dict | None = None,
     *,
-    perf_findings: int = 0,
+    perf_opportunities: int = 0,
     perf_analyzed: bool | None = None,
     summary: bool = False,
 ) -> dict:
@@ -101,11 +101,11 @@ def _metric_to_dict(
     # ``performance_score`` is computed but not yet surfaced as its own pillar.
     out["maintainability_score"] = _round_opt(getattr(m, "maintainability_score", None))
     out["performance_score"] = _round_opt(getattr(m, "performance_score", None))
-    # Performance lens inputs for the code-health map: the open perf-finding
-    # count colors the heat, and ``perf_analyzed`` (did a detector run on this
-    # language?) separates green ("analyzed, none found") from grey ("never
+    # Performance lens inputs for the code-health map: the file's causes in the
+    # default queue color the heat, and ``perf_analyzed`` (did a detector run on
+    # this language?) separates green ("analyzed, none found") from grey ("never
     # looked"). Presentation only — the score above is untouched.
-    out["performance_findings"] = perf_findings
+    out["performance_opportunities"] = perf_opportunities
     out["performance_analyzed"] = perf_analyzed
     if not summary:
         # The headline's two halves, and the score the file would carry without
@@ -160,6 +160,7 @@ def _file_signals_to_dict(s: FileSignals) -> dict:
         "lines_deleted_90d": s.lines_deleted_90d,
         "commit_count_90d": s.commit_count_90d,
         "age_days": s.age_days,
+        "history": s.history,
         "primary_owner_name": s.primary_owner_name,
         "primary_owner_commit_pct": s.primary_owner_commit_pct,
         "recent_owner_name": s.recent_owner_name,

@@ -282,6 +282,9 @@ def _followed(cfg: CFG, line: int, s: int, e: int) -> bool:
     if at is None:
         return True
     block, k = at
+    st = cfg.block(block).statements[k]
+    if st.start_line < s or e < st.end_line:
+        return True
     rest = cfg.block(block).statements[k + 1 :]
     if rest:
         return s <= rest[0].start_line <= e

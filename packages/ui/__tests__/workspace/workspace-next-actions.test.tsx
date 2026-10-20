@@ -113,4 +113,21 @@ describe("WorkspaceNextActions", () => {
     expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
     expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
   });
+
+  it("gives each repository's rows the agent prompt, loaded from that repository", async () => {
+    const loadPrompt = vi.fn().mockResolvedValue("Row prompt");
+    render(
+      <WorkspaceNextActions
+        data={data}
+        hrefFor={() => null}
+        repoHref={(id) => `/repos/${id}/overview`}
+        contractsHref="/workspace/contracts"
+        loadPrompt={loadPrompt}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt for your agent: Clean up/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Row prompt")).toBeInTheDocument();
+    expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
+  });
 });

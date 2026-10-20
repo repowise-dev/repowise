@@ -45,24 +45,15 @@ export const SEVERITY_CHIP: Record<Severity, string> = {
   low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
+/** The quiet mono label: a field name, a state word, a small tag. */
+export const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
 /** Segment fills for a severity split (ProportionBar `color`). */
 export const SEVERITY_SEGMENT: Record<Severity, string> = {
   critical: "var(--color-error)",
   high: "var(--color-warning)",
   medium: "var(--color-caution)",
   low: "var(--color-text-tertiary)",
-};
-
-/**
- * Effort tint. A ramp, not a judgement: green is the cheap end, red the
- * expensive one. The badge prints the bucket letter beside it, so it belongs
- * on the semantic ramp. Here rather than in the card so it has one home.
- */
-export const EFFORT_TINT: Record<"S" | "M" | "L" | "XL", string> = {
-  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
-  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
-  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
-  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
 /**

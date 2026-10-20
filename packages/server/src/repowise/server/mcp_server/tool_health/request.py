@@ -62,6 +62,8 @@ _KNOWN_INCLUDES = frozenset(
         "semantics",
         # With ``plan_id``: the plan as preconditions, steps and postconditions.
         "recipe",
+        # Points each fix would recover, per worst file and for the repo.
+        "what_if",
     }
 )
 

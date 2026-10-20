@@ -9,8 +9,8 @@ small file can hold the worst cause in the tree.
 So the feed admits files in a fixed order - the caller's pinned paths first,
 then a small floor per module so a little module never vanishes behind a big
 one, then everything else by origin tier (production, tooling and build, test,
-docs examples), and inside a tier the files carrying open performance
-opportunities in rank order before a health-debt rank that puts unhealthy, large
+docs examples), and inside a tier the files carrying a performance cause in
+the default queue, in rank order, before a health-debt rank that puts unhealthy, large
 files ahead of clean ones. Vendored and generated files are held out unless the
 caller asks for them, because they are not the reader's to change. The response
 states exactly what the cap and the hold pushed out. One response carries both
@@ -26,7 +26,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.finding_registry import HELD_ORIGINS
+from repowise.core.analysis.areas import in_area
+from repowise.core.analysis.finding_registry import HELD_ORIGINS, stored_origin
 from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
@@ -92,11 +93,14 @@ class HealthMapFeed:
     #: Which half of the repository the field describes.
     scope: str = DEFAULT_SCOPE
     counts: str = DEFAULT_COUNTS
+    #: The directory the field is narrowed to, ``None`` for the whole repository.
+    area: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
             "scope": self.scope,
             "counts": self.counts,
+            "area": self.area,
             "files": self.files,
             "cap": self.cap,
             "shown": self.shown,
@@ -144,11 +148,28 @@ class HealthMapService:
         counts: str = DEFAULT_COUNTS,
         include_held: bool = False,
         query: str | None = None,
+        area: str | None = None,
+        held: frozenset[str] | None = None,
     ) -> HealthMapFeed:
         session, repo_id = self._session, self._repository_id
         metrics = await crud.get_health_metrics(session, repo_id)
         rollups = await crud.performance_file_rollups(session, repo_id)
+        if area:
+            # A drilled area is its own field: every count, the cap and the
+            # performance totals below describe the area, never the repository.
+            metrics = [m for m in metrics if in_area(m.file_path, area)]
+            rollups = [r for r in rollups if in_area(r.file_path, area)]
+        if held is not None:
+            # The area map's held origins (``hold=map``) leave the field before
+            # any count, as they leave the area rollups beside it; the held set
+            # then decides vendored and generated too, even when every group
+            # was brought back and the set is empty.
+            metrics = [m for m in metrics if stored_origin(m.code_origin, m.is_test) not in held]
+            include_held = True
         languages = await crud.get_file_language_map(session, repo_id)
+        # The same set ``hotspot_health`` averages over, so the hotspot lens
+        # and that KPI can never disagree about which files are hotspots.
+        hotspots = await crud.get_hotspot_file_paths(session, repo_id)
         summary = await crud.get_performance_summary(session, repo_id)
         perf_languages = supported_perf_languages()
 
@@ -182,12 +203,13 @@ class HealthMapService:
             for m in drawable
             if include_held or m.code_origin not in HELD_ORIGINS or m.file_path in pinned
         ]
-        held = len(drawable) - len(eligible)
+        held_out = len(drawable) - len(eligible)
         eligible_paths = {m.file_path for m in eligible}
         burden = {r.file_path: r for r in rollups}
 
-        # A file whose only causes are ``expected`` has nothing to do; it earns no priority slot.
-        open_rollups = [r for r in rollups if r.opportunities > r.expected]
+        # A file earns a priority slot with a cause in the default queue, the
+        # count the performance headline leads with; the rest wait in the queue view.
+        open_rollups = [r for r in rollups if r.queued]
         perf_position = {
             r.file_path: i for i, r in enumerate(open_rollups) if r.file_path in eligible_paths
         }
@@ -243,7 +265,7 @@ class HealthMapService:
 
         drawn = [by_path[path] for path in chosen]
         files = [
-            self._row(metric, burden.get(metric.file_path), languages, perf_languages)
+            self._row(metric, burden.get(metric.file_path), languages, perf_languages, hotspots)
             for metric in drawn
         ]
 
@@ -256,10 +278,10 @@ class HealthMapService:
         omitted = {
             "files": len(eligible) - len(chosen),
             "performance_files": len(undrawn_perf),
-            "opportunities": sum(r.opportunities - r.expected for r in undrawn_perf),
+            "opportunities": sum(r.queued for r in undrawn_perf),
             "observations": sum(r.observations for r in undrawn_perf),
             # Drawable, and left out by the vendored/generated hold, not the cap.
-            "held": held,
+            "held": held_out,
         }
         # What the bands after the pins admitted, split the way older readers
         # count it: the performance band, and everything else.
@@ -315,6 +337,7 @@ class HealthMapService:
             ),
             scope=DEFAULT_SCOPE if not scope_narrowed else "production",
             counts=counts,
+            area=area or None,
         )
 
     def _row(
@@ -323,6 +346,7 @@ class HealthMapService:
         rollup: Any,
         languages: dict[str, str | None],
         perf_languages: Any,
+        hotspots: set[str],
     ) -> dict[str, Any]:
         """One node. The lens reads the rollup; everything else is geometry.
 
@@ -341,10 +365,12 @@ class HealthMapService:
             "has_test_file": metric.has_test_file,
             "maintainability_score": metric.maintainability_score,
             "performance_analyzed": languages.get(metric.file_path) in perf_languages,
-            # What the default queue shows: ``expected`` causes have nothing to do.
-            "performance_opportunities": rollup.opportunities - rollup.expected if rollup else 0,
+            # What the default queue shows, so the lens and the headline agree.
+            # Observations stay every open one on the file: evidence, not a count to act on.
+            "performance_opportunities": rollup.queued if rollup else 0,
             "performance_observations": rollup.observations if rollup else 0,
             "code_origin": metric.code_origin,
+            "is_hotspot": metric.file_path in hotspots,
         }
         actionability = _leading_actionability(rollup)
         if actionability is not None:
@@ -376,7 +402,7 @@ class HealthMapService:
             file_burden = burden.get(metric.file_path)
             if file_burden is None:
                 continue
-            row["opportunities"] += file_burden.opportunities
+            row["opportunities"] += file_burden.queued
             row["observations"] += file_burden.observations
             row["plan_ready"] += file_burden.plan_ready
             best = row["best_rank"]
@@ -400,7 +426,8 @@ class HealthMapService:
 
         ``None`` means this index has never materialized the read model, which
         is a different answer from "analyzed and nothing surfaced" and the lens
-        must not render the two the same way.
+        must not render the two the same way. Its totals are the repository's
+        whole inventory, every context and state; the nodes count the queue.
         """
         if summary is None and not rollups:
             return None
@@ -452,9 +479,11 @@ def _leading_actionability(rollup: Any) -> str | None:
     """The best thing a reader could do about this file, or nothing.
 
     Best rather than most common: a file with one stored plan and nine
-    investigations is a file with a stored plan.
+    investigations is a file with a stored plan. Read over the queued causes,
+    the ones the lens counts.
     """
     if rollup is None:
         return None
     # ``expected`` is never a lead: it has nothing to do.
-    return next((s for s in ACTIONABILITY_ORDER if s != "expected" and getattr(rollup, s)), None)
+    states = rollup.queued_states
+    return next((s for s in ACTIONABILITY_ORDER if s != "expected" and s in states), None)

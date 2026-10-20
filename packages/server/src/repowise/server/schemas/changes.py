@@ -11,6 +11,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_serializer
 
+from repowise.server.schemas.git import CommitHealthFindingResponse
+from repowise.server.schemas.history import HealthRollupResponse
+
 
 class ChangeIdentity(BaseModel):
     """``pr`` | ``change_id`` | ``merge`` | ``commit``, first that applies."""
@@ -68,6 +71,11 @@ class ChangeSummary(BaseModel):
     category: str
     # Null while AI attribution is off, or on rows indexed before it.
     provenance: ChangeProvenance | None = None
+    #: What the change's commits did to health, the row's lead. Null when
+    #: none of them was scanned.
+    health: HealthRollupResponse | None = None
+    #: Files the change touched that are hotspots now.
+    touches_hotspot: int = 0
 
 
 class EvidenceLine(BaseModel):
@@ -102,7 +110,21 @@ class ChangeEvidence(BaseModel):
     items: list[EvidenceItem]
 
 
+class ChangeHealthFindingResponse(CommitHealthFindingResponse):
+    """A finding a change's commit introduced or worsened, with that commit."""
+
+    sha: str
+
+
+class ChangeHealthResponse(HealthRollupResponse):
+    """A change's health rollup plus its worse findings, worst first and
+    capped: file, lines, symbol and biomarker, enough for a fix prompt."""
+
+    findings: list[ChangeHealthFindingResponse] = Field(default_factory=list)
+
+
 class ChangeRecord(ChangeSummary):
+    health: ChangeHealthResponse | None = None
     commits: list[str]
     files: list[ChangeFile]
     metadata: ChangeForgeMetadata
@@ -202,6 +224,7 @@ class Suspect(BaseModel):
 class SuspectsResponse(BaseModel):
     window: dict[str, str]
     candidates: int
+    candidates_capped: bool
     #: Changes git could not read; they are ranked on title and files alone.
     texts_missing: int = 0
     symptom_files: list[str] = []

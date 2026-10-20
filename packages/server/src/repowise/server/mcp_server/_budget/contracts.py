@@ -152,7 +152,12 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "patch_coverage",
             "impacted_tests",
             "health_delta.skipped",
+            "health_delta.files[]",
             "health_delta.top_findings[]",
+            # A requested checklist sheds its rows' detail lists, then their
+            # details, before the block itself: every row keeps its verdict.
+            "evidence.items[].details[]",
+            "evidence.items[].details",
             "evidence",
         ),
         protected=(
@@ -162,7 +167,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "risk_percentile",
         ),
         # Present only when asked for, and then it is the answer.
-        requested_projections=(("evidence", ("evidence",)),),
+        requested_projections=(
+            ("evidence", ("evidence", "evidence.items[].details[]", "evidence.items[].details")),
+        ),
     ),
     "get_answer": ResponseBudgetContract(
         "blocks",
@@ -302,6 +309,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             ("graph", ("community_summary",)),
             ("ownership", ("knowledge_map",)),
             ("content", ("content_md",)),
+            ("tools", ("tool_surface.opt_in", "tool_surface.tools[]",
+                       "tool_surface.recipes[]", "tool_surface")),
+            ("actions", ("next_actions.quarter.actions[]",)),
         ),
     ),
     "get_health": ResponseBudgetContract(

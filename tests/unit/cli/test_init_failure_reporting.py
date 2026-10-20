@@ -9,6 +9,7 @@ import pytest
 
 from repowise.cli.commands.init_cmd.generation import run_repo_generation
 from repowise.cli.commands.init_cmd.reporting import show_completion
+from repowise.cli.ui.brand import THEME
 from repowise.core.generation.job_system import JobSystem
 from repowise.core.generation.models import GeneratedPage
 
@@ -114,7 +115,7 @@ def test_run_repo_generation_reports_failures(tmp_path, monkeypatch):
     # Deliberately not "due to provider failures": the commonest cause is this
     # run's own artifact check rejecting the model's text, and naming the
     # provider sent people to check a key that was working.
-    assert "The wiki is incomplete: some pages were not written." in output
+    assert "The documentation is incomplete: some pages were not written." in output
     assert "provider failures" not in output
     assert "repowise init --resume" in output
 
@@ -182,7 +183,7 @@ def test_recorded_cost_includes_the_knowledge_graph_enrichment(tmp_path, monkeyp
 
 @pytest.mark.parametrize("verbose_flag", [True, False])
 def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
-    """When no pages fail, run_repo_generation prints success summary only when verbose, stays silent otherwise."""
+    """A clean run prints nothing here: the "Generating pages" done row carries the count."""
     jobs_dir = tmp_path / ".repowise" / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -235,23 +236,19 @@ def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
     assert len(pages) == 1
     output = "\n".join(printed_lines)
     assert "failed" not in output
-    assert "The wiki is incomplete" not in output
-    if verbose_flag:
-        assert "Generated [bold]1[/bold] pages" in output
-    else:
-        assert output.strip() == ""
+    assert "The documentation is incomplete" not in output
+    assert "Generated" not in output
 
 
 def test_show_completion_panel_with_failures(monkeypatch):
     """show_completion reflects failed count in metric line when failures exist."""
     printed_panels = []
 
-    def mock_completion_panel(title, metrics, next_steps=None):
+    def mock_completion_panel(console, title, metrics, next_steps=None, **_kw):
         printed_panels.append(metrics)
-        return "PANEL"
 
     monkeypatch.setattr(
-        "repowise.cli.commands.init_cmd.reporting.build_completion_panel", mock_completion_panel
+        "repowise.cli.ui.finish_panel.print_completion_panel", mock_completion_panel
     )
     monkeypatch.setattr(
         "repowise.cli.commands.init_cmd.reporting.console.print", lambda *a, **kw: None
@@ -287,7 +284,7 @@ def test_show_completion_panel_with_failures(monkeypatch):
 
     assert printed_panels
     metrics_dict = dict(printed_panels[0])
-    assert metrics_dict.get("Pages generated") == "1 (2 failed)"
+    assert metrics_dict.get("Documentation") == "1 page (2 failed)"
 
 
 def _completion_result(pages: list) -> SimpleNamespace:
@@ -313,14 +310,9 @@ _CHECK_ROWS = ("Orientation overlap", "Layer grouping", "Artifact checks", "Over
 
 
 class TestInitRendersGenerationChecks:
-    """`init` writes a repository's first pages, so it must report on them.
+    """The generation checks are a -v readout; the default finish is one panel."""
 
-    It never built a GenerationReport at all: the checks ran only on a later
-    `update`. The first index is where duplication is created, and it was the
-    one run that said nothing about it.
-    """
-
-    def _output(self, monkeypatch, *, index_only: bool) -> str:
+    def _output(self, monkeypatch, *, index_only: bool, verbose: bool = True) -> str:
         import io
 
         from rich.console import Console
@@ -328,11 +320,7 @@ class TestInitRendersGenerationChecks:
         buf = io.StringIO()
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.console",
-            Console(file=buf, width=200, force_terminal=False),
-        )
-        monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd.reporting.build_completion_panel",
-            lambda title, metrics, next_steps=None: "PANEL",
+            Console(file=buf, width=200, force_terminal=False, theme=THEME),
         )
         show_completion(
             repo_path="/fake",
@@ -341,28 +329,40 @@ class TestInitRendersGenerationChecks:
             effective_index_only=index_only,
             run_mode="standard",
             provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+            verbose=verbose,
         )
         return buf.getvalue()
 
     @pytest.mark.parametrize("index_only", [False, True])
-    def test_checks_render_after_completion(self, monkeypatch, index_only):
+    def test_checks_render_under_verbose(self, monkeypatch, index_only):
         output = self._output(monkeypatch, index_only=index_only)
 
         for row in _CHECK_ROWS:
-            assert row in output, f"{row} missing from init's completion output"
+            assert row in output, f"{row} missing from init -v output"
 
-    def test_check_failure_is_loud_and_names_the_cause(self, monkeypatch):
-        """A failed check block must not read as a clean first index."""
+    @pytest.mark.parametrize("index_only", [False, True])
+    def test_default_finish_has_no_checks_table(self, monkeypatch, index_only):
+        output = self._output(monkeypatch, index_only=index_only, verbose=False)
+
+        assert "Generation Checks" not in output
+        for row in _CHECK_ROWS:
+            assert row not in output
+
+    def test_check_failure_is_calm_and_only_under_verbose(self, monkeypatch):
+        """A check that could not run is not an error on an exit-0 run."""
 
         def _boom(*_args, **_kwargs):
             raise RuntimeError("overlap exploded")
 
         monkeypatch.setattr("repowise.core.generation.report.GenerationReport.from_pages", _boom)
-        output = self._output(monkeypatch, index_only=False)
+        verbose = self._output(monkeypatch, index_only=False)
+        assert "Generation checks were skipped" in verbose
+        assert "overlap exploded" in verbose
+        assert "did not run" not in verbose
 
-        assert "overlap exploded" in output
-        assert "RuntimeError" in output
-        assert "checks did not run" in output
+        default = self._output(monkeypatch, index_only=False, verbose=False)
+        assert "overlap exploded" not in default
+        assert "Generation checks" not in default
 
 
 def _stub_page(page_id: str) -> GeneratedPage:
@@ -463,7 +463,7 @@ class TestStubsAreNotCountedTwice:
     def test_a_clean_run_is_unaffected(self, tmp_path, monkeypatch):
         output = self._run(tmp_path, monkeypatch, [_page("module_page:a")], [])
 
-        assert "Generated [bold]1[/bold] pages" in output
+        assert "Generated" not in output
         assert "failed" not in output
 
 
@@ -471,8 +471,8 @@ def test_completion_panel_excludes_placeholders_from_the_page_count(monkeypatch)
     """The panel derives the same split from the same helper, not its own count."""
     printed_panels = []
     monkeypatch.setattr(
-        "repowise.cli.commands.init_cmd.reporting.build_completion_panel",
-        lambda title, metrics, next_steps=None: printed_panels.append(metrics) or "PANEL",
+        "repowise.cli.ui.finish_panel.print_completion_panel",
+        lambda console, title, metrics, next_steps=None, **_kw: printed_panels.append(metrics),
     )
     monkeypatch.setattr(
         "repowise.cli.commands.init_cmd.reporting.console.print", lambda *a, **kw: None
@@ -490,7 +490,7 @@ def test_completion_panel_excludes_placeholders_from_the_page_count(monkeypatch)
         provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
     )
 
-    assert dict(printed_panels[0]).get("Pages generated") == "1 (1 failed)"
+    assert dict(printed_panels[0]).get("Documentation") == "1 page (1 failed)"
 
 
 def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypatch):
@@ -565,11 +565,7 @@ class TestInitClosingKeylessNote:
         buf = io.StringIO()
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.console",
-            Console(file=buf, width=200, force_terminal=False),
-        )
-        monkeypatch.setattr(
-            "repowise.cli.commands.init_cmd.reporting.build_completion_panel",
-            lambda title, metrics, next_steps=None: "PANEL",
+            Console(file=buf, width=200, force_terminal=False, theme=THEME),
         )
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.load_state",
@@ -605,9 +601,9 @@ class TestInitClosingKeylessNote:
     )
     def test_note_prints_with_and_without_editor_setup(self, monkeypatch, setup):
         out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")])
-        assert "repowise generate writes the subsystem pages" in out
-        assert "--provider ollama" in out
-        assert "repowise reindex adds semantic search" in out
+        # Once, as a step row: the duplicate closing sentence is gone.
+        assert out.count("repowise generate") == 1
+        assert "Semantic search is off: repowise reindex turns it on" in out
         assert "--embedder ..." not in out
 
     def test_note_drops_the_search_half_when_semantic_search_is_available(self, monkeypatch):
@@ -619,9 +615,10 @@ class TestInitClosingKeylessNote:
             },
         }
         out = self._output(monkeypatch, setup=None, pages=[_page("file_page:a")], state=state)
-        assert "repowise generate writes the subsystem pages" in out
+        assert "repowise generate" in out
         assert "reindex" not in out
 
-    def test_no_note_when_fast_mode_rendered_no_pages(self, monkeypatch):
+    def test_no_search_line_when_no_documentation_was_built(self, monkeypatch):
         out = self._output(monkeypatch, setup=None, pages=[])
-        assert "repowise generate" not in out
+        assert "Semantic search" not in out
+        assert "Documentation" in out and "none" in out

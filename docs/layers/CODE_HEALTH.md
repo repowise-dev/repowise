@@ -47,14 +47,17 @@ are never blended into one number.
 | Maintainability | How hard the code is to read and change | Set by hand; never fitted to bugs |
 | Performance risk | Where the structure wastes work | Per-marker precision weights; see [PERFORMANCE.md](PERFORMANCE.md) |
 
-Smells that fire often but predict bugs weakly (low cohesion, brain methods,
-duplicated code, broad error handling) are down-weighted in code health and
+Smells that fire often but predict bugs weakly (low cohesion, duplicated code,
+broad error handling) are down-weighted in code health and
 counted in full in maintainability.
 
 ## Reading the score
 
 Each file starts at 10. Every finding deducts its severity times its marker
-weight, deductions are capped per category, and the result is clamped to 1-10.
+weight, deductions are bounded per category, and the result is clamped to 1-10.
+Code categories bend toward their bound rather than stopping at it, so shrinking a
+critical function raises the score even while it stays critical, and several findings on one
+function count mostly once.
 
 | Band | Score | Meaning |
 |---|---|---|
@@ -163,12 +166,15 @@ on the dashboard, in `get_health` and in `repowise health --format json`
 `repowise next` prints the cross-layer list the dashboard calls Do next and
 `get_overview` returns as `next_actions`. It reads stored actions, so it is
 instant. Fix first items sit beside a live secret, fresh regressions, fragile
-files, files with knowledge loss, broken doc references, a dead-code batch,
+files, files with fading ownership, broken doc references, a dead-code batch,
 missing or stale coverage, and decisions waiting for review. Rows are grouped as
 Now, Worth planning and Improve what Repowise can see. Within a group, rows rank
 by value times confidence over effort, and the top due Fix first item leads its
 group, so Do next and Fix first lead with the same work. Dismissing or snoozing a
 row takes effect at once.
+A fresh regression is in Now only when this week's commits added a proven
+performance cause (one in the performance queue) or lost measured coverage. The
+long, complex or nested code a week of work leaves becomes one row to plan.
 A fragile file asks for tests only when no measured coverage and no test in the
 code graph reaches it; otherwise the row asks you to simplify its lead function. A
 folder where bug fixes concentrate names its first step, the most fixed file's, or
@@ -195,11 +201,11 @@ dominating a file.
 
 | Family | Detectors | Cap | Catches |
 |---|---:|---|---|
-| Structural complexity | 6 | 2.5 | Deep nesting, brain methods, god classes, low cohesion, bumpy roads, complex conditions |
+| Structural complexity | 6 | 2.5 | Deep nesting, brain methods (listed, not scored), god classes, low cohesion, repeated nesting, complex conditions |
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
 | Duplication | 1 | 1.0 | Cloned blocks |
 | Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
-| Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, knowledge loss, prior bug fixes |
+| Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, fading ownership, prior bug fixes |
 | Test coverage | 3 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a coverage report) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins; maintainability or performance only |
@@ -215,7 +221,9 @@ governance, a contradictory decision) come from the
 History amplifies code risk and does not stand alone. Git history costs a file at
 most 1.0 point, plus one point for each point its code-shape findings deduct, up
 to 3.5. A simple file that changes often reads as busy, not broken, and never
-drops below 9.0 from history alone.
+drops below 9.0 from history alone. Several history findings on one file count
+the largest in full and the rest at a quarter, because they usually describe the
+same burst of activity.
 
 | Detector | Fires when |
 |---|---|

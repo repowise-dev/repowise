@@ -294,6 +294,23 @@ def test_changing_an_exported_go_method_warns_about_outside_callers() -> None:
     assert notes.risks[0].text.endswith("breaks consumers outside the repo.")
 
 
+def test_changing_an_exported_csharp_method_warns_about_outside_callers() -> None:
+    exported = {
+        "src/Lib/Client.cs": {"src/Lib/Client.cs::Client::Send": "src/Lib/Client.cs"},
+    }
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(plan(file_path="src/Lib/Client.cs", target_symbol="Client.Send"), facts)
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Client.Send` is exported from `src/Lib/Client.cs`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+    # Only the exported member, never a neighbour in the same file.
+    assert not annotate_any(plan(file_path="src/Lib/Client.cs", target_symbol="Retry"), facts)
+
+
 def test_a_moved_exported_method_carries_one_public_api_risk() -> None:
     exported = {
         "svc/orders.py": {

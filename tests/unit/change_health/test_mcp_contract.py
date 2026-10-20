@@ -53,6 +53,20 @@ async def test_the_response_leads_with_the_directive_then_the_delta(tool, make_r
     assert result["directive"]["next_actions"]
 
 
+async def test_the_headline_its_first_action_and_the_first_finding_agree(tool, make_repo):
+    module = tool(seeded(make_repo))
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+    directive, delta = result["directive"], result["health_delta"]
+    lead = delta["top_findings"][0]
+
+    assert directive["status"] == "review_required"
+    assert f"in {lead['path']}." in directive["headline"]
+    assert directive["next_actions"][0].endswith(f"({lead['id']})")
+    change = delta["score_change"]
+    assert f"{change['base']:.2f} to {change['head']:.2f}" in directive["headline"]
+
+
 async def test_the_default_response_stays_small_and_omits_score_mechanics(tool, make_repo):
     module = tool(seeded(make_repo))
 
@@ -126,7 +140,10 @@ async def test_a_surfaced_finding_can_be_expanded_by_its_id(tool, make_repo):
 
     listing = await module.get_change_risk("HEAD", baseline=0)
     row = listing["health_delta"]["top_findings"][0]
-    assert row["inspect"] == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
+    assert "inspect" not in row
+    full = await module.get_change_risk("HEAD", baseline=0, include=["findings"])
+    inspect = full["health_delta"]["top_findings"][0]["inspect"]
+    assert inspect == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
 
     detail = await module.get_change_risk("HEAD", baseline=0, finding_id=row["id"])
 
@@ -288,7 +305,7 @@ def test_every_request_filter_is_part_of_the_cache_key(make_repo):
     plain = DeltaRequest(str(repo.path), "HEAD")
     # repo_path and revspec reach the key through the service and the resolved pair.
     for field in dataclasses.fields(DeltaRequest):
-        if field.name in ("repo_path", "revspec"):
+        if field.name in ("repo_path", "revspec", "dependents"):
             continue
         narrowed = dataclasses.replace(plain, **{field.name: ("vendor/",)})
         assert service._cache_key(narrowed, pair) != service._cache_key(plain, pair), field.name
@@ -296,6 +313,9 @@ def test_every_request_filter_is_part_of_the_cache_key(make_repo):
         joined = dataclasses.replace(plain, **{field.name: ("a,b",)})
         split = dataclasses.replace(plain, **{field.name: ("a", "b")})
         assert service._cache_key(joined, pair) != service._cache_key(split, pair), field.name
+    counted = dataclasses.replace(plain, dependents={"app.py": 3})
+    recounted = dataclasses.replace(plain, dependents={"app.py": 4})
+    assert len({service._cache_key(r, pair) for r in (plain, counted, recounted)}) == 3
 
 
 async def test_include_paths_as_a_string_filters_like_the_list(tool, make_repo):

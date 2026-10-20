@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
@@ -132,11 +133,20 @@ class SecurityFindingResponse(BaseModel):
     commit_sha: str | None
     commit_at: datetime | None
     found_in_history: bool
+    # Shipped source, tests, or docs (``services/security_classes.py``).
+    path_class: Literal["source", "test", "docs"] = "source"
 
 
 class SecuritySummaryResponse(BaseModel):
     # When the pattern scan last ran; None = never ran or unknown (not all-clear).
     scanned_at: datetime | None = None
+    # Every stored finding, and how many sit in shipped source, tests and docs
+    # (``services/security_classes.py``). The page lede reads these rather
+    # than counting a capped list.
+    total: int = 0
+    class_counts: dict[Literal["source", "test", "docs"], int] = Field(default_factory=dict)
+    # High-severity findings in shipped source.
+    source_high: int = 0
 
 
 class RepoStatsResponse(BaseModel):

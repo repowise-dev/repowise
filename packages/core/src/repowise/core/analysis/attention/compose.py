@@ -127,14 +127,19 @@ class SourceResult:
 
 @dataclass(frozen=True, slots=True)
 class DecisionAttentionInput:
-    """The two fields of a decision record the attention list shows.
+    """The fields of a decision record the attention list shows.
 
     No staleness score: :func:`decision_source` never re-sorts a lane, so a
     producer without one passes the stale lane in whatever order it trusts.
+
+    ``source`` is the record's provenance (see ``SOURCE_RANK``): ``"cli"`` is a
+    human-authored manual entry, everything else is a pipeline proposal. Only
+    the proposed lane reads it — the wording of the description differs.
     """
 
     id: str
     title: str
+    source: str = ""
 
 
 class AttentionArea(TypedDict):
@@ -224,7 +229,11 @@ def decision_source(
                 "id": f"proposed-{d.id}",
                 "type": "proposed_decision",
                 "title": d.title,
-                "description": "Auto-proposed decision awaiting review",
+                "description": (
+                    "Decision recorded by hand, awaiting review"
+                    if d.source == "cli"
+                    else "Auto-proposed decision awaiting review"
+                ),
                 "severity": "medium",
                 "target_id": d.id,
             }

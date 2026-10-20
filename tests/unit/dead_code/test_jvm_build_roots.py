@@ -232,3 +232,56 @@ def test_each_writer_is_read_once(monkeypatch):
     writers = set(source_map)
     assert not any(scope.can_refer("Foo", _DECLARING, writers, w) for w in writers - {_DECLARING})
     assert calls <= len(writers)
+
+
+_SERVLET_FILES = {
+    "src/main/java/com/example/admin/AdminApplication.java": (
+        "package com.example.admin;\n\n"
+        "import org.springframework.boot.SpringApplication;\n"
+        "import org.springframework.boot.autoconfigure.SpringBootApplication;\n\n"
+        "@SpringBootApplication\npublic class AdminApplication {\n"
+        "  public static void main(String[] args) {\n"
+        "    SpringApplication.run(AdminApplication.class, args);\n  }\n}\n"
+    ),
+    "src/main/java/com/example/admin/ServletInitializer.java": (
+        "package com.example.admin;\n\n"
+        "import org.springframework.boot.builder.SpringApplicationBuilder;\n"
+        "import org.springframework.boot.web.servlet.support.SpringBootServletInitializer;\n\n"
+        "public class ServletInitializer extends SpringBootServletInitializer {\n"
+        "  @Override\n"
+        "  protected SpringApplicationBuilder configure(SpringApplicationBuilder application) {\n"
+        "    return application.sources(AdminApplication.class);\n  }\n}\n"
+    ),
+    # Control: a class extending some other external base is still judged on
+    # its own uses.
+    "src/main/java/com/example/admin/Leftover.java": (
+        "package com.example.admin;\n\n"
+        "import org.springframework.boot.builder.SpringApplicationBuilder;\n\n"
+        "public class Leftover extends SpringApplicationBuilder {\n}\n"
+    ),
+}
+
+
+def _spring_report(root: Path):
+    from repowise.core.pipeline.incremental import build_repo_graph
+
+    for rel, text in _SERVLET_FILES.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _, sources, builder, _, _ = build_repo_graph(
+        root, [], collect_sources=True, log=lambda *a, **k: None, read_only=True
+    )
+    return DeadCodeAnalyzer(
+        builder.graph(),
+        {},
+        parsed_files=builder._parsed_files,
+        source_map=sources,
+        repo_root=root,
+    ).analyze({"min_confidence": 0.0})
+
+
+def test_spring_boot_servlet_initializer_is_not_reported(tmp_path: Path):
+    report = _spring_report(tmp_path)
+    assert not [f for f in report.findings if "ServletInitializer" in f.file_path]
+    assert "Leftover" in _named(report, DeadCodeKind.UNUSED_EXPORT)

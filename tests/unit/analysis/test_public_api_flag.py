@@ -372,3 +372,160 @@ def test_go_method_of_an_unexported_type_is_not_public(tmp_path: Path) -> None:
     }
     flags = _public_flags(build_fixture(tmp_path, files).graph())
     assert flags["lib/b.go::client::Send"] == ""
+
+# ---------------------------------------------------------------------------
+# C#: a type of a project that ships a package is public API
+# ---------------------------------------------------------------------------
+
+
+def _csproj(props: str = "") -> str:
+    return f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>{props}</PropertyGroup></Project>'
+
+
+def build_files(repo: Path, files: dict[str, str]) -> dict[str, str]:
+    """Build a graph from *files*; ``{symbol id: public_api}`` for every symbol."""
+    for rel, body in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(body, encoding="utf-8")
+    parser = ASTParser()
+    builder = GraphBuilder(repo)
+    for fi in FileTraverser(repo).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    builder.build()
+    return {
+        node: data["public_api"]
+        for node, data in builder.graph().nodes(data=True)
+        if data.get("node_type") == "symbol" and "public_api" in data
+    }
+
+
+_CSHARP_REPO = {
+    # Packs by opting in.
+    "src/Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+    "src/Lib/Client.cs": (
+        "namespace Lib;\n"
+        "public class Client\n{\n    public void Send() { }\n    private void Retry() { }\n}\n"
+        "internal class Helper\n{\n    public void Go() { }\n}\n"
+        "class Implicit\n{\n    public void Go() { }\n}\n"
+    ),
+    # Sets no packing property: shipped by the baseline it keeps.
+    "src/Base/Base.csproj": _csproj(),
+    "src/Base/.PublicAPI/PublicAPI.Shipped.txt": "Base.Thing\n",
+    "src/Base/Thing.cs": "namespace Base;\npublic class Thing\n{\n    public void Do() { }\n}\n",
+    # Says nothing about packing, so ships nothing.
+    "samples/App/App.csproj": _csproj(),
+    "samples/App/Program.cs": "namespace App;\npublic class Program\n{\n    public void Main() { }\n}\n",
+    "tests/Lib.Tests/Lib.Tests.csproj": _csproj(),
+    "tests/Lib.Tests/ClientTests.cs": (
+        "namespace Lib.Tests;\npublic class ClientTests\n{\n    public void Works() { }\n}\n"
+    ),
+    # An explicit no beats a PackageId.
+    "src/Nope/Nope.csproj": _csproj("<IsPackable>false</IsPackable><PackageId>Nope</PackageId>"),
+    "src/Nope/Widget.cs": "namespace Nope;\npublic class Widget\n{\n    public void Spin() { }\n}\n",
+    # A sample nested in the packaged library's folder is not part of the package.
+    "src/Lib/samples/Demo/Demo.csproj": _csproj(),
+    "src/Lib/samples/Demo/Demo.cs": "namespace Demo;\npublic class Demo\n{\n    public void Run() { }\n}\n",
+}
+
+
+def test_public_csharp_types_of_a_shipped_project_are_public_api(tmp_path: Path) -> None:
+    flags = build_files(tmp_path, _CSHARP_REPO)
+    stamped = {node for node, root in flags.items() if root}
+    assert stamped == {
+        "src/Lib/Client.cs::Client",
+        "src/Lib/Client.cs::Client::Send",
+        "src/Base/Thing.cs::Thing",
+        "src/Base/Thing.cs::Thing::Do",
+    }
+    # The file that exports a symbol is the file that declares it.
+    assert flags["src/Lib/Client.cs::Client::Send"] == "src/Lib/Client.cs"
+    assert flags["src/Base/Thing.cs::Thing"] == "src/Base/Thing.cs"
+    # A private member, internal and modifier-less types (and their public
+    # members), and every type of a project that ships nothing stay unflagged.
+    for node in (
+        "src/Lib/Client.cs::Client::Retry",
+        "src/Lib/Client.cs::Helper",
+        "src/Lib/Client.cs::Helper::Go",
+        "src/Lib/Client.cs::Implicit",
+        "src/Lib/Client.cs::Implicit::Go",
+        "samples/App/Program.cs::Program",
+        "samples/App/Program.cs::Program::Main",
+        "tests/Lib.Tests/ClientTests.cs::ClientTests",
+        "tests/Lib.Tests/ClientTests.cs::ClientTests::Works",
+        "src/Nope/Widget.cs::Widget",
+        "src/Nope/Widget.cs::Widget::Spin",
+        "src/Lib/samples/Demo/Demo.cs::Demo",
+        "src/Lib/samples/Demo/Demo.cs::Demo::Run",
+    ):
+        assert flags[node] == "", node
+
+
+def test_a_repo_with_no_readable_project_stamps_no_csharp(tmp_path: Path) -> None:
+    files = {rel: body for rel, body in _CSHARP_REPO.items() if not rel.endswith(".csproj")}
+    assert not {node for node, root in build_files(tmp_path, files).items() if root}
+
+
+def test_every_generic_arity_of_a_public_type_is_public_api(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+            "Lib/Box.cs": (
+                "namespace Lib;\n"
+                "public class Box<T>\n{\n    public void Put() { }\n}\n"
+                "public class Box\n{\n    public void Open() { }\n}\n"
+            ),
+        },
+    )
+    # ``Box<T>`` and ``Box`` share a name; the id tells them apart.
+    assert {node for node, root in flags.items() if root} == {
+        "Lib/Box.cs::Box`1",
+        "Lib/Box.cs::Box`1::Put",
+        "Lib/Box.cs::Box",
+        "Lib/Box.cs::Box::Open",
+    }
+
+
+def test_a_partial_fragment_without_a_modifier_takes_the_public_part(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "src/Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+            "src/Lib/Pipeline.cs": (
+                "namespace Lib;\npublic partial class Pipeline\n{\n    public void Build() { }\n}\n"
+            ),
+            "src/Lib/Pipeline.Sync.cs": (
+                "namespace Lib;\npartial class Pipeline\n{\n"
+                "    public void Run() { }\n    private void Spin() { }\n}\n"
+            ),
+        },
+    )
+    assert flags["src/Lib/Pipeline.cs::Pipeline::Build"] == "src/Lib/Pipeline.cs"
+    # The part with no modifier is the public type too, and so are its members.
+    assert flags["src/Lib/Pipeline.Sync.cs::Pipeline"] == "src/Lib/Pipeline.Sync.cs"
+    assert flags["src/Lib/Pipeline.Sync.cs::Pipeline::Run"] == "src/Lib/Pipeline.Sync.cs"
+    assert flags["src/Lib/Pipeline.Sync.cs::Pipeline::Spin"] == ""
+
+
+def test_partial_fragments_of_an_internal_type_stay_unflagged(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "Lib/Lib.csproj": _csproj("<IsPackable>true</IsPackable>"),
+            "Lib/Engine.cs": "namespace Lib;\ninternal partial class Engine\n{\n    public void A() { }\n}\n",
+            "Lib/Engine.More.cs": "namespace Lib;\npartial class Engine\n{\n    public void B() { }\n}\n",
+        },
+    )
+    assert not {node for node, root in flags.items() if root}
+
+
+def test_partial_fragments_in_a_project_that_ships_nothing_stay_unflagged(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "App/App.csproj": _csproj(),
+            "App/Job.cs": "namespace App;\npublic partial class Job\n{\n    public void A() { }\n}\n",
+            "App/Job.More.cs": "namespace App;\npartial class Job\n{\n    public void B() { }\n}\n",
+        },
+    )
+    assert not {node for node, root in flags.items() if root}

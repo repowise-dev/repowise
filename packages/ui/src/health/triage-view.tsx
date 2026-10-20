@@ -23,9 +23,8 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import useSWR from "swr";
-import { Search } from "lucide-react";
 import type {
   HealthMapFeed,
   HealthOverviewResponse,
@@ -35,26 +34,17 @@ import type {
 import { Skeleton } from "../ui/skeleton";
 import { ApiError } from "../shared/api-error";
 import { toFriendlyMessage } from "../lib/errors";
-import { OverviewSection } from "../overview/section";
 
 import { CodeHealthLede } from "./code-health-lede";
-import {
-  CodeHealthMap,
-  MapLegend,
-  MapLensSwitcher,
-  type CodeHealthMapFile,
-  type CodeHealthOverlay,
-  type MapScope,
-} from "./code-health-map";
-import { MapFieldList } from "./map/inspector";
+import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./code-health-map";
+import { AreaMapSection, type FlatMapExtras } from "./area-map-section";
+import type { AreaRailLabels } from "./area-rail/labels";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
 export type HealthPillar = "all" | "defect" | "maintainability" | "performance";
 
-/** Map height. The rail is height-matched so it never outgrows the field it lists. */
+/** Map height while the page around it loads. */
 const MAP_HEIGHT = 720;
-/** The legend row under the map plus the gap above it, so the rail ends where the legend does. */
-const LEGEND_ROW = 52;
 
 /** Read the server's own selection totals into the shape the map states. */
 export function scopeFromFeed(feed: HealthMapFeed): MapScope {
@@ -108,6 +98,13 @@ export function TriageView({
   mapPending,
   mapError,
   onRetryMap,
+  area,
+  onAreaChange,
+  fileExtras,
+  railLabels,
+  primaryLenses,
+  include,
+  onIncludeChange,
 }: {
   adapter: CodeHealthAdapter;
   /** Trend fetched once by the host. Consumed by `trendSlot`; accepted here so
@@ -155,6 +152,22 @@ export function TriageView({
   /** The field's request failed; the map shows it with a retry. */
   mapError?: unknown;
   onRetryMap?: () => void;
+  /**
+   * The map's selected area (`""` is the repository), owned by the host so it
+   * rides in the URL and the browser's back button climbs back out. The host
+   * drops the selected file in the same write.
+   */
+  area?: string;
+  onAreaChange?: (area: string) => void;
+  /** Per-file signals the host joins onto the area-loaded rows (e.g. churn). */
+  fileExtras?: ReadonlyMap<string, Partial<CodeHealthMapFile>>;
+  /** Translations for the map's rail. */
+  railLabels?: Partial<AreaRailLabels>;
+  /** Lenses shown as segments; the rest sit behind "More". */
+  primaryLenses?: CodeHealthOverlay[];
+  /** Held-out groups brought back into the map, and the toggle that changes them. */
+  include?: readonly string[];
+  onIncludeChange?: (include: string[]) => void;
 }) {
   const { cacheKey } = adapter;
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
@@ -176,31 +189,15 @@ export function TriageView({
   }, []);
   const closeDrawer = useCallback(() => setSelected(null), [setSelected]);
 
-  const [mapQuery, setMapQuery] = useState("");
-
-  const files = mapFeed?.files as CodeHealthMapFile[] | undefined;
   const scope = useMemo(() => (mapFeed ? scopeFromFeed(mapFeed) : undefined), [mapFeed]);
-  // Only "is it drawn" is needed now that the drawer is the inspector.
-  const selectedDrawn = useMemo(
-    () => (selected ? (files?.some((f) => f.file_path === selected) ?? false) : false),
-    [files, selected],
-  );
+  // With the areas API the rail hosts the file detail; without it the drawer does.
+  const hasAreas = Boolean(adapter.getAreaTree && adapter.getAreaFiles && adapter.getAreaDetail);
 
   // CodeHealthMap's optional props, omitted rather than passed as `undefined`
   // (strict optional props in the shared lib). Memoized so the map sees the
   // same object until one of them actually changes.
   const mapExtra = useMemo(() => {
-    const extra: {
-      lenses?: CodeHealthOverlay[];
-      overlayLoading?: boolean;
-      scope?: MapScope;
-      highlightPaths?: string[];
-      onDrawMore?: () => void;
-      drawMoreStep?: number;
-      onIncludeHeldChange?: (include: boolean) => void;
-      onFindUndrawn?: (query: string) => void;
-      pending?: boolean;
-    } = {};
+    const extra: FlatMapExtras = {};
     if (lenses) extra.lenses = lenses;
     if (overlayLoading !== undefined) extra.overlayLoading = overlayLoading;
     if (scope) extra.scope = scope;
@@ -259,98 +256,35 @@ export function TriageView({
       {isLoading ? (
         <Skeleton className="w-full rounded-xl" style={{ height: MAP_HEIGHT }} />
       ) : loaded ? (
-        <OverviewSection
-          title="Code health map"
-          description="Every file as a node, clustered into module galaxies and sized by lines of code. The lens re-marks the same field rather than redrawing it. Click a galaxy to zoom, a file to inspect it."
-          action={
-            onOverlayChange ? (
-              <MapLensSwitcher
-                overlay={overlay}
-                onOverlayChange={onOverlayChange}
-                {...(lenses ? { lenses } : {})}
-              />
-            ) : undefined
-          }
-        >
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <div className="flex flex-col gap-2.5">
-              {!files && mapError ? (
-                // A failed field says so, rather than leaving the skeleton up.
-                <div className="flex items-center justify-center" style={{ minHeight: MAP_HEIGHT }}>
-                  <ApiError
-                    title="Couldn't load the map"
-                    message={toFriendlyMessage(mapError)}
-                    {...(onRetryMap ? { onRetry: onRetryMap } : {})}
-                  />
-                </div>
-              ) : !files ? (
-                <Skeleton className="w-full rounded-xl" style={{ height: MAP_HEIGHT }} />
-              ) : (
-                <CodeHealthMap
-                  files={files}
-                  search={mapQuery}
-                  selectedPath={selected}
-                  onSelectFile={setSelected}
-                  minHeight={MAP_HEIGHT}
-                  overlay={overlay}
-                  chrome="none"
-                  {...mapExtra}
-                />
-              )}
-              <MapLegend overlay={overlay} loading={overlayLoading ?? false} />
-            </div>
-
-            {/* The rail, height-matched to the map and its legend. Separated
-                by space, not by a rule: a vertical hairline down the side of
-                the canvas would turn the map into a trench. */}
-            <aside
-              className="flex flex-col gap-3 lg:sticky lg:top-4 lg:h-[var(--rail-h)]"
-              style={{ "--rail-h": `${MAP_HEIGHT + LEGEND_ROW}px` } as CSSProperties}
-            >
-              <div className="relative">
-                <Search
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]"
-                />
-                <input
-                  type="search"
-                  value={mapQuery}
-                  onChange={(e) => setMapQuery(e.target.value)}
-                  placeholder="Find a file in the map…"
-                  aria-label="Find a file in the map"
-                  className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-2 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-                />
-              </div>
-
-              {selected && files && !selectedDrawn ? (
-                <p className="text-xs text-[var(--color-text-tertiary)]">
-                  <span className="break-all font-mono">{selected}</span> is not in the drawn
-                  field, so no node is marked. Its details are open in the file panel.
-                </p>
-              ) : null}
-
-              {files ? (
-                <div className="min-h-0 flex-1 overflow-hidden border-t border-[var(--color-border-default)] pt-3">
-                  <MapFieldList
-                    files={files}
-                    overlay={overlay}
-                    selectedPath={selected}
-                    onSelectFile={setSelected}
-                    {...(scope ? { scope } : {})}
-                  />
-                </div>
-              ) : null}
-            </aside>
-          </div>
-        </OverviewSection>
+        <AreaMapSection
+          adapter={adapter}
+          overlay={overlay}
+          onOverlayChange={onOverlayChange}
+          lenses={lenses}
+          mapFeed={mapFeed}
+          mapScope={scope}
+          mapError={mapError}
+          onRetryMap={onRetryMap}
+          mapExtra={mapExtra}
+          overlayLoading={overlayLoading ?? false}
+          selected={selected}
+          setSelected={setSelected}
+          area={area}
+          onAreaChange={onAreaChange}
+          fileExtras={fileExtras}
+          railLabels={railLabels}
+          primaryLenses={primaryLenses}
+          include={include}
+          onIncludeChange={onIncludeChange}
+        />
       ) : null}
 
       {loaded ? hotspotsSlot : null}
       {loaded ? trendSlot : null}
 
       {/* Outside the loaded branch, so a file linked by URL opens even while
-          the overview is still on its way. */}
-      {adapter.renderFileDrawer({
+          the overview is still on its way. The area rail hosts it inline. */}
+      {hasAreas ? null : adapter.renderFileDrawer({
         filePath: selected,
         onClose: closeDrawer,
         lens: overlay,

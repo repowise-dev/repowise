@@ -3,125 +3,113 @@ import { healthBand } from "../health/tokens";
 import { formatScore } from "@repowise-dev/types/health";
 import { LedeLink, PageLede } from "../shared/page-lede";
 
+export interface HealthLedeCopy {
+  label: string;
+  unit: string;
+  reportLink: string;
+  /** Shown before the first health run. */
+  empty: string;
+  /** Methodology behind the info tip beside the label. `counts` is null when
+   *  the index has no hotspots. */
+  hint: (counts: { hotspots: string; files: string } | null) => string;
+  /** The one reading under the figure. `figure` is the coloured hotspot score;
+   *  `holdsUp` is true when hotspots score at or above the whole codebase. */
+  hotspotReading: (figure: React.ReactNode, holdsUp: boolean) => React.ReactNode;
+}
+
+export const HEALTH_LEDE_COPY: HealthLedeCopy = {
+  label: "Code health",
+  unit: "out of 10",
+  reportLink: "Full health report",
+  empty:
+    "Health scores land with the first index: complexity, duplication, coverage, churn and ownership across every file.",
+  hint: (counts) =>
+    `Average code health of every scored file, from 1 to 10.${
+      counts
+        ? ` Hotspots are the ${counts.hotspots} of ${counts.files} files that git history changes and fixes most.`
+        : ""
+    }`,
+  hotspotReading: (figure, holdsUp) =>
+    holdsUp ? (
+      <>Hotspots average {figure}, as healthy as the rest of the code.</>
+    ) : (
+      <>Hotspots average {figure}, the place fixes pay off most.</>
+    ),
+};
+
 export interface HealthLedeProps {
   /** Code-health headline, 1–10. Higher is better. Null before the first run. */
   score: number | null;
+  /** @deprecated Not shown on Overview; Code Health owns it. */
   maintainability?: number | null | undefined;
-  /** Static performance score, 1–10. Higher is better, like the other two. */
+  /** @deprecated Not shown on Overview; Code Health owns it. */
   performance?: number | null | undefined;
-  /** Health of the highest-churn files. The interesting number, usually. */
+  /** Health of the highest-churn files. */
   hotspotHealth?: number | null | undefined;
   hotspotCount?: number | undefined;
   fileCount?: number | undefined;
   /** "Full health report →" target. */
   href: string;
   LinkComponent?: React.ElementType | undefined;
+  copy?: Partial<HealthLedeCopy> | undefined;
 }
 
 /**
- * Code health as a headline number and a plain sentence, not a card of tiles.
- *
- * The figure alone is not readable: "329 risks · 9.9/10" looks like a
- * contradiction until something says the score is a bounded summary of the
- * findings rather than a count of them. So the prose is load-bearing, not
- * decoration — it is the part that makes the number mean anything, and it is
- * why the public repo landing page reads calm while showing the same data.
- *
- * Health keeps the largest number on the page because it is the product's
- * moat. It does not get the whole top of the page: the column beside it
- * carries the other reasons people open Overview.
+ * Code health as one figure, its band, and one reading that points at where
+ * work pays off. How the score is built sits behind the info tip.
  */
 export function HealthLede({
   score,
-  maintainability,
-  performance,
   hotspotHealth,
   hotspotCount = 0,
   fileCount = 0,
   href,
   LinkComponent,
+  copy,
 }: HealthLedeProps) {
+  const c = { ...HEALTH_LEDE_COPY, ...copy };
   if (score == null) {
     return (
       <div className="flex flex-col gap-2">
         <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          Code health
+          {c.label}
         </p>
-        <p className="max-w-[54ch] text-sm text-[var(--color-text-secondary)]">
-          Health scores land with the first index: complexity, duplication, coverage,
-          churn and ownership across every file.
-        </p>
+        <p className="max-w-[54ch] text-sm text-[var(--color-text-secondary)]">{c.empty}</p>
       </div>
     );
   }
 
   const band = healthBand(score);
-  const hot = hotspotHealth != null ? healthBand(hotspotHealth) : null;
-
-  // Assembled rather than interpolated inline: a repo can have measured one
-  // pillar and not the other, and the naive version produced "Maintainability
-  // scores 8.6. The three are scored separately" (there were two) or a sentence
-  // starting lowercase when only performance was present.
-  // "static performance risk 9.7" read as an alarm and meant the opposite: the
-  // figure is a score on the same 1-10 ladder as the other two, where 9.7 is
-  // close to clean. The noun has to agree with the direction of the number, so
-  // it is named like its siblings and the word "risk" is left to the findings
-  // count on the health page, where more genuinely is worse.
-  const pillars: string[] = [];
-  if (maintainability != null) pillars.push(`maintainability ${formatScore(maintainability)}`);
-  if (performance != null) pillars.push(`static performance ${formatScore(performance)}`);
-  const pillarSentence =
-    pillars.length === 0
-      ? null
-      : `It also scores ${pillars.join(" and ")} out of 10. ${
-          pillars.length === 1
-            ? "The two are scored separately and never blended into one number."
-            : "The three are scored separately and never blended into one number."
-        }`;
+  const hot = hotspotCount > 0 && hotspotHealth != null ? hotspotHealth : null;
 
   return (
     <PageLede
-      label="Code health"
+      label={c.label}
+      labelHint={c.hint(
+        hot != null && fileCount > 0
+          ? { hotspots: hotspotCount.toLocaleString(), files: fileCount.toLocaleString() }
+          : null,
+      )}
       value={formatScore(score)}
       valueColor={band.color}
-      unit="out of 10"
+      unit={c.unit}
       band={band}
       action={
         <LedeLink href={href} LinkComponent={LinkComponent}>
-          Full health report
+          {c.reportLink}
         </LedeLink>
       }
     >
-      <p>
-        This codebase scores{" "}
-        <strong className="font-semibold text-[var(--color-text-primary)]">
-          {formatScore(score)} out of 10
-        </strong>{" "}
-        for code health, which we rate {band.label.toLowerCase()}.
-        {pillarSentence && ` ${pillarSentence}`}
-        {/* This used to open "The files you change most are the weak spot",
-            which reads as an indictment of something every codebase does. Hot
-            files scoring below the average is the premise the whole product
-            rests on, not a failure: it is why ranking by git history finds
-            defects that reading the code alone does not. Same two figures,
-            stated as the finding they are, and pointed at the files rather
-            than at the reader. */}
-        {hotspotCount > 0 && hot && (
-          <>
-            {" "}
-            Risk is concentrated, as it usually is:{" "}
-            <strong className="font-semibold text-[var(--color-text-primary)]">
-              {hotspotCount.toLocaleString()}
-              {fileCount > 0 ? ` of ${fileCount.toLocaleString()}` : ""} files
-            </strong>{" "}
-            are git hotspots, and they average{" "}
-            <strong className="font-semibold" style={{ color: hot.color }}>
-              {formatScore(hotspotHealth!)}
-            </strong>
-            {" "}— which is where the fixes pay off most.
-          </>
-        )}
-      </p>
+      {hot != null && (
+        <p>
+          {c.hotspotReading(
+            <strong className="font-semibold tabular-nums" style={{ color: healthBand(hot).color }}>
+              {formatScore(hot)}
+            </strong>,
+            hot >= score,
+          )}
+        </p>
+      )}
     </PageLede>
   );
 }
