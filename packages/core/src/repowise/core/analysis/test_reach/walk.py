@@ -170,7 +170,6 @@ def import_walk(
     # (test, file it imports) -> seeds carried in: one set union per edge, not
     # a dict write per seed; split per seed once the walk ends.
     reached: dict[tuple[str, str], set[str]] = {}
-    seed_set = set(seeds)
     frontier = list(seeds)
 
     for _ in range(max_depth):
@@ -178,15 +177,18 @@ def import_walk(
             break
         level, frontier = frontier, []
         queued: set[str] = set()
+        # Read each level against the origins it started with, so a seed that
+        # imports another seed moves one hop per level, whatever the edge order.
+        start = {f: frozenset(origins[f]) for f in level}
         for dependent, dependency in (yield Need("importers", tuple(level))):
-            carried = origins.get(dependency)
+            carried = start.get(dependency)
             if not carried:
                 continue
             if dependent in test_files:
                 reached.setdefault((dependent, dependency), set()).update(carried)
                 continue
-            if dependent in seed_set:
-                continue
+            # Another seed is an ordinary node here: a route through it must
+            # reach the same tests a one-seed walk would.
             known = origins.setdefault(dependent, set())
             fresh = carried - known
             if not fresh:

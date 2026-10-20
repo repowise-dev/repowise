@@ -183,6 +183,29 @@ def test_unreached_needs_the_whole_import_closure_to_miss() -> None:
     assert rows["src/alone.py"].state == "unreached"
 
 
+def test_a_closure_route_through_another_target_still_reaches() -> None:
+    g = _graph(
+        {
+            "tests/test_top.py": True,
+            "src/top.py": False,
+            "src/mid.py": False,
+            "src/leaf.py": False,
+            "src/alone.py": False,
+        },
+        [
+            ("tests/test_top.py", "src/top.py", "imports"),
+            ("src/top.py", "src/mid.py", "imports"),
+            ("src/mid.py", "src/leaf.py", "imports"),
+            ("src/alone.py", "src/top.py", "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    alone = reach_states(maps, ["src/leaf.py"])["src/leaf.py"].state
+    together = reach_states(maps, ["src/mid.py", "src/leaf.py"])
+    assert alone == together["src/leaf.py"].state == "reached"
+    assert together["src/mid.py"].state == "reached"
+
+
 def test_more_targets_than_one_closure_carries_are_walked_in_batches(monkeypatch) -> None:
     from repowise.core.analysis.test_reach import walk
 
