@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from repowise.cli.helpers import (
     console,
@@ -14,7 +14,7 @@ from repowise.cli.helpers import (
     run_async,
     warn,
 )
-from repowise.core.docs_mode import DocsMode, docs_mode_state_fields, resolve_docs_mode
+from repowise.core.docs_mode import DocsMode, resolve_docs_mode
 from repowise.core.index_scope import fast_to_full_command
 
 if TYPE_CHECKING:
@@ -145,14 +145,20 @@ def _run_index_for_repo(
     ensure_repowise_dir(repo_path)
     _inherit_distill_verdict(repo_path, primary_cfg)
 
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+
+    resolved_commit_limit = int(commit_limit) if commit_limit else _DEFAULT_COMMIT_LIMIT
     try:
-        file_count, symbol_count = _index_added_repo(repo_path, commit_limit, exclude_patterns)
-        console.print(f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols")
+        index = _index_added_repo(repo_path, resolved_commit_limit, exclude_patterns)
+        result = index.result
+        console.print(
+            f"  [green]✓[/green] {result.file_count} files, {result.symbol_count:,} symbols"
+        )
     except Exception as exc:
         warn(f"Indexing failed for '{alias}': {exc}")
         return
 
-    generated_pages = 0
+    generated_pages: list = []
     resolved_reasoning = resolve_reasoning(config=primary_cfg)
     if docs_mode != "none":
         generated_pages, error = _build_added_repo_docs(
@@ -168,8 +174,7 @@ def _run_index_for_repo(
             # A model run keeps its provider state so `update --docs` retries it.
             if provider is None:
                 docs_mode = "none"
-
-    head, state = _save_added_repo_state(repo_path, provider, generated_pages, docs_mode)
+    result.generated_pages = generated_pages
 
     # Persist provider settings into the added repo's config.yaml so future
     # `repowise update` runs don't have to re-prompt.
@@ -185,6 +190,17 @@ def _run_index_for_repo(
             save_key=save_key,
         )
 
+    ctx = _added_repo_ctx(
+        provider,
+        ws_config,
+        exclude_patterns,
+        concurrency=concurrency,
+        reasoning=resolved_reasoning,
+        commit_limit=resolved_commit_limit,
+        save_key=save_key,
+    )
+    head, state = _save_added_repo_state(repo_path, ctx, index, docs_mode)
+
     _record_in_workspace(ws_root, ws_config, alias, head)
 
     # Honest completion notice — exact remediation command for the
@@ -197,19 +213,19 @@ def _run_index_for_repo(
         )
 
 
-def _build_added_repo_docs(*, provider: object | None, **kwargs: object) -> tuple[int, str | None]:
+def _build_added_repo_docs(*, provider: object | None, **kwargs: object) -> tuple[list, str | None]:
     """Generate the added repo's documentation as ``(pages, error)``; never raises."""
     try:
         pages = _generate_docs_for_added_repo(provider=provider, **kwargs)  # type: ignore[arg-type]
     except Exception as exc:
         console.print(f"  [yellow]Documentation failed: {exc}[/yellow]")
-        return 0, f"generation error: {exc}"
+        return [], f"generation error: {exc}"
     source = (
         "built from code"
         if provider is None
         else f"written by {getattr(provider, 'model_name', 'the model')}"
     )
-    console.print(f"  [green]✓[/green] Documentation: {pages} pages, {source}")
+    console.print(f"  [green]✓[/green] Documentation: {len(pages)} pages, {source}")
     return pages, None
 
 
@@ -257,55 +273,89 @@ def _resolve_docs_provider(
     return provider
 
 
-def _index_added_repo(
-    repo_path: Path, commit_limit: object, exclude_patterns: list[str]
-) -> tuple[int, int]:
-    """Full-index the repo, returning ``(file_count, symbol_count)``.
+def _index_added_repo(repo_path: Path, commit_limit: int, exclude_patterns: list[str]) -> Any:
+    """Full-index the repo, returning init's per-repo ``_RepoIndex``.
 
     Shared full-index step (run pipeline, persist, export the curated KG
     artifact so doc generation can load curated module grouping) — the same
-    helper the workspace updater's first-time indexing uses.
+    helper the workspace updater's first-time indexing uses. No model mines
+    decisions here, so the index carries no provider.
     """
+    from repowise.cli.commands.init_cmd.workspace import _RepoIndex
+    from repowise.core.pipeline import PhaseTimingRecorder
+    from repowise.core.pipeline.full_index import index_repo_full
 
-    async def _do_index() -> tuple[int, int]:
-        from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
-        from repowise.core.pipeline.full_index import index_repo_full
-
-        result = await index_repo_full(
+    recorder = PhaseTimingRecorder()
+    result = run_async(
+        index_repo_full(
             repo_path,
-            commit_depth=int(commit_limit) if commit_limit else _DEFAULT_COMMIT_LIMIT,
+            commit_depth=commit_limit,
             exclude_patterns=exclude_patterns,
+            progress=recorder,
         )
-        return result.file_count, result.symbol_count
+    )
+    return _RepoIndex(result=result, callback=recorder, provider=None)
 
-    return run_async(_do_index())
+
+def _added_repo_ctx(
+    provider: object | None,
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
+    exclude_patterns: list[str],
+    *,
+    concurrency: int,
+    reasoning: str,
+    commit_limit: int,
+    save_key: bool,
+) -> Any:
+    """Workspace init's run settings for this one repo, so its state is init's."""
+    from repowise.cli.commands.init_cmd.workspace import _WorkspaceCtx
+    from repowise.core.generation.styles import DEFAULT_STYLE
+
+    return _WorkspaceCtx(
+        provider=provider,
+        ws_config=ws_config,
+        editor_options=None,
+        index_only=provider is None,
+        dry_run=False,
+        force=False,
+        follow_renames=False,
+        include_submodules=False,
+        exclude_patterns=exclude_patterns,
+        skip_tests=False,
+        skip_infra=False,
+        concurrency=concurrency,
+        test_run=False,
+        yes=False,
+        resume=False,
+        onboarding=True,
+        wiki_style=DEFAULT_STYLE,
+        language="en",
+        resolved_reasoning=reasoning,
+        # Pages go to full-text search only; none are embedded.
+        embedder_name_resolved=None,  # type: ignore[arg-type]
+        embedder_was_requested=False,
+        resolved_commit_limit=commit_limit,
+        save_key=save_key,
+    )
 
 
 def _save_added_repo_state(
-    repo_path: Path, provider: object | None, generated_pages: int, docs_mode: DocsMode
+    repo_path: Path, ctx: Any, index: Any, docs_mode: DocsMode
 ) -> tuple[str | None, dict]:
-    """Write ``state.json`` so `repowise update` has a baseline commit.
+    """Write the state workspace init writes for a repo; returns ``(head, state)``.
 
-    Returns ``(head, state)``.
+    Called after the add's config writes, which the config fingerprint reads.
     """
+    from repowise.cli.commands.init_cmd.persistence import stamp_fresh_index
+    from repowise.cli.commands.init_cmd.workspace import _repo_state, _RepoDocs
     from repowise.cli.helpers import get_head_commit, save_state
-    from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 
     head = get_head_commit(repo_path)
-    state: dict = {
-        "last_sync_commit": head,
-        "total_pages": generated_pages,
-        **docs_mode_state_fields(docs_mode),
-        # The full index just walked git under the current history rules.
-        GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
-    }
-    if provider is not None:
-        state["provider"] = provider.provider_name
-        state["model"] = provider.model_name
-    # `workspace add` freshly full-indexes the repo, so this from-scratch state
-    # is a current-format store, not one predating the concept tree. Stamp the
-    # terminal version rather than clamping to v1 and nagging a repo this run
-    # just built to re-index itself.
+    pages = index.result.generated_pages or []
+    docs = _RepoDocs(docs_mode=docs_mode, pages_generated=len(pages))
+    state = _repo_state(head, repo_path, ctx, index, docs, [])
+    stamp_fresh_index(state, repo_path, index.result)
+    # Freshly full-indexed, so stamp the terminal store format.
     save_state(repo_path, state, full_index=True)
     return head, state
 
@@ -342,8 +392,8 @@ def _generate_docs_for_added_repo(
     concurrency: int,
     reasoning: str,
     exclude_patterns: list[str],
-) -> int:
-    """Generate wiki pages for a newly-added workspace repo.
+) -> list:
+    """Generate wiki pages for a newly-added workspace repo; returns them.
 
     With no *provider* the pages are built from code: templates, no model call.
 
@@ -400,7 +450,7 @@ def _generate_docs_for_added_repo(
         provider, assembler, config, language=config.language, repo_path=repo_path
     )
 
-    async def _do() -> int:
+    async def _do() -> list:
         pages = await generator.generate_all(
             parsed_files,
             source_map,
@@ -425,6 +475,6 @@ def _generate_docs_for_added_repo(
         await fts.ensure_index()
         await fts.index_pages(pages)
         await engine.dispose()
-        return len(pages)
+        return pages
 
     return run_async(_do())

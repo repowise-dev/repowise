@@ -84,7 +84,7 @@ def test_docs_off_writes_state_and_stamps_the_entry(ws, capsys):
 def test_docs_on_records_the_provider(ws, monkeypatch, capsys):
     ws_root, cfg, calls = ws
     monkeypatch.setattr("repowise.cli.helpers.resolve_provider", lambda *a, **k: _provider())
-    monkeypatch.setattr(_index, "_generate_docs_for_added_repo", lambda **_k: 5)
+    monkeypatch.setattr(_index, "_generate_docs_for_added_repo", lambda **_k: [object()] * 5)
     _run(ws_root, cfg, docs_mode="llm", save_key=False)
 
     state = load_state(ws_root / "added")
@@ -110,7 +110,7 @@ def test_provider_failure_falls_back_to_built_from_code(ws, monkeypatch, capsys)
 
     def fake_generate(**kwargs):
         seen.update(kwargs)
-        return 4
+        return [object()] * 4
 
     monkeypatch.setattr("repowise.cli.helpers.resolve_provider", boom)
     monkeypatch.setattr(_index, "_generate_docs_for_added_repo", fake_generate)
@@ -136,7 +136,7 @@ def test_default_builds_from_code_without_a_model(ws, monkeypatch, capsys):
 
     def fake_generate(**kwargs):
         seen.update(kwargs)
-        return 7
+        return [object()] * 7
 
     monkeypatch.setattr("repowise.cli.helpers.resolve_provider", no_model)
     monkeypatch.setattr(_index, "_generate_docs_for_added_repo", fake_generate)
@@ -182,3 +182,39 @@ def test_index_failure_stops_before_any_state(ws, monkeypatch):
     assert "last_sync_commit" not in load_state(ws_root / "added")
     assert calls["hooks"] == []
     assert WorkspaceConfig.load(ws_root).get_repo("added").last_commit_at_index is None
+
+
+def test_state_matches_what_workspace_init_writes(ws, monkeypatch):
+    """The added repo carries init's stamps and scope, so the first update has nothing to redo."""
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+    from repowise.core.index_scope import resolve_index_scope
+
+    ws_root, cfg, _calls = ws
+    coverage = SimpleNamespace(to_dict=lambda: {"mode": "full", "commits": 12})
+
+    async def fake_index(repo_path, **_kwargs):
+        return SimpleNamespace(
+            file_count=3,
+            symbol_count=1234,
+            git_summary=SimpleNamespace(history_coverage=coverage),
+            health_report=object(),
+        )
+
+    monkeypatch.setattr("repowise.core.pipeline.full_index.index_repo_full", fake_index)
+    monkeypatch.setattr(_index, "_generate_docs_for_added_repo", lambda **_k: [object()] * 2)
+    _run(ws_root, cfg, docs_mode="deterministic")
+
+    repo = ws_root / "added"
+    state = load_state(repo)
+    assert state["config_fingerprint"] == config_fingerprint(repo)
+    assert state["config_dependency_fingerprints"]
+    assert state["renderer_fingerprint"]
+    assert state["health_analyzer_version"] == HEALTH_ANALYZER_VERSION
+    assert state["security_scanner_version"] == SECURITY_SCANNER_VERSION
+    assert state["git_history_coverage"] == {"mode": "full", "commits": 12}
+    scope = resolve_index_scope(state)
+    assert scope["git_tier"] == "full"
+    assert scope["content_provenance"] == "template"
+    assert scope["search"]["full_text"] == "available"
