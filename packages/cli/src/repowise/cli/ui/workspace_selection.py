@@ -150,17 +150,7 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
     seen: set[str] = set()
     unknown: list[str] = []
     for raw in names:
-        name = raw.replace("\\", "/").strip("/").casefold()
-        hits = [
-            r
-            for r in repos
-            if name in (r.alias.casefold(), r.name.casefold(), display_path(r, root).casefold())
-        ]
-        if not hits:
-            given = Path(raw).expanduser()
-            bases = [Path(root) / given] if root is not None and not given.is_absolute() else []
-            targets = {t for t in map(_resolved, [*bases, given]) if t is not None}
-            hits = [r for r in repos if _resolved(r.path) in targets]
+        hits = _name_hits(repos, raw, root) or _path_hits(repos, raw, root)
         if not hits:
             unknown.append(raw)
         elif len(hits) > 1:
@@ -173,6 +163,24 @@ def match_repo_names(repos: list[Any], names: list[str], root: Any = None) -> li
         available = ", ".join(display_path(r, root) for r in repos)
         raise ValueError(f"Unknown repo: {', '.join(unknown)}. Available: {available}.")
     return picked
+
+
+def _name_hits(repos: list[Any], raw: str, root: Any) -> list[Any]:
+    """Repos whose alias, directory name or root-relative path is *raw*."""
+    name = raw.replace("\\", "/").strip("/").casefold()
+    return [
+        r
+        for r in repos
+        if name in (r.alias.casefold(), r.name.casefold(), display_path(r, root).casefold())
+    ]
+
+
+def _path_hits(repos: list[Any], raw: str, root: Any) -> list[Any]:
+    """Repos whose folder *raw* resolves to, a relative path read from *root* first."""
+    given = Path(raw).expanduser()
+    bases = [Path(root) / given] if root is not None and not given.is_absolute() else []
+    targets = {t for t in map(_resolved, [*bases, given]) if t is not None}
+    return [r for r in repos if _resolved(r.path) in targets]
 
 
 def _resolved(path: Path) -> Path | None:

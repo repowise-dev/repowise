@@ -168,3 +168,13 @@ def test_a_relative_path_is_read_from_the_workspace_root(tmp_path, monkeypatch):
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     assert match_repo_names(repos, ["./repo-b"], root) == [repos[1]]
+
+
+def test_a_path_that_cannot_be_resolved_matches_nothing(tmp_path, monkeypatch):
+    from repowise.cli.ui import workspace_selection
+
+    def _fail(self, *a, **k):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(workspace_selection.Path, "resolve", _fail)
+    assert workspace_selection._resolved(tmp_path) is None
