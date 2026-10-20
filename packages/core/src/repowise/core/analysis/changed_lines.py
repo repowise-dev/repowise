@@ -338,8 +338,10 @@ def change_set(
             files[path] = diffs.get(path) or FileDiff(path=path)
     if working_tree:
         files.update(untracked_diffs(repo_path, exclude_patterns))
-    files = {p: replace(d, path=p) for p, d in checkout_relative(repo_path, files).items()}
-    deleted = set(checkout_relative(repo_path, dict.fromkeys(deleted)))
+    # One re-keying for both sides: each relative path maps back to git's.
+    named = checkout_relative(repo_path, {p: p for p in [*files, *deleted]})
+    deleted = {rel for rel, top in named.items() if top in deleted}
+    files = {rel: replace(files[top], path=rel) for rel, top in named.items() if top in files}
     base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
     return ChangeSet(files, deleted, label, base, head)
 
@@ -438,10 +440,12 @@ def diff_since(
 
     What moves a line number read at one commit (an index's symbol spans) to
     the code being asked about (:func:`map_old_line` over ``FileDiff.hunks``).
+    *paths* and the keys are relative to *repo_path*, as the index names them.
     """
     tail = [until] if until else []
     args = ["diff", "--unified=0", *DIFF_ARGS, since, *tail, "--", *paths]
-    return parse_unified_diff(_diff(repo_path, args))
+    diffs = checkout_relative(repo_path, parse_unified_diff(_diff(repo_path, args)))
+    return {p: replace(d, path=p) for p, d in diffs.items()}
 
 
 def change_diff(
