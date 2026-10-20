@@ -49,7 +49,7 @@ def test_only_a_real_embedder_that_failed_is_an_error():
     assert "pip install --force-reinstall lancedb" in message
 
 
-def test_the_full_init_scope_marks_a_failed_embed_unavailable():
+def test_the_full_init_scope_marks_a_failed_embed_unavailable(tmp_path):
     from repowise.cli.commands.init_cmd.persistence import _stamp_full_init_scope
 
     def _stamp(failed: int) -> dict:
@@ -67,6 +67,7 @@ def test_the_full_init_scope_marks_a_failed_embed_unavailable():
             resolved_commit_limit=10,
             max_file_pages=None,
             embedder_name_resolved="openai",
+            repo_path=tmp_path,
         )
         return state["index_scope"]["search"]
 
@@ -76,7 +77,8 @@ def test_the_full_init_scope_marks_a_failed_embed_unavailable():
         "next_command": None,
     }
     assert _stamp(3)["semantic"] == "unavailable"
-    assert _stamp(3)["next_command"] == "repowise reindex"
+    # The embedder that failed is the one to retry.
+    assert _stamp(3)["next_command"] == "repowise reindex --embedder openai"
 
 
 def test_run_repo_generation_records_the_failed_count(tmp_path, monkeypatch):
@@ -213,7 +215,7 @@ def _broken_store(monkeypatch):
     monkeypatch.setattr(LanceDBVectorStore, "embed_batch", _boom)
 
 
-def test_init_with_a_real_embedder_exits_nonzero_when_embedding_fails(tmp_path, monkeypatch):
+def test_init_with_a_real_embedder_exits_degraded_when_embedding_fails(tmp_path, monkeypatch):
     from repowise.cli.main import cli
 
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:9")
@@ -226,7 +228,7 @@ def test_init_with_a_real_embedder_exits_nonzero_when_embedding_fails(tmp_path, 
         cli, ["init", str(tmp_path), "--index-only", "--embedder", "ollama", "--yes"]
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "Embedding failed for" in result.output
     assert "repowise reindex" in result.output
     state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
@@ -261,7 +263,7 @@ def test_update_marks_semantic_unavailable_and_fails(tmp_path):
 
     state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert state["index_scope"]["search"]["semantic"] == "unavailable"
-    assert state["index_scope"]["search"]["next_command"] == "repowise reindex"
+    assert state["index_scope"]["search"]["next_command"] == "repowise reindex --embedder openai"
     emitter.error.assert_called_once()
 
 
@@ -377,7 +379,7 @@ def test_reindex_clears_the_unavailable_stamp(tmp_path, monkeypatch):
     assert state["index_scope"]["search"]["next_command"] is None
 
 
-def test_workspace_init_persists_every_repo_then_exits_nonzero(tmp_path, monkeypatch):
+def test_workspace_init_persists_every_repo_then_exits_degraded(tmp_path, monkeypatch):
     import git as gitpython
 
     from repowise.cli.main import cli
@@ -399,7 +401,7 @@ def test_workspace_init_persists_every_repo_then_exits_nonzero(tmp_path, monkeyp
         ["init", str(tmp_path), "--index-only", "--embedder", "ollama", "--yes", "--all"],
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "Embedding failed for" in " ".join(result.output.split())
     for name in ("api", "web"):
         state = json.loads((tmp_path / name / ".repowise" / "state.json").read_text("utf-8"))
@@ -410,7 +412,7 @@ def test_workspace_init_persists_every_repo_then_exits_nonzero(tmp_path, monkeyp
 def _indexed_repo_with_broken_store(tmp_path, monkeypatch) -> Path:
     """An index-only repo pinned to a real embedder, with a store that fails.
 
-    Init itself exits 1 here (its embed fails too); the stamp is reset to
+    Init itself exits 2 here (its embed fails too); the stamp is reset to
     available so the update test proves the update is what marks it.
     """
     import subprocess
@@ -437,7 +439,7 @@ def _indexed_repo_with_broken_store(tmp_path, monkeypatch) -> Path:
     init = CliRunner().invoke(
         cli, ["init", str(repo), "--index-only", "--embedder", "ollama", "--yes", "--no-workspace"]
     )
-    assert init.exit_code == 1, init.output
+    assert init.exit_code == 2, init.output
     state = load_state(repo)
     state["index_scope"]["search"]["semantic"] = "available"
     save_state(repo, state)
@@ -466,4 +468,4 @@ def test_update_with_a_failing_store_exits_nonzero(tmp_path, monkeypatch, extra_
     assert "Embedding failed for" in " ".join(result.output.split())
     state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert state["index_scope"]["search"]["semantic"] == "unavailable"
-    assert state["index_scope"]["search"]["next_command"] == "repowise reindex"
+    assert state["index_scope"]["search"]["next_command"] == "repowise reindex --embedder ollama"

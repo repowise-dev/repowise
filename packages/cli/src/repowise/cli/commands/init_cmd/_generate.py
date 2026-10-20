@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
 from rich.table import Table
 
+from repowise.cli.cost_gate import spend_phrase
 from repowise.cli.helpers import console, load_config, warn
 from repowise.cli.ui import BRAND, VALUE, print_phase_header
 from repowise.cli.ui.mode_names import INDEX_ONLY
 from repowise.core.generation.styles import DEFAULT_STYLE
 
+from ._exit import COST_UNCONFIRMED_BUILT, COST_UNCONFIRMED_KEPT
 from ._options import InitRun
 from .generation import (
     concept_page_count,
     cost_gate_declined,
+    embedding_note,
     estimate_generation,
-    format_cost,
     page_type_label,
     run_repo_generation,
     structural_page_summary,
@@ -160,6 +163,19 @@ def _run_deterministic_generation_phase(
     return embedder
 
 
+def _local_server_overloaded(provider_name: str, concurrency: int) -> bool:
+    """A local model server (Ollama) at high concurrency, which can time out.
+
+    An agent CLI bounds its own process count (its estimate says so), so it
+    never needs the advice to lower --concurrency.
+    """
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider_name)
+    is_local_server = spec is not None and spec.local and not spec.agent
+    return is_local_server and concurrency > 4
+
+
 def _print_generation_plan(
     est: Any, result: Any, provider: Any, *, concurrency: int, onboarding: bool
 ) -> None:
@@ -196,11 +212,7 @@ def _print_generation_plan(
         lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
-    # Warn when a local provider runs with default concurrency
-    from repowise.core.providers.llm.specs import PROVIDER_SPECS
-
-    spec = PROVIDER_SPECS.get(provider.provider_name)
-    if spec is not None and spec.local and concurrency > 4:
+    if _local_server_overloaded(provider.provider_name, concurrency):
         warn(
             f"  {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
@@ -272,6 +284,7 @@ def _run_generation_phase(
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
+        embedder=embedder_name_resolved,
     )
 
     _print_generation_plan(est, result, provider, concurrency=concurrency, onboarding=onboarding)
@@ -287,11 +300,14 @@ def _run_generation_phase(
     concept_n = concept_page_count(plans)
     console.print(
         f"  Writing [bold]{concept_n:,}[/bold] subsystem pages with "
-        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. {spend_phrase(est, concurrency)}."
     )
     structural = structural_page_summary(plans)
     if structural:
         console.print(f"  [dim]{structural}[/dim]")
+    embedding = embedding_note(est)
+    if embedding:
+        console.print(f"  [dim]{embedding}[/dim]")
     if cost_gate_declined(est, yes=yes, message="  Continue?"):
         console.print("  Skipping the model. [dim]Building documentation from code instead.[/dim]")
         console.print(
@@ -365,22 +381,31 @@ def _generate_with_model(run: InitRun) -> bool:
     )
     if gen_stop:
         return True
-    if cost_declined and run.prior_docs_mode == "llm":
+    if cost_declined:
+        _after_cost_declined(run)
+    return False
+
+
+def _after_cost_declined(run: InitRun) -> None:
+    """Keep model-written pages, or build from code; a gap when nobody could say no."""
+    kept = run.prior_docs_mode == "llm"
+    if not sys.stdin.isatty():
+        run.gaps.append(COST_UNCONFIRMED_KEPT if kept else COST_UNCONFIRMED_BUILT)
+    if kept:
         # Declining new pages is no request to replace the written ones.
         console.print(
             "  [dim]Keeping the documentation this repo already has. Nothing was "
             "generated and nothing was replaced.[/dim]"
         )
-    elif cost_declined:
-        run.cost_declined = True
-        console.print(
-            "  [dim]Building documentation from code instead. Run "
-            "[bold]repowise update --full[/bold] to write it with a "
-            "model later.[/dim]"
-        )
-        # Declining the bill keeps the configured embedder.
-        _render_template_wiki(run, embedder_was_requested=True)
-    return False
+        return
+    run.cost_declined = True
+    console.print(
+        "  [dim]Building documentation from code instead. Run "
+        "[bold]repowise update --full[/bold] to write it with a "
+        "model later.[/dim]"
+    )
+    # Declining the bill keeps the configured embedder.
+    _render_template_wiki(run, embedder_was_requested=True)
 
 
 def _generate(run: InitRun) -> bool:
