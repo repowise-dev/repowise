@@ -1,9 +1,46 @@
+import * as vscode from "vscode";
+
 const SEARCH_WINDOW_LINES = 20;
 
 export interface LocatedReference {
   line: number;
   start: number;
   end: number;
+}
+
+export interface FindingWithId {
+  id: string;
+}
+
+/** Tracks the last resolved 0-based line for findings across live document edits. */
+export const lastKnownLines = new Map<string, number>();
+
+/** Clears cached line locations for a document URI, or all documents if omitted. */
+export function clearDocDriftLocations(uri?: vscode.Uri): void {
+  if (!uri) {
+    lastKnownLines.clear();
+    return;
+  }
+  const prefix = `${uri.toString()}::`;
+  for (const key of lastKnownLines.keys()) {
+    if (key.startsWith(prefix)) {
+      lastKnownLines.delete(key);
+    }
+  }
+}
+
+/** Prunes cached line locations for findings that no longer exist for the given document URI. */
+export function pruneDocDriftLocations(
+  uri: vscode.Uri,
+  currentFindings: readonly FindingWithId[],
+): void {
+  const prefix = `${uri.toString()}::`;
+  const validKeys = new Set(currentFindings.map((f) => `${prefix}${f.id}`));
+  for (const key of lastKnownLines.keys()) {
+    if (key.startsWith(prefix) && !validKeys.has(key)) {
+      lastKnownLines.delete(key);
+    }
+  }
 }
 
 /**

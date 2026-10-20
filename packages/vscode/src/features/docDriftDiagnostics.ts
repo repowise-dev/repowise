@@ -7,41 +7,26 @@ import { registerEditorDiagnostics } from "./editorDiagnostics";
 
 const CONFIG_PREFIX = `${CONFIG_SECTION}.docDrift`;
 const MARKDOWN_EXT = /\.(md|mdx|markdown)$/i;
-import { locateReference, type LocatedReference } from "./locateReference";
+import {
+  clearDocDriftLocations,
+  lastKnownLines,
+  locateReference,
+  pruneDocDriftLocations,
+  type LocatedReference,
+} from "./locateReference";
 
-export { locateReference, type LocatedReference };
+export {
+  clearDocDriftLocations,
+  lastKnownLines,
+  locateReference,
+  pruneDocDriftLocations,
+  type LocatedReference,
+};
 
 function isMarkdown(doc: vscode.TextDocument): boolean {
   return doc.languageId === "markdown" || MARKDOWN_EXT.test(doc.uri.path);
 }
 
-/** Tracks the last resolved 0-based line for findings across live document edits. */
-export const lastKnownLines = new Map<string, number>();
-
-/** Clears cached line locations for a document URI, or all documents if omitted. */
-export function clearDocDriftLocations(uri?: vscode.Uri): void {
-  if (!uri) {
-    lastKnownLines.clear();
-    return;
-  }
-  const prefix = `${uri.toString()}::`;
-  for (const key of lastKnownLines.keys()) {
-    if (key.startsWith(prefix)) {
-      lastKnownLines.delete(key);
-    }
-  }
-}
-
-/** Removes tracked line locations for findings that are no longer in the given set. */
-export function pruneDocDriftLocations(uri: vscode.Uri, items: DocDriftFinding[]): void {
-  const prefix = `${uri.toString()}::`;
-  const validKeys = new Set(items.map((f) => `${prefix}${f.id}`));
-  for (const key of lastKnownLines.keys()) {
-    if (key.startsWith(prefix) && !validKeys.has(key)) {
-      lastKnownLines.delete(key);
-    }
-  }
-}
 
 /** The finding's line, narrowed to the reference as written (else the target), relocated in live buffer. */
 export function rangeFor(doc: vscode.TextDocument, f: DocDriftFinding): vscode.Range | null {

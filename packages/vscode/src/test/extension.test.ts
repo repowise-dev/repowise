@@ -1,12 +1,12 @@
 import * as assert from "node:assert";
 import * as vscode from "vscode";
 import { Commands, EXTENSION_ID } from "../constants";
-import { locateReference } from "../features/locateReference";
 import {
   clearDocDriftLocations,
-  pruneDocDriftLocations,
   lastKnownLines,
-} from "../features/docDriftDiagnostics";
+  locateReference,
+  pruneDocDriftLocations,
+} from "../features/locateReference";
 
 /**
  * Fast, offline smoke suite. It runs inside a real VS Code process against an
