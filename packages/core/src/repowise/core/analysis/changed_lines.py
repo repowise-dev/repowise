@@ -26,7 +26,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .git_cli import _git, path_filter, split_revspec, untracked_paths
+from .git_cli import _git, checkout_relative, path_filter, split_revspec, untracked_paths
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
 # count of 0 means "nothing on that side" (pure insertion / pure deletion).
@@ -241,16 +241,19 @@ def changed_lines(
     of this branch would bring. A *base* that does not resolve, or shares
     no merge-base, falls back to the plain working-tree diff and its label.
     *skip_untracked* (gitignore-style) names untracked files not to read; the
-    caller still filters tracked paths. *label* is a human string naming what
-    was diffed. Raises ``ValueError`` on an unknown revision so the caller can
-    fail loudly rather than silently reporting "no changes".
+    caller still filters tracked paths. Paths are relative to *repo_path*, as
+    the index names them, and files outside it are left out when it sits below
+    the git top level. *label* is a human string naming what was diffed.
+    Raises ``ValueError`` on an unknown revision so the caller can fail loudly
+    rather than silently reporting "no changes".
     """
     if working_tree:
-        return _working_tree_lines(repo_path, base, skip_untracked)
-
-    command, revisions, label = _change_command(repo_path, revspec, staged=staged)
-    diff = _diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *revisions])
-    return _parse_unified_diff(diff), label
+        changed, label = _working_tree_lines(repo_path, base, skip_untracked)
+    else:
+        command, revisions, label = _change_command(repo_path, revspec, staged=staged)
+        diff = _diff(repo_path, [*command, "--unified=0", *DIFF_ARGS, *revisions])
+        changed = _parse_unified_diff(diff)
+    return checkout_relative(repo_path, changed), label
 
 
 def _change_command(

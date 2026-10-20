@@ -11,6 +11,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import TypeVar
 
 import pathspec
 
@@ -102,6 +103,22 @@ def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
             proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
         )
     return proc.stdout
+
+
+_V = TypeVar("_V")
+
+
+def checkout_relative(repo_path: str, by_path: Mapping[str, _V]) -> dict[str, _V]:
+    """*by_path*, keyed by git's top-level paths, re-keyed relative to *repo_path*.
+
+    The index names files from the checkout it was built in, which can sit
+    below the git top level; paths outside that checkout are dropped. Raises
+    as :func:`_git` does when *repo_path* is not in a repository.
+    """
+    prefix = _git(["rev-parse", "--show-prefix"], repo_path).strip()
+    if not prefix:
+        return dict(by_path)
+    return {p[len(prefix) :]: v for p, v in by_path.items() if p.startswith(prefix)}
 
 
 def untracked_paths(

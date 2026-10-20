@@ -405,3 +405,19 @@ def test_index_gap_on_a_sibling_branch_counts_only_the_base_side(git_repo) -> No
 
     change = change_set(str(git_repo), "HEAD~1..HEAD")
     assert index_gap(str(git_repo), indexed, change) == ["base_only.py"]
+
+
+def test_changed_lines_name_files_from_a_checkout_below_the_git_top_level(git_repo) -> None:
+    # The index is built in ``svc/``; its file paths start there, git's at the top.
+    (git_repo / "svc").mkdir()
+    (git_repo / "svc" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-qm", "svc")
+    (git_repo / "svc" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    (git_repo / "mod.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8")
+    _git(git_repo, "commit", "-qam", "edit both")
+
+    changed, _ = changed_lines(str(git_repo / "svc"), "HEAD~1..HEAD")
+    assert changed == {"a.py": {2}}
+    # Read from the top level, nothing moves.
+    assert changed_lines(str(git_repo), "HEAD~1..HEAD")[0] == {"svc/a.py": {2}, "mod.py": {4}}

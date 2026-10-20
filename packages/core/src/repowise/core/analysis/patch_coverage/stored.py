@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..git_cli import _git, untracked_paths
+from ..git_cli import _git, checkout_relative, untracked_paths
 from ..health.coverage.discovery import CoverageScope
 from ..health.coverage.freshness import (
     FreshnessStatus,
@@ -156,17 +156,15 @@ def _changed_since(
     tail = [until] if until else []
     spec = [f":(literal){p}" for p in paths]
     try:
-        prefix = _git(["rev-parse", "--show-prefix"], repo_path).strip()
         listing = _git(
             ["diff", "--name-only", "-z", "--no-renames", since, *tail, "--", *spec], repo_path
         )
+        changed = {p for p in listing.split("\0") if p}
+        if until is None:
+            changed |= set(untracked_paths(repo_path, pathspecs=spec or (":/",)))
+        return set(checkout_relative(repo_path, dict.fromkeys(changed)))
     except (subprocess.SubprocessError, OSError):
         return None
-    # git names paths from its top level; the prefix is where *repo_path* sits.
-    changed = {p for p in listing.split("\0") if p}
-    if until is None:
-        changed |= set(untracked_paths(repo_path, pathspecs=spec or (":/",)))
-    return {p[len(prefix) :] for p in changed if p.startswith(prefix)}
 
 
 async def _stored_branch_data(
