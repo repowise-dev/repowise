@@ -268,6 +268,7 @@ def show_workspace_completion(
     index_only: bool,
     provider: Any,
     docs_outcomes: dict[str, tuple[int, str | None]],
+    dry_run: bool = False,
     setup: Any = None,
 ) -> None:
     """Render the workspace finish panel, the per-repo documentation inside it."""
@@ -287,6 +288,7 @@ def show_workspace_completion(
         files=total_files,
         symbols=total_symbols,
         primary=primary_alias,
+        dry_run=dry_run,
         elapsed=format_elapsed(elapsed),
         provider=None
         if index_only or provider is None

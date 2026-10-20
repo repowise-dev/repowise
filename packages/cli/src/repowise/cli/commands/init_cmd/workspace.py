@@ -456,9 +456,9 @@ def _generate_repo_docs(repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex) -> _Re
         )
         docs.skip_reason = "dry run"
     elif ctx.run_mode == "fast":
-        # Fast mode is a graph-and-git index by design, as in single-repo init.
+        # Fast mode is a graph-and-git index by design, as in single-repo init;
+        # the panel names it Index only rather than calling it skipped.
         console.print()
-        docs.skip_reason = "fast mode"
     elif not ctx.index_only and ctx.provider is not None:
         _generate_repo_with_model(repo, ctx, index, docs)
     else:
@@ -909,6 +909,7 @@ def _workspace_init(
         index_only=answers.index_only,
         provider=provider,
         docs_outcomes=totals.docs_outcomes,
+        dry_run=dry_run,
         setup=None
         if dry_run
         else detect_editor_setup_outcome(

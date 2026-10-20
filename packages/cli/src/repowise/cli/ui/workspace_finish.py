@@ -61,6 +61,8 @@ class WorkspaceFacts:
     elapsed: str
     #: ``claude_cli / claude-haiku-5-5``; None for a run without a model.
     provider: str | None = None
+    #: Nothing was written, so there is no mode to name and nothing to rebuild.
+    dry_run: bool = False
 
 
 def _n(count: int, noun: str) -> str:
@@ -98,7 +100,12 @@ def _metrics(facts: WorkspaceFacts) -> list[tuple[str, str]]:
     scopes = [r.scope for r in indexed]
     no_docs = "none (Index only)" if {mode_label(s) for s in scopes} == {INDEX_ONLY} else "none"
     rows = [
-        ("Scope", escape(workspace_scope_line(scopes))),
+        (
+            "Scope",
+            "Dry run, nothing written"
+            if facts.dry_run
+            else escape(workspace_scope_line(scopes)),
+        ),
         ("Repositories", repos),
         ("Indexed", f"{_n(facts.files, 'file')} · {_n(facts.symbols, 'symbol')}"),
         ("Documentation", pages(total_pages) if total_pages else no_docs),
@@ -156,13 +163,13 @@ def workspace_steps(facts: WorkspaceFacts, setup: Any = None) -> list[tuple[str,
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
         candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
     skipped = next((r for r in facts.repos if r.skipped), None)
-    if skipped:
+    if skipped and not facts.dry_run:
         candidates.append(
             (f"repowise update --repo {escape(skipped.alias)} --docs", "build its documentation")
         )
-    if not facts.provider:
+    elif not facts.provider and not facts.dry_run:
         candidates.append(
-            ("repowise generate <repo>", "write a repo's documentation with a model (needs a key)")
+            ("repowise update --repo <alias> --docs", "write a repo's documentation with a model")
         )
     candidates += [
         ('repowise search "<query>"', "search across all indexed repos"),

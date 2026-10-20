@@ -76,7 +76,7 @@ def test_mixed_modes_count_each_and_label_each_repo():
     # Problems lead the list.
     assert text.index("✗ broken") < text.index("✓ api")
     assert "failed (parse failed)" in text
-    assert "repowise generate <repo>" in text
+    assert "repowise update --repo <alias> --docs" in text
 
 
 def test_many_repos_are_cut_after_ten_with_the_rest_counted():
@@ -89,6 +89,18 @@ def test_many_repos_are_cut_after_ten_with_the_rest_counted():
     assert "svc-20" in listed  # the skipped one is never cut
     assert f"and {25 - MAX_REPO_ROWS} more repos" in text
     assert "repowise update --repo svc-20 --docs" in text
+
+
+def test_dry_run_names_no_mode_and_suggests_no_rebuild():
+    repos = [RepoOutcome("api", {}, skipped="dry run")]
+    facts = WorkspaceFacts(
+        repos=repos, files=0, symbols=0, primary="api", elapsed="1s", dry_run=True
+    )
+    text = _render(facts)
+
+    assert "Dry run, nothing written" in text
+    assert "--docs" not in text
+    assert "Mode unknown" not in text
 
 
 def test_model_name_drops_a_repeated_provider_prefix():
