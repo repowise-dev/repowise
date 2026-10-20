@@ -102,6 +102,31 @@ def test_a_test_file_finding_warns_at_most():
     assert result.verdict == "warn" and levels(result) == [WARNING]
 
 
+@pytest.mark.parametrize("severity", ["low", "medium"])
+def test_a_finding_below_high_severity_warns_at_most(severity):
+    result = evaluate(delta(finding(severity=severity)), fail_on="worsened")
+    assert result.verdict == "warn" and levels(result) == [WARNING]
+
+
+def test_nothing_readable_is_not_evaluated():
+    d = delta(
+        status="unavailable",
+        scope=ScopeCounts(changed=1, eligible=1),
+        skipped={"huge.py": "too_large"},
+    )
+    with pytest.raises(NotEvaluatedError):
+        evaluate(d)
+
+
+def test_only_generated_code_passes_with_a_note():
+    d = delta(
+        status="unavailable",
+        scope=ScopeCounts(changed=1, eligible=1, skipped=1),
+        skipped={"gen.py": "generated"},
+    )
+    assert evaluate(d).verdict == "pass"
+
+
 def test_a_file_that_failed_to_parse_warns():
     d = delta(status="partial", skipped={"bad.py": "parse_failed", "old.py": "base_unreadable"})
     result = evaluate(d)
@@ -134,7 +159,13 @@ def test_nothing_to_compare_passes_with_a_note():
         ("unsupported_range", {"comparison_basis": "not_compared"}),
         ("stale_baseline", {}),
         ("unavailable", {"comparison_basis": "not_compared"}),
-        ("unavailable", {"scope": ScopeCounts(changed=2, eligible=2, failed=2)}),
+        (
+            "unavailable",
+            {
+                "scope": ScopeCounts(changed=2, eligible=2, failed=2),
+                "skipped": {"a.py": "parse_failed", "b.py": "base_parse_failed"},
+            },
+        ),
     ],
 )
 def test_a_comparison_that_judged_nothing_is_not_evaluated(status, kw):

@@ -23,6 +23,7 @@ from repowise.core.ci import github, gitlab, sarif
 from repowise.core.ci.markdown import ROW_LIMIT, cell, details, more_line, plural
 
 from ..test_paths import is_test_related_path
+from .change_health.identity import severity_rank
 from .change_health.models import INCIDENTAL_BASES, ChangeFinding, ChangeHealthDelta
 from .health.biomarker_labels import biomarker_label
 from .health.scoring import is_code_shape
@@ -30,6 +31,8 @@ from .health.scoring import is_code_shape
 #: ``--fail-on`` values, least to most severe: a level fails it and every level above.
 FAIL_ON = ("worsened", "introduced")
 _KIND_RANK = {kind: i for i, kind in enumerate(FAIL_ON)}
+#: The lowest severity that can fail the gate; below it a finding warns.
+_FAIL_SEVERITY = severity_rank("high")
 
 ERROR, WARNING, NOTE = "error", "warning", "note"
 PASS, WARN, FAIL = "pass", "warn", "fail"
@@ -44,7 +47,7 @@ SARIF_TOOL_NAME = "repowise-health"
 SARIF_FINGERPRINT_KEY = "repowiseHealth/v1"
 
 #: Skip reasons meaning a file that should have been read was not.
-_UNREAD = frozenset({"parse_failed", "unreadable"})
+_UNREAD = frozenset({"parse_failed", "unreadable", "too_large"})
 _SOURCE = "health"
 _NOT_ANALYSED = "not_analysed"
 #: Statuses whose findings can be judged; ``unavailable`` is decided per case.
@@ -159,18 +162,19 @@ def evaluate(
 def health_findings(delta: ChangeHealthDelta, *, fail_on: str) -> tuple[list[GateFinding], list[str]]:
     """``(findings, notes)`` for *delta*; raises :class:`NotEvaluatedError` when it judged nothing.
 
-    A change with nothing health can read (docs, config, an unsupported
-    language) passes with a note; a comparison that could not run, or one
-    whose every code file failed to parse, cannot be evaluated.
+    A change with nothing health reads (docs, config, an unsupported language,
+    generated or vendored files) passes with a note; a comparison that could
+    not run, or one where no code file could be read, cannot be evaluated.
     """
+    unread = _unread_files(delta.skipped)
     if delta.status not in _JUDGED:
         if delta.status != "unavailable" or delta.comparison_basis == "not_compared":
             raise NotEvaluatedError(delta.status, delta.explanation)
-        if delta.scope.failed:
+        if unread:
             raise NotEvaluatedError("not_analysed", delta.explanation)
         return [], [delta.explanation]
     findings = [_from_change(f, fail_on) for f in delta.findings]
-    findings += _unread_files(delta.skipped)
+    findings += unread
     notes = []
     if code_skipped := delta.code_skipped:
         notes.append(
@@ -208,14 +212,19 @@ def _level(f: ChangeFinding, fail_on: str) -> str:
     """Error when the change wrote a code-shape finding at or above *fail_on*.
 
     A finding the change only carried (moved) or sits away from its lines
-    (incidental) is a note, as is anything that is not code shape. A test
-    file's finding warns at most: long test functions are the change's own
-    scaffolding more often than a defect.
+    (incidental) is a note, as is anything that is not code shape. Below high
+    severity a finding warns at most (CCN 9 to 14, nesting depth 4: just past a
+    detector's threshold), and so does one in a test file: long test functions
+    are the change's own scaffolding more often than a defect.
     """
     authored = f.attribution_basis != "moved" and f.attribution_basis not in INCIDENTAL_BASES
     if not authored or not is_code_shape(f.biomarker_type) or f.change_kind not in _KIND_RANK:
         return NOTE
-    if _KIND_RANK[f.change_kind] >= _KIND_RANK[fail_on] and not is_test_related_path(f.path):
+    if (
+        _KIND_RANK[f.change_kind] >= _KIND_RANK[fail_on]
+        and severity_rank(f.severity) >= _FAIL_SEVERITY
+        and not is_test_related_path(f.path)
+    ):
         return ERROR
     return WARNING
 
@@ -228,7 +237,7 @@ def _message(f: ChangeFinding) -> str:
 
 
 def _unread_files(skipped: Mapping[str, str]) -> list[GateFinding]:
-    """A warning per changed code file that failed to parse on either side."""
+    """A warning per changed code file left unread on either side (unparsable, too large)."""
     return [
         GateFinding(
             source=_SOURCE,
