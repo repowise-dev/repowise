@@ -10,12 +10,13 @@ the workflow-command strings come from :mod:`repowise.core.ci.github`.
 from __future__ import annotations
 
 import contextlib
-import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, NoReturn
 
 import click
+
+from repowise.core.ci.github import append_step_summary as append_step_summary
 
 #: The gate ran and the change failed it.
 EXIT_GATE_FAILED = 1
@@ -130,16 +131,3 @@ def _reading_change(what: str, *, shallow_hint: bool = True) -> Iterator[None]:
         ) from exc
     except (subprocess.SubprocessError, OSError) as exc:
         raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
-
-
-def append_step_summary(markdown: str, *, env: Mapping[str, str] | None = None) -> bool:
-    """Add *markdown* to the GitHub Actions job summary; ``False`` when not in Actions."""
-    target = (os.environ if env is None else env).get("GITHUB_STEP_SUMMARY")
-    if not target:
-        return False
-    try:
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(markdown.rstrip("\n") + "\n")
-    except OSError:
-        return False
-    return True
