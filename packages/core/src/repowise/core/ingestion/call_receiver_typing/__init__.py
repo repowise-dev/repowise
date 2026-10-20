@@ -391,8 +391,6 @@ class ReceiverTypingMixin(
             return self._inherited_typed_target(file_path, call, caller_id, bare)
         return found
 
-
-
     def _typed_receiver_lookup(
         self,
         file_path: str,
@@ -434,7 +432,9 @@ class ReceiverTypingMixin(
 
         return self._receiver_pair_match(file_path, key, spelled)
 
-    def _import_bound_method(self, file_path: str, bound: str, key: tuple[str, str]) -> str | None:
+    def _import_bound_method(
+        self, file_path: str, bound: str, key: tuple[str, str]
+    ) -> str | None:
         """The method *key* names on a type an import bound to the file *bound*."""
         sym_id = self._file_methods.get(bound, {}).get(key)
         if sym_id is not None:
@@ -560,9 +560,7 @@ class ReceiverTypingMixin(
         fields = self._field_types_in(file_path, language).get(class_id, {})
         if name in fields:
             field = fields[name]
-            return (
-                None if builtin_local and external_type_name(field) else (field, "field", file_path)
-            )
+            return None if builtin_local and external_type_name(field) else (field, "field", file_path)
         if builtin_local:
             return None
         inherited = self._inherited_field(file_path, caller_id, class_id, name, language)
@@ -733,17 +731,13 @@ class ReceiverTypingMixin(
         marks = scan_scope_marks(text, language)
         chains = {}
         open_functions: list[tuple[Symbol, _Scope]] = []
-        symbols = sorted(
-            parsed.symbols if parsed else (), key=lambda s: (s.start_line, -s.end_line)
-        )
+        symbols = sorted(parsed.symbols if parsed else (), key=lambda s: (s.start_line, -s.end_line))
         for symbol in symbols:
             while open_functions and open_functions[-1][0].end_line < symbol.start_line:
                 open_functions.pop()
             own = _scope_of(symbol, bindings, marks)
             enclosing = tuple(
-                scope
-                for outer, scope in reversed(open_functions)
-                if symbol.end_line <= outer.end_line
+                scope for outer, scope in reversed(open_functions) if symbol.end_line <= outer.end_line
             )
             chains[symbol.id] = (own, *enclosing)
             if symbol.kind in _FUNCTION_KINDS:
@@ -902,9 +896,8 @@ class ReceiverTypingMixin(
         host = self._capture_host(file_path, caller_id, language, receiver_name, body_types)
         while host is not None:
             body_types = self._captured_types(file_path, host, caller_id, language)
-            caller_id, host = (
-                host,
-                self._capture_host(file_path, host, language, receiver_name, body_types),
+            caller_id, host = host, self._capture_host(
+                file_path, host, language, receiver_name, body_types
             )
         return caller_id, body_types
 
