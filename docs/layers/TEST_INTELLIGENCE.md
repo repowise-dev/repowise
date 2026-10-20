@@ -56,7 +56,7 @@ hop and the whole import closure all miss it. `new` is a file the index has not 
 `no_signal` an index that holds no tests, `type_only` a file that declares only types (it
 has nothing a test could run, so it is never a gap) and `mocked_only` a file every
 reaching test replaces with a double
-([details](../architecture/test-intelligence.md#one-walk-two-graph-sources)).
+([details](../architecture/test-intelligence.md)).
 
 ## Supported formats
 
