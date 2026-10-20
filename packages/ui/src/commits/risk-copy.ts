@@ -9,6 +9,8 @@
 
 export const SIZE_AND_SPREAD_LABEL = "Size and spread";
 export const SIZE_AND_SPREAD_QUALIFIER = "diff size, not a bug predictor";
+export const COMMITS_FILTER_LABEL = "Size, spread and fixes";
+export const HIGH_SIZE_AND_SPREAD_LABEL = "High size and spread";
 
 export const LIMITS =
   "The rank is a diff-size statistic: it barely beats churn alone and cannot rank danger.";
