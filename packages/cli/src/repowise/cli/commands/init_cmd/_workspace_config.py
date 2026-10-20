@@ -8,10 +8,13 @@ replace the list, and the existing primary stays unless the user picked one.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import click
+import yaml
 from rich.console import Console
 from rich.markup import escape
 
@@ -21,51 +24,72 @@ from repowise.core.ci.markdown import plural
 _NAMES_SHOWN = 5
 
 
-def build_workspace_config(
-    selected: list[Any],
-    root: Path,
-    primary_alias: str,
-    *,
-    console: Console,
-    ask: bool,
-    primary_picked: bool,
-) -> Any:
-    """The config for *selected*, keeping what an existing config lists.
+@dataclass(frozen=True)
+class WorkspacePick:
+    """What the user picked: the repos to index and the primary among them."""
+
+    selected: list[Any]
+    root: Path
+    primary_alias: str
+    primary_repo: Any
+    #: The user chose the primary in a prompt, so it replaces the existing one.
+    primary_picked: bool
+
+
+def build_workspace_config(pick: WorkspacePick, *, console: Console, ask: bool) -> Any:
+    """The config for the picked repos, keeping what an existing config lists.
 
     *ask* allows a prompt before repos the user did not pick are dropped;
-    without it they are always kept. *primary_picked* means the user chose
-    *primary_alias* in a prompt, so it replaces the existing primary.
+    without it they are always kept.
     """
-    from repowise.core.workspace import RepoEntry, WorkspaceConfig
+    from repowise.core.workspace import WorkspaceConfig
 
+    root = pick.root
     existing = _load_existing(root, console)
     previous = {_key(root, e.path): e for e in existing.repos} if existing else {}
-    picked: dict[str, Any] = {}
-    for repo in selected:
-        key = _key(root, repo.path)
-        before = previous.get(key)
-        picked[key] = RepoEntry(
-            path=repo.path.relative_to(root).as_posix(),
-            alias=repo.alias,
-            tags=list(before.tags) if before else [],
-        )
-
+    picked = _picked_entries(pick, previous)
     if existing is None:
-        return _finish(WorkspaceConfig(version=1), list(picked.values()), primary_alias)
+        return _finish(WorkspaceConfig(version=1), list(picked.values()), pick.primary_alias)
 
     left_out = [e for k, e in previous.items() if k not in picked]
     replace, kept, clashed = _settle_left_out(root, left_out, picked, console=console, ask=ask)
+    repos = _merged_repos(root, previous, picked, kept)
+    keep_primary = not replace and not pick.primary_picked
+    primary = _primary(existing.default_repo, repos, clashed, pick.primary_alias, keep_primary)
+    return _finish(existing, repos, primary)
 
-    keep_keys = {_key(root, e.path) for e in kept}
-    repos = [picked.get(k, e) for k, e in previous.items() if k in picked or k in keep_keys]
-    repos += [e for k, e in picked.items() if k not in previous]
 
-    primary = primary_alias
+def _picked_entries(pick: WorkspacePick, previous: dict[str, Any]) -> dict[str, Any]:
+    """One entry per picked repo, keyed by real path, carrying its existing tags."""
+    from repowise.core.workspace import RepoEntry
+
+    picked: dict[str, Any] = {}
+    for repo in pick.selected:
+        key = _key(pick.root, repo.path)
+        before = previous.get(key)
+        picked[key] = RepoEntry(
+            path=repo.path.relative_to(pick.root).as_posix(),
+            alias=repo.alias,
+            tags=list(before.tags) if before else [],
+        )
+    return picked
+
+
+def _merged_repos(
+    root: Path, previous: dict[str, Any], picked: dict[str, Any], kept: list[Any]
+) -> list[Any]:
+    """Existing order first (picked entries replace theirs in place), then new picks."""
+    keep_keys = {_key(root, e.path) for e in kept} | picked.keys()
+    repos = [picked.get(k, e) for k, e in previous.items() if k in keep_keys]
+    return repos + [e for k, e in picked.items() if k not in previous]
+
+
+def _primary(
+    old: str | None, repos: list[Any], clashed: list[Any], picked: str, keep_old: bool
+) -> str:
     # A clashed alias now names a different repo, so it is not the old primary.
     still_there = {e.alias for e in repos} - {e.alias for e in clashed}
-    if not replace and not primary_picked and existing.default_repo in still_there:
-        primary = existing.default_repo
-    return _finish(existing, repos, primary)
+    return old if keep_old and old in still_there else picked
 
 
 def _settle_left_out(
@@ -73,17 +97,21 @@ def _settle_left_out(
 ) -> tuple[bool, list[Any], list[Any]]:
     """Whether to replace the workspace, and the left-out repos kept and clashed."""
     # A folder that no longer exists has nothing to keep.
-    gone = [e for e in left_out if not (root / e.path).is_dir()]
-    left_out = [e for e in left_out if e not in gone]
-    replace = bool(left_out) and ask and _confirm_replace(console, left_out, len(picked))
+    gone, present = _partition(left_out, lambda e: not (root / e.path).is_dir())
+    replace = bool(present) and ask and _confirm_replace(console, present, len(picked))
     picked_aliases = {e.alias for e in picked.values()}
     # Shortcut: a kept repo whose alias a picked repo now uses is dropped
     # rather than renamed, since other tools address repos by alias. The line
     # below names it; renaming would need the user to pick a new alias.
-    kept = [] if replace else [e for e in left_out if e.alias not in picked_aliases]
-    clashed = [] if replace else [e for e in left_out if e.alias in picked_aliases]
+    clashed, kept = ([], []) if replace else _partition(present, lambda e: e.alias in picked_aliases)
     _report_kept(console, kept, clashed, gone)
     return replace, kept, clashed
+
+
+def _partition(items: list[Any], pred: Callable[[Any], bool]) -> tuple[list[Any], list[Any]]:
+    """(items matching *pred*, the rest), each in order."""
+    yes = [e for e in items if pred(e)]
+    return yes, [e for e in items if not pred(e)]
 
 
 def _finish(config: Any, repos: list[Any], primary: str) -> Any:
@@ -101,7 +129,8 @@ def _load_existing(root: Path, console: Console) -> Any | None:
         return None
     try:
         return WorkspaceConfig.load(root)
-    except Exception as exc:
+    # A malformed file raises from YAML, or from the shape checks in from_dict.
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError) as exc:
         # An unreadable file has nothing to merge; the write replaces it.
         console.print(
             f"  [{WARN}]Could not read the existing workspace config "

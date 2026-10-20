@@ -14,7 +14,10 @@ import yaml
 from rich.console import Console
 
 from repowise.cli.commands.init_cmd import workspace as ws_mod
-from repowise.cli.commands.init_cmd._workspace_config import build_workspace_config
+from repowise.cli.commands.init_cmd._workspace_config import (
+    WorkspacePick,
+    build_workspace_config,
+)
 from repowise.cli.ui.workspace_selection import interactive_repo_select
 from repowise.core.workspace import WorkspaceConfig
 
@@ -38,14 +41,9 @@ def _write(root: Path, aliases: list[str], default: str, **extra: object) -> Non
 
 def _build(root: Path, picked: list[str], primary: str, **kw: bool) -> WorkspaceConfig:
     console = Console(record=True, width=200)
-    cfg = build_workspace_config(
-        [_repo(root, n) for n in picked],
-        root.resolve(),
-        primary,
-        console=console,
-        ask=kw.get("ask", False),
-        primary_picked=kw.get("primary_picked", False),
-    )
+    repos = [_repo(root, n) for n in picked]
+    pick = WorkspacePick(repos, root.resolve(), primary, repos[0], kw.get("primary_picked", False))
+    cfg = build_workspace_config(pick, console=console, ask=kw.get("ask", False))
     cfg._console_text = console.export_text()  # type: ignore[attr-defined]
     return cfg
 
@@ -184,5 +182,12 @@ def test_repo_whose_folder_is_gone_is_dropped_and_named(tmp_path: Path) -> None:
 def test_existing_primary_kept_on_single_pick_via_selector(tmp_path: Path) -> None:
     scan = SimpleNamespace(root=tmp_path, repos=[_repo(tmp_path, "a"), _repo(tmp_path, "b")])
     with patch.object(ws_mod, "interactive_repo_select", return_value=scan.repos[:1]):
-        assert ws_mod._select_workspace_repos(scan, select_all=False)[3] is False
-    assert ws_mod._select_workspace_repos(scan, select_all=True)[3] is False
+        assert ws_mod._select_workspace_repos(scan, select_all=False).primary_picked is False
+    assert ws_mod._select_workspace_repos(scan, select_all=True).primary_picked is False
+
+
+def test_a_malformed_config_is_replaced_with_a_note(tmp_path: Path) -> None:
+    (tmp_path / CONFIG).write_text("repos: [unclosed", encoding="utf-8")
+    cfg = _build(tmp_path, ["a"], "a")
+    assert [e.alias for e in cfg.repos] == ["a"]
+    assert "Could not read the existing workspace config" in cfg._console_text
