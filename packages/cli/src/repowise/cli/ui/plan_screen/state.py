@@ -135,8 +135,11 @@ def _found_phrase(provider: str, how: str) -> str:
     if agent is not None:
         label = agent.display_name.removesuffix(" CLI")
         return f"{label} is logged in" if agent.login_check else f"{label} is installed"
-    if provider == "ollama":
-        return f"Ollama is running at {how}"
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider)
+    if spec is not None and spec.local:
+        return f"{spec.label.removesuffix(' (Local)')} is running at {how}"
     return f"{how} found" if how else f"{provider} is set up"
 
 

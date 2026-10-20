@@ -189,19 +189,20 @@ def _search_lines(facts: FinishFacts) -> list[RenderableType]:
     ]
 
 
-#: Display names for hosted embedders; an unlisted one is shown as written.
-_HOSTED_EMBEDDERS = {"openai": "OpenAI", "gemini": "Gemini", "openrouter": "OpenRouter"}
-
-
 def _embed_cost(command: str) -> str:
     """Who pays for the embedder the command names; Ollama is the keyless option."""
+    from repowise.cli.providers import is_free_embedder
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
     args = command.split()
     name = args[args.index("--embedder") + 1] if "--embedder" in args[:-1] else None
     if name is None:
         return "Ollama needs no key"
-    if name == "ollama":
+    if is_free_embedder(name):
         return "runs locally with Ollama, no key"
-    return f"uses your {_HOSTED_EMBEDDERS.get(name, name)} key"
+    # Hosted embedders share their provider's name, so its catalog label names the key.
+    spec = PROVIDER_SPECS.get(name)
+    return f"uses your {spec.label if spec else name} key"
 
 
 def _footer(
