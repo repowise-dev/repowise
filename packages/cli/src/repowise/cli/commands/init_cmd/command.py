@@ -25,15 +25,13 @@ from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
 from repowise.core.update_lock import init_in_progress
 
+from ._agent_summary import init_output
 from ._exit import exit_interrupted
 from ._finish import (
-    catch_up_savings,
     complete_setup,
     exit_with_gaps,
     persist_index,
     register_clients,
-    save_run_config,
-    write_run_state,
 )
 from ._generate import (
     _generate,
@@ -62,7 +60,6 @@ from ._questions import (
     _offer_fast_mode,
 )
 from ._seed import delegate_to_seeded_update
-from .reporting import show_analysis_summary
 from .workspace import _workspace_init
 
 __all__ = [
@@ -451,7 +448,13 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "--progress",
     type=click.Choice(["rich", "json"]),
     default="rich",
-    help="Progress output style.",
+    help=(
+        "Progress output. 'rich' (default) draws a live checklist in a terminal "
+        "and one short line per step anywhere else. 'json' writes one JSON event "
+        "per line to stdout (stages, steps, warnings) and ends with a summary "
+        "line: status, mode, restart_required, spend, warnings, files_written "
+        "and next commands. Human text goes to stderr."
+    ),
 )
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
@@ -464,10 +467,11 @@ def init_command(**params: Any) -> None:
     """
     from repowise.core.cancellation import PipelineCancelled
 
-    try:
-        _run_init(resolve_structural_flags(InitOptions(**params)))
-    except (PipelineCancelled, KeyboardInterrupt):
-        exit_interrupted()
+    with init_output(params.get("progress", "rich"), resolve_repo_path(params.get("path"))):
+        try:
+            _run_init(resolve_structural_flags(InitOptions(**params)))
+        except (PipelineCancelled, KeyboardInterrupt):
+            exit_interrupted()
 
 
 def _run_init(opts: InitOptions) -> None:
@@ -510,16 +514,12 @@ def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     if run.run_warnings:
         run.gaps.append(f"{len(run.run_warnings):,} warning(s) while indexing (see above)")
 
-    show_analysis_summary(run.result)
     if _generate(run):
         return
 
     # A declined cost gate or a missing provider persists like index-only.
     run.effective_index_only = run.opts.index_only or run.cost_declined or run.no_provider
     persist_index(run)
-    catch_up_savings(run.repo_path)
-    save_run_config(run)
     register_clients(run)
-    write_run_state(run)
     complete_setup(run)
     exit_with_gaps(run)

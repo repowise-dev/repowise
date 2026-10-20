@@ -51,8 +51,8 @@ def test_full_upgrade_passes_a_real_progress_callback() -> None:
     assert "RichProgressCallback" in src, (
         "the full upgrade must attach a live progress bar, not progress=None"
     )
-    # The callback is wired to the same rich Progress init uses.
-    assert "Progress(" in src
+    # The callback is wired to the same progress display init uses.
+    assert "make_progress(" in src
 
 
 def test_full_upgrade_estimate_names_structural_pages() -> None:

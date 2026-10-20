@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.editor_setup import register_editor_clients, write_editor_project_files
 from repowise.cli.helpers import (
@@ -22,14 +20,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
-from repowise.cli.ui import (
-    BRAND_STYLE,
-    OK,
-    OWL_SPINNER,
-    MaybeCountColumn,
-    RichProgressCallback,
-    print_phase_header,
-)
+from repowise.cli.ui import OK, print_stage, progress_steps
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.decision_lanes import record_decision_lanes
@@ -51,36 +42,24 @@ from .reporting import show_completion
 
 
 def persist_index(run: InitRun) -> None:
-    """Save to the database and build the search index."""
-    print_phase_header(
-        console,
-        run.total_phases,
-        run.total_phases,
-        "Persistence",
-        "Saving to database and building search index",
-    )
+    """Save to the database and build the search index, then bank agent savings."""
+    print_stage(console, "persistence", run.total_phases)
 
-    # The index run's columns, minus cost.
     recorder = run.recorder
-    with Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as persist_bar:
-        persist_callback = recorder.rebind(RichProgressCallback(persist_bar, console))
+    with progress_steps(console, stage="persistence") as steps:
+        persist_callback = recorder.rebind(steps)
         # Indeterminate, announced so the stage is never silent.
         persist_callback.on_phase_start("persist", None)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
-    # Persistence has its own callback; fold its warnings into the run record.
-    run.run_warnings.extend(persist_callback.warnings)
-    # Read last: every stage writes into the one table.
-    recorder.table.stop("run")
-    run.phase_timings = recorder.timings
-    console.print(f"  [{OK}]✓[/] Database updated")
+        # Persistence has its own callback; fold its warnings into the run record.
+        run.run_warnings.extend(persist_callback.warnings)
+        # Read last: every stage writes into the one table.
+        recorder.table.stop("run")
+        run.phase_timings = recorder.timings
+        with steps.step("savings"):
+            catch_up_savings(run.repo_path)
+    save_run_config(run)
 
 
 def catch_up_savings(repo_path: Path) -> None:
@@ -129,19 +108,33 @@ def register_clients(run: InitRun) -> None:
     """Global client registration, then the workspace's distill verdict."""
     from repowise.cli.editor_integrations.global_mcp import confirm_global_mcp
 
+    no_editor_setup = not run.opts.editor_setup
     if confirm_global_mcp(
         console,
         run.repo_path,
         yes=run.opts.yes,
-        no_editor_setup=not run.opts.editor_setup,
+        no_editor_setup=no_editor_setup,
     ):
-        register_editor_clients(console, run.repo_path)
+        run.mcp_repointed = _mcp_entry_moves(run.repo_path)
+        register_editor_clients(console, run.repo_path, no_editor_setup=no_editor_setup)
 
     # Before the config fingerprint: left unwritten, the first update writes it,
     # sees a fingerprint change and re-scores every file.
     from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
 
     inherit_workspace_distill_verdict(run.repo_path)
+
+
+def _mcp_entry_moves(repo_path: Path) -> bool:
+    """Whether registering writes a new or moved global repowise MCP entry. Read-only.
+
+    The consent gate's own probe, so the two cannot disagree; an unreadable
+    config reads as no move, as it does there.
+    """
+    from repowise.cli.editor_integrations.global_mcp import _probe
+
+    target = _probe(repo_path)
+    return target is not None and (target.repoints or target.command_changes)
 
 
 def _docs_mode(run: InitRun) -> str:
@@ -379,7 +372,7 @@ def _record_init_outcome(run: InitRun) -> None:
     )
 
 
-def _write_editor_files(run: InitRun) -> list[Path]:
+def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
     """Read views, project editor files and the coverage hook; returns the files written.
 
     Runs after state is saved so the guidance reads the final index_scope.
@@ -387,14 +380,19 @@ def _write_editor_files(run: InitRun) -> list[Path]:
     repo_path = run.repo_path
     editor_setup = run.opts.editor_setup
     # Before the editor files, which quote Fix first from these views.
-    refresh_read_snapshots(repo_path)
-    files_written = write_editor_project_files(
-        console,
-        repo_path,
-        options=run.editor_options,
-        no_editor_setup=not editor_setup,
-    )
-    if editor_setup:
+    with steps.step("views"):
+        refresh_read_snapshots(repo_path)
+    if not editor_setup:
+        return write_editor_project_files(
+            console, repo_path, options=run.editor_options, no_editor_setup=True
+        )
+    with steps.step("editor_files"):
+        files_written = write_editor_project_files(
+            console,
+            repo_path,
+            options=run.editor_options,
+            no_editor_setup=False,
+        )
         from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
 
         sync_repo_hook(repo_path, console)
@@ -402,10 +400,14 @@ def _write_editor_files(run: InitRun) -> list[Path]:
 
 
 def complete_setup(run: InitRun) -> None:
-    """Editor files, hook offers, then the completion panel."""
+    """State, read views and editor files, hook offers, then the completion panel."""
     opts = run.opts
     repo_path = run.repo_path
-    files_written = _write_editor_files(run)
+    # The prompts below cannot run under a live display, so it closes first.
+    with progress_steps(console) as steps:
+        with steps.step("state"):
+            write_run_state(run)
+        files_written = _write_editor_files(run, steps)
     _record_init_outcome(run)
 
     offer_hook_install(
@@ -428,13 +430,14 @@ def complete_setup(run: InitRun) -> None:
     # offers' gate: when they were skipped the panel names their hooks.
     from repowise.cli.editor_setup import detect_editor_setup_outcome
 
-    setup_outcome = detect_editor_setup_outcome(
+    run.files_written = files_written
+    run.setup_outcome = setup_outcome = detect_editor_setup_outcome(
         repo_path,
         interactive=(sys.stdin.isatty() and not opts.yes),
         first_index=run.first_index,
         no_editor_setup=not opts.editor_setup,
     )
-    show_completion(
+    run.next_steps = show_completion(
         repo_path=repo_path,
         result=run.result,
         start=run.start,
@@ -449,17 +452,20 @@ def complete_setup(run: InitRun) -> None:
 
 def exit_with_gaps(run: InitRun) -> None:
     """Exit degraded when the run left a gap; last, so everything else is kept."""
+    from repowise.cli.agent_events import active
     from repowise.cli.providers import embed_failure_message
 
+    from ._agent_summary import run_summary
     from ._exit import exit_on_gaps, run_gaps
 
     result = run.result
-    exit_on_gaps(
-        run.gaps
-        + run_gaps(
-            failed_pages=len(getattr(result, "failed_page_ids", None) or []),
-            embed_error=embed_failure_message(
-                run.scope_embedder, getattr(result, "embed_failed_pages", 0)
-            ),
-        )
+    gaps = run.gaps + run_gaps(
+        failed_pages=len(getattr(result, "failed_page_ids", None) or []),
+        embed_error=embed_failure_message(
+            run.scope_embedder, getattr(result, "embed_failed_pages", 0)
+        ),
     )
+    events = active()
+    if events is not None:
+        events.summary(run_summary(run, gaps))
+    exit_on_gaps(gaps)

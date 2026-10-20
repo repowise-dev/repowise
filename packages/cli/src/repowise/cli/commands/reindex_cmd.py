@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import click
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli.helpers import (
     console,
@@ -13,7 +12,7 @@ from repowise.cli.helpers import (
     run_async,
     warn,
 )
-from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
+from repowise.cli.ui import make_progress
 
 _PROVIDER_FAILURE_CIRCUIT_SLICES = 2
 _INPUT_TOO_LONG_RETRIES = 4
@@ -49,7 +48,27 @@ def reindex_command(path: str | None, embedder: str, batch_size: int) -> None:
 
     load_dotenv(repo_path)
 
+    index_only = _index_only_message(repo_path)
+    if index_only:
+        console.print(index_only)
+        return
     run_async(_reindex(repo_path, embedder, batch_size))
+
+
+def _index_only_message(repo_path) -> str | None:
+    """What to run first on an Index only repo, which has no documentation to embed."""
+    from repowise.cli.helpers import load_state
+    from repowise.core.docs_mode import resolve_docs_mode
+    from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
+    state = load_state(repo_path)
+    if not state or resolve_docs_mode(state) != "none":
+        return None
+    return (
+        "[yellow]This repo is Index only: it has no documentation to embed yet.[/yellow] "
+        f"Run [bold]{FAST_TO_FULL_COMMAND}[/bold] to build it from code (no key needed), "
+        "then [bold]repowise reindex[/bold]."
+    )
 
 
 async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
@@ -114,15 +133,8 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     consecutive_provider_failures = 0
     provider_circuit_error: Exception | None = None
 
-    with Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Indexing pages...", total=total)
+    with make_progress(console) as progress:
+        task = progress.add_task("Indexing pages...", total=total, unit="pages")
 
         warned = 0
 

@@ -35,6 +35,7 @@ from repowise.cli.ui.mode_names import (
     pages,
 )
 from repowise.cli.ui.result_panels import build_completion_panel, serve_step
+from repowise.core.index_scope import fast_to_full_command
 
 #: Repos listed by name; the rest are counted, problems listed first.
 MAX_REPO_ROWS = 10
@@ -165,11 +166,11 @@ def workspace_steps(facts: WorkspaceFacts, setup: Any = None) -> list[tuple[str,
     skipped = next((r for r in facts.repos if r.skipped), None)
     if skipped and not facts.dry_run:
         candidates.append(
-            (f"repowise update --repo {escape(skipped.alias)} --docs", "build its documentation")
+            (fast_to_full_command(escape(skipped.alias)), "build its documentation")
         )
     elif not facts.provider and not facts.dry_run:
         candidates.append(
-            ("repowise update --repo <alias> --docs", "write a repo's documentation with a model")
+            ("repowise generate <repo>", "write a repo's documentation with a model")
         )
     candidates += [
         ('repowise search "<query>"', "search across all indexed repos"),

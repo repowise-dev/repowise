@@ -78,6 +78,24 @@ def model_run_embedder(pinned: str | None) -> tuple[str | None, str, bool]:
     return name, f"{stated} ({reason})", upgraded
 
 
+def keyless_run_embedder(pinned: str | None) -> tuple[str, str]:
+    """``(name, stated)`` for a run with no model, which promises no spend.
+
+    An embedder the user chose (a real pin, ``REPOWISE_EMBEDDER``) is kept and
+    named as such; one only inferred from a key falls back to the mock.
+    """
+    if pin_names_an_embedder(pinned):
+        name, reason = str(pinned).strip(), "pinned in .repowise/config.yaml"
+    else:
+        name, reason = resolve_embedder_choice(None)
+        kept = template_run_embedder(name, embedder_was_requested(None, pinned))
+        if kept != name:
+            name, reason = kept, "keyless run"
+    if name == "mock":
+        reason += ", semantic search off"
+    return name, f"{name} ({reason})"
+
+
 def semantic_search_command(repo_path: Any = None, used: str | None = None) -> str:
     """The one command that turns semantic search on for *repo_path* here.
 

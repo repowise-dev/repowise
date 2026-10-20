@@ -182,7 +182,7 @@ def test_recorded_cost_includes_the_knowledge_graph_enrichment(tmp_path, monkeyp
 
 @pytest.mark.parametrize("verbose_flag", [True, False])
 def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
-    """When no pages fail, run_repo_generation prints success summary only when verbose, stays silent otherwise."""
+    """A clean run prints nothing here: the "Generating pages" done row carries the count."""
     jobs_dir = tmp_path / ".repowise" / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -236,21 +236,19 @@ def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
     output = "\n".join(printed_lines)
     assert "failed" not in output
     assert "The documentation is incomplete" not in output
-    if verbose_flag:
-        assert "Generated [bold]1[/bold] pages" in output
-    else:
-        assert output.strip() == ""
+    assert "Generated" not in output
 
 
 def test_show_completion_panel_with_failures(monkeypatch):
     """show_completion reflects failed count in metric line when failures exist."""
     printed_panels = []
 
-    def mock_completion_panel(title, metrics, **_kw):
+    def mock_completion_panel(console, title, metrics, next_steps=None, **_kw):
         printed_panels.append(metrics)
-        return "PANEL"
 
-    monkeypatch.setattr("repowise.cli.ui.finish_panel.build_completion_panel", mock_completion_panel)
+    monkeypatch.setattr(
+        "repowise.cli.ui.finish_panel.print_completion_panel", mock_completion_panel
+    )
     monkeypatch.setattr(
         "repowise.cli.commands.init_cmd.reporting.console.print", lambda *a, **kw: None
     )
@@ -464,7 +462,7 @@ class TestStubsAreNotCountedTwice:
     def test_a_clean_run_is_unaffected(self, tmp_path, monkeypatch):
         output = self._run(tmp_path, monkeypatch, [_page("module_page:a")], [])
 
-        assert "Generated [bold]1[/bold] pages" in output
+        assert "Generated" not in output
         assert "failed" not in output
 
 
@@ -472,8 +470,8 @@ def test_completion_panel_excludes_placeholders_from_the_page_count(monkeypatch)
     """The panel derives the same split from the same helper, not its own count."""
     printed_panels = []
     monkeypatch.setattr(
-        "repowise.cli.ui.finish_panel.build_completion_panel",
-        lambda title, metrics, **_kw: printed_panels.append(metrics) or "PANEL",
+        "repowise.cli.ui.finish_panel.print_completion_panel",
+        lambda console, title, metrics, next_steps=None, **_kw: printed_panels.append(metrics),
     )
     monkeypatch.setattr(
         "repowise.cli.commands.init_cmd.reporting.console.print", lambda *a, **kw: None

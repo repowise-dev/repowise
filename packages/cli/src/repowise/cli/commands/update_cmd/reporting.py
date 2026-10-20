@@ -14,13 +14,9 @@ import sys
 from typing import Any
 
 import click
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli.helpers import console
 from repowise.cli.ui import (
-    BRAND_STYLE,
-    OWL_SPINNER,
-    MaybeCountColumn,
     build_completion_panel,
     format_elapsed,
 )
@@ -113,21 +109,6 @@ def render_cascade_budget_warning(
     else:
         console.print(f"  Pass `{full}` to regenerate them in this run.")
     console.print()
-
-
-def make_generation_progress() -> Progress:
-    """Build the live page-generation progress bar (owl spinner + running cost),
-    matching the columns ``init`` uses for its generation phase.
-    """
-    return Progress(
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-        console=console,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +333,7 @@ def show_index_only_completion(
     pages_rendered: int = 0,
     template_wiki: bool = False,
     changed_paths: list[str] | None = None,
+    upgrade_command: str | None = None,
 ) -> None:
     """Render the completion panel for an index-only update (no LLM regen).
 
@@ -382,6 +364,11 @@ def show_index_only_completion(
         # page at a time — not the all-or-nothing `update --full`.
         next_steps.append(
             ("repowise generate", "write the documentation with a model (needs a key)")
+        )
+    elif upgrade_command:
+        # Index only: there are no docs to regenerate.
+        next_steps.append(
+            (upgrade_command, "build documentation from code and the full git history (no key)")
         )
     else:
         next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))

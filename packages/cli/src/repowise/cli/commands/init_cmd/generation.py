@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 # The cost-gate helpers moved to ``repowise.cli.cost_gate`` so ``init`` and
 # ``generate`` share one gate. Re-exported here for the callers that still
@@ -40,12 +39,10 @@ from repowise.cli.providers import (
     flush_cost_tracker,
 )
 from repowise.cli.ui import (
-    BRAND_STYLE,
     OK,
     OWL_SPINNER,
     WARN,
-    MaybeCountColumn,
-    RichProgressCallback,
+    progress_steps,
 )
 from repowise.core.generation.models import (
     STUB_FALLBACK_ERROR,
@@ -275,6 +272,7 @@ def run_repo_generation(
     test_run: bool = False,
     timings: Any | None = None,
     warnings: list[str] | None = None,
+    total_phases: int | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
@@ -309,7 +307,11 @@ def run_repo_generation(
     # on ``result``. Only a caller whose embedder matches
     # ``embedder_name_resolved`` may pre-set it.
     vector_store: Any = getattr(result, "vector_store", None)
-    if vector_store is None:
+    if vector_store is None and verbose:
+        # Opening the store can take seconds on a large index; say so.
+        with progress_steps(console) as steps, steps.step("vector_store"):
+            vector_store = build_vector_store(repo_path, embedder_impl)
+    elif vector_store is None:
         vector_store = build_vector_store(repo_path, embedder_impl)
     result.vector_store = vector_store
 
@@ -324,21 +326,10 @@ def run_repo_generation(
 
     if verbose and not deterministic:
         console.print(
-            "  [dim](each generated page is saved as it completes; safe to Ctrl-C, "
+            "  [dim](each generated page is saved as it completes: safe to Ctrl-C, "
             "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
         )
 
-    # No cost column on a deterministic run: it would sit at $0.000 for the
-    # whole run, which reads as an unanswered question rather than an answer.
-    columns: list[Any] = [
-        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MaybeCountColumn(),
-        TimeElapsedColumn(),
-    ]
-    if not deterministic:
-        columns.append(TextColumn("[" + OK + "]${task.fields[cost]:.3f}[/]"))
 
     # Filled by a resumed run with the pages it skipped because they already
     # exist. Persistence needs them: they are absent from ``generated_pages``,
@@ -355,8 +346,18 @@ def run_repo_generation(
     result.generation_scope = generation_scope
     generation_stats: dict[str, int] = {}
 
-    with Progress(*columns, console=console) as gen_progress:
-        gen_callback: Any = RichProgressCallback(gen_progress, console)
+    # No cost column on a deterministic run: it would sit at $0.000 for the
+    # whole run, which reads as an unanswered question rather than an answer.
+    # ``total_phases`` comes only from single-repo init, whose resume this is.
+    from ._ingest import RESUME_COMMAND
+
+    with progress_steps(
+        console,
+        cost=not deterministic,
+        resume_command=RESUME_COMMAND if total_phases is not None else None,
+        total_phases=total_phases,
+        stage="generation",
+    ) as gen_callback:
         if timings is not None:
             gen_callback = PhaseTimingRecorder(gen_callback, timings)
         generated_pages = run_async(
@@ -468,8 +469,6 @@ def run_repo_generation(
             "  [dim]Run [bold]repowise init --resume[/bold] to generate the pages that "
             "failed, without re-spending on the ones that succeeded.[/dim]\n"
         )
-    elif verbose:
-        console.print(f"  [{OK}]✓[/] Generated [bold]{written_count}[/bold] pages")
 
     # KG enrichment is layer naming and the guided tour, both pure prompting.
     # A deterministic run has no model to ask, and the skeleton's structural

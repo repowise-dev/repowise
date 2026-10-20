@@ -74,15 +74,23 @@ def _claude_auth(out: str) -> CliAuth | None:
     backend = data.get("apiProvider")
     if backend and backend != "firstParty":
         return CliAuth(f"runs through {backend}: billed to that cloud account")
+    return _claude_login_auth(data)
+
+
+def _claude_login_auth(data: dict) -> CliAuth:
+    """Billing for a first-party Claude Code login, by its ``authMethod``."""
     method = str(data.get("authMethod") or "")
     if method == "claude.ai":
-        plan = data.get("subscriptionType")
-        if plan and plan != "free":
-            return CliAuth(f"Claude {plan} plan: uses your plan quota")
-        return CliAuth("signed in without a paid Claude plan", offer=False)
+        return _claude_plan_auth(data.get("subscriptionType"))
     if "key" in method.lower() or method == "console":
         return CliAuth("API key: billed per token")
     return _unknown("Claude Code")
+
+
+def _claude_plan_auth(plan: object) -> CliAuth:
+    if plan and plan != "free":
+        return CliAuth(f"Claude {plan} plan: uses your plan quota")
+    return CliAuth("signed in without a paid Claude plan", offer=False)
 
 
 def _codex_auth(out: str) -> CliAuth | None:

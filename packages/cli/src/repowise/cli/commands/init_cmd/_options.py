@@ -109,6 +109,11 @@ class InitRun:
     effective_index_only: bool = False
     phase_timings: dict[str, float] = field(default_factory=dict)
     scope_embedder: str | None = None
+    # What the finish reported, kept for the --progress json summary.
+    mcp_repointed: bool = False
+    setup_outcome: Any = None
+    files_written: list[Path] = field(default_factory=list)
+    next_steps: list[tuple[str, str]] = field(default_factory=list)
 
 
 def resolve_structural_flags(opts: InitOptions) -> InitOptions:

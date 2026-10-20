@@ -15,9 +15,8 @@ from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
     build_contextual_next_steps,
     format_elapsed,
-    print_analysis_summary,
 )
-from repowise.cli.ui.finish_panel import FinishFacts, build_finish_panel
+from repowise.cli.ui.finish_panel import FinishFacts, print_finish_panel
 from repowise.cli.ui.mode_names import pages, provider_model
 from repowise.cli.ui.workspace_finish import (
     RepoOutcome,
@@ -46,41 +45,6 @@ def _lang_summary(result: Any) -> str:
 def _hotspots(result: Any) -> int:
     summary = result.git_summary
     return summary.hotspots if summary and hasattr(summary, "hotspots") else 0
-
-
-def show_analysis_summary(result: Any) -> None:
-    """Render the analysis-complete interstitial shown before generation."""
-    _graph = result.graph_builder.graph()
-    _dc_unreachable_pre, _dc_unused_pre = _dead_counts(result)
-    _dc_lines_pre = result.dead_code_report.deletable_lines if result.dead_code_report else 0
-    _n_decisions_pre = (
-        sum(result.decision_report.by_source.values()) if result.decision_report else 0
-    )
-
-    # Community count (best-effort)
-    _community_count = 0
-    try:
-        if hasattr(result.graph_builder, "communities"):
-            _community_count = len(result.graph_builder.communities())
-    except Exception:
-        pass
-
-    console.print()
-    print_analysis_summary(
-        console,
-        file_count=result.file_count,
-        symbol_count=result.symbol_count,
-        graph_nodes=_graph.number_of_nodes(),
-        graph_edges=_graph.number_of_edges(),
-        dead_unreachable=_dc_unreachable_pre,
-        dead_unused=_dc_unused_pre,
-        dead_lines=_dc_lines_pre,
-        decision_count=_n_decisions_pre,
-        git_files=result.git_summary.files_indexed if result.git_summary else 0,
-        hotspot_count=_hotspots(result),
-        community_count=_community_count,
-        lang_summary=_lang_summary(result),
-    )
 
 
 def _render_defect_accuracy(result: Any) -> None:
@@ -144,8 +108,8 @@ def show_completion(
     setup: Any = None,
     files_written: list[Path] | None = None,
     verbose: bool = False,
-) -> None:
-    """Render the one finish panel; the generation checks only under ``-v``.
+) -> list[tuple[str, str]]:
+    """Render the one finish panel and return its next steps; generation checks only under ``-v``.
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot and *files_written* what editor setup put in the working tree,
@@ -191,14 +155,13 @@ def show_completion(
         setup=setup,
     )
     console.print()
-    console.print(
-        build_finish_panel(
-            facts,
-            steps=steps,
-            setup=setup,
-            repo_path=Path(repo_path),
-            files_written=files_written,
-        )
+    print_finish_panel(
+        console,
+        facts,
+        steps=steps,
+        setup=setup,
+        repo_path=Path(repo_path),
+        files_written=files_written,
     )
     console.print()
     _render_defect_accuracy(result)
@@ -211,6 +174,7 @@ def show_completion(
 
     if verbose:
         _show_generation_checks(result)
+    return steps
 
 
 def _top_hotspot(result: Any) -> str:

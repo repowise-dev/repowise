@@ -192,6 +192,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--test-run` | Write docs with the model for only the top 10 files (by PageRank). Not with `--no-prose` or `--mode fast` |
 | `--all` | In multi-repo mode, index every detected repo without prompting |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos) |
+| `--progress` | `rich` (default): a live checklist in a terminal, one short line per step (at most 100 columns) anywhere else. `json`: one JSON event per line on stdout, ending with a summary line; see below. |
 
 **Examples:**
 
@@ -222,6 +223,16 @@ documentation built from code because the cost estimate needed confirmation and
 there was no terminal, so re-run with `--yes`). `130` interrupted: run
 `repowise init --resume` to continue. Any other non-zero code is a failure; a
 usage error (a bad flag) also exits `2`, before anything runs.
+
+**Driving init from an agent or script.** `repowise init --yes --no-prose --progress json`
+writes only JSON lines to stdout; human text goes to stderr. Every line has `v`
+(schema version, `1`) and `event`: `stage`, `phase` (`state` is `start`, `done`
+or `failed`, with `completed`, `total`, `unit` and `elapsed_s`), `warning`, and
+last `summary`. The summary's `status` is `ready`, `degraded`, `interrupted` or
+`failed`, matching exit `0`, `2`, `130` or any other code, and it carries
+`mode` (`key` from the index scope, `label`, `run_mode`), `restart_required`
+(the editor needs a restart or `/mcp` to load the tools), `spend` (`tokens`,
+`usd`), `warnings`, `files_written` and `next` (commands, `repowise serve` first).
 
 With a real embedder (anything but `mock`), a run whose page vectors fail to
 write, for example because the LanceDB install is broken, keeps its pages and
@@ -292,7 +303,7 @@ See [WORKTREES.md](../scale/WORKTREES.md).
 
 **First-time indexing:** `update --workspace` runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only, no LLM cost, and writes a state.json marker. Doc generation then follows on the next update once the repo has an index: pass `--docs` (or set its `docs_enabled`) and it regenerates pages like any other member.
 
-**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no model-written docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL using a resumable checkpoint, reuses the persisted graph, generates the missing prose, rebuilds full-text search, embeds pages when the resolved embedder is available, and recomputes health against FULL history. The command records the transition before work and checkpoints each completed stage; failure or cancellation leaves the prior scope truthful and a retryable upgrade instead of stamping the repository full early. Persisted provider/model/embedder choices are reused when valid, overrides remain explicit, and estimated model cost is shown before paid generation. If embedding is unavailable the completed scope says so and gives the exact recovery command, `repowise reindex`; it never implies semantic search was built. Single-repo only; it errors in workspace mode.
+**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no model-written docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL using a resumable checkpoint, reuses the persisted graph, builds the missing documentation, rebuilds full-text search, embeds pages when the resolved embedder is available, and recomputes health against FULL history. The command records the transition before work and checkpoints each completed stage; failure or cancellation leaves the prior scope truthful and a retryable upgrade instead of stamping the repository full early. Persisted provider/model/embedder choices are reused when valid, overrides remain explicit, and estimated model cost is shown before paid generation. If embedding is unavailable the completed scope says so and gives the exact recovery command, `repowise reindex`; it never implies semantic search was built. It needs no key: with no model configured the documentation is built from code, with no model calls and no spend, and the embedder stays the free one unless you chose another. With a model configured, the model writes it. One repo at a time; in a workspace, pass `--repo <alias>`.
 
 `state.json:index_scope` is the canonical machine-readable description used by `status --format json`, `/api/repos`, generated agent guidance, and MCP `_meta.index_scope`. It separately records run mode, content provenance (`none`, `template`, or `model`), Git tier, configured commit cap, achieved Git-history coverage, configured/effective file-page caps, eligible/generated/omitted file-page counts, unavailable/skipped analysis, search availability, provider choices, and upgrade state. Older indexes project missing facts as `unknown`/`null`; a configured cap is never reported as achieved coverage and a missing analysis result is never reported as a clean result.
 
