@@ -175,3 +175,28 @@ def test_bracketed_file_names_render_literally():
     assert 'Why does [id].tsx change' in text
     assert "repowise risk [id].tsx" in text
     assert "app/[slug]/page.md" in text
+
+
+@pytest.mark.parametrize(
+    ("command", "tail", "absent"),
+    [
+        ("repowise reindex --embedder openai", "(uses your OpenAI key)", "Ollama"),
+        ("repowise reindex --embedder ollama", "(runs locally with Ollama, no key)", "your"),
+        ("repowise reindex", "(Ollama needs no key)", "your"),
+    ],
+)
+def test_semantic_search_line_names_who_pays_for_the_embedder(command, tail, absent):
+    scope = {
+        "content_provenance": "template",
+        "search": {"semantic": "unavailable", "next_command": command},
+    }
+    facts = FinishFacts(
+        scope=scope, files=1, symbols=1, languages="Python 100%", graph_nodes=1,
+        graph_edges=0, elapsed="1.0s", pages="1 page",
+    )
+    console = Console(record=True, width=120)
+    console.print(build_finish_panel(facts, steps=[serve_step()]))
+    line = next(x for x in console.export_text().splitlines() if "Semantic search is off" in x)
+    assert f"{command} turns it on {tail}" in line
+    assert absent not in line
+

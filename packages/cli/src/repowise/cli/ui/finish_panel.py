@@ -182,8 +182,26 @@ def _search_lines(facts: FinishFacts) -> list[RenderableType]:
         return []
     command = search.get("next_command") or "repowise reindex"
     return [
-        _dim(f"Semantic search is off: [bold]{command}[/bold] turns it on (Ollama needs no key).")
+        _dim(
+            f"Semantic search is off: [bold]{command}[/bold] turns it on "
+            f"({_embed_cost(command)})."
+        )
     ]
+
+
+#: Display names for hosted embedders; an unlisted one is shown as written.
+_HOSTED_EMBEDDERS = {"openai": "OpenAI", "gemini": "Gemini", "openrouter": "OpenRouter"}
+
+
+def _embed_cost(command: str) -> str:
+    """Who pays for the embedder the command names; Ollama is the keyless option."""
+    args = command.split()
+    name = args[args.index("--embedder") + 1] if "--embedder" in args[:-1] else None
+    if name is None:
+        return "Ollama needs no key"
+    if name == "ollama":
+        return "runs locally with Ollama, no key"
+    return f"uses your {_HOSTED_EMBEDDERS.get(name, name)} key"
 
 
 def _footer(
