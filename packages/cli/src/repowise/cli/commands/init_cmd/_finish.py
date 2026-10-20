@@ -32,10 +32,12 @@ from repowise.cli.ui import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 from repowise.core.repo_config import config_dependency_fingerprints
 
+from ._ingest import decision_llm_client
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from ._options import InitRun
 from .persistence import (
@@ -245,6 +247,9 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
     apply_git_history_coverage_state(base_state, result)
     _stamp_scope(run, base_state, docs_mode)
+    record_decision_lanes(
+        base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
+    )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
     if run.phase_timings:

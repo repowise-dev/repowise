@@ -335,6 +335,12 @@ cycle) is rendered from structure and refreshes on `repowise update`, so
 naming one with `--page` is an actionable error rather than a silent LLM
 re-render.
 
+**Decisions a keyless index skipped.** An index built without a model (no key,
+or `--no-prose`) cannot read decisions from PRs, git history or code comments.
+The first `generate` (or `update --full`) with a model runs those lanes too, and
+the cost estimate prices them on their own line. Later runs skip them, and
+`repowise status` shows a Decisions row while they are still pending.
+
 **Interactive chooser.** Run `repowise generate` with no selection flag on a
 terminal and it prints the wiki's state (written / unwritten / stale on the
 concept layer), writes the unwritten subsystem pages, asks about cascade only

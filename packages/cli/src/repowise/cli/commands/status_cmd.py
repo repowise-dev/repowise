@@ -31,6 +31,7 @@ from repowise.cli.ui.mode_names import (
     scope_line,
 )
 from repowise.cli.ui.result_panels import keyless_upgrade_note
+from repowise.core.decision_lanes import lanes_label, pending_decision_lanes
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.index_scope import resolve_index_scope
 
@@ -690,6 +691,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     db_path = repowise_dir / "wiki.db"
     has_db = db_path.exists() or db_configured()
     incomplete = _incomplete_index(repo_path, state)
+    pending_lanes = pending_decision_lanes(state, repo_path)
 
     if fmt == "json":
         counts, total_db_tokens = (
@@ -716,6 +718,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
+                "decision_lanes_pending": list(pending_lanes),
             }
         )
         return
@@ -780,6 +783,11 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         state_table.add_row("Test run", "documentation covers the top 10 files only")
     if _shows_upgrade_row(scope):
         state_table.add_row("Full upgrade", scope["upgrade"]["status"])
+    if pending_lanes:
+        state_table.add_row(
+            "Decisions",
+            f"{lanes_label(pending_lanes)} not read yet (needs a model): repowise generate",
+        )
     console.print(state_table)
 
     # A template-only scope is a finished keyless index, not a broken one —
