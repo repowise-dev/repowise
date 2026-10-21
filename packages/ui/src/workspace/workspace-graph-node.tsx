@@ -71,6 +71,21 @@ export function HealthRing({ score, size = 36 }: { score: number; size?: number 
   );
 }
 
+function HealthCell({ score }: { score: number | null }) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      {score != null ? (
+        <HealthRing score={score} />
+      ) : (
+        <span className="text-[10px] text-[var(--color-text-tertiary)]">—</span>
+      )}
+      <span className="text-[8px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
+        {score != null ? "health" : "no score"}
+      </span>
+    </div>
+  );
+}
+
 function WorkspaceGraphNodeInner({ data }: NodeProps) {
   const d = data as unknown as WorkspaceGraphNodeData;
   const langColor = languageColor(d.topLanguage);
@@ -98,16 +113,7 @@ function WorkspaceGraphNodeInner({ data }: NodeProps) {
       </div>
 
       <div className="flex items-center gap-2.5">
-        <div className="flex flex-col items-center gap-0.5">
-          {d.healthScore != null ? (
-            <HealthRing score={d.healthScore} />
-          ) : (
-            <span className="text-[10px] text-[var(--color-text-tertiary)]">—</span>
-          )}
-          <span className="text-[8px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
-            {d.healthScore != null ? "health" : "no score"}
-          </span>
-        </div>
+        <HealthCell score={d.healthScore} />
         <div className="flex-1 min-w-0 space-y-1">
           <div className="flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)]">
             <FileText className="w-3 h-3 shrink-0" />
