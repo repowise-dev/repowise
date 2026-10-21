@@ -262,3 +262,105 @@ async def test_upsert_repository_advances_worktree_head(tmp_path: Path) -> None:
             assert repo.head_commit == sha2
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upsert_repository_rewrites_sole_row_when_path_misses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A moved checkout must not gain a second repository row on update."""
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+    orig = tmp_path / "orig"
+    moved = tmp_path / "moved"
+    orig.mkdir()
+    moved.mkdir()
+    sha = "f" * 40
+    _make_git_checkout(orig, sha)
+    _make_git_checkout(moved, sha)
+
+    db = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db.as_posix()}")
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    try:
+        async with get_session(sf) as session:
+            first = await upsert_repository(session, name="orig", local_path=str(orig))
+            first_id = first.id
+
+        async with get_session(sf) as session:
+            from sqlalchemy import func, select
+
+            from repowise.core.persistence.models import Repository
+
+            repo = await upsert_repository(
+                session,
+                name="moved",
+                local_path=str(moved),
+                relocate_sole_row_on_path_miss=True,
+            )
+            assert repo.id == first_id
+            assert repo.local_path == str(moved)
+            count = await session.scalar(select(func.count()).select_from(Repository))
+            assert count == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upsert_repository_does_not_infer_in_configured_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path / "shared.db"
+    monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite:///{shared.as_posix()}")
+
+    orig = tmp_path / "orig"
+    moved = tmp_path / "moved"
+    orig.mkdir()
+    moved.mkdir()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{shared.as_posix()}")
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    try:
+        async with get_session(sf) as session:
+            await upsert_repository(session, name="orig", local_path=str(orig))
+
+        async with get_session(sf) as session:
+            from sqlalchemy import func, select
+
+            from repowise.core.persistence.models import Repository
+
+            await upsert_repository(session, name="moved", local_path=str(moved))
+            count = await session.scalar(select(func.count()).select_from(Repository))
+            assert count == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upsert_repository_does_not_infer_when_store_has_two_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    try:
+        async with get_session(sf) as session:
+            await upsert_repository(session, name="a", local_path=str(tmp_path / "a"))
+            await upsert_repository(session, name="b", local_path=str(tmp_path / "b"))
+
+        async with get_session(sf) as session:
+            from sqlalchemy import func, select
+
+            from repowise.core.persistence.models import Repository
+
+            await upsert_repository(session, name="c", local_path=str(tmp_path / "c"))
+            count = await session.scalar(select(func.count()).select_from(Repository))
+            assert count == 3
+    finally:
+        await engine.dispose()

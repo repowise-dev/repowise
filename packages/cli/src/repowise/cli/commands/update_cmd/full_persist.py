@@ -465,7 +465,11 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
         async with get_session(sf) as session:
             with timed(timings, "persist.open"):
                 repo = await upsert_repository(
-                    session, name=ctx.repo_name, local_path=str(ctx.repo_path), stamp_head=True
+                    session,
+                    name=ctx.repo_name,
+                    local_path=str(ctx.repo_path),
+                    stamp_head=True,
+                    relocate_sole_row_on_path_miss=True,
                 )
             ctx.session, ctx.repo_id = session, repo.id
             await run_steps(ctx, FULL_UPDATE_STEPS)

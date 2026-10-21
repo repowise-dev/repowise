@@ -340,7 +340,12 @@ async def _persist_async(
         await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo = await upsert_repository(
+                session,
+                name=repo_path.name,
+                local_path=str(repo_path),
+                relocate_sole_row_on_path_miss=True,
+            )
             repo_id = repo.id
             await upsert_pages_from_generated(session, generated_pages, repo_id)
 

@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...git_head import read_head_commit
+from ..database import get_configured_db_url
 from ..models import (
     GenerationJob,
     Page,
@@ -29,6 +30,28 @@ from ._shared import _VALID_JOB_STATUSES
 # ---------------------------------------------------------------------------
 
 
+async def _repository_for_upsert(session: AsyncSession, local_path: str) -> Repository | None:
+    """Resolve the row ``upsert_repository`` should update, or ``None`` to insert.
+
+    Matches by exact ``local_path`` first. A copied or moved checkout keeps the
+    repo-local store but not the old path; when the store is not a configured
+    shared database and holds exactly one repository row, that row is the same
+    repo and its ``local_path`` is rewritten. Shared or multi-repo stores still
+    match by path only.
+    """
+    repo = await get_repository_by_path(session, local_path)
+    if repo is not None:
+        return repo
+    if get_configured_db_url() is not None:
+        return None
+    repos = (await session.scalars(select(Repository).limit(2))).all()
+    if len(repos) != 1:
+        return None
+    repo = repos[0]
+    repo.local_path = local_path
+    return repo
+
+
 async def upsert_repository(
     session: AsyncSession,
     *,
@@ -40,16 +63,20 @@ async def upsert_repository(
     head_commit: str | None = None,
     stamp_head: bool = False,
     repo_id: str | None = None,
+    relocate_sole_row_on_path_miss: bool = False,
 ) -> Repository:
     """Create or update a repository record.
 
-    Lookup is by ``local_path`` (the canonical key for local repositories).
+    Lookup is by ``local_path``. When ``relocate_sole_row_on_path_miss`` is
+    set (``repowise update`` paths), a repo-local store with one row and a path
+    miss rewrites that row's path instead of inserting a second row; configured
+    or multi-repo stores still match by path only.
 
     ``repo_id`` fixes the primary key when the row is *created*. The server
     keeps a registry row for each repo in its primary database and the
     canonical row in the repo-local ``wiki.db``; both must share one id so
     per-repo session routing keyed by that id resolves consistently. Ignored
-    when a row for ``local_path`` already exists (the existing id wins).
+    when an existing row is resolved (the existing id wins).
 
     ``head_commit`` records the git commit the index was built against — the
     value the MCP ``_meta`` freshness check compares to the live HEAD. A new
@@ -61,8 +88,10 @@ async def upsert_repository(
     made the database claim an index at HEAD while ``state.json`` still named
     the last real sync.
     """
-    result = await session.execute(select(Repository).where(Repository.local_path == local_path))
-    repo = result.scalar_one_or_none()
+    if relocate_sole_row_on_path_miss:
+        repo = await _repository_for_upsert(session, local_path)
+    else:
+        repo = await get_repository_by_path(session, local_path)
 
     stamping = repo is None or stamp_head or head_commit is not None
     resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None

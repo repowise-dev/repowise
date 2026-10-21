@@ -167,7 +167,12 @@ def _load_prior_pages(run: UpdateRun) -> dict[str, object]:
         engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo = await upsert_repository(
+                session,
+                name=repo_path.name,
+                local_path=str(repo_path),
+                relocate_sole_row_on_path_miss=True,
+            )
             return await load_prior_pages(session, repo.id)
 
     try:

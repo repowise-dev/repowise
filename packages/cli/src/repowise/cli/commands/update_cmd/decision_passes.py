@@ -223,7 +223,12 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
     await init_db(engine)
     sf = create_session_factory(engine)
     async with get_session(sf) as session:
-        repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        repo = await upsert_repository(
+            session,
+            name=repo_path.name,
+            local_path=str(repo_path),
+            relocate_sole_row_on_path_miss=True,
+        )
         res = await apply_injection_feedback(session, repo.id, repo_path)
     await engine.dispose()
     return res
@@ -323,7 +328,12 @@ def _run_decision_evolution(
         await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo = await upsert_repository(
+                session,
+                name=repo_path.name,
+                local_path=str(repo_path),
+                relocate_sole_row_on_path_miss=True,
+            )
             res = await run_update_evolution(
                 session,
                 repo.id,

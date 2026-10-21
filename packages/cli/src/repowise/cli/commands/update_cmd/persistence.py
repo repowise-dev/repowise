@@ -92,7 +92,10 @@ def _repair_module_attribution(repo_path: Path) -> int:
             sf = create_session_factory(engine)
             async with get_session(sf) as session:
                 repo = await upsert_repository(
-                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                    session,
+                    name=Path(repo_path).name,
+                    local_path=str(repo_path),
+                    relocate_sole_row_on_path_miss=True,
                 )
                 return await backfill_module_attribution(session, repo.id, roots)
         finally:
@@ -813,7 +816,10 @@ class PageCheckpointer:
                 async with get_session(self._session_factory) as session:
                     if repo_id is None:
                         repo = await upsert_repository(
-                            session, name=self.repo_name, local_path=str(self.repo_path)
+                            session,
+                            name=self.repo_name,
+                            local_path=str(self.repo_path),
+                            relocate_sole_row_on_path_miss=True,
                         )
                         repo_id = repo.id
                     await upsert_page_from_generated(session, page, repo_id)
@@ -1046,7 +1052,12 @@ async def _rescore_health_from_db(
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo = await upsert_repository(
+                session,
+                name=repo_path.name,
+                local_path=str(repo_path),
+                relocate_sole_row_on_path_miss=True,
+            )
             repo_id = repo.id
 
             gm_result = await session.execute(
@@ -1464,7 +1475,12 @@ async def _security_rescan_from_full_parse(repo_path: Any, exclude_patterns: lis
         await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo = await upsert_repository(
+                session,
+                name=repo_path.name,
+                local_path=str(repo_path),
+                relocate_sole_row_on_path_miss=True,
+            )
             findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
             await SecurityScanner(session, repo.id).replace_findings(findings_by_file, scanned_paths)
     finally:
