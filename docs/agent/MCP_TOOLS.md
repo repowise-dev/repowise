@@ -163,6 +163,7 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 Target kinds:
 
 - `path::Symbol`: a miss falls back to the file's card.
+- A directory: a module card from the indexed files under it, with or without a module page (none is `index_status: "directory_without_module_page"`, with up to 15 `docs.files`). Git history is stored per file, so `ownership` counts the files each person is primary owner of (`owners_by_files`), `last_change` gives the newest commit's date and file (and its author when a stored author matches), and `hotspot_files` counts hotspot files; no commit share, contributor count or bus factor is claimed.
 - `component:<name>`: declared context and rolled-up facts, from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or derived.
 - `change:<id>` (`change:pr-123` or a commit sha): one [Change Record](../reference/CLI_REFERENCE.md#repowise-changes).
 - `package:<name>` (`package:requests`, `package:npm:lodash`): where a package is imported ([PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md)).

@@ -25,6 +25,7 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._directory import _dir_prefix, _indexed_under
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     escape_like,
@@ -82,6 +83,8 @@ class ResolvedTarget:
     graph_symbol: GraphNode | None = None
     live_file_meta: GitMetadata | None = None
     live_unindexed_file: bool = False
+    # A module's directory: its page's path, or the directory itself with no page.
+    dir_path: str | None = None
 
 
 Resolution = ResolvedTarget | dict[str, Any]
@@ -215,14 +218,29 @@ async def _module_page_partial(q: TargetQuery) -> Page | None:
     return candidates[0] if candidates else None
 
 
+async def _directory(q: TargetQuery) -> Resolution | None:
+    """A directory with no module page, known from the indexed files under it."""
+    prefix = _dir_prefix(q.target)
+    if "::" in q.target or not prefix:
+        return None
+    if await _indexed_under(q.session, q.repo_id, q.target, q.exclude_spec):
+        return ResolvedTarget("module", dir_path=prefix.rstrip("/"))
+    return None
+
+
 async def _module_page(q: TargetQuery) -> Resolution | None:
-    """A module page: exact, then without a trailing slash, then partial."""
+    """A module page: exact, then without a trailing slash; then the directory
+    itself when files are indexed under it, so a partial match cannot hand a
+    parent directory its child's card; then partial."""
     page = await _module_page_at(q, q.target)
     if page is None and q.clean_target != q.target:
         page = await _module_page_at(q, q.clean_target)
     if page is None:
+        directory = await _directory(q)
+        if directory is not None:
+            return directory
         page = await _module_page_partial(q)
-    return ResolvedTarget("module", page=page) if page else None
+    return ResolvedTarget("module", page=page, dir_path=page.target_path) if page else None
 
 
 async def _symbol_rows(q: TargetQuery) -> Any:

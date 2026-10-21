@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -37,6 +38,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
+from repowise.server.mcp_server._directory import _git_rows_under
 from repowise.server.mcp_server._edit_sites import reference_edit_set
 from repowise.server.mcp_server._helpers import _decision_body
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
@@ -63,6 +65,18 @@ from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 _MAX_CANDIDATES = 3
 _MAX_DECISION_HISTORY = 2
 
+#: Owners a directory card names, by how many of its files each owns.
+_MAX_DIRECTORY_OWNERS = 3
+
+#: The per-file git columns a directory card reads.
+_DIRECTORY_COLUMNS = (
+    GitMetadata.file_path,
+    GitMetadata.primary_owner_name,
+    GitMetadata.last_commit_at,
+    GitMetadata.is_hotspot,
+    GitMetadata.top_authors_json,
+)
+
 
 @dataclass
 class CardState:
@@ -71,6 +85,7 @@ class CardState:
     query: TargetQuery
     resolved: ResolvedTarget
     data: dict[str, Any] = field(default_factory=dict)
+    _dir_rows: list[Any] | None = field(default=None, init=False, repr=False)
 
     @property
     def session(self) -> AsyncSession:
@@ -102,10 +117,25 @@ class CardState:
 
     @property
     def git_path(self) -> str | None:
-        """The path git rows are keyed on: the module's directory for a module."""
-        if self.resolved.target_type == "module" and self.page:
-            return self.page.target_path
+        """The file git rows are keyed on; None for a module."""
         return self.resolved.file_path
+
+    @property
+    def dir_path(self) -> str | None:
+        """A module's directory, whose git facts come from the files under it."""
+        return self.resolved.dir_path if self.resolved.target_type == "module" else None
+
+    async def dir_rows(self) -> list[Any]:
+        """The git rows of the files under ``dir_path``, read once per card."""
+        if self._dir_rows is None:
+            self._dir_rows = await _git_rows_under(
+                self.session,
+                self.repo_id,
+                self.dir_path or "",
+                self.query.exclude_spec,
+                *_DIRECTORY_COLUMNS,
+            )
+        return self._dir_rows
 
     @property
     def skeleton_plus(self) -> bool:
@@ -126,6 +156,8 @@ def _identity_section(card: CardState) -> None:
     data["type"] = resolved.target_type
     if resolved.target_type == "file" and resolved.file_path:
         data["path"] = path_identity(resolved.file_path)
+    if resolved.target_type == "module" and card.page is None:
+        data["index_status"] = "directory_without_module_page"
     meta = resolved.live_file_meta
     if meta is not None:
         data["index_status"] = "live_file_without_wiki_page"
@@ -188,6 +220,9 @@ async def _triage_section(card: CardState) -> None:
     * ``decision_records``: titles only, pointing to ``get_why``; inlining
       rationale would bloat every cached response.
     """
+    if card.dir_path is not None:
+        await _directory_triage(card)
+        return
     triage_path = card.git_path
     if not triage_path:
         return
@@ -215,6 +250,16 @@ async def _triage_section(card: CardState) -> None:
     # latency on every card. Returns titles; get_why has the rationale.
     if card.wants("decisions"):
         await _governing_decision_titles(card, triage_path)
+
+
+async def _directory_triage(card: CardState) -> None:
+    """A directory has no hotspot bit or fix history of its own; it names how
+    many files under it are hotspots, the cue to call get_risk on them."""
+    hotspots = sum(1 for r in await card.dir_rows() if r.is_hotspot)
+    if hotspots:
+        card.data["hotspot_files"] = hotspots
+    if card.wants("decisions"):
+        await _governing_decision_titles(card, card.dir_path or card.target)
 
 
 async def _governing_decision_titles(card: CardState, triage_path: str) -> None:
@@ -253,6 +298,9 @@ async def _git_meta_row(card: CardState, git_path: str | None) -> GitMetadata | 
 async def _ownership_section(card: CardState) -> None:
     if not card.default_on("ownership"):
         return
+    if card.dir_path is not None:
+        card.data["ownership"] = _directory_ownership(await card.dir_rows())
+        return
     ownership: dict[str, Any] = {}
     meta = await _git_meta_row(card, card.git_path)
     if meta:
@@ -279,6 +327,28 @@ async def _ownership_section(card: CardState) -> None:
     card.data["ownership"] = ownership
 
 
+def _directory_ownership(rows: list[Any]) -> dict[str, Any]:
+    """Who owns the files under a directory, counted in files.
+
+    Each file stores only its own primary owner and shares, so a commit share,
+    contributor count or bus factor for the directory cannot be derived: an
+    author's commits on two files may be one commit.
+    """
+    counts = Counter(r.primary_owner_name for r in rows if r.primary_owner_name)
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ownership: dict[str, Any] = {
+        "files_with_history": len(rows),
+        "owners_by_files": [
+            {"name": name, "files": n} for name, n in ranked[:_MAX_DIRECTORY_OWNERS]
+        ],
+        "basis": "files each person is primary owner of; history is per file, so no "
+        "directory commit share, contributor count or bus factor",
+    }
+    if len(ranked) > _MAX_DIRECTORY_OWNERS:
+        ownership["owners_total"] = len(ranked)
+    return ownership
+
+
 def _agent_provenance(card: CardState, meta: GitMetadata, ownership: dict[str, Any]) -> None:
     """Agent provenance, only when agent-attributed commits exist and
     attribution is on. The share is of commits with a known source, with its
@@ -303,6 +373,9 @@ def _agent_provenance(card: CardState, meta: GitMetadata, ownership: dict[str, A
 async def _last_change_section(card: CardState) -> None:
     if not card.default_on("last_change"):
         return
+    if card.dir_path is not None:
+        card.data["last_change"] = await _directory_last_change(card)
+        return
     last_change: dict[str, Any] = {}
     meta = await _git_meta_row(card, card.git_path)
     if meta:
@@ -316,6 +389,38 @@ async def _last_change_section(card: CardState) -> None:
         last_change["author"] = None
         last_change["days_ago"] = None
     card.data["last_change"] = last_change
+
+
+async def _directory_last_change(card: CardState) -> dict[str, Any]:
+    """The newest commit under a directory: its date and the file it touched.
+
+    ``author`` is the author whose own newest commit on that file is at that
+    moment, and is absent when no stored author matches.
+    """
+    dated = [r for r in await card.dir_rows() if r.last_commit_at]
+    if not dated:
+        return {"date": None, "days_ago": None}
+    newest = max(dated, key=lambda r: (_as_utc(r.last_commit_at), r.file_path))
+    last_change: dict[str, Any] = {
+        "date": newest.last_commit_at.isoformat(),
+        "path": newest.file_path,
+        "days_ago": await _days_since_last_change(
+            card.session, card.repo_id, newest.last_commit_at, card.query.as_of_ts
+        ),
+    }
+    author = _author_at(newest.top_authors_json, _as_utc(newest.last_commit_at))
+    if author:
+        last_change["author"] = author
+    return last_change
+
+
+def _author_at(top_authors_json: str | None, moment: datetime) -> str | None:
+    """The stored author whose newest commit on the file is at *moment*."""
+    with contextlib.suppress(TypeError, ValueError):
+        for a in json.loads(top_authors_json or "[]"):
+            if int(a.get("last_commit_ts") or -1) == int(moment.timestamp()):
+                return a.get("name")
+    return None
 
 
 async def _changes_section(card: CardState) -> None:

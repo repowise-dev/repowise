@@ -13,20 +13,22 @@ from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import DecisionRecord, GitMetadata
+from repowise.core.persistence.models import DecisionRecord
 from repowise.core.precedent.currency import describe_decision_currency
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
+from repowise.server.mcp_server._directory import (
+    _build_directory_origin,
+    _indexed_under,
+    _rows_under,
+)
 from repowise.server.mcp_server._episodes import episode_evidence
 from repowise.server.mcp_server._helpers import (
-    LIKE_ESCAPE,
-    _build_directory_origin,
     _build_origin_story,
     _compute_alignment,
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
-    escape_like,
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -179,37 +181,6 @@ def _origin_for(
     if git_meta is not None:
         return _build_origin_story(path, git_meta, governing)
     return _build_directory_origin(path.rstrip("/"), rows_under, governing)
-
-
-def _dir_prefix(path: str) -> str:
-    """*path* as a directory prefix of indexed file paths; ``""`` for the root."""
-    clean = path.replace("\\", "/").removeprefix("./").strip("/")
-    return "" if clean in ("", ".") else clean + "/"
-
-
-def _rows_under(path: str, all_git_meta: list, exclude_spec: Any) -> list:
-    """The git rows of the non-excluded files under *path* as a directory."""
-    prefix = _dir_prefix(path)
-    return [
-        m
-        for m in all_git_meta
-        if m.file_path.startswith(prefix) and not is_excluded(m.file_path, exclude_spec)
-    ]
-
-
-async def _indexed_under(
-    session: Any, repository_id: Any, path: str, exclude_spec: Any
-) -> bool:
-    """Whether a non-excluded indexed file lives under *path*, without loading rows."""
-    res = await session.execute(
-        select(GitMetadata.file_path).where(
-            GitMetadata.repository_id == repository_id,
-            GitMetadata.file_path.like(
-                f"{escape_like(_dir_prefix(path))}%", escape=LIKE_ESCAPE
-            ),
-        )
-    )
-    return any(not is_excluded(fp, exclude_spec) for fp in res.scalars())
 
 
 def _records_naming_path(all_decisions: list, path: str) -> list:

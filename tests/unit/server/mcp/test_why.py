@@ -342,7 +342,7 @@ async def test_get_why_target_cards_roll_up_a_directory(setup_mcp):
 def test_directory_origin_lists_a_shared_commit_once():
     from types import SimpleNamespace
 
-    from repowise.server.mcp_server._helpers import _build_directory_origin
+    from repowise.server.mcp_server._directory import _build_directory_origin
 
     shared = '[{"sha": "s1", "date": "2026-01-02", "message": "m", "author": "a"}]'
     metas = [
@@ -360,14 +360,14 @@ def test_directory_rows_skip_excluded_files_and_sibling_prefixes():
 
     import pathspec
 
-    from repowise.server.mcp_server.tool_why.path_mode import _rows_under
+    from repowise.server.mcp_server._directory import _rows_under
 
     rows = [
         SimpleNamespace(file_path=p)
         for p in ("src/db/models.py", "src/dbx/other.py", "src/db/vendor/lib.py")
     ]
     spec = pathspec.PathSpec.from_lines("gitwildmatch", ["vendor/"])
-    for query in ("src/db", "src/db/", "./src/db", "src\db"):
+    for query in ("src/db", "src/db/", "./src/db", r"src\db"):
         assert [m.file_path for m in _rows_under(query, rows, spec)] == ["src/db/models.py"]
     assert len(_rows_under(".", rows, None)) == 3
 
