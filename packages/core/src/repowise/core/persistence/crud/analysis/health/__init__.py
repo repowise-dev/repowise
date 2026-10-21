@@ -50,6 +50,7 @@ from .snapshots import (
     _doc_drift_count,  # noqa: F401
     get_health_snapshot_file_counts,
     get_health_snapshot_headline,
+    get_latest_snapshot_analyzer_version,
     list_health_snapshots,
     save_health_snapshot,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "get_health_snapshot_file_counts",
     "get_health_snapshot_headline",
     "get_health_summary",
+    "get_latest_snapshot_analyzer_version",
     "get_perf_coverage",
     "get_scored_file_paths",
     "health_exclude_spec",

@@ -174,6 +174,10 @@ Every id with its threshold and weight:
 - Every `init`, `update` and `health --recompute` stores a snapshot (the last 50 per
   repository); `repowise health --trend` prints the last 10 with declining, predicted
   decline and history-drag alerts ([rules](../architecture/code-health.md#8-trends-trendspy)).
+- `analyzer_version` names the scoring a number came from, in `health --format json`,
+  `health check --format json`, each `--trend` row and `get_health`'s
+  `_meta.health_analysis`. A score that moves while it changes may reflect new scoring,
+  not new code; it is `null` (or absent on MCP) for analysis stored before it was recorded.
 - Coverage reports feed the coverage detectors (`repowise coverage add coverage.lcov`);
   with none, only `untested_hotspot` and the reach-tier `untested_complexity` (hidden by
   default) run, and no file is treated as uncovered

@@ -144,9 +144,12 @@ def render_live(scores: LiveScores, fmt: str) -> None:
 
 
 def live_payload(scores: LiveScores) -> dict[str, Any]:
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     change = score_change(scores.rows)
     return {
         "basis": "live",
+        "analyzer_version": HEALTH_ANALYZER_VERSION,
         "history_source": "index" if scores.indexed else "none",
         "against": scores.against,
         "files": [

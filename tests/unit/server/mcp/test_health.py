@@ -3027,3 +3027,30 @@ async def test_workspace_rows_count_the_files_the_overview_counts(setup_mcp, hea
 
     overview = await _build_code_health(session, SimpleNamespace(id=health_data))
     assert await _code_files(session, health_data) == overview["code_files"]
+
+
+@pytest.mark.asyncio
+async def test_meta_names_the_analyzer_the_stored_scores_came_from(
+    setup_mcp, session, health_data
+):
+    """Both modes report the newest snapshot's stamp, and omit it when none recorded it."""
+    from repowise.core.persistence.crud import save_health_snapshot
+    from repowise.server.mcp_server import get_health
+
+    assert "analyzer_version" not in (await get_health(only=["kpis"]))["_meta"]["health_analysis"]
+    await save_health_snapshot(
+        session,
+        health_data,
+        hotspot_health=5.0,
+        average_health=6.0,
+        worst_performer_path=None,
+        worst_performer_score=None,
+    )
+    await session.flush()
+
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    scoped = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    dashboard = await get_health(only=["kpis"])
+    for result in (scoped, dashboard):
+        assert result["_meta"]["health_analysis"]["analyzer_version"] == HEALTH_ANALYZER_VERSION

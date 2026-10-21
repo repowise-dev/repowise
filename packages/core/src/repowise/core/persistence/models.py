@@ -2521,6 +2521,9 @@ class HealthSnapshot(Base):
     maintainability_average: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Stored documentation drift findings at this instant. NULL before recorded.
     doc_drift_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``HEALTH_ANALYZER_VERSION`` of the writer, so a trend can tell a scoring
+    # change from a code change. NULL on snapshots taken before it was recorded.
+    analyzer_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class SnapshotRun(Base):

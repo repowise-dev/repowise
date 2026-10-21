@@ -50,6 +50,9 @@ def test_score_compares_the_file_on_disk_with_a_revision(tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout[result.stdout.index("{") :])
     assert payload["history_source"] == "none"
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    assert payload["analyzer_version"] == HEALTH_ANALYZER_VERSION
     row = payload["files"][0]
     assert row["path"] == "app.py"
     assert row["head_score"] > row["base_score"]

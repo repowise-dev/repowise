@@ -51,6 +51,7 @@ from .persist import (
     _load_queue_counts,
     _load_recommendations,
     _load_short_history,
+    _load_stored_analyzer_version,
     _load_stored_report,
     _persist_health,
 )
@@ -346,6 +347,11 @@ class _Options:
     trend_view: bool
 
     @property
+    def live(self) -> bool:
+        """The report is analysed in-process rather than read from the index."""
+        return self.recompute or self.generate_code is not None
+
+    @property
     def controls_set(self) -> bool:
         """``--scope`` or ``--counts`` asks for other than the stored reading."""
         return (
@@ -434,7 +440,7 @@ def _render_stored_view(repo_path: Path, status: Any, opts: _Options) -> bool:
 
 def _load_report(repo_path: Path, opts: _Options) -> tuple[Any, set[str], dict[str, str]]:
     """``(report, hotspot paths, language by path)``, recomputed or as stored."""
-    if opts.recompute or opts.generate_code is not None:
+    if opts.live:
         # Written back only for a whole-repo table: json/md are read by scripts
         # and CI, and a file or module run is an inspection, not repo state.
         return _recompute_report(
@@ -509,12 +515,21 @@ def _scoped_suggestions(report: Any, opts: _Options) -> list[Any]:
 def _render_json(
     repo_path: Path, report: Any, metrics_sorted: list[Any], findings: list[Any], opts: _Options
 ) -> None:
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     excluded = excluded_types()
     short_history = _load_short_history(repo_path)
     click.echo(
         json.dumps(
             {
                 "kpis": report.kpis,
+                # Which scoring produced these numbers: a score that moves
+                # across a version change may not mean the code changed.
+                "analyzer_version": (
+                    HEALTH_ANALYZER_VERSION
+                    if opts.live
+                    else _load_stored_analyzer_version(repo_path)
+                ),
                 "scope": parse_scope(opts.scope),
                 "counts": parse_counts(opts.counts),
                 # Findings, causes, plans and Fix first items, as every

@@ -438,8 +438,11 @@ def render_gitlab(result: GateResult) -> list[dict]:
 
 def as_json(result: GateResult, delta: ChangeHealthDelta, *, label: str) -> dict[str, Any]:
     """The JSON document: the comparison's scope, every finding, the gate."""
+    from .health import HEALTH_ANALYZER_VERSION
+
     return {
         "revspec": label,
+        "analyzer_version": HEALTH_ANALYZER_VERSION,
         "status": delta.status,
         "explanation": delta.explanation,
         "scope": delta.scope.as_dict(),

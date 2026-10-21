@@ -71,6 +71,7 @@ def _run(monkeypatch, *args: str) -> tuple[str, str]:
             patch.object(health_module, "_load_fix_first", return_value=None),
             patch.object(health_module, "_load_queue_counts", return_value=None),
             patch.object(health_module, "_load_short_history", return_value=set()),
+            patch.object(health_module, "_load_stored_analyzer_version", return_value=41),
             patch.object(health_module, "console", console),
         ):
             resolve.return_value = SimpleNamespace(
@@ -86,6 +87,8 @@ def test_json_keeps_withheld_findings_so_it_explains_its_score(monkeypatch) -> N
     payload = json.loads(stdout[stdout.index("{"):])
     by_kind = {f["biomarker_type"]: f for f in payload["findings"]}
     assert set(by_kind) == {"complex_method", "dry_violation"}
+    # A stored reading names the analyzer its snapshot recorded, not this binary's.
+    assert payload["analyzer_version"] == 41
     assert by_kind["dry_violation"]["withheld"] is True
     assert "withheld" not in by_kind["complex_method"]
 

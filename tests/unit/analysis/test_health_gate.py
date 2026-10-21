@@ -204,6 +204,9 @@ def test_json_carries_the_gate_shape_policy_rules_read():
     d = delta(finding())
     doc = as_json(evaluate(d), d, label="main...HEAD")
     json.dumps(doc)
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    assert doc["analyzer_version"] == HEALTH_ANALYZER_VERSION
     gate = doc["gate"]
     assert gate["passed"] is False and gate["verdict"] == "fail"
     (row,) = gate["failing"]
