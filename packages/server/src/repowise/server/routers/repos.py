@@ -385,15 +385,7 @@ async def get_repo_stats(
     """Get aggregate stats for a repository."""
     await _get_repo_or_404(session, repo_id)
 
-    # File nodes only: `graph_nodes` also holds symbol rows.
-    file_count = await _scalar_or(
-        session,
-        select(func.count(GraphNode.id)).where(
-            GraphNode.repository_id == repo_id,
-            GraphNode.node_type == "file",
-        ),
-        0,
-    )
+    file_count = await crud.count_files(session, repo_id)
     symbol_count = await crud.count_symbols(session, repo_id)
     entry_point_count = await _scalar_or(
         session,

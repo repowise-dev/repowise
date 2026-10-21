@@ -236,13 +236,20 @@ async def test_stats_file_count_excludes_symbol_nodes(client: AsyncClient, sessi
                 )
             )
         session.add_all(make_wiki_symbol(repo.id, f"src/mod{i}.py", f"sym{j}") for j in range(5))
+    # Import targets are file rows too: a third-party package and a path an
+    # import names that traversal never parsed.
+    for node_id, language in [("external:requests", "external"), ("src/generated", "unknown")]:
+        session.add(
+            GraphNode(repository_id=repo.id, node_id=node_id, node_type="file", language=language)
+        )
     await session.commit()
 
     data = (await client.get(f"/api/repos/{repo.id}/stats")).json()
     overview = (await client.get(f"/api/repos/{repo.id}/overview-summary")).json()
     symbols = (await client.get("/api/symbols", params={"repo_id": repo.id})).json()
 
-    assert data["file_count"] == 2  # not 14
+    assert data["file_count"] == 2  # not 16, not 4
+    assert overview["stats"]["file_count"] == 2
     # One figure, the symbol index's row count: not 12 symbol nodes, not 12 emissions.
     assert data["symbol_count"] == 10
     assert overview["stats"]["symbol_count"] == 10

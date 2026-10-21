@@ -36,7 +36,6 @@ class TechStackItem:
 class KeyModule:
     name: str  # display name, e.g. "src/api"
     purpose: str  # short description (~80 chars)
-    file_count: int
     owner: str | None
 
 

@@ -72,6 +72,7 @@ workspace overlays, MCP responses, and CLI output.
 | Symbol node | Graph node for an extracted symbol. | `GraphBuilder.add_file()` | `{node_type: "symbol", kind: "function", name: "main"}` |
 | External node | Node for third-party or unresolvable dependencies. | Import resolution paths | `external:react` |
 | Synthetic module symbol | Symbol node for top-level calls in a file. | `GraphBuilder.add_file()` | `src/app.py::__module__` |
+| File count | The "files" figure on `repowise status`, the dashboard, Stats and workspace views: one per file the index read, in any language. Import-target nodes (third-party packages, and paths an import names that traversal never parsed) are not counted. Health's "code files" is the code-language subset of these, inside the health exclude rules. | `count_files()` | `6,363 files` |
 | Symbol count | The "symbols" figure on `repowise status`, the dashboard, workspace views and `get_overview`: one per distinct symbol id in the symbol index. An overload set counts once, and the synthetic module symbol is not counted. | `count_symbols()` | `76,924 symbols` |
 | `defines` edge | File-to-symbol containment. | `GraphBuilder.add_file()` | `src/app.py -> src/app.py::main` |
 | `imports` edge | File-to-file import relationship. | `GraphBuilder.build()` | `src/app.py -> src/settings.py` |

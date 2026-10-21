@@ -86,7 +86,7 @@ def _full_data(**kw) -> EditorFileData:
         "indexed_at": "2026-10-19",
         "indexed_commit": "a1b2c3d",
         "architecture_summary": "A demo service.",
-        "key_modules": [KeyModule(name="src/api", purpose="HTTP layer", file_count=4, owner=None)],
+        "key_modules": [KeyModule(name="src/api", purpose="HTTP layer", owner=None)],
         "entry_points": ["src/main.py"],
         "hotspots": [
             HotspotFile(

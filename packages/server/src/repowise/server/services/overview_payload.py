@@ -89,12 +89,7 @@ async def docs_split(session: AsyncSession, repo_id: str) -> dict:
 
 async def stat_strip(session: AsyncSession, repo_id: str) -> dict:
     """Graph, docs, dead-export and hotspot counts, in payload order."""
-    file_count = await _count(
-        session,
-        select(func.count(GraphNode.id)).where(
-            GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
-        ),
-    )
+    file_count = await crud.count_files(session, repo_id)
     symbol_count = await crud.count_symbols(session, repo_id)
     entry_point_count = await _count(
         session,

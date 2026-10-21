@@ -170,7 +170,7 @@ class EditorFileDataFetcher:
         # Fetch module pages sorted by their target_path (proxy for PageRank
         # ordering is applied by joining with graph_nodes).
         pages_result = await self._session.execute(
-            select(Page, GraphNode.pagerank, GraphNode.symbol_count)
+            select(Page, GraphNode.pagerank)
             .join(
                 GraphNode,
                 (GraphNode.repository_id == Page.repository_id)
@@ -194,7 +194,7 @@ class EditorFileDataFetcher:
         owner_map = await self._get_owners_for_paths(target_paths)
 
         modules: list[KeyModule] = []
-        for page, _pagerank, symbol_count in rows:
+        for page, _pagerank in rows:
             skip_preamble = _is_structure_only(page)
             purpose = _extract_sentences(
                 page.content or "", max_sentences=1, skip_preamble=skip_preamble
@@ -206,7 +206,6 @@ class EditorFileDataFetcher:
                 KeyModule(
                     name=page.target_path,
                     purpose=purpose,
-                    file_count=symbol_count or 0,
                     owner=owner_map.get(page.target_path),
                 )
             )

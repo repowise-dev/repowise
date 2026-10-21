@@ -1024,6 +1024,9 @@ class TestQueryRepoStats:
                 ("src/b.py::qux", "symbol", "python"),
                 ("src/b.py::quux", "symbol", "python"),
                 ("src/c.py::corge", "symbol", "python"),
+                # Import targets: a package and a path traversal never parsed.
+                ("external:os", "file", "external"),
+                ("src/generated", "file", "unknown"),
             ],
         )
 
@@ -1060,6 +1063,21 @@ class TestQueryRepoStats:
         top_language = workspace._query_top_language(db_path)
 
         assert top_language == "python"
+
+    def test_top_language_ignores_import_targets(self, tmp_path: Path) -> None:
+        """A repo importing more packages than it has files is not written in "external"."""
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(
+            db_path,
+            rows=[],
+            graph_nodes=[
+                ("src/a.py", "file", "python"),
+                ("external:os", "file", "external"),
+                ("external:sys", "file", "external"),
+            ],
+        )
+
+        assert workspace._query_top_language(db_path) == "python"
 
 
 # ---------------------------------------------------------------------------

@@ -65,6 +65,15 @@ async def _seed(session, repo_id: str, *, files: int, symbols_per_file: int = 3)
         session.add_all(
             make_wiki_symbol(repo_id, f"src/mod{i}.py", f"sym{j}") for j in range(symbols_per_file)
         )
+        # An import target per file, also stored as a file row: not a file the index read.
+        session.add(
+            GraphNode(
+                repository_id=repo_id,
+                node_id=f"external:pkg{i}",
+                node_type="file",
+                language="external",
+            )
+        )
         session.add(
             GitMetadata(
                 repository_id=repo_id,
@@ -137,7 +146,7 @@ async def test_file_count_excludes_symbol_nodes(client: AsyncClient, session) ->
     assert resp.status_code == 200
     row = resp.json()["repos"][0]
 
-    assert row["file_count"] == 4  # not 20
+    assert row["file_count"] == 4  # not 24: symbol and import-target rows are not files
     assert row["symbol_count"] == 12  # not 16: `__module__` nodes are not symbols
     assert row["entry_point_count"] == 1
 

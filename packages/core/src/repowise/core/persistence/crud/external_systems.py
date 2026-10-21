@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...analysis.external_systems.links import (
     EXTERNAL_NODE_PREFIX,
+    IMPORT_TARGET_LANGUAGES,
     declaration_name_candidates,
 )
 from ..models import (
@@ -276,6 +277,28 @@ async def count_symbols(session: AsyncSession, repository_id: str) -> int:
     """:func:`count_symbols_by_repo` for one repository."""
     n = await session.scalar(
         select(func.count(WikiSymbol.id)).where(WikiSymbol.repository_id == repository_id)
+    )
+    return int(n or 0)
+
+
+def indexed_file() -> ColumnElement[bool]:
+    """Graph rows for files the index read, the population every "files" count uses.
+
+    ``node_type == "file"`` alone also holds import targets: third-party
+    packages and paths an edge names that traversal never parsed.
+    """
+    return and_(
+        GraphNode.node_type == "file",
+        GraphNode.language.notin_(IMPORT_TARGET_LANGUAGES),
+    )
+
+
+async def count_files(session: AsyncSession, repository_id: str) -> int:
+    """Indexed files in one repository: the figure every surface calls "files"."""
+    n = await session.scalar(
+        select(func.count(GraphNode.id)).where(
+            GraphNode.repository_id == repository_id, indexed_file()
+        )
     )
     return int(n or 0)
 

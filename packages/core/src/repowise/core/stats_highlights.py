@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import Any
 
+from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
 from repowise.core.test_paths import is_test_related_path
 
 Row = Mapping[str, Any]
@@ -94,10 +95,11 @@ def _offset_minutes(raw: Any) -> int | None:
         return None
 
 
-def _is_external(node: Row) -> bool:
+def _is_import_target(node: Row) -> bool:
+    """The row form of ``crud.indexed_file``, negated: not a file the index read."""
     node_id = str(node.get("node_id") or node.get("id") or "")
     return (
-        node.get("language") == "external"
+        node.get("language") in IMPORT_TARGET_LANGUAGES
         or node_id.startswith("external:")
         or node.get("external_system_id") is not None
     )
@@ -125,7 +127,7 @@ def file_mix(file_nodes: Iterable[Row]) -> dict[str, Any]:
     code_paths: list[str] = []
     for node in file_nodes:
         lang = node.get("language")
-        if not lang or _is_external(node):
+        if not lang or _is_import_target(node):
             continue
         spec = REGISTRY.get(lang)
         if spec is not None and spec.is_code:
@@ -152,12 +154,12 @@ def build_scale(
 ) -> dict[str, Any]:
     """Counts and NLOC, plus the :func:`file_mix` languages and module count.
 
-    ``file_nodes`` are graph file nodes; external dependency nodes are dropped
-    so the file count describes the repo. ``symbol_count`` is
+    ``file_nodes`` are graph file nodes; import targets are dropped so the
+    file count is ``crud.count_files``. ``symbol_count`` is
     ``crud.count_symbols``, the figure every other surface shows.
     """
     file_nodes = list(file_nodes)
-    file_count = sum(1 for node in file_nodes if not _is_external(node))
+    file_count = sum(1 for node in file_nodes if not _is_import_target(node))
 
     total_nloc = 0
     test_nloc = 0

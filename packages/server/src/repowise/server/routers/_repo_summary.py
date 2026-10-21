@@ -13,7 +13,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.persistence.crud import count_symbols_by_repo
+from repowise.core.persistence.crud import count_symbols_by_repo, indexed_file
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -35,14 +35,15 @@ def _fresh_case(column: Any, value: Any) -> Any:
 
 
 async def _file_figures(session: AsyncSession) -> _Figures:
-    # `graph_nodes` also holds symbol rows, so every count is scoped to files.
+    # `graph_nodes` also holds symbol and import-target rows; `indexed_file` is
+    # the population `crud.count_files` counts.
     result = await session.execute(
         select(
             GraphNode.repository_id,
             func.count(GraphNode.id),
             _fresh_case(GraphNode.is_entry_point, True),
         )
-        .where(GraphNode.node_type == "file")
+        .where(indexed_file())
         .group_by(GraphNode.repository_id)
     )
     return [
