@@ -27,6 +27,10 @@ what the system prompt already tells the model to do.
 
 from __future__ import annotations
 
+from ..ingestion.git_indexer._constants import (
+    PRIOR_DEFECT_WINDOW_DAYS,
+    PRIOR_DEFECT_WINDOW_LABEL,
+)
 from .languages import sanitize_language_code
 
 ENGLISH_LABELS: dict[str, str] = {
@@ -77,7 +81,12 @@ ENGLISH_LABELS: dict[str, str] = {
     "history_owner": "**{owner}** is its primary maintainer, at {pct}% of commits.",
     "history_owner_lines": "**{owner}** wrote {line}% of its current lines ({commit}% of commits).",
     "history_owner_lines_only": "**{owner}** wrote {line}% of its current lines.",
-    "history_fixes": "{count} of those commits fixed a bug.",
+    # Its own sentence, never "of those commits": the fix count covers the
+    # prior-defect window, not the 90 days the commit sentence ends on.
+    "history_fixes": "{count} {fix_word} in the last {window}.",
+    "fix_commit_singular": "bug-fix commit",
+    "fix_commit_plural": "bug-fix commits",
+    "fix_window": PRIOR_DEFECT_WINDOW_LABEL,
     "history_hotspot": "It is one of the repository's change hotspots.",
     "history_stable": "It has been stable: nothing has changed it lately.",
     "commit_singular": "commit",
@@ -221,7 +230,11 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
             "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben ({commit}% der Commits)."
         ),
         "history_owner_lines_only": "**{owner}** hat {line}% ihrer aktuellen Zeilen geschrieben.",
-        "history_fixes": "{count} dieser Commits haben einen Fehler behoben.",
+        "history_fixes": "{count} {fix_word} in den letzten {window}.",
+        "fix_commit_singular": "Bugfix-Commit",
+        "fix_commit_plural": "Bugfix-Commits",
+        # Dative after "in den letzten"; same months as PRIOR_DEFECT_WINDOW_LABEL.
+        "fix_window": f"{PRIOR_DEFECT_WINDOW_DAYS // 30} Monaten",
         "history_hotspot": "Sie gehört zu den Änderungs-Hotspots des Repositorys.",
         "history_stable": "Sie ist stabil: zuletzt hat sich nichts an ihr geändert.",
         "commit_singular": "Commit",

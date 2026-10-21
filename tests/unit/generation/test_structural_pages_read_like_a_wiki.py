@@ -108,7 +108,9 @@ class TestHistory:
         assert "27 commits in its history, 9 in the last 90 days." in page
         assert "Ada Lovelace" in page
         assert "62%" in page
-        assert "12 of those commits fixed a bug." in page
+        assert "12 bug-fix commits in the last 6 months." in page
+        # The fix count spans 6 months, not the 90 days the sentence before it ends on.
+        assert "of those commits" not in page
         assert "change hotspots" in page
 
     def test_a_blame_owner_is_credited_with_lines_not_commits(self, generator):
@@ -147,7 +149,15 @@ class TestHistory:
         )
 
         assert "## History" in page
-        assert "fixed a bug" not in page
+        assert "bug-fix" not in page
+
+    def test_one_fix_is_not_described_in_the_plural(self, generator):
+        page = render(
+            generator,
+            _context(git_metadata={"commit_count_total": 3, "prior_defect_count": 1}),
+        )
+
+        assert "1 bug-fix commit in the last 6 months." in page
 
     def test_one_commit_is_not_described_in_the_plural(self, generator):
         page = render(generator, _context(git_metadata={"commit_count_total": 1}))
@@ -607,7 +617,7 @@ Also defined: `log = structlog.get_logger(__name__)`.
 
 27 commits in its history, 9 in the last 90 days. The last landed on 2026-08-17. \
 **Ada Lovelace** is its primary maintainer, at 62% of commits. \
-12 of those commits fixed a bug. It is one of the repository's change hotspots.
+12 bug-fix commits in the last 6 months. It is one of the repository's change hotspots.
 
 ## Changes together with
 

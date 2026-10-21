@@ -16,6 +16,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ingestion.git_indexer._constants import PRIOR_DEFECT_WINDOW_LABEL
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.error_hints import describe_provider_error
 
@@ -377,6 +378,7 @@ class PerTypeGenerationMixin:
                 concept_rows=rows,
                 concept_omitted=omitted,
                 signals=signals,
+                fix_window=PRIOR_DEFECT_WINDOW_LABEL,
             )
             page.digest = re.sub(r"\n{3,}", "\n\n", digest).strip()
             return page

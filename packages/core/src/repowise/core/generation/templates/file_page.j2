@@ -162,7 +162,7 @@ _{{ labels.and_more.format(count=paths | length - 25) }}_
     that has been moved, so the fixes belong to a path this page no longer
     describes. -#}
 {%- if git.get("prior_defect_count") and git.get("prior_defect_count") <= commits -%}
-{%- set _ = history.append(labels.history_fixes.format(count=git.get("prior_defect_count"))) -%}
+{%- set _ = history.append(labels.history_fixes.format(count=git.get("prior_defect_count"), fix_word=labels.fix_commit_plural if git.get("prior_defect_count") != 1 else labels.fix_commit_singular, window=labels.fix_window)) -%}
 {%- endif -%}
 {%- if git.get("is_hotspot") -%}
 {%- set _ = history.append(labels.history_hotspot) -%}
