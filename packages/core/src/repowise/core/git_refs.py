@@ -29,6 +29,7 @@ __all__ = [
     "default_base",
     "files_by_ref",
     "find_path_removal",
+    "git_common_dir",
     "is_ancestor",
     "is_shallow",
     "list_branches",
@@ -76,6 +77,23 @@ def toplevel(repo_path: str) -> str:
     to resolve it before it can match a path against an index.
     """
     return _read(repo_path, ["rev-parse", "--show-toplevel"])
+
+
+def git_common_dir(repo_path: str | Path) -> str:
+    """The repository's common git dir (shared across worktrees), ``""`` when not a repo."""
+    try:
+        p = Path(repo_path)
+        if not p.is_dir():
+            return ""
+        out = _read(str(p), ["rev-parse", "--git-common-dir"])
+        if not out:
+            return ""
+        common = Path(out)
+        if not common.is_absolute():
+            common = (p / common).resolve()
+        return str(common)
+    except Exception:
+        return ""
 
 
 def remote_name(repo_path: str) -> str:
@@ -189,9 +207,7 @@ def list_branches(repo_path: str) -> list[BranchRef]:
     return refs
 
 
-def ahead_behind_many(
-    repo_path: str, base: str, refs: Sequence[str]
-) -> dict[str, tuple[int, int]]:
+def ahead_behind_many(repo_path: str, base: str, refs: Sequence[str]) -> dict[str, tuple[int, int]]:
     """``(ahead, behind)`` against *base* for each full refname, in one call.
 
     ``%(ahead-behind:...)`` needs git 2.36, so an older git yields ``{}`` and
@@ -281,7 +297,9 @@ def commit_file_sets(repo_path: str, revspec: str | None) -> list[frozenset[str]
         return []
     # The commits of "a...b" are "a..b"; three dots is diff syntax, not a range.
     base, _sep, head = parts
-    out = _read(repo_path, ["log", "--reverse", "--format=%x00%H", "--name-only", f"{base}..{head}"])
+    out = _read(
+        repo_path, ["log", "--reverse", "--format=%x00%H", "--name-only", f"{base}..{head}"]
+    )
     sets: list[frozenset[str]] = []
     for block in out.split("\x00"):
         paths = {line.strip() for line in block.splitlines()[1:] if line.strip()}
@@ -372,7 +390,12 @@ def branch_with_path(repo_path: str, path: str) -> str | None:
     # tree, and the read only reads, so no guard is needed here.
     listing = _read(
         repo_path,
-        ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)", "refs/heads"],
+        [
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)%09%(HEAD)",
+            "refs/heads",
+        ],
     )
     # ``*`` marks the checked-out branch, whose tree the caller already read.
     rows = (line.partition("\t") for line in listing.splitlines())
