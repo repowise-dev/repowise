@@ -34,8 +34,8 @@ async def upsert_repository(
     *,
     name: str,
     local_path: str,
-    url: str = "",
-    default_branch: str = "main",
+    url: str | None = None,
+    default_branch: str | None = None,
     settings: dict | None = None,
     head_commit: str | None = None,
     stamp_head: bool = False,
@@ -50,6 +50,11 @@ async def upsert_repository(
     canonical row in the repo-local ``wiki.db``; both must share one id so
     per-repo session routing keyed by that id resolves consistently. Ignored
     when a row for ``local_path`` already exists (the existing id wins).
+
+    ``url``, ``default_branch`` and ``settings`` overwrite an existing row only
+    when passed; ``None`` keeps the stored value, so a command that only needs
+    the row never resets a ``master`` branch to ``main``. Pass ``""`` to clear
+    the url. A new row defaults to ``""`` and ``"main"``.
 
     ``head_commit`` records the git commit the index was built against — the
     value the MCP ``_meta`` freshness check compares to the live HEAD. A new
@@ -73,16 +78,18 @@ async def upsert_repository(
             id=repo_id or _new_uuid(),
             name=name,
             local_path=local_path,
-            url=url,
-            default_branch=default_branch,
+            url=url or "",
+            default_branch=default_branch or "main",
             settings_json=json.dumps(settings or {}),
             head_commit=resolved_head,
         )
         session.add(repo)
     else:
         repo.name = name
-        repo.url = url
-        repo.default_branch = default_branch
+        if url is not None:
+            repo.url = url
+        if default_branch is not None:
+            repo.default_branch = default_branch
         if settings is not None:
             repo.settings_json = json.dumps(keep_analysis_ran(repo.settings_json, settings))
         # Only advance the stamp when we could read a real commit; never blank
