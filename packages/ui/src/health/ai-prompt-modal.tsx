@@ -44,7 +44,7 @@ export function fileChatContext(path: string | null | undefined): ChatContext | 
  *  own label already names, and the hint for the active one says the rest. */
 const FLAVORS: { value: AiPromptFlavor; label: string; hint: string }[] = [
   { value: "generic", label: "Generic", hint: "Any agent: Copilot, Codex, ChatGPT, custom." },
-  { value: "claude-code", label: "Claude Code", hint: "Tuned for Claude Code's tools (Read / Edit / TodoWrite)." },
+  { value: "claude-code", label: "Claude Code", hint: "Tuned for Claude Code." },
   {
     value: "claude-code-mcp",
     label: "Claude + MCP",

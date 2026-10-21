@@ -163,7 +163,7 @@ describe("co-change prompt Verify", () => {
       expect(opening).not.toContain("the commits that touched them before");
     }
     expect(buildCoChangePairAiPrompt({ pair: pair(), flavor: "claude-code" })).toContain(
-      "Use Read, Grep and Glob on the files it names before planning edits",
+      "Open and search the files it names before planning edits",
     );
   });
 });
