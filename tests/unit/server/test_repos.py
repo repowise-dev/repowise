@@ -254,3 +254,58 @@ async def test_stats_file_count_excludes_symbol_nodes(client: AsyncClient, sessi
     assert data["symbol_count"] == 10
     assert overview["stats"]["symbol_count"] == 10
     assert symbols["total"] == 10
+
+
+@pytest.mark.asyncio
+async def test_create_on_a_registered_path_keeps_omitted_url_and_branch(
+    client: AsyncClient,
+) -> None:
+    repo_dir = Path(tempfile.mkdtemp()) / "legacy"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    first = {"index": False, "name": "legacy", "local_path": str(repo_dir)}
+    await client.post(
+        "/api/repos",
+        json={**first, "url": "https://github.com/acme/legacy", "default_branch": "master"},
+    )
+
+    again = await client.post("/api/repos", json={**first, "name": "renamed"})
+
+    data = again.json()
+    assert data["name"] == "renamed"
+    assert data["url"] == "https://github.com/acme/legacy"
+    assert data["default_branch"] == "master"
+
+    sent = await client.post("/api/repos", json={**first, "url": "", "default_branch": "dev"})
+    assert sent.json()["url"] == ""
+    assert sent.json()["default_branch"] == "dev"
+
+
+@pytest.mark.asyncio
+async def test_indexed_create_on_a_registered_path_keeps_omitted_fields_in_both_rows(
+    client: AsyncClient, app, tmp_path, monkeypatch
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Repository
+    from repowise.server.routers import repos as repos_module
+
+    async def _noop(job_id, app_state, session_factory_override=None):
+        return None
+
+    monkeypatch.setattr(repos_module, "execute_job", _noop)
+    repo_dir = tmp_path / "legacy"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    body = {"name": "legacy", "local_path": str(repo_dir), "index": True}
+    await client.post(
+        "/api/repos",
+        json={**body, "url": "https://github.com/acme/legacy", "default_branch": "master"},
+    )
+
+    data = (await client.post("/api/repos", json=body)).json()
+
+    assert (data["url"], data["default_branch"]) == ("https://github.com/acme/legacy", "master")
+    async with app.state.session_factory() as session:
+        row = (await session.execute(select(Repository))).scalar_one()
+    assert (row.url, row.default_branch) == ("https://github.com/acme/legacy", "master")

@@ -76,6 +76,19 @@ async def _get_repo_or_404(session: AsyncSession, repo_id: str) -> Repository:
     return repo
 
 
+def _sent_metadata(body: RepoCreate) -> tuple[str | None, str | None]:
+    """``(url, default_branch)`` the client sent; ``None`` for an omitted one.
+
+    An existing row keeps what the body leaves out, as PATCH does; the schema
+    defaults only fill a new row.
+    """
+    sent = body.model_fields_set
+    return (
+        body.url if "url" in sent else None,
+        body.default_branch if "default_branch" in sent else None,
+    )
+
+
 @router.post("", response_model=RepoResponse, status_code=201)
 async def create_repo(
     body: RepoCreate,
@@ -93,12 +106,14 @@ async def create_repo(
     """
     if not body.index:
         # Metadata-only registration: per-repo storage is created on first index.
+        existing = await crud.get_repository_by_path(session, body.local_path)
+        url, branch = _sent_metadata(body) if existing else (body.url, body.default_branch)
         repo = await crud.upsert_repository(
             session,
             name=body.name,
             local_path=body.local_path,
-            url=body.url,
-            default_branch=body.default_branch,
+            url=url,
+            default_branch=branch,
             settings=body.settings,
         )
         return RepoResponse.from_orm(repo)
@@ -123,8 +138,11 @@ async def create_repo(
         repo = await crud.get_repository(repo_session, repo_id)
         if repo is not None:
             repo.name = body.name
-            repo.url = body.url
-            repo.default_branch = body.default_branch
+            url, branch = _sent_metadata(body)
+            if url is not None:
+                repo.url = url
+            if branch is not None:
+                repo.default_branch = branch
             if body.settings is not None:
                 import json as _json
 
@@ -133,6 +151,7 @@ async def create_repo(
                 )
             await repo_session.flush()
             response = RepoResponse.from_orm(repo)
+            stored_url, stored_branch = repo.url, repo.default_branch
         else:  # pragma: no cover — the row was created two lines above
             raise HTTPException(status_code=500, detail="Repository registration failed")
 
@@ -143,8 +162,8 @@ async def create_repo(
             repo_id=repo_id,
             name=body.name,
             local_path=body.local_path,
-            url=body.url,
-            default_branch=body.default_branch,
+            url=stored_url,
+            default_branch=stored_branch,
             settings=body.settings,
         )
         await session.commit()
