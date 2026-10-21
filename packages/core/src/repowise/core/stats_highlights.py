@@ -97,12 +97,7 @@ def _offset_minutes(raw: Any) -> int | None:
 
 def _is_import_target(node: Row) -> bool:
     """The row form of ``crud.indexed_file``, negated: not a file the index read."""
-    node_id = str(node.get("node_id") or node.get("id") or "")
-    return (
-        node.get("language") in IMPORT_TARGET_LANGUAGES
-        or node_id.startswith("external:")
-        or node.get("external_system_id") is not None
-    )
+    return node.get("language") in IMPORT_TARGET_LANGUAGES
 
 
 # ---------------------------------------------------------------------------

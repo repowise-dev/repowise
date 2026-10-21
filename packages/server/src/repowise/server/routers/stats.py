@@ -179,7 +179,6 @@ async def stats_highlights(
         select(
             GraphNode.node_id,
             GraphNode.language,
-            GraphNode.external_system_id,
         ).where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file"),
     )
     metrics = await _rows(

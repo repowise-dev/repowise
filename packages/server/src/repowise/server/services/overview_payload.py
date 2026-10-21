@@ -164,7 +164,7 @@ async def language_mix(session: AsyncSession, repo_id: str) -> dict:
     that, count languages in SQL and fetch only code paths.
     """
     node_rows = await session.execute(
-        select(GraphNode.node_id, GraphNode.language, GraphNode.external_system_id).where(
+        select(GraphNode.node_id, GraphNode.language).where(
             GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
         )
     )
