@@ -388,6 +388,27 @@ def _is_coverage_hook(hook: object) -> bool:
     return "--coverage-only" in _hook_command(hook) and _is_repowise_hook(hook)
 
 
+def _health_gate_entry() -> dict:
+    from repowise.core.owned_paths import HEALTH_GATE_HOOK_COMMAND
+
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": HEALTH_GATE_HOOK_COMMAND,
+                # Above the gate's own 20 s budget, so the gate times out first and fails open.
+                "timeout": 30,
+                "statusMessage": "Running the repowise health gate...",
+            }
+        ],
+    }
+
+
+def _is_health_gate_hook(hook: object) -> bool:
+    return "--health-gate" in _hook_command(hook) and _is_repowise_hook(hook)
+
+
 def claude_code_augment_installed() -> bool:
     """Whether ``~/.claude/settings.json`` carries the repowise augment hooks."""
     path = _claude_code_settings_path()
@@ -409,9 +430,38 @@ def set_repo_coverage_hook(repo_path: Path, enabled: bool) -> Path | None:
     settings files. Returns the file when it changed, else ``None``. A file
     this leaves empty is removed.
     """
+    return _set_repo_local_hook(
+        repo_path, enabled, _COVERAGE_HOOK_EVENTS, _coverage_entry, _is_coverage_hook
+    )
+
+
+def set_repo_health_gate_hook(repo_path: Path, enabled: bool) -> Path | None:
+    """Add or remove the opt-in health-gate PreToolUse entry, as :func:`set_repo_coverage_hook`.
+
+    Repo-local for the same reason: only a repository that turned the gate on
+    pays a process start per shell call.
+    """
+    return _set_repo_local_hook(
+        repo_path, enabled, ("PreToolUse",), _health_gate_entry, _is_health_gate_hook
+    )
+
+
+def repo_health_gate_hook_installed(repo_path: Path) -> bool:
+    """Whether the repo's ``settings.local.json`` carries the health-gate entry."""
+    settings = _read_local_settings(claude_code_local_settings_path(repo_path), False)
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    entries = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if not isinstance(entries, list):
+        return False
+    return any(_is_health_gate_hook(h) for e in _own_entries(entries) for h in _hooks_of(e))
+
+
+def _set_repo_local_hook(
+    repo_path: Path, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> Path | None:
     path = claude_code_local_settings_path(repo_path)
     settings = _read_local_settings(path, enabled)
-    if settings is None or not _apply_coverage_entries(settings, enabled):
+    if settings is None or not _apply_local_entries(settings, enabled, events, entry, is_ours):
         return None
     return _write_or_remove(path, settings)
 
@@ -426,33 +476,38 @@ def _read_local_settings(path: Path, enabled: bool) -> dict | None:
         return None
 
 
-def _apply_coverage_entries(settings: dict, enabled: bool) -> bool:
+def _apply_local_entries(
+    settings: dict, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> bool:
     """Add or remove our entry under each event of *settings*, in place; whether it changed."""
     hooks = settings.setdefault("hooks", {}) if enabled else settings.get("hooks")
     if not isinstance(hooks, dict):
         return False
     changed = False
-    for event in _COVERAGE_HOOK_EVENTS:
-        changed = _apply_coverage_entry(hooks, event, enabled) or changed
+    for event in events:
+        changed = _apply_local_entry(hooks, event, enabled, entry, is_ours) or changed
     if not hooks:
         settings.pop("hooks", None)
     return changed
 
 
-def _apply_coverage_entry(hooks: dict, event: str, enabled: bool) -> bool:
+def _own_entries(entries: list) -> list:
+    """Ours only inside a shell-matcher entry: the same command elsewhere is someone else's."""
+    return [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
+
+
+def _apply_local_entry(hooks: dict, event: str, enabled: bool, entry, is_ours) -> bool:
     entries = hooks.setdefault(event, []) if enabled else hooks.get(event)
     if not isinstance(entries, list):
         return False
-    # Ours only inside a shell-matcher entry: the same command under any other
-    # matcher was written by someone else and is left alone.
-    own = [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
-    present = any(_is_coverage_hook(h) for e in own for h in _hooks_of(e))
+    own = _own_entries(entries)
+    present = any(is_ours(h) for e in own for h in _hooks_of(e))
     changed = enabled != present
     if changed and enabled:
-        entries.append(_coverage_entry())
+        entries.append(entry())
     elif changed:
         kept = list(own)
-        _strip_hooks(kept, _is_coverage_hook)
+        _strip_hooks(kept, is_ours)
         dropped = [e for e in own if not any(e is k for k in kept)]
         entries[:] = [e for e in entries if not any(e is d for d in dropped)]
     if not entries:

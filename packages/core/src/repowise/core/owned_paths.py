@@ -73,6 +73,11 @@ COVERAGE_HOOK_COMMAND = (
     "if command -v repowise-augment >/dev/null 2>&1; "
     "then exec repowise-augment --coverage-only; fi"
 )
+#: The opt-in Claude Code health gate (PreToolUse), in ``.claude/settings.local.json``.
+HEALTH_GATE_HOOK_COMMAND = (
+    "if command -v repowise-augment >/dev/null 2>&1; "
+    "then exec repowise-augment --health-gate; fi"
+)
 #: The Codex context and freshness hooks, in ``.codex/hooks.json``.
 CODEX_HOOK_COMMAND = "repowise-augment --client codex"
 #: What the cursor target writes above its block in a new rules file.
@@ -92,7 +97,7 @@ CURSOR_RULES_PREFIX = (
 _DISTILL_TAG = "REPOWISE_DISTILL"
 _COPILOT_OWNER_PAIR = ("<!-- REPOWISE_COPILOT_CLI:START -->", "<!-- REPOWISE_COPILOT_CLI:END -->")
 
-_HOOK_COMMANDS = (COVERAGE_HOOK_COMMAND, CODEX_HOOK_COMMAND)
+_HOOK_COMMANDS = (COVERAGE_HOOK_COMMAND, HEALTH_GATE_HOOK_COMMAND, CODEX_HOOK_COMMAND)
 #: The server entry's key in every target's config (each target's ``SERVER_NAME``).
 _SERVER_NAME = "repowise"
 

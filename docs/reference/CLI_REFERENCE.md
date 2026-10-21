@@ -42,7 +42,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   status`](#repowise-hook-status), [`hook uninstall`](#repowise-hook-uninstall), [`hook stats`](#repowise-hook-stats),
   [`hook backfill`](#repowise-hook-backfill), [`hook rewrite`](#repowise-hook-rewrite-installuninstallstatus), [`hook
   read-skeleton|search-digest|read-reread`](#repowise-hook-read-skeletonsearch-digestread-reread),
-  [`augment`](#repowise-augment)
+  [`hook health-gate`](#repowise-hook-health-gate-installuninstallstatus), [`augment`](#repowise-augment)
 - **Server:** [`serve`](#repowise-serve-path), [`mcp`](#repowise-mcp-path)
 - **Workspace:** [`workspace list`](#repowise-workspace-list), [`workspace add`](#repowise-workspace-add-path),
   [`workspace remove`](#repowise-workspace-remove-alias), [`workspace scan`](#repowise-workspace-scan-path), [`workspace
@@ -1896,6 +1896,18 @@ repowise hook read-reread status -w
 
 - No hook to install: `init`'s PostToolUse hook carries all three; these set the verdict in `.repowise/config.yaml` (`init` sets it from `--distill-hook`).
 - `uninstall` returns whole results (the digest rides alongside again). `status` says on/off and, when off, points to `repowise saved`. With no `.repowise/` it asks for `repowise init`.
+
+### `repowise hook health-gate install|uninstall|status`
+
+Opt-in, off by default: Claude Code's `git commit` and `git push` in this repo run
+[`repowise health check`](#repowise-health-check-revspec) first and are denied when the gate fails (exit 1). Optional
+`PATH`, `-w`/`--no-workspace`.
+
+- `install` sets `hooks.health_gate: true` in `.repowise/config.yaml` and adds a PreToolUse entry to the repo's
+  `.claude/settings.local.json`; `uninstall` (and `hook uninstall`) removes both. `init` and `upgrade` never write either.
+- A commit is checked on the staged change, including `git add` earlier in the same command and `-a`; a push on
+  `@{u}...HEAD`, else the default branch's merge-base. `--amend`, pathspecs, other branches, tags and `--delete` pass
+  unchecked, as does anything that keeps the check from finishing within 20 s.
 
 ## Utility Commands
 

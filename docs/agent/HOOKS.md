@@ -26,6 +26,7 @@ For the exact settings entries each install writes, see the
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Coverage re-ingest** (opt-in) | Claude Code | `hooks.coverage_reingest: true`, then the next `repowise coverage add` / `init` / `update` | `Bash` / `PowerShell` | Re-ingests a fresh full-suite coverage report in the background |
+| **Health gate** (opt-in) | Claude Code | `repowise hook health-gate install` | `git commit` / `git push` via `Bash` / `PowerShell` | Runs `repowise health check` on what the command records and blocks it when the gate fails ([details](../start/CI.md#before-an-agent-commits-or-pushes)) |
 | **Command rewrite (distill)** | Claude Code, Codex, Cursor | `repowise hook rewrite install`, or Yes at the `repowise init` prompt | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
 | **Codex context and staleness** | Codex | `repowise init --codex` | SessionStart, edits, shell | Reminds Codex to use the MCP tools and flags stale context after git operations |
 

@@ -260,6 +260,7 @@ overrides a key for one session.
 | `read_reread` | `false` | Serve an unchanged repeat Read as a short notice. |
 | `search_digest` | `false` | Serve multi-file grep floods as a digest. |
 | `coverage_reingest` | `false` | Re-ingest coverage after an agent's full test run, at a process start per shell command ([test intelligence](../layers/TEST_INTELLIGENCE.md)). |
+| `health_gate` | `false` | Block an agent's `git commit` / `git push` that fails `repowise health check`; set with `repowise hook health-gate install` ([CI](../start/CI.md#before-an-agent-commits-or-pushes)). |
 
 **`read_skeleton`**
 

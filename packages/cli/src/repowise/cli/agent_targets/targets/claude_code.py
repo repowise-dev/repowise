@@ -473,10 +473,13 @@ class ClaudeCodeTarget:
             from repowise.cli.editor_integrations.claude_config import (
                 claude_code_local_settings_path,
                 set_repo_coverage_hook,
+                set_repo_health_gate_hook,
             )
 
-            # The coverage re-ingest entries `coverage add` / init / update wrote.
-            if set_repo_coverage_hook(repo_path, False) is not None:
+            # The coverage re-ingest entries `coverage add` / init / update wrote,
+            # and the health-gate entry `hook health-gate install` wrote.
+            coverage = set_repo_coverage_hook(repo_path, False)
+            if (set_repo_health_gate_hook(repo_path, False) or coverage) is not None:
                 result.record(claude_code_local_settings_path(repo_path), FileAction.REMOVED)
             return result
 

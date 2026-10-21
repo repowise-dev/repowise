@@ -563,6 +563,15 @@ health-fail-at: medium
 
 Findings that do not fail warn. On GitLab, set `REPOWISE_HEALTH: "true"`.
 
+### Before an agent commits or pushes
+
+`repowise hook health-gate install` runs the same check when Claude Code runs
+`git commit` (on the staged change) or `git push` (on `@{u}...HEAD`, else the
+default branch's merge-base) in this repo, and blocks the command when the gate
+fails. It is off by default, and `init` and `upgrade` never turn it on.
+Anything that stops the check from running within 20 s lets the command
+through; `repowise hook health-gate uninstall` turns it off.
+
 ## Gate on change risk
 
 The [shared workflow](#github-actions) shows the input in use.
