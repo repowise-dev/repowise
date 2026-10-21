@@ -154,3 +154,23 @@ async def test_cross_repo_cut_reaches_summary_and_rollups(setup_mcp, monkeypatch
     safe = await get_dead_code(safe_only=True)
     assert safe["summary"]["filtered_findings"] == 0
     assert "safe_only_note" in safe["summary"]
+
+
+class _EveryFileCalled(_EveryFileConsumed):
+    def get_contract_links_as_provider(self, repo_alias, file_path):
+        return [{"consumer_repo": "web"}]
+
+
+@pytest.mark.asyncio
+async def test_the_default_floor_reads_the_cut_confidence(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_dead_code, tool_dead_code
+
+    monkeypatch.setattr(tool_dead_code, "_cross_repo_lookup", lambda: _EveryFileCalled())
+
+    # 0.9 / 0.7 / 0.5 cut to 0.27 / 0.21 / 0.15: none clears 0.4.
+    result = await get_dead_code()
+    assert not any(t["findings"] for t in result["tiers"].values())
+    assert result["summary"]["filtered_findings"] == 0
+    assert result["summary"]["total_findings"] == 3
+    low = await get_dead_code(min_confidence="low")
+    assert [f["confidence"] for f in low["tiers"]["low"]["findings"]] == [0.27, 0.21, 0.15]

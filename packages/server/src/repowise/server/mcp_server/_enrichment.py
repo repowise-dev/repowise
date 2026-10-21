@@ -134,6 +134,24 @@ class CrossRepoEnricher:
         self._conformance: dict | None = None
 
     @classmethod
+    def for_workspace(cls, ws_root: Path) -> CrossRepoEnricher:
+        """The enricher over every artifact a workspace update wrote under *ws_root*."""
+        from repowise.core.workspace.breaking_change import BREAKING_CHANGES_FILENAME
+        from repowise.core.workspace.config import WORKSPACE_DATA_DIR
+        from repowise.core.workspace.conformance import CONFORMANCE_FILENAME
+        from repowise.core.workspace.contracts import CONTRACTS_FILENAME
+        from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
+
+        data_dir = Path(ws_root) / WORKSPACE_DATA_DIR
+        return cls(
+            data_dir / "cross_repo_edges.json",
+            contracts_path=data_dir / CONTRACTS_FILENAME,
+            system_graph_path=data_dir / SYSTEM_GRAPH_FILENAME,
+            breaking_changes_path=data_dir / BREAKING_CHANGES_FILENAME,
+            conformance_path=data_dir / CONFORMANCE_FILENAME,
+        )
+
+    @classmethod
     def from_data(
         cls,
         *,

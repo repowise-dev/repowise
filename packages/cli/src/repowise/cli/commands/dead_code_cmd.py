@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,13 @@ from repowise.cli.helpers import (
 from repowise.cli.output import notice_console
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeReport
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
-from repowise.core.analysis.dead_code.serving import safe_only_note
+from repowise.core.analysis.dead_code.serving import (
+    CrossRepoLookup,
+    ServedFinding,
+    is_safe,
+    safe_only_note,
+    serve_findings,
+)
 from repowise.core.analysis.finding_registry import preview_lines
 
 #: The floor ``init`` and ``update`` store findings at: they run the analyzer
@@ -149,6 +156,56 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
     return analyzer.analyze(config)
 
 
+def _cross_repo_inputs(
+    target: Any, repo_path: Path, no_workspace: bool
+) -> tuple[CrossRepoLookup | None, str | None]:
+    """The workspace data and alias the cross-repo cut reads for *repo_path*."""
+    if no_workspace or target.ws_root is None:
+        return None, None
+    from repowise.core.workspace.config import WorkspaceConfig
+
+    ws_config = target.ws_config or WorkspaceConfig.load(target.ws_root)
+    resolved = repo_path.resolve()
+    alias = next(
+        (e.alias for e in ws_config.repos if (target.ws_root / e.path).resolve() == resolved),
+        None,
+    )
+    if alias is None:
+        return None, None
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    return CrossRepoEnricher.for_workspace(target.ws_root), alias
+
+
+def _with_cut(served: ServedFinding) -> DeadCodeFindingData:
+    if served.cross_repo_note is None:
+        return served.row
+    return replace(
+        served.row,
+        confidence=served.confidence,
+        safe_to_delete=is_safe(served),
+        evidence=[*served.row.evidence, served.cross_repo_note],
+    )
+
+
+def _cut_cross_repo(
+    report: DeadCodeReport, lookup: CrossRepoLookup | None, alias: str | None, floor: float
+) -> tuple[DeadCodeReport, int]:
+    """The cross-repo cut every surface applies, then the floor again, since it only lowers.
+
+    Returns the report and how many findings the cut touched.
+    """
+    if lookup is None:
+        return report, 0
+    served = serve_findings(report.findings, lookup, alias)
+    cut = [_with_cut(s) for s in served]
+    shown = [f for f in cut if f.confidence >= floor]
+    touched = sum(1 for s in served if s.cross_repo_note)
+    return DeadCodeReport.from_findings(
+        shown, hidden_below_threshold=report.hidden_below_threshold + len(cut) - len(shown)
+    ), touched
+
+
 @click.command("dead-code")
 @click.argument("path", required=False, type=click.Path(exists=True))
 @click.option(
@@ -238,8 +295,9 @@ def dead_code_command(
     with no index, it parses the working tree and analyzes it live.
 
     In workspace mode, analyzes the primary repo by default; pass
-    --repo <alias> to target a different repo. Cross-repo dead-code
-    detection is not yet supported — run once per repo for now.
+    --repo <alias> to target a different repo. A finding whose file another
+    workspace repo may use is never cleanup-ready, with the same confidence as
+    on every other surface. Run once per repo.
     """
     # The live path parses the whole tree, and its structlog lines go to
     # stdout: they would corrupt JSON/Markdown and bury the table.
@@ -294,6 +352,14 @@ def dead_code_command(
         report = _analyze_live(repo_path, config, notices)
     else:
         _notice_stored(repo_path, notices)
+    report, touched = _cut_cross_repo(
+        report, *_cross_repo_inputs(target, repo_path, no_workspace), min_confidence
+    )
+    if touched:
+        notices.print(
+            f"[dim]{touched} finding(s) not cleanup-ready: another workspace repo may use "
+            "their file.[/dim]"
+        )
     findings = sorted(report.findings, key=_finding_order)
 
     if safe_only:

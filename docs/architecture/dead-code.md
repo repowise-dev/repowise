@@ -177,7 +177,9 @@ built from the `risk_factors.py` constants. The TypeScript mirror is
 `DEAD_CODE_CONFIDENCE` in `packages/types/src/dead-code.ts`, so CLI, web and
 MCP tier identically.
 
-`adjust_cross_repo` runs after tiering in workspace mode: a file with
-cross-repo co-change partners gets confidence `* 0.5` and a
-`cross_repo_note`; otherwise an `unused_export` in a repo that other repos
-depend on as a package gets `* 0.3`.
+`serve_findings` is the one read the MCP tool, the REST routes and the CLI
+share: it applies `cross_repo_cut` to each stored row, then the filters, and
+tiering reads the result. A file another repo's contract link points at gets
+confidence `* 0.3`. Cross-repo co-change partners, or an `unused_export` in a
+repo other repos depend on as a package, keep the confidence. Each adds a
+`cross_repo_note` and withdraws `safe_to_delete`.

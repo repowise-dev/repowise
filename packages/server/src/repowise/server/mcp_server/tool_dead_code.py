@@ -14,22 +14,20 @@ from repowise.core.analysis.dead_code.serving import (
     TIER_FLOORS,
     CrossRepoLookup,
     FindingFilters,
-    adjust_cross_repo,
     apply_filters,
     build_summary,
     build_tiers,
     compute_impact,
-    cross_repo_withdraws,
     dead_code_finding_id,
     excluded_kinds,
     merge_summary_counts,
     rollup_by_directory,
     rollup_by_owner,
     serialize_finding,
+    serve_findings,
     summary_counts,
 )
 from repowise.core.analysis.finding_registry import excluded_types, served_previews
-from repowise.core.analysis.health.rows import field
 from repowise.core.persistence.crud import get_dead_code_findings
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata
@@ -52,29 +50,8 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 
 def _cross_repo_lookup() -> CrossRepoLookup | None:
-    """The workspace's cross-repo data, when there is any to adjust by."""
-    enricher = _state._cross_repo_enricher
-    if enricher is None or not enricher.has_data or not _is_workspace_mode():
-        return None
-    return enricher
-
-
-def _adjust_cross_repo(
-    findings: list[dict], filters: FindingFilters, repo_alias: str | None
-) -> list[dict]:
-    """The cross-repo cut, then ``safe_only`` again, since the cut withdraws safety."""
-    adjust_cross_repo(findings, _cross_repo_lookup(), repo_alias)
-    if filters.safe_only:
-        return [f for f in findings if f["safe_to_delete"]]
-    return findings
-
-
-def _withdrawn_by(repo_alias: str | None) -> Callable[[Any], bool] | None:
-    """The cross-repo cut as a predicate over stored rows, for the summary."""
-    lookup = _cross_repo_lookup()
-    if lookup is None or not repo_alias:
-        return None
-    return lambda f: cross_repo_withdraws(lookup, repo_alias, field(f, "file_path"), field(f, "kind"))
+    """The workspace's cross-repo data; an empty artifact simply cuts nothing."""
+    return _state._cross_repo_enricher if _is_workspace_mode() else None
 
 
 async def _get_dead_code_all_repos(
@@ -96,11 +73,12 @@ async def _get_dead_code_all_repos(
             repo_findings, withheld = filters.split_withheld(repo_findings)
             repo_findings, gated = filters.split_gated(repo_findings)
             git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
+        served = serve_findings(repo_findings, _cross_repo_lookup(), ctx.alias)
         serialized = [
             serialize_finding(f, git_meta_map, repository=ctx.alias)
-            for f in apply_filters(repo_findings, filters)
+            for f in apply_filters(served, filters)
         ]
-        return serialized, summary_counts(repo_findings, _withdrawn_by(ctx.alias)), withheld, gated
+        return serialized, summary_counts(served), withheld, gated
 
     fed = Federation()
     answered = await fed.run(_one_repo)
@@ -113,7 +91,6 @@ async def _get_dead_code_all_repos(
                 merged = into.setdefault(name, {**entry, "count": 0})
                 merged["count"] += entry["count"]
 
-    merged_findings = _adjust_cross_repo(merged_findings, filters, None)
     summary = build_summary(
         merge_summary_counts([part[1] for _, part in answered]),
         len(merged_findings),
@@ -198,7 +175,7 @@ async def get_dead_code(
 
     Run before a cleanup sprint, not a targeted fix. Findings tier
     high/medium/low with per-directory and per-owner rollups; workspace
-    mode lowers confidence on findings other repos import.
+    mode withdraws safety on findings other repos may use.
 
     Args:
         repo: usually omitted.
@@ -317,11 +294,12 @@ async def get_dead_code(
         git_meta_map = await _load_git_meta_map(session, repository.id, every_shown_kind)
 
     reference_repository = ctx.alias or repository.name
+    lookup = _cross_repo_lookup()
     if finding_id:
         match = next(
             (
                 row
-                for row in every_shown_kind
+                for row in serve_findings(every_shown_kind, lookup, ctx.alias)
                 if finding_id in {row.id, dead_code_finding_id(row, reference_repository)}
             ),
             None,
@@ -345,7 +323,8 @@ async def get_dead_code(
             ),
         }
 
-    filtered = apply_filters(all_findings, filters)
+    served = serve_findings(all_findings, lookup, ctx.alias)
+    filtered = apply_filters(served, filters)
     serialized = [
         serialize_finding(f, git_meta_map, repository=reference_repository) for f in filtered
     ]
@@ -356,9 +335,8 @@ async def get_dead_code(
             "\n".join(json.dumps(f, separators=(",", ":")) for f in beyond),
         )
 
-    serialized = _adjust_cross_repo(serialized, filters, ctx.alias)
     tiers = build_tiers(serialized, limit, tier, on_overflow=_keep_overflow)
-    counts = summary_counts(all_findings, _withdrawn_by(ctx.alias))
+    counts = summary_counts(served)
     summary = build_summary(counts, len(serialized), filters, withheld, gated)
 
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}

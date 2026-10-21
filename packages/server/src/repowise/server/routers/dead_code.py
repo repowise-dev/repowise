@@ -5,12 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.dead_code.risk_factors import (
     RISK_CAP_CONFIDENCE,
 )
+from repowise.core.analysis.dead_code.serving import FindingFilters, ServedFinding, serve_findings
 from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.deps import get_db_session, verify_api_key, workspace_alias_for
 from repowise.server.routers._unverified import UnverifiedQuery
 from repowise.server.schemas import (
     DeadCodeAnalyzeResponse,
@@ -26,12 +26,30 @@ router = APIRouter(
 )
 
 
+def _cross_repo(request: Request, repo_id: str) -> dict:
+    """The cross-repo cut's inputs for *repo_id*; empty outside a workspace."""
+    state = request.app.state
+    return {
+        "lookup": getattr(state, "cross_repo_enricher", None),
+        "alias": workspace_alias_for(state, repo_id),
+    }
+
+
+def _response(f: ServedFinding) -> DeadCodeFindingResponse:
+    response = DeadCodeFindingResponse.from_orm(f)
+    if f.cross_repo_note:
+        # Evidence is the list the finding's signals already render from.
+        response.evidence.append(f.cross_repo_note)
+    return response
+
+
 @router.get(
     "/api/repos/{repo_id}/dead-code",
     response_model=list[DeadCodeFindingResponse],
 )
 async def list_dead_code(
     repo_id: str,
+    request: Request,
     kind: str | None = Query(None, description="Filter by finding kind"),
     min_confidence: float = Query(RISK_CAP_CONFIDENCE, ge=0.0, le=1.0),
     status: str = Query("open"),
@@ -41,7 +59,8 @@ async def list_dead_code(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[DeadCodeFindingResponse]:
     """List dead code findings for a repository."""
-    findings = await crud.get_dead_code_findings(
+    # The cut only lowers confidence, so the SQL floor keeps a superset.
+    rows = await crud.get_dead_code_findings(
         session,
         repo_id,
         kind=kind,
@@ -49,13 +68,12 @@ async def list_dead_code(
         status=status,
         include_unverified=include_unverified,
     )
-    if safe_only:
-        findings = [
-            f
-            for f in findings
-            if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete, f.kind)
-        ]
-    return [DeadCodeFindingResponse.from_orm(f) for f in findings[:limit]]
+    filters = FindingFilters(
+        kind=None, safe_only=safe_only, min_confidence=min_confidence, directory=None, owner=None
+    )
+    findings = serve_findings(rows, **_cross_repo(request, repo_id), filters=filters)
+    findings.sort(key=lambda f: -f.confidence)
+    return [_response(f) for f in findings[:limit]]
 
 
 @router.post(
@@ -112,12 +130,13 @@ async def analyze_dead_code(
 )
 async def dead_code_summary(
     repo_id: str,
+    request: Request,
     include_unverified: bool = UnverifiedQuery,
     session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
     summary = await crud.get_dead_code_summary(
-        session, repo_id, include_unverified=include_unverified
+        session, repo_id, include_unverified=include_unverified, **_cross_repo(request, repo_id)
     )
     analyzed_at = await dead_code_analyzed_at(session, repo_id)
     return DeadCodeSummaryResponse(**summary, analyzed_at=analyzed_at)
@@ -127,6 +146,7 @@ async def dead_code_summary(
 async def resolve_finding(
     finding_id: str,
     body: DeadCodePatchRequest,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeFindingResponse:
     """Update the status of a dead code finding."""
@@ -140,4 +160,5 @@ async def resolve_finding(
     finding = await crud.update_dead_code_status(session, finding_id, body.status, body.note)
     if finding is None:
         raise HTTPException(status_code=404, detail="Finding not found")
-    return DeadCodeFindingResponse.from_orm(finding)
+    repo_id = finding.repository_id
+    return _response(serve_findings([finding], **_cross_repo(request, repo_id))[0])

@@ -13,6 +13,7 @@ import ipaddress
 import logging
 import os
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader, SecurityScopes
@@ -102,6 +103,19 @@ async def get_workspace_config(request: Request):
 async def get_cross_repo_enricher(request: Request):
     """Return CrossRepoEnricher from app state, or None."""
     return getattr(request.app.state, "cross_repo_enricher", None)
+
+
+def workspace_alias_for(app_state, repo_id: str) -> str | None:
+    """The workspace alias of the member stored as ``repo_id``; None outside a workspace."""
+    ws_config = getattr(app_state, "workspace_config", None)
+    ws_root = getattr(app_state, "workspace_root", None)
+    path_to_id = getattr(app_state, "workspace_path_to_repo_id", None) or {}
+    if ws_config is None or ws_root is None:
+        return None
+    for entry in ws_config.repos:
+        if path_to_id.get(str((Path(ws_root) / entry.path).resolve())) == repo_id:
+            return entry.alias
+    return None
 
 
 def client_is_local(request: Request) -> bool:
