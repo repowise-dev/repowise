@@ -662,9 +662,21 @@ Rules are evaluated only against structural edges (HTTP, gRPC, event, package, d
 
 ```bash
 export MINIMAX_API_KEY="..."
-repowise init --provider minimax --model MiniMax-M3
+repowise init --provider minimax --model MiniMax-M3.1-Flash
 ```
 
 The global endpoint is used by default. Set
 `MINIMAX_BASE_URL=https://api.minimaxi.com/v1` for the China region.
 MiniMax API keys are region-bound, so use a key issued for the selected endpoint.
+
+The ordinary model choices are `MiniMax-M3.1-Flash` (default) and `MiniMax-M3`.
+Explicit saved/custom model IDs remain unchanged. Flash requires adaptive thinking:
+`auto` preserves its default max effort, while `low`, `medium`, `high`, `xhigh`,
+and `max` set `reasoning_effort`. Flash rejects `off`, `none`, and `minimal`
+before sending a request. M3 supports `auto` and disabling with `off`/`none`.
+
+Cost estimates use standard input/output rates per million tokens: $0.15/$0.60
+for Flash and $0.30/$1.20 for M3. The flat estimator does not account for M3's
+doubled rates above 512k input or cache-read discounts.
+See the [MiniMax API reference](https://platform.minimax.io/docs/api-reference/text-openai-api)
+and [pricing](https://platform.minimax.io/docs/guides/pricing-paygo).

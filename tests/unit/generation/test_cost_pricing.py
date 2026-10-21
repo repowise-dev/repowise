@@ -30,10 +30,17 @@ def test_unknown_model_still_falls_back() -> None:
 
 
 def test_minimax_pricing_is_case_insensitive() -> None:
-    expected = {"input": 0.6, "output": 2.4}
+    expected = {"input": 0.3, "output": 1.2}
     assert get_model_pricing("MiniMax-M3") == expected
     assert get_model_pricing("minimax-m3") == expected
     assert get_model_pricing("minimax/MINIMAX-M3") == expected
+
+
+def test_flash_and_saved_legacy_pricing() -> None:
+    for model in ("MiniMax-M3.1-Flash", "minimax-m3.1-flash"):
+        assert get_model_pricing(model) == {"input": 0.15, "output": 0.6}
+    assert get_model_pricing("MiniMax-M2.7") == {"input": 0.3, "output": 1.2}
+    assert get_model_pricing("minimax/minimax-m3.1-flash:free") == {"input": 0.0, "output": 0.0}
 
 
 def test_dated_opus_variant_prices_at_opus_tier_not_sonnet_fallback() -> None:

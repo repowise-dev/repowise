@@ -59,8 +59,11 @@ _PRICING: dict[str, dict[str, float]] = {
     # DeepSeek
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
-    # MiniMax
-    "MiniMax-M3": {"input": 0.6, "output": 2.4},
+    # MiniMax standard rates. M3 input/output rates double above 512k input;
+    # this flat estimator uses the ordinary-context tier (no length-tier machinery).
+    "MiniMax-M3.1-Flash": {"input": 0.15, "output": 0.6},
+    "minimax/minimax-m3.1-flash:free": {"input": 0.0, "output": 0.0},
+    "MiniMax-M3": {"input": 0.3, "output": 1.2},
     "MiniMax-M2.7": {"input": 0.3, "output": 1.2},
 }
 

@@ -100,8 +100,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "minimax",
         "name": "MiniMax",
-        "default_model": "MiniMax-M3",
-        "models": ["MiniMax-M3", "MiniMax-M2.7"],
+        "default_model": "MiniMax-M3.1-Flash",
+        "models": ["MiniMax-M3.1-Flash", "MiniMax-M3"],
         "env_keys": ["MINIMAX_API_KEY"],
         "requires_key": True,
     },

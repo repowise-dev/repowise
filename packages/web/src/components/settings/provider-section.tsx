@@ -28,7 +28,7 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   anthropic: "claude-haiku-4-5",
   deepseek: "deepseek-v4-flash",
   kimi: "kimi-for-coding",
-  minimax: "MiniMax-M3",
+  minimax: "MiniMax-M3.1-Flash",
   opencode: "opencode/default",
   ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",

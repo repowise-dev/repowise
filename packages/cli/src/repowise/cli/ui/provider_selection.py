@@ -30,7 +30,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "anthropic": "claude-haiku-4-5",
     "deepseek": "deepseek-v4-flash",
     "kimi": "kimi-for-coding",
-    "minimax": "MiniMax-M3",
+    "minimax": "MiniMax-M3.1-Flash",
     "codex_cli": "codex_cli/default",
     "opencode": "opencode/default",
     "ollama": "qwen3.5:4b",

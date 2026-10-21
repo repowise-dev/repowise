@@ -10,8 +10,10 @@ Regions:
     - CN       → https://api.minimaxi.com/v1  (set MINIMAX_BASE_URL)
 
 Models:
-    - MiniMax-M3    — 1M-context flagship with adaptive thinking [default]
-    - MiniMax-M2.7  — compact model with always-on thinking
+    - MiniMax-M3.1-Flash — adaptive thinking with configurable effort [default]
+    - MiniMax-M3         — adaptive thinking that can be disabled
+
+Explicit saved/custom model IDs remain supported, including MiniMax-M2.7.
 
 Thinking translation:
     MiniMax-M3 thinks adaptively by default and can also be told not to think;
@@ -43,7 +45,6 @@ from repowise.core.providers.llm.base import (
     ProviderModelOption,
     RateLimitError,
     ensure_reasoning_supported,
-    fallback_model_option,
     normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
@@ -58,7 +59,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_DEFAULT_MODEL = "MiniMax-M3"
+_DEFAULT_MODEL = "MiniMax-M3.1-Flash"
+_CURRENT_MODELS = (_DEFAULT_MODEL, "MiniMax-M3")
+_FLASH_EFFORTS: tuple[ReasoningMode, ...] = ("low", "medium", "high", "xhigh", "max")
 # Global endpoint. The CN deployment lives at https://api.minimaxi.com/v1 and is
 # selected by setting MINIMAX_BASE_URL (or passing base_url=), so one provider
 # serves both regions without a second code path.
@@ -81,13 +84,19 @@ def _is_always_on_thinking_model(model: str) -> bool:
     return _minimax_model_leaf(model).casefold().startswith("minimax-m2.7")
 
 
+def _is_flash_model(model: str) -> bool:
+    return _minimax_model_leaf(model).casefold() == "minimax-m3.1-flash"
+
+
 def _is_adaptive_thinking_model(model: str) -> bool:
-    """True for the adaptive/disable-able thinking family (MiniMax-M3)."""
-    return _minimax_model_leaf(model).casefold().startswith("minimax-m3")
+    """True for MiniMax-M3, whose adaptive thinking can be disabled."""
+    return _minimax_model_leaf(model).casefold() == "minimax-m3"
 
 
 def _minimax_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
     """Explicit reasoning modes (excluding ``auto``) a model can be told to use."""
+    if _is_flash_model(model):
+        return _FLASH_EFFORTS
     if _is_adaptive_thinking_model(model):
         return _M3_DISABLE_MODES
     # Always-on models (M2.7) and any undiscovered id expose no explicit toggle.
@@ -102,6 +111,7 @@ def _resolve_minimax_reasoning_mode(
     # MiniMax accepts the disabled-thinking field for M2.x but keeps thinking
     # enabled, so reject that misleading request before it incurs API usage.
     detail = (
+        "MiniMax-M3.1-Flash requires adaptive thinking and supports low through max effort; "
         "MiniMax-M3 thinks adaptively and can be told not to think; MiniMax-M2.7 "
         "thinks always-on and accepts auto only."
     )
@@ -123,6 +133,8 @@ def _minimax_reasoning_kwargs(model: str, reasoning: ReasoningMode) -> dict[str,
     always-on family by the time this runs.
     """
     mode = normalize_reasoning(reasoning)
+    if _is_flash_model(model) and mode in _FLASH_EFFORTS:
+        return {"reasoning_effort": mode}
     if mode in ("off", "none"):
         return {"extra_body": {"thinking": {"type": "disabled"}}}
     return {}
@@ -148,9 +160,19 @@ def _minimax_model_options(
     base_url: str,
     fallback_model: str,
 ) -> tuple[ProviderModelOption, ...]:
-    fallback = fallback_model_option(
-        fallback_model,
-        reasoning_modes=("auto", *_minimax_supported_reasoning_modes(fallback_model)),
+    # Keep the ordinary catalog current even when discovery fails or returns
+    # retired IDs. A configured legacy/custom model remains an explicit choice.
+    models = list(_CURRENT_MODELS)
+    if fallback_model.casefold() not in {model.casefold() for model in models}:
+        models.append(fallback_model)
+    fallback = tuple(
+        ProviderModelOption(
+            model=model,
+            label=model,
+            reasoning_modes=("auto", *_minimax_supported_reasoning_modes(model)),
+            recommended=model == _DEFAULT_MODEL,
+        )
+        for model in models
     )
     try:
         import httpx
@@ -163,18 +185,22 @@ def _minimax_model_options(
         response.raise_for_status()
         data = response.json().get("data", [])
     except Exception:
-        return (fallback,)
+        return fallback
 
     if not isinstance(data, list):
-        return (fallback,)
+        return fallback
 
+    discovered = {
+        raw["id"].casefold()
+        for raw in data
+        if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+    }
     options: list[ProviderModelOption] = []
-    for raw in data:
-        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
-            continue
-        model_id = raw["id"]
+    for model_id in models:
         reasoning_modes = ("auto", *_minimax_supported_reasoning_modes(model_id))
-        if _is_always_on_thinking_model(model_id):
+        if _is_flash_model(model_id):
+            notes = "adaptive thinking required; low through max effort"
+        elif _is_always_on_thinking_model(model_id):
             notes = "thinks always-on"
         elif _is_adaptive_thinking_model(model_id):
             notes = "adaptive thinking; can be disabled"
@@ -185,14 +211,14 @@ def _minimax_model_options(
                 model=model_id,
                 label=model_id,
                 reasoning_modes=reasoning_modes,
-                recommended=model_id == fallback_model,
-                source="api",
+                recommended=model_id == _DEFAULT_MODEL,
+                source="api" if model_id.casefold() in discovered else "fallback",
                 notes=notes,
             )
         )
 
     if not options:
-        return (fallback,)
+        return fallback
 
     return tuple(options)
 
@@ -202,7 +228,7 @@ class MiniMaxProvider(BaseProvider):
 
     Args:
         api_key:      MiniMax API key. Falls back to MINIMAX_API_KEY env var.
-        model:        Model identifier. Defaults to MiniMax-M3.
+        model:        Model identifier. Defaults to MiniMax-M3.1-Flash.
         base_url:     Override the MiniMax API URL. Point it at
                       https://api.minimaxi.com/v1 for the CN region.
         rate_limiter: Optional RateLimiter instance.

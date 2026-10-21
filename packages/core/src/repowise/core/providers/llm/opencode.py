@@ -208,6 +208,7 @@ def _load_opencode_model_catalog(opencode_cmd: str) -> list[str] | None:
 
 def _opencode_model_options(
     opencode_cmd: str,
+    saved_model: str | None = None,
 ) -> tuple[ProviderModelOption, ...]:
     catalog = _load_opencode_model_catalog(opencode_cmd)
     if catalog is None:
@@ -232,7 +233,21 @@ def _opencode_model_options(
             notes="uses opencode config",
         )
     ]
-    for model in sorted(catalog):
+    for model in sorted(
+        catalog,
+        key=lambda value: (
+            value.rsplit("/", 1)[0],
+            0 if "minimax-m3.1-flash" in value.casefold() else 1,
+            value,
+        ),
+    ):
+        leaf = model.rsplit("/", 1)[-1].split(":", 1)[0].casefold()
+        if (
+            leaf.startswith("minimax-")
+            and leaf not in ("minimax-m3.1-flash", "minimax-m3.1-flash-free", "minimax-m3")
+            and model != saved_model
+        ):
+            continue
         options.append(
             ProviderModelOption(
                 model=_model_label(model),
@@ -311,7 +326,7 @@ class OpenCodeProvider(BaseProvider):
         return ("auto",)
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
-        return _opencode_model_options(self._opencode_cmd)
+        return _opencode_model_options(self._opencode_cmd, self._model)
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()

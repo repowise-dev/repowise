@@ -179,10 +179,15 @@ repowise init --provider kimi --model kimi-k2.6
 
 ```bash
 export MINIMAX_API_KEY="..."
-repowise init --provider minimax --model MiniMax-M3
+repowise init --provider minimax --model MiniMax-M3.1-Flash
 ```
 
-Set `MINIMAX_BASE_URL=https://api.minimaxi.com/v1` to use the China region.
+Set `MINIMAX_BASE_URL=https://api.minimaxi.com/v1` to use the China region
+with a key issued for that region. The ordinary choices are `MiniMax-M3.1-Flash`
+(default) and `MiniMax-M3`; explicitly saved/custom IDs remain supported.
+Flash requires adaptive thinking and supports `low`, `medium`, `high`, `xhigh`,
+and `max` effort. `auto` preserves its max-effort default; `off`/`none` are
+available only for M3.
 
 For K2.x models, Repowise selects the required sampling parameters for
 thinking or instant mode.

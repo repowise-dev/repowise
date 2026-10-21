@@ -24,9 +24,9 @@ def test_provider_name():
     assert p.provider_name == "minimax"
 
 
-def test_default_model_is_m3():
+def test_default_model_is_flash():
     p = MiniMaxProvider(api_key="sk-test")
-    assert p.model_name == "MiniMax-M3"
+    assert p.model_name == "MiniMax-M3.1-Flash"
 
 
 def test_api_key_from_env(monkeypatch):
@@ -126,9 +126,10 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     assert captured["headers"] == {"Authorization": "Bearer sk-test"}
     m3 = next(option for option in options if option.model == "MiniMax-M3")
     assert m3.reasoning_modes == ("auto", "off", "none")
-    assert m3.recommended is True
-    m27 = next(option for option in options if option.model == "MiniMax-M2.7")
-    assert m27.reasoning_modes == ("auto",)
+    assert m3.recommended is False
+    assert [option.model for option in options] == ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+    assert options[0].recommended is True
+    assert options[0].reasoning_modes == ("auto", "low", "medium", "high", "xhigh", "max")
 
 
 def _make_mock_chat_response(
@@ -320,7 +321,7 @@ async def test_cost_tracker_called():
 
     mock_tracker.record.assert_called_once()
     call_kwargs = mock_tracker.record.call_args.kwargs
-    assert call_kwargs["model"] == "MiniMax-M3"
+    assert call_kwargs["model"] == "MiniMax-M3.1-Flash"
     assert call_kwargs["input_tokens"] == 120
     assert call_kwargs["output_tokens"] == 60
 

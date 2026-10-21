@@ -62,6 +62,8 @@ _OPENROUTER_REASONING_MODES: tuple[ReasoningMode, ...] = (
     "xhigh",
 )
 _OPENROUTER_REASONING_MODELS_BY_BASE: dict[str, set[str]] = {}
+_MINIMAX_FLASH = "minimax/minimax-m3.1-flash:free"
+_CURRENT_MINIMAX_MODELS = (_MINIMAX_FLASH, "minimax/minimax-m3")
 
 
 def _openrouter_supports_reasoning_effort(
@@ -81,6 +83,9 @@ def _openrouter_supported_reasoning_modes(
     *,
     base_url: str | None = None,
 ) -> tuple[ReasoningMode, ...]:
+    if model.casefold() == _MINIMAX_FLASH:
+        # Flash requires thinking; do not offer the generic disable/minimal modes.
+        return ("low", "medium", "high", "xhigh")
     if not _openrouter_supports_reasoning_effort(model, base_url=base_url):
         return ()
     return _OPENROUTER_REASONING_MODES
@@ -152,6 +157,12 @@ def _openrouter_model_options(
         if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
             continue
         model_id = raw["id"]
+        if (
+            model_id.casefold().startswith("minimax/")
+            and model_id.casefold() not in _CURRENT_MINIMAX_MODELS
+            and model_id != fallback_model
+        ):
+            continue
         supported_parameters = raw.get("supported_parameters")
         has_reasoning = (
             isinstance(supported_parameters, list) and "reasoning" in supported_parameters
@@ -164,6 +175,8 @@ def _openrouter_model_options(
             if has_reasoning
             else _openrouter_supported_reasoning_modes(model_id)
         )
+        if model_id.casefold() == _MINIMAX_FLASH:
+            reasoning_modes = _openrouter_supported_reasoning_modes(model_id)
         options.append(
             ProviderModelOption(
                 model=model_id,
@@ -181,7 +194,13 @@ def _openrouter_model_options(
     if not options:
         return (fallback,)
 
-    options.sort(key=lambda option: option.model)
+    options.sort(
+        key=lambda option: (
+            option.model.split("/", 1)[0],
+            0 if option.model == _MINIMAX_FLASH else 1,
+            option.model,
+        )
+    )
     return tuple(options)
 
 
