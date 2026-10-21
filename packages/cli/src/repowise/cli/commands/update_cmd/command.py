@@ -20,8 +20,10 @@ from typing import Any
 import click
 import structlog
 
+from repowise.cli._exit import exit_interrupted, exit_on_gaps
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
+from repowise.cli.exit_codes import EXIT_CODES_HELP
 from repowise.cli.helpers import (
     clear_update_queued,
     console,
@@ -268,7 +270,7 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
         record_reindex_notice_shown(repo_path, verdict)
 
 
-@click.command("update")
+@click.command("update", epilog=EXIT_CODES_HELP)
 @click.argument("path", required=False, default=None)
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
@@ -436,30 +438,34 @@ def update_command(
     workspace exists upstream of the working directory. Use --no-workspace to
     force single-repo mode and --workspace to force workspace mode.
     """
-    # Click ignores the return value, so don't forward run_update's outcome
-    # here (keeps this command's ``-> None`` annotation honest).
-    run_update(
-        path=path,
-        provider_name=provider_name,
-        model=model,
-        since=since,
-        reasoning=reasoning,
-        cascade_budget=cascade_budget,
-        dry_run=dry_run,
-        workspace=workspace,
-        no_workspace=no_workspace,
-        repo_alias=repo_alias,
-        index_only=index_only,
-        docs_flag=docs_flag,
-        full=full,
-        yes=yes,
-        agents_md=agents_md,
-        concurrency=concurrency,
-        no_cost_tracking=no_cost_tracking,
-        verbose=verbose,
-        progress=progress,
-        include_working_tree=include_working_tree,
-    )
+    degraded: list[str] = []
+    try:
+        run_update(
+            path=path,
+            provider_name=provider_name,
+            model=model,
+            since=since,
+            reasoning=reasoning,
+            cascade_budget=cascade_budget,
+            dry_run=dry_run,
+            workspace=workspace,
+            no_workspace=no_workspace,
+            repo_alias=repo_alias,
+            index_only=index_only,
+            docs_flag=docs_flag,
+            full=full,
+            yes=yes,
+            agents_md=agents_md,
+            concurrency=concurrency,
+            no_cost_tracking=no_cost_tracking,
+            verbose=verbose,
+            progress=progress,
+            include_working_tree=include_working_tree,
+            degraded_out=degraded,
+        )
+    except KeyboardInterrupt:
+        exit_interrupted(command="update")
+    exit_on_gaps(degraded)
 
 
 class UpdateOutcome(StrEnum):
@@ -718,6 +724,7 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
             no_cost_tracking=opts.no_cost_tracking,
             progress=opts.progress,
             include_working_tree=opts.include_working_tree,
+            degraded=run.degraded,
         )
     return _emit_done(run, UpdateOutcome.REGENERATED)
 
@@ -2071,6 +2078,7 @@ def run_update(
     progress: str = "rich",
     skip_cross_repo_hooks: bool = False,
     include_working_tree: bool = False,
+    degraded_out: list[str] | None = None,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2113,50 +2121,54 @@ def run_update(
         include_working_tree=include_working_tree,
     )
     run = _start_run(opts)
-    target = _resolve_target(opts)
-    if target.is_workspace:
-        return _update_workspace_target(opts, run, target)
+    try:
+        target = _resolve_target(opts)
+        if target.is_workspace:
+            return _update_workspace_target(opts, run, target)
 
-    # --- Single-repo path from here on. ---
-    run.repo_path = target.repo_path
-    assert run.repo_path is not None  # single mode always sets repo_path
-    _prepare_repo(run.repo_path)
+        # --- Single-repo path from here on. ---
+        run.repo_path = target.repo_path
+        assert run.repo_path is not None  # single mode always sets repo_path
+        _prepare_repo(run.repo_path)
 
-    # --full reuses the persisted graph instead of diffing changed files.
-    if opts.full:
-        return _full_upgrade(opts, run)
-    _load_sync_base(opts, run)
-    _check_config_and_renderer(run)
-    _collect_working_tree(opts, run)
-    _repair_before_detection(opts, run)
-    _assess_staleness(run)
-    if run.git_is_current and not run.stale_db_paths and not run.stale_deterministic_ids:
-        return _already_up_to_date(opts, run)
+        # --full reuses the persisted graph instead of diffing changed files.
+        if opts.full:
+            return _full_upgrade(opts, run)
+        _load_sync_base(opts, run)
+        _check_config_and_renderer(run)
+        _collect_working_tree(opts, run)
+        _repair_before_detection(opts, run)
+        _assess_staleness(run)
+        if run.git_is_current and not run.stale_db_paths and not run.stale_deterministic_ids:
+            return _already_up_to_date(opts, run)
 
-    deferred = _acquire_update_lock(run)
-    if deferred is not None:
-        return deferred
-    _prepare_locked_run(opts, run)
+        deferred = _acquire_update_lock(run)
+        if deferred is not None:
+            return deferred
+        _prepare_locked_run(opts, run)
 
-    _stage(run, "detect_changes")
-    _detect_changes(run)
-    if _nothing_to_do(run):
-        return _no_changed_files(opts, run)
+        _stage(run, "detect_changes")
+        _detect_changes(run)
+        if _nothing_to_do(run):
+            return _no_changed_files(opts, run)
 
-    if run.config.health_changed:
-        console.print("[yellow]Config files changed. Re-running health analysis.[/yellow]")
-    if _config_change_only(run):
-        return _config_only_update(opts, run)
+        if run.config.health_changed:
+            console.print("[yellow]Config files changed. Re-running health analysis.[/yellow]")
+        if _config_change_only(run):
+            return _config_only_update(opts, run)
 
-    render_changed_files(run.file_diffs, verbose=opts.verbose)
-    _rebuild_index(run)
-    _plan_pages(opts, run)
-    if opts.dry_run:
-        console.print("[yellow]Dry run: no pages regenerated.[/yellow]")
-        return _emit_done(run, UpdateOutcome.DRY_RUN)
-    _analyze_changes(run)
-    _refresh_knowledge_graph_stage(run)
-    if run.index_only:
-        return _index_only_update(opts, run)
+        render_changed_files(run.file_diffs, verbose=opts.verbose)
+        _rebuild_index(run)
+        _plan_pages(opts, run)
+        if opts.dry_run:
+            console.print("[yellow]Dry run: no pages regenerated.[/yellow]")
+            return _emit_done(run, UpdateOutcome.DRY_RUN)
+        _analyze_changes(run)
+        _refresh_knowledge_graph_stage(run)
+        if run.index_only:
+            return _index_only_update(opts, run)
 
-    return _docs_update(opts, run)
+        return _docs_update(opts, run)
+    finally:
+        if degraded_out is not None:
+            degraded_out.extend(run.degraded)
