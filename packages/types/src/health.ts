@@ -286,6 +286,12 @@ export interface HealthFileMetric {
   history_deduction?: number | null;
   unclamped_score?: number | null;
   /**
+   * `"short"`: too few recorded commits for most history markers to fire, so a
+   * high score is an absent history rather than a clean one. Omitted otherwise
+   * and on `fields=summary` rows.
+   */
+  history?: "short" | null;
+  /**
    * Test material, decided at ingestion. Drives the production/all scope
    * without re-deriving the answer from the path on every surface.
    */
