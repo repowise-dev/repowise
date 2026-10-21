@@ -21,7 +21,108 @@
         "code_origin": "production"
       }
     ],
-    "findings": [],
+    "findings": [
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "FastestSupplier",
+        "line_start": 155,
+        "line_end": 166,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 155
+        },
+        "health_impact": 0.0,
+        "reason": "FastestSupplier has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_9c4e543562fe5f8b76ad"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "AddLine",
+        "line_start": 224,
+        "line_end": 239,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 224
+        },
+        "health_impact": 0.0,
+        "reason": "AddLine has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_03e106976978913f3b80"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "OrdersBySupplier",
+        "line_start": 271,
+        "line_end": 284,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 271
+        },
+        "health_impact": 0.0,
+        "reason": "OrdersBySupplier has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_74751d6b8941656b8a14"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "OpenOrders",
+        "line_start": 286,
+        "line_end": 298,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 286
+        },
+        "health_impact": 0.0,
+        "reason": "OpenOrders has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d596f31c5cf5b49adb34"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "inventory.go",
+        "function_name": "ReceiveOrder",
+        "line_start": 332,
+        "line_end": 351,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 332
+        },
+        "health_impact": 0.0,
+        "reason": "ReceiveOrder has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_fd719cff20def72136b2"
+      }
+    ],
     "kpis": {
       "hotspot_health": null,
       "average_health": 10.0,
@@ -209,6 +310,26 @@
         "id": "finding_adecdf1cea8a1aad2796"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "account.ts",
+        "function_name": "parseAccount",
+        "line_start": 15,
+        "line_end": 56,
+        "details": {
+          "crap": 306.0,
+          "ccn": 17,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 15
+        },
+        "health_impact": 0.0,
+        "reason": "parseAccount has CRAP 306 (complexity 17, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_01e0fea6a9a9584edcb7"
+      },
+      {
         "biomarker_type": "complex_method",
         "severity": "high",
         "file_path": "workspace.ts",
@@ -249,6 +370,26 @@
         "reason": "97% of file duplicated in other files; worst clone shares 68 lines with account.ts",
         "dimension": "maintainability",
         "id": "finding_27bf987f937f7819f307"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "workspace.ts",
+        "function_name": "parseWorkspace",
+        "line_start": 15,
+        "line_end": 56,
+        "details": {
+          "crap": 306.0,
+          "ccn": 17,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 15
+        },
+        "health_impact": 0.0,
+        "reason": "parseWorkspace has CRAP 306 (complexity 17, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_73748342cd33391dda21"
       }
     ],
     "kpis": {
@@ -458,6 +599,186 @@
         "reason": "close_project has cyclomatic complexity 10",
         "dimension": "defect",
         "id": "finding_ebd7768c22e919caee2c"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "read_account",
+        "line_start": 22,
+        "line_end": 48,
+        "details": {
+          "crap": 156.0,
+          "ccn": 12,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 22
+        },
+        "health_impact": 0.0,
+        "reason": "read_account has CRAP 156 (complexity 12, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_be3bc1e43f396ec4b1d2"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "close_account",
+        "line_start": 52,
+        "line_end": 71,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 52
+        },
+        "health_impact": 0.0,
+        "reason": "close_account has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_8d5ebbeab16804227744"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "list_accounts",
+        "line_start": 75,
+        "line_end": 83,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 75
+        },
+        "health_impact": 0.0,
+        "reason": "list_accounts has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_01fbce0dcb4b8c1cbbcf"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "read_workspace",
+        "line_start": 86,
+        "line_end": 112,
+        "details": {
+          "crap": 156.0,
+          "ccn": 12,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 86
+        },
+        "health_impact": 0.0,
+        "reason": "read_workspace has CRAP 156 (complexity 12, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_c3ce87446b4e7949dc32"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "close_workspace",
+        "line_start": 116,
+        "line_end": 135,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 116
+        },
+        "health_impact": 0.0,
+        "reason": "close_workspace has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d01c9e91d2a81a69d705"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "list_workspaces",
+        "line_start": 139,
+        "line_end": 147,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 139
+        },
+        "health_impact": 0.0,
+        "reason": "list_workspaces has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_ea0dc36989d7db2e3cd9"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "read_project",
+        "line_start": 150,
+        "line_end": 176,
+        "details": {
+          "crap": 156.0,
+          "ccn": 12,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 150
+        },
+        "health_impact": 0.0,
+        "reason": "read_project has CRAP 156 (complexity 12, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_dc33685f497d775411c5"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "close_project",
+        "line_start": 180,
+        "line_end": 199,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 180
+        },
+        "health_impact": 0.0,
+        "reason": "close_project has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_47eeb076a35072b87323"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "handlers.py",
+        "function_name": "list_projects",
+        "line_start": 203,
+        "line_end": 211,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 203
+        },
+        "health_impact": 0.0,
+        "reason": "list_projects has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_1941c4a02c0d4659337a"
       }
     ],
     "kpis": {
@@ -1841,6 +2162,26 @@
         "id": "finding_7336de57febe95c93630"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "cpp/nested.cpp",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_294c508a3bdf5636dbc5"
+      },
+      {
         "biomarker_type": "io_in_loop",
         "severity": "medium",
         "file_path": "csharp/PerfIoInLoop.cs",
@@ -2041,6 +2382,26 @@
         "id": "finding_525e8162089608e8a869"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "csharp/nested.cs",
+        "function_name": "DeeplyNested",
+        "line_start": 5,
+        "line_end": 21,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 5
+        },
+        "health_impact": 0.0,
+        "reason": "DeeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_06ba5b0fe6a38fa75b04"
+      },
+      {
         "biomarker_type": "nested_complexity",
         "severity": "medium",
         "file_path": "dart/nested.dart",
@@ -2085,6 +2446,46 @@
         "reason": "manyBranches has cyclomatic complexity 9",
         "dimension": "defect",
         "id": "finding_75e1face476206b793af"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "dart/nested.dart",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_3b2e6e678827a0c95db8"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "dart/nested.dart",
+        "function_name": "manyBranches",
+        "line_start": 20,
+        "line_end": 28,
+        "details": {
+          "crap": 90.0,
+          "ccn": 9,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 20
+        },
+        "health_impact": 0.0,
+        "reason": "manyBranches has CRAP 90 (complexity 9, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_c1ac480b4aeb3197f16d"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -2195,6 +2596,46 @@
         "id": "finding_fc2bd6cbf299ac72583b"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "go/conditionals.go",
+        "function_name": "ThreeOps",
+        "line_start": 3,
+        "line_end": 8,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "ThreeOps has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_814731f9fbc11f91edc5"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "go/conditionals.go",
+        "function_name": "SixOps",
+        "line_start": 10,
+        "line_end": 15,
+        "details": {
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 10
+        },
+        "health_impact": 0.0,
+        "reason": "SixOps has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_c1cb731e126a1224c410"
+      },
+      {
         "biomarker_type": "complex_conditional",
         "severity": "low",
         "file_path": "go/conditionals.go",
@@ -2254,6 +2695,26 @@
         "reason": "DeeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_8a94b5551a568cc7522f"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "go/nested.go",
+        "function_name": "DeeplyNested",
+        "line_start": 3,
+        "line_end": 17,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "DeeplyNested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d271936fd68e02aa1a7f"
       },
       {
         "biomarker_type": "error_handling",
@@ -2426,6 +2887,46 @@
         "id": "finding_7f34c7947a7498cc922c"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "java/Conditionals.java",
+        "function_name": "threeOps",
+        "line_start": 2,
+        "line_end": 7,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 2
+        },
+        "health_impact": 0.0,
+        "reason": "threeOps has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_5cad121e3eec66668619"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "java/Conditionals.java",
+        "function_name": "sixOps",
+        "line_start": 9,
+        "line_end": 14,
+        "details": {
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 9
+        },
+        "health_impact": 0.0,
+        "reason": "sixOps has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_fd14e71841abee247de5"
+      },
+      {
         "biomarker_type": "complex_conditional",
         "severity": "low",
         "file_path": "java/Conditionals.java",
@@ -2485,6 +2986,26 @@
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_716ef8994749727b5d74"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "java/Nested.java",
+        "function_name": "deeplyNested",
+        "line_start": 2,
+        "line_end": 19,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 2
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_37724bd1b3882e3b1429"
       },
       {
         "biomarker_type": "error_handling",
@@ -2660,6 +3181,26 @@
         "id": "finding_bd08c69b932b606b18c9"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "javascript/nested.js",
+        "function_name": "deeplyNested",
+        "line_start": 1,
+        "line_end": 17,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_f4d48fd3c571c65c8066"
+      },
+      {
         "biomarker_type": "error_handling",
         "severity": "low",
         "file_path": "javascript/nested.js",
@@ -2700,6 +3241,26 @@
         "id": "finding_341db9359cf919b9c51c"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "kotlin/nested.kt",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_763d93b2e5a15a2123fe"
+      },
+      {
         "biomarker_type": "complex_method",
         "severity": "medium",
         "file_path": "pascal/complex.pas",
@@ -2721,6 +3282,26 @@
         "reason": "ManyBranches has cyclomatic complexity 13",
         "dimension": "defect",
         "id": "finding_cdb1bfd5e7f5961c0f48"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "pascal/complex.pas",
+        "function_name": "ManyBranches",
+        "line_start": 7,
+        "line_end": 46,
+        "details": {
+          "crap": 182.0,
+          "ccn": 13,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 7
+        },
+        "health_impact": 0.0,
+        "reason": "ManyBranches has CRAP 182 (complexity 13, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_7fa470e6114dc37b6fd9"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -2746,6 +3327,26 @@
         "id": "finding_472f3545d0b4e4e51dcb"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "pascal/nested.pas",
+        "function_name": "DeeplyNested",
+        "line_start": 7,
+        "line_end": 30,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 7
+        },
+        "health_impact": 0.0,
+        "reason": "DeeplyNested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d69da900f78a85b1c0f8"
+      },
+      {
         "biomarker_type": "nested_complexity",
         "severity": "medium",
         "file_path": "php/nested.php",
@@ -2767,6 +3368,26 @@
         "reason": "deeply_nested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_08fb66e3bd4471dcc116"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "php/nested.php",
+        "function_name": "deeply_nested",
+        "line_start": 4,
+        "line_end": 15,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_6a2d7046d153f5e28f70"
       },
       {
         "biomarker_type": "low_cohesion",
@@ -2809,6 +3430,66 @@
         "reason": "many_branches has cyclomatic complexity 15",
         "dimension": "defect",
         "id": "finding_0218dfee9ddbbc3acb0c"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "python/complex.py",
+        "function_name": "many_branches",
+        "line_start": 1,
+        "line_end": 21,
+        "details": {
+          "crap": 240.0,
+          "ccn": 15,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "many_branches has CRAP 240 (complexity 15, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_878a89457f1905e001a4"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "python/conditionals.py",
+        "function_name": "three_ops",
+        "line_start": 1,
+        "line_end": 4,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "three_ops has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_e51ed3bb71580fb53c52"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "python/conditionals.py",
+        "function_name": "six_ops",
+        "line_start": 7,
+        "line_end": 10,
+        "details": {
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 7
+        },
+        "health_impact": 0.0,
+        "reason": "six_ops has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_9ce0eaced1fca0186c01"
       },
       {
         "biomarker_type": "complex_conditional",
@@ -2870,6 +3551,26 @@
         "reason": "deeply_nested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_d4ee38f48a43bc6c92fd"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "python/nested.py",
+        "function_name": "deeply_nested",
+        "line_start": 1,
+        "line_end": 12,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_b229a93c6dc594cdc15f"
       },
       {
         "biomarker_type": "error_handling",
@@ -3078,6 +3779,46 @@
         "reason": "deeply_nested nests 4 levels deep",
         "dimension": "defect",
         "id": "finding_980163708d497ecefb31"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "ruby/nested.rb",
+        "function_name": "deeply_nested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_75bf41261c0bcdf5e53c"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "ruby/nested.rb",
+        "function_name": "many_branches",
+        "line_start": 16,
+        "line_end": 27,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 16
+        },
+        "health_impact": 0.0,
+        "reason": "many_branches has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_77744cd877e0d96bea97"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3387,6 +4128,46 @@
         "id": "finding_8ef9939b9fdcbcf63e88"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "rust/conditionals.rs",
+        "function_name": "three_ops",
+        "line_start": 1,
+        "line_end": 6,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "three_ops has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_a42703ee8e4769a7c306"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "rust/conditionals.rs",
+        "function_name": "six_ops",
+        "line_start": 8,
+        "line_end": 13,
+        "details": {
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 8
+        },
+        "health_impact": 0.0,
+        "reason": "six_ops has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_7e8892978e25daab749c"
+      },
+      {
         "biomarker_type": "complex_conditional",
         "severity": "low",
         "file_path": "rust/conditionals.rs",
@@ -3446,6 +4227,26 @@
         "reason": "deeply_nested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_51c3d3fb3a7baa49f5d1"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "rust/nested.rs",
+        "function_name": "deeply_nested",
+        "line_start": 1,
+        "line_end": 16,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeply_nested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_274f31bce9e3a7e76826"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3665,6 +4466,46 @@
         "id": "finding_35278d63e4c3bf59be37"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "scala/nested.scala",
+        "function_name": "deeplyNested",
+        "line_start": 4,
+        "line_end": 18,
+        "details": {
+          "crap": 42.0,
+          "ccn": 6,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 42 (complexity 6, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_bef116cdaae8db9288a4"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "scala/nested.scala",
+        "function_name": "manyBranches",
+        "line_start": 20,
+        "line_end": 28,
+        "details": {
+          "crap": 90.0,
+          "ccn": 9,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 20
+        },
+        "health_impact": 0.0,
+        "reason": "manyBranches has CRAP 90 (complexity 9, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_5bf22a92bcba1473b280"
+      },
+      {
         "biomarker_type": "io_in_loop",
         "severity": "medium",
         "file_path": "scala/perf_io_in_loop.scala",
@@ -3852,6 +4693,26 @@
         "id": "finding_d2fe951005c971f897c1"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "shell/control_flow.sh",
+        "function_name": "process",
+        "line_start": 5,
+        "line_end": 36,
+        "details": {
+          "crap": 110.0,
+          "ccn": 10,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 5
+        },
+        "health_impact": 0.0,
+        "reason": "process has CRAP 110 (complexity 10, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_45212a20ebb63db6f7dc"
+      },
+      {
         "biomarker_type": "nested_complexity",
         "severity": "medium",
         "file_path": "swift/nested.swift",
@@ -3875,6 +4736,26 @@
         "id": "finding_d407fd3ab687e2789f32"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "swift/nested.swift",
+        "function_name": "deeplyNested",
+        "line_start": 3,
+        "line_end": 14,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 3
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_8bf514f1b02c06aca9a2"
+      },
+      {
         "biomarker_type": "low_cohesion",
         "severity": "medium",
         "file_path": "typescript/classes.ts",
@@ -3892,6 +4773,46 @@
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
         "dimension": "maintainability",
         "id": "finding_71eaf8ee511ffe4dce0d"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "typescript/conditionals.ts",
+        "function_name": "threeOps",
+        "line_start": 1,
+        "line_end": 6,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "threeOps has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_d6eb483a3c2792253001"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "typescript/conditionals.ts",
+        "function_name": "sixOps",
+        "line_start": 8,
+        "line_end": 21,
+        "details": {
+          "crap": 72.0,
+          "ccn": 8,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 8
+        },
+        "health_impact": 0.0,
+        "reason": "sixOps has CRAP 72 (complexity 8, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_97168cde0d08fc10589a"
       },
       {
         "biomarker_type": "complex_conditional",
@@ -3953,6 +4874,26 @@
         "reason": "deeplyNested nests 5 levels deep",
         "dimension": "defect",
         "id": "finding_28aa3ceec6692a33ea1e"
+      },
+      {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "typescript/nested.ts",
+        "function_name": "deeplyNested",
+        "line_start": 1,
+        "line_end": 19,
+        "details": {
+          "crap": 56.0,
+          "ccn": 7,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 1
+        },
+        "health_impact": 0.0,
+        "reason": "deeplyNested has CRAP 56 (complexity 7, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_b8dce4aaa790eae85100"
       },
       {
         "biomarker_type": "error_handling",

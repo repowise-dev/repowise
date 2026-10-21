@@ -504,6 +504,8 @@ class _Reports:
             path_prefix=self.cfg.path_prefix,
             report_prefixes=self.prefixes,
             ignore=self.cfg.ignore,
+            # The check stores nothing, so a fragment is judged, flagged partial.
+            allow_partial=True,
         )
 
 
@@ -537,9 +539,12 @@ def _resolve_reports(reports: _Reports, notices, keys=None, side: str = ""):
             "carry a build prefix, set coverage.strip_prefix in .repowise/config.yaml."
         )
     if resolved.mapping_partial:
+        from repowise.core.analysis.health.coverage import prefix_hint
+
+        hint = prefix_hint(resolved.suggested_prefixes)
         notices.print(
             "[yellow]More than half the report paths did not match a file in this "
-            "repository; check coverage.strip_prefix / coverage.path_prefix.[/yellow]"
+            f"repository; {escape(hint)}.[/yellow]"
         )
     return resolved
 

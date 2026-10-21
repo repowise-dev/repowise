@@ -19,6 +19,7 @@ BIOMARKER_LABELS: dict[str, str] = {
     "dry_violation": "DRY violation",
     "untested_hotspot": "Untested hotspot",
     "coverage_gap": "Coverage gap",
+    "untested_complexity": "Untested complexity",
     "coverage_gradient": "Coverage gradient",
     "developer_congestion": "Many authors",
     "knowledge_loss": "Fading ownership",

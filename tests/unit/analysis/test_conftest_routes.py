@@ -9,6 +9,7 @@ import pytest
 from repowise.core.analysis.conftest_routes import (
     ConftestFacts,
     conftest_use,
+    entry_names,
     local_names,
 )
 
@@ -627,3 +628,80 @@ def test_an_autouse_fixture_using_what_the_module_imports_or_holds_still_reaches
 ) -> None:
     use = _autouse("from app import store", line, _STORE_FUNCTIONS)
     assert use.run_all and "autouse fixture _f uses store" in use.run_all
+
+
+@pytest.mark.parametrize(
+    ("line", "narrowed"),
+    [
+        ('monkeypatch.setattr(store.Client, "detect", lambda self: False)', True),
+        ('monkeypatch.setattr(store.Client.Inner, "x", None)', True),
+        ('monkeypatch.setattr(store.make(), "x", None)', False),
+        ('monkeypatch.delattr(store.Client, "detect")', False),
+    ],
+)
+def test_patching_an_attribute_read_from_the_route_in_an_autouse_fixture_is_import_time_only(
+    line: str, narrowed: bool
+) -> None:
+    """A patch target that stops resolving fails the import check, which runs the fixture."""
+    use = _use(
+        f"""
+        import pytest
+        from app import store
+
+        @pytest.fixture(autouse=True)
+        def _isolate(monkeypatch):
+            {line}
+        """
+    )
+    assert (use.run_all is None) is narrowed
+
+
+_FACADE = {
+    "src/app/facade.py": (
+        "from app.console import NAMES as NAMES\n"
+        "from .console import reset\n"
+        "from app.console import LEVEL\n"
+        "from app.other import THING\n"
+        "from app import util\n"
+        "LEVEL = LEVEL + 1\n"
+    ),
+    "src/app/console.py": (
+        "import logging\nNAMES = ('a', 'b')\nLEVEL = 3\n_seen = {}\n\n"
+        "def reset():\n    _seen.clear()\n"
+    ),
+    "src/app/other.py": "from app.deep import THING\n",
+}
+
+
+def test_a_re_exported_local_name_is_stable_unless_the_change_is_where_it_is_defined() -> None:
+    names = entry_names("src/app/facade.py", _FACADE.get)
+    assert {"NAMES", "reset"} <= names.stable("src/app/util.py")
+    # The defining module is the change, so the name may be what changed.
+    assert not {"NAMES", "reset"} & names.stable("src/app/console.py")
+    # Rebound in the facade, or re-exported twice over: not followed.
+    assert not {"LEVEL", "THING", "util"} & names.stable("src/app/util.py")
+
+
+def test_a_re_exported_name_with_no_single_defining_file_stays_unresolved() -> None:
+    gone = {k: v for k, v in _FACADE.items() if k != "src/app/console.py"}
+    assert "NAMES" not in entry_names("src/app/facade.py", gone.get).stable("src/app/util.py")
+    # Two source roots both hold app/console.py: which one runs is unknown.
+    twice = {**_FACADE, "app/console.py": "NAMES = ()\n"}
+    assert "NAMES" not in entry_names("src/app/facade.py", twice.get).stable("src/app/util.py")
+
+
+@pytest.mark.parametrize("where", ["top", "fixture"])
+def test_an_autouse_fixture_reading_a_re_exported_constant_reaches_only_its_definer(
+    where: str,
+) -> None:
+    """``from facade import NAMES`` at top level or in the fixture body: an import-only route."""
+    imports, body = "from app.facade import NAMES", "loggers = list(NAMES)"
+    if where == "fixture":
+        imports, body = "", f"{imports}\n    {body}"
+    names = entry_names("src/app/facade.py", _FACADE.get)
+    source = f"import pytest\n{imports}\n\n@pytest.fixture(autouse=True)\ndef _f():\n    {body}\n"
+    entries = ["src/app/facade.py"]
+    behind = {"src/app/facade.py": names.stable("src/app/util.py")}
+    assert conftest_use(source, "tests/conftest.py", entries, behind).run_all is None
+    at_definer = {"src/app/facade.py": names.stable("src/app/console.py")}
+    assert conftest_use(source, "tests/conftest.py", entries, at_definer).run_all

@@ -156,6 +156,13 @@ export interface FileDetailCoverage {
   source_format: string;
   ingested_at: string | null;
   ingested_commit_sha: string | null;
+  /**
+   * Whether `covered_lines` still lines up with the file on disk: `stale` when
+   * git shows the file changed since `ingested_commit_sha`, `unknown` when it
+   * cannot tell. Only `stale` withholds the line tint. Optional so older
+   * payloads parse.
+   */
+  freshness?: "current" | "stale" | "unknown";
 }
 
 export interface FileGraphNeighbor {

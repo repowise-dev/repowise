@@ -105,7 +105,10 @@ STORE_FORMAT_VERSION: int = 2
 #: A top-level Kotlin declaration with two annotations (``@Preview @Composable
 #: private fun f()``) that the grammar read as an expression is re-parsed with its
 #: leading annotations blanked, so it becomes a symbol again.
-PARSER_SCHEMA_VERSION: int = 9
+#:
+#: v10: a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
+#: is not a test by that folder alone, which moves its stored ``is_test``.
+PARSER_SCHEMA_VERSION: int = 10
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

@@ -55,7 +55,7 @@ normalized once (keyed by repo-relative POSIX path) and fed to
 total_coverable_lines)` pin a file down; an entry that anchors none is
 skipped (absent ≠ zero).
 - `detect_format(text)` — returns the sniffed format or ``None``.
-- `is_test_file(path, source=None)` — path + optional content heuristic.
+- `is_test_file(path, source=None, *, roots=None)` — path + optional content heuristic; pass pytest `roots` so a module pytest does not collect is not a test. Callers holding the stored `is_test` flag use that instead.
 - `paired_test_file(path, all_paths)` — find the conventional test
   partner for a source path.
 

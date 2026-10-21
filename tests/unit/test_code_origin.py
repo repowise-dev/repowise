@@ -47,6 +47,10 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        # a `tests/` folder inside a JS-family `src` tree is a product feature
+        ("packages/web/src/app/repos/[id]/tests/page.tsx", "production"),
+        ("packages/web/src/components/tests/tests-view.tsx", "production"),
+        ("packages/web/src/components/tests/tests-view.test.tsx", "test"),
         ("vendor/github.com/x/y.go", "vendored"),
         ("web/node_modules/lodash/index.js", "vendored"),
         ("static/bower_components/jquery/jquery.js", "vendored"),

@@ -654,27 +654,6 @@
         "evidence": [
           {
             "basis": "inferred",
-            "source_file": "src/inferred.py",
-            "source_format": null,
-            "via": "import-graph"
-          }
-        ],
-        "repository": "<bare>",
-        "repository_id": "<bare>",
-        "source_files": [
-          "src/inferred.py"
-        ],
-        "test_file": "tests/excluded/test_hidden.py",
-        "test_id": "tests/excluded/test_hidden.py"
-      },
-      {
-        "bases": [
-          "inferred"
-        ],
-        "basis": "inferred",
-        "evidence": [
-          {
-            "basis": "inferred",
             "source_file": "src/both.py",
             "source_format": null,
             "via": "import-graph"
@@ -708,6 +687,27 @@
         ],
         "test_file": "tests/test_inferred.py",
         "test_id": "tests/test_inferred.py"
+      },
+      {
+        "bases": [
+          "inferred"
+        ],
+        "basis": "inferred",
+        "evidence": [
+          {
+            "basis": "inferred",
+            "source_file": "src/inferred.py",
+            "source_format": null,
+            "via": "import-graph"
+          }
+        ],
+        "repository": "<bare>",
+        "repository_id": "<bare>",
+        "source_files": [
+          "src/inferred.py"
+        ],
+        "test_file": "tests/excluded/test_hidden.py",
+        "test_id": "tests/excluded/test_hidden.py"
       }
     ],
     "recommendations_by_primary_basis": {
@@ -1207,27 +1207,6 @@
         "evidence": [
           {
             "basis": "inferred",
-            "source_file": "src/inferred.py",
-            "source_format": null,
-            "via": "import-graph"
-          }
-        ],
-        "repository": "<stale>",
-        "repository_id": "<stale>",
-        "source_files": [
-          "src/inferred.py"
-        ],
-        "test_file": "tests/excluded/test_hidden.py",
-        "test_id": "tests/excluded/test_hidden.py"
-      },
-      {
-        "bases": [
-          "inferred"
-        ],
-        "basis": "inferred",
-        "evidence": [
-          {
-            "basis": "inferred",
             "source_file": "src/both.py",
             "source_format": null,
             "via": "import-graph"
@@ -1261,6 +1240,27 @@
         ],
         "test_file": "tests/test_inferred.py",
         "test_id": "tests/test_inferred.py"
+      },
+      {
+        "bases": [
+          "inferred"
+        ],
+        "basis": "inferred",
+        "evidence": [
+          {
+            "basis": "inferred",
+            "source_file": "src/inferred.py",
+            "source_format": null,
+            "via": "import-graph"
+          }
+        ],
+        "repository": "<stale>",
+        "repository_id": "<stale>",
+        "source_files": [
+          "src/inferred.py"
+        ],
+        "test_file": "tests/excluded/test_hidden.py",
+        "test_id": "tests/excluded/test_hidden.py"
       }
     ],
     "recommendations_by_primary_basis": {

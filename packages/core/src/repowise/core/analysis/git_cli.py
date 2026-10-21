@@ -104,7 +104,12 @@ def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
     return proc.stdout
 
 
-def untracked_paths(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> list[str]:
+def untracked_paths(
+    repo_path: str,
+    exclude_patterns: tuple[str, ...] = (),
+    *,
+    pathspecs: Sequence[str] = (":/",),
+) -> list[str]:
     """Untracked, not-ignored files, root-relative like ``git diff``'s paths.
 
     The one source of untracked files for every working-tree reader (the score,
@@ -112,9 +117,10 @@ def untracked_paths(repo_path: str, exclude_patterns: tuple[str, ...] = ()) -> l
     repowise writes whole are left out here, before anything reads them: an
     unignored index directory holds thousands of files. *exclude_patterns*
     (gitignore-style) drops a caller's excluded paths at the same point.
+    *pathspecs* narrows the listing (the whole repo by default).
     """
     listing = _git(
-        ["ls-files", "--others", "--exclude-standard", "-z", "--full-name", "--", ":/"],
+        ["ls-files", "--others", "--exclude-standard", "-z", "--full-name", "--", *pathspecs],
         repo_path,
         check=False,
     )

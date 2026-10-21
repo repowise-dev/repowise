@@ -52,7 +52,8 @@ Row shapes (the field names are the SQL columns):
     ``partial``.
 ``test_map``
     One mapping of path to ``total`` (test files that reach it in the code
-    graph) and ``via`` (the walk), for :func:`reach_paths`; see
+    graph) and ``via`` (the walk, or ``mocked-only`` with a total of 0 when
+    only tests replacing the file reach it), for :func:`reach_paths`; see
     ``repowise.core.analysis.test_reachability.any_tests_reaching``.
 """
 
@@ -73,6 +74,7 @@ from repowise.core.analysis.health.queue.eligibility import perf_confident_verdi
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.scoring import HISTORY_CATEGORY, biomarker_category
 from repowise.core.author_identity import author_identity_key
+from repowise.core.test_paths import is_test_related_path
 
 from .context import WEEK, build_context
 from .facts import (
@@ -121,17 +123,12 @@ def _open(row: Any) -> bool:
     return (field(row, "status") or "open") == "open"
 
 
-def _is_test(path: str, files: Mapping[str, FileFacts]) -> bool:
-    f = files.get(path)
-    return f is not None and f.is_test
-
-
-def _test_path(path: str | None) -> bool:
-    lowered = (path or "").lower()
-    return any(
-        seg in lowered
-        for seg in ("/tests/", "/test/", "__tests__", "/fixtures/", ".test.", ".spec.", "_test.")
-    ) or lowered.startswith(("tests/", "test/"))
+def _is_test(path: str | None, files: Mapping[str, FileFacts]) -> bool:
+    """The stored test flag, or the shared classifier for a file the index lacks."""
+    f = files.get(path or "")
+    if f is not None:
+        return f.is_test
+    return bool(path) and is_test_related_path(path)
 
 
 # --- files --------------------------------------------------------------------
@@ -453,7 +450,6 @@ def build_secrets(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             and field(r, "severity") == "high"
             and field(r, "kind") in kinds
             and not _is_test(field(r, "file_path"), files)
-            and not _test_path(field(r, "file_path"))
         )
     }
 
@@ -493,7 +489,6 @@ def build_dead(rows: Rows, files: Mapping[str, FileFacts]) -> dict[str, Any]:
             and field(r, "safe_to_delete")
             and is_served("dead_code", field(r, "kind"), field(r, "file_path"), skipped)
             and not _is_test(field(r, "file_path"), files)
-            and not _test_path(field(r, "file_path"))
         )
     }
 

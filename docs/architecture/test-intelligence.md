@@ -4,8 +4,7 @@ How repowise answers "which tests reach this file" and "which tests should I
 run" with no coverage report. For the user-facing layer, see
 [layers/TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md).
 
-Code: `packages/core/src/repowise/core/analysis/test_reachability.py` (the
-walks), `analysis/test_selection.py` (runner arguments for `impacted-tests`),
+Code: `packages/core/src/repowise/core/analysis/test_reach/` (the walks), `analysis/test_selection.py` (runner arguments for `impacted-tests`),
 `analysis/health/coverage/` (report parsers, discovery, path matching) and
 `persistence/crud/analysis/coverage_map.py` (the measured per-test map).
 
@@ -128,6 +127,28 @@ The inferred map is read from `graph_edges` when asked and never written to
 The health pass computes the whole-repo answer in one multi-source walk, once
 per run, and caches it. The per-change walk reads the same edge table
 `pr_blast` reads.
+
+## One walk, two graph sources
+
+The reverse walks are written once and run over the stored graph or over a
+graph held in memory (`build_walk_maps` on the NetworkX graph or its node-link
+JSON), and both return the same rows. `reach_states` gives each file a typed
+state: `reached`, `unreached`, `new`, `no_signal`, `type_only` or
+`mocked_only`. A file is
+`unreached` only when the call walk, the helper and barrel hop and the whole
+import closure all miss it, and a test the change adds or edits that is named
+for the file or imports it, or the file's own inline tests (Rust
+`#[cfg(test)]`, a Go `_test.go` beside it), count as reaching it.
+
+A Python test that swaps a module object out (`patch("pkg.helpers")`,
+`patch.object(pkg, "helpers")`, `monkeypatch.setattr`, a `sys.modules` entry)
+does not reach that module through the swap. A file only such tests reach is
+`mocked_only`, read from the test files' text at walk time, never stored.
+Patching a name inside a module, a run-time target, or a patch with `wraps`,
+`side_effect` or `autospec` keeps the reach. In JavaScript and TypeScript,
+`vi.mock` / `jest.mock` swaps a module out when its factory takes no parameter
+and returns only literals and `vi.fn()` / `jest.fn()`; an automock, `doMock`, a
+factory that reads the original, or a non-relative specifier keeps the reach.
 
 ## Measured map internals
 

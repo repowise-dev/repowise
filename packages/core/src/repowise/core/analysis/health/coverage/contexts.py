@@ -38,6 +38,23 @@ PER_TEST_COVERAGE_COMMAND = "pytest --cov --cov-context=test"
 # coverage.py sqlite files start with the standard SQLite magic header.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 
+#: Why a ``.coverage`` gives no per-file coverage: its schema stores the lines
+#: that ran, never the executable set, so no percentage can be taken from it.
+COVERAGE_DATA_FILE_NOTE = (
+    "a coverage.py data file records the lines that ran but not which lines are "
+    "executable, so it gives no per-file coverage; export it with `coverage lcov` "
+    "or `coverage xml` and add that report"
+)
+
+
+def is_coverage_data_file(path: str | Path) -> bool:
+    """True when *path* is a coverage.py ``.coverage`` sqlite (binary magic)."""
+    try:
+        with Path(path).open("rb") as fh:
+            return fh.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
 
 def parse_lcov_contexts(text: str) -> ContextCoverageReport:
     """Parse per-test records from an lcov report's ``TN:`` names.
@@ -203,15 +220,9 @@ def parse_contexts_file(path: str | Path) -> ContextCoverageReport:
     empty aggregate-only report rather than raising.
     """
     p = Path(path)
-    try:
-        with p.open("rb") as fh:
-            head = fh.read(len(_SQLITE_MAGIC))
-    except OSError:
-        return ContextCoverageReport(source_format="unknown", has_contexts=False)
-
-    if head == _SQLITE_MAGIC:
+    if is_coverage_data_file(p):
         return parse_coverage_sqlite(p)
     try:
         return parse_lcov_contexts(p.read_text(encoding="utf-8"))
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ContextCoverageReport(source_format="unknown", has_contexts=False)

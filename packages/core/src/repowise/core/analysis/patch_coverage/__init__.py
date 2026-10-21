@@ -64,6 +64,7 @@ from .risk import (
 )
 from .stored import (
     attach_history_delta,
+    file_on_disk_freshness,
     history_delta,
     ingest_scope,
     ingest_totals,
@@ -100,6 +101,7 @@ __all__ = [
     "build_hints",
     "cause_words",
     "compute_patch_coverage",
+    "file_on_disk_freshness",
     "first_hint",
     "fmt_pct",
     "format_ranges",

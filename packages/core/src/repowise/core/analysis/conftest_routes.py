@@ -18,7 +18,8 @@ through its imports can break a test through either:
    working fails there as well.
 2. **What the conftest does with the module.** A fixture, a hook or
    module-level code that names something from a module on the route, in any
-   way but as the ``setattr`` target in an autouse fixture or hook,
+   way but as the ``setattr`` target (the module or an attribute of it) in an
+   autouse fixture or hook,
    can change what a test sees: calling it, reading a constant, comparing,
    iterating or formatting it all do. An autouse fixture, a ``pytest_*`` hook,
    module-level code (class bodies included) and a fixture or hook defined in
@@ -33,7 +34,9 @@ change is. One exception: reading a literal constant of a module on the route,
 or calling a function of it that uses nothing the module imports beyond standard
 modules that cannot load code by name (:func:`local_names`), depends on that
 module's text alone, so it reaches a change only in that module, not one in a
-module it merely imports. A binding the conftest never reads (``import
+module it merely imports. The same holds for such a name a module on the route
+re-exports (``from .console import NAMES as NAMES``): it reaches a change only
+in the module that defines it (:func:`entry_names`). A binding the conftest never reads (``import
 app.models  # registers them``) is imported for its side effects, which every
 test sees, so it keeps every test.
 
@@ -81,8 +84,8 @@ from ..ingestion.framework_edges.pytest_edges import (
 )
 from ..ingestion.languages.python_modules import module_parts
 from ..ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
-from .test_reachability import _in_clause
-from .test_selection import is_runnable_test, scope_kind
+from .test_reach.db import _in_clause
+from .test_selection import BROADCAST_VIA, is_runnable_test, scope_kind
 
 # The call whose first argument is the object an attribute is patched on:
 # naming a module there in an autouse fixture is caught by the import check.
@@ -236,9 +239,11 @@ def _parents(tree: ast.AST) -> dict[int, ast.AST]:
 
 
 def _patch_target(name: ast.Name, parents: Mapping[int, ast.AST]) -> bool:
-    """Whether the name is the first argument of an attribute patch or probe call."""
-    par = parents.get(id(name))
-    if not (isinstance(par, ast.Call) and par.args and par.args[0] is name):
+    """Whether the name, or an attribute chain read from it (``mod.Cls``), is the
+    first argument of an attribute patch call."""
+    node, _ = _dotted_read(name, parents)
+    par = parents.get(id(node))
+    if not (isinstance(par, ast.Call) and par.args and par.args[0] is node):
         return False
     func = par.func
     called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
@@ -523,6 +528,82 @@ def local_names(source: str) -> frozenset[str]:
     return frozenset(
         names.literals | local | {f"{n}.{method}" for n, method in names.resets.items()}
     )
+
+
+@dataclass(frozen=True)
+class EntryNames:
+    """A route entry's names whose use depends on one file's text (:func:`entry_names`)."""
+
+    own: frozenset[str] = frozenset()
+    # {the file a name is re-exported from: those names, as the entry binds them}
+    borrowed: Mapping[str, frozenset[str]] = field(default_factory=dict)
+
+    def stable(self, target: str) -> frozenset[str]:
+        """The names whose use cannot reach a change in *target*."""
+        return self.own.union(*(n for origin, n in self.borrowed.items() if origin != target))
+
+
+def _reexports(source: str, here: tuple[str, ...]) -> dict[str, tuple[tuple[str, ...], str]]:
+    """``{bound name: (module, the name imported)}`` for each name *source* binds once,
+    by a top-level ``from`` import."""
+    try:
+        tree = parse_python(source)
+    except (SyntaxError, ValueError):
+        return {}
+    counts = Counter(n for node in ast.walk(tree) for n in _bound_names(node))
+    if "*" in counts:
+        return {}
+    return {
+        alias.asname or alias.name: (_from_module(stmt, here), alias.name)
+        for stmt in tree.body
+        if isinstance(stmt, ast.ImportFrom)
+        for alias in stmt.names
+        if counts[alias.asname or alias.name] == 1
+    }
+
+
+def _module_file(
+    module: tuple[str, ...], entry: str, read: Callable[[str], str | None]
+) -> str | None:
+    """The one readable file *module* names, from the repository root or a source root
+    above *entry*; ``None`` when none is, or several are.
+
+    Ceiling: a module under another source root (a namespace package split
+    across distributions) is not found, so its names stay unresolved.
+    """
+    if not module:
+        return None
+    parts = PurePosixPath(entry).parts
+    roots = [()] + [parts[:i] for i in range(1, len(parts)) if parts[i] == module[0]]
+    found = {
+        path
+        for root in roots
+        for path in ("/".join((*root, *module)) + ".py", "/".join((*root, *module, "__init__.py")))
+        if read(path) is not None
+    }
+    return found.pop() if len(found) == 1 else None
+
+
+def entry_names(path: str, read: Callable[[str], str | None]) -> EntryNames:
+    """The :func:`local_names` of the file at *path*, and those it re-exports.
+
+    A name the module binds once by ``from X import N`` reads ``X.N``, so when
+    ``N`` is a local name of ``X`` its use depends on ``X``'s text alone. One
+    hop: a name ``X`` itself re-exports stays unresolved.
+    """
+    source = read(path) or ""
+    parts = module_parts(path)
+    here = parts if PurePosixPath(path).name == "__init__.py" else parts[:-1]
+    borrowed: dict[str, set[str]] = {}
+    for bound, (module, name) in _reexports(source, here).items():
+        origin = _module_file(module, path, read)
+        if origin is None or origin == path:
+            continue
+        names = local_names(read(origin) or "")
+        mine = {bound + n[len(name) :] for n in names if n == name or n.startswith(f"{name}.")}
+        if mine:
+            borrowed.setdefault(origin, set()).update(mine)
+    return EntryNames(local_names(source), {o: frozenset(n) for o, n in borrowed.items()})
 
 
 def _dotted_read(name: ast.Name, parents: Mapping[int, ast.AST]) -> tuple[ast.AST, list[str]]:
@@ -1003,7 +1084,7 @@ def _judge_routes(
     """Set each route's use and reason. One parse per conftest and per entry; each distinct
     route through it is matched against it once."""
     facts: dict[str, ConftestFacts | None] = {}
-    consts: dict[str, frozenset[str]] = {}
+    consts: dict[str, EntryNames] = {}
     uses: dict[tuple, ConftestUse] = {}
     for target, conf, route in ((t, c, r) for t, by in routes.items() for c, r in by.items()):
         if conf not in facts:
@@ -1012,8 +1093,8 @@ def _judge_routes(
         # The changed file's own local names may be what changed.
         others = route.entries - {target}
         for e in others - set(consts) if read_source else ():
-            consts[e] = local_names(read_source(e) or "")
-        stable = {e: consts[e] for e in others if consts.get(e)}
+            consts[e] = entry_names(e, read_source)
+        stable = {e: names for e in others if e in consts and (names := consts[e].stable(target))}
         _judge(conf, route, facts[conf], plugin_loader, uses, stable)
 
 
@@ -1032,7 +1113,7 @@ def _judge(
     elif parsed is None:
         route.reason = f"{conf} could not be read"
     else:
-        key = (conf, route.entries, frozenset(stable))
+        key = (conf, route.entries, frozenset(stable.items()))
         if key not in uses:
             uses[key] = parsed.use(route.entries, stable)
         route.use = uses[key]
@@ -1106,8 +1187,13 @@ def _narrow(
     scope: _Scope,
     notes: dict[tuple[str, str], list[str]],
 ) -> list[tuple[str, str]]:
-    """One target's picks, each narrowable conftest replaced by the tests it can break."""
+    """One target's picks, each narrowable conftest replaced by the tests it can break.
+
+    A test only a conftest keeping every test under it adds is labelled
+    :data:`BROADCAST_VIA`.
+    """
     blocked: set[str] = set()
+    spread: set[str] = set()
     added: dict[str, str] = {}
     narrowed: list[str] = []
     hidden_importer = scope.unresolved_conftest_import()
@@ -1115,6 +1201,7 @@ def _narrow(
         reason, users = _route_users(conf, route, scope, hidden_importer)
         if reason is not None:
             _add_note(notes, (f"{conf} keeps every test under it for ", f": {reason}"), target)
+            spread.add(conf)
             continue
         if route.use is None:
             # Reached only through another conftest's tests, which decide it.
@@ -1127,7 +1214,13 @@ def _narrow(
     kept = {t: v for t, v in picks.items() if t not in blocked}
     for test, via in added.items():
         kept.setdefault(test, via)
+    # Before the walk below, which adds to the dict it is given.
+    start = {t: v for t, v in kept.items() if t not in spread}
     result = dict(with_importers(kept, scope.parents, blocked))
+    if spread:
+        inner = dict(with_importers(start, scope.parents, blocked | spread))
+        for t in [t for t in result if t not in inner and t not in spread]:
+            result[t] = BROADCAST_VIA
     for conf in narrowed:
         check = _add_import_check(conf, result, scope)
         _add_note(notes, _narrow_note(conf, routes[conf], check), target)

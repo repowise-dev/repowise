@@ -8,6 +8,7 @@ from an empty recommendation population.
 
 from __future__ import annotations
 
+import sys
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
@@ -16,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
-from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET, rank_tests
+from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET, rank_reaching
 from repowise.core.analysis.test_selection import expand_test_scopes
 from repowise.core.exclusion import is_excluded
 from repowise.core.persistence.models import Repository
@@ -58,15 +59,6 @@ _FRESHNESS_REASONS: dict[str, str | None] = {
     "stale": "coverage_commit_differs_from_index",
     "unknown": "coverage_or_index_commit_unavailable",
 }
-
-
-def _recommendation_sort_key(row: dict[str, Any]) -> tuple[int, int, str, str]:
-    return (
-        -len(row["source_files"]),
-        _BASIS_ORDER[row["basis"]],
-        row["repository"],
-        row["test_id"],
-    )
 
 
 async def analyze_test_impact(
@@ -156,20 +148,33 @@ async def _read_inferred(
     session: AsyncSession, repository_id: str, changed: list[str]
 ) -> tuple[dict[str, dict[str, Any]], set[str], str | None]:
     """The tests the graph walk reaches per changed path, the test files, and the walk error."""
-    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching_by_tier
+    from repowise.core.analysis.test_reachability import (
+        cached_hub_files,
+        load_test_files,
+        tests_reaching_by_tier,
+    )
 
     inference_error: str | None = None
     test_files: set[str] = set()
     try:
         test_files = await load_test_files(session, repository_id)
         reached_by_file = await tests_reaching_by_tier(
-            session, repository_id, changed, test_files=test_files
+            session,
+            repository_id,
+            changed,
+            test_files=test_files,
+            hubs=await cached_hub_files(session, repository_id),
         )
     except Exception as exc:
         reached_by_file = {}
         inference_error = type(exc).__name__
     inferred = {
-        path: {"tests": list(reached.all_tests or reached.tests), "via": reached.via}
+        path: {
+            "tests": list(reached.all_tests or reached.tests),
+            "via": reached.via,
+            "reach": reached.reach,
+            "transitive": reached.transitive,
+        }
         for path, reached in reached_by_file.items()
     }
     if inference_error is None:
@@ -215,11 +220,13 @@ def assemble_test_impact(
     when *coverage_summary* reports pairs. *inferred_by_file* maps a changed path
     to ``{"tests": [...], "via": tier}``, both keys required, with ``tests`` the
     uncapped list (``ReachedBy.all_tests``, not the display-capped ``tests``), and
-    ``narrowed`` true when a reached conftest was already resolved to its tests;
-    paths outside *changed_files* are ignored. That list is used as the walk
-    found it, except where a scope file expanded (below). *coverage_summary* carries
-    ``pair_count``, ``test_count``, ``source_file_count``, ``ingested_at``,
-    ``source_format`` and ``ingested_commit_sha``. The ``*_error`` arguments
+    ``narrowed`` true when a reached conftest was already resolved to its tests,
+    and optional ``reach`` and ``transitive`` (from ``ReachedBy``); paths
+    outside *changed_files* are ignored. That list is used in the walk's order,
+    except where a scope file expanded (below), and inferred recommendations
+    keep that order. *coverage_summary* carries ``pair_count``, ``test_count``,
+    ``source_file_count``, ``ingested_at``, ``source_format`` and
+    ``ingested_commit_sha``. The ``*_error`` arguments
     are the exception type names of a failed read; each marks the analysis degraded.
     *changed_files* is filtered by *exclude_spec* here too.
 
@@ -289,6 +296,8 @@ def assemble_test_impact(
     inferred_tests_by_file: dict[str, list[str]] = {path: [] for path in changed}
     evidence: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     test_files: dict[tuple[str, str], set[str]] = defaultdict(set)
+    # Each inferred test's best place in a walk's ranked list (rank_reaching).
+    walk_order: dict[tuple[str, str], int] = {}
 
     summary = coverage_summary
     map_present = summary.get("pair_count", 0) > 0
@@ -335,10 +344,18 @@ def assemble_test_impact(
         if reached.get("narrowed") or expanded != list(reached["tests"]):
             # A root conftest stands for every test in the repository: rank the
             # expansion nearest-first and keep the walk's own per-target cap.
-            kept_tests = rank_tests(path, kept_tests)[:MAX_TESTS_PER_TARGET]
-        for test_id in kept_tests:
+            kept_tests = rank_reaching(
+                path,
+                kept_tests,
+                reach=reached.get("reach"),
+                changed=changed,
+                transitive=reached.get("transitive") or (),
+            )
+            kept_tests = kept_tests[:MAX_TESTS_PER_TARGET]
+        for place, test_id in enumerate(kept_tests):
             inferred_tests_by_file[path].append(test_id)
             key = (repository_id, test_id)
+            walk_order[key] = min(walk_order.get(key, place), place)
             test_files[key].add(test_id)
             detail = {
                 "basis": "inferred",
@@ -373,7 +390,15 @@ def assemble_test_impact(
                 "evidence": details,
             }
         )
-    recommendations.sort(key=_recommendation_sort_key)
+    recommendations.sort(
+        key=lambda row: (
+            -len(row["source_files"]),
+            _BASIS_ORDER[row["basis"]],
+            row["repository"],
+            walk_order.get((row["repository_id"], row["test_id"]), sys.maxsize),
+            row["test_id"],
+        )
+    )
 
     matched_files = sum(bool(tests) for tests in measured_tests_by_file.values())
     coverage_reason: str | None

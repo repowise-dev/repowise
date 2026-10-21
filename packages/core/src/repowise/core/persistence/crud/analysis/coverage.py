@@ -457,10 +457,13 @@ async def load_coverage_map(session: AsyncSession, repository_id: str) -> dict[s
     """Stored coverage in the shape ``HealthAnalyzer`` takes as ``coverage_map``."""
     from repowise.core.analysis.health.coverage.model import coverage_map_entry
 
-    # Health scoring never reads the executable-line set, so its blob is not
-    # loaded (it is at least as large as the covered set).
+    # Both line sets: per-function coverage divides covered by executable lines.
     result = await session.execute(
-        select(*_COVERAGE_SCALAR_COLUMNS, CoverageFile.covered_lines_json).where(
+        select(
+            *_COVERAGE_SCALAR_COLUMNS,
+            CoverageFile.covered_lines_json,
+            CoverageFile.coverable_lines_json,
+        ).where(
             CoverageFile.repository_id == repository_id
         )
     )

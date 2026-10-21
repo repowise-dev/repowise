@@ -451,6 +451,71 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     assert it["summary"] == "1 test(s) to run for this change, every test file there is."
 
 
+async def test_a_test_file_the_change_edits_leads_the_inferred_run_list(tmp_path, monkeypatch):
+    """Twelve broad tests import both changed sources; the one test file the
+    change edits imports one. It still leads, inside the ten shown."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    generic = [f"tests/test_aaa_generic_{i:02}.py" for i in range(12)]
+    edited = "tests/test_duplication.py"
+    _commit(
+        repo,
+        {
+            "src/dup.py": "a\n",
+            "src/tok.py": "a\n",
+            edited: "from src import dup\n",
+            **dict.fromkeys(generic, "from src import dup, tok\n"),
+        },
+        "chore: seed",
+    )
+    _commit(
+        repo,
+        {"src/dup.py": "a\nb\n", "src/tok.py": "a\nb\n", edited: "from src import dup\n\n"},
+        "feat: edit",
+    )
+
+    factory = await _factory_with_repo(None, head_commit=_sha(repo, "HEAD~1"))
+    async with factory() as s:
+        for path in (*generic, edited, "src/dup.py", "src/tok.py"):
+            is_test = path.startswith("tests/")
+            s.add(
+                GraphNode(
+                    repository_id="repo1",
+                    node_id=path,
+                    node_type="file",
+                    is_test=is_test,
+                    always_run_reason="" if is_test else None,
+                )
+            )
+        imports = [(edited, "src/dup.py")]
+        imports += [(t, src) for t in generic for src in ("src/dup.py", "src/tok.py")]
+        for source, target in imports:
+            s.add(
+                GraphEdge(
+                    repository_id="repo1",
+                    source_node_id=source,
+                    target_node_id=target,
+                    edge_type="imports",
+                )
+            )
+        await s.commit()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+
+    assert it["basis"] == "inferred"
+    assert it["tests_to_run"][0] == edited
+    assert len(it["tests_to_run"]) == 10
+
+
 @pytest.mark.parametrize(
     ("files", "summary"),
     [

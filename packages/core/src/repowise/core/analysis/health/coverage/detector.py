@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ....test_paths import is_test_related_path
 from .clover import parse_clover
@@ -38,6 +39,9 @@ from .jacoco import parse_jacoco
 from .lcov import parse_lcov
 from .model import CoverageReport
 from .repowise_json import parse_repowise_json
+
+if TYPE_CHECKING:
+    from ....pytest_roots import PytestRoots
 
 # Test framework import patterns — used when the path heuristic is
 # inconclusive. Detected via cheap substring scan (no tree-sitter pass).
@@ -146,15 +150,19 @@ def parse(text: str, *, format: str | None = None) -> CoverageReport:
     return parser(text.lstrip(_BOM))
 
 
-def is_test_file(rel_path: str, source: str | None = None) -> bool:
+def is_test_file(
+    rel_path: str, source: str | None = None, *, roots: PytestRoots | None = None
+) -> bool:
     """Does *rel_path* look like a test file?
 
     The path rules live in :mod:`repowise.core.test_paths`, the one home for
     them (#1103). What this adds is the *source* branch: given a file body, a
     test-framework import marks a test whose path follows no convention at all,
-    which no amount of path matching can tell you.
+    which no amount of path matching can tell you. Pass *roots* so pytest's
+    config can keep a test-named production module (``core/test_x.py``) out.
+    Callers holding a stored ``is_test`` flag should read that instead.
     """
-    if is_test_related_path(rel_path):
+    if is_test_related_path(rel_path, roots=roots):
         return True
     if source:
         head = source[:4096]

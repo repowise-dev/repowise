@@ -838,6 +838,14 @@ def test_fragile_no_test_reaches_says_add_tests() -> None:
     assert (reach.value, reach.basis) == ("None in the code graph", "inferred")
 
 
+def test_fragile_reached_only_by_replacing_tests_gives_that_reason_not_none() -> None:
+    f = _file("src/a.py", tests_reaching=0, tests_reaching_via="mocked-only")
+    (a,) = _run(code.fragile_file, _facts([f])).actions
+    assert a.title.startswith("Add tests around `src/a.py`")
+    reach = next(w for w in a.why if w.label == "tests that reach it")
+    assert (reach.value, reach.basis) == ("Only tests that replace it reach it", "inferred")
+
+
 def test_fragile_unknown_reach_is_not_zero() -> None:
     """A failed test-map walk claims neither "add tests" nor "tests reach it"."""
     lead = LeadFinding("complex_method", "high", "run", 10, "")
@@ -894,3 +902,25 @@ def test_history_at_the_busy_floor_or_uncounted_is_not_flagged() -> None:
         facts = _facts(files, history_commits=commits)
         assert build_context(facts).history_too_short is False
         assert _run(code.fragile_file, facts).status == "evaluated"
+
+
+def _dead_row(path: str) -> dict:
+    return {"id": path, "kind": "unused_export", "file_path": path, "symbol_name": "old",
+            "lines": 5, "safe_to_delete": True, "status": "open"}
+
+
+def test_dead_code_actions_skip_tests_by_the_shared_classifier() -> None:
+    from repowise.core.analysis.actions.build import build_dead
+
+    paths = ("src/components/tests/tests-view.tsx", "src/components/foo.test.ts")
+    dead = build_dead([_dead_row(p) for p in paths], {})
+    assert [d.file_path for d in dead["dead"]] == ["src/components/tests/tests-view.tsx"]
+
+
+def test_dead_code_actions_read_the_stored_test_flag_first() -> None:
+    from repowise.core.analysis.actions.build import build_dead
+
+    path = "core/check_test.py"
+    stored = {path: _file(path, is_test=False)}
+    assert [d.file_path for d in build_dead([_dead_row(path)], stored)["dead"]] == [path]
+    assert build_dead([_dead_row(path)], {})["dead"] == ()

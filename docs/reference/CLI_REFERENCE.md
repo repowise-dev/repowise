@@ -1122,7 +1122,13 @@ per-file `selected.basis`: `full-run`, `no-tests-needed`, `test-tree`,
 `test-package`, `conftest`, `helper-importers`, `deleted-test`, `coverage`,
 `changed-test`, `call-graph`, `import-graph`, `filename-pattern`, `unknown`,
 or `none` (no index), and a per-test `selected.why`: the first changed file and
-evidence that selected it, or why it runs with every subset. When it runs everything:
+evidence that selected it, or why it runs with every subset. `selected.broadcast`
+maps each selected test file that runs only because a conftest or test-package
+`__init__.py` on a route keeps every test under it to that file; agent views
+count these apart from the tests the change reaches. `selected.import_closure`
+maps each selected test file the change reaches only through imports, more than
+one file away and with no call path, to its distance; these are counted apart
+too. When it runs everything:
 [CI](../start/CI.md#selecting-the-tests-a-change-needs).
 
 **Run order.** `--format args` and `json` list the selected tests likeliest to fail
@@ -1405,7 +1411,14 @@ repowise coverage suggest-gates         # propose path-scoped gates for coverage
 | `--path` | Repo path (defaults to cwd / workspace primary) |
 | `--format` | Force a parser instead of auto-detecting: `lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco` |
 | `--strict` | Also exit non-zero when some report files did not map to the repo tree |
+| `--allow-partial` | Store the coverage even when more than half the report did not map to the repo tree; the rows are flagged partial |
 | `--verbose` / `-v` | Show debug logs while discovering and ingesting coverage |
+
+When more than half the report did not map to the repo tree, `add` stores
+nothing, exits `1`, and suggests the `coverage.strip_prefix` or
+`coverage.path_prefix` that would map it. `init` and `update` keep no coverage
+from such a report either, so an `update` that re-reads it clears a fragment
+stored with `--allow-partial`.
 
 Each `PATH` is a report path or a quoted glob, relative to cwd, as in
 `coverage check --report`; only when it matches nothing is it read as
@@ -1415,15 +1428,17 @@ successful ingest also syncs the opt-in coverage re-ingest hook
 (`hooks.coverage_reingest`).
 
 `add` ingests per-file line/branch coverage from LCOV, Cobertura, Clover,
-JaCoCo XML, a Go coverprofile (`go test -coverprofile`), or a coverage.py
-`.coverage` file. It auto-discovers `coverage/lcov.info`, `.coverage`,
+JaCoCo XML, or a Go coverprofile (`go test -coverprofile`). A coverage.py
+`.coverage` file records the lines that ran but not which lines are executable,
+so it gives the per-test map only; export it with `coverage lcov` for per-file
+coverage. It auto-discovers `coverage/lcov.info`, `.coverage`,
 `coverage.out`, `target/site/jacoco/jacoco.xml`, and similar reports when no
 path is given, and
 merges multiple reports (hit wins). When the report carries per-test contexts,
 a coverage.py `.coverage` recorded with per-test contexts
 (`pytest --cov=<package> --cov-context=test`, needs pytest-cov), or a
 per-test lcov, `add` also builds the per-test *test-to-code map*, which test
-covers which source lines. A report without contexts still ingests the
+covers which source lines. A text report without contexts still ingests the
 per-file coverage; it just skips the map.
 
 ```bash
@@ -1434,7 +1449,7 @@ repowise coverage add 'artifacts/**/lcov.info'   # every shard's report
 repowise coverage add web/coverage/lcov.info=web # report paths are relative to web/
 repowise coverage add --verbose             # show ingestion debug logs
 pytest --cov=<package> --cov-context=test   # produce .coverage with contexts (needs pytest-cov)
-repowise coverage add .coverage             # per-file coverage + per-test map
+repowise coverage add .coverage             # per-test map
 repowise coverage status                    # coverage summary + "Test-to-code map" counts
 repowise coverage status --format json      # machine-readable (note: the --format on `coverage add` names the input parser instead)
 ```

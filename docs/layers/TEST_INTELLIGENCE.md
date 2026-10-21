@@ -20,7 +20,7 @@ pytest --cov --cov-report=lcov:coverage.lcov
 pytest --cov=<package> --cov-context=test   # also records which test ran each line (needs pytest-cov)
 # 2. Ingest it.
 repowise coverage add coverage.lcov
-repowise coverage add .coverage             # per-file coverage + per-test map
+repowise coverage add .coverage             # per-test map
 repowise coverage status                    # files, line and branch %, map counts
 # 3. Use it.
 repowise health                             # untested hotspots now light up

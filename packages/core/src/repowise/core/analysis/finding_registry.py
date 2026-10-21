@@ -91,6 +91,13 @@ REGISTRY: dict[str, FindingTypeStatus] = {
         measured_on="2026-09-29",
         reason="Flags duplicated import blocks and data literals as design duplication.",
     ),
+    # New and unmeasured. Measured CRAP is arithmetic over the report, but an
+    # estimate rests on call-graph reach, whose recall is partial; flip to
+    # validated once a labelled sample clears the floor.
+    "untested_complexity": FindingTypeStatus(
+        "provisional",
+        reason="Not yet measured; estimated coverage rests on call-graph reach.",
+    ),
 }
 
 

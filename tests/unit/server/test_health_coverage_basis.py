@@ -560,9 +560,9 @@ async def test_the_file_endpoint_says_when_the_list_was_cut(
     the evidence. Measured on this repository, one file is reached by 124 tests
     and would have rendered as 50.
     """
-    import repowise.core.analysis.test_reachability as tr
+    from repowise.core.analysis.test_reach import model
 
-    monkeypatch.setattr(tr, "MAX_TESTS_PER_TARGET", 2)
+    monkeypatch.setattr(model, "MAX_TESTS_PER_TARGET", 2)
     repo = await create_test_repo(client, tmp_path)
     tests = [f"tests/test_{i}.py" for i in range(5)]
     edges = [e for t in tests for e in _calls(t, "src/a.py")]
@@ -602,3 +602,30 @@ async def test_the_file_endpoint_404s_for_an_unknown_repo(client):
         "/api/repos/nope/health/tests-reaching", params={"file_path": "src/a.py"}
     )
     assert resp.status_code == 404
+
+
+async def test_a_file_of_only_types_is_not_a_row_nothing_reaches(client, session, tmp_path):
+    """A ``.d.ts`` or a module of ``TypedDict`` classes has nothing a test could run."""
+    repo = await create_test_repo(client, tmp_path)
+    root = tmp_path / "test-repo" / "src"
+    root.mkdir()
+    (root / "types.py").write_text(
+        "from typing import TypedDict\n\nclass Row(TypedDict):\n    a: int\n", encoding="utf-8"
+    )
+    (root / "c.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    paths = ["src/a.py", "src/c.py", "src/types.py", "src/api.d.ts"]
+    await save_health_metrics(session, repo["id"], [_metric(p) for p in paths])
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={"tests/test_a.py": True, **{p: False for p in paths}},
+        edges=_calls("tests/test_a.py", "src/a.py"),
+    )
+    await session.commit()
+
+    body = await _get(client, repo["id"])
+
+    reached = {f["file_path"]: f["reached"] for f in body["inferred"]["files"]}
+    assert reached == {"src/a.py": True, "src/c.py": False}
+    assert body["inferred"]["files_total"] == 2
+    assert body["inferred"]["files_not_reached"] == 1

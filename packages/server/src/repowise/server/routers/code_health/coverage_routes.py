@@ -22,8 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.test_reachability import (
     cached_files_reached_by_tests,
+    cached_hub_files,
     cached_test_files,
+    read_under,
     tests_reaching_by_tier,
+    type_only_files,
 )
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import Repository
@@ -258,6 +261,15 @@ async def _inferred_coverage(
             }
         # Walked once per index state: the edge read is the cost of this tab.
         reached = await cached_files_reached_by_tests(session, repo_id)
+        # A file of only types has nothing a test could run: not a gap.
+        repo = await session.get(Repository, repo_id)
+        # Reads and parses files: off the event loop.
+        types = await asyncio.to_thread(
+            type_only_files,
+            [m.file_path for m in rows if m.file_path not in reached],
+            read_under(repo.local_path if repo else None),
+        )
+        rows = [m for m in rows if m.file_path not in types]
     except Exception:
         return {
             "basis": "none",
@@ -330,7 +342,9 @@ async def health_tests_reaching(
         "truncated": False,
     }
     try:
-        found = await tests_reaching_by_tier(session, repo_id, [file_path])
+        # A listing: tests that reach the file only through a hub go last.
+        hubs = await cached_hub_files(session, repo_id)
+        found = await tests_reaching_by_tier(session, repo_id, [file_path], hubs=hubs)
     except Exception:
         return empty
     reached = found.get(file_path)
@@ -343,7 +357,7 @@ async def health_tests_reaching(
         "reached": True,
         "tests": reached.tests,
         "via": reached.via,
-        # The walk's own count, which ``tests`` may be a trimmed alphabetical
+        # The walk's own count, which ``tests`` may be a ranked, trimmed
         # slice of. Without it a caller renders the cap as the answer.
         "total": total,
         "truncated": total > len(reached.tests),

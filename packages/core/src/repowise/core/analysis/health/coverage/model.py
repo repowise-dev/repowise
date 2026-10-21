@@ -96,6 +96,7 @@ def coverage_map_entry(fc: FileCoverage, source_format: str | None) -> dict:
         "branch_coverage_pct": fc.branch_coverage_pct,
         "covered_lines": list(fc.covered_lines),
         "total_coverable_lines": fc.total_coverable_lines,
+        "coverable_lines": list(fc.coverable_lines),
         "source_format": source_format,
     }
 

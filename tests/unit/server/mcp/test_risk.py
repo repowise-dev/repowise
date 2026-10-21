@@ -388,17 +388,19 @@ async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(pr_ch
 async def test_get_risk_pr_directive_runs_tests_in_import_reach(pr_checkout):
     """No map and no call-graph test -> the tests in reverse-import reach, inferred.
 
-    ``tests/test_service.py`` reaches ``models.py`` through ``service.py``. With
-    no coverage the gap list is withheld, not sent empty.
+    ``tests/test_service.py`` reaches ``models.py`` only through ``service.py``,
+    so it runs but is counted apart from the headline. With no coverage the gap
+    list is withheld, not sent empty.
     """
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"])
     directive = result["directive"]
 
-    assert directive["tests_to_run"] == ["tests/test_service.py"]
+    assert directive["tests_to_run"] == []
+    assert directive["tests_import_closure_total"] == 1
+    assert "1 more test(s) must still run because they import the change" in directive["summary"]
     assert directive["tests_to_run_basis"] == "inferred"
-    assert directive["tests_to_run_kind"] == "test_file"
     assert "missing_tests" not in directive
     assert directive["coverage"]["status"] == "unavailable"
     assert "test gaps are withheld" in directive["summary"]

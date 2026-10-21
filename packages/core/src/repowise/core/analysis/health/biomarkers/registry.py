@@ -64,6 +64,7 @@ from .sql_select_star import SqlSelectStarDetector
 from .sql_update_delete_without_where import SqlUpdateDeleteWithoutWhereDetector
 from .string_concat_in_loop import StringConcatInLoopDetector
 from .unbounded_read_reduced_in_memory import UnboundedReadReducedInMemoryDetector
+from .untested_complexity import UntestedComplexityDetector
 from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
@@ -78,6 +79,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     DryViolationDetector,  # type: ignore[list-item]
     UntestedHotspotDetector,  # type: ignore[list-item]
     CoverageGapDetector,  # type: ignore[list-item]
+    UntestedComplexityDetector,  # type: ignore[list-item]
     CoverageGradientDetector,  # type: ignore[list-item]
     DeveloperCongestionDetector,  # type: ignore[list-item]
     KnowledgeLossDetector,  # type: ignore[list-item]

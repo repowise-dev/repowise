@@ -51,7 +51,7 @@ from repowise.core.analysis.actions.build import (
     with_leads,
     with_test_reach,
 )
-from repowise.core.analysis.actions.facts import FileFacts
+from repowise.core.analysis.actions.facts import MOCKED_ONLY_VIA, FileFacts
 from repowise.core.analysis.actions.rules.code import FIX_FIRST_ACTIONS
 from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET_KINDS
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
@@ -296,7 +296,11 @@ async def _test_map(session: AsyncSession, repo_id: str, files: dict[str, FileFa
     paths = reach_paths(files)
     if not paths:
         return {}
-    return {"files": with_test_reach(files, await any_tests_reaching(session, repo_id, paths))}
+    rows = await any_tests_reaching(session, repo_id, paths)
+    reaching = {
+        path: row.reached or {"total": 0, "via": MOCKED_ONLY_VIA} for path, row in rows.items()
+    }
+    return {"files": with_test_reach(files, reaching)}
 
 
 async def _fix_first(session: AsyncSession, repo_id: str) -> dict[str, Any]:

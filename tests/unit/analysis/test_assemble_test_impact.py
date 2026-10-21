@@ -128,3 +128,42 @@ def test_nothing_changed() -> None:
     impact = assemble_test_impact([], {}, {}, {}, repository_id="r1")
     assert impact["files"] == []
     assert impact["coverage"]["reason"] == "no_changed_files"
+
+
+def test_inferred_recommendations_keep_the_walk_order() -> None:
+    """The walk ranked closest first; the recommendations do not re-sort by name."""
+    impact = assemble_test_impact(
+        ["src/a.py"],
+        {},
+        {"src/a.py": {"tests": ["tests/z/test_near.py", "tests/a/test_far.py"], "via": "call-graph"}},
+        {},
+        repository_id="r1",
+    )
+    assert [r["test_id"] for r in impact["recommendations"]] == [
+        "tests/z/test_near.py",
+        "tests/a/test_far.py",
+    ]
+
+
+def test_an_expanded_scope_ranks_by_the_walk_distance() -> None:
+    from repowise.core.analysis.test_reachability import ReachDistance
+
+    impact = assemble_test_impact(
+        ["src/core.py"],
+        {},
+        {
+            "src/core.py": {
+                "tests": ["conftest.py", "tests/z/test_near.py"],
+                "via": "call-graph",
+                "reach": {"tests/z/test_near.py": ReachDistance(1, 1)},
+            }
+        },
+        {},
+        repository_id="r1",
+        repository_test_files={"conftest.py", "tests/a/test_core.py", "tests/z/test_near.py"},
+    )
+    assert impact["files"][0]["inferred_tests"] == ["tests/a/test_core.py", "tests/z/test_near.py"]
+    assert [r["test_id"] for r in impact["recommendations"]] == [
+        "tests/z/test_near.py",
+        "tests/a/test_core.py",
+    ]

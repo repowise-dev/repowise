@@ -23,6 +23,7 @@ from repowise.core.analysis.finding_registry import excluded_types, split_gated
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
+from repowise.core.analysis.patch_coverage import file_on_disk_freshness
 from repowise.core.attribution import attribution_enabled
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
@@ -365,6 +366,11 @@ async def file_detail(
     if coverage_rows:
         coverage = crud.coverage_row_dict(coverage_rows[0], include_covered_lines=not slim)
         coverage.setdefault("covered_lines", [])
+        # The file page shows the source on disk; covered line numbers from
+        # another version of it would tint the wrong lines.
+        coverage["freshness"] = await file_on_disk_freshness(
+            repo.local_path, coverage["ingested_commit_sha"], file_path
+        )
 
     # --- Graph context ------------------------------------------------------
     graph: dict | None = None

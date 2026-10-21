@@ -199,6 +199,8 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "dry_violation": "duplication",
     "untested_hotspot": "test_coverage",
     "coverage_gap": "test_coverage",
+    # Advisory (deducts nothing); filed with the coverage markers it explains.
+    "untested_complexity": "test_coverage",
     "coverage_gradient": "test_coverage_gradient",
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
@@ -324,6 +326,10 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Fires only beside complex_method and large_method on the same function, so
     # scoring it charged that function twice; dropping it moved no defect AUC.
     "brain_method": {ADVISORY_DIMENSION},
+    # Its two inputs already deduct: complexity through complex_method, missing
+    # coverage through coverage_gap and coverage_gradient. Uncalibrated; it ranks
+    # which complex functions most need tests rather than moving the score.
+    "untested_complexity": {ADVISORY_DIMENSION},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -545,7 +551,13 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
 # The display half of the pairing above; ``test_advisory_dimension.py`` locks
 # the two together for every registered biomarker.
 _ADVISORY_HOME: frozenset[str] = frozenset(
-    {"assertion_free_test", "mock_saturated_test", "hidden_coupling", "brain_method"}
+    {
+        "assertion_free_test",
+        "mock_saturated_test",
+        "hidden_coupling",
+        "brain_method",
+        "untested_complexity",
+    }
 )
 
 

@@ -22,7 +22,7 @@ import functools
 import os
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -77,6 +77,9 @@ from .scoring import compute_kpis
 from .source_reader import SourceReader, disk_source_reader
 from .walk_cache import HealthWalkCache
 
+if TYPE_CHECKING:
+    from ..function_test_map import FunctionTests
+
 log = structlog.get_logger(__name__)
 
 # Bump when a change to this analyzer makes already-persisted health rows wrong
@@ -97,6 +100,11 @@ log = structlog.get_logger(__name__)
 #
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
+#
+# v42: a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
+# is production unless its name or a test directory says otherwise, and the
+# cross-file assertion pass reads the stored test flag, which moves scope and
+# findings for those files.
 #
 # v41 (also): a loop that grows only by reading tables that do not grow with
 # the repository is bounded (``perf.table_scale``), so its causes leave the queue.
@@ -398,7 +406,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 41
+HEALTH_ANALYZER_VERSION = 42
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -905,8 +913,13 @@ class HealthAnalyzer:
         # per-file object, so no file is parsed twice for dataflow.
         dataflow_cache = FileDataflowCache(self.read_source)
         self.perf_stage.run(walked, dataflow_cache, timings)
+        # Before the evaluation: untested_complexity reads each function's nearest test.
+        with timed(timings, "analysis.health.function_tests"):
+            function_tests = self.test_index.function_tests()
         with timed(timings, "analysis.health.repo_stats"):
-            evaluator = self._file_evaluator(run, dup_report, fn_mod_p80, dataflow_cache)
+            evaluator = self._file_evaluator(
+                run, dup_report, fn_mod_p80, dataflow_cache, function_tests
+            )
         with timed(timings, "analysis.health.evaluate"):
             metrics, findings, suggestions = self._evaluate_all(evaluator, walked, on_step)
         # KPIs are repo-wide; on an incremental run they would be biased
@@ -916,8 +929,6 @@ class HealthAnalyzer:
         with timed(timings, "analysis.health.finalize"):
             execution_roles = self._mark_perf_entry_reachability(findings)
             suggestions = self._with_performance_plans(run, findings, suggestions)
-        with timed(timings, "analysis.health.function_tests"):
-            function_tests = self.test_index.function_tests()
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -942,6 +953,7 @@ class HealthAnalyzer:
         dup_report: DuplicationReport,
         fn_mod_p80: int | None,
         dataflow_cache: FileDataflowCache,
+        function_tests: FunctionTests | None = None,
     ) -> FileEvaluator:
         """The repo-wide inputs every file's evaluation reads, built once per pass."""
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
@@ -959,6 +971,7 @@ class HealthAnalyzer:
             file_scc_index=build_file_scc_index(self.graph),
             methods_by_file=build_methods_by_file(self.graph),
             dataflow_cache=dataflow_cache,
+            function_tests=function_tests,
         )
 
     def _evaluate_all(
