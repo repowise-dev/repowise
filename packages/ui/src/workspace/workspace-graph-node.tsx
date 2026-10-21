@@ -10,9 +10,10 @@ export interface WorkspaceGraphNodeData {
   repoId: string;
   name: string;
   fileCount: number;
+  /** Mean wiki page confidence, 0-100. */
   coveragePct: number;
-  healthScore: number;
-  healthScoreSource: "canonical" | "derived";
+  /** Code health, 0-100; null when health has not scored the repo. */
+  healthScore: number | null;
   topLanguage: string;
 }
 
@@ -20,20 +21,12 @@ export function healthColor(score: number): string {
   return healthInk100(score);
 }
 
-export function HealthRing({
-  score,
-  source,
-  size = 36,
-}: {
-  score: number;
-  source: "canonical" | "derived";
-  size?: number;
-}) {
+export function HealthRing({ score, size = 36 }: { score: number; size?: number }) {
   const r = (size - 4) / 2;
   const circ = 2 * Math.PI * r;
   const offset = circ * (1 - score / 100);
   const color = healthColor(score);
-  const label = source === "derived" ? "Estimated health score" : "Health score";
+  const label = "Health score";
 
   return (
     <svg
@@ -106,9 +99,13 @@ function WorkspaceGraphNodeInner({ data }: NodeProps) {
 
       <div className="flex items-center gap-2.5">
         <div className="flex flex-col items-center gap-0.5">
-          <HealthRing score={d.healthScore} source={d.healthScoreSource} />
+          {d.healthScore != null ? (
+            <HealthRing score={d.healthScore} />
+          ) : (
+            <span className="text-[10px] text-[var(--color-text-tertiary)]">—</span>
+          )}
           <span className="text-[8px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
-            {d.healthScoreSource === "derived" ? "est." : "health"}
+            {d.healthScore != null ? "health" : "no score"}
           </span>
         </div>
         <div className="flex-1 min-w-0 space-y-1">
@@ -118,7 +115,9 @@ function WorkspaceGraphNodeInner({ data }: NodeProps) {
           </div>
           <div className="flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)]">
             <BarChart3 className="w-3 h-3 shrink-0" />
-            <span>{Math.round(d.coveragePct)}% cov</span>
+            <span title="Average confidence of the generated doc pages">
+              {Math.floor(d.coveragePct)}% doc conf.
+            </span>
           </div>
         </div>
       </div>

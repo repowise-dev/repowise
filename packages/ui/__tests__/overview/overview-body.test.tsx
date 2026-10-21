@@ -5,7 +5,7 @@ import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import { AttentionAreas } from "../../src/overview/attention-areas.js";
 import { HealthLede } from "../../src/overview/health-lede.js";
 import { OverviewBody } from "../../src/overview/overview-body.js";
-import { buildReads, inventoryRows } from "../../src/overview/overview-model.js";
+import { buildExplore, buildReads, inventoryRows } from "../../src/overview/overview-model.js";
 
 function summary(): OverviewSummaryResponse {
   return {
@@ -225,7 +225,8 @@ describe("inventoryRows", () => {
   it("counts each area on the same basis as its card and page", () => {
     const rows = inventoryRows({
       ...summary(),
-      health: { ...summary().health, finding_counts: { inventory: 321 } },
+      // The queue inventory is lower; the row prints the open_findings headline.
+      health: { ...summary().health, open_findings: 321, finding_counts: { inventory: 200 } },
       attention_summary: {
         total: 99,
         by_source: {},
@@ -253,6 +254,17 @@ describe("inventoryRows", () => {
       ["ownership", 41, "sole-owned files", "One author, no second reader"],
       ["doc_drift", 5, null, "server detail"],
     ]);
+  });
+});
+
+describe("buildExplore", () => {
+  it("names the open_findings headline on the code health door, not the queue inventory", () => {
+    const s = summary();
+    const entries = buildExplore(
+      { ...s, health: { ...s.health, open_findings: 13563, finding_counts: { inventory: 11371 } } } as unknown as OverviewSummaryResponse,
+      { base: "/r" },
+    );
+    expect(entries.find((e) => e.key === "code-health")?.description).toContain("13,563 open findings");
   });
 });
 

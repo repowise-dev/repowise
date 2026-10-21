@@ -4671,8 +4671,7 @@ export interface WorkspaceGraphNode {
   name: string;
   file_count?: number;
   coverage_pct?: number;
-  health_score?: number;
-  health_score_source?: string;
+  health_score?: number | null;
   top_language?: string;
 }
 
@@ -4761,6 +4760,7 @@ export interface WorkspaceRepoEntry {
   file_count?: number;
   symbol_count?: number;
   page_count?: number;
+  fresh_page_count?: number;
   doc_coverage_pct?: number;
   hotspot_count?: number;
   health_score?: number | null;

@@ -154,7 +154,8 @@ export default function SystemMapPage() {
     const health = new Map<string, RepoHealth>();
     const ids = new Map<string, string>();
     for (const n of repoGraph?.nodes ?? []) {
-      health.set(n.name, { score: n.health_score, source: n.health_score_source });
+      // An unscored repo has no entry, so its nodes read "No health score".
+      if (n.health_score != null) health.set(n.name, { score: n.health_score });
       ids.set(n.name, n.repo_id);
     }
     return { healthByRepo: health, repoIdByAlias: ids };

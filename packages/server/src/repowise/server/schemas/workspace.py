@@ -26,6 +26,9 @@ class WorkspaceRepoEntry(BaseModel):
     file_count: int = 0
     symbol_count: int = 0
     page_count: int = 0
+    # Pages whose freshness status is fresh, out of ``page_count``.
+    fresh_page_count: int = 0
+    # Mean wiki page confidence, 0-100. Not a share of files documented.
     doc_coverage_pct: float = 0.0
     hotspot_count: int = 0
     # Canonical 0-100 health score, or None when the repo carries no health
@@ -212,9 +215,10 @@ class WorkspaceGraphNode(BaseModel):
     repo_id: str
     name: str
     file_count: int = 0
+    #: Mean wiki page confidence, 0-100, like the entry's ``doc_coverage_pct``.
     coverage_pct: float = 0.0
-    health_score: float = 0.0
-    health_score_source: str = "derived"
+    #: The repo's code health, 0-100; None when health has not scored it.
+    health_score: float | None = None
     top_language: str = "unknown"
 
 

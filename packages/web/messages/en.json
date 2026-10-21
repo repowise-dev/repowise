@@ -925,7 +925,7 @@
         "symbolsSub": "functions, classes and methods",
         "docFreshness": "Doc freshness",
         "docFreshnessNoPages": "no documentation generated yet",
-        "docFreshnessSub": "weighted across {pages} pages",
+        "docFreshnessSub": "{fresh} of {pages} pages fresh",
         "hotspots": "Hotspots",
         "hotspotsSub": "files by churn and prior fixes",
         "contractLinks": "Contract links",

@@ -91,47 +91,23 @@ def _query_top_language(db_path: Path) -> str:
         return "unknown"
 
 
-def _compute_health_score(file_count: int, doc_coverage_pct: float, hotspot_count: int) -> int:
-    """Derive a 0-100 health score from available repo metrics."""
-    if file_count == 0:
-        return 0
-    coverage_component = doc_coverage_pct * 0.6
-    hotspot_ratio = min(hotspot_count / max(file_count, 1), 1.0)
-    hotspot_component = (1.0 - hotspot_ratio) * 100 * 0.4
-    return max(0, min(100, round(coverage_component + hotspot_component)))
-
-
-def _resolve_graph_health_score(stats: dict) -> tuple[float, str]:
-    canonical = stats.get("health_score")
-    if canonical is not None:
-        return canonical, "canonical"
-    return (
-        float(
-            _compute_health_score(
-                stats.get("file_count", 0),
-                stats.get("doc_coverage_pct", 0.0),
-                stats.get("hotspot_count", 0),
-            )
-        ),
-        "derived",
-    )
-
-
 def _query_repo_stats(db_path: Path) -> dict:
     """Query basic stats from a repo's wiki.db using raw sqlite3.
 
     Returns a dict with repo_id, file_count, symbol_count, page_count,
-    doc_coverage_pct, hotspot_count, health_score, status, docs_enabled,
-    docs_skip_reason, and (when the row is read) indexed_at.  All values default to sensible neutrals on error.
+    fresh_page_count, doc_coverage_pct, hotspot_count, health_score, status,
+    docs_enabled, docs_skip_reason, and (when the row is read) indexed_at.
+    All values default to sensible neutrals on error.
 
-    ``health_score`` is None when the repo carries no health metrics; callers
-    decide whether to fall back to a derived score or to render nothing.
+    ``health_score`` is None when the repo carries no health metrics, and
+    stays None: no other figure here measures code health.
     """
     result: dict = {
         "repo_id": None,
         "file_count": 0,
         "symbol_count": 0,
         "page_count": 0,
+        "fresh_page_count": 0,
         "doc_coverage_pct": 0.0,
         "hotspot_count": 0,
         "health_score": None,
@@ -174,13 +150,14 @@ def _query_repo_stats(db_path: Path) -> dict:
         row = c.execute("SELECT COUNT(*) FROM wiki_symbols").fetchone()
         result["symbol_count"] = int(row[0]) if row else 0
 
-        # page count
-        row = c.execute("SELECT COUNT(*) FROM wiki_pages").fetchone()
-        result["page_count"] = row[0] if row else 0
-
-        # doc coverage (avg confidence * 100)
-        row = c.execute("SELECT AVG(confidence) FROM wiki_pages").fetchone()
-        result["doc_coverage_pct"] = round(float(row[0] or 0.0) * 100, 1)
+        # Pages, fresh pages, and mean page confidence * 100. The last is named
+        # doc_coverage_pct on the wire; it is not a share of files documented.
+        pages, fresh, confidence = c.execute(
+            "SELECT COUNT(*), SUM(freshness_status = 'fresh'), AVG(confidence) FROM wiki_pages"
+        ).fetchone()
+        result["page_count"] = pages
+        result["fresh_page_count"] = int(fresh or 0)
+        result["doc_coverage_pct"] = round(float(confidence or 0.0) * 100, 1)
 
         # hotspot count — use the canonical is_hotspot flag, matching the rest
         # of the codebase (module_health, extract-demo-data). The earlier
@@ -460,10 +437,6 @@ async def get_workspace_graph(
             db_path = repo_path / ".repowise" / "wiki.db"
             stats = _query_repo_stats(db_path)
             top_language = _query_top_language(db_path)
-            health_score, health_score_source = _resolve_graph_health_score(stats)
-        else:
-            health_score = 0.0
-            health_score_source = "derived"
         rid = stats.get("repo_id") or r.alias
         repo_id_map[r.alias] = rid
         nodes.append(
@@ -472,8 +445,7 @@ async def get_workspace_graph(
                 name=r.alias,
                 file_count=stats.get("file_count", 0),
                 coverage_pct=stats.get("doc_coverage_pct", 0.0),
-                health_score=health_score,
-                health_score_source=health_score_source,
+                health_score=stats.get("health_score"),
                 top_language=top_language,
             )
         )

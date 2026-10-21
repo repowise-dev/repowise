@@ -925,7 +925,7 @@
         "symbolsSub": "函数、类与方法",
         "docFreshness": "文档新鲜度",
         "docFreshnessNoPages": "尚未生成文档",
-        "docFreshnessSub": "按 {pages} 页加权",
+        "docFreshnessSub": "{fresh} / {pages} 页为最新",
         "hotspots": "热点",
         "hotspotsSub": "按改动频率与历史修复排序的文件",
         "contractLinks": "契约链接",

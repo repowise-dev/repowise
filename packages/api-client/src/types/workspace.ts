@@ -13,6 +13,9 @@ export interface WorkspaceRepoEntry {
   file_count: number;
   symbol_count: number;
   page_count: number;
+  // Pages whose freshness status is fresh, out of `page_count`.
+  fresh_page_count: number;
+  // Mean wiki page confidence, 0-100. Not a share of files documented.
   doc_coverage_pct: number;
   hotspot_count: number;
   // Canonical 0-100 health score. Optional so a frontend ahead of its server
@@ -202,9 +205,10 @@ export interface WorkspaceGraphNode {
   repo_id: string;
   name: string;
   file_count: number;
+  /** Mean wiki page confidence, 0-100. */
   coverage_pct: number;
-  health_score: number;
-  health_score_source: "canonical" | "derived";
+  /** Code health, 0-100; null when health has not scored the repo. */
+  health_score: number | null;
   top_language: string;
 }
 
