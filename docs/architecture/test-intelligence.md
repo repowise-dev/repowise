@@ -1,7 +1,7 @@
 # Test intelligence: the inferred tier
 
 How repowise answers "which tests reach this file" and "which tests should I
-run" with no coverage report. For the user-facing layer, see
+run" with no coverage report. User guide:
 [layers/TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md).
 
 Code: `packages/core/src/repowise/core/analysis/test_reach/` (the walks), `analysis/test_selection.py` (runner arguments for `impacted-tests`),
@@ -10,9 +10,9 @@ Code: `packages/core/src/repowise/core/analysis/test_reach/` (the walks), `analy
 
 ## Why a graph signal
 
-The measured map (`test_coverage`) is filled only by a coverage report. Most
-repositories never ingest one, so without a second signal `tests_to_run` would
-be empty, `impacted_tests` would say "run the full suite", and `untested_hotspot`
+The measured map (`test_coverage`) is filled only by a coverage report, and most
+repositories never ingest one. Without a second signal `tests_to_run` would be
+empty, `impacted_tests` would say "run the full suite", and `untested_hotspot`
 would fall back to matching filenames.
 
 Filename matching fails both ways. On this repository, five of the six worst
@@ -28,24 +28,21 @@ that reach them:
 | `analysis/pr_blast.py` | nothing | 3 |
 | `analysis/health/engine.py` | `tests/unit/distill/test_engine.py` | 6, all under `tests/unit/health/` |
 
-The last row is the worse failure: a basename match paired the health engine
-with the distill engine's tests.
+In the last row a basename match paired the health engine with distill's tests.
 
 ## Two graphs, two directions
 
-The **call graph** leads: seed the symbols a test file declares, walk
-`EXECUTION_EDGE_TYPES` forward, and every symbol reached is one the test can
-run. `EXECUTION_EDGE_TYPES` (in `ingestion/models.py`) is
-`SYMBOL_USE_EDGE_TYPES` minus `references`, because a name sitting in a
-dispatch table is a mention, not a transfer of control. Dead code asks "is this
-used", which a mention answers; this asks "is this run".
+- **Call graph (leads):** seed the symbols a test file declares and walk
+  `EXECUTION_EDGE_TYPES` forward; every symbol reached is one the test can run.
+  `EXECUTION_EDGE_TYPES` (`ingestion/models.py`) is `SYMBOL_USE_EDGE_TYPES` minus
+  `references`: a name in a dispatch table is a mention, not a transfer of
+  control. Dead code asks "is this used"; this asks "is this run".
+- **Import graph (weaker):** importing a module pulls in every symbol it defines,
+  while the test may touch one function.
 
-The **import graph** is the weaker tier: importing a module pulls in every
-symbol it defines while the test may touch one function.
-
-Measured against real per-test coverage on this repository, over
-the slice where per-test attribution is complete, both sides seeing the same
-37 test files and 159 provably executed production files.
+Measured against real per-test coverage on this repository, over the slice where
+per-test attribution is complete: 37 test files and 159 provably executed
+production files.
 
 **Forward, "what reaches this file"** (suppresses `untested_hotspot`):
 
@@ -65,34 +62,35 @@ the slice where per-test attribution is complete, both sides seeing the same
 | Both unioned | 47 | 100.0% | 95.8% |
 | **Call graph, else import graph** (ships) | 47 | **100.0%** | **97.5%** |
 
-The tiers combine differently per direction. Unioning costs the forward walk
-16.8 points of precision for 0.6 of recall, and a false "something reaches
-this" hides a real gap, so forward is call edges only. Reverse falls back: the
-import tier is spent only on targets the call graph left silent, which answers
-one more target at identical precision.
-
-Both tables compare signals uncapped over the same test set. End to end, with
-the walk seeing the whole test set and `MAX_TESTS_PER_TARGET` applied, the
-reverse walk scores 100.0% hit and 95.5% precision on the same slice; the gap
-is the cap truncating a long list.
+- **Forward is call edges only.** Unioning costs the forward walk 16.8 points
+  of precision for 0.6 of recall, and a false "something reaches this" hides a
+  real gap.
+- **Reverse falls back.** The import tier is spent only on targets the call
+  graph left silent, which answers one more target at identical precision.
+- **The tables are uncapped**, over the same test set. End to end, with the
+  whole test set and `MAX_TESTS_PER_TARGET` applied, the reverse walk scores
+  100.0% hit and 95.5% precision on the slice; the cap truncates a long list.
 
 ## Depth
 
-`DEFAULT_CALL_DEPTH = 3`: 3, 4 and 5 hops return the same 48 claims and 44
-confirmations, so the recall ceiling is the call graph's capture rate, not the
-depth. `DEFAULT_MAX_DEPTH = 1` for imports: a blanket second hop recovered 20
-of 128 misses while adding 50 wrong claims; a facade-only second hop through
-`__init__.py` (3 recovered, 5 added) and `conftest.py` transitivity (none
-recovered) were also tested and rejected.
+- `DEFAULT_CALL_DEPTH = 3`: 3, 4 and 5 hops return the same 48 claims and 44
+  confirmations, so the recall ceiling is the call graph's capture rate, not the
+  depth.
+- `DEFAULT_MAX_DEPTH = 1` for imports: a blanket second hop recovered 20 of 128
+  misses while adding 50 wrong claims.
+- Rejected too: a facade-only second hop through `__init__.py` (3 recovered, 5
+  added) and `conftest.py` transitivity (none recovered).
 
 ## The resolution-origin filter
 
 "Filtered" drops call edges whose `resolution_origin` is `global_unique`: a
 name bound to the only symbol carrying it anywhere in the repository, which the
-origin vocabulary itself scores at 0.50. Dropping it costs no recall and buys
-4.0 points of forward precision (91.7% to 95.7%) and 1.1 of reverse (96.4% to
-97.5%). Filtering `receiver_global` too changes no number. A confidence floor
-of 0.90 was tried instead and cut recall from 27.7% to 23.3%.
+origin vocabulary itself scores at 0.50.
+
+- Dropping it costs no recall and buys 4.0 points of forward precision (91.7%
+  to 95.7%) and 1.1 of reverse (96.4% to 97.5%).
+- Filtering `receiver_global` too changes no number.
+- A 0.90 confidence floor instead cut recall from 27.7% to 23.3%.
 
 ## Why recall reads low
 
@@ -111,66 +109,70 @@ ran was inside a function body:
 Of the 13 missed in the last group, 11 are alembic migrations the framework
 invokes by naming convention with no static caller.
 
-The tables above cover the slice. Repo-wide, against the unit suite's line coverage,
-the shipped forward walk keeps 97.7% precision at 76.5% recall over files with a
-function body run
-([numbers](../layers/TEST_INTELLIGENCE.md#accuracy-and-limits)).
+These tables cover the slice; repo-wide the shipped forward walk keeps 97.7%
+precision at 76.5% recall ([numbers](../layers/TEST_INTELLIGENCE.md#accuracy-and-limits)).
 
 ## Nothing is stored
 
 The inferred map is read from `graph_edges` when asked and never written to
 `test_coverage`:
 
-1. **A consumer cannot mistake it for measured data.** Sharing the table behind
-   a marker column would make every existing reader start returning inferred
-   rows the day someone forgot to check the marker.
-2. **It would be a transitive closure.** Tests reach most production files;
-   materialising that is tests x sources rows that go stale whenever the graph
-   moves, to answer a bounded breadth-first search over rows already in the
-   database.
+1. **A consumer cannot mistake it for measured data.** A shared table behind a
+   marker column would leak inferred rows to every reader that forgot the marker.
+2. **It would be a transitive closure:** tests x sources rows that go stale
+   whenever the graph moves, to answer a bounded breadth-first search over rows
+   already in the database.
 
-The health pass computes the whole-repo answer in one multi-source walk, once
-per run, and caches it. The per-change walk reads the same edge table
-`pr_blast` reads.
+The health pass computes the whole-repo answer in one multi-source walk per run
+and caches it; the per-change walk reads the same edge table `pr_blast` reads.
 
 ## One walk, two graph sources
 
 The reverse walks are written once and run over the stored graph or over a
 graph held in memory (`build_walk_maps` on the NetworkX graph or its node-link
-JSON), and both return the same rows. `reach_states` gives each file a typed
-state: `reached`, `unreached`, `new`, `no_signal`, `type_only` or
-`mocked_only`. A file is
-`unreached` only when the call walk, the helper and barrel hop and the whole
-import closure all miss it, and a test the change adds or edits that is named
-for the file or imports it, or the file's own inline tests (Rust
-`#[cfg(test)]`, a Go `_test.go` beside it), count as reaching it.
+JSON), and both return the same rows.
 
-A Python test that swaps a module object out (`patch("pkg.helpers")`,
-`patch.object(pkg, "helpers")`, `monkeypatch.setattr`, a `sys.modules` entry)
-does not reach that module through the swap. A file only such tests reach is
-`mocked_only`, read from the test files' text at walk time, never stored.
-Patching a name inside a module, a run-time target, or a patch with `wraps`,
-`side_effect` or `autospec` keeps the reach. In JavaScript and TypeScript,
-`vi.mock` / `jest.mock` swaps a module out when its factory takes no parameter
-and returns only literals and `vi.fn()` / `jest.fn()`; an automock, `doMock`, a
-factory that reads the original, or a non-relative specifier keeps the reach.
+### Reach states
+
+`reach_states` gives each file a typed state
+([the six states](../layers/TEST_INTELLIGENCE.md#reach-states)).
+
+- A file is `unreached` only when the call walk, the helper and barrel hop and
+  the whole import closure all miss it.
+- These count as reaching it: a test the change adds or edits that is named for
+  the file or imports it, and the file's own inline tests (Rust `#[cfg(test)]`, a
+  Go `_test.go` beside it).
+
+### Mocked-only reach
+
+A test that swaps a module out for a double does not reach that module through
+the swap. A file only such tests reach is `mocked_only`, read from the test
+files' text at walk time, never stored.
+
+- **Python** swaps: `patch("pkg.helpers")`, `patch.object(pkg, "helpers")`,
+  `monkeypatch.setattr`, a `sys.modules` entry. Patching a name inside a module, a
+  run-time target, or a patch with `wraps`, `side_effect` or `autospec` keeps the
+  reach.
+- **JavaScript, TypeScript** swaps: `vi.mock` / `jest.mock` whose factory takes no
+  parameter and returns only literals and `vi.fn()` / `jest.fn()`. An automock,
+  `doMock`, a factory that reads the original, or a non-relative specifier keeps
+  the reach.
 
 ## Measured map internals
 
 - `.coverage` is opened read-only as SQLite. Repowise decodes coverage.py's
   `numbits` line bitmaps itself and falls back to the `arc` table when line
   bits are absent, so there is no runtime dependency on coverage.py.
-- Rows are indexed both ways: repo plus source file (reverse lookup) and repo
-  plus test id (forward). `MAX_TEST_COVERAGE_ROWS = 250_000`.
+- Rows are indexed by repo plus source file (reverse) and repo plus test id
+  (forward). `MAX_TEST_COVERAGE_ROWS = 250_000`.
 - Ingest records (formats merged, matched, unmatched and tied paths, a sample of
   misses, the commit measured) are kept as history,
-  `COVERAGE_HISTORY_RETENTION = 50`. A local index created before the history
-  table changed keeps one record per repository until rebuilt.
+  `COVERAGE_HISTORY_RETENTION = 50`; an index created before the history table
+  changed keeps one per repository until rebuilt.
 
 ## Report formats and discovery
 
-The parser is chosen by sniffing the file unless `--format` or `coverage.format`
-names one:
+The file is sniffed unless `--format` or `coverage.format` names a parser:
 
 | Format | Detected by |
 |--------|-------------|
@@ -182,24 +184,27 @@ names one:
 | coverage.py `.coverage` | SQLite file |
 | Normalized JSON (`repowise-coverage-v1`) | Leading `{` plus `repowise-coverage` or `line_coverage_pct` |
 
-With no path, `coverage add` looks for `coverage/lcov.info`, `lcov.info`,
-`coverage.lcov`, `coverage.xml`, `**/cobertura.xml`, `**/clover.xml`,
-`target/llvm-cov/**/*.lcov`, `coverage.out`, `cover.out`,
-`**/target/site/jacoco*/jacoco.xml`, `build/reports/jacoco/**/*.xml`, a
-repo-root `.coverage`, and a few more. `coverage.artifacts` overrides the
-globs. Multiple reports merge: covered and coverable lines are each unioned.
+- With no path, `coverage add` looks for `coverage/lcov.info`, `lcov.info`,
+  `coverage.lcov`, `coverage.xml`, `**/cobertura.xml`, `**/clover.xml`,
+  `target/llvm-cov/**/*.lcov`, `coverage.out`, `cover.out`,
+  `**/target/site/jacoco*/jacoco.xml`, `build/reports/jacoco/**/*.xml`, a
+  repo-root `.coverage`, and a few more.
+- `coverage.artifacts` overrides the globs.
+- Multiple reports merge: covered and coverable lines are each unioned.
 
 ## Report path matching
 
 Report paths are matched to indexed files by exact path, then by the longest
-matching tail. A tie is reported as ambiguous, never guessed. A relative path
-is tried under the report's own directory first, so
-`packages/web/coverage/lcov.info` naming `src/index.ts` maps to
-`packages/web/src/index.ts`. Cobertura paths are joined to each `<source>`
-root. Matching needs more than the basename when the report names a directory:
-`other/pkg/utils.py` never maps to `src/utils.py`. When a whole report comes
-back unmatched, `coverage.strip_prefix` trims the absolute prefix the runner
-wrote.
+matching tail. A tie is reported as ambiguous, never guessed.
+
+- A relative path is tried under the report's own directory first, so
+  `packages/web/coverage/lcov.info` naming `src/index.ts` maps to
+  `packages/web/src/index.ts`.
+- Cobertura paths are joined to each `<source>` root.
+- Matching needs more than the basename when the report names a directory:
+  `other/pkg/utils.py` never maps to `src/utils.py`.
+- When a whole report comes back unmatched, `coverage.strip_prefix` trims the
+  absolute prefix the runner wrote.
 
 ## Test wiring edges
 
@@ -216,11 +221,10 @@ The graph carries test wiring no import states, which test selection reads:
 ## Nearest tests per function
 
 Each index keeps, for every function, the few test functions nearest it in the
-call graph. Refactoring plans quote them as runnable selectors in place of
-whole test files; they are inferred like the rest of the graph map. A function
-with no resolved caller, or in a language whose tests cannot be told apart by
-name (such as Java's `@Test` or Rust's `#[test]`), is left unknown instead of
-called untested.
+call graph; refactoring plans quote them as runnable selectors in place of whole
+test files. They are inferred like the rest of the graph map. A function with no
+resolved caller, or in a language whose tests cannot be told apart by name (such as Java's `@Test` or Rust's `#[test]`), is left unknown
+instead of called untested.
 
 ## The `impacted_tests` payload
 
@@ -247,13 +251,20 @@ called untested.
 }
 ```
 
+`status` is `selected` (the selection vouches for `tests_to_run`) or one of these,
+each with `run_all: true`: `run_all` (every test must run; `reasons` says why and
+`tests_to_run` is what to run first), `no_index` (nothing indexed yet), `unknown`
+(the git or index read failed), `config_invalid` (`tests.*` in
+`.repowise/config.yaml` does not parse), `timeout` (over 30 seconds;
+`repowise impacted-tests` gives the same answer), `busy` (a selection for this
+repository is still running), `no_source_line_changes` (no changed source lines to
+map).
+
 ## Coverage re-ingest hook
 
 With `hooks.coverage_reingest: true`, the hook fires after the agent runs a
-whole test suite: `pytest`, `go test ./...`, `npm test`, `cargo test`,
-`mvn test`, `./gradlew test` and similar. It re-ingests any watched report
-newer than the last ingest, in the background, and says so in one transcript
-line. It does not act:
+whole test suite (`pytest`, `go test ./...`, `npm test`, `cargo test`,
+`mvn test`, `./gradlew test` and similar). It does not act:
 
 - in a repository that has never ingested coverage;
 - on a run that targets some tests (a path, `::`, `-k`, `-run`, `--filter`,
