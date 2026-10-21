@@ -37,9 +37,9 @@ HEALTH_HISTORY_POINTS = 12
 def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
     """Best-effort git remote for a repo, with any credentials removed.
 
-    ``repositories.url`` is client-supplied and empty for most CLI-registered
-    repos, so fall back to reading ``origin`` out of ``.git/config``. Parsed
-    rather than shelled out to: this runs on a page load, and ``git remote
+    ``repositories.url`` is empty when the last sync found no remote, so fall
+    back to reading one added since out of ``.git/config``. Parsed rather than
+    shelled out to: this runs on a page load, and ``git remote
     get-url`` would cost a process spawn per request for a string sitting in a
     file we can read.
 

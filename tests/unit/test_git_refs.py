@@ -15,6 +15,7 @@ from repowise.core.git_refs import (
     commit_file_sets,
     current_branch,
     default_base,
+    default_branch,
     find_path_removal,
     list_branches,
     remote_name,
@@ -122,6 +123,29 @@ class TestDefaultBase:
 
     def test_a_non_repository_is_head(self, tmp_path: Path) -> None:
         assert default_base(str(tmp_path / "nowhere_at_all")) == "HEAD"
+
+
+class TestDefaultBranch:
+    def test_is_the_origin_head_target_without_the_remote(self, repo: Path) -> None:
+        _run(repo, "branch", "master", "main")
+        _run(repo, "update-ref", "refs/remotes/origin/master", "master")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+        assert default_branch(str(repo)) == "master"
+
+    def test_falls_back_to_a_local_trunk(self, tmp_path: Path) -> None:
+        root = tmp_path / "legacy"
+        root.mkdir()
+        _run(root, "init", "-b", "master")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) == "master"
+
+    def test_is_none_when_git_cannot_name_one(self, tmp_path: Path) -> None:
+        root = tmp_path / "trunkless"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        assert default_branch(str(root)) is None
+        assert default_branch(str(tmp_path / "nowhere_at_all")) is None
 
 
 class TestChangedFiles:

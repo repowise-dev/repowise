@@ -27,6 +27,7 @@ __all__ = [
     "commit_file_sets",
     "current_branch",
     "default_base",
+    "default_branch",
     "files_by_ref",
     "find_path_removal",
     "is_ancestor",
@@ -147,6 +148,16 @@ def default_base(repo_path: str) -> str:
         if resolve(repo_path, name):
             return name
     return "HEAD"
+
+
+def default_branch(repo_path: str) -> str | None:
+    """The repository's default branch name, ``None`` when git cannot name one.
+
+    :func:`default_base` without the remote prefix: ``origin/HEAD``'s target,
+    else a local trunk. A detached checkout with neither has no answer.
+    """
+    base = default_base(repo_path)
+    return None if base == "HEAD" else base.removeprefix("origin/")
 
 
 def _parse_ref_line(line: str) -> BranchRef | None:
