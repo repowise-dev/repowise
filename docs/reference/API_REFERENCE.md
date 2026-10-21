@@ -442,7 +442,8 @@ repo (`routers/search.py`).
 `url` or `default_branch` the body leaves out keeps its stored value, as with
 `PATCH`. The schema defaults (`""`, `"main"`) fill only a new row, and each
 index replaces them with the remote url (credentials removed) and default branch
-git reports (`routers/repos.py`, `crud/repository.py`).
+git reports (`routers/repos.py`, `crud/repository.py`). A value set by `PATCH`
+or `POST` therefore holds until the next index whose git names one.
 
 ### 5.4 Pagination
 
