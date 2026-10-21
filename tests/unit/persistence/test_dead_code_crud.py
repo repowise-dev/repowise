@@ -354,10 +354,12 @@ async def test_get_dead_code_git_fields_is_empty_for_an_unknown_repo(async_sessi
 
 
 async def test_summary_uses_shared_confidence_thresholds(async_session, monkeypatch):
+    from repowise.core.analysis.dead_code.serving import TIER_FLOORS
     from repowise.core.persistence.crud.analysis import dead_code as dead_code_crud
 
-    monkeypatch.setattr(dead_code_crud, "SAFE_CONFIDENCE_THRESHOLD", 0.8)
-    monkeypatch.setattr(dead_code_crud, "RISK_CAP_CONFIDENCE", 0.3)
+    # The summary tiers through the serving module's one table.
+    monkeypatch.setitem(TIER_FLOORS, "high", 0.8)
+    monkeypatch.setitem(TIER_FLOORS, "medium", 0.3)
 
     repo = await insert_repo(async_session)
 
