@@ -399,7 +399,6 @@ def _health_gate_entry() -> dict:
                 "command": HEALTH_GATE_HOOK_COMMAND,
                 # Above the gate's own 20 s budget, so the gate times out first and fails open.
                 "timeout": 30,
-                "statusMessage": "Running the repowise health gate...",
             }
         ],
     }

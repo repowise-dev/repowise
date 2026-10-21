@@ -1906,7 +1906,8 @@ Opt-in, off by default: Claude Code's `git commit` and `git push` in this repo r
 - `install` sets `hooks.health_gate: true` in `.repowise/config.yaml` and adds a PreToolUse entry to the repo's
   `.claude/settings.local.json`; `uninstall` (and `hook uninstall`) removes both. `init` and `upgrade` never write either.
 - A commit is checked on the staged change, including `git add` earlier in the same command and `-a`; a push on
-  `@{u}...HEAD`, else the default branch's merge-base. `--amend`, pathspecs, other branches, tags and `--delete` pass
+  `@{u}...HEAD`, else the default branch's merge-base. `--amend`, pathspecs, merges in progress, other branches, tags,
+  `--delete`, and a `git add` after another command in the chain pass
   unchecked, as does anything that keeps the check from finishing within 20 s.
 
 ## Utility Commands

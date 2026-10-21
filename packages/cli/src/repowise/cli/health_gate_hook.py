@@ -21,7 +21,8 @@ What is checked is what the command would record:
   ``--mirror``, ``--delete`` or ``--dry-run`` is not read.
 
 Module scope is stdlib only: this fires on every shell call in an opted-in
-repository and returns on the first regex for everything that is not git.
+repository and returns on the first regex for everything that is not git. The
+config read (through the augment package) is paid only for a commit or push.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO
 
@@ -48,6 +49,12 @@ _MAX_LISTED = 5
 _QUICK_RE = re.compile(r"\bgit\b[\s\S]*\b(?:commit|push)\b")
 _OPERATORS = frozenset({"&&", "||", ";", "|", "&", "|&", ";;", "(", ")"})
 _REDIRECT_RE = re.compile(r"^[<>&]+$")
+#: Unquoted, these make the token stream misleading; the command is not read.
+_UNREAD_TOKENS = frozenset({"<<", "<<-", "<<<", "("})
+#: Commands that write nothing a commit could pick up.
+_INERT_COMMANDS = frozenset({"echo", "printf", "pwd", "true", ":", "cd"})
+#: :class:`GitCall` verb for any other command in the chain.
+SHELL_STEP = "(shell)"
 #: Global ``git`` options that take the next token as their value.
 _GIT_VALUE_OPTS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"})
 #: Global options that point git somewhere this hook does not follow.
@@ -56,6 +63,10 @@ _GIT_OPAQUE_OPTS = frozenset({"--git-dir", "--work-tree", "--namespace", "--bare
 _READ_ONLY_VERBS = frozenset(
     {"status", "diff", "log", "show", "fetch", "remote", "rev-parse", "ls-files", "describe"}
 )
+
+#: What may run before a commit in the same chain for its staged content to be read.
+_COMMIT_PRELUDE = _READ_ONLY_VERBS | {"add", SHELL_STEP}
+_OPERATION_HEADS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")
 
 _COMMIT_VALUE_SHORT = frozenset("mFCct")
 _COMMIT_VALUE_LONG = frozenset({
@@ -154,17 +165,23 @@ def _enabled(cwd: str) -> bool:
 
 
 def git_calls(command: str, cwd: str) -> list[GitCall]:
-    """Every ``git`` call in *command*, in order; ``[]`` when it does not tokenize."""
+    """Every ``git`` call in *command*, in order; ``[]`` when it does not tokenize.
+
+    Any other command that could write files is kept as a :data:`SHELL_STEP`,
+    so a check knows the tree may change before the commit runs.
+    """
     calls: list[GitCall] = []
     here = cwd
-    for tokens in _segments(command):
-        tokens = _unwrap(tokens)
+    for raw in _segments(command):
+        tokens, git_env = _unwrap(raw)
         if len(tokens) >= 2 and tokens[0] == "cd":
             here = os.path.join(here, os.path.expanduser(tokens[1]))
         elif tokens and Path(tokens[0]).name.lower() in ("git", "git.exe"):
             call = _git_call(tokens[1:], here)
             if call is not None:
-                calls.append(call)
+                calls.append(replace(call, opaque=True) if git_env else call)
+        elif tokens and tokens[0] not in _INERT_COMMANDS:
+            calls.append(GitCall(SHELL_STEP, here, ()))
     return calls
 
 
@@ -176,6 +193,8 @@ def _segments(command: str) -> list[list[str]]:
         tokens = list(lexer)
     except ValueError:
         return []
+    if _UNREAD_TOKENS & set(tokens):
+        return []  # a heredoc body or a subshell's ``cd`` would be misread
     segments: list[list[str]] = [[]]
     skip_next = False
     for i, token in enumerate(tokens):
@@ -185,26 +204,32 @@ def _segments(command: str) -> list[list[str]]:
             segments.append([])
         elif _REDIRECT_RE.match(token):
             skip_next = True  # the redirection's target
-        elif token.isdigit() and i + 1 < len(tokens) and _REDIRECT_RE.match(tokens[i + 1]):
+        elif token in ("0", "1", "2") and i + 1 < len(tokens) and _REDIRECT_RE.match(tokens[i + 1]):
             continue  # the ``2`` of ``2>&1``
         else:
             segments[-1].append(token)
     return [s for s in segments if s]
 
 
-def _unwrap(tokens: list[str]) -> list[str]:
-    """*tokens* without leading ``VAR=value`` and the ``repowise distill`` wrapper."""
+def _unwrap(tokens: list[str]) -> tuple[list[str], bool]:
+    """*tokens* without leading ``VAR=value`` and the ``repowise distill`` wrapper.
+
+    The flag says a ``GIT_*`` assignment was among them (``GIT_DIR``,
+    ``GIT_INDEX_FILE``, ...): git then reads somewhere this hook does not.
+    """
+    git_env = False
     while tokens and re.match(r"^\w+=", tokens[0]):
+        git_env = git_env or tokens[0].startswith("GIT_")
         tokens = tokens[1:]
     if tokens[:2] != ["repowise", "distill"]:
-        return tokens
+        return tokens, git_env
     rest = tokens[2:]
     if rest[:1] == ["--source"]:
         rest = rest[2:]
     if len(rest) == 1:  # the rewritten form quotes the whole command
         segments = _segments(rest[0])
-        return segments[0] if len(segments) == 1 else []
-    return rest
+        return _unwrap(segments[0]) if len(segments) == 1 else ([], git_env)
+    return rest, git_env
 
 
 def _git_call(args: list[str], cwd: str) -> GitCall | None:
@@ -289,7 +314,12 @@ def push_targets_head(args: tuple[str, ...], branch: str) -> bool:
         else:
             positional.append(arg)
     allowed = {"HEAD", branch, f"refs/heads/{branch}"} - {""}
-    return all(ref.lstrip("+").split(":", 1)[0] in allowed for ref in positional[1:])
+    for ref in positional[1:]:
+        src, _, dst = ref.lstrip("+").partition(":")
+        # A push to another remote branch is judged against the wrong upstream.
+        if src not in allowed or (dst and dst not in allowed - {"HEAD"}):
+            return False
+    return True
 
 
 # -- checking -----------------------------------------------------------------
@@ -298,24 +328,17 @@ def push_targets_head(args: tuple[str, ...], branch: str) -> bool:
 def _check_commit(call: GitCall, before: list[GitCall], deadline: float) -> str | None:
     plan = commit_plan(call.args)
     root = _git(call.cwd, "rev-parse", "--show-toplevel")
-    if plan is None or not root or any(c.verb not in _READ_ONLY_VERBS | {"add"} for c in before):
+    if plan is None or not root or any(c.verb not in _COMMIT_PRELUDE for c in before):
         return None
+    adds = [c for c in before if c.verb == "add" and not c.opaque]
+    if (adds or plan == "all") and any(c.verb == SHELL_STEP for c in before):
+        return None  # that step may rewrite the files before they are staged
     head = _git(root, "rev-parse", "--verify", "-q", "HEAD")
-    if not head:
-        return None  # the first commit: nothing to compare with
+    if not head or _mid_operation(root):
+        return None  # the first commit, or a merge whose other side is not this change
     with tempfile.TemporaryDirectory(prefix="repowise-gate-") as tmp:
         env = _scratch_env(root, Path(tmp))
-        if env is None:
-            return None
-        adds = [c for c in before if c.verb == "add" and not c.opaque]
-        for add in adds:
-            if _git(add.cwd, "rev-parse", "--show-toplevel") != root:
-                continue
-            if _ADD_UNREAD & set(add.args) or _git(add.cwd, "add", *add.args, env=env) is None:
-                return None
-        if plan == "all" and _git(root, "add", "-u", env=env) is None:
-            return None
-        snapshot = _snapshot(root, head, env)
+        snapshot = _stage(root, head, plan, adds, env, deadline) if env is not None else None
         if snapshot is None:
             return None
         env.pop("GIT_INDEX_FILE")
@@ -323,9 +346,31 @@ def _check_commit(call: GitCall, before: list[GitCall], deadline: float) -> str 
     return _reason("commit", failing, None) if failing else None
 
 
+def _mid_operation(root: str) -> bool:
+    """A merge, cherry-pick or revert in progress: the commit carries another side's lines."""
+    return any(_git(root, "rev-parse", "-q", "--verify", ref) for ref in _OPERATION_HEADS)
+
+
+def _stage(
+    root: str, head: str, plan: str, adds: list[GitCall], env: dict, deadline: float
+) -> str | None:
+    """Replay the chain's ``git add`` (and ``-a``) on the scratch index; its snapshot commit."""
+    for add in adds:
+        if time.monotonic() > deadline:
+            return None
+        if _git(add.cwd, "rev-parse", "--show-toplevel") != root:
+            continue
+        if _ADD_UNREAD & set(add.args) or _git(add.cwd, "add", *add.args, env=env) is None:
+            return None
+    if plan == "all" and _git(root, "add", "-u", env=env) is None:
+        return None
+    return _snapshot(root, head, env)
+
+
 def _check_push(call: GitCall, before: list[GitCall], deadline: float) -> str | None:
     root = _git(call.cwd, "rev-parse", "--show-toplevel")
-    if not root or any(c.verb not in _READ_ONLY_VERBS | {"add", "commit"} for c in before):
+    # An earlier commit in the chain moves HEAD; its own check covers it.
+    if not root or any(c.verb not in _READ_ONLY_VERBS | {SHELL_STEP} for c in before):
         return None
     branch = _git(root, "symbolic-ref", "--short", "-q", "HEAD") or ""
     if not push_targets_head(call.args, branch):
@@ -349,12 +394,17 @@ def _scratch_env(root: str, tmp: Path) -> dict[str, str] | None:
     shutil.copyfile(index, tmp / "index")
     (tmp / "objects").mkdir()
     inherited = os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+    try:  # the repo's own alternates (``--reference`` / ``--shared`` clones)
+        own = (Path(objects) / "info" / "alternates").read_text(encoding="utf-8").split()
+    except OSError:
+        own = []
+    alternates = [objects, *(str(Path(objects) / a) for a in own), inherited]
     return {
         **os.environ,
         **_SNAPSHOT_IDENTITY,
         "GIT_INDEX_FILE": str(tmp / "index"),
         "GIT_OBJECT_DIRECTORY": str(tmp / "objects"),
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.pathsep.join(filter(None, [objects, inherited])),
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.pathsep.join(filter(None, alternates)),
     }
 
 

@@ -71,11 +71,15 @@ def _no_health_check(monkeypatch) -> list:
         ("git add a.py && git commit -m 'a && b'", [("add", "/r"), ("commit", "/r")]),
         ("git -C sub push", [("push", "sub")]),
         ("cd sub && git commit -am x", [("commit", "sub")]),
-        ("FOO=1 git push origin HEAD 2>&1 | tail -5", [("push", "/r")]),
+        ("FOO=1 git push origin HEAD 2>&1 | tail -5", [("push", "/r"), ("(shell)", "/r")]),
         ('repowise distill "git push"', [("push", "/r")]),
         ("echo git commit", []),
         ("git log --grep commit", [("log", "/r")]),
         ("git commit -m 'unbalanced", []),
+        ("cat <<EOF\ngit commit\nEOF", []),
+        ("(cd sub && git commit -m x)", []),
+        ("ruff check . && git commit -m x", [("(shell)", "/r"), ("commit", "/r")]),
+        ("echo hi && git commit -m x", [("commit", "/r")]),
     ],
 )
 def test_git_calls_reads_verbs_and_directories(command, expected) -> None:
@@ -85,6 +89,13 @@ def test_git_calls_reads_verbs_and_directories(command, expected) -> None:
 
 def test_git_dir_override_is_marked_opaque() -> None:
     assert gate.git_calls("git --git-dir=x commit -m y", "/r")[0].opaque
+    assert gate.git_calls("GIT_INDEX_FILE=x git commit -m y", "/r")[0].opaque
+    assert not gate.git_calls("LANG=C git commit -m y", "/r")[0].opaque
+
+
+def test_a_quoted_heredoc_message_is_still_read() -> None:
+    command = "git commit -m \"$(cat <<'EOF'\nfix: x\n\nbody\nEOF\n)\""
+    assert [c.verb for c in gate.git_calls(command, "/r")] == ["commit"]
 
 
 @pytest.mark.parametrize(
@@ -116,6 +127,8 @@ def test_commit_plan(args, plan) -> None:
         (("origin", "--delete", "x"), False),
         (("origin", ":main"), False),
         (("--dry-run",), False),
+        (("origin", "HEAD:refs/heads/other"), False),
+        (("origin", "HEAD:main"), True),
     ],
 )
 def test_push_targets_head(args, reads) -> None:
@@ -215,6 +228,7 @@ def test_unread_commit_forms_pass_without_a_check(repo, monkeypatch) -> None:
         "git commit -m x a.py",
         "git rm a.py && git commit -m x",
         "git commit -m x",  # nothing staged
+        "npm run format && git add a.py && git commit -m x",
     ):
         assert gate.deny_reason(_payload(command, repo)) is None
     assert calls == []
@@ -349,3 +363,21 @@ def test_the_entry_counts_as_repowise_s_own_edit() -> None:
 
     created = json.dumps({"hooks": {"PreToolUse": [_health_gate_entry()]}})
     assert only_repowise_differs(".claude/settings.local.json", "", created)
+
+
+def test_a_merge_in_progress_passes_without_a_check(repo, monkeypatch) -> None:
+    _enable(repo)
+    calls = _no_health_check(monkeypatch)
+    (repo / "b.py").write_text(_NESTED, encoding="utf-8")
+    _git(repo, "add", "b.py")
+    (repo / ".git" / "MERGE_HEAD").write_text(_git(repo, "rev-parse", "HEAD") + "\n")
+    assert gate.deny_reason(_payload("git commit -m x", repo)) is None
+    assert calls == []
+
+
+def test_a_push_after_a_commit_in_the_chain_checks_only_the_commit(repo, monkeypatch) -> None:
+    _enable(repo)
+    calls = _no_health_check(monkeypatch)
+    (repo / "b.py").write_text(_NESTED, encoding="utf-8")
+    gate.deny_reason(_payload("git add b.py && git commit -m x && git push", repo))
+    assert len(calls) == 1 and ".." in calls[0] and "..." not in calls[0]
