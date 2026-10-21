@@ -21,7 +21,7 @@ from repowise.core.components.resolve import (
     resolve_components,
 )
 from repowise.core.components.rollup import rollup_component
-from repowise.core.persistence.crud import code_file_rows
+from repowise.core.persistence.crud import code_file_rows, indexed_file
 from repowise.core.persistence.crud.repository import ANALYSIS_RAN_KEY
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -86,7 +86,7 @@ async def load_repo_components(
     rows = (
         await session.execute(
             select(GraphNode.node_id, GraphNode.is_test).where(
-                GraphNode.repository_id == repository_id, GraphNode.node_type == "file"
+                GraphNode.repository_id == repository_id, indexed_file()
             )
         )
     ).all()
