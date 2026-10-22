@@ -51,7 +51,7 @@ from ..models import FileInfo, Import, ParsedFile, Symbol, compute_content_hash
 from ..parser_helpers import _collect_error_nodes, _run_query
 from ..python_local_refs import local_refs_from_tree, parse_python_module
 from ..python_registrars import registering_functions
-from ..sfc_source import component_call_sites, prepare_source
+from ..sfc_source import component_call_sites, extract_astro_markup_imports, prepare_source
 from ..special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
 from .calls import (
     _DOTTED_PATH,
@@ -166,12 +166,16 @@ class ASTParser:
             or _is_fsharp_signature(file_info)
         ):
             return self.parse_file(file_info, source).imports
+        original_source = source
         source = prepare_source(lang, source, path=file_info.path)
         root, _, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
         query = _load_compiled_query(lang, grammar_tag)
         matches = _run_query(query, root) if query is not None else []
         src = source.decode("utf-8", errors="replace")
-        return _extract_imports(matches, config, file_info, src)
+        imports = _extract_imports(matches, config, file_info, src)
+        if lang == "astro":
+            _merge_markup_imports(imports, extract_astro_markup_imports(original_source))
+        return imports
 
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
@@ -220,6 +224,8 @@ class ASTParser:
         )
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
+        if lang == "astro":
+            _merge_markup_imports(imports, extract_astro_markup_imports(original_source))
         calls = _extract_calls(matches, config, file_info, src, symbols)
         # An SFC's markup tags (``<Foo />``) are component calls the TS buffer lost.
         calls.extend(component_call_sites(lang, original_source, symbols))
@@ -251,6 +257,15 @@ class ASTParser:
             registrars=registrars,
             references=references,
         )
+
+
+def _merge_markup_imports(imports: list[Import], markup_imports: list[Import]) -> None:
+    """Append markup imports whose module path is not already present."""
+    seen = {imp.module_path for imp in imports}
+    for markup_imp in markup_imports:
+        if markup_imp.module_path not in seen:
+            seen.add(markup_imp.module_path)
+            imports.append(markup_imp)
 
 
 def _is_fsharp_signature(file_info: FileInfo) -> bool:

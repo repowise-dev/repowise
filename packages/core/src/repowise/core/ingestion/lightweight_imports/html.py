@@ -67,27 +67,38 @@ def _attributes(start_tag: Node) -> dict[str, str]:
 
 
 def _start_tag(node: Node) -> Node | None:
-    return next((c for c in node.children if c.type == "start_tag"), None)
+    return next((c for c in node.children if c.type in ("start_tag", "self_closing_tag")), None)
 
 
-def _walk(node: Node, out: list[tuple[str, str]]) -> None:
+def _walk(node: Node, out: list[tuple[str, str]], *, case_sensitive: bool = False) -> None:
     # <script> gets its own node type; <link> is a plain element.
     if node.type in ("script_element", "element"):
         start = _start_tag(node)
         if start is not None:
             name_node = next((c for c in start.children if c.type == "tag_name"), None)
             if name_node is not None and name_node.text is not None:
-                tag = name_node.text.decode("utf-8", "replace").lower()
+                raw_tag = name_node.text.decode("utf-8", "replace")
+                tag = raw_tag if case_sensitive else raw_tag.lower()
                 attr = _REF_ATTRS.get(tag)
                 if attr is not None:
                     value = _attributes(start).get(attr, "").strip()
                     if value:
                         out.append((tag, value))
+    elif node.type == "ERROR":
+        name_node = next((c for c in node.children if c.type == "tag_name"), None)
+        if name_node is not None and name_node.text is not None:
+            raw_tag = name_node.text.decode("utf-8", "replace")
+            tag = raw_tag if case_sensitive else raw_tag.lower()
+            attr = _REF_ATTRS.get(tag)
+            if attr is not None:
+                value = _attributes(node).get(attr, "").strip()
+                if value:
+                    out.append((tag, value))
     for child in node.children:
-        _walk(child, out)
+        _walk(child, out, case_sensitive=case_sensitive)
 
 
-def extract_html_imports(text: str) -> list[Import]:
+def extract_html_imports(text: str, *, case_sensitive: bool = False) -> list[Import]:
     """Return one ``Import`` per local ``<script src>`` / ``<link href>``."""
     from ..sfc_source import _grammar
 
@@ -104,7 +115,7 @@ def extract_html_imports(text: str) -> list[Import]:
         return []
 
     refs: list[tuple[str, str]] = []
-    _walk(tree.root_node, refs)
+    _walk(tree.root_node, refs, case_sensitive=case_sensitive)
 
     imports: list[Import] = []
     seen: set[str] = set()
