@@ -90,6 +90,24 @@ def _sent_metadata(body: RepoCreate) -> tuple[str | None, str | None]:
     )
 
 
+async def _new_row_metadata(
+    session: AsyncSession, body: RepoCreate
+) -> tuple[str | None, str | None]:
+    """``(url, default_branch)`` for a canonical row ``POST`` may create.
+
+    What the body omits comes from the registry row an earlier ``index=false``
+    call stored; ``None`` (read from git) when there is none.
+    """
+    url, branch = _sent_metadata(body)
+    registered = await crud.get_repository_by_path(session, body.local_path)
+    if registered is None:
+        return url, branch
+    return (
+        registered.url if url is None else url,
+        registered.default_branch if branch is None else branch,
+    )
+
+
 @router.post("", response_model=RepoResponse, status_code=201)
 async def create_repo(
     body: RepoCreate,
@@ -122,14 +140,8 @@ async def create_repo(
 
     app_state = request.app.state
 
-    # A new canonical row takes what the body omits from the registry row an
-    # earlier ``index=false`` call stored, else from git.
     sent_url, sent_branch = _sent_metadata(body)
-    url, branch = sent_url, sent_branch
-    registered = await crud.get_repository_by_path(session, body.local_path)
-    if registered is not None:
-        url = registered.url if url is None else url
-        branch = registered.default_branch if branch is None else branch
+    url, branch = await _new_row_metadata(session, body)
 
     # Canonical row in the repo-local DB; the factory routes all later access.
     repo_factory, repo_id = await ensure_repo_registration(
