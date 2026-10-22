@@ -20,7 +20,18 @@ def _git(args: list[str], cwd: Path) -> str:
 async def test_get_change_risk_scores_linked_worktree_commit(pr_checkout, tmp_path):
     # Add a second commit on main so HEAD~1..HEAD exists on main
     (tmp_path / "src/auth/service.py").write_text("x = 100\n", encoding="utf-8")
-    _git(["commit", "-am", "commit on main"], tmp_path)
+    _git(
+        [
+            "-c",
+            "user.name=Dev",
+            "-c",
+            "user.email=dev@example.com",
+            "commit",
+            "-am",
+            "commit on main",
+        ],
+        tmp_path,
+    )
     main_head = _git(["rev-parse", "HEAD"], tmp_path)[:12]
 
     wt_path = tmp_path / "worktree-1"
@@ -29,7 +40,18 @@ async def test_get_change_risk_scores_linked_worktree_commit(pr_checkout, tmp_pa
     # Add extra commit in worktree
     extra_file = wt_path / "src/auth/service.py"
     extra_file.write_text("x = 2\ndef extra():\n    return 42\n", encoding="utf-8")
-    _git(["commit", "-am", "add extra in worktree"], wt_path)
+    _git(
+        [
+            "-c",
+            "user.name=Dev",
+            "-c",
+            "user.email=dev@example.com",
+            "commit",
+            "-am",
+            "add extra in worktree",
+        ],
+        wt_path,
+    )
     wt_head = _git(["rev-parse", "HEAD"], wt_path)[:12]
 
     # Without repo: scores main checkout's commit
