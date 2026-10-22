@@ -91,6 +91,18 @@ async def test_a_sync_records_the_branch_and_a_credential_free_remote(
     assert repo.url == "https://github.com/acme/legacy.git"
 
 
+async def test_a_sync_passing_an_empty_branch_reads_it_from_git(
+    async_session, tmp_path: Path
+) -> None:
+    root = _checkout(tmp_path, "master")
+
+    repo = await crud.upsert_repository(
+        async_session, name="r", local_path=str(root), default_branch="", stamp_head=True
+    )
+
+    assert repo.default_branch == "master"
+
+
 async def test_the_origin_head_target_wins_over_a_local_trunk(
     async_session, tmp_path: Path
 ) -> None:
