@@ -79,8 +79,9 @@ async def _get_repo_or_404(session: AsyncSession, repo_id: str) -> Repository:
 def _sent_metadata(body: RepoCreate) -> tuple[str | None, str | None]:
     """``(url, default_branch)`` the client sent; ``None`` for an omitted one.
 
-    An existing row keeps what the body leaves out, as PATCH does; the schema
-    defaults only fill a new row.
+    An existing row keeps what the body leaves out, as PATCH does; a new row
+    reads an omitted one from git, else takes the schema default
+    (:func:`crud.upsert_repository`).
     """
     sent = body.model_fields_set
     return (
@@ -106,8 +107,7 @@ async def create_repo(
     """
     if not body.index:
         # Metadata-only registration: per-repo storage is created on first index.
-        existing = await crud.get_repository_by_path(session, body.local_path)
-        url, branch = _sent_metadata(body) if existing else (body.url, body.default_branch)
+        url, branch = _sent_metadata(body)
         repo = await crud.upsert_repository(
             session,
             name=body.name,
@@ -122,13 +122,22 @@ async def create_repo(
 
     app_state = request.app.state
 
+    # A new canonical row takes what the body omits from the registry row an
+    # earlier ``index=false`` call stored, else from git.
+    sent_url, sent_branch = _sent_metadata(body)
+    url, branch = sent_url, sent_branch
+    registered = await crud.get_repository_by_path(session, body.local_path)
+    if registered is not None:
+        url = registered.url if url is None else url
+        branch = registered.default_branch if branch is None else branch
+
     # Canonical row in the repo-local DB; the factory routes all later access.
     repo_factory, repo_id = await ensure_repo_registration(
         app_state,
         local_path=body.local_path,
         name=body.name,
-        url=body.url,
-        default_branch=body.default_branch,
+        url=url,
+        default_branch=branch,
         settings=body.settings,
     )
 
@@ -138,11 +147,10 @@ async def create_repo(
         repo = await crud.get_repository(repo_session, repo_id)
         if repo is not None:
             repo.name = body.name
-            url, branch = _sent_metadata(body)
-            if url is not None:
-                repo.url = url
-            if branch is not None:
-                repo.default_branch = branch
+            if sent_url is not None:
+                repo.url = sent_url
+            if sent_branch is not None:
+                repo.default_branch = sent_branch
             if body.settings is not None:
                 import json as _json
 
