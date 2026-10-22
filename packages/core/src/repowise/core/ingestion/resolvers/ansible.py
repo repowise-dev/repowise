@@ -56,6 +56,12 @@ def _resolve_file(target: str, importer_path: str, ctx: ResolverContext) -> str 
 
 
 def _resolve_role(name: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    # Galaxy/collection names (``geerlingguy.nginx``, ``namespace.collection.role``)
+    # and path-like names are repo-external by definition; resolving them to a
+    # vendored directory that happens to match would be a wrong edge, which is
+    # worse than the documented absence.
+    if "." in name or "/" in name:
+        return None
     # Importer's directory first, walking up to the repo root, so playbooks in
     # a subdirectory resolve a sibling ``roles/`` tree (Ansible's search path
     # covers both the playbook directory and the current directory).

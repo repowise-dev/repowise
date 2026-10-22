@@ -207,6 +207,26 @@ class TestAnsibleResolution:
         ctx = _ctx(None, FILES)
         assert resolve_import("role:geerlingguy.nginx", "site.yml", "yaml", ctx) is None
 
+    def test_galaxy_role_rejected_even_when_directory_exists(self) -> None:
+        # A vendored roles/geerlingguy.nginx/ directory must not lure the
+        # resolver into a wrong edge: dotted names are Galaxy-scoped.
+        files = dict(FILES)
+        files["roles/geerlingguy.nginx/tasks/main.yml"] = "- debug: msg=x\n"
+        ctx = _ctx(None, files)
+        assert resolve_import("role:geerlingguy.nginx", "site.yml", "yaml", ctx) is None
+
+    def test_collection_role_rejected(self) -> None:
+        files = dict(FILES)
+        files["roles/ns.coll.role/tasks/main.yml"] = "- debug: msg=x\n"
+        ctx = _ctx(None, files)
+        assert resolve_import("role:ns.coll.role", "site.yml", "yaml", ctx) is None
+
+    def test_path_like_role_rejected(self) -> None:
+        files = dict(FILES)
+        files["roles/vendor/common/tasks/main.yml"] = "- debug: msg=x\n"
+        ctx = _ctx(None, files)
+        assert resolve_import("role:vendor/common", "site.yml", "yaml", ctx) is None
+
     def test_empty_target_returns_none(self) -> None:
         ctx = _ctx(None, FILES)
         assert resolve_ansible_import("  ", "site.yml", ctx) is None
