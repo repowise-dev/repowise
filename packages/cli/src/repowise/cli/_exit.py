@@ -17,7 +17,7 @@ COST_UNCONFIRMED_BUILT = f"documentation built from code, {_NO_TERMINAL}"
 COST_UNCONFIRMED_KEPT = f"documentation kept as it was, {_NO_TERMINAL}"
 
 
-def exit_interrupted(*, command: str = "init") -> NoReturn:
+def exit_interrupted(command: str = "init") -> NoReturn:
     """Ctrl-C at any point: one line, then the shell's interrupt code."""
     from repowise.cli.hints import maybe_hint
     from repowise.cli.ui import mascot

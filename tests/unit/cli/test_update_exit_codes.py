@@ -36,7 +36,9 @@ def test_update_degraded_step_exits_2(tmp_path):
         result = CliRunner().invoke(cli, ["update", str(tmp_path)])
 
     assert result.exit_code == EXIT_DEGRADED, result.output
-    assert "Finished with gaps: Knowledge-graph export: [Errno 13] Permission denied." in result.output
+    assert (
+        "Finished with gaps: Knowledge-graph export: [Errno 13] Permission denied." in result.output
+    )
 
 
 def test_update_keyboard_interrupt_exits_130(tmp_path):
