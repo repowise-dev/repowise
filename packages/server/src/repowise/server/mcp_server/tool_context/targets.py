@@ -429,7 +429,9 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
         if value:
             docs[key] = clean_signature(value) if attr == "signature" else value
     # File page summary (full content gated behind include=["full_doc"])
-    sym_page = await card.session.get(Page, f"file_page:{sym.file_path}")
+    sym_page = await card.session.get(
+        Page, {"id": f"file_page:{sym.file_path}", "repository_id": card.repo_id}
+    )
     if sym_page is not None:
         docs["file_summary"] = sym_page.summary or ""
         if card.wants("full_doc"):

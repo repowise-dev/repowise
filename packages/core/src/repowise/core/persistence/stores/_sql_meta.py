@@ -115,8 +115,10 @@ class _SqlMetaMixin(MetaIndexStore):
             self._session, generated_page, repository_id
         )
 
-    async def get_page(self, page_id: str) -> Page | None:
-        return await crud.get_page(self._session, page_id)
+    async def get_page(
+        self, page_id: str, repository_id: str | None = None
+    ) -> Page | None:
+        return await crud.get_page(self._session, page_id, repository_id=repository_id)
 
     async def list_pages(
         self,
@@ -139,9 +141,15 @@ class _SqlMetaMixin(MetaIndexStore):
         )
 
     async def get_page_versions(
-        self, page_id: str, *, limit: int = 50
+        self,
+        page_id: str,
+        *,
+        repository_id: str | None = None,
+        limit: int = 50,
     ) -> list[PageVersion]:
-        return await crud.get_page_versions(self._session, page_id, limit=limit)
+        return await crud.get_page_versions(
+            self._session, page_id, repository_id=repository_id, limit=limit
+        )
 
     async def get_stale_pages(self, repository_id: str) -> list[Page]:
         return await crud.get_stale_pages(self._session, repository_id)
