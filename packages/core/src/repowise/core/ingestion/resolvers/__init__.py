@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .ansible import resolve_ansible_import
 from .clojure import resolve_clojure_import
 from .context import ResolverContext
 from .cpp import resolve_cpp_import
@@ -76,6 +77,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "fsharp": resolve_fsharp_import,
     # dbt ref()/source(), gated on dbt_project.yml via the model index.
     "sql": resolve_dbt_import,
+    # Ansible file paths + `role:<name>` stamps from the yaml extractor.
+    "yaml": resolve_ansible_import,
     # <script src>/<link href> are asset paths, not module specifiers — they
     # get their own document-/root-relative resolution, never the TS/JS one.
     "html": resolve_html_asset,
