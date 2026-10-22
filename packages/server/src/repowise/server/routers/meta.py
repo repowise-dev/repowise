@@ -25,6 +25,7 @@ from repowise.core.upgrade.release import (
     latest_highlights_cached,
     load_bundled_changelog,
     load_release_stats,
+    newer_changelog_cached,
 )
 from repowise.server import __version__
 from repowise.server.deps import resolve_session_factory, verify_api_key
@@ -96,11 +97,30 @@ async def _attach_store_status(resp: VersionResponse, repo_id: str, request: Req
 
 
 @router.get("/changelog", response_model=ChangelogResponse)
-async def get_changelog(limit: int = 20) -> ChangelogResponse:
-    """Return repowise's bundled changelog, newest first, capped at *limit*."""
-    entries = load_bundled_changelog()[: max(0, limit)]
+async def get_changelog(limit: int = 20, include_newer: bool = False) -> ChangelogResponse:
+    """Return repowise's changelog, newest first, capped at *limit*.
+
+    The bundled changelog stops at the running version. With *include_newer*
+    (the upgrade banner's view) and a newer release on PyPI, the releases in
+    between are read from the changelog at the latest tag and put on top; when
+    that fetch fails the bundled changelog is returned as before.
+    """
+    entries = load_bundled_changelog()
+    if include_newer:
+        # Off the event loop: a cache miss makes up to two 2 s network calls.
+        entries = await asyncio.to_thread(_newer_entries) + entries
     stats = load_release_stats()
-    return ChangelogResponse(entries=[_entry(e, stats.get(e.version)) for e in entries])
+    return ChangelogResponse(
+        entries=[_entry(e, stats.get(e.version)) for e in entries[: max(0, limit)]]
+    )
+
+
+def _newer_entries() -> list[ChangelogEntry]:
+    """Releases after the running one, up to the latest on PyPI, or ``[]``."""
+    check = check_latest_version_cached(__version__)
+    if check.update_available and check.latest_version:
+        return newer_changelog_cached(__version__, check.latest_version)
+    return []
 
 
 def _highlight(h: ChangelogHighlight) -> ChangelogHighlightModel:

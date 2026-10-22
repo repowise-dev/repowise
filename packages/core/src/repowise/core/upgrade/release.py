@@ -15,16 +15,28 @@ from __future__ import annotations
 import contextlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .changelog import ChangelogEntry, parse_changelog
+from .changelog import (
+    ChangelogEntry,
+    ChangelogHighlight,
+    ChangelogSection,
+    entries_between,
+    parse_changelog,
+)
 
 PYPI_URL = "https://pypi.org/pypi/repowise/json"
 
 #: The changelog on main, read only to name what a newer release brings.
 CHANGELOG_URL = "https://raw.githubusercontent.com/repowise-dev/repowise/main/docs/CHANGELOG.md"
+
+#: The changelog as released at a tag, read for the notes of releases newer than
+#: the running one. Pinned to the tag so the result never changes once fetched.
+TAGGED_CHANGELOG_URL = (
+    "https://raw.githubusercontent.com/repowise-dev/repowise/v{version}/docs/CHANGELOG.md"
+)
 
 #: Default freshness window for the cached PyPI check (hours). Within it the last
 #: fetched ``latest_version`` is reused so routine calls never hit the network.
@@ -44,6 +56,10 @@ _CACHE_PATH = Path.home() / ".repowise" / "update-check.json"
 #: Highlight titles of the newer release. A file of its own because the CLI
 #: rewrites ``update-check.json`` whole.
 _HIGHLIGHTS_CACHE_PATH = Path.home() / ".repowise" / "release-highlights.json"
+
+#: Parsed notes of the releases between the running and the latest version, for
+#: the same reason a file of its own.
+_NEWER_NOTES_CACHE_PATH = Path.home() / ".repowise" / "release-notes.json"
 
 
 # --- version comparison ---------------------------------------------------
@@ -227,6 +243,85 @@ def latest_highlights_cached(
     return titles or []
 
 
+# --- newer release notes --------------------------------------------------
+
+
+def fetch_newer_changelog(
+    current_version: str, latest_version: str, timeout: float = 2.0
+) -> list[ChangelogEntry] | None:
+    """Entries newer than *current_version*, up to *latest_version*. Never raises.
+
+    Read from the changelog at the ``v{latest_version}`` tag, because the
+    installed wheel's bundled changelog was built before those releases existed.
+    ``None`` on any network failure, so the caller falls back to the bundled one.
+    """
+    import httpx
+
+    try:
+        resp = httpx.get(TAGGED_CHANGELOG_URL.format(version=latest_version), timeout=timeout)
+        resp.raise_for_status()
+    except httpx.HTTPError:  # offline, timeout, non-2xx (a tag without the file)
+        return None
+    return entries_between(
+        parse_changelog(resp.text), newer_than=current_version, up_to=latest_version
+    )
+
+
+def newer_changelog_cached(
+    current_version: str,
+    latest_version: str,
+    *,
+    timeout: float = 2.0,
+) -> list[ChangelogEntry]:
+    """Cached :func:`fetch_newer_changelog`, ``[]`` when unknown.
+
+    A tag's changelog does not change, so a fetched result is kept until either
+    version moves. A failed or empty lookup is kept for :data:`_EMPTY_TTL_HOURS`
+    only, as for the highlights.
+    """
+    try:
+        cached = json.loads(_NEWER_NOTES_CACHE_PATH.read_text(encoding="utf-8"))
+        age = time.time() - float(cached["checked_at"])
+        entries = [_entry_from_json(e) for e in cached.get("entries") or []]
+        fresh = bool(entries) or 0 <= age < _EMPTY_TTL_HOURS * 3600
+        if (
+            cached.get("current") == current_version
+            and cached.get("latest") == latest_version
+            and fresh
+        ):
+            return entries
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass  # no cache yet, or a malformed one: fetch
+    entries = fetch_newer_changelog(current_version, latest_version, timeout=timeout) or []
+    with contextlib.suppress(OSError):  # a read-only home only costs a refetch
+        _NEWER_NOTES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _NEWER_NOTES_CACHE_PATH.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "current": current_version,
+                    "latest": latest_version,
+                    "entries": [asdict(e) for e in entries],
+                }
+            ),
+            encoding="utf-8",
+        )
+    return entries
+
+
+def _entry_from_json(raw: dict[str, Any]) -> ChangelogEntry:
+    return ChangelogEntry(
+        version=raw["version"],
+        label=raw.get("label"),
+        sections=tuple(
+            ChangelogSection(name=s["name"], items=tuple(s.get("items") or ()))
+            for s in raw.get("sections") or ()
+        ),
+        summary=raw.get("summary") or "",
+        highlights=tuple(ChangelogHighlight(**h) for h in raw.get("highlights") or ()),
+    )
+
+
 # --- bundled changelog and release stats ----------------------------------
 
 # Parsed files keyed by path, reused while the file's mtime is unchanged, so a
@@ -267,13 +362,16 @@ __all__ = [
     "DEFAULT_TTL_HOURS",
     "PYPI_URL",
     "RELEASE_STATS_PATH",
+    "TAGGED_CHANGELOG_URL",
     "ReleaseCheck",
     "check_latest_version_cached",
     "fetch_latest_version",
+    "fetch_newer_changelog",
     "fetch_release_highlights",
     "is_newer_version",
     "latest_highlights_cached",
     "load_bundled_changelog",
     "load_release_stats",
+    "newer_changelog_cached",
     "parse_release",
 ]

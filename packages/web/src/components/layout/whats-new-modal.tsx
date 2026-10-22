@@ -24,15 +24,23 @@ export interface WhatsNewModalProps {
   version?: string | null;
   /** The reader just upgraded to `version`: its highlights read "New". */
   fresh?: boolean;
+  /** Also list releases newer than the running version (the upgrade banner). */
+  includeNewer?: boolean;
 }
 
-/** repowise's release notes from the bundled changelog: the chosen release on
- *  top, earlier ones a click away. */
-export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: WhatsNewModalProps) {
+/** repowise's release notes from the bundled changelog (plus newer releases
+ *  when `includeNewer`): the chosen release on top, earlier ones a click away. */
+export function WhatsNewModal({
+  open,
+  onOpenChange,
+  version,
+  fresh = false,
+  includeNewer = false,
+}: WhatsNewModalProps) {
   const t = useTranslations("shell");
   const pathname = usePathname();
   // Only fetch once the modal is opened.
-  const { entries, error, isLoading } = useChangelog(open);
+  const { entries, error, isLoading } = useChangelog(open, undefined, includeNewer);
   const [selected, setSelected] = useState<string | null>(null);
 
   // Each opening starts on the release it was opened for.

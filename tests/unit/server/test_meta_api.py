@@ -13,6 +13,7 @@ def _stub_pypi(monkeypatch, tmp_path):
     """Keep these tests offline and deterministic."""
     monkeypatch.setattr(rel, "_CACHE_PATH", tmp_path / "update-check.json")
     monkeypatch.setattr(rel, "_HIGHLIGHTS_CACHE_PATH", tmp_path / "release-highlights.json")
+    monkeypatch.setattr(rel, "_NEWER_NOTES_CACHE_PATH", tmp_path / "release-notes.json")
     monkeypatch.setattr(rel, "fetch_latest_version", lambda timeout=2.0: ("9.9.9", None))
     monkeypatch.setattr(
         rel, "fetch_release_highlights", lambda version, timeout=2.0: ["Charts in chat"]
@@ -182,3 +183,70 @@ async def test_changelog_endpoint_drops_malformed_stats(
 
     entry = (await client.get("/api/meta/changelog")).json()["entries"][0]
     assert entry["stats"] is None
+
+
+_NEWER = "## [9.9.9] - 2026-11-01\n\nThe advertised release.\n\n### Added\n\n- New.\n"
+
+
+@pytest.mark.asyncio
+async def test_changelog_include_newer_puts_the_advertised_release_on_top(
+    client: AsyncClient, monkeypatch
+) -> None:
+    from repowise.core.upgrade.changelog import parse_changelog
+    from repowise.server import __version__
+
+    seen = {}
+
+    def _fetch(current, latest, timeout=2.0):
+        seen["args"] = (current, latest)
+        return parse_changelog(_NEWER)
+
+    monkeypatch.setattr(rel, "fetch_newer_changelog", _fetch)
+    entries = (
+        await client.get("/api/meta/changelog", params={"include_newer": True, "limit": 3})
+    ).json()["entries"]
+    assert seen["args"] == (__version__, "9.9.9")
+    assert entries[0]["version"] == "9.9.9"
+    assert entries[0]["summary"] == "The advertised release."
+    assert len(entries) <= 3
+    # The bundled entries follow.
+    assert [e.version for e in rel.load_bundled_changelog()[:1]] == [entries[1]["version"]]
+
+
+@pytest.mark.asyncio
+async def test_changelog_include_newer_falls_back_to_bundled_when_offline(
+    client: AsyncClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(rel, "fetch_newer_changelog", lambda current, latest, timeout=2.0: None)
+    with_newer = (await client.get("/api/meta/changelog", params={"include_newer": True})).json()[
+        "entries"
+    ]
+    bundled = (await client.get("/api/meta/changelog")).json()["entries"]
+    assert with_newer == bundled
+
+
+@pytest.mark.asyncio
+async def test_changelog_include_newer_up_to_date_does_not_fetch(
+    client: AsyncClient, monkeypatch
+) -> None:
+    from repowise.server import __version__
+
+    monkeypatch.setattr(rel, "fetch_latest_version", lambda timeout=2.0: (__version__, None))
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("no newer release to fetch")
+
+    monkeypatch.setattr(rel, "fetch_newer_changelog", _fail)
+    resp = await client.get("/api/meta/changelog", params={"include_newer": True})
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_changelog_default_never_fetches(client: AsyncClient, monkeypatch) -> None:
+    """The version footer's view: the installed release's notes, no network."""
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("default changelog must not fetch")
+
+    monkeypatch.setattr(rel, "fetch_newer_changelog", _fail)
+    assert (await client.get("/api/meta/changelog")).status_code == 200
