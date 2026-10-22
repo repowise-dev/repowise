@@ -54,7 +54,8 @@ async def upsert_repository(
     ``url``, ``default_branch`` and ``settings`` overwrite an existing row only
     when passed; ``None`` keeps the stored value, so a command that only needs
     the row never resets a ``master`` branch to ``main``. Pass ``""`` to clear
-    the url. A new row defaults to ``""`` and ``"main"``.
+    the url. An empty branch counts as not passed, since a repository always
+    has one. A new row defaults to ``""`` and ``"main"``.
 
     ``head_commit`` records the git commit the index was built against — the
     value the MCP ``_meta`` freshness check compares to the live HEAD. A new
@@ -88,7 +89,7 @@ async def upsert_repository(
         repo.name = name
         if url is not None:
             repo.url = url
-        if default_branch is not None:
+        if default_branch:
             repo.default_branch = default_branch
         if settings is not None:
             repo.settings_json = json.dumps(keep_analysis_ran(repo.settings_json, settings))

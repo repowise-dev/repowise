@@ -38,6 +38,21 @@ async def test_passed_values_overwrite_and_empty_url_clears(async_session) -> No
     assert repo.default_branch == "develop"
 
 
+async def test_an_empty_branch_is_never_stored(async_session) -> None:
+    new = await crud.upsert_repository(
+        async_session, name="r", local_path="/tmp/e", default_branch=""
+    )
+    assert new.default_branch == "main"
+
+    await crud.upsert_repository(
+        async_session, name="r", local_path="/tmp/e", default_branch="master"
+    )
+    kept = await crud.upsert_repository(
+        async_session, name="r", local_path="/tmp/e", default_branch=""
+    )
+    assert kept.default_branch == "master"
+
+
 async def test_a_new_row_without_values_gets_the_defaults(async_session) -> None:
     repo = await crud.upsert_repository(async_session, name="r", local_path="/tmp/new")
 
