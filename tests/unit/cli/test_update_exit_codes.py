@@ -41,6 +41,21 @@ def test_update_degraded_step_exits_2(tmp_path):
     )
 
 
+def test_update_recoverable_persistence_step_exits_0(tmp_path):
+    def _fake_run_update(*args, degraded_out=None, **kwargs):
+        if degraded_out is not None:
+            degraded_out.append("Graph nodes persist: graph nodes exploded")
+            degraded_out.append("Git persist: disk full")
+            degraded_out.append("Symbol persist: disk full")
+        return UpdateOutcome.REGENERATED
+
+    with patch("repowise.cli.commands.update_cmd.command.run_update", side_effect=_fake_run_update):
+        result = CliRunner().invoke(cli, ["update", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Finished with gaps" not in result.output
+
+
 def test_update_keyboard_interrupt_exits_130(tmp_path):
     def _interrupt(*args, **kwargs):
         raise KeyboardInterrupt

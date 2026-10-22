@@ -270,6 +270,35 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
         record_reindex_notice_shown(repo_path, verdict)
 
 
+_PERSISTENCE_STEP_NAMES: frozenset[str] | None = None
+
+
+def _is_recoverable_persistence_step(entry: str) -> bool:
+    """True when a degraded entry was produced by an expected best-effort persistence step.
+
+    These failures are recoverable conditions: the command reports them visibly,
+    preserves the pending repair marker, advances the sync commit, and exits 0
+    so the next update can retry the range. Genuine CLI gaps (such as unrecoverable
+    exports, config failures, or workspace member repo errors) are not filtered out
+    and exit with status code 2.
+    """
+    global _PERSISTENCE_STEP_NAMES
+    if _PERSISTENCE_STEP_NAMES is None:
+        from repowise.core.pipeline.incremental.persist_index import (
+            CLEANUP_STEPS,
+            INCREMENTAL_STEPS,
+        )
+
+        from .full_persist import FULL_UPDATE_CLEANUP, FULL_UPDATE_STEPS
+
+        _PERSISTENCE_STEP_NAMES = frozenset(
+            s.name
+            for s in (*INCREMENTAL_STEPS, *CLEANUP_STEPS, *FULL_UPDATE_STEPS, *FULL_UPDATE_CLEANUP)
+        )
+    step_name = entry.split(":", 1)[0].strip()
+    return step_name in _PERSISTENCE_STEP_NAMES
+
+
 @click.command("update", epilog=EXIT_CODES_HELP)
 @click.argument("path", required=False, default=None)
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
@@ -465,7 +494,8 @@ def update_command(
         )
     except KeyboardInterrupt:
         exit_interrupted(command="update")
-    exit_on_gaps(degraded)
+    gaps = [d for d in degraded if not _is_recoverable_persistence_step(d)]
+    exit_on_gaps(gaps)
 
 
 class UpdateOutcome(StrEnum):
