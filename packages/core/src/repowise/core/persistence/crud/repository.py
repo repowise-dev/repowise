@@ -6,6 +6,7 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -79,7 +80,8 @@ async def upsert_repository(
     stamping = repo is None or stamp_head or head_commit is not None
     resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
     if stamping and (url is None or not default_branch):
-        git_url, git_branch = _read_git_remote(local_path)
+        # Off the event loop: the branch read runs git, and the server awaits this.
+        git_url, git_branch = await asyncio.to_thread(_read_git_remote, local_path)
         url = git_url if url is None else url
         default_branch = default_branch or git_branch
 
