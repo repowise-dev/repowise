@@ -339,8 +339,11 @@ def _operand_role(node: Node) -> str:
         return "discriminant"
     if parent.type == "call_expression" and parent.child_by_field_name("function") == node:
         return "none"
-    if parent.type != "binary_expression":
-        return "path"
+    return _binary_role(node, parent) if parent.type == "binary_expression" else "path"
+
+
+def _binary_role(node: Node, parent: Node) -> str:
+    """:func:`_operand_role` for an operand of binary *parent*."""
     op = _operator(parent)
     if op in _EQUALITY_OPS:
         other = parent.child_by_field_name("right" if parent.child_by_field_name("left") == node else "left")

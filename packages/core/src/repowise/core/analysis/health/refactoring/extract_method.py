@@ -706,11 +706,7 @@ def _render_fields(
             out_rebound=rebound,
             typed_host=fn_node is not None
             and fn_node.child_by_field_name("return_type") is not None,
-            throws_clause=(
-                next((child.text.decode() for child in fn_node.named_children if child.type == "throws"), None)
-                if language == "java" and fn_node is not None
-                else None
-            ),
+            throws_clause=_throws_clause(fn_node, language),
         )
     )
     rendered = {
@@ -730,6 +726,13 @@ def _render_fields(
         "new_symbol": rendered,
         "call_site": {"replace_span": span, "new_text": call} if call else None,
     }
+
+
+def _throws_clause(fn_node: Any, language: str | None) -> str | None:
+    """A Java method's ``throws`` clause, for the helper to repeat."""
+    if language != "java" or fn_node is None:
+        return None
+    return next((c.text.decode() for c in fn_node.named_children if c.type == "throws"), None)
 
 
 def _undeclared_outputs_note(analysis: FunctionAnalysis, extraction: Extraction) -> list[str]:
@@ -821,28 +824,41 @@ def _unwritable(
     def_lines: dict[str, list[int]],
 ) -> str | None:
     """Why *x*'s helper cannot be written as planned, None when it can."""
+    if _assigns_outer_declaration(analysis, x):
+        return OUTER_DECLARATION
+    if language in _NARROWING_LANGUAGES and _loses_narrowing(analysis, x, language, def_lines):
+        return NARROWING_LOST
+    return None
+
+
+def _assigns_outer_declaration(analysis: FunctionAnalysis, x: Extraction) -> bool:
+    """Whether *x* assigns a name declared outside it that it neither takes nor
+    returns. A name the span declares itself is its own binding (a second
+    ``for (int i``)."""
     inside = range(x.start_line, x.end_line + 1)
-    passed = set(x.params) | set(x.returns)
     defs = analysis.def_use.definitions
     declared = [(d.var, d.line in inside) for d in defs if d.declared_at is not None]
-    # A name the span declares itself is its own binding (a second ``for (int i``).
     outside = {v for v, held in declared if not held} - {v for v, held in declared if held}
-    if any(d.line in inside and d.declared_at is None and d.var in outside - passed for d in defs):
-        return OUTER_DECLARATION
-    if language not in _NARROWING_LANGUAGES:
-        return None
+    outside -= set(x.params) | set(x.returns)
+    return any(d.line in inside and d.declared_at is None and d.var in outside for d in defs)
+
+
+def _loses_narrowing(
+    analysis: FunctionAnalysis, x: Extraction, language: str, def_lines: dict[str, list[int]]
+) -> bool:
+    """Whether a TypeScript narrowing the lines rely on stays behind in the
+    function, or one the code after them relies on leaves with them
+    (``narrowing``)."""
+    inside = range(x.start_line, x.end_line + 1)
     args = (analysis.fn_node, get_language_map(language), x.start_line, x.end_line)
     uses = [u for bdu in analysis.def_use.blocks.values() for u in bdu.uses if not u.echo]
     # Names the function never binds (a module's): the helper reads them unnarrowed.
     free = {u.name for u in uses if u.line in inside} - set(def_lines)
-    after = {u.name for u in uses if u.line > x.end_line}
-    if (
-        property_narrowings(*args, set(x.params) | free, def_lines)
-        or (free and narrowings(*args, free, def_lines))
-        or span_guards(*args) & after
-    ):
-        return NARROWING_LOST
-    return None
+    if property_narrowings(*args, set(x.params) | free, def_lines):
+        return True
+    if free and narrowings(*args, free, def_lines):
+        return True
+    return bool(span_guards(*args) & {u.name for u in uses if u.line > x.end_line})
 
 
 def _def_lines(analysis: FunctionAnalysis) -> dict[str, list[int]]:
