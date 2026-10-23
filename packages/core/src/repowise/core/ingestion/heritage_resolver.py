@@ -149,7 +149,7 @@ class HeritageResolver:
 
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
-        # Built on the first Apex relation (see ``_apex_parent``).
+        # Built on the first Apex relation (see ``_apex_namespaces_index``).
         self._apex_namespaces: Any = None
 
         self._build_indices(parsed_files)
@@ -278,9 +278,14 @@ class HeritageResolver:
                 line=rel.line,
             )
 
-        # Apex has no imports: the parent is a type of the child's own project.
-        apex_parent = self._apex_parent(file_path, parent_name)
-        if apex_parent is not None:
+        # Apex has no imports: the parent is a type its project reaches, or none.
+        if self._is_apex(file_path):
+            index = self._apex_namespaces_index()
+            apex_parent = index.top_level_type(file_path, parent_name) or index.nested_type(
+                file_path, parent_name
+            )
+            if apex_parent is None:
+                return None
             return ResolvedHeritage(
                 child_id=child_id,
                 parent_id=apex_parent,
@@ -306,15 +311,16 @@ class HeritageResolver:
 
         return None
 
-    def _apex_parent(self, file_path: str, parent_name: str) -> str | None:
+    def _is_apex(self, file_path: str) -> bool:
         parsed = self._parsed_files.get(file_path)
-        if parsed is None or parsed.file_info.language != "apex":
-            return None
+        return parsed is not None and parsed.file_info.language == "apex"
+
+    def _apex_namespaces_index(self) -> Any:
         if self._apex_namespaces is None:
             from .languages.apex_namespace import build_apex_namespaces
 
             self._apex_namespaces = build_apex_namespaces(self._parsed_files)
-        return self._apex_namespaces.top_level_type(file_path, parent_name)
+        return self._apex_namespaces
 
 
 def _heritage_kind_to_edge_type(kind: str) -> str:

@@ -970,9 +970,15 @@ def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
         return None, False
     inner = unwrap_pointer_like(raw) if language == "cpp" else None
     name = inner or (raw if raw.isidentifier() else bare_type_name(raw))
-    if not is_resolvable_type_name(name, language):
+    if not is_resolvable_type_name(name, language) and not _apex_member_of_repo_type(raw, language):
         return None, False
     return written_type_key(name, raw, language), inner is not None
+
+
+def _apex_member_of_repo_type(raw: str, language: str) -> bool:
+    """``LoggerPlugin.Batchable``: a member type named like a builtin, qualified by a repo type."""
+    qualifier = type_qualifier(raw) if language == "apex" else None
+    return bool(qualifier) and is_resolvable_type_name(bare_type_name(qualifier), language)
 
 
 # Languages whose constructor parameter lists sit at class scope, unextracted,

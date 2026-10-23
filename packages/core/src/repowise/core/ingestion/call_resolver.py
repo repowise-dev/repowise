@@ -378,6 +378,7 @@ class CallResolver(
         self._known_type_names = frozenset(
             symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
         )
+        self._folded_types: frozenset[str] | None = None
         # Narrowed to C# for the extension index: the set above is a bare
         # cross-language name match, so a type of that name in any language
         # would admit an extension on the BCL type it shadows.
@@ -1962,6 +1963,9 @@ class CallResolver(
         if key in merged_methods:
             return merged_methods[key], "import"
 
+        # An Apex type is one its project reaches (a strategy answers that), never repo-wide.
+        if self._language_of(file_path) == "apex":
+            return None
         return self._repo_wide_method(key, spelled or key[0])
 
     def _repo_wide_method(self, key: tuple[str, str], spelled: str) -> tuple[str, str] | None:

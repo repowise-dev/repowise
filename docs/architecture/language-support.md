@@ -970,8 +970,9 @@ declared names keep their written case. CumulusCI `%%%NAMESPACE%%%` tokens are
 blanked byte for byte before parsing.
 
 Apex has no imports, so a type name resolves to the top-level class its own
-sfdx project declares, compared without case; a name two files of one project
-declare is read in the copy deployed with the caller, else refused. Static,
+sfdx project declares, compared without case, then to an un-namespaced package
+it declares a dependency on; another project is reached only through its
+namespace prefix (`usf3.Foo`), and nothing binds across projects otherwise. Static,
 inner-class, typed, chained, inherited and `super` calls follow Java's tiers,
 and a bare name never reaches another class's method. Ceiling: a call site does
 not record `new`, so a constructor written in lower case is missed.

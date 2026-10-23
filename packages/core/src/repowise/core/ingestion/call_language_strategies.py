@@ -182,6 +182,7 @@ class LanguageStrategiesMixin:
 
         # Apex project namespaces (lazy ApexNamespaces)
         self._apex_namespaces: Any = None
+        self._apex_retyping = False
 
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
@@ -636,17 +637,16 @@ class LanguageStrategiesMixin:
 
         The head is a member type of the caller's class or of a class around
         it (an inner class wins inside its outer), else the one top-level type
-        of that name in the caller's project. A head naming no type that is
-        the project's own namespace prefix is dropped; any other prefix is a
-        managed package's and names nothing here. Each later segment is a
+        of that name the caller's project reaches. A head naming no type is a
+        namespace prefix (see ``prefixed_type``). Each later segment is a
         member type of the one before it.
         """
         index = self._get_apex_namespaces()
         head, *rest = written.split(".")
         type_id = self._apex_head_type(file_path, caller_id, head)
-        if type_id is None and rest and index.strips_prefix(file_path, head):
-            head, *rest = rest
-            type_id = index.top_level_type(file_path, head)
+        if type_id is None and rest:
+            prefix, (head, *rest) = head, rest
+            type_id = index.prefixed_type(file_path, prefix, head)
         for segment in rest:
             if type_id is None:
                 return None
@@ -727,7 +727,18 @@ class LanguageStrategiesMixin:
             return None
         type_id = self._apex_type(file_path, caller_id, receiver)
         if type_id is None:
-            return None
+            # ``Affiliations.get()`` on a local declared ``affiliations``.
+            variable = self._apex_variable_spelling(file_path, caller_id, receiver)
+            # One hop: the typed lookup asks this strategy again with the declared type.
+            if variable is None or self._apex_retyping:
+                return None
+            self._apex_retyping = True
+            try:
+                return self._resolve_typed_receiver(
+                    file_path, replace(call, receiver_name=variable), caller_id
+                )
+            finally:
+                self._apex_retyping = False
         return self._apex_member_call(file_path, call, caller_id, type_id)
 
     def _apex_member_call(
@@ -759,6 +770,17 @@ class LanguageStrategiesMixin:
         if self._symbol_paths_by_id.get(sym_id) == file_path:
             return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
         return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
+
+    def _apex_variable_spelling(self, file_path: str, caller_id: str, receiver: str) -> str | None:
+        """The local, parameter or field *receiver* names in another case, as declared."""
+        if "." in receiver:
+            return None
+        declared = (
+            *self._declared_types_in(file_path, caller_id, "apex"),
+            *self._field_types_in(file_path, "apex").get(self._caller_class_id(caller_id), {}),
+        )
+        folded = receiver.lower()
+        return next((name for name in declared if name.lower() == folded and name != receiver), None)
 
     def _apex_variable(self, file_path: str, caller_id: str, receiver: str) -> bool:
         """Is the head of *receiver* a local, parameter or field the caller declares?"""
