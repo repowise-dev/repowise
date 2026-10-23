@@ -119,7 +119,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "shell/functions.sh": {
     "file_info": {
@@ -250,7 +251,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "shell/sourcing.sh": {
     "file_info": {
@@ -400,7 +402,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "shell/zero_functions.sh": {
     "file_info": {
@@ -442,7 +445,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "shell/zshisms.zsh": {
     "file_info": {
@@ -510,6 +514,7 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

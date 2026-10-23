@@ -234,7 +234,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "php/classes.php": {
     "file_info": {
@@ -743,7 +744,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "php/clean.php": {
     "file_info": {
@@ -819,7 +821,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "php/nested.php": {
     "file_info": {
@@ -1115,6 +1118,7 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

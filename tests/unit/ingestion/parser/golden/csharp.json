@@ -507,7 +507,8 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "csharp/assertions.cs": {
     "file_info": {
@@ -874,7 +875,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "csharp/classes.cs": {
     "file_info": {
@@ -1264,7 +1266,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "csharp/nested.cs": {
     "file_info": {
@@ -1383,6 +1386,7 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

@@ -118,7 +118,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "java/Nested.java": {
     "file_info": {
@@ -214,7 +215,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "java/PerfIoInLoop.java": {
     "file_info": {
@@ -762,6 +764,7 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

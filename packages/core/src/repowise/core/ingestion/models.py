@@ -95,6 +95,9 @@ LanguageTag = Literal[
     "aura",
     # Salesforce flows: one symbol per flow.
     "salesforce_flow",
+    # Salesforce object and field metadata, and saved SOQL queries.
+    "salesforce_object",
+    "soql",
     "unknown",
 ]
 
@@ -439,7 +442,8 @@ EdgeType = Literal[
     # parser could have seen, and letting it read as one would put an inferred
     # wiring hop into an execution flow as if it were source.
     "framework_binds",
-    # A data reference rather than a call: C# member access, file → file. It
+    # A data reference rather than a call, file → file: C# member access, and
+    # Apex or metadata naming a Salesforce object or field. It
     # used to name two unrelated things — the Express route wiring emitted it
     # symbol → symbol — which is why one consumer set could not say which layer
     # it meant. That producer now emits `framework_binds`.
@@ -622,7 +626,8 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
         "dynamic_imports",
         "dynamic_url_route",
         # C# member access (`var x = new T(); x.Prop`) resolves to the file
-        # declaring the type, so this is a real file-level reference.
+        # declaring the type, so this is a real file-level reference. So is a
+        # SOQL query or DML statement on an object the repository defines.
         "reads",
     }
 )
@@ -732,6 +737,22 @@ class TypeReference:
     ] = "ctor_param"
 
 
+@dataclass(frozen=True)
+class SchemaReference:
+    """A Salesforce SObject, or a field path on one, named in a file.
+
+    ``path`` is empty for the object itself; otherwise the dotted field path
+    as written after it (``("Parent__r", "Name")`` for ``Parent__r.Name``),
+    resolved hop by hop through lookup metadata. Names keep their written case;
+    Salesforce compares them case-insensitively.
+    """
+
+    source_symbol_id: str  # the method, trigger or field that names it
+    object_name: str
+    line: int
+    path: tuple[str, ...] = ()
+
+
 @dataclass
 class ParsedFile:
     """Full result of parsing a single source file."""
@@ -766,6 +787,9 @@ class ParsedFile:
     # symbol enclosing it, and a line — and it lets these ride the same
     # resolution tiers. They become ``references`` edges, not ``calls``.
     references: list[CallSite] = field(default_factory=list)
+    # Salesforce SObjects and fields this file names: SOQL, DML and trigger
+    # targets in Apex, lookup targets in field metadata. See ``salesforce_schema``.
+    schema_refs: list[SchemaReference] = field(default_factory=list)
 
     @property
     def symbol_count(self) -> int:

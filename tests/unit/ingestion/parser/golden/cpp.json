@@ -344,7 +344,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "cpp/classes.cpp": {
     "file_info": {
@@ -673,7 +674,8 @@
         "argument_types": null,
         "argument_names": null
       }
-    ]
+    ],
+    "schema_refs": []
   },
   "cpp/nested.cpp": {
     "file_info": {
@@ -773,6 +775,7 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

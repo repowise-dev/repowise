@@ -19,6 +19,8 @@ import structlog
 
 from .models import FileInfo, Import, ParsedFile, Symbol
 from .salesforce_flow import parse_flow_file
+from .salesforce_schema import parse_object_metadata
+from .salesforce_soql import parse_soql_file
 
 log = structlog.get_logger(__name__)
 
@@ -26,7 +28,7 @@ log = structlog.get_logger(__name__)
 # Language tags routed to parse_special by the parser. Kept here, next to
 # the handler table, so the two can't drift apart.
 SPECIAL_HANDLER_LANGUAGES = frozenset(
-    {"openapi", "dockerfile", "makefile", "sql", "salesforce_flow"}
+    {"openapi", "dockerfile", "makefile", "sql", "salesforce_flow", "salesforce_object", "soql"}
 )
 
 
@@ -43,6 +45,8 @@ def parse_special(file_info: FileInfo, source: bytes, lang: str) -> ParsedFile:
         "makefile": _parse_makefile,
         "sql": _parse_sql,
         "salesforce_flow": parse_flow_file,
+        "salesforce_object": parse_object_metadata,
+        "soql": parse_soql_file,
     }.get(lang, _parse_unknown)
     try:
         return handler(file_info, source)

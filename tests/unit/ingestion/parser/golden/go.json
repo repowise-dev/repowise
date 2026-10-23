@@ -97,7 +97,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "go/nested.go": {
     "file_info": {
@@ -173,7 +174,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "go/perf_io_in_loop.go": {
     "file_info": {
@@ -660,6 +662,7 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

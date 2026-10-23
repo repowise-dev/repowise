@@ -57,8 +57,10 @@ from .razor import SPEC as _RAZOR
 from .ruby import SPEC as _RUBY
 from .rust import SPEC as _RUST
 from .salesforce_flow import SPEC as _SALESFORCE_FLOW
+from .salesforce_object import SPEC as _SALESFORCE_OBJECT
 from .scala import SPEC as _SCALA
 from .shell import SPEC as _SHELL
+from .soql import SPEC as _SOQL
 from .sql import SPEC as _SQL
 from .svelte import SPEC as _SVELTE
 from .swift import SPEC as _SWIFT
@@ -153,6 +155,9 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _AURA,
     # Salesforce flows. See the spec's docstring.
     _SALESFORCE_FLOW,
+    # Salesforce object/field metadata and saved SOQL queries.
+    _SALESFORCE_OBJECT,
+    _SOQL,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though

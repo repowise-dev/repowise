@@ -229,7 +229,8 @@
       "do_work"
     ],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "python/classes.py": {
     "file_info": {
@@ -551,7 +552,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "python/complex.py": {
     "file_info": {
@@ -603,7 +605,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "python/conditionals.py": {
     "file_info": {
@@ -703,7 +706,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "python/match.py": {
     "file_info": {
@@ -779,7 +783,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "python/nested.py": {
     "file_info": {
@@ -855,7 +860,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "python/perf_io_in_loop.py": {
     "file_info": {
@@ -1614,7 +1620,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "python/py_overload_init.py": {
     "file_info": {
@@ -1970,6 +1977,7 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

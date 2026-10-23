@@ -683,7 +683,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "typescript/classes.ts": {
     "file_info": {
@@ -979,7 +980,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "typescript/conditionals.ts": {
     "file_info": {
@@ -1079,7 +1081,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "typescript/nested.ts": {
     "file_info": {
@@ -1155,7 +1158,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "typescript/perf_io_in_loop.ts": {
     "file_info": {
@@ -1375,7 +1379,8 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "typescript/ts_class_modifiers.ts": {
     "file_info": {
@@ -1789,7 +1794,8 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "typescript/ts_module_consts.ts": {
     "file_info": {
@@ -1974,7 +1980,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "typescript/ts_overload_fn_method.ts": {
     "file_info": {
@@ -2299,6 +2306,7 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

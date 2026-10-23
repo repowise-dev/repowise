@@ -51,6 +51,7 @@ from ..models import FileInfo, Import, ParsedFile, Symbol, compute_content_hash
 from ..parser_helpers import _collect_error_nodes, _run_query
 from ..python_local_refs import local_refs_from_tree, parse_python_module
 from ..python_registrars import registering_functions
+from ..salesforce_soql import apex_schema_refs
 from ..sfc_source import component_call_sites, prepare_source
 from ..special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
 from .calls import (
@@ -250,6 +251,10 @@ class ASTParser:
             local_refs=local_refs,
             registrars=registrars,
             references=references,
+            # SOQL/SOSL, DML and trigger targets, bound to SObject metadata later.
+            schema_refs=(
+                apex_schema_refs(root, symbols, file_info.path) if lang == "apex" else []
+            ),
         )
 
 
