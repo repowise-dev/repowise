@@ -549,8 +549,15 @@ async def _resolve_file_level_callers(
                 entry["via"] = VIA_INTERFACE
         entries.append(entry)
     entries = filter_dicts_by_key(entries, "file", exclude_spec)
-    # Direct callers first; interface dispatch is a possible target, not a proven one.
-    entries.sort(key=lambda x: (-(x.get("inbound_calls") or 0), -(x.get("interface_calls") or 0)))
+    # Every direct entry, importers included, before any interface-only one:
+    # interface dispatch is a possible target, not a proven one.
+    entries.sort(
+        key=lambda x: (
+            x.get("via") == VIA_INTERFACE,
+            -(x.get("inbound_calls") or 0),
+            -(x.get("interface_calls") or 0),
+        )
+    )
 
     cap_collection(
         result_data,

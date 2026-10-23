@@ -137,3 +137,42 @@ async def test_the_base_method_keeps_only_its_own_callers(setup_mcp, session):
 
     assert all(c.get("via") != "interface" for c in t["callers"])
     assert "callers_via_interface" not in t
+
+
+@pytest.mark.asyncio
+async def test_importers_are_never_crowded_out_by_interface_only_files(setup_mcp, session):
+    """25 interface-only files must not push an import-only file past the 20 cap."""
+    await _seed(session)
+    repo = (await session.execute(select(Repository))).scalars().first()
+    importers = [f"app/Wire{i}.java" for i in range(3)]
+    for path in importers:
+        session.add(
+            GraphNode(
+                id=f"ifc_{path}",
+                repository_id=repo.id,
+                node_id=path,
+                node_type="file",
+                name=path.rsplit("/", 1)[-1],
+                file_path=path,
+                created_at=_NOW,
+            )
+        )
+        session.add(
+            GraphEdge(
+                id=f"ifc_{path}_imports",
+                repository_id=repo.id,
+                source_node_id=path,
+                target_node_id=IMPL,
+                edge_type="imports",
+                created_at=_NOW,
+            )
+        )
+    await session.flush()
+
+    t = await _ctx(IMPL)
+
+    shown = [c["file"] for c in t["callers"]]
+    assert len(shown) == 20
+    assert set(importers) <= set(shown)
+    first_via = next(i for i, c in enumerate(t["callers"]) if c.get("via") == "interface")
+    assert all(c.get("via") == "interface" for c in t["callers"][first_via:])
