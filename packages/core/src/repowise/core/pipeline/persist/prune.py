@@ -204,6 +204,9 @@ class _FileLiveness:
     def __init__(self, repo_path: Any) -> None:
         self._root = Path(repo_path)
         self._tracked: frozenset[str] | None = None
+        # Rows written by the git indexer are keyed relative to the git root,
+        # which is not ``_root`` when the index covers a subdirectory.
+        self._toplevel: Path | bool | None = False
         # The same path is asked about once per table it has rows in, and a
         # stat under an antivirus scanner is not free.
         self._memo: dict[str, bool] = {}
@@ -215,12 +218,24 @@ class _FileLiveness:
             self._memo[path] = answer
         return answer
 
+    def _git_toplevel(self) -> Path | None:
+        if self._toplevel is False:
+            from repowise.core.git_refs import toplevel
+
+            top = toplevel(str(self._root))
+            resolved = Path(top).resolve() if top else None
+            self._toplevel = resolved if resolved and resolved != self._root.resolve() else None
+        return self._toplevel  # type: ignore[return-value]
+
     def _is_live(self, path: str) -> bool:
         if (self._root / path).exists():
             return True
         if self._tracked is None:
             self._tracked = _git_tracked_paths(self._root)
-        return path in self._tracked
+        if path in self._tracked:
+            return True
+        top = self._git_toplevel()
+        return top is not None and (top / path).exists()
 
 
 def path_liveness(repo_path: Any) -> Callable[[str], bool] | None:

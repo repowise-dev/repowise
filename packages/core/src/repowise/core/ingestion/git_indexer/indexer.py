@@ -419,7 +419,7 @@ class GitIndexer:
         # History-tier rows take none of the code signals.
         code_results = [meta for meta in results if meta["file_path"] not in history_files]
         merge_code_signals(code_results, walk, prior_defects, trace_index)
-        commit_rows, commit_file_rows = build_commit_tables(commit_sink)
+        commit_rows, commit_file_rows = build_commit_tables(commit_sink, self._scope_prefix(repo))
 
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
@@ -745,6 +745,13 @@ class GitIndexer:
         drawn from the same tracked-file set (the parsed files miss .rst,
         LICENSE and the like), and the co-change walk reads that set too.
         """
+        # Callers hand over paths relative to the indexed directory; git and the
+        # rows this indexer writes are keyed relative to the repository root.
+        module_prefix = self._module_prefix(repo)
+        if module_prefix:
+            changed_file_paths = [f"{module_prefix}/{p}" for p in changed_file_paths]
+            if all_files:
+                all_files = {f"{module_prefix}/{p}" for p in all_files}
         tier_paths = (self._get_tracked_files(repo) or all_files) if all_files else None
         history_files = _history_tier_files(
             self.repo_path,
@@ -934,7 +941,7 @@ class GitIndexer:
                 provenance_classifier=self._provenance_classifier(),
             )
             rows = build_commit_rows(sink)
-            files = build_commit_file_rows(sink)
+            files = build_commit_file_rows(sink, self._scope_prefix(repo))
             # Only after both succeed: the sink is the caller's list, and a
             # partial extend would outlive the failure that caused it.
             if file_rows_sink is not None:
@@ -1337,7 +1344,8 @@ class GitIndexer:
 
     def _get_tracked_files(self, repo: Any) -> list[str]:
         try:
-            output = repo.git.ls_files()
+            prefix = self._scope_prefix(repo)
+            output = repo.git.ls_files("--", prefix) if prefix else repo.git.ls_files()
             paths = [f for f in output.splitlines() if f.strip()]
             if self._exclude.patterns:
                 paths = [p for p in paths if not self._exclude.match_file(p)]
@@ -1345,6 +1353,30 @@ class GitIndexer:
         except Exception as exc:
             logger.warning("Failed to list tracked files", error=str(exc))
             return []
+
+    def _module_prefix(self, repo: Any) -> str:
+        """Where the indexed path sits inside the git working tree ("" at the root).
+
+        Git, and so every key this indexer writes, is relative to the root; the
+        index above it is relative to the indexed directory.
+        """
+        from ..change_detector import _prefix_in_repo
+
+        return _prefix_in_repo(repo, self.repo_path)
+
+    def _scope_prefix(self, repo: Any) -> str:
+        """Directory whose files get git rows, "" for the whole repository.
+
+        An index of a subdirectory records history for that subdirectory only.
+        Without this, indexing one module of a large repository wrote a row per
+        file of the whole repository, and spent most of the git pass on files
+        nothing could ever look up. ``REPOWISE_GIT_SCOPE=repo`` restores the
+        whole-repository behaviour, which keeps co-change partners that live
+        outside the module.
+        """
+        if os.environ.get("REPOWISE_GIT_SCOPE", "module").strip().lower() == "repo":
+            return ""
+        return self._module_prefix(repo)
 
     # ------------------------------------------------------------------
     # Backward-compatible instance shims

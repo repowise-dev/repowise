@@ -52,11 +52,14 @@ def merge_code_signals(
     compute_percentiles(code_results)
 
 
-def build_commit_tables(commit_sink: list[dict]) -> tuple[list[dict], list[dict]]:
+def build_commit_tables(
+    commit_sink: list[dict], path_prefix: str = ""
+) -> tuple[list[dict], list[dict]]:
     """Per-commit rows and their file detail from the commit-index walk's parsed diffs.
 
     Empty in rename-tracking mode (no batched commit index). Failure-isolated
-    so a change_risk hiccup never breaks file-level git metadata.
+    so a change_risk hiccup never breaks file-level git metadata. *path_prefix*
+    narrows the per-file detail (not the commit rows) to one directory.
     """
     if not commit_sink:
         return [], []
@@ -64,7 +67,7 @@ def build_commit_tables(commit_sink: list[dict]) -> tuple[list[dict], list[dict]
         from .commit_rows import build_commit_file_rows, build_commit_rows
 
         built = build_commit_rows(commit_sink)
-        built_files = build_commit_file_rows(commit_sink)
+        built_files = build_commit_file_rows(commit_sink, path_prefix)
     except Exception as exc:
         logger.debug("commit_rows_build_failed", error=str(exc))
         return [], []
