@@ -88,7 +88,8 @@ PROBE_ROWS: tuple[ProbeRow, ...] = (
         (
             rf"\brequire\(\s*['\"](?:{_JS_LIBS})['\"]\s*\)",
             rf"\bfrom\s+['\"](?:{_JS_LIBS})['\"]",
-            r"\bfetch\s*\(",
+            # The global, not a method named fetch (`this.fetch(`, `async fetch(id) {`).
+            r"(?<![\w.$])(?<!function )(?<!async )fetch\s*\(",
             r"\$http\s*[.(]",
             r"\bnew\s+XMLHttpRequest\b",
             r"\bhttps?\.(?:request|get)\s*\(",

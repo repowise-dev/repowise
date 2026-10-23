@@ -194,7 +194,7 @@ def _print_call_coverage(diag: ExtractionDiagnostics) -> None:
         console.print(
             f"    HTTP calls  {http_consumers} resolved, {unresolved} located but not "
             "statically resolvable; calls no dialect recognises were not counted "
-            "(re-run 'repowise update --workspace' to count them)."
+            "(this artifact predates that count)."
         )
         return
     if coverage is None:

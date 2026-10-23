@@ -53,6 +53,14 @@ def test_a_token_only_in_a_comment_is_not_counted():
     assert _count(files) == 0
 
 
+def test_a_method_named_fetch_is_not_a_network_call():
+    files = {
+        "store.js": "class S {\n  async fetch(id) { return this.fetch(id); }\n}\nstore.fetch(1);\n",
+        "api.js": "export async function load() { return fetch('/api/x'); }\n",
+    }
+    assert _count(files) == 1
+
+
 def test_files_with_no_network_token_or_language_are_ignored():
     files = {"util.js": "export const add = (a, b) => a + b;\n", "schema.sql": "SELECT 1;\n"}
     assert _count(files) == 0

@@ -330,7 +330,8 @@ function lensOptionsFor(
     {
       value: "core",
       label: t("lens.core.label"),
-      count: architecture ? String(architecture.core_size) : undefined,
+      // Null when the graph's evidence is insufficient; the lens then says why.
+      count: architecture?.core_size != null ? String(architecture.core_size) : undefined,
       hint: t("lens.core.hint"),
       disabledReason: failed.architecture
         ? t("lens.core.disabledFailed")
