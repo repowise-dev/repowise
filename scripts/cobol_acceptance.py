@@ -141,14 +141,17 @@ def truth(root: str) -> dict:
 
 
 def _literal_assignments(text: str) -> dict[str, set[str]]:
-    """``{VAR: {'LIT', ...}}`` from ``MOVE 'LIT' TO VAR`` and ``VAR ... VALUE 'LIT'``."""
-    out: dict[str, set[str]] = collections.defaultdict(set)
-    for m in re.finditer(r"\bMOVE\s+'([A-Z0-9#@$-]+)'\s+TO\s+([A-Z0-9-]+)", text, re.I):
-        out[m.group(2).upper()].add(m.group(1).upper())
+    """``{VAR: {'LIT', ...}}`` from ``VAR ... VALUE 'LIT'``, ``MOVE 'LIT' TO VAR``, and
+    ``MOVE CONST TO VAR`` where ``CONST`` has a VALUE literal."""
+    values: dict[str, set[str]] = collections.defaultdict(set)
     for m in re.finditer(
         r"^\s*\d\d\s+([A-Z0-9-]+)\s+PIC[^.]*?VALUE\s+'([A-Z0-9#@$-]+)'", text, re.I | re.M
     ):
-        out[m.group(1).upper()].add(m.group(2).upper())
+        values[m.group(1).upper()].add(m.group(2).upper())
+    out = collections.defaultdict(set, {k: set(v) for k, v in values.items()})
+    for m in re.finditer(r"\bMOVE\s+('?)([A-Z0-9#@$-]+)'?\s+TO\s+([A-Z0-9-]+)", text, re.I):
+        source, target = m.group(2).upper(), m.group(3).upper()
+        out[target] |= {source} if m.group(1) else values.get(source, set())
     return out
 
 

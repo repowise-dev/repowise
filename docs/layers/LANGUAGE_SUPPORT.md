@@ -81,6 +81,9 @@ COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
 `COPY` statements masked before parsing; a copybook parses as a data or
 procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
 nearest copybook with that name; system copybooks such as `DFHAID` stay external.
+`EXEC CICS LINK` and `XCTL` link to their program when it is a literal or a
+constant moved into the program variable; any other target shows as a
+`cics-dynamic:` reference rather than a guess.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
 resolved case-insensitively within each sfdx project's namespace; its dead-code
 findings are review-only. Apex test coverage from the Salesforce CLI is read as a
@@ -276,7 +279,7 @@ Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 - Razor has no import edges.
 - Scala import resolution is partial, and the Elixir and F# import resolvers
   have known gaps.
-- COBOL dynamic program names and free-format source produce no edges.
+- COBOL dynamic `CALL` targets and free-format source produce no edges.
 - C has no performance risk support.
 
 The full list per language, with the mechanics behind each gap, is in

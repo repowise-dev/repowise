@@ -227,6 +227,7 @@ class ASTParser:
         calls = _extract_calls(matches, config, file_info, src, symbols)
         # An SFC's markup tags (``<Foo />``) are component calls the TS buffer lost.
         calls.extend(component_call_sites(lang, original_source, symbols))
+        calls.extend(_masked_call_sites(lang, original_source, symbols))
         references = (
             _extract_references(matches, file_info, src, symbols, imports)
             if lang in _REFERENCE_LANGUAGES
@@ -299,9 +300,18 @@ def _parse_without_grammar(
 def _masked_imports(lang: str, original_source: bytes) -> list[Import]:
     """Imports ``prepare_source`` masked from the grammar, read from the original bytes."""
     if lang == "cobol":
-        from ..cobol.copybooks import copy_imports
+        from ..cobol.facts import cobol_imports
 
-        return copy_imports(original_source)
+        return cobol_imports(original_source)
+    return []
+
+
+def _masked_call_sites(lang: str, original_source: bytes, symbols: list[Symbol]) -> list:
+    """Call sites ``prepare_source`` masked from the grammar (COBOL ``EXEC CICS``)."""
+    if lang == "cobol":
+        from ..cobol.facts import cobol_call_sites
+
+        return cobol_call_sites(original_source, symbols)
     return []
 
 

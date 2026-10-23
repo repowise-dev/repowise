@@ -11,6 +11,7 @@ from __future__ import annotations
 import posixpath
 from typing import TYPE_CHECKING
 
+from ..cobol.cics import DYNAMIC_PREFIX
 from ..languages.registry import REGISTRY
 
 if TYPE_CHECKING:
@@ -20,6 +21,9 @@ _COPYBOOK_SUFFIXES = frozenset({".cpy"})
 
 
 def resolve_cobol_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    if module_path.startswith(DYNAMIC_PREFIX):
+        # A program chosen at runtime: shown as such, never matched to a file.
+        return ctx.add_external_node(f"cics-{module_path}")
     library, _, member = module_path.rpartition("/")
     spec = REGISTRY.get("cobol")
     extensions = spec.extensions if spec else _COPYBOOK_SUFFIXES

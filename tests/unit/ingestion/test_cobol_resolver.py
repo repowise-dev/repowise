@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from repowise.core.ingestion.cobol.copybooks import copy_imports
+from repowise.core.ingestion.cobol.facts import cobol_imports
 from repowise.core.ingestion.graph import build_stem_map
 from repowise.core.ingestion.resolvers.cobol import resolve_cobol_import
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -59,7 +59,7 @@ def test_copy_and_sql_include_become_one_import_per_member() -> None:
         b"           EXEC SQL INCLUDE DCLTRTYP END-EXEC.\n"
     )
 
-    found = [(i.module_path, i.raw_statement, i.imported_names) for i in copy_imports(source)]
+    found = [(i.module_path, i.raw_statement, i.imported_names) for i in cobol_imports(source)]
 
     assert found == [
         ("COCOM01Y", "COPY COCOM01Y", ["*"]),
