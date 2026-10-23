@@ -744,7 +744,12 @@ def _undeclared_outputs_note(analysis: FunctionAnalysis, extraction: Extraction)
     if not extraction.returns:
         return []
     inside = range(extraction.start_line, extraction.end_line + 1)
-    declared = [(d.var, d.line in inside) for d in analysis.def_use.definitions if d.declared_at is not None]
+    # ``declares`` also marks a declarator spanning lines, where ``declared_at`` is None.
+    declared = [
+        (d.var, d.line in inside)
+        for d in analysis.def_use.definitions
+        if d.declared_at is not None or d.declares
+    ]
     names = [
         r
         for r in extraction.returns

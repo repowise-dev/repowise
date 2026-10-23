@@ -350,6 +350,8 @@ class _FunctionSlicer:
             slice_nloc = pre.code[j + 1] - pre.code[i]
             if not _MIN_SLICE_NLOC <= slice_nloc < self.max_slice_nloc:
                 continue
+            if _shares_a_line(stmts, i, j):
+                continue
             found = self._extraction(blk, i, j, decisions, slice_nloc, refused)
             if found is not None:
                 out.append(found)
@@ -460,6 +462,16 @@ class _FunctionSlicer:
         return blk.loop is None or _loop_carry_free(
             span.nodes, blk.loop, s, e, self.carry_defs, self.use_lines, self.lmap
         )
+
+
+def _shares_a_line(stmts: list[Node], i: int, j: int) -> bool:
+    """Whether statements ``i..j`` start on the line the one before them ends,
+    or end on the line the one after them starts (``} // done`` puts a
+    comment on a closing brace's line). A plan names whole lines, so lifting
+    those lines would carry code that is not in the span."""
+    if i > 0 and stmts[i - 1].end_point[0] == stmts[i].start_point[0]:
+        return True
+    return j + 1 < len(stmts) and stmts[j + 1].start_point[0] == stmts[j].end_point[0]
 
 
 def _scoped_resource_indexes(stmts: list[Node], lmap: LanguageNodeMap) -> list[int]:

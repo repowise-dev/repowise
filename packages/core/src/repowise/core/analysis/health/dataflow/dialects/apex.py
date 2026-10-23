@@ -55,6 +55,20 @@ _SPELLING_SCOPES = frozenset({"method_declaration", "constructor_declaration", "
 # Declarations whose ``name`` field binds a local.
 _NAMED_BINDERS = frozenset({"formal_parameter", "variable_declarator", "enhanced_for_statement"})
 _STOP = frozenset({"class_body"})
+# Nodes whose own declarations end with them.
+_BLOCK_SCOPES = frozenset({"block", *_LOOPS, _CATCH, "switch_rule"})
+_DYNAMIC_QUERIES = frozenset(
+    {
+        ("database", "query"),
+        ("database", "countquery"),
+        ("database", "getquerylocator"),
+        ("system.database", "query"),
+        ("system.database", "countquery"),
+        ("system.database", "getquerylocator"),
+        ("search", "query"),
+        ("system.search", "query"),
+    }
+)
 
 # Spelling maps by method text. A pure function of the text, so a shared,
 # bounded dict is safe across files and threads (a lost race only recomputes).
@@ -180,6 +194,8 @@ class ApexDefUseDialect(JavaDefUseDialect):
         if node is not None and node.type == _OBJECT_CREATION:
             self._creation(node, out, out, reads_only=True)
             return
+        if node is not None and _dynamic_query(node):
+            out.extend(self._scope_reads(node))
         super().collect_reads(node, out)
 
     # -- heads and statements -------------------------------------------------
@@ -224,6 +240,8 @@ class ApexDefUseDialect(JavaDefUseDialect):
             for child in node.named_children:
                 self._process(child, defs, uses)
             return
+        if _dynamic_query(node):
+            uses.extend(self._scope_reads(node))
         super()._process(node, defs, uses)
         if t == _SWITCH and _leaves_loop(node):
             uses.extend(self._loop_state(node))
@@ -250,6 +268,35 @@ class ApexDefUseDialect(JavaDefUseDialect):
         else:
             self._process(node, defs, uses)
 
+    def _scope_reads(self, call: Node) -> list[Occurrence]:
+        """A read at *call* of every local and parameter in scope there: a
+        ``Database.query(q)`` string binds ``:name`` by name in the calling
+        scope, so whatever holds the call must hold those names too."""
+        line, column = call.start_point[0] + 1, call.start_point[1]
+        names: set[str] = set()
+        child, cur = call, call.parent
+        while cur is not None and cur.type not in _STOP:
+            # What *cur* binds before the path down to the call: earlier
+            # declarations of a block, a loop header, a catch parameter, a
+            # ``when`` binder, the method's parameters. A finished nested
+            # block's own declarations are out of scope, so it is not entered.
+            stack = [cur]
+            while stack:
+                node = stack.pop()
+                # A declarator the call initializes is not declared yet.
+                name = _binder_name(node) if node.type != "variable_declarator" or node.id != cur.id else None
+                if name is not None and name.type == "identifier":
+                    names.add(_canonical(name))
+                for c in node.named_children:
+                    if node.id == cur.id and c.start_byte >= child.start_byte:
+                        break
+                    if c.type not in _BLOCK_SCOPES:
+                        stack.append(c)
+            if cur.type in _SPELLING_SCOPES:
+                break
+            child, cur = cur, cur.parent
+        return [Occurrence(n, line, column) for n in sorted(names)]
+
     def _loop_state(self, switch: Node) -> list[Occurrence]:
         """A read at *switch* of every name its enclosing loop mentions: a
         ``break`` / ``continue`` in an arm carries the state there to the
@@ -271,6 +318,19 @@ class ApexDefUseDialect(JavaDefUseDialect):
                 seen.setdefault(name, Occurrence(name, line, column))
             stack.extend(cur.named_children)
         return [seen[n] for n in sorted(seen)]
+
+
+def _dynamic_query(node: Node) -> bool:
+    """``Database.query(q)`` and kin: SOQL / SOSL text whose ``:name`` binds
+    resolve against the calling scope's locals (``queryWithBinds`` takes them
+    in a map, so it is not one)."""
+    if node.type != "method_invocation":
+        return False
+    obj, name = node.child_by_field_name("object"), node.child_by_field_name("name")
+    if obj is None or name is None:
+        return False
+    owner = node_text(obj).lower().replace(" ", "")
+    return (owner, node_text(name).lower()) in _DYNAMIC_QUERIES
 
 
 def _catch_param(handler: Node) -> Node | None:

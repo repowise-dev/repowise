@@ -385,3 +385,73 @@ def test_apex_arm_jump_keeps_the_state_before_the_switch_live(jump):
     start = _line(src, "if (x > 5)")
     offered = [e for e in _extractions(fn) if e.start_line == start]
     assert all("best" in e.returns for e in offered if "best" in e.params)
+
+
+def test_apex_dynamic_query_reads_every_local_in_scope():
+    # ``Database.query`` resolves ``:ids`` / ``:stage`` by name where it runs,
+    # so a helper holding the call must take them, and a span declaring one
+    # ahead of the call must hand it back.
+    src = """
+    public class Demo {
+        List<SObject> f(Set<Id> ids, Boolean wide) {
+            String stage = 'Open';
+            if (wide) { Integer unused = 1; }
+            String q = 'SELECT Id FROM Opportunity WHERE Id IN :ids AND StageName = :stage';
+            for (Integer k = 0; k < 2; k++) {
+                List<SObject> rows = Database.query(q);
+            }
+            return Database.query(q);
+        }
+    }
+    """
+    fn = _first(src)
+    call = _line(src, "List<SObject> rows = Database.query(q);")
+    read = {u.name for b in fn.def_use.blocks.values() for u in b.uses if u.line == call}
+    assert {"ids", "wide", "stage", "q", "k"} <= read
+    assert not {"unused", "rows"} & read
+
+
+def test_apex_span_never_cuts_a_shared_line():
+    src = """
+    public class Demo {
+        Integer f(List<Integer> xs, Integer limit) {
+            Integer total = 0;
+            for (Integer x : xs) {
+                total += x;
+            } // xs
+            Integer extra = 0;
+            if (limit > 0) {
+                extra = limit * 2;
+            } else {
+                extra = 1;
+            }
+            Integer result = total + extra;
+            System.debug(result);
+            return result;
+        }
+    }
+    """
+    fn = _first(src)
+    shared = _line(src, "} // xs")
+    assert all(e.start_line != shared for e in _extractions(fn))
+
+
+def test_output_declared_over_several_lines_needs_no_declare_note():
+    from repowise.core.analysis.health.dataflow import Extraction
+    from repowise.core.analysis.health.refactoring.extract_method import _undeclared_outputs_note
+
+    src = """
+    public class Demo {
+        void f(List<Account> xs) {
+            if (xs.isEmpty()) { Account a = null; System.debug(a); }
+            Account a = new Account(
+                Name = 'x'
+            );
+            System.debug(a);
+        }
+    }
+    """
+    fn = _first(src)
+    start = _line(src, "Account a = new Account(")
+    span = Extraction(start, start + 2, (), ("a",), slice_nloc=3, ccn_removed=1)
+    assert _undeclared_outputs_note(fn, span) == []
