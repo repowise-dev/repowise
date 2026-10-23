@@ -161,18 +161,22 @@ def _read_manifest(manifest: Path, project: str) -> tuple[frozenset[str], tuple[
     except (OSError, ValueError, AttributeError, TypeError):
         return frozenset(), ()
     prefixes = frozenset({namespace.lower()}) if isinstance(namespace, str) and namespace else frozenset()
-    relative = (
-        PurePosixPath(path.replace("\\", "/")).as_posix().removeprefix("./").rstrip("/")
-        for path in written
-        if isinstance(path, str)
-    )
-    # A package directory outside the project (``../shared``) is not read: a ceiling.
-    dirs = tuple(
-        PurePosixPath(project, path).as_posix()
-        for path in relative
-        if path not in ("", ".") and not path.startswith("..")
-    )
-    return prefixes, dirs
+    return prefixes, _package_dirs(written, project)
+
+
+def _package_dirs(written: list[Any], project: str) -> tuple[str, ...]:
+    """The written package directories, repo-relative.
+
+    Ceiling: one outside the project (``../shared``) is not read.
+    """
+    found = []
+    for path in written:
+        if not isinstance(path, str):
+            continue
+        path = PurePosixPath(path.replace("\\", "/")).as_posix().removeprefix("./").rstrip("/")
+        if path not in ("", ".") and not path.startswith(".."):
+            found.append(PurePosixPath(project, path).as_posix())
+    return tuple(found)
 
 
 def spell_apex_names(parsed_files: Iterable[Any]) -> None:
@@ -191,53 +195,51 @@ def spell_apex_names(parsed_files: Iterable[Any]) -> None:
     record ``new``, so a capitalised receiver-less name some type folds to is a
     constructor (``new OrgConfig()`` inside a method ``orgConfig``), and any
     other capitalised one matches only its own file's member (``new Contact()``,
-    the sObject, never becomes another class's method ``contact``). Ceiling: a
-    file declaring ``contact()`` reads its own ``new Contact()`` as that method. Ceiling: a constructor written
-    in lower case (``new accountService()``) keeps its spelling and misses.
+    the sObject, never becomes another class's method ``contact``). Ceilings: a
+    file declaring ``contact()`` reads its own ``new Contact()`` as that method,
+    and a constructor written in lower case (``new accountService()``) misses.
     """
     apex = [parsed for parsed in parsed_files if parsed.file_info.language == "apex"]
-    names: dict[str, set[str]] = defaultdict(set)
-    types: dict[str, set[str]] = defaultdict(set)
-    members: dict[str, set[str]] = defaultdict(set)
+    repo = _Spellings(symbol for parsed in apex for symbol in parsed.symbols)
     for parsed in apex:
-        for symbol in parsed.symbols:
-            names[symbol.name.lower()].add(symbol.name)
-            kind = types if symbol.kind in _TYPE_KINDS else members
-            kind[symbol.name.lower()].add(symbol.name)
-
-    def spelled(name: str, declared: dict[str, set[str]]) -> str:
-        spellings = declared.get(name.lower())
-        if not spellings or name in names.get(name.lower(), ()) or len(spellings) > 1:
-            return name
-        return next(iter(spellings))
-
-    for parsed in apex:
-        own_types, own_members = _own_spellings(parsed)
+        own = _Spellings(parsed.symbols)
         for index, call in enumerate(parsed.calls):
-            folded = call.target_name.lower()
-            if call.receiver_name or call.receiver_call:
-                target = spelled(call.target_name, names)
-            elif call.target_name[:1].isupper():
-                if folded in types:
-                    target = own_types.get(folded) or spelled(call.target_name, types)
-                else:
-                    target = own_members.get(folded, call.target_name)
-            else:
-                target = own_members.get(folded) or spelled(call.target_name, members)
+            target = repo.call_target(call, own)
             if target != call.target_name:
                 parsed.calls[index] = replace(call, target_name=target)
         for relation in parsed.heritage:
-            relation.parent_name = spelled(relation.parent_name, types)
+            relation.parent_name = repo.spelled(relation.parent_name, repo.types)
 
 
-def _own_spellings(parsed: Any) -> tuple[dict[str, str], dict[str, str]]:
-    """``{folded name: spelling}`` of the types, then the members, one file declares in one spelling."""
-    types: dict[str, set[str]] = defaultdict(set)
-    members: dict[str, set[str]] = defaultdict(set)
-    for symbol in parsed.symbols:
-        kind = types if symbol.kind in _TYPE_KINDS else members
-        kind[symbol.name.lower()].add(symbol.name)
-    return tuple(  # type: ignore[return-value]
-        {folded: next(iter(found)) for folded, found in table.items() if len(found) == 1}
-        for table in (types, members)
-    )
+class _Spellings:
+    """``{folded name: declared spellings}`` for a set of Apex symbols, by kind."""
+
+    def __init__(self, symbols: Iterable[Any]) -> None:
+        self.names: dict[str, set[str]] = defaultdict(set)
+        self.types: dict[str, set[str]] = defaultdict(set)
+        self.members: dict[str, set[str]] = defaultdict(set)
+        for symbol in symbols:
+            self.names[symbol.name.lower()].add(symbol.name)
+            kind = self.types if symbol.kind in _TYPE_KINDS else self.members
+            kind[symbol.name.lower()].add(symbol.name)
+
+    def spelled(self, name: str, declared: dict[str, set[str]]) -> str:
+        """*name* as *declared* spells it, when that is one spelling and *name* is none."""
+        spellings = declared.get(name.lower())
+        if not spellings or name in self.names.get(name.lower(), ()) or len(spellings) > 1:
+            return name
+        return next(iter(spellings))
+
+    def call_target(self, call: Any, own: _Spellings) -> str:
+        """The spelling a call's target means; *own* is the caller file's."""
+        name = call.target_name
+        if call.receiver_name or call.receiver_call:
+            return self.spelled(name, self.names)
+        folded = name.lower()
+        if not name[:1].isupper():
+            table, mine = self.members, own.members
+        elif folded in self.types:
+            table, mine = self.types, own.types
+        else:
+            return own.spelled(name, own.members)
+        return own.spelled(name, mine) if folded in mine else self.spelled(name, table)

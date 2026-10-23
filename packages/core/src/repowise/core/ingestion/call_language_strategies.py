@@ -721,8 +721,6 @@ class LanguageStrategiesMixin:
         A receiver the caller declares as a local, parameter or field is a
         variable, whatever class shares its folded name: it is left to the
         typed fallback. ``this`` and ``super`` are left to their own tiers.
-        The method may be inherited: the nearest superclass declaration wins,
-        else the one ancestor declaring it.
         """
         receiver = call.receiver_name or ""
         if receiver in ("this", "super") or self._apex_variable(file_path, caller_id, receiver):
@@ -730,8 +728,16 @@ class LanguageStrategiesMixin:
         type_id = self._apex_type(file_path, caller_id, receiver)
         if type_id is None:
             return None
-        # The name as written first: ``X.errors()`` is the method even where
-        # ``X`` also nests a class ``Errors``, which ``new X.Errors()`` means.
+        return self._apex_member_call(file_path, call, caller_id, type_id)
+
+    def _apex_member_call(
+        self, file_path: str, call: CallSite, caller_id: str, type_id: str
+    ) -> ResolvedCall | None:
+        """The member *call* names on the type *type_id*: a member type, a method, an inherited one.
+
+        The name as written first: ``X.errors()`` is the method even where
+        ``X`` also nests a class ``Errors``, which ``new X.Errors()`` means.
+        """
         sym_id = self._declares(type_id, call.target_name)
         if sym_id is None:
             member = self._get_apex_namespaces().member_type(type_id, call.target_name)
