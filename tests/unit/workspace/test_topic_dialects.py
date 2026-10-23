@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.workspace.extractors.topic import TopicExtractor
+from repowise.core.workspace.origins import ContractOrigin
 
 
 def _extract(tmp_path: Path, rel: str, content: str, alias: str = "svc"):
@@ -454,3 +455,185 @@ class TestNestMicroservices:
 
     def test_handlers_need_the_microservices_import(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "c.ts", "@EventPattern('x')\nf() {}\n") == []
+
+
+class TestKafkaByReceiverType:
+    """A client read on whatever name the file declares it with."""
+
+    def test_kafka_template_under_any_name(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "class Pub {\n"
+            "  private final KafkaTemplate<String, Map<String, Object>> kt;\n"
+            '  void f() { kt.send("orders", o); this.kt.send("refunds", o); other.send("x", o); }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "Pub.java", src)
+        assert sorted(c.contract_id for c in rows) == ["topic::orders", "topic::refunds"]
+        assert {c.origin for c in rows} == {ContractOrigin.CLIENT_CALL}
+
+    def test_a_kafka_template_bean_method_names_no_receiver(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "KafkaTemplate<String, String> kafkaTemplate(ProducerFactory pf) { return null; }\n"
+            'void f() { template.send("orders", o); }\n'
+        )
+        assert _extract(tmp_path, "Cfg.java", src) == []
+
+    def test_kafka_clients_producer_record(self, tmp_path: Path) -> None:
+        src = (
+            "import org.apache.kafka.clients.producer.ProducerRecord;\n"
+            'p.send(new ProducerRecord<>("payments", k, v));\n'
+        )
+        c = _one(_extract(tmp_path, "P.java", src), "provider")
+        assert c.contract_id == "topic::payments"
+
+    def test_confluent_python_on_a_member_and_a_local(self, tmp_path: Path) -> None:
+        src = (
+            "from confluent_kafka import Producer, Consumer\n"
+            "class P:\n"
+            "    def __init__(self, conf):\n"
+            "        self._p = Producer(conf)\n"
+            "        c = Consumer(conf)\n"
+            "        c.subscribe(['shipments', 'returns'])\n"
+            "    def go(self):\n"
+            "        self._p.produce('invoices', value=b'x')\n"
+        )
+        rows = _extract(tmp_path, "pub.py", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("consumer", "topic::shipments"),
+            ("consumer", "topic::returns"),
+            ("provider", "topic::invoices"),
+        }
+
+    def test_a_qualified_constructor_is_read_only_through_confluent(self, tmp_path: Path) -> None:
+        src = (
+            "import confluent_kafka\n"
+            "p = confluent_kafka.Producer(conf)\n"
+            "p.produce('invoices')\n"
+            "q = other.Producer(conf)\n"
+            "q.produce('nothere')\n"
+        )
+        rows = _extract(tmp_path, "pub.py", src)
+        assert [c.contract_id for c in rows] == ["topic::invoices"]
+
+    def test_a_producer_class_without_confluent_is_not_read(self, tmp_path: Path) -> None:
+        src = "p = Producer(conf)\np.produce('invoices')\n"
+        assert _extract(tmp_path, "pub.py", src) == []
+
+    def test_kafka_python_and_aiokafka(self, tmp_path: Path) -> None:
+        src = (
+            "from kafka import KafkaProducer, KafkaConsumer\n"
+            "from aiokafka import AIOKafkaProducer\n"
+            "pub = KafkaProducer(bootstrap_servers='b')\n"
+            "pub.send('audit', b'x')\n"
+            "aio = AIOKafkaProducer(bootstrap_servers='b')\n"
+            "await aio.send_and_wait('metrics', b'x')\n"
+            "cons = KafkaConsumer('a1', 'a2', group_id='g')\n"
+        )
+        rows = _extract(tmp_path, "kp.py", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("provider", "topic::audit"),
+            ("provider", "topic::metrics"),
+            ("consumer", "topic::a1"),
+            ("consumer", "topic::a2"),
+        }
+
+    def test_confluent_dotnet(self, tmp_path: Path) -> None:
+        src = (
+            "using Confluent.Kafka;\n"
+            "public class Pub {\n"
+            "  private readonly IProducer<Null, string> _producer;\n"
+            "  public Pub(IConsumer<Ignore, string> consumer) {\n"
+            '    consumer.Subscribe(new[] { "in.a", "in.b" });\n'
+            "  }\n"
+            "  void Build(ProducerConfig cfg) {\n"
+            "    using var p = new ProducerBuilder<Null, string>(cfg).Build();\n"
+            '    p.Produce("out.b", m);\n'
+            "  }\n"
+            '  async Task Go() { await _producer.ProduceAsync("out.a", m); }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "Pub.cs", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("consumer", "topic::in.a"),
+            ("consumer", "topic::in.b"),
+            ("provider", "topic::out.a"),
+            ("provider", "topic::out.b"),
+        }
+
+    def test_dotnet_needs_the_confluent_import(self, tmp_path: Path) -> None:
+        src = 'class P { IProducer<string> p; void F() { p.Produce("x", m); } }\n'
+        assert _extract(tmp_path, "P.cs", src) == []
+
+    def test_a_commented_out_send_is_not_read(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.kafka.core.KafkaTemplate;\n"
+            "KafkaTemplate<String, String> kt;\n"
+            '// kt.send("orders", o);\n'
+        )
+        assert _extract(tmp_path, "Pub.java", src) == []
+
+
+class TestGoKafka:
+    def test_sarama_message_and_consumer_group(self, tmp_path: Path) -> None:
+        src = (
+            'import "github.com/IBM/sarama"\n'
+            'const Orders = "orders"\n'
+            "var group sarama.ConsumerGroup\n"
+            "msg := &sarama.ProducerMessage{Topic: Orders, Value: sarama.StringEncoder(b)}\n"
+            'group.Consume(ctx, []string{"payments"}, h)\n'
+        )
+        rows = _extract(tmp_path, "main.go", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("provider", "topic::orders"),
+            ("consumer", "topic::payments"),
+        }
+
+    def test_segmentio_writer_and_reader(self, tmp_path: Path) -> None:
+        src = (
+            'import kafka "github.com/segmentio/kafka-go"\n'
+            'w := &kafka.Writer{Addr: kafka.TCP("b"), Topic: "out"}\n'
+            'r := kafka.NewReader(kafka.ReaderConfig{Brokers: []string{"b"}, Topic: "in"})\n'
+        )
+        rows = _extract(tmp_path, "main.go", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("provider", "topic::out"),
+            ("consumer", "topic::in"),
+        }
+
+    def test_franz_go(self, tmp_path: Path) -> None:
+        src = (
+            'import "github.com/twmb/franz-go/pkg/kgo"\n'
+            'cl, _ := kgo.NewClient(kgo.ConsumeTopics("a", "b"))\n'
+            'cl.Produce(ctx, &kgo.Record{Topic: "c", Value: v}, nil)\n'
+        )
+        rows = _extract(tmp_path, "main.go", src)
+        assert {(c.role, c.contract_id) for c in rows} == {
+            ("consumer", "topic::a"),
+            ("consumer", "topic::b"),
+            ("provider", "topic::c"),
+        }
+
+    def test_a_consume_without_a_topic_list_is_not_read(self, tmp_path: Path) -> None:
+        src = (
+            'import "github.com/IBM/sarama"\n'
+            "var g sarama.ConsumerGroup\n"
+            'db.Consume(ctx, "x")\n'
+        )
+        assert _extract(tmp_path, "main.go", src) == []
+
+    def test_a_segmentio_message_is_not_a_publish(self, tmp_path: Path) -> None:
+        src = (
+            'import kafka "github.com/segmentio/kafka-go"\n'
+            'r.CommitMessages(ctx, kafka.Message{Topic: "in", Offset: 4})\n'
+        )
+        assert _extract(tmp_path, "main.go", src) == []
+
+    def test_go_shapes_need_their_library(self, tmp_path: Path) -> None:
+        src = (
+            'w := &kafka.Writer{Topic: "out"}\n'
+            'group.Consume(ctx, []string{"payments"}, h)\n'
+            'r := kgo.Record{Topic: "c"}\n'
+        )
+        assert _extract(tmp_path, "main.go", src) == []
