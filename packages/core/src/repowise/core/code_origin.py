@@ -828,9 +828,8 @@ def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
 
 #: Suffixes whose test status the file's content can decide.
 CONTENT_TEST_SUFFIXES: tuple[str, ...] = (".cls",)
-# An Apex ``@IsTest`` class is test code whatever its name. Comments are blanked
-# first, since ApexDoc quotes the annotation in prose.
-_APEX_COMMENT_RE = re.compile(r"/\*.*?(?:\*/|\Z)|//[^\n]*", re.DOTALL)
+# An Apex ``@IsTest`` class is test code whatever its name. Comments and strings
+# are blanked first: ApexDoc and annotation arguments can quote the annotation.
 _APEX_CLASS_KEYWORD_RE = re.compile(r"\bclass\b", re.IGNORECASE)
 _APEX_IS_TEST_RE = re.compile(r"@istest\b", re.IGNORECASE)
 
@@ -844,7 +843,10 @@ def declares_test(path: str, text: str | bytes | None) -> bool:
     """
     if not path.lower().endswith(CONTENT_TEST_SUFFIXES):
         return False
-    code = _APEX_COMMENT_RE.sub(" ", _header_text(text))
+    # Imported here: the ingestion package imports this module.
+    from .ingestion.framework_routes import apex_code
+
+    code = apex_code(_header_text(text))
     keyword = _APEX_CLASS_KEYWORD_RE.search(code)
     return keyword is not None and _APEX_IS_TEST_RE.search(code, 0, keyword.start()) is not None
 

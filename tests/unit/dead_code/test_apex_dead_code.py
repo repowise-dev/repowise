@@ -342,3 +342,13 @@ def test_metadata_past_the_read_budget_leaves_apex_unjudged(tmp_path: Path, monk
     (tmp_path / "flows/Place.flow-meta.xml").write_text("<actionName>Other</actionName>")
     graph, sources = _service_graph()
     assert _analyze(graph, sources, repo_root=tmp_path).findings == []
+
+
+def test_a_quoted_annotation_does_not_make_a_test() -> None:
+    text = "@SuppressWarnings('@IsTest')\npublic class Foo {}\n"
+    assert not declares_test("classes/Foo.cls", text)
+
+
+def test_an_annotation_after_a_quoted_argument_still_makes_a_test() -> None:
+    text = "@SuppressWarnings('PMD.ApexDoc')\n@IsTest\nprivate class FooTests {}\n"
+    assert declares_test("classes/FooTests.cls", text)

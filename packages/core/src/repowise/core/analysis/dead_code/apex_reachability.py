@@ -15,16 +15,18 @@ each other stay dead. Ceiling: a name in a comment or string counts as a use
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ids import file_path_of, is_external
+from repowise.core.support_paths import DOC_EXTENSIONS
 
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.decorator_names import decorator_base
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
+from ...ingestion.traverser import is_output_dir
 from .constants import never_flag_path
 from .contract_methods import APEX_PLATFORM_TYPES
 from .file_reachability import has_dependency_importer
@@ -64,11 +66,10 @@ _ENTRY_MODIFIERS: frozenset[str] = frozenset({"global", "webservice", "testmetho
 #: Top-level kinds a name use reaches (a trigger is a ``function``, never judged).
 _TYPE_KINDS: frozenset[str] = frozenset({"class", "interface", "enum"})
 
-#: Tooling and build output, and metadata types that cannot name an Apex class.
-_SKIP_DIRS: frozenset[str] = frozenset(
+#: Salesforce CLI state, and metadata types that cannot name an Apex class.
+_SKIP_DIRS: frozenset[str] = PRUNED_DIRS | frozenset(
     {
-        ".git", ".hg", ".svn", "node_modules", ".sfdx", ".sf", ".repowise", ".venv",
-        "venv", "__pycache__", "dist", "build", "target", "coverage", ".next", "vendor",
+        ".sfdx", ".sf",
         "fields", "layouts", "listViews", "compactLayouts", "recordTypes",
         "objectTranslations", "translations", "reports", "reportTypes", "dashboards",
         "standardValueSets", "standardValueSetTranslations", "globalValueSets",
@@ -91,8 +92,8 @@ _LISTING_SUFFIXES: tuple[str, ...] = (
 _LISTING_NAMES: frozenset[str] = frozenset({"package.xml"})
 _LISTING_PREFIXES: tuple[str, ...] = ("destructivechanges",)
 
-#: Documentation suffixes whose class names describe rather than use.
-_DOC_SUFFIXES: tuple[str, ...] = (".md", ".mdx", ".markdown", ".rst", ".txt", ".html", ".htm")
+#: Prose whose class names describe rather than use.
+_PROSE_SUFFIXES: tuple[str, ...] = tuple(DOC_EXTENSIONS | {".markdown", ".html", ".htm"})
 
 #: Read budget; past it the metadata is unread, so no Apex file is judged.
 _PER_FILE_BYTES = 2 * 1024 * 1024
@@ -163,7 +164,7 @@ def _is_metadata_record(lowered: str) -> bool:
 
 def _is_doc(path: str) -> bool:
     lowered = path.lower()
-    return lowered.endswith(_DOC_SUFFIXES) and not _is_metadata_record(lowered)
+    return lowered.endswith(_PROSE_SUFFIXES) and not _is_metadata_record(lowered)
 
 
 def _is_metadata(path: str) -> bool:
@@ -179,9 +180,8 @@ def _mentions(blob: bytes, names: frozenset[bytes]) -> set[bytes]:
 def _metadata_paths(repo_root: Path, indexed: Mapping[str, bytes]) -> Iterable[str]:
     """Repo-relative paths of unindexed Salesforce metadata, sorted for a stable budget."""
     found: list[str] = []
-    for current, dirs, files in os.walk(repo_root):
-        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
-        rel_dir = Path(current).relative_to(repo_root).as_posix()
+    for current, _dirs, files in walk_repo(repo_root, prune_dirs=_SKIP_DIRS, prune=is_output_dir):
+        rel_dir = current.relative_to(repo_root).as_posix()
         for name in files:
             rel = name if rel_dir == "." else f"{rel_dir}/{name}"
             if rel not in indexed and _is_metadata(rel):
