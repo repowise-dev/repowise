@@ -74,11 +74,15 @@ _TAG_RE = re.compile(r"""<([A-Za-z]\w*):([A-Za-z_]\w*)((?:[^>"']|"[^"]*"|'[^']*'
 _ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _QUALIFIED_RE = re.compile(r"^\s*(\w+):(\w+)\s*$")
 # Formatters reflow `{!c.h}` across lines and append a `;` (NebulaLogger ships one).
+# A handler inside a larger expression (`{!v.x ? c.a : c.b}`) is not read;
+# none of the validation corpora writes one.
 _MARKUP_HANDLER_RE = re.compile(r"\{\s*[!#]\s*c\.([A-Za-z_]\w*)\s*;?\s*\}")
 # A "c.x" string literal; group 1 is set when it is the argument of `.get(`.
 _ACTION_RE = re.compile(r"""(\.get\(\s*)?(["'])c\.([A-Za-z_]\w*)\2""")
 _HELPER_CALL_RE = re.compile(r"(?<![\w.$])helper\s*\.\s*([A-Za-z_$][\w$]*)\s*\(")
-# Inside a helper, `this` is the (inherited) helper object.
+# Inside a helper, `this` is the (inherited) helper object. A `this.x(` in a
+# nested non-arrow callback is read the same way; its target must still be a
+# helper function, which bounds the cost.
 _THIS_CALL_RE = re.compile(r"(?<![\w.$])this\s*\.\s*([A-Za-z_$][\w$]*)\s*\(")
 _CREATE_ONE_RE = re.compile(r"""\$A\s*\.\s*createComponent\s*\(\s*(["'`])(\w+):(\w+)\1""")
 _CREATE_MANY_RE = re.compile(r"\$A\s*\.\s*createComponents\s*\(")
@@ -342,7 +346,11 @@ class _AuraIndex:
         return hits[0].id if hits else None
 
     def enclosing(self, path: str, line: int) -> str:
-        """Innermost symbol of *path* spanning *line*, else its ``__module__``."""
+        """Innermost symbol of *path* spanning *line*, else its ``__module__``.
+
+        Line granularity: in a one-line bundle with several handlers the later
+        one is credited. Bundle JS is written one handler per line block.
+        """
         best: Any = None
         for s in self.parsed_files[path].symbols:
             if s.start_line <= line <= s.end_line and (
@@ -381,6 +389,8 @@ def _file_edge(graph: nx.DiGraph, src: str, dst: str, names: set[str]) -> int:
     if src == dst or src not in graph or dst not in graph:
         return 0
     existing = graph.get_edge_data(src, dst)
+    # An edge with no names already vouches for every member; one of another
+    # type is left alone (first wins, as in `_add_edge_if_new`).
     if existing is not None:
         if existing.get("edge_type") == "framework" and existing.get("imported_names"):
             merged = set(existing["imported_names"]) | names
@@ -466,7 +476,12 @@ def _markup_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None
             hit = idx.bundle_function(bdir, "Renderer", n)
             if hit is not None:
                 edges.bind(module, hit, main)
-        platform = {m for i in implements for m in _PLATFORM_INTERFACE_METHODS.get(i.lower(), ())}
+        platform = {
+            m
+            for b_dir in idx.chain(bdir)
+            for i in idx.root_attrs(b_dir).get("implements", "").split(",")
+            for m in _PLATFORM_INTERFACE_METHODS.get(i.strip().lower(), ())
+        }
         for n in sorted(idx.interface_methods(bdir) | platform):
             hit = idx.bundle_function(bdir, "Controller", n)
             if hit is not None:

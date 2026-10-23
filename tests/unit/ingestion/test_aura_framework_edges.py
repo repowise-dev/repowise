@@ -226,3 +226,18 @@ def test_dead_code_keeps_bound_handlers_and_reports_unbound_ones(tmp_path: Path)
     assert not any(path.endswith((".cmp", ".app", ".evt", ".intf")) for path, _ in dead)
     assert (ctrl, "orphan") in dead
     assert (f"{_A}/accountList/accountListHelper.js", "notCalled") in dead
+
+
+def test_change_sources_see_aura_markup() -> None:
+    from repowise.core.ingestion.traverser import is_candidate_source_path
+
+    assert is_candidate_source_path(f"{_A}/accountList/accountList.cmp")
+    assert is_candidate_source_path(f"{_A}/main/main.app")
+    assert not is_candidate_source_path("grammar/Lexer.tokens")
+
+
+def test_only_aura_bundle_files_carry_the_aura_risk_factor() -> None:
+    from repowise.core.analysis.dead_code.risk_factors import path_risk_factors
+
+    assert path_risk_factors(f"{_A}/accountList/accountListHelper.js") == ("aura",)
+    assert path_risk_factors("src/aura/util.js") == ()

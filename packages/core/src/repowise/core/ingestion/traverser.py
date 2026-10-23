@@ -1813,7 +1813,7 @@ def is_candidate_source_path(
         return False
     if _BLOCKED_FILENAME_SPEC.match_file(name):
         return False
-    return suffix in EXTENSION_TO_LANGUAGE
+    return suffix in EXTENSION_TO_LANGUAGE or is_aura_markup_path(posix)
 
 
 def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
