@@ -92,6 +92,9 @@ class MatchState:
             normalize_contract_id(provider.contract_id) if via_alias else "",
         )
         if dedup_key in self.seen:
+            # The same call written twice in one file: already linked, so later
+            # passes must not place it again.
+            self.matched.add(id(consumer))
             return False
         self.seen.add(dedup_key)
         self.links.append(

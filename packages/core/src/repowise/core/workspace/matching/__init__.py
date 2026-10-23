@@ -12,7 +12,7 @@ Same-repo same-service pairs, and consumers resolved to a third-party host
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -25,6 +25,7 @@ from .http import annotate_consumer_targets
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract, ContractLink
+    from repowise.core.workspace.service_names import GatewayRoute
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,12 @@ class TypeMatcher:
 MATCHERS: dict[str, TypeMatcher] = {
     "http": TypeMatcher(
         deferred=http.is_deferred,
-        passes=(http.base_resolved_pass, http.candidate_pass, http.service_pass),
+        passes=(
+            http.gateway_pass,
+            http.base_resolved_pass,
+            http.candidate_pass,
+            http.service_pass,
+        ),
     ),
     "topic": TypeMatcher(
         deferred=topic.is_binding,
@@ -92,18 +98,20 @@ def _exact_pass(state: MatchState) -> None:
             state.add(consumer, provider, strategy, via_alias=aliased)
 
 
-def run_matching(contracts: list[Contract]) -> MatchState:
+def run_matching(contracts: list[Contract], routes: Iterable[GatewayRoute] = ()) -> MatchState:
     """Match providers to consumers across repos; the state holds links and service links.
 
     The exact pass runs first for every type, then each registered type's own
     passes in registry order. Target resolution for HTTP consumers is read from
-    ``meta`` (see :func:`annotate_consumer_targets`).
+    ``meta`` (see :func:`annotate_consumer_targets`). Each gateway route in
+    *routes* adds its gateway-to-service edge to the service links.
     """
     state = MatchState.build(contracts)
     _exact_pass(state)
     for rules in MATCHERS.values():
         for run in rules.passes:
             run(state)
+    state.service_links.extend(http.gateway_route_links(routes))
     return state
 
 
