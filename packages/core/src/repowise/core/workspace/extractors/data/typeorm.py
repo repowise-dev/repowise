@@ -17,7 +17,7 @@ from repowise.core.workspace.origins import ContractOrigin
 from ..base import ScanContext, line_at
 from ..calls import Call, call_sites, decorated_member
 from ..langs import JS_TS
-from ..strings import Arg, on_comment_line
+from ..strings import Arg
 from .dialect import dedup_emit
 from .names import snake_case
 
@@ -39,15 +39,14 @@ def _default_table(cls: str) -> str:
 class TypeOrmDialect:
     name = "typeorm"
     extensions = JS_TS
+    requires = ("@Entity",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if "@Entity" not in content:
-            return []
         found: list[tuple[str, float, int]] = []
         for _shape, args, m, strings in call_sites(ctx, (_ENTITY,), empty=True):
             member = decorated_member(content, m.start())
-            if member is None or member.group("cls") is None or on_comment_line(content, m.start()):
+            if member is None or member.group("cls") is None:
                 continue
             # `@Entity('users', { schema })` or `@Entity({ name, schema })`.
             options = args[:1] if args[:1] and args[0].startswith("{") else args[1:2]

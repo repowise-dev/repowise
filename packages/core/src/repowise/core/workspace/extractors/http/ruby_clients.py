@@ -142,6 +142,7 @@ def faraday_connection_calls(content: str) -> Iterator[ClientCallMatch]:
 class RubyClientsDialect:
     name = "ruby-clients"
     extensions = RUBY
+    requires = ("HTTParty", "RestClient", "Faraday", "Net::HTTP")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

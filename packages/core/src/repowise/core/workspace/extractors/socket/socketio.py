@@ -148,11 +148,10 @@ _DEFAULT_NAMESPACE_RE = re.compile(r"(?<![\w$.])io\s*\.\s*(?:on|emit|to|in)\s*\(
 class SocketIoDialect:
     name = "socket.io"
     extensions = JS_TS
+    requires = _SOCKET_IO
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if not any(r in content for r in _SOCKET_IO):
-            return []
         strings = file_strings(ctx)
         if strings is None:
             return []

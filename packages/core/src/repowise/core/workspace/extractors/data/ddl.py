@@ -39,6 +39,7 @@ class DdlDialect:
 
     name = "ddl"
     extensions = frozenset({".sql"})
+    requires = ("CREATE", "create", "Create", "ALTER", "alter", "Alter")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         try:

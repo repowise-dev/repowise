@@ -81,11 +81,9 @@ def _verb(links: list[str]) -> str:
 class KnexDialect:
     name = "knex"
     extensions = JS_TS
+    requires = ("knex", "Knex")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        content = ctx.content
-        if "knex" not in content and "Knex" not in content:
-            return []
         return self._migrations(ctx) + self._queries(ctx)
 
     def _migrations(self, ctx: ScanContext) -> list[Contract]:

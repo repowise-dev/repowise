@@ -19,6 +19,7 @@ from repowise.core.ingestion.framework_routes import (
 )
 
 from ..base import line_at
+from ..calls import outside_comments
 from ..langs import JAVA, KOTLIN
 from .dialect import build_provider_contract, nearest_prefix
 from .mounts import compose_prefix
@@ -32,14 +33,13 @@ if TYPE_CHECKING:
 class JaxRsDialect:
     name = "jaxrs"
     extensions = JAVA | KOTLIN
+    requires = ("@Path",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if "@Path" not in content:
-            return []
         class_paths = jaxrs_class_paths(content)
         out: list[Contract] = []
-        for route in jaxrs_routes(content):
+        for route in outside_comments(ctx, jaxrs_routes(content)):
             if route.verb not in HTTP_METHODS:
                 continue
             path = compose_prefix(nearest_prefix(class_paths, route.offset), route.path or "")

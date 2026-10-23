@@ -1290,6 +1290,18 @@ differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
 subscription) registers its extra passes, or its own `keys`, in
 `matching.MATCHERS`.
 
+Every dialect declares `requires`: tokens one of which a file must hold, chosen
+so that every match needs one (a contract format such as `.proto` declares
+`EVERY_FILE`). `dialect.run_dialect` checks the gate, looking each token up
+once per file, and drops a contract whose line is only a comment. `call_sites`,
+`code_matches`, `outside_comments` and `consumer_contracts` skip a match that
+starts in a comment, so a commented-out decorator sets no state either.
+`test_dialect_registry.py` fails on an ungated entry, and
+`test_extraction_dialect_budget.py` on a dialect that costs as much as an
+ungated scan. A Python docstring example is still read, because the mask keeps
+strings, and Ruby, VB and SQL files are not masked: their comment syntax would
+mislead the masker.
+
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |

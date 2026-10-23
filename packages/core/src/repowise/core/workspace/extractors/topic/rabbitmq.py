@@ -38,6 +38,7 @@ RABBITMQ = TopicDialect(
             extensions=JAVA,
             name=Arg(keys=("queues", "queue")),
             kind=TOPIC_KIND_QUEUE,
+            requires=("@RabbitListener",),
         ),
         TopicCall(
             head=re.compile(r"rabbitTemplate\.convertAndSend\s*\("),
@@ -49,6 +50,7 @@ RABBITMQ = TopicDialect(
             # `(exchange, routingKey, message)`; in the two-argument form the
             # second is the message, which does not resolve, so it routes nowhere.
             routing_key=Arg(pos=1),
+            requires=("rabbitTemplate",),
         ),
         TopicCall(
             head=re.compile(r"\.\s*consume\s*\("),
@@ -98,6 +100,7 @@ RABBITMQ = TopicDialect(
             name=Arg(keys=("queue",), pos=0),
             kind=TOPIC_KIND_QUEUE,
             origin=ContractOrigin.NAME_HEURISTIC,  # a variable named `channel`
+            requires=("basic_consume",),
         ),
         TopicCall(
             head=re.compile(r"channel\.basic_publish\s*\("),
@@ -109,6 +112,7 @@ RABBITMQ = TopicDialect(
             origin=ContractOrigin.NAME_HEURISTIC,  # a variable named `channel`
             routing_key=Arg(keys=("routing_key",)),
             default_exchange=True,
+            requires=("basic_publish",),
         ),
         TopicCall(
             head=re.compile(r"channel\.queue_bind\s*\("),
@@ -120,6 +124,7 @@ RABBITMQ = TopicDialect(
             origin=ContractOrigin.NAME_HEURISTIC,  # a variable named `channel`
             routing_key=Arg(keys=("routing_key",), pos=2),
             queue=Arg(keys=("queue",), pos=0),
+            requires=("queue_bind",),
         ),
         # php-amqplib: `basic_publish($msg, $exchange = '', $routing_key = '')`.
         TopicCall(

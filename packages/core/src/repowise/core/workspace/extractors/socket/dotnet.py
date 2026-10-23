@@ -26,6 +26,7 @@ DOTNET = SocketDialect(
             label="ClientWebSocket.ConnectAsync",
             extensions=CSHARP,
             name=_URL,
+            requires=("ConnectAsync", "connectAsync"),
         ),
         SocketCall(
             head=re.compile(r"\bWithUrl\s*\(", re.IGNORECASE),
@@ -62,6 +63,7 @@ DOTNET = SocketDialect(
             extensions=CSHARP,
             name=_URL,
             origin=ContractOrigin.ROUTE_REGISTRATION,
+            requires=("MapHub", "mapHub"),
         ),
     ),
 )

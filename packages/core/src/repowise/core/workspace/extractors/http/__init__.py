@@ -8,7 +8,8 @@ a framework means dropping one dialect module and appending it to a registry —
 no orchestrator edits. HTTP keeps its own orchestrator rather than the shared
 :class:`..dialect.DialectExtractor` because it runs two passes the others do
 not: router mounts collected across files, and the index-backed routes and
-client calls.
+client calls. Each dialect still runs through :func:`..dialect.run_dialect`,
+the one gate and comment check every contract type shares.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
-from ..dialect import ContractDialect, union_extensions
+from ..dialect import ContractDialect, run_dialect, runs_on, union_extensions
 from ..langs import PYTHON
 from .apex_callouts import ApexCalloutsDialect
 from .apex_rest import ApexRestDialect
@@ -189,16 +190,12 @@ class HttpExtractor:
                     )
 
             for dialect in self.provider_dialects:
-                if suffix not in dialect.extensions:
-                    continue
                 if from_parse and dialect.name in _INDEX_BACKED_DIALECTS:
                     continue  # superseded by the index pass above
-                contracts.extend(dialect.extract(ctx))
+                contracts.extend(run_dialect(dialect, ctx))
             index_ids = {c.contract_id for c in consumers_from_parse}
             for dialect in self.consumer_dialects:
-                if suffix not in dialect.extensions:
-                    continue
-                found = dialect.extract(ctx)
+                found = run_dialect(dialect, ctx)
                 if index_ids and dialect.name in _INDEX_BACKED_CONSUMER_DIALECTS:
                     # Supersede per *contract*, not per file. Dropping the whole
                     # dialect for a file the index read would delete anything
@@ -225,10 +222,9 @@ class HttpExtractor:
         ]
         per_file: list[dict[str, str]] = []
         for rel_path, suffix, content in files:
-            ctx: ScanContext | None = None
+            ctx = ScanContext(repo_alias, rel_path, suffix, content)
             for dialect in collectors:
-                if suffix in dialect.extensions:
-                    ctx = ctx or ScanContext(repo_alias, rel_path, suffix, content)
+                if runs_on(dialect, ctx):
                     found = dialect.collect_mounts(ctx)
                     if found:
                         per_file.append(found)

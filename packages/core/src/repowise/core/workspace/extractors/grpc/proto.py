@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from repowise.core.workspace.contract_schema import ContractSchema, SchemaField
 from repowise.core.workspace.origins import ContractOrigin
 
-from ..dialect import build_contract
+from ..dialect import EVERY_FILE, build_contract
 from ..langs import PROTO
 
 if TYPE_CHECKING:
@@ -214,6 +214,7 @@ def _parse_proto_file(
 class ProtoDialect:
     name = "proto"
     extensions = PROTO
+    requires = EVERY_FILE
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         package, services, messages = _parse_proto_file(ctx.content)

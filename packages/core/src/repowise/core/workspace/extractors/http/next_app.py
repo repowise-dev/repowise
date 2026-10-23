@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 class NextAppDialect:
     name = "next-app"
     extensions = JS_TS
+    requires = ("export",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         path = next_route_path(ctx.rel_path)

@@ -163,6 +163,7 @@ def resttemplate_calls(content: str) -> Iterator[ClientCallMatch]:
 class JavaClientsDialect:
     name = "java-clients"
     extensions = JAVA
+    requires = ("@RequestLine", "HttpRequest", "RestTemplate")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

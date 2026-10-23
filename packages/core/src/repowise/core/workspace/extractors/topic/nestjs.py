@@ -94,11 +94,10 @@ def _pattern(raw: str, strings: FileStrings) -> str | None:
 class NestMicroservicesDialect:
     name = "nestjs"
     extensions = JS_TS
+    requires = _MICROSERVICES  # handlers and ClientProxy both come from this package
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if not any(r in content for r in _MICROSERVICES):
-            return []  # handlers and ClientProxy both come from this package
         calls = list(_HANDLERS)
         names = set(typed_receivers(content, _PROXY_TYPE_RE))
         if names:

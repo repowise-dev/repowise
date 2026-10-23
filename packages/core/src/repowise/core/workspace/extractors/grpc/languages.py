@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
+from ..calls import code_matches
 from ..dialect import build_contract
 from ..langs import CSHARP, GO, JAVA, JS_TS, PYTHON
 
@@ -50,6 +51,9 @@ class _Language:
     name: str
     extensions: frozenset[str]
     rules: tuple[_Rule, ...]
+    #: Tokens one of which a file must contain before any rule runs: every
+    #: rule's pattern needs one, so the gate drops no match.
+    requires: tuple[str, ...] = ()
     #: A marker the file must carry before any consumer rule runs.
     consumer_gate: re.Pattern[str] | None = None
     #: Stub-name prefixes that are test doubles rather than clients.
@@ -68,6 +72,7 @@ LANGUAGES: tuple[_Language, ...] = (
             _Rule("consumer", re.compile(r"\.New(\w+)Client\s*\("),
                   "go:New{service}Client", "go_client", _CLIENT_CALL),
         ),
+        requires=("Register", "Client"),
     ),
     _Language(
         name="java",
@@ -80,6 +85,7 @@ LANGUAGES: tuple[_Language, ...] = (
             _Rule("consumer", re.compile(r"(\w+)Grpc\.new(?:Blocking|Future)?Stub\s*\("),
                   "java:{service}Grpc.newStub", "java_stub", _CLIENT_CALL),
         ),
+        requires=("Grpc.",),
     ),
     _Language(
         name="python",
@@ -92,6 +98,7 @@ LANGUAGES: tuple[_Language, ...] = (
             _Rule("consumer", re.compile(r"(\w+)Stub\s*\("),
                   "py:{service}Stub", "py_stub", _CLIENT_CALL),
         ),
+        requires=("_to_server", "Stub"),
         false_prefixes=("mock", "test", "fake"),
     ),
     _Language(
@@ -103,6 +110,7 @@ LANGUAGES: tuple[_Language, ...] = (
                   "ts:@GrpcMethod('{service}', '{method}')", "ts_decorator", _ROUTE_REGISTRATION,
                   method_group=2),
         ),
+        requires=("@GrpcMethod",),
     ),
     _Language(
         name="csharp",
@@ -119,6 +127,8 @@ LANGUAGES: tuple[_Language, ...] = (
             _Rule("consumer", re.compile(r"\bnew\s+(\w+)Client\s*\("),
                   "cs:new {service}Client", "csharp_client", _NAME_HEURISTIC),
         ),
+        # The consumer gate's markers all hold `Grpc`, `CallInvoker` or `Base`.
+        requires=("MapGrpcService", "Base", "Grpc", "CallInvoker"),
         consumer_gate=re.compile(
             r"\bGrpcChannel\b|\bGrpc\.(?:Net|Core)\b|\bCallInvoker\b|\bChannelBase\b"
             r"|\bAddGrpcClient\b|using\s+Grpc\b"
@@ -135,6 +145,7 @@ class LanguageGrpcDialect:
         self._lang = language
         self.name = language.name
         self.extensions = language.extensions
+        self.requires = language.requires
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         lang = self._lang
@@ -143,7 +154,7 @@ class LanguageGrpcDialect:
         for rule in lang.rules:
             if rule.role == "consumer" and gated:
                 continue
-            for m in rule.pattern.finditer(ctx.content):
+            for m in code_matches(ctx, rule.pattern):
                 service = m.group(1)
                 if rule.role == "consumer" and service.lower().startswith(lang.false_prefixes):
                     continue

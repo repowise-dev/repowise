@@ -115,9 +115,14 @@ def consumer_contracts(
     *rooted_only* drops a URL that is neither absolute nor rooted. A client
     with a configured base composes ``"some/path"`` onto it, so the path the
     request reaches has a prefix this layer cannot see.
+
+    A call in a comment (a usage example in a doc comment) is skipped here,
+    once for every recogniser.
     """
     out: list[Contract] = []
     for m in matches:
+        if ctx.in_comment(m.offset):
+            continue
         url = resolve_string(m.url, syntax, constants)
         if url is None or (path_only and "/" not in url):
             continue

@@ -52,7 +52,7 @@ _NAME = PHP_CLASS_NAME
 # Every app has this queue: two apps naming it share nothing.
 _DEFAULT_QUEUE = "default"
 
-# A file must contain one of these for any pattern below to run.
+# The dialect's gate: a file must contain one of these for any pattern below to run.
 _HINTS = ("dispatch", "Queue::", "ShouldQueue", "job")
 
 # Literal-led heads; the text before a `dispatch(` says which form it is.
@@ -238,8 +238,6 @@ class _LaravelQueuePass:
 
     def scan(self, ctx: ScanContext) -> None:
         content = ctx.content
-        if not any(h in content for h in _HINTS):
-            return
         reader = _FileReader(ctx)
         if "ShouldQueue" in content and (job := reader.queued_class()) is not None:
             self.jobs.setdefault(job.name, job)
@@ -292,6 +290,7 @@ class _LaravelQueuePass:
 class LaravelQueueDialect:
     name = _BROKER
     extensions = PHP
+    requires = _HINTS
 
     def repo_pass(self) -> _LaravelQueuePass:
         return _LaravelQueuePass()

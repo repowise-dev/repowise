@@ -63,6 +63,7 @@ def reqwest_calls(content: str) -> Iterator[ClientCallMatch]:
 class RustClientsDialect:
     name = "rust-clients"
     extensions = RUST
+    requires = (".get", ".post", ".put", ".delete", ".patch", ".head", "reqwest")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         # `.get("key")` on a map has no slash; the receiver is anyone's.

@@ -32,6 +32,7 @@ _SCHEMA_RE = re.compile(r"""^[ \t]*@@schema\(\s*"([^"]+)"\s*\)""", re.MULTILINE)
 class PrismaDialect:
     name = "prisma"
     extensions = frozenset({".prisma"})
+    requires = ("model",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

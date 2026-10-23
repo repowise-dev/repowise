@@ -25,7 +25,7 @@ from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
 from ..calls import call_sites
-from ..dialect import build_contract
+from ..dialect import build_contract, rows_gate
 from ..http.paths import (
     extract_path_from_url,
     is_unusable_consumer_path,
@@ -159,6 +159,7 @@ class SocketDialect:
         self.name = name
         self.calls = calls
         self.extensions = frozenset().union(*(c.extensions for c in calls))
+        self.requires = rows_gate(calls)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []

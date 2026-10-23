@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from repowise.core.ingestion.framework_routes import HTTP_METHODS, go_groups, go_routes
 
 from ..base import line_at
+from ..calls import outside_comments
 from ..langs import GO
 from .dialect import build_provider_contract
 from .mounts import compose_prefix, group_prefixes
@@ -32,11 +33,17 @@ _VERBLESS = ("HANDLE", "HANDLEFUNC")
 class GoDialect:
     name = "go"
     extensions = GO
+    # The verb opens its call directly, as gofmt writes it; a chain may break
+    # the line after the receiver's `.`.
+    requires = (
+        "GET(", "POST(", "PUT(", "DELETE(", "PATCH(", "OPTIONS(", "HEAD(", "Any(", "Handle(",
+        "HandleFunc(",
+    )  # fmt: skip
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         prefixes = group_prefixes(go_groups(ctx.content))
         out: list[Contract] = []
-        for route in go_routes(ctx.content):
+        for route in outside_comments(ctx, go_routes(ctx.content)):
             if route.verb in _VERBLESS:
                 method = "*"
             elif route.verb in HTTP_METHODS:

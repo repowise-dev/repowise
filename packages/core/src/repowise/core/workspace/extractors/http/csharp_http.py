@@ -93,6 +93,8 @@ def besthttp_calls(content: str) -> Iterator[ClientCallMatch]:
 class CSharpHttpDialect:
     name = "csharp-http"
     extensions = CSHARP
+    # `GetAsync`, `GetRequest`, `UnityWebRequest`, `HTTPRequest` in any case.
+    requires = ("Async", "Request", "request", "REQUEST")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

@@ -27,7 +27,7 @@ from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
 from ..calls import call_sites
-from ..dialect import build_contract
+from ..dialect import build_contract, rows_gate
 
 if TYPE_CHECKING:
     import re
@@ -161,6 +161,7 @@ class TopicDialect:
         self.name = name
         self.calls = calls
         self.extensions = frozenset().union(*(c.extensions for c in calls))
+        self.requires = rows_gate(calls)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []

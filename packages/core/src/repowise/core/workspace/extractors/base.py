@@ -20,15 +20,17 @@ from typing import TYPE_CHECKING
 
 from repowise.core.test_paths import is_skippable_test_path
 
+from .langs import APEX, CSHARP, GO, JAVA, JS_TS, KOTLIN, PHP, PROTO, RUST
+
 if TYPE_CHECKING:
     from repowise.core.workspace.repo_index import RepoIndex
 
 # Repowise's own contract-extractor sources. Their docstrings and comments spell
 # out the syntax each dialect matches (``@app.get("/path")``, ``topic::orders``,
 # ``AuthServiceStub``), so scanning them yields contracts for endpoints and
-# queues that do not exist — on this repo, 14 of them. A regex over raw text
-# cannot tell an example in a comment from a live route; excluding the tree that
-# is nothing *but* examples is the cheap half of that fix.
+# queues that do not exist — on this repo, 14 of them. A match in a comment is
+# dropped (see :meth:`ScanContext.in_comment`), but one in a docstring is a
+# string to the mask; excluding the tree that is nothing *but* examples covers it.
 _SELF_EXCLUDE_GLOBS = ("*/repowise/core/workspace/extractors/*",)
 
 
@@ -66,6 +68,43 @@ def make_exclude_predicate(
     return skip
 
 
+#: Where comments are ``//`` and ``/* */`` and ``#`` is code (a C# directive, a
+#: Rust or PHP attribute). Ruby is left out: its ``/.../`` regex literals would
+#: open a comment the masker cannot close. VB and SQL are left out too. A match
+#: in an unmasked file is never treated as commented out.
+_SLASH_COMMENT_SUFFIXES = JAVA | KOTLIN | GO | CSHARP | RUST | PHP | APEX | PROTO | {".prisma"}
+
+
+def _comment_mask(suffix: str, content: str) -> str | None:
+    """*content* with its comments blanked and offsets kept; None for an unknown syntax."""
+    from repowise.core.ingestion.source_mask import mask_source
+
+    # The JS-aware masker reads regex literals and Python string prefixes.
+    if suffix == ".py":
+        return mask_source(content, suffix)
+    if suffix in JS_TS:
+        return mask_source(content, ".js")
+    if suffix not in _SLASH_COMMENT_SUFFIXES:
+        return None
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+    return mask_comments_and_strings(
+        content, strings=False, hash_comments=False, **mask_dialect(suffix)
+    )
+
+
+class _FileMemo:
+    """What one file's dialects share: each gate token's presence, and the comment mask."""
+
+    __slots__ = ("lines", "mask", "masked", "tokens")
+
+    def __init__(self) -> None:
+        self.tokens: dict[str, bool] = {}
+        self.masked = False
+        self.mask: str | None = None
+        self.lines: tuple[list[str], list[str]] | None = None
+
+
 @dataclass(frozen=True)
 class ScanContext:
     """A single source file presented to a dialect.
@@ -79,6 +118,11 @@ class ScanContext:
 
     ``index`` is the repo's read-only symbol table, when the repo has one.
     Every dialect may ignore it and read ``content`` exactly as before.
+
+    Gates and comments are read here once per file, however many dialects
+    ask: :meth:`has_any` memoizes each token, and the comment mask is built
+    the first time a match asks about it, so a file nothing matches in never
+    pays for it.
     """
 
     repo_alias: str
@@ -87,6 +131,51 @@ class ScanContext:
     content: str
     mounts: Mapping[str, str] = field(default_factory=dict)
     index: RepoIndex | None = None
+    _memo: _FileMemo = field(default_factory=_FileMemo, init=False, repr=False, compare=False)
+
+    def has_any(self, tokens: tuple[str, ...]) -> bool:
+        """Whether the file contains one of *tokens*, each searched for once per file."""
+        seen = self._memo.tokens
+        for token in tokens:
+            found = seen.get(token)
+            if found is None:
+                found = seen[token] = token in self.content
+            if found:
+                return True
+        return False
+
+    def _mask(self) -> str | None:
+        memo = self._memo
+        if not memo.masked:
+            memo.mask = _comment_mask(self.suffix, self.content)
+            memo.masked = True
+        return memo.mask
+
+    def in_comment(self, offset: int) -> bool:
+        """Whether a match at *offset* (leading whitespace skipped) sits in a comment."""
+        content = self.content
+        end = len(content)
+        while offset < end and content[offset] in " \t\n":
+            offset += 1
+        if offset >= end:
+            return False
+        mask = self._mask()
+        return mask is not None and mask[offset] != content[offset]
+
+    def comment_only_line(self, line: int | None) -> bool:
+        """Whether 1-based *line* holds a comment and nothing else."""
+        if line is None or line < 1:
+            return False
+        mask = self._mask()
+        if mask is None:
+            return False
+        memo = self._memo
+        if memo.lines is None:
+            memo.lines = (mask.split("\n"), self.content.split("\n"))
+        code, source = memo.lines
+        if line > len(code) or code[line - 1].strip():
+            return False
+        return bool(source[line - 1].strip())
 
 
 # One scanned source file: ``(rel_path, suffix, content)``.

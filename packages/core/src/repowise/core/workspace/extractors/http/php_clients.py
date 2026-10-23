@@ -129,6 +129,7 @@ def laravel_http_calls(content: str) -> Iterator[ClientCallMatch]:
 class PhpClientsDialect:
     name = "php-clients"
     extensions = PHP
+    requires = ("Client", "Http::")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         request_rows = list(guzzle_request_calls(ctx.content))

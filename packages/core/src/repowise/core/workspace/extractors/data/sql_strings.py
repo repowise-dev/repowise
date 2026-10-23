@@ -124,6 +124,12 @@ class SqlStringsDialect:
 
     name = "sql-strings"
     extensions = PYTHON | JS_TS | JAVA | KOTLIN | GO | CSHARP | RUBY | PHP
+    # A SQL literal holds one of the verbs `_SQL_VERB_RE` reads, in some case.
+    requires = tuple(
+        spelling
+        for verb in ("select", "insert", "update", "delete", "merge")
+        for spelling in (verb.upper(), verb, verb.capitalize())
+    )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []

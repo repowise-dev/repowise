@@ -23,6 +23,7 @@ KAFKA = TopicDialect(
             label="@KafkaListener",
             extensions=JAVA,
             name=_TOPIC,
+            requires=("@KafkaListener",),
         ),
         TopicCall(
             head=re.compile(r"@KafkaListener\s*\("),
@@ -32,6 +33,7 @@ KAFKA = TopicDialect(
             name=Arg(keys=("topicPattern",)),
             pattern=TOPIC_PATTERN_REGEX,
             normalize=unescape_backslashes,
+            requires=("@KafkaListener",),
         ),
         TopicCall(
             head=re.compile(r"kafkaTemplate\.send\s*\("),
@@ -39,6 +41,7 @@ KAFKA = TopicDialect(
             label="kafkaTemplate.send",
             extensions=JAVA,
             name=_FIRST,
+            requires=("kafkaTemplate",),
         ),
         TopicCall(
             head=re.compile(r"producer\.send\s*\("),
@@ -46,6 +49,7 @@ KAFKA = TopicDialect(
             label="producer.send({topic})",
             extensions=JS_TS,
             name=_TOPIC,
+            requires=("producer",),
         ),
         TopicCall(
             head=re.compile(r"consumer\.subscribe\s*\("),
@@ -53,6 +57,7 @@ KAFKA = TopicDialect(
             label="consumer.subscribe({topic})",
             extensions=JS_TS,
             name=_TOPIC,
+            requires=("consumer",),
         ),
         TopicCall(
             head=re.compile(r"KafkaConsumer\s*\("),
@@ -60,6 +65,7 @@ KAFKA = TopicDialect(
             label="KafkaConsumer",
             extensions=PYTHON,
             name=_FIRST,
+            requires=("KafkaConsumer",),
         ),
         TopicCall(
             head=re.compile(r"producer\.produce\s*\("),
@@ -68,6 +74,7 @@ KAFKA = TopicDialect(
             extensions=PYTHON | JS_TS,
             name=Arg(keys=("topic",), pos=0),
             origin=ContractOrigin.NAME_HEURISTIC,  # read off a variable named `producer`
+            requires=("producer",),
         ),
         TopicCall(
             head=re.compile(r"ConsumePartition\s*\("),
@@ -75,6 +82,7 @@ KAFKA = TopicDialect(
             label="ConsumePartition",
             extensions=GO,
             name=_FIRST,
+            requires=("ConsumePartition",),
         ),
     ),
 )

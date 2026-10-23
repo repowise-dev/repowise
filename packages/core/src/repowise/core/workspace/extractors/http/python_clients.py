@@ -30,6 +30,7 @@ def requests_calls(content: str) -> Iterator[ClientCallMatch]:
 class PythonClientsDialect:
     name = "python-clients"
     extensions = PYTHON
+    requires = ("requests", "httpx", "Requests", "Httpx", "REQUESTS", "HTTPX")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         return consumer_contracts(ctx, requests_calls(ctx.content), PYTHON_SYNTAX)

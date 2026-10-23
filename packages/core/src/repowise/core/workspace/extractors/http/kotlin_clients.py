@@ -208,11 +208,10 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
 class KotlinClientsDialect:
     name = "kotlin-clients"
     extensions = KOTLIN
+    requires = (_KTOR_PACKAGE,)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if _KTOR_PACKAGE not in content:
-            return []
         rows = list(ktor_calls(content))
         if not rows:
             return []

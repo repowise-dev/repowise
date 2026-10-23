@@ -185,6 +185,8 @@ def _url(
 class ApexCalloutsDialect:
     name = "apex-callouts"
     extensions = APEX
+    # Apex is case-insensitive; `extract` reads the exact spelling.
+    requires = ("setEndpoint", "setendpoint", "SetEndpoint", "SETENDPOINT")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

@@ -34,6 +34,8 @@ class SqlAlchemyDjangoDialect:
 
     name = "python-orm"
     extensions = PYTHON
+    # `__tablename__`, `db_table`, `op.create_table` and `table=True` all hold it.
+    requires = ("table",)
 
     _TABLENAME_RE = re.compile(r"^\s*__tablename__\s*[:=]\s*.*?['\"](\S+?)['\"]", re.MULTILINE)
     _DB_TABLE_RE = re.compile(r"^\s*db_table\s*=\s*['\"](\S+?)['\"]", re.MULTILINE)
@@ -42,12 +44,25 @@ class SqlAlchemyDjangoDialect:
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         # A migration's `create_table` defines the schema; the rest model it.
+        # Each pattern runs only where its literal is: the `^\s*` ones have no
+        # literal prefix for the regex engine to skip ahead by.
+        content = ctx.content
         seen: set[str] = set()
-        created = found_names(self._CREATE_TABLE_RE, ctx.content, ContractOrigin.DDL)
+        created = (
+            found_names(self._CREATE_TABLE_RE, content, ContractOrigin.DDL)
+            if ctx.has_any(("op.create_table",))
+            else []
+        )
         out = dedup_emit(ctx, self.name, created, schema="create", seen=seen)
-        found = found_names(self._TABLENAME_RE, ctx.content, ContractOrigin.EXPLICIT_TABLE)
-        found += found_names(self._DB_TABLE_RE, ctx.content, ContractOrigin.EXPLICIT_TABLE)
-        found += found_names(self._SQLMODEL_RE, ctx.content, ContractOrigin.NAME_CONVENTION, str.lower)
+        found: list[tuple[str, ContractOrigin, int]] = []
+        if ctx.has_any(("__tablename__",)):
+            found += found_names(self._TABLENAME_RE, content, ContractOrigin.EXPLICIT_TABLE)
+        if ctx.has_any(("db_table",)):
+            found += found_names(self._DB_TABLE_RE, content, ContractOrigin.EXPLICIT_TABLE)
+        if ctx.has_any(("True",)):
+            found += found_names(
+                self._SQLMODEL_RE, content, ContractOrigin.NAME_CONVENTION, str.lower
+            )
         return out + dedup_emit(ctx, self.name, found, seen=seen)
 
 
@@ -56,6 +71,7 @@ class JpaDialect:
 
     name = "jpa"
     extensions = JAVA | KOTLIN
+    requires = ("@Table", "@Entity")
 
     _TABLE_RE = re.compile(r"@Table\s*\(\s*name\s*=\s*\"([^\"]+)\"")
     # @Entity (optionally parameterized) followed by its class declaration.
@@ -79,6 +95,7 @@ class EfCoreDialect:
 
     name = "efcore"
     extensions = CSHARP
+    requires = ("[Table(", "DbSet<")
 
     _TABLE_ATTR_RE = re.compile(r"\[Table\(\s*\"([^\"]+)\"")
     _DBSET_RE = re.compile(r"\bDbSet<\s*\w+\s*>\s+(\w+)")
@@ -94,6 +111,7 @@ class ActiveRecordDialect:
 
     name = "activerecord"
     extensions = RUBY
+    requires = ("table_name", "ApplicationRecord", "ActiveRecord::Base")
 
     _TABLE_NAME_RE = re.compile(r"self\.table_name\s*=\s*['\"](\w+)['\"]")
     _MODEL_CLASS_RE = re.compile(

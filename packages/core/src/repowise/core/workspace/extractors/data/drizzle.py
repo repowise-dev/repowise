@@ -40,11 +40,10 @@ def _schema_tables(names: tuple[str, ...]) -> tuple[Call, ...]:
 class DrizzleDialect:
     name = "drizzle"
     extensions = JS_TS
+    requires = (_DRIZZLE,)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        if _DRIZZLE not in content:
-            return []
         found: list[tuple[str, float, int]] = []
         schemas: dict[str, str] = {}
         for call, args, m, strings in call_sites(ctx, (_TABLE, _SCHEMA)):

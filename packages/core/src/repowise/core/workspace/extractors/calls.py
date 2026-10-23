@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from .strings import (
     call_arguments,
@@ -31,6 +31,13 @@ if TYPE_CHECKING:
 
     from .base import ScanContext
     from .strings import Arg, StringSyntax
+
+
+class _HasOffset(Protocol):
+    offset: int
+
+
+_Located = TypeVar("_Located", bound=_HasOffset)
 
 
 class CallShape(Protocol):
@@ -109,6 +116,24 @@ def file_strings(ctx: ScanContext) -> FileStrings | None:
     return FileStrings(ctx.content, syntax) if syntax is not None else None
 
 
+def code_matches(ctx: ScanContext, pattern: re.Pattern[str]) -> Iterator[re.Match[str]]:
+    """Every match of *pattern* in *ctx*'s file that does not start in a comment.
+
+    The one match loop a recogniser should use instead of a bare ``finditer``:
+    the comment check is the file's, built once and only when something matched.
+    """
+    for m in pattern.finditer(ctx.content):
+        if not ctx.in_comment(m.start()):
+            yield m
+
+
+def outside_comments(ctx: ScanContext, found: Iterable[_Located]) -> Iterator[_Located]:
+    """The matches in *found* (a shared recogniser's, carrying ``offset``) not in a comment."""
+    for item in found:
+        if not ctx.in_comment(item.offset):
+            yield item
+
+
 def call_sites(
     ctx: ScanContext,
     calls: Iterable[CallShape],
@@ -118,20 +143,19 @@ def call_sites(
 ) -> Iterator[tuple[CallShape, list[str], re.Match[str], FileStrings]]:
     """Each call in *ctx* one of *calls* recognises, with its argument list.
 
-    A call with no arguments is skipped unless *empty* is set: for a decorator
-    such as ``@Get()`` the missing argument is the answer. Pass *strings* when
-    the caller already holds the file's, so its constants are read once.
+    A row is tried only on a file holding one of its ``requires`` tokens,
+    each looked up once per file across every dialect, and a call in a
+    comment is skipped. A call with no arguments is skipped unless *empty* is
+    set: for a decorator such as ``@Get()`` the missing argument is the
+    answer. Pass *strings* when the caller already holds the file's, so its
+    constants are read once.
     """
-    present: dict[tuple[str, ...], bool] = {}  # rows of one library share a gate
     for call in calls:
         if ctx.suffix not in call.extensions:
             continue
-        if call.requires:
-            if call.requires not in present:
-                present[call.requires] = any(r in ctx.content for r in call.requires)
-            if not present[call.requires]:
-                continue
-        for m in call.head.finditer(ctx.content):
+        if call.requires and not ctx.has_any(call.requires):
+            continue
+        for m in code_matches(ctx, call.head):
             args = call_arguments(ctx.content, m.end() - 1)
             if args is None or not (args or empty):
                 continue
@@ -265,8 +289,10 @@ __all__ = [
     "FileStrings",
     "call_chain",
     "call_sites",
+    "code_matches",
     "decorated_member",
     "file_strings",
+    "outside_comments",
     "receiver_at",
     "receiver_name",
     "typed_receivers",
