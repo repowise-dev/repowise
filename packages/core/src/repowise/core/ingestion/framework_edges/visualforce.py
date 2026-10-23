@@ -19,6 +19,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from ...analysis.security_scan import mask_comments_and_strings
+from ..return_types import signature_parameter_count
 from ..type_names import bare_type_name, type_qualifier
 from .aura import _file_edge, _mask_xml, _nearest, _own_namespaces
 from .base import DetectionContext, FrameworkHandler, add_symbol_edge, source_text
@@ -149,17 +150,7 @@ class _VfIndex:
     def constructors(self, cls_file: str, cls: str, arity: int) -> list[Any]:
         """Public constructors of *cls* taking *arity* parameters."""
         ctors = self.members(cls_file, cls).get(cls.lower(), [])
-        return [s for s in ctors if _arity(s.signature or "") == arity]
-
-
-def _arity(signature: str) -> int:
-    """Parameter count of ``Name(T a, Map<K, V> b) -> R``."""
-    inner = signature.partition("(")[2].rpartition(")")[0]
-    depth, count = 0, 0
-    for ch in inner:
-        depth += (ch == "<") - (ch == ">")
-        count += ch == "," and depth == 0
-    return count + 1 if inner.strip() else 0
+        return [s for s in ctors if signature_parameter_count(s.signature or "") == arity]
 
 
 class _Edges:
@@ -183,6 +174,7 @@ class _Edges:
     def flush(self) -> int:
         for (src, dst), names in sorted(self.names.items()):
             self.count += _file_edge(self.graph, src, dst, names)
+        # A `Page.X` framework edge to the same page is the stronger evidence and stays.
         for src, dst in sorted(self.dynamic):
             if (
                 src != dst

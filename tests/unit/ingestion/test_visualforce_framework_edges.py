@@ -88,6 +88,7 @@ _REPO = {
         "public class Nav {\n"
         "    // Page.Orphan in a comment\n"
         "    public PageReference go() { return Page.ACCOUNTEDIT; }\n"
+        "    public PageReference again() { return new PageReference('/apex/AccountEdit'); }\n"
         "    public PageReference url() { return new PageReference('/apex/Orphan?id=1'); }\n"
         "    public String s() { return 'Page.Help'; }\n"
         "    public PageReference built(String n) { return new PageReference('/apex/' + n); }\n"
@@ -194,7 +195,9 @@ def test_component_tags_and_page_references(tmp_path: Path) -> None:
     assert (_PAGE, f"{_D}/pages/Footer.page") in framework  # own ns__ prefix dropped
     assert (_PAGE, f"{_D}/pages/Help.page") in framework  # $Page.Help
     nav = f"{_D}/classes/Nav.cls"
-    assert (nav, _PAGE) in framework  # Page.ACCOUNTEDIT
+    # Page.ACCOUNTEDIT; the literal to the same page keeps the compile-checked edge.
+    assert (nav, _PAGE) in framework
+    assert (nav, _PAGE) not in _edges(g, "dynamic_uses")
     assert (nav, f"{_D}/pages/Help.page") not in framework  # a string, not code
     assert (nav, f"{_D}/pages/Orphan.page") in _edges(g, "dynamic_uses")
     assert g.edges[nav, f"{_D}/pages/Orphan.page"]["hint_source"] == "vf_page_reference"
