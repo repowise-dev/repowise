@@ -50,17 +50,33 @@ _TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)")
 _SCHEME_TEMPLATE_VALUE = re.compile(
     r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\))"
 )
-_OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
+_OWN_NAME_VALUE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 _CONSTANT_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 # Uppercase env-var names and sentinels can have short version numbers. Four
 # consecutive digits are credential-shaped, so keep those values reportable.
 _UPPER_KEY_NAME_VALUE = re.compile(r"[A-Z_][A-Z0-9_]*")
 _LONG_DIGIT_RUN = re.compile(r"[0-9]{4,}")
+# A password value is a name only as an env-var name for a password setting
+# (``FINERACT_RO_SCHEMA_PASSWORD``): ``SECRET_PHRASE`` may be the password itself.
+_PASSWORD_NAME_SUFFIX = re.compile(r"_(?:PASSWORD|PASSWD|PWD)\Z")
+
+
+def _is_key_name_value(kind: str, value: str) -> bool:
+    """Whether a keyword-matched *value* is a setting's or variable's name."""
+    upper_name = (
+        "_" in value and _UPPER_KEY_NAME_VALUE.fullmatch(value) and not _LONG_DIGIT_RUN.search(value)
+    )
+    if kind == "hardcoded_password":
+        return bool(upper_name and _PASSWORD_NAME_SUFFIX.search(value))
+    return bool(_KEY_NAME_VALUE.fullmatch(value) or upper_name)
 
 
 def _is_own_name_value(value: str, name: str) -> bool:
-    """Whether a letter-only constant holds its own name or a suffix of it."""
+    """Whether a constant holds its own name or a suffix of it.
+
+    Digits are allowed here: ``S3_ACCESS_KEY = "s3_access_key"`` names itself.
+    """
     if not _OWN_NAME_VALUE.fullmatch(value):
         return False
     normalized_name = re.sub(r"[_-]", "", name).lower()
@@ -95,16 +111,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
     if kind not in _KEYWORD_KINDS:
         return True
     value = val.strip()
-    if kind == "hardcoded_secret" and (
-        _KEY_NAME_VALUE.fullmatch(value)
-        or (
-            "_" in value
-            and _UPPER_KEY_NAME_VALUE.fullmatch(value)
-            and not _LONG_DIGIT_RUN.search(value)
-        )
-    ):
-        return False
-    if _is_own_name_value(value, name):
+    if _is_key_name_value(kind, value) or _is_own_name_value(value, name):
         return False
     # A leading ``--`` is a CSS custom property or a CLI flag, not a key.
     return not (

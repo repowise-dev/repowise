@@ -1209,6 +1209,46 @@ class TestVendorShapeEdges:
     def test_uppercase_password_is_not_exempted(self) -> None:
         assert "hardcoded_password" in self._kinds('password = "SECRET_PHRASE"\n')
 
+    @pytest.mark.parametrize(
+        ("path", "source"),
+        [
+            ("Constants.java", 'public static final String S3_ACCESS_KEY = "s3_access_key";\n'),
+            ("Constants.java", 'public static final String S3_SECRET_KEY = "s3_secret_key";\n'),
+            ("config.py", 'OAUTH2_CLIENT_SECRET = "oauth2_client_secret"\n'),
+            (
+                "TenantConstants.java",
+                'public static final String PROPERTY_RO_SCHEMA_PASSWORD = "FINERACT_RO_SCHEMA_PASSWORD";\n',
+            ),
+            ("settings.py", 'DB_PASSWORD_ENV = "DB_PASSWORD"\n'),
+        ],
+    )
+    def test_config_key_names_are_not_credentials(self, path: str, source: str) -> None:
+        kinds = self._kinds(source, path)
+        assert "hardcoded_secret" not in kinds
+        assert "hardcoded_password" not in kinds
+
+    @pytest.mark.parametrize(
+        ("name", "kind"), [("DB_PASSWORD", "hardcoded_password"), ("API_KEY", "hardcoded_secret")]
+    )
+    @pytest.mark.parametrize(
+        "value",
+        ["a1b2c3d4_e5f6", "abc_1234_def", "PROD_PASSWORD_2024", "n0t_a_s3cret", "a1_b2_c3"],
+    )
+    def test_credential_shaped_identifiers_still_fire(self, name: str, kind: str, value: str) -> None:
+        assert self._kinds(f'{name} = "{value}"\n') == [kind]
+
+    @pytest.mark.parametrize("value", ["my_secret_password", "admin_pwd", "Summer_PASSWORD"])
+    def test_lowercase_password_shaped_values_still_fire(self, value: str) -> None:
+        assert self._kinds(f'password = "{value}"\n') == ["hardcoded_password"]
+
+    def test_git_url_password_with_digits_still_fires(self) -> None:
+        url = "https://u:" + "s3cr3t_p4ss" + "@github.com/acme/app.git"
+        assert self._kinds(f'REMOTE = "{url}"\n') == ["git_url_credentials"]
+
+    def test_env_password_literal_still_fires(self) -> None:
+        source = 'export FINERACT_HIKARI_PASSWORD="skdcnwauicn2ucnaecasdsajdnizucawencascdca"\n'
+        assert self._kinds(source, "fineract-war/setenv.sh") == ["hardcoded_password"]
+
     def test_vendor_key_is_not_exempted_by_uppercase_identifier(self) -> None:
         key = "AKIA" + "BCDEFGHIJKLMNOPQ"
         assert "aws_access_key" in self._kinds(f'API_KEY = "{key}"\n')
