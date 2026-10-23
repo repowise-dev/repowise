@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .apex import parse_apex, parse_apex_contexts
 from .clover import parse_clover
 from .cobertura import parse_cobertura
 from .contexts import (
@@ -80,6 +81,8 @@ __all__ = [
     "measurement_ref",
     "normalize_report_path",
     "parse",
+    "parse_apex",
+    "parse_apex_contexts",
     "parse_clover",
     "parse_cobertura",
     "parse_contexts_file",

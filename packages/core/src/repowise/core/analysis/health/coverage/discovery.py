@@ -36,7 +36,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
-from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file
+from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
 from .detector import parse as parse_coverage
 from .model import (
     ContextCoverageReport,
@@ -71,6 +71,10 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
     # Root module only: ``build`` is pruned under ``**``, so a nested
     # module's report is passed explicitly.
     "build/reports/jacoco/**/*.xml",
+    # Salesforce: the VS Code extension's results dir, and any
+    # ``sf apex run test --code-coverage --output-dir``.
+    ".sfdx/tools/testresults/apex/test-result-codecoverage.json",
+    "**/test-result-codecoverage.json",
 )
 
 # Directories we never descend into when expanding ``**`` patterns — heavy,
@@ -704,17 +708,47 @@ def normalize_report_path(
     return p
 
 
+#: Apex source extensions. Apex names are case-insensitive, so these files are
+#: indexed and looked up by their case-folded basename.
+_APEX_EXTS = (".cls", ".trigger")
+
+
+def _index_name(base: str) -> str:
+    folded = base.casefold()
+    return folded if folded.endswith(_APEX_EXTS) else base
+
+
 def _build_suffix_index(repo_keys: set[str]) -> dict[str, list[str]]:
     """Map each basename -> repo keys ending in that basename.
 
     Basename is the cheap first filter; trailing-segment overlap then
     disambiguates among same-named files (``mod.rs`` is everywhere in Rust).
+    Apex files are keyed case-folded (:func:`_index_name`).
     """
     index: dict[str, list[str]] = defaultdict(list)
     for key in repo_keys:
         base = key.rsplit("/", 1)[-1]
-        index[base].append(key)
+        index[_index_name(base)].append(key)
     return index
+
+
+def _apex_names(norm_path: str) -> tuple[str, ...]:
+    """The Apex file basenames a Salesforce coverage entry can mean, case-folded.
+
+    Salesforce reports name a class or trigger, not a file: ``Foo.cls`` /
+    ``Foo.trigger`` (the Apex JSON parser), or a bare ``Foo`` under
+    ``no-map/`` (the CLI's lcov / Cobertura reports when it found no source),
+    which may be either. Empty for anything else, including a dotted name.
+    """
+    segs = norm_path.split("/")
+    if len(segs) == 2 and segs[0] == "no-map":
+        segs = segs[1:]
+    name = segs[0].casefold() if len(segs) == 1 else ""
+    if name.endswith(_APEX_EXTS):
+        return (name,)
+    if not name or "." in name:
+        return ()
+    return tuple(name + ext for ext in _APEX_EXTS)
 
 
 def _match_key(
@@ -742,8 +776,15 @@ def _match_key(
     if norm_path in repo_keys:
         return norm_path, False
 
+    # A class or trigger name is unique in an org, so two files of that name
+    # are two copies: refuse rather than pick by directory. No Apex file of
+    # that name leaves a bare ``Makefile`` to the suffix match below.
+    hits = [k for name in _apex_names(norm_path) for k in suffix_index.get(name, ())]
+    if hits:
+        return (hits[0], False) if len(hits) == 1 else (None, True)
+
     base = norm_path.rsplit("/", 1)[-1]
-    candidates = suffix_index.get(base)
+    candidates = suffix_index.get(_index_name(base))
     if not candidates:
         return None, False
 
@@ -1101,7 +1142,7 @@ def suggest_prefixes(
     for norm in sample:
         segs = norm.split("/")
         rewrites: set[tuple[str, str]] = set()
-        for key in suffix_index.get(segs[-1], ()):
+        for key in suffix_index.get(_index_name(segs[-1]), ()):
             key_segs = key.split("/")
             tail = _common_run(reversed(segs), reversed(key_segs))
             rewrites.add(("/".join(segs[:-tail]), "/".join(key_segs[:-tail])))
@@ -1233,7 +1274,7 @@ def resolve_test_reports(
             out.matched_suffix += 1
 
         test_key: str | None = None
-        head = _extract_test_file(rec.test_id)
+        head = rec.test_file or _extract_test_file(rec.test_id)
         if head:
             tkey, _, _ = _resolve_path(head, repo_keys, suffix_index, **resolve_kw)
             if tkey is not None:
@@ -1287,7 +1328,7 @@ def build_coverage_map(
             errors.append((path, COVERAGE_DATA_FILE_NOTE))
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_report_text(path)
         except OSError as exc:
             errors.append((path, f"could not read: {exc}"))
             continue

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "01p000000000001AAA",
+    "name": "AccountTriggerHandler",
+    "totalLines": 6,
+    "lines": {"4": 1, "5": 1, "8": 1, "9": 0, "12": 1, "13": 0},
+    "totalCovered": 4,
+    "coveredPercent": 67
+  },
+  {
+    "id": "01q000000000001AAA",
+    "name": "AccountTrigger",
+    "totalLines": 2,
+    "lines": {"2": 1, "3": 1},
+    "totalCovered": 2,
+    "coveredPercent": 100
+  }
+]

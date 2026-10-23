@@ -251,6 +251,7 @@ Reports must list every runnable line, including new files no test loads
 | Java (Maven) | `mvn test jacoco:report` (`report-aggregate` for multi-module) | `target/site/jacoco/jacoco.xml` |
 | JavaScript or TypeScript | `c8 --all --reporter=lcov`, or a runner's `lcov` reporter including every source file | `coverage/lcov.info` |
 | Rust | `cargo llvm-cov --lcov --output-path coverage/lcov.info` | `coverage/lcov.info` |
+| Salesforce Apex | `sf apex run test --code-coverage --result-format json --output-dir coverage` (lists only the classes and triggers the run touched) | `coverage/test-result-<run id>.json` (with the per-test map) |
 
 - Several reports merge: a line any of them ran counts as run.
 - Export a coverage.py `.coverage` database first; it is not a text report.

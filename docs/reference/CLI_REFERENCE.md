@@ -119,7 +119,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--skip-tests` | No docs for test files. | off |
 | `--skip-infra` | No docs for infra (Dockerfiles, Makefiles, Terraform). | off |
 | `--include-submodules` | Include git submodules. | excluded |
-| `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
+| `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, Salesforce Apex JSON. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
 | `--commit-limit` | Max commits per file and for co-change; cap 10000. Saved. | `5000` |
 | `--follow-renames` | Track renames via `git log --follow` (slower, more accurate). Saved. | off |
 | `--resume` | Continue a previous run; see notes. | off |
@@ -1102,7 +1102,7 @@ repowise coverage add .coverage                  # per-test map
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--path` | Repo path. | `add`: cwd / workspace primary; `status`: cwd |
-| `--format` | `add`: force a parser (`lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco`). `status`: `table` or `json`. | `add`: auto-detect; `status`: `table` |
+| `--format` | `add`: force a parser (`lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco`, `apex`). `status`: `table` or `json`. | `add`: auto-detect; `status`: `table` |
 | `--strict` | `add`: also exit non-zero when some report files do not map. | off |
 | `--allow-partial` | `add`: store even when over half does not map; rows flagged partial. | off |
 | `--verbose` / `-v` | `add`: debug logs. | off |
@@ -1112,7 +1112,7 @@ repowise coverage add .coverage                  # per-test map
   `hooks.coverage_reingest`.
 - Over half unmapped: stores nothing, exits `1`, suggests a `coverage.strip_prefix` or `coverage.path_prefix`. `init` /
   `update` keep nothing from it, so their re-read clears an `--allow-partial` fragment.
-- Formats: LCOV, Cobertura, Clover, JaCoCo XML, Go coverprofile (`go test -coverprofile`). With no path, discovers
+- Formats: LCOV, Cobertura, Clover, JaCoCo XML, Go coverprofile (`go test -coverprofile`), Salesforce Apex JSON. With no path, discovers
   `coverage/lcov.info`, `.coverage`, `coverage.out`, `target/site/jacoco/jacoco.xml` and similar.
 - *Test-to-code map* (which test covers which lines: "which tests exercise this change"): from a context-recorded
   `.coverage` or per-test lcov; without contexts, per-file only. Separate from the per-file aggregate and `health`.

@@ -497,6 +497,15 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                     f"  Files:   {map_summary['source_file_count']}\n"
                     f"  Records: {map_summary['pair_count']}"
                 )
+            elif summary.get("source_format") == "apex":
+                # test-result-codecoverage.json is per class only; the run's
+                # own result file carries the per-test records.
+                console.print(
+                    "[dim]No test-to-code map yet - add the run's "
+                    "[cyan]test-result-<run id>.json[/cyan] from "
+                    "[cyan]sf apex run test --code-coverage --output-dir <dir>[/cyan] with "
+                    "[cyan]repowise coverage add[/cyan].[/dim]"
+                )
             else:
                 console.print(
                     "[dim]No test-to-code map yet - record one with "
