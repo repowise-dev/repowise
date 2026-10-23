@@ -521,11 +521,12 @@ def _scan_spring_autoconfig(
 #: ``metadata_builder_contributor`` in ``application.yml``, an H2 ``CREATE
 #: ALIAS ... FOR "pkg.Cls.method"`` in an init ``.sql``, a MyBatis
 #: ``typeHandler=`` in a mapper ``.xml``, a P6Spy ``logMessageFormat=`` in a
-#: ``.properties``. Main resources only: a class named by test resources alone
-#: is not live code.
+#: ``.properties``, a ``<servlet-class>`` in a WAR's ``WEB-INF/web.xml`` (Maven
+#: ``src/main/webapp``, Ant ``WebContent`` / ``web``). Main resources only: a
+#: class named by test resources alone is not live code.
 _RESOURCE_CLASS_FILES: tuple[str, ...] = tuple(
     f"src/main/resources/*{suffix}" for suffix in (".xml", ".yml", ".yaml", ".properties", ".sql")
-)
+) + tuple(f"{root}/WEB-INF/web.xml" for root in ("src/main/webapp", "WebContent", "web"))
 #: A dotted name ending in a capitalised segment: ``com.acme.db.JsonTypeHandler``,
 #: also out of ``com.acme.db.JsonTypeHandler.parse``. Only a name that resolves
 #: to a class in the repository counts, so a framework FQN matches nothing.
@@ -562,6 +563,13 @@ def resource_class_names(ctx: ResolverContext) -> set[str]:
         _RESOURCE_CLASS_FILES,
         prune_nested_git=ctx.prune_nested_git,
     ):
+        # The web.xml globs match at any depth, test fixtures included.
+        try:
+            rel = resource.relative_to(ctx.repo_path).as_posix()
+        except ValueError:
+            continue
+        if rel.startswith("src/test/") or "/src/test/" in rel:
+            continue
         try:
             if resource.stat().st_size > _RESOURCE_MAX_BYTES:
                 continue

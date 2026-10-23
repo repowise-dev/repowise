@@ -285,3 +285,101 @@ def test_spring_boot_servlet_initializer_is_not_reported(tmp_path: Path):
     report = _spring_report(tmp_path)
     assert not [f for f in report.findings if "ServletInitializer" in f.file_path]
     assert "Leftover" in _named(report, DeadCodeKind.UNUSED_EXPORT)
+
+
+_CONTAINER_FILES = {
+    "src/main/java/com/example/shop/OrderRoutes.java": (
+        "package com.example.shop;\n\n"
+        "import org.apache.camel.builder.RouteBuilder;\n\n"
+        "public class OrderRoutes extends RouteBuilder {\n"
+        "  @Override\n  public void configure() {\n    from(\"direct:orders\").to(\"log:orders\");\n  }\n}\n"
+    ),
+    "src/main/java/com/example/shop/StockEndpoint.java": (
+        "package com.example.shop;\n\n"
+        "import javax.jws.WebService;\n\n"
+        "@WebService\npublic class StockEndpoint {\n  public int stock(String sku) { return 0; }\n}\n"
+    ),
+    "src/main/java/com/example/shop/StockProvider.java": (
+        "package com.example.shop;\n\n"
+        "import javax.xml.ws.WebServiceProvider;\n\n"
+        "@WebServiceProvider\npublic class StockProvider {\n}\n"
+    ),
+    "src/main/java/com/example/shop/LegacyServlet.java": (
+        "package com.example.shop;\n\n"
+        "import javax.servlet.http.HttpServlet;\n\n"
+        "public class LegacyServlet extends HttpServlet {\n}\n"
+    ),
+    "src/main/java/com/example/shop/AuditFilter.java": (
+        "package com.example.shop;\n\n"
+        "import javax.servlet.Filter;\n\n"
+        "public class AuditFilter implements Filter {\n}\n"
+    ),
+    "src/main/webapp/WEB-INF/web.xml": (
+        "<web-app>\n"
+        "  <servlet><servlet-name>legacy</servlet-name>"
+        "<servlet-class>com.example.shop.LegacyServlet</servlet-class></servlet>\n"
+        "  <filter><filter-name>audit</filter-name>"
+        "<filter-class>com.example.shop.AuditFilter</filter-class></filter>\n"
+        "</web-app>\n"
+    ),
+    # Ant layout.
+    "legacy/WebContent/WEB-INF/web.xml": (
+        "<web-app><servlet><servlet-class>com.example.old.OldServlet</servlet-class></servlet></web-app>\n"
+    ),
+    "legacy/src/com/example/old/OldServlet.java": (
+        "package com.example.old;\n\npublic class OldServlet {\n}\n"
+    ),
+    # Controls: named only by a test resource, and a plain class nothing names.
+    "src/test/resources/web/WEB-INF/web.xml": (
+        "<web-app><servlet><servlet-class>com.example.shop.TestOnlyServlet</servlet-class></servlet></web-app>\n"
+    ),
+    "src/main/java/com/example/shop/TestOnlyServlet.java": (
+        "package com.example.shop;\n\npublic class TestOnlyServlet {\n}\n"
+    ),
+    "src/main/java/com/example/shop/Unused.java": (
+        "package com.example.shop;\n\npublic class Unused {\n}\n"
+    ),
+}
+
+
+def _container_exports(root: Path) -> set[str]:
+    from repowise.core.pipeline.incremental import build_repo_graph
+
+    for rel, text in _CONTAINER_FILES.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _, sources, builder, _, _ = build_repo_graph(
+        root, [], collect_sources=True, log=lambda *a, **k: None, read_only=True
+    )
+    report = DeadCodeAnalyzer(
+        builder.graph(),
+        {},
+        parsed_files=builder._parsed_files,
+        source_map=sources,
+        repo_root=root,
+    ).analyze({"min_confidence": 0.0})
+    return _named(report, DeadCodeKind.UNUSED_EXPORT)
+
+
+def test_camel_route_builder_is_not_reported(tmp_path: Path):
+    assert "OrderRoutes" not in _container_exports(tmp_path)
+
+
+def test_jax_ws_web_service_is_not_reported(tmp_path: Path):
+    exports = _container_exports(tmp_path)
+    assert "StockEndpoint" not in exports
+    assert "StockProvider" not in exports
+
+
+def test_servlet_and_filter_named_in_web_xml_are_not_reported(tmp_path: Path):
+    exports = _container_exports(tmp_path)
+    assert "LegacyServlet" not in exports
+    assert "AuditFilter" not in exports
+    assert "OldServlet" not in exports
+
+
+def test_container_controls_are_still_reported(tmp_path: Path):
+    exports = _container_exports(tmp_path)
+    assert "TestOnlyServlet" in exports
+    assert "Unused" in exports
