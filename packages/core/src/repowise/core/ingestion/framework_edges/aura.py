@@ -1,41 +1,20 @@
 """Salesforce Aura bundle edges.
 
-An Aura component is a directory ``aura/<name>/``: markup (``<name>.cmp``,
-``.app``, ``.evt``, ``.intf``, ``.design``, ``.tokens``) plus
-``<name>Controller.js`` / ``Helper.js`` / ``Renderer.js``. Nothing in it is an
-import. The platform wires the pieces by name, and this handler reads those
-names:
+An Aura bundle ``aura/<name>/`` (markup plus ``<name>Controller.js``,
+``Helper.js``, ``Renderer.js``) is wired by name, not imports. Edges:
 
-* ``controller="Cls"`` on ``aura:component`` / ``aura:application`` -> the Apex
-  class file.
-* ``component.get("c.m")`` (any receiver) in bundle JS -> Apex method ``m`` of
-  the bundle's controller class, found through ``extends="c:Base"`` when the
-  bundle declares none. When the class has no ``m`` but the bundle's
-  Controller.js does, it is a client-side action and binds there instead;
-  ``getReference("c.m")`` always does.
-* ``{!c.h}`` in markup -> function ``h`` of the bundle's Controller.js.
-* ``helper.x(`` in bundle JS, and ``this.x(`` in Helper.js -> function ``x`` of the
-  bundle's Helper.js, inherited through ``extends`` like the controller.
-* ``<c:X>``, ``extends="c:X"``, ``implements="c:X"`` and the event ``type`` /
-  ``event`` of ``aura:registerEvent`` / ``aura:handler`` -> bundle ``X``,
-  Aura first, else the LWC bundle's ``X.js``. Only the own namespaces (``c``
-  and the sfdx-project.json ``namespace``) are followed; ``force:``,
-  ``lightning:``, ``flexipage:`` and the rest are the platform's.
-* ``$A.createComponent("c:X", ...)`` and the ``["c:X", {...}]`` entries of
-  ``$A.createComponents`` -> bundle ``X`` as a ``dynamic_uses`` edge, string
-  literals only. A name built at run time is never guessed.
+* ``controller="Cls"`` -> the Apex class; ``get("c.m")`` in bundle JS -> its
+  method ``m``, or the Controller.js function when the class has none.
+* ``{!c.h}`` and other ``"c.h"`` literals -> Controller.js functions;
+  ``helper.x(`` -> Helper.js functions. Both inherit through ``extends``.
+* Own-namespace ``<c:X>``, ``extends``, ``implements`` and event types -> the
+  Aura bundle ``X``, else the LWC bundle; ``$A.createComponent(s)`` literals
+  -> ``dynamic_uses``.
 
-Aura names match by exact case (every reference in the validation corpora
-does); Apex names fold case, as the platform does, and reach the classes an
-Apex file in the same sfdx project would. A name with two candidate bundles or
-classes binds to neither.
-
-Entry points: an ``.app`` and a component implementing a platform placement
-interface (App Builder, tabs, quick actions, communities, URL addressable)
-are placed from outside the source tree, so the markup node is marked
-``is_entry_point``; a Renderer's ``render`` / ``rerender`` / ``afterRender`` /
-``unrender`` overrides are bound from the bundle's markup because the
-framework calls them.
+Aura names match by exact case; Apex names fold case and follow the Apex reach
+rules (``languages.apex_namespace``). A name with two candidates binds neither.
+An ``.app`` and a component implementing a placement interface are entry
+points, and a Renderer's overrides are bound from the markup.
 """
 
 from __future__ import annotations
@@ -75,24 +54,18 @@ _JS_COMMENT_OR_STRING_RE = re.compile(
 _TAG_RE = re.compile(r"""<([A-Za-z]\w*):([A-Za-z_]\w*)((?:[^>"']|"[^"]*"|'[^']*')*)>""")
 _ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _QUALIFIED_RE = re.compile(r"^\s*(\w+):(\w+)\s*$")
-# Formatters reflow `{!c.h}` across lines and append a `;` (NebulaLogger ships one).
-# A handler inside a larger expression (`{!v.x ? c.a : c.b}`) is not read;
-# none of the validation corpora writes one.
+# Formatters reflow `{!c.h}` and append a `;`. Ceiling: `{!v.x ? c.a : c.b}` is not read.
 _MARKUP_HANDLER_RE = re.compile(r"\{\s*[!#]\s*c\.([A-Za-z_]\w*)\s*;?\s*\}")
 # A "c.x" string literal; group 1 is set when it is the argument of `.get(`.
 _ACTION_RE = re.compile(r"""(\.get\(\s*)?(["'])c\.([A-Za-z_]\w*)\2""")
 _HELPER_CALL_RE = re.compile(r"(?<![\w.$])helper\s*\.\s*([A-Za-z_$][\w$]*)\s*\(")
-# Inside a helper, `this` is the (inherited) helper object. A `this.x(` in a
-# nested non-arrow callback is read the same way; its target must still be a
-# helper function, which bounds the cost.
+# Inside a helper, `this` is the (inherited) helper object.
 _THIS_CALL_RE = re.compile(r"(?<![\w.$])this\s*\.\s*([A-Za-z_$][\w$]*)\s*\(")
 _CREATE_ONE_RE = re.compile(r"""\$A\s*\.\s*createComponent\s*\(\s*(["'`])(\w+):(\w+)\1""")
 _CREATE_MANY_RE = re.compile(r"\$A\s*\.\s*createComponents\s*\(")
 _CREATE_MANY_ITEM_RE = re.compile(r"""\[\s*(["'`])(\w+):(\w+)\1""")
 
-# Interfaces that let an admin place the component without any source naming
-# it: App Builder pages, tabs, quick actions, overrides, communities, flows
-# and URL navigation.
+# Interfaces that let an admin place the component without any source naming it.
 _ENTRY_INTERFACE_PREFIXES = ("flexipage:", "forcecommunity:", "lightningsnapin:")
 _ENTRY_INTERFACES = frozenset(
     {
@@ -421,9 +394,7 @@ def _root_edges(idx: _AuraIndex, bdir: str, main: str, edges: _Edges) -> None:
         target = idx.bundle_target(name, main) if name else None
         if target is not None:
             edges.file(main, target)
-    # The framework calls these: renderer overrides, the controller function an
-    # action-less `aura:method` of an implemented interface names, and the
-    # functions a platform interface obliges the component to define.
+    # The framework calls these: renderer overrides and interface-named controller functions.
     module = f"{main}::__module__"
     platform = {
         m

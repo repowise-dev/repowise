@@ -80,7 +80,7 @@ findings are review-only. Apex test coverage from the Salesforce CLI is read as 
 coverage report ([formats](TEST_INTELLIGENCE.md#supported-formats)). Health covers Apex
 complexity, class cohesion, and SOQL, DML and callouts inside loops.
 Salesforce flows (`.flow-meta.xml`) are one symbol each, linked to the Apex
-invocable actions, subflows and screen components they name.
+invocable actions, subflows, screen components and triggering objects they name.
 Salesforce object and field metadata become symbols that Apex SOQL, DML and
 triggers reference.
 
@@ -252,7 +252,6 @@ This table is why a language is Full and not Good.
 - Dart, F# and Objective-C report class size, method count and CCN (supporting
   detectors like God Class), but do not compute cohesion metrics (LCOM4).
 - An unmapped language produces no findings, never guessed ones.
-- Apex has Extract Method: helpers are written as Apex methods, static where the host is.
 - The two test-quality markers (mock saturation, assertion-free test) are
   advisory and never deduct from a score.
 

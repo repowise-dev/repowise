@@ -195,10 +195,7 @@ def path_risk_factors(file_path: str) -> tuple[str, ...]:
         if tag:
             factors.add(tag)
 
-    # A file of a Salesforce Aura bundle (directly inside `aura/<bundle>/`):
-    # the Lightning runtime loads the whole bundle and also reads its
-    # JavaScript for `$Label` and component references, so a function nothing
-    # calls can still be load-bearing.
+    # The Lightning runtime loads a whole Aura bundle, so an uncalled function may be load-bearing.
     if aura_bundle(norm) is not None:
         factors.add("aura")
 

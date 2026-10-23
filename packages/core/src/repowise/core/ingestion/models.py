@@ -89,9 +89,7 @@ LanguageTag = Literal[
     # [ext_resource path=...] and [autoload] are how a Godot project reaches
     # its scripts at all.
     "godot_resource",
-    # Salesforce Aura markup (.cmp/.app/.evt/.intf/.design/.tokens in an
-    # aura/<bundle>/ dir): no symbols, but it names the bundle's controller
-    # functions, Apex controller and child components.
+    # Salesforce Aura markup: no symbols, read for the names it wires.
     "aura",
     # Salesforce flows: one symbol per flow.
     "salesforce_flow",

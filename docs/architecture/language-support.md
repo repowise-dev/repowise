@@ -930,18 +930,12 @@ enclosing statement.
 
 ### Salesforce Aura
 
-Aura markup is routed to the `aura` passthrough tag by its folder, a markup suffix
-directly inside `aura/<bundle>/`, because `.app` and `.tokens` are not Aura's alone.
-Bundle JavaScript stays `javascript`; a synthetic-symbol provider makes each
-`key: function` of a `<bundle>Controller.js`, `Helper.js` or `Renderer.js` object
-literal a function symbol. `framework_edges/aura.py` then binds `controller=` to the
-Apex class, `get("c.m")` to the Apex method (through `extends` when the bundle
-declares no controller), `{!c.h}` and other `"c.h"` literals to controller functions,
-`helper.x(` to helper functions (both inherited through `extends`), and own-namespace
-tags, `extends`, `implements` and event types to the Aura bundle, or the LWC bundle of
-that name. `$A.createComponent(s)` string literals become `dynamic_uses` edges. Aura
-names match by exact case, Apex names fold case, and a name with two candidates binds
-to neither.
+Markup directly inside `aura/<bundle>/` is Aura, and each `key: function` of the
+bundle's Controller, Helper and Renderer JavaScript is a function symbol. Markup
+and JavaScript link to the Apex controller and its methods, to controller and helper
+functions (inherited through `extends`), and to the Aura or LWC bundles that tags,
+events and `$A.createComponent` literals name. Aura names match by exact case, and a
+name with two candidate bundles binds to neither.
 
 ### VB.NET
 
@@ -961,13 +955,10 @@ arguments, and some multi-line LINQ layouts, each recovered from locally.
 
 ### Apex
 
-The grammar is the language pack's `apex`, loaded as COBOL's is. It keeps
-Java's node and field names, so `apex.scm`, heritage and type heads follow Java;
-inline SOQL/SOSL and DML are their own nodes and never produce call sites.
-Keywords and type names are case-insensitive: visibility and heritage read the
-AST rather than keyword text, and builtin types are compared folded, while
-declared names keep their written case. CumulusCI `%%%NAMESPACE%%%` tokens are
-blanked byte for byte before parsing.
+The language pack's `apex` grammar keeps Java's node names, so queries, heritage
+and type heads follow Java; inline SOQL/SOSL and DML never produce call sites.
+Keywords and builtin types compare case-insensitively, declared names keep their
+written case, and CumulusCI `%%%NAMESPACE%%%` tokens are blanked before parsing.
 
 Apex has no imports, so a type name resolves to the top-level class its own
 sfdx project declares, compared without case, then to an un-namespaced package
@@ -976,6 +967,13 @@ namespace prefix (`usf3.Foo`), and nothing binds across projects otherwise. Stat
 inner-class, typed, chained, inherited and `super` calls follow Java's tiers,
 and a bare name never reaches another class's method. Ceiling: a call site does
 not record `new`, so a constructor written in lower case is missed.
+
+LWC, Aura, Visualforce and flows reach Apex classes by the same rules from the
+project they sit in, and also reach a class that exactly one other, un-namespaced
+project declares: they name action classes of packages installed separately in the
+same org. A name two projects declare binds nothing. Ceiling: two copies outside
+every package directory of one project (an mdapi export) tie and bind nothing, as
+they do for Apex.
 
 A `@RestResource` class's `@Http*` methods are HTTP providers at
 `/services/apexrest` plus its `urlMapping`, and are entry points in the graph.
@@ -1003,16 +1001,10 @@ literal-bound loops) and on calls that run once, such as a lazily filled cache.
 Ceiling: `while` loops, `Database.executeBatch` and `System.schedule` are not
 reported, and untested complexity needs measured coverage or a test the graph sees.
 
-Extract Method reads Apex as Java plus its own rules: names are
-case-insensitive, inline SOQL reads only its `:bind` expressions, and
-`switch on ... when` arms and `System.runAs` blocks are understood. Helpers are
-written as Apex methods, static when the host method is. A `break` or
-`continue` inside a `when` arm is modelled conservatively, as a read of the
-loop's names at the switch.
-
 Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
 one symbol named by its API name, linked to the Apex invocable actions,
-subflows, screen components and Apex-defined types it names. Apex
+subflows, screen components and Apex-defined types it names, and a
+record-triggered flow references its object's metadata symbol. Apex
 `Flow.Interview` references and LWC `<lightning-flow>` tags with a literal name
 link back to it. Flexipages, quick actions, tabs, email services and Experience
 sites mark what they name as live; names in another package's namespace are not
@@ -1034,7 +1026,7 @@ to a public member (property, `getX`, or `setX` for inputs) of the controller,
 then each extension, up the `extends` chain. Custom component tags, included
 pages and Apex `Page.X` references link pages and components; a
 `PageReference('/apex/X')` literal is a `dynamic_uses` edge. Names fold case,
-and a name two equally near files declare binds nothing.
+and a page or component two equally near files declare binds nothing.
 
 ### QML
 
@@ -1064,7 +1056,7 @@ Inside an `lwc/<name>/` bundle, `c/<name>` imports resolve to that bundle's
 main module and `@salesforce/apex/Cls.method` imports to the Apex method.
 Templates link to child components by tag and to their own class's members by
 `{binding}`, `@wire` binds its Apex method, and an exposed bundle is an entry
-point. A name two sfdx projects declare goes to the nearer one; a tie gets no edge.
+point. A bundle two sfdx projects declare goes to the nearer one; a tie gets no edge.
 
 ### Known gaps per language
 
