@@ -8,8 +8,10 @@ def configure_cli_logging(*, verbose: bool = False) -> None:
 
     ``init`` / ``update`` render their own Rich progress bars. By default the
     underlying library loggers (httpx/httpcore) and the ``repowise.core`` /
-    ``repowise.server`` structlog loggers are quieted to ERROR so they don't
-    interleave debug/info lines with the bars. ``verbose=True`` lets the
+    ``repowise.server`` structlog loggers are quieted so they don't interleave
+    debug/info lines with the bars: the HTTP noise stays at ERROR, the repowise
+    loggers at WARNING by default so warnings such as ``parser.symbol_bloat``
+    still reach the user (issue #4482). ``verbose=True`` lets the
     repowise loggers through at DEBUG so a user can see provider/pipeline
     activity (``repowise update -v``); httpx/httpcore stay quiet either way,
     since their debug stream is HTTP-level noise that buries the useful lines.
@@ -22,7 +24,7 @@ def configure_cli_logging(*, verbose: bool = False) -> None:
     """
     import logging
 
-    level = logging.DEBUG if verbose else logging.ERROR
+    level = logging.DEBUG if verbose else logging.WARNING
 
     logging.getLogger("httpx").setLevel(logging.ERROR)
     logging.getLogger("httpcore").setLevel(logging.ERROR)

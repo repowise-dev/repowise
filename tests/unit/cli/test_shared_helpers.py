@@ -170,8 +170,9 @@ def test_configure_cli_logging_quiet_by_default() -> None:
     prior = {n: logging.getLogger(n).level for n in ("repowise.core", "repowise.server")}
     try:
         _setup.configure_cli_logging(verbose=False)
-        assert logging.getLogger("repowise.core").level == logging.ERROR
-        assert logging.getLogger("repowise.server").level == logging.ERROR
+        # Warnings stay visible by default; only debug/info are quieted.
+        assert logging.getLogger("repowise.core").level == logging.WARNING
+        assert logging.getLogger("repowise.server").level == logging.WARNING
         # HTTP libs stay quiet regardless of verbosity.
         assert logging.getLogger("httpx").level == logging.ERROR
     finally:
@@ -199,3 +200,23 @@ def test_configure_cli_logging_verbose_shows_repowise_debug() -> None:
 
 def test_repo_session_exposes_open_repo_db() -> None:
     assert callable(_repo_session.open_repo_db)
+
+
+def test_configure_cli_logging_shows_repowise_warnings_by_default() -> None:
+    """Quiet-by-default still lets WARNING through (issue #4482).
+
+    ``parser.symbol_bloat`` and friends are emitted at WARNING level; quieting
+    the repowise loggers to ERROR made them unreachable on a normal run.
+    """
+    import logging
+
+    prior = {n: logging.getLogger(n).level for n in ("repowise.core", "repowise.server")}
+    try:
+        _setup.configure_cli_logging(verbose=False)
+        for name in ("repowise.core", "repowise.server"):
+            assert logging.getLogger(name).isEnabledFor(logging.WARNING)
+            assert not logging.getLogger(name).isEnabledFor(logging.INFO)
+    finally:
+        for name, level in prior.items():
+            logging.getLogger(name).setLevel(level)
+        _setup.configure_cli_logging(verbose=False)
