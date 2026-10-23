@@ -86,14 +86,23 @@ def _tag_target(ns: str, body: str, referrer: str, ctx: ResolverContext) -> str 
     return target
 
 
+def _binding_edges(graph: nx.DiGraph, template: str, text: str, main: Any) -> int:
+    """``{member}`` in *template* -> that method or getter of the bundle's class."""
+    members = _members(main)
+    # A for:each / iterator variable shadows a same-named member.
+    for m in _LOOP_VAR_RE.finditer(text):
+        members.pop(m.group(1) or m.group(2), None)
+    module_sym = f"{template}::__module__"
+    names = {m.group(1) for m in _BINDING_RE.finditer(text)}
+    return sum(add_symbol_edge(graph, module_sym, members[n]) for n in names if n in members)
+
+
 def _template_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext) -> int:
     bundles = lwc_bundles(ctx)
     source_map = getattr(ctx, "source_map", None) or {}
     count = 0
     for path in sorted(parsed_files):
-        if not path.endswith(".html"):
-            continue
-        bundle_dir = lwc_bundle_dir(path)
+        bundle_dir = lwc_bundle_dir(path) if path.endswith(".html") else None
         if bundle_dir is None:
             continue
         text = _COMMENT_RE.sub(" ", source_text(path, parsed_files[path], source_map))
@@ -103,22 +112,17 @@ def _template_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: Resolv
                 count += _add_edge_if_new(graph, path, target)
         own = bundle_dir.rpartition("/")[2]
         main = next((p for p in bundles.get(own, ()) if lwc_bundle_dir(p) == bundle_dir), None)
-        if main is None or main not in parsed_files:
-            continue
-        members = _members(parsed_files[main])
-        # A for:each / iterator variable shadows a same-named member.
-        for m in _LOOP_VAR_RE.finditer(text):
-            members.pop(m.group(1) or m.group(2), None)
-        module_sym = f"{path}::__module__"
-        for name in {m.group(1) for m in _BINDING_RE.finditer(text)}:
-            member = members.get(name)
-            if member is not None:
-                count += add_symbol_edge(graph, module_sym, member)
+        if main in parsed_files:
+            count += _binding_edges(graph, path, text, parsed_files[main])
     return count
 
 
 def _apex_method(apex: Any, cls: str, method: str) -> str | None:
-    """The id of *cls*.*method* in a parsed Apex file, matched case-insensitively."""
+    """The id of *cls*.*method* in a parsed Apex file, matched case-insensitively.
+
+    Apex names are case-insensitive. A local fold until the shared
+    case-insensitive Apex lookup (lane S2) lands; replace this with it then.
+    """
     cls, method = cls.lower(), method.lower()
     ids = {
         s.id
@@ -126,6 +130,22 @@ def _apex_method(apex: Any, cls: str, method: str) -> str | None:
         if s.kind == "method" and s.name.lower() == method and (s.parent_name or "").lower() == cls
     }
     return ids.pop() if len(ids) == 1 else None
+
+
+def _apex_bindings(parsed: Any, parsed_files: dict[str, Any]) -> dict[str, str]:
+    """Local name -> Apex method id for each ``@salesforce/apex`` import that resolved."""
+    bound: dict[str, str] = {}
+    for imp in parsed.imports:
+        spec = next((imp.module_path[len(p) :] for p in APEX_MODULE_PREFIXES
+                     if imp.module_path.startswith(p)), None)  # fmt: skip
+        apex = parsed_files.get(imp.resolved_file or "")
+        if spec is None or apex is None:
+            continue
+        cls, _, method = spec.rpartition(".")
+        target = _apex_method(apex, cls.rpartition(".")[2], method)
+        if target is not None:
+            bound.update((b.local_name, target) for b in imp.bindings if b.local_name)
+    return bound
 
 
 def _wire_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext) -> int:
@@ -139,23 +159,13 @@ def _wire_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverCo
     source_map = getattr(ctx, "source_map", None) or {}
     count = 0
     for path, parsed in parsed_files.items():
-        if lwc_bundle_dir(path) is None or "@wire" not in source_text(path, parsed, source_map):
+        if lwc_bundle_dir(path) is None:
             continue
-        bound: dict[str, str] = {}
-        for imp in parsed.imports:
-            spec = next((imp.module_path[len(p) :] for p in APEX_MODULE_PREFIXES
-                         if imp.module_path.startswith(p)), None)  # fmt: skip
-            apex = parsed_files.get(imp.resolved_file or "")
-            if spec is None or apex is None:
-                continue
-            cls, _, method = spec.rpartition(".")
-            target = _apex_method(apex, cls.rpartition(".")[2], method)
-            if target is not None:
-                bound.update((b.local_name, target) for b in imp.bindings if b.local_name)
+        text = source_text(path, parsed, source_map)
+        bound = _apex_bindings(parsed, parsed_files) if "@wire" in text else None
         if not bound:
             continue
         callers = {c.line: c.caller_symbol_id for c in parsed.calls if c.target_name == "wire"}
-        text = source_text(path, parsed, source_map)
         for m in _WIRE_RE.finditer(text):
             caller = callers.get(text.count("\n", 0, m.start()) + 1)
             target = bound.get(m.group(1))
