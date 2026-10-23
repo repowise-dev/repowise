@@ -201,6 +201,40 @@ def test_lwc_bundles_are_linked_bound_and_anchored(tmp_path: Path) -> None:
     }
 
 
+def test_a_loop_variable_shadows_a_member_only_inside_its_loop(tmp_path: Path) -> None:
+    js = f"{_LWC}/list/list.js"
+    files = {
+        js: (
+            "import { LightningElement } from 'lwc';\n"
+            "export default class List extends LightningElement {\n"
+            "  get item() { return 1; }\n  get child() { return 2; }\n"
+            "  get it() { return 3; }\n  get rows() { return []; }\n  get idx() { return 4; }\n"
+            "}\n"
+        ),
+        f"{_LWC}/list/list.html": (
+            "<template>\n"
+            "  <p>{item}</p>\n"
+            '  <template for:each={rows} for:item="item">\n'
+            "    <p key={item.id}>{item.name}</p>\n"
+            '    <template for:each={item.kids} for:item="child">{child} {item.x}</template>\n'
+            "    {child.name}\n"
+            "  </template>\n"
+            "  <template iterator:it={rows}>{it.value}</template>\n"
+            '  <template for:each={rows} for:item="r" for:index="idx">{idx}</template>\n'
+            "  {idx}\n"
+            "</template>\n"
+        ),
+    }
+    graph, _ = _graph(_write(tmp_path, files))
+    module = f"{_LWC}/list/list.html::__module__"
+    binds = {t.rpartition("::")[2] for _, t, d in graph.out_edges(module, data=True)
+             if d["edge_type"] == "framework_binds"}  # fmt: skip
+    # `item` before the loop and `rows` in the loop's own tag read the members;
+    # `child` after the inner loop closes and `idx` after its loop read the members
+    # too; `it` occurs only inside its loop.
+    assert binds == {"item", "rows", "child", "idx"}
+
+
 def test_a_name_shared_by_two_projects_resolves_within_the_importer_s(tmp_path: Path) -> None:
     files = {}
     for project in ("one", "two"):

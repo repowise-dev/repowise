@@ -57,6 +57,11 @@ _WIRE_RE = re.compile(r"@wire\s*\(\s*([A-Za-z_$][\w$]*)")
 _EXPOSED_RE = re.compile(r"<isExposed>\s*true\s*</isExposed>", re.IGNORECASE)
 # `for:item="x"`, `for:index="i"`, `iterator:it={...}`: template-local names.
 _LOOP_VAR_RE = re.compile(r"""for:(?:item|index)\s*=\s*["']([A-Za-z_$][\w$]*)|iterator:([A-Za-z_$][\w$]*)""")
+# A `<template ...>` open tag or a `</template>` close tag (loops live on templates).
+# Quoted attribute values may hold `>`; `<template-x>` is a custom element, not a template.
+_TEMPLATE_TAG_RE = re.compile(
+    r"""<template(?=[\s>/])(?:[^>"']|"[^"]*"|'[^']*')*>|</template\s*>""", re.IGNORECASE
+)
 # A Flow screen component's property editor, named by tag in its targetConfig.
 _EDITOR_RE = re.compile(r"""configurationEditor\s*=\s*["']([A-Za-z][A-Za-z0-9]*)-([A-Za-z0-9_-]+)["']""")
 
@@ -86,15 +91,43 @@ def _tag_target(ns: str, body: str, referrer: str, ctx: ResolverContext) -> str 
     return target
 
 
+def _loop_scopes(text: str) -> list[tuple[int, int, frozenset[str]]]:
+    """``(start, end, names)`` per loop template: the span where its variables are visible.
+
+    The span runs from the end of the ``<template for:each ...>`` open tag to
+    its matching ``</template>``, nested templates balanced on a stack. An
+    unclosed one runs to the end of the text.
+    """
+    scopes: list[tuple[int, int, frozenset[str]]] = []
+    stack: list[tuple[int, frozenset[str]]] = []
+    for m in _TEMPLATE_TAG_RE.finditer(text):
+        if m.group().startswith("</"):
+            if stack:
+                start, names = stack.pop()
+                scopes.append((start, m.start(), names))
+            continue
+        names = frozenset(a or b for a, b in _LOOP_VAR_RE.findall(m.group()))
+        stack.append((m.end(), names))
+    scopes.extend((start, len(text), names) for start, names in stack)
+    return [scope for scope in scopes if scope[2]]
+
+
 def _binding_edges(graph: nx.DiGraph, template: str, text: str, main: Any) -> int:
-    """``{member}`` in *template* -> that method or getter of the bundle's class."""
+    """``{member}`` in *template* -> that method or getter of the bundle's class.
+
+    A binding inside a loop that declares the same name (``for:item``,
+    ``for:index``, ``iterator:``) reads the loop variable, not the member.
+    """
     members = _members(main)
-    # A for:each / iterator variable shadows a same-named member.
-    for m in _LOOP_VAR_RE.finditer(text):
-        members.pop(m.group(1) or m.group(2), None)
+    scopes = _loop_scopes(text)
+    names = {
+        m.group(1)
+        for m in _BINDING_RE.finditer(text)
+        if m.group(1) in members
+        and not any(s <= m.start() < e and m.group(1) in local for s, e, local in scopes)
+    }
     module_sym = f"{template}::__module__"
-    names = {m.group(1) for m in _BINDING_RE.finditer(text)}
-    return sum(add_symbol_edge(graph, module_sym, members[n]) for n in names if n in members)
+    return sum(add_symbol_edge(graph, module_sym, members[n]) for n in names)
 
 
 def _template_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext) -> int:
