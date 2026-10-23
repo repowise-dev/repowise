@@ -1,22 +1,10 @@
 """Lightning Web Components: bundle names, module specifiers and template tags.
 
-An LWC bundle is a folder ``.../lwc/<name>/`` whose main module is
-``<name>.js`` (or ``.ts``). Other bundles reach it two ways, neither a path:
-
-* JS imports ``c/<name>`` (or ``<ns>/<name>`` with the project's own sfdx
-  namespace). Without this they fall through to an ``external:c/...`` node.
-* Templates write ``<c-kebab-name>``: each uppercase letter becomes
-  ``-lowercase``, digits stay attached and underscores stay literal
-  (``fsc_flowCombobox`` is ``<c-fsc_flow-combobox>``). Tags are looked up in a
-  reverse index of ``kebab(name)``, never parsed back to camelCase, which is
-  ambiguous.
-
-``@salesforce/apex/[ns.]Cls.method`` resolves to the Apex class file, matched
-case-insensitively as Apex names are; the binding publishes ``method`` (see
-``extractors/bindings/ts_js.py``), so a call through it resolves to the method.
-
-LWC names are case-sensitive, as LWC module specifiers are. A name declared by more
-than one bundle (separate sfdx projects in one repository) goes to the bundle
+An LWC bundle is ``.../lwc/<name>/`` with main module ``<name>.js`` (or ``.ts``).
+JS imports reach it as ``c/<name>`` (or the sfdx namespace), templates as
+``<c-kebab-name>``, looked up in a reverse index of ``kebab(name)`` because
+camelCase cannot be recovered from a tag. ``@salesforce/apex/[ns.]Cls.method``
+resolves to the Apex class file. A name two bundles declare goes to the one
 sharing the longest directory prefix with the referrer; a tie resolves nothing.
 """
 
@@ -122,8 +110,7 @@ def nearest(candidates: tuple[str, ...], referrer: str) -> str | None:
 def _apex_classes(ctx: ResolverContext) -> dict[str, tuple[str, ...]]:
     """Lowercased Apex class name -> ``.cls`` paths (Apex names are case-insensitive).
 
-    A local index until the shared case-insensitive Apex lookup (lane S2)
-    lands; replace this with it then.
+    Ceiling: a local index; use a shared case-insensitive Apex index once one exists.
     """
     cached = getattr(ctx, "_lwc_apex_classes", None)
     if cached is None:
@@ -157,8 +144,7 @@ def resolve_lwc_module(module_path: str, importer_path: str, ctx: ResolverContex
     """
     for prefix in APEX_MODULE_PREFIXES:
         if module_path.startswith(prefix):
-            # Jest cannot reach Apex: a test imports the module only to mock
-            # it, and an edge would read as the test exercising the class.
+            # Jest only mocks Apex, so a test's import is no use of the class.
             if is_test_related_path(importer_path, "javascript"):
                 return None
             return _resolve_apex_module(module_path[len(prefix) :], importer_path, ctx)

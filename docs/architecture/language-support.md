@@ -1000,17 +1000,11 @@ costs an edge rather than inventing one.
 
 ### Lightning Web Components
 
-An LWC bundle is `lwc/<name>/` with main module `<name>.js`. Inside a bundle,
-`c/<name>` (or the sfdx `namespace`) resolves to that module and
-`@salesforce/apex/Cls.method` to the Apex class file, whose binding publishes
-`method` so calls resolve `import_scoped`. `framework_edges/lwc.py` reads
-templates as raw text: `<c-kebab-name>` is looked up in a reverse index of
-kebab-cased bundle names (the HTML grammar splits tags at `_`), `{member}`
-binds a template to its class's method or getter, `@wire(apexBinding)` binds
-the Apex method, and a `.js-meta.xml` with `isExposed` true anchors the bundle
-to `framework:lwc` (its `configurationEditor` links the editor bundle). A jest
-test's Apex import stays external, since jest only mocks Apex. A name two sfdx
-projects declare goes to the nearer one, and a tie gets no edge.
+Inside an `lwc/<name>/` bundle, `c/<name>` imports resolve to that bundle's
+main module and `@salesforce/apex/Cls.method` imports to the Apex method.
+Templates link to child components by tag and to their own class's members by
+`{binding}`, `@wire` binds its Apex method, and an exposed bundle is an entry
+point. A name two sfdx projects declare goes to the nearer one; a tie gets no edge.
 
 ### Known gaps per language
 

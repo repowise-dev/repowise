@@ -1,22 +1,11 @@
 """Lightning Web Components: template tags, template bindings and exposed bundles.
 
-Three things reach an LWC bundle's code that no JS import says:
+* ``<c-child-name>`` in a template: a file edge to the child bundle's main module.
+* ``{handleClick}`` in a template: a ``framework_binds`` edge to that class member.
+* ``<isExposed>true</isExposed>`` in ``.js-meta.xml``: the main module is an entry
+  point anchored to ``framework:lwc``; its ``configurationEditor`` gets a file edge.
 
-* a parent template's ``<c-child-name>`` tag instantiates the ``childName``
-  bundle: a file edge from the template to the child's main module;
-* a template's ``{handleClick}`` / ``{isOpen}`` binding runs that member of
-  the bundle's own class: a ``framework_binds`` edge from the template's module
-  symbol to the method or getter, so a handler only the template names has a
-  caller;
-* a ``.js-meta.xml`` with ``<isExposed>true</isExposed>`` lets App Builder,
-  Experience Builder or a Flow place the component (its targets count only
-  then): its main module is anchored to ``framework:lwc`` and marked an entry point. Its
-  ``configurationEditor="c-x-cpe"`` names the bundle Flow Builder loads to
-  edit it: a file edge from the component to that editor.
-
-Tags are read from raw text, not the HTML grammar, which splits
-``<c-fsc_flow-combobox>`` at the underscore. The template is not linked to its
-own module: a template does not make its component reachable, a parent does.
+Tags are read from raw text because the HTML grammar splits them at ``_``.
 """
 
 from __future__ import annotations
@@ -153,8 +142,7 @@ def _template_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: Resolv
 def _apex_method(apex: Any, cls: str, method: str) -> str | None:
     """The id of *cls*.*method* in a parsed Apex file, matched case-insensitively.
 
-    Apex names are case-insensitive. A local fold until the shared
-    case-insensitive Apex lookup (lane S2) lands; replace this with it then.
+    Ceiling: a local lookup; use a shared case-insensitive Apex index once one exists.
     """
     cls, method = cls.lower(), method.lower()
     found = [
@@ -187,10 +175,8 @@ def _apex_bindings(parsed: Any, parsed_files: dict[str, Any]) -> dict[str, str]:
 def _wire_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext) -> int:
     """``@wire(getThings, ...)`` with an Apex import binding -> that Apex method.
 
-    An imperative ``getThings()`` is an ordinary call the resolver already
-    binds through the import; the wire service invokes the method for the
-    decorated member instead, so this is a ``framework_binds`` edge from the
-    ``wire(...)`` call's caller (the class for a field, the method for a handler).
+    The edge starts at the ``wire(...)`` call's caller: the class for a field,
+    the method for a handler.
     """
     source_map = getattr(ctx, "source_map", None) or {}
     count = 0

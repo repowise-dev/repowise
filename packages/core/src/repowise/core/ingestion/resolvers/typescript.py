@@ -94,8 +94,7 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
                     return candidate
         return None
 
-    # LWC ``c/fooBar``: only a module inside an ``lwc/<bundle>/`` folder
-    # imports through the Salesforce module namespace.
+    # LWC ``c/fooBar``, only from inside an ``lwc/<bundle>/`` folder.
     if lwc_bundle_dir(importer_path) is not None:
         lwc_resolved = resolve_lwc_module(module_path, importer_path, ctx)
         if lwc_resolved is not None:
