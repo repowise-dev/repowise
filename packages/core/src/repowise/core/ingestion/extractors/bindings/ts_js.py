@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import NamedBinding
+from ...resolvers.lwc import APEX_MODULE_PREFIXES
 from ..helpers import node_text
 
 
@@ -31,6 +32,21 @@ def _extract_require_bindings(
     if name_node is None:
         return [], []
     return _module_pattern_bindings(name_node, src)
+
+
+def _apex_method(stmt_node: Node, src: str) -> str | None:
+    """``m`` for ``import x from '@salesforce/apex/[ns.]Cls.m'``, else None.
+
+    Salesforce's default export of that module is the Apex method itself, so
+    the binding publishes the method's name rather than ``default``.
+    """
+    source = stmt_node.child_by_field_name("source")
+    spec = node_text(source, src).strip("'\"`") if source is not None else ""
+    prefix = next((p for p in APEX_MODULE_PREFIXES if spec.startswith(p)), None)
+    if prefix is None:
+        return None
+    parts = spec[len(prefix) :].split(".")
+    return parts[-1] if len(parts) in (2, 3) and all(parts) else None
 
 
 def _bound_at(
@@ -187,9 +203,12 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
         for sub in child.children:
             if sub.type == "identifier":
                 local = node_text(sub, src)
-                names.append(local)
+                method = _apex_method(stmt_node, src)
+                names.append(method or local)
                 bindings.append(
-                    NamedBinding(local_name=local, exported_name="default", source_file=None)
+                    NamedBinding(
+                        local_name=local, exported_name=method or "default", source_file=None
+                    )
                 )
             elif sub.type == "named_imports":
                 for spec in sub.children:
