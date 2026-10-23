@@ -120,3 +120,72 @@ class TestCobolCalls:
 """
         result = parser.parse_file(_cobol("dynamic.cbl"), source)
         assert result.calls == []
+
+
+class TestCobolCallScope:
+    """A PERFORM stays in its program and its copybooks; a CALL names a PROGRAM-ID."""
+
+    @staticmethod
+    def _resolve(parser: ASTParser, files: dict[str, bytes], imports: dict[str, set[str]]):
+        parsed = {path: parser.parse_file(_cobol(path), source) for path, source in files.items()}
+        resolver = CallResolver(parsed, {path: imports.get(path, set()) for path in parsed})
+        caller = next(iter(files))
+        return {(e.callee_id, e.origin) for e in resolver.resolve_file(caller, parsed[caller].calls)}
+
+    def test_a_perform_never_binds_to_another_programs_paragraph(self, parser: ASTParser) -> None:
+        caller = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. A.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           PERFORM 1000-EXIT.
+"""
+        other = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. B.
+       PROCEDURE DIVISION.
+       1000-EXIT.
+           EXIT.
+"""
+        assert self._resolve(parser, {"a.cbl": caller, "b.cbl": other}, {}) == set()
+
+    def test_a_perform_reaches_a_paragraph_its_copybook_brings_in(self, parser: ASTParser) -> None:
+        caller = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. A.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           PERFORM STORE-PFKEY THRU STORE-PFKEY-EXIT.
+       COPY CSSTRPFY.
+"""
+        copybook = b"""      * COMMON CODE
+      *
+       STORE-PFKEY.
+           CONTINUE.
+       STORE-PFKEY-EXIT.
+           EXIT.
+"""
+        edges = self._resolve(
+            parser, {"a.cbl": caller, "CSSTRPFY.cpy": copybook}, {"a.cbl": {"CSSTRPFY.cpy"}}
+        )
+        # The THRU end is part of the range, not a second target.
+        assert edges == {("CSSTRPFY.cpy::STORE-PFKEY", "import_scoped")}
+
+    def test_a_call_binds_to_the_program_not_a_same_named_data_item(
+        self, parser: ASTParser
+    ) -> None:
+        caller = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LGACDB01.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       77 LGACDB02 PIC X(8) VALUE 'LGACDB02'.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           EXEC CICS LINK PROGRAM(LGACDB02) END-EXEC.
+           CALL 'LGACDB02'.
+"""
+        callee = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LGACDB02.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           GOBACK.
+"""
+        edges = self._resolve(parser, {"lgacdb01.cbl": caller, "lgacdb02.cbl": callee}, {})
+        assert edges == {("lgacdb02.cbl::LGACDB02", "global_unique")}

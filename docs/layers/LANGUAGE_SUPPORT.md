@@ -83,7 +83,9 @@ procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
 nearest copybook with that name; system copybooks such as `DFHAID` stay external.
 `EXEC CICS LINK` and `XCTL` link to their program when it is a literal or a
 constant moved into the program variable; any other target shows as a
-`cics-dynamic:` reference rather than a guess.
+`cics-dynamic:` reference rather than a guess. A `PERFORM` binds only within
+its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
+unique PROGRAM-ID.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
 resolved case-insensitively within each sfdx project's namespace; its dead-code
 findings are review-only. Apex test coverage from the Salesforce CLI is read as a
