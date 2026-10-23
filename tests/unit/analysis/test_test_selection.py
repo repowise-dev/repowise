@@ -1065,3 +1065,10 @@ def test_a_runner_gets_only_its_own_always_run_tests_and_hears_of_the_rest() -> 
     assert runner_args(upper, "pytest") == ["tests/test_b.py", "tests/TEST_C.PY"]
     assert runner_notes(sel, "files") == []
     assert runner_notes(_select(["uv.lock"], config=config), "pytest") == []
+
+
+def test_an_apex_test_class_is_test_code() -> None:
+    path = "force-app/main/default/classes/AccountServiceTest.cls"
+    assert is_runnable_test(path)
+    sel = _select([path], _tiers())
+    assert not any("is not code" in r for r in sel.reasons), sel.reasons

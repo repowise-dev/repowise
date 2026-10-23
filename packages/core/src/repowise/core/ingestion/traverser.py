@@ -32,7 +32,7 @@ import pathspec
 import structlog
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
-from ..code_origin import is_generated_header
+from ..code_origin import CONTENT_TEST_SUFFIXES, declares_test, is_generated_header
 from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
 from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
@@ -900,6 +900,10 @@ class FileTraverser:
             dotnet_projects=tables.dotnet_test_projects,
             phpunit_roots=tables.phpunit_roots,
             package_root=self._is_package_root_dir,
+        ) or (
+            # An Apex ``@IsTest`` class is test code whatever its name.
+            rel_str.lower().endswith(CONTENT_TEST_SUFFIXES)
+            and declares_test(rel_str, _read_head(abs_path))
         )
         entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
         return FileInfo(
@@ -1213,6 +1217,15 @@ def _is_generated(abs_path: Path) -> bool:
     except OSError:
         return False
     return is_generated_header(header)
+
+
+def _read_head(abs_path: Path) -> bytes:
+    """The first 4 KB of a file, which is what a content rule reads; empty if unreadable."""
+    try:
+        with open(abs_path, "rb") as f:
+            return f.read(4096)
+    except OSError:
+        return b""
 
 
 def _is_config_file(language: LanguageTag) -> bool:

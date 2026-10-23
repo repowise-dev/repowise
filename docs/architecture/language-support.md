@@ -986,6 +986,14 @@ Salesforce CLI coverage names a class or trigger, never a file, so it maps to
 the one `.cls` or `.trigger` file of that name, ignoring case. A name two files
 share, or no file has, stays unmapped.
 
+Apex dead code starts from triggers, tests, entry annotations such as
+`@AuraEnabled` and `@InvocableMethod`, `global` members and platform interfaces
+such as `Schedulable`. A class is live when a live class or any Salesforce
+metadata, Lightning or project file writes its name in any case, strings
+included, since `Type.forName` reaches classes by name. Ceiling: a mention in a
+comment counts as a use, and a Visualforce-shaped class stays live until pages
+are parsed.
+
 Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
 one symbol named by its API name, linked to the Apex invocable actions,
 subflows, screen components and Apex-defined types it names. Apex

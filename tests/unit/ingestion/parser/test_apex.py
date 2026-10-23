@@ -108,6 +108,14 @@ class TestApexSymbols:
         assert symbols["AccountService"].decorators[0].startswith("@IsTest")
         assert symbols["helper"].decorators == []
 
+    def test_modifier_keywords_are_lowercased_without_annotations(self, parser: ASTParser) -> None:
+        symbols = _by_name(_parse(parser, CLASS_SOURCE))
+        assert symbols["find"].modifiers == ("global", "static")
+        assert symbols["ws"].modifiers == ("webservice", "static")
+        assert symbols["helper"].modifiers == ()
+        # ``with sharing`` is not a single keyword, and annotations stay decorators.
+        assert symbols["AccountService"].modifiers == ("public",)
+
     def test_apexdoc(self, parser: ASTParser) -> None:
         symbols = _by_name(_parse(parser, CLASS_SOURCE))
         assert symbols["AccountService"].docstring == "Account operations."

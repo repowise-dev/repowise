@@ -217,7 +217,7 @@ _DOC_SUFFIXES = DOC_EXTENSIONS | {"", ".markdown"}
 _TEST_CODE_SUFFIXES = frozenset(
     {".py", ".go", ".java", ".kt", ".kts", ".scala", ".groovy", ".rb", ".cs", ".fs"}
     | {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
-    | {".rs", ".php", ".swift", ".ex", ".exs", ".dart", ".c", ".cc", ".cpp"}
+    | {".rs", ".php", ".swift", ".ex", ".exs", ".dart", ".c", ".cc", ".cpp", ".cls"}
 )
 
 PYTHON_SUFFIXES = (".py",)

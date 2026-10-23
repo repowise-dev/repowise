@@ -36,8 +36,10 @@ from .test_paths import is_test_related_path
 
 __all__ = [
     "CODE_ORIGINS",
+    "CONTENT_TEST_SUFFIXES",
     "CodeOrigin",
     "code_origin",
+    "declares_test",
     "is_build_file",
     "is_generated_header",
     "is_migration_path",
@@ -785,7 +787,8 @@ def code_origin(
     path.
 
     *is_test* is the flag ingestion stored, when the caller has it. ``None``
-    derives it from the path with the shared test classifier.
+    derives it from the path with the shared test classifier, and from *text*
+    where the content decides (:func:`declares_test`).
 
     *project* is the repository's name, so its own release banner is not
     taken for someone else's.
@@ -808,7 +811,7 @@ def code_origin(
         and _third_party_header(header, project)
     ):
         return "vendored"
-    return _maintained_origin(normalized, name, dirs, is_test, repo_root)
+    return _maintained_origin(normalized, name, dirs, is_test, repo_root, header)
 
 
 def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
@@ -819,18 +822,50 @@ def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
     )
 
 
+# --------------------------------------------------------------------------
+# Test, by content
+# --------------------------------------------------------------------------
+
+#: Suffixes whose test status the file's content can decide.
+CONTENT_TEST_SUFFIXES: tuple[str, ...] = (".cls",)
+# An Apex ``@IsTest`` class is test code whatever its name. Comments are blanked
+# first, since ApexDoc quotes the annotation in prose.
+_APEX_COMMENT_RE = re.compile(r"/\*.*?(?:\*/|\Z)|//[^\n]*", re.DOTALL)
+_APEX_CLASS_KEYWORD_RE = re.compile(r"\bclass\b", re.IGNORECASE)
+_APEX_IS_TEST_RE = re.compile(r"@istest\b", re.IGNORECASE)
+
+
+def declares_test(path: str, text: str | bytes | None) -> bool:
+    """Whether *text*, the head of the file at *path*, marks it test code.
+
+    An Apex class annotated ``@IsTest`` is; the annotation must sit before the
+    top-level ``class`` keyword, inside the first 4 KB like every content rule
+    here.
+    """
+    if not path.lower().endswith(CONTENT_TEST_SUFFIXES):
+        return False
+    code = _APEX_COMMENT_RE.sub(" ", _header_text(text))
+    keyword = _APEX_CLASS_KEYWORD_RE.search(code)
+    return keyword is not None and _APEX_IS_TEST_RE.search(code, 0, keyword.start()) is not None
+
+
 def _maintained_origin(
     normalized: str,
     name: str,
     dirs: list[str],
     is_test: bool | None,
     repo_root: str | os.PathLike[str] | None,
+    header: str = "",
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
     examples, tooling, or production, in that precedence."""
     if _is_build_name(name, dirs, as_origin=True):
         return "build"
-    if is_test if is_test is not None else is_test_related_path(normalized):
+    if (
+        is_test
+        if is_test is not None
+        else is_test_related_path(normalized) or declares_test(normalized, header)
+    ):
         return "test"
     if _is_docs_example(normalized, dirs, repo_root):
         return "docs_example"

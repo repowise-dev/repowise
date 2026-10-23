@@ -143,6 +143,9 @@ class ReachabilityRescues:
     #: type reaches (see :mod:`swift_reachability`). ``None`` is "not checked"
     #: and resolves a ``.swift`` file to reachable, as for C#.
     swift_named_files: AbstractSet[str] | None = None
+    #: Apex files a root or a live file reaches (see :mod:`apex_reachability`).
+    #: ``None`` is "not checked" and resolves an Apex file to reachable.
+    apex_live_files: AbstractSet[str] | None = None
 
 
 #: Prefix of an :class:`repowise.core.ids.ExternalId`, matched textually rather
@@ -325,6 +328,10 @@ def is_file_reachable(
         return True
     if path.endswith(_SWIFT_SUFFIX) and (
         rescues.swift_named_files is None or path in rescues.swift_named_files
+    ):
+        return True
+    if node_data.get("language") == "apex" and (
+        rescues.apex_live_files is None or path in rescues.apex_live_files
     ):
         return True
 

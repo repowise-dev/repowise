@@ -32,7 +32,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -55,7 +57,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -78,7 +82,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -101,7 +107,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -126,7 +134,10 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public",
+          "static"
+        ],
         "alias_of": null
       },
       {
@@ -149,7 +160,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -172,7 +185,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "private"
+        ],
         "alias_of": null
       },
       {
@@ -195,7 +210,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "private"
+        ],
         "alias_of": null
       },
       {
@@ -218,7 +235,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -241,7 +260,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -264,7 +285,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       },
       {
@@ -310,7 +333,9 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": [],
+        "modifiers": [
+          "public"
+        ],
         "alias_of": null
       }
     ],

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import networkx as nx
-import pytest
 
 from repowise.core.analysis.dead_code.analyzer import DeadCodeAnalyzer
 
@@ -60,11 +59,9 @@ def _private_method_graph(language: str) -> nx.DiGraph:
     return graph
 
 
-@pytest.mark.parametrize("language", ["apex", "cobol"])
-def test_exempt_language_private_symbol_is_not_an_unused_internal(language: str) -> None:
-    # Apex private symbols back triggers, @AuraEnabled and test classes the
-    # graph cannot see yet, so the internal pass honours the exemption too.
-    report = DeadCodeAnalyzer(_private_method_graph(language), git_meta_map={}).analyze(
+def test_exempt_language_private_symbol_is_not_an_unused_internal() -> None:
+    # The internal pass honours the exemption like the file and export passes.
+    report = DeadCodeAnalyzer(_private_method_graph("cobol"), git_meta_map={}).analyze(
         {"detect_zombie_packages": False}
     )
     assert report.findings == []

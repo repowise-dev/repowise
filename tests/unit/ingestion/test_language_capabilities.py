@@ -263,9 +263,8 @@ class TestImportSupportTiers:
         assert REGISTRY.import_support_for("klingon") == "none"
 
     def test_runtime_entered_languages_are_exempt_from_static_dead_code_claims(self) -> None:
-        # Apex until its platform entry points (triggers, annotations,
-        # platform interfaces) are modelled.
-        assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol", "apex"})
+        # Apex models its platform entry points instead (apex_reachability).
+        assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol"})
 
 
 class TestLanguageTagParity:

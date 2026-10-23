@@ -745,6 +745,8 @@ _CLASS_TEST_SUFFIXES: dict[str, tuple[str, ...]] = {
     ".cs": ("Test", "Tests"),
     ".kt": ("Test", "Tests", "Spec"),
     ".scala": ("Spec", "Suite", "Test"),
+    # Apex names are case-insensitive and the corpora write all of these.
+    ".cls": ("Test", "Tests", "_Test", "_Tests", "_TEST"),
 }
 
 

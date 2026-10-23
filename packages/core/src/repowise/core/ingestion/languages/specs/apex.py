@@ -20,12 +20,6 @@ SPEC = LanguageSpec(
     # Apex has no import statement: every top-level class in a package
     # directory is visible by name, so there is nothing for a resolver to read.
     import_support="none",
-    # Triggers, @AuraEnabled/@InvocableMethod/@RestResource members, platform
-    # interfaces (Queueable, Batchable, ...) and global API are entered by the
-    # org runtime, Lightning, Flows and managed-package subscribers, none of
-    # which the static graph sees yet. Unused/unreachable claims stay off
-    # until those entry points are modelled.
-    dead_code_exempt=True,
     # FooTest / FooTests. Foo_Test, Foo_TEST and Test_Foo already match the
     # generic stem rules, which compare lowercased.
     test_camel_suffixes=("Test", "Tests"),
