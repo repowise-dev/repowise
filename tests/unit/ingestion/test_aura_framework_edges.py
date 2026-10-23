@@ -82,6 +82,16 @@ _REPO = {
     f"{_A}/accountPicked/accountPicked.evt": '<aura:event type="COMPONENT"/>\n',
     f"{_A}/accountRow/accountRow.cmp": "<aura:component/>\n",
     f"{_A}/accountRow/accountRow.design": "<design:component/>\n",
+    # A flow local action: the flow runtime runs its controller's `invoke`, and a
+    # formatter has reflowed one handler expression across lines.
+    f"{_A}/goNext/goNext.cmp": (
+        '<aura:component implements="lightning:availableForFlowActions">\n'
+        '  <lightning:button onclick="\n    {\n      !c.onClick;\n    }\n  "/>\n'
+        "</aura:component>\n"
+    ),
+    f"{_A}/goNext/goNextController.js": (
+        "({\n    invoke : function(cmp, event, helper) {},\n    onClick : function(cmp) {},\n})\n"
+    ),
     f"{_A}/main/main.app": '<aura:application extends="force:slds"><c:accountList/></aura:application>\n',
     # An LWC bundle reached by an Aura tag, by its camelCase name.
     "force-app/main/default/lwc/accountTile/accountTile.js": (
@@ -179,6 +189,9 @@ def test_bundle_edges(tmp_path: Path) -> None:
     assert getter == [f"{cls}::AccountCtrl::getAccounts#0"]
     # `get("c.x")` naming no Apex method but a controller function is a client action.
     assert (f"{helper}::load", f"{ctrl}::unbound") in binds
+    go = f"{_A}/goNext/goNext"
+    assert (f"{go}.cmp::__module__", f"{go}Controller.js::invoke") in binds
+    assert (f"{go}.cmp::__module__", f"{go}Controller.js::onClick") in binds
     dynamic = _edges(g, "dynamic_uses")
     assert (ctrl, tile) in dynamic
     assert (helper, f"{_A}/accountRow/accountRow.cmp") in dynamic

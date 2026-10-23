@@ -73,7 +73,8 @@ _JS_COMMENT_OR_STRING_RE = re.compile(
 _TAG_RE = re.compile(r"""<([A-Za-z]\w*):([A-Za-z_]\w*)((?:[^>"']|"[^"]*"|'[^']*')*)>""")
 _ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _QUALIFIED_RE = re.compile(r"^\s*(\w+):(\w+)\s*$")
-_MARKUP_HANDLER_RE = re.compile(r"\{[!#]\s*c\.([A-Za-z_]\w*)\s*\}")
+# Formatters reflow `{!c.h}` across lines and append a `;` (NebulaLogger ships one).
+_MARKUP_HANDLER_RE = re.compile(r"\{\s*[!#]\s*c\.([A-Za-z_]\w*)\s*;?\s*\}")
 # A "c.x" string literal; group 1 is set when it is the argument of `.get(`.
 _ACTION_RE = re.compile(r"""(\.get\(\s*)?(["'])c\.([A-Za-z_]\w*)\2""")
 _HELPER_CALL_RE = re.compile(r"(?<![\w.$])helper\s*\.\s*([A-Za-z_$][\w$]*)\s*\(")
@@ -105,6 +106,9 @@ _ENTRY_INTERFACES = frozenset(
     }
 )
 _RENDERER_OVERRIDES = ("render", "rerender", "afterRender", "unrender")
+# Controller functions a platform interface obliges the component to define:
+# the flow runtime runs a local action's `invoke`.
+_PLATFORM_INTERFACE_METHODS = {"lightning:availableforflowactions": ("invoke",)}
 _EXTENDS_DEPTH = 6
 
 
@@ -462,7 +466,8 @@ def _markup_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None
             hit = idx.bundle_function(bdir, "Renderer", n)
             if hit is not None:
                 edges.bind(module, hit, main)
-        for n in sorted(idx.interface_methods(bdir)):
+        platform = {m for i in implements for m in _PLATFORM_INTERFACE_METHODS.get(i.lower(), ())}
+        for n in sorted(idx.interface_methods(bdir) | platform):
             hit = idx.bundle_function(bdir, "Controller", n)
             if hit is not None:
                 edges.bind(module, hit, main)
