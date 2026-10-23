@@ -179,6 +179,17 @@ def test_note_is_quiet_when_a_model_writes_the_docs(monkeypatch: Any) -> None:
     assert _note(monkeypatch, run) == ""
 
 
+@pytest.mark.parametrize("var", ["REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"])
+def test_note_spawns_no_agent_cli_when_network_is_off(monkeypatch: Any, var: str) -> None:
+    def _boom(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("agent CLI probed with an off switch set")
+
+    monkeypatch.setattr(subscription, "logged_in_agent_providers", _boom)
+    monkeypatch.setattr(subscription.subprocess, "run", _boom)
+    monkeypatch.setenv(var, "1")
+    assert _note(monkeypatch, _run()) == ""
+
+
 def test_note_is_quiet_without_a_logged_in_cli(monkeypatch: Any) -> None:
     _logged_in(monkeypatch)
     assert _note(monkeypatch, _run()) == ""

@@ -99,6 +99,10 @@ def note_subscription_cli(run: InitRun) -> None:
 
 def _wants_subscription_note(run: InitRun) -> bool:
     """A scripted run nobody picked a provider for, and no model writes."""
+    from repowise.core.platform.telemetry import network_disabled
+
+    if network_disabled():  # the probe spawns third-party CLIs that phone home
+        return False
     chosen = run.is_interactive or run.opts.provider_name or run.config.get("provider")
     return not chosen and bool(run.opts.index_only or run.no_provider)
 
