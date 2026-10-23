@@ -17,7 +17,12 @@ from repowise.core.analysis.health.coverage import (
     resolve_reports,
     resolve_test_reports,
 )
-from repowise.core.analysis.health.coverage.model import CoverageReport, FileCoverage
+from repowise.core.analysis.health.coverage.discovery import _merge_into
+from repowise.core.analysis.health.coverage.model import (
+    CoverageReport,
+    FileCoverage,
+    file_coverage,
+)
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "coverage"
 CLASSES = "force-app/main/default/classes"
@@ -252,3 +257,44 @@ def test_test_file_stays_unset_when_the_test_class_does_not_resolve() -> None:
     res = resolve_test_reports(parse_apex_contexts(text), KEYS)
     assert [r.test_file for r in res.records] == [None, None]
     assert res.test_files_resolved == 0
+
+
+def test_merge_two_counts_only_entries_keeps_stated_count() -> None:
+    a = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    b = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    _merge_into(a, b)
+    assert a.covered_line_count == 22
+    assert a.line_coverage_pct == pytest.approx(78.57)
+
+
+def test_merge_counts_only_with_line_sets_does_not_lose_hits() -> None:
+    counts = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    lines = file_coverage("AccountService.cls", [1, 2, 3], list(range(1, 29)))
+    _merge_into(lines, counts)
+    assert lines.covered_line_count == 22
+    assert lines.total_coverable_lines == 28
+
+
+def test_merge_order_does_not_matter() -> None:
+    counts = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    lines = file_coverage("AccountService.cls", [1, 2, 3], list(range(1, 29)))
+    _merge_into(counts, lines)
+    assert counts.covered_line_count == 22
+    assert counts.line_coverage_pct == pytest.approx(78.57)
+
+
+def test_merge_with_percentage_only_source_still_works() -> None:
+    a = file_coverage("A.cls", [1, 2], [1, 2, 3, 4])
+    b = file_coverage("A.cls", [], [], total=4)
+    # A percentage-only source states no hit count at all.
+    b.covered_line_count = None
+    _merge_into(a, b)
+    assert a.covered_line_count == 2
+
+
+def test_two_deploy_reports_for_one_class_keep_their_percentage() -> None:
+    keys = {"force-app/main/default/classes/AccountService.cls"}
+    text = _read("sample.apex-deploy.json")
+    res = resolve_reports([parse_apex(text), parse_apex(text)], keys)
+    entry = res.coverage_map["force-app/main/default/classes/AccountService.cls"]
+    assert entry["line_coverage_pct"] == pytest.approx(78.57)

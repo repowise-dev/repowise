@@ -981,11 +981,19 @@ def _merge_into(dst: FileCoverage, src: FileCoverage) -> None:
     covered = set(dst.covered_lines) | set(src.covered_lines)
     coverable = set(dst.coverable_lines) | set(src.coverable_lines)
     total = max(dst.total_coverable_lines, src.total_coverable_lines, len(covered))
+    # A counts-only report (a deploy result) states how many lines were hit but
+    # not which, so its line set is empty. Keep the larger stated count rather
+    # than recounting from the sets alone. A count of None means the source
+    # stated only a percentage, so it adds nothing here.
+    hit = min(
+        max(len(covered), dst.covered_line_count or 0, src.covered_line_count or 0),
+        total,
+    )
     dst.covered_lines = sorted(covered)
     dst.coverable_lines = sorted(coverable)
     dst.total_coverable_lines = total
-    dst.covered_line_count = len(covered)
-    dst.line_coverage_pct = round(len(covered) / total * 100.0, 2) if total else 0.0
+    dst.covered_line_count = hit
+    dst.line_coverage_pct = round(hit / total * 100.0, 2) if total else 0.0
     if src.branch_coverage_pct is not None:
         dst.branch_coverage_pct = (
             src.branch_coverage_pct
