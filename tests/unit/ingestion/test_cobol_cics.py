@@ -77,6 +77,17 @@ def test_a_reassigned_value_is_not_a_constant() -> None:
     assert _transfers(source) == [ProgramTransfer("XCTL", 9, (), dynamic="WS-PGM")]
 
 
+def test_a_literal_later_overwritten_by_another_verb_is_dynamic() -> None:
+    source = _program(
+        "       01 WS-PGM PIC X(8).",
+        "           MOVE 'COMEN01C' TO WS-PGM\n"
+        "           ACCEPT WS-PGM\n"
+        "           EXEC CICS XCTL PROGRAM(WS-PGM) END-EXEC.",
+    )
+
+    assert _transfers(source) == [ProgramTransfer("XCTL", 10, ("COMEN01C",), dynamic="WS-PGM")]
+
+
 def test_other_cics_commands_and_comments_are_not_transfers() -> None:
     source = _program(
         "",

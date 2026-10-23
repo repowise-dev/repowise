@@ -91,8 +91,8 @@ def program_transfers(code: str) -> list[ProgramTransfer]:
     """Every LINK/XCTL in *code* (a code view), its targets resolved where static."""
     statements = mask_statements(code)
     moves = _moves(statements)
-    rewritten = {name for _, dsts in moves for name in dsts}
-    rewritten |= {m.group(1).upper() for m in _OTHER_WRITE.finditer(statements)}
+    other_writes = {m.group(1).upper() for m in _OTHER_WRITE.finditer(statements)}
+    rewritten = {name for _, dsts in moves for name in dsts} | other_writes
     constants = {
         m.group("name").upper(): _unquote(m.group("lit"))
         for m in _VALUE.finditer(statements)
@@ -113,6 +113,7 @@ def program_transfers(code: str) -> list[ProgramTransfer]:
             continue
         var = program.group("var").upper()
         targets, dynamic = _values_of(var, moves, constants)
+        dynamic = dynamic or var in other_writes
         out.append(
             ProgramTransfer(verb.group(1).upper(), block.line, targets, var if dynamic else None)
         )
