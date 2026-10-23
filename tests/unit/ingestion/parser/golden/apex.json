@@ -587,7 +587,45 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "object_name": "Account",
+        "line": 28,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": [
+          "Name"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": [
+          "Name"
+        ]
+      }
+    ]
   },
   "apex/AccountTrigger.trigger": {
     "file_info": {
@@ -691,7 +729,15 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/AccountTrigger.trigger::AccountTrigger",
+        "object_name": "Account",
+        "line": 1,
+        "path": []
+      }
+    ]
   },
   "apex/assertions.cls": {
     "file_info": {
@@ -1146,7 +1192,15 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/assertions.cls::Assertions::makeData",
+        "object_name": "Account",
+        "line": 34,
+        "path": []
+      }
+    ]
   },
   "apex/classes.cls": {
     "file_info": {
@@ -1631,7 +1685,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "apex/nested.cls": {
     "file_info": {
@@ -1835,7 +1890,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "apex/perf_io_in_loop.cls": {
     "file_info": {
@@ -2836,6 +2892,204 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cursor",
+        "object_name": "Account",
+        "line": 141,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cursor",
+        "object_name": "Account",
+        "line": 141,
+        "path": [
+          "ParentId"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cursor",
+        "object_name": "Account",
+        "line": 141,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::mergeAll",
+        "object_name": "Account",
+        "line": 133,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::customMetadata",
+        "object_name": "Setting__mdt",
+        "line": 127,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::customMetadata",
+        "object_name": "Setting__mdt",
+        "line": 127,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::customMetadata",
+        "object_name": "Setting__mdt",
+        "line": 127,
+        "path": [
+          "DeveloperName"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::firstMatch",
+        "object_name": "Account",
+        "line": 106,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cached",
+        "object_name": "Account",
+        "line": 98,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cached",
+        "object_name": "Account",
+        "line": 98,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::flushAtSize",
+        "object_name": "Account",
+        "line": 88,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::chunked",
+        "object_name": "Account",
+        "line": 79,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::literalBound",
+        "object_name": "Task",
+        "line": 73,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::literalBound",
+        "object_name": "Task",
+        "line": 70,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlForChunks",
+        "object_name": "Account",
+        "line": 64,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlForChunks",
+        "object_name": "Account",
+        "line": 63,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlForChunks",
+        "object_name": "Account",
+        "line": 63,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::queryInHeader",
+        "object_name": "Account",
+        "line": 57,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::queryInHeader",
+        "object_name": "Account",
+        "line": 57,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Contact",
+        "line": 53,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Contact",
+        "line": 53,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Contact",
+        "line": 53,
+        "path": [
+          "AccountId"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Account",
+        "line": 52,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
+        "object_name": "Task",
+        "line": 40,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
+        "object_name": "Id",
+        "line": 21,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::dmlPerRecord",
+        "object_name": "Account",
+        "line": 14,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+        "object_name": "Account",
+        "line": 8,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+        "object_name": "Account",
+        "line": 8,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+        "object_name": "Account",
+        "line": 8,
+        "path": [
+          "Id"
+        ]
+      }
+    ]
   }
 }
