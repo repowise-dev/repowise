@@ -36,7 +36,7 @@ resolution and health markers are all static.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (14) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (11) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, F# and Objective-C get the complexity-derived ones; the rest get none yet |
+| **Good** (11) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F# and Objective-C get the complexity-derived ones; the rest get none yet |
 | **Partial** (2) | Luau / Roblox, Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure, Haskell, Lean 4, Erlang, HTML, QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R, Zig, Julia, Elm, OCaml, Crystal, Nim, D | Git history only: blame, hotspots, co-change. No AST parsing |
@@ -88,6 +88,9 @@ its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
 unique PROGRAM-ID. JCL (`.jcl`, `.prc`, `.proc`) links each job step to the
 program or PROC it runs, which makes that program an entry point, and BMS
 mapsets (`.bms`) are linked from the programs that send or receive their maps.
+Health measures each paragraph and section as a function: `IF`, `WHEN` arms,
+`PERFORM UNTIL/VARYING` loops and `AND`/`OR` add to its complexity, and data-only
+copybooks have no functions to flag.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
 resolved case-insensitively within each sfdx project's namespace; its dead-code
 findings are review-only. Apex test coverage from the Salesforce CLI is read as a
@@ -299,7 +302,7 @@ The full list per language, with the mechanics behind each gap, is in
 | Scala, Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
 | Object Pascal | A dedicated `uses` resolver |
-| COBOL | Dialect coverage, health markers |
+| COBOL | Dialect coverage, health markers beyond complexity |
 | VB.NET, Elixir | Health markers |
 | F#, Objective-C | Health markers beyond complexity |
 | SQL / dbt | Column-level blast radius |

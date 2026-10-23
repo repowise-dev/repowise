@@ -57,6 +57,7 @@ from .ast_utils import (
     _parameter_list,
 )
 from .class_analysis import _collect_classes
+from .cobol import walk_cobol
 from .cyclomatic import _walk_function_body
 from .deprecation import is_deprecated
 from .dispatch import dispatch_points, dispatch_share
@@ -164,6 +165,9 @@ def walk_file(
     except Exception as exc:
         log.debug("complexity_walker_parse_failed", path=abs_path, error=str(exc))
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
+
+    if language == "cobol":
+        return walk_cobol(tree.root_node, source)
 
     functions: list[FunctionComplexity] = []
     fc_by_node_id: dict[int, FunctionComplexity] = {}
