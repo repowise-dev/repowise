@@ -602,3 +602,79 @@ def test_postgres_reconcile_ignores_pgvector_type_warning(monkeypatch: pytest.Mo
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         db_module._reconcile_schema(connection)
+
+
+async def _init(db_path: Path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+
+def _stamp_state(db_path: Path) -> tuple[int, int]:
+    (user_version,) = _fetchall(db_path, "PRAGMA user_version")[0]
+    (cookie,) = _fetchall(db_path, "PRAGMA schema_version")[0]
+    return user_version, cookie
+
+
+@pytest.mark.asyncio
+async def test_stamped_store_skips_the_reconcile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store carrying the current stamp opens without reflecting a table."""
+    from repowise.core.persistence import database as db_module
+
+    db_path = tmp_path / "wiki.db"
+    await _init(db_path)
+    user_version, cookie = _stamp_state(db_path)
+    assert user_version == db_module.schema_stamp(cookie)
+
+    def _walked(_connection: Any) -> None:
+        raise AssertionError("reconciled a store already on the current schema")
+
+    monkeypatch.setattr(db_module, "_reconcile_schema", _walked)
+    await _init(db_path)
+
+
+@pytest.mark.asyncio
+async def test_store_stamped_by_other_models_is_reconciled(tmp_path: Path) -> None:
+    """A stamp another release wrote (an upgrade, a downgrade) reconciles and restamps."""
+    from repowise.core.persistence import database as db_module
+
+    db_path = tmp_path / "wiki.db"
+    await _init(db_path)
+    try:
+        _execute(db_path, 'ALTER TABLE "decision_records" DROP COLUMN "verification"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+    # Stamped after the drop, as a release whose models lack the column would.
+    _, cookie = _stamp_state(db_path)
+    _execute(db_path, f"PRAGMA user_version = {db_module.schema_stamp(cookie) % 1000 + 1}")
+
+    await _init(db_path)
+
+    assert "verification" in _table_columns(db_path, "decision_records")
+    user_version, cookie = _stamp_state(db_path)
+    assert user_version == db_module.schema_stamp(cookie)
+
+
+@pytest.mark.asyncio
+async def test_a_locked_store_opens_without_waiting_for_its_stamp(tmp_path: Path) -> None:
+    """Stamping is the one write a current store's open adds; it must not block."""
+    import time
+
+    db_path = tmp_path / "wiki.db"
+    await _init(db_path)
+    _execute(db_path, "PRAGMA user_version = 0")  # current schema, never stamped
+
+    writer = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        writer.execute("BEGIN IMMEDIATE")  # another update holding the write lock
+        started = time.monotonic()
+        await _init(db_path)
+        assert time.monotonic() - started < 10
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+    assert _stamp_state(db_path)[0] == 0

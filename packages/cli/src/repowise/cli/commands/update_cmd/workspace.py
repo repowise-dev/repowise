@@ -108,7 +108,7 @@ def _workspace_update(
         verbose=verbose,
     )
     if not dry_run and scan.up_to_date_repos:
-        _reconcile_up_to_date(scan.up_to_date_repos)
+        _reconcile_up_to_date(ws_root, scan.up_to_date_repos)
 
     if scan.stale_count == 0:
         console.print("[green]All repos are up to date.[/green]")
@@ -296,17 +296,26 @@ def _wants_docs_update(
     return resolve_docs_mode(repo_state) == "deterministic"
 
 
-def _reconcile_up_to_date(up_to_date_repos: list[tuple[Path, str]]) -> None:
+def _reconcile_up_to_date(ws_root: Path, up_to_date_repos: list[tuple[Path, str]]) -> None:
     """Reconcile the DB freshness stamp of up-to-date repos.
 
     Staleness is measured against the workspace config, but the server and the
     MCP freshness check read each repo DB's head_commit, which the all-up-to-date
-    path would otherwise never touch. Only writes on drift.
+    path would otherwise never touch. A repo nothing has moved since the last
+    refresh (see :mod:`.member_refresh`) already carries today's stamp, so only
+    the others are opened.
     """
     from repowise.core.workspace import reconcile_repo_head_commit
 
+    from .member_refresh import is_unchanged, load_member_stamps
+
+    stamps = load_member_stamps(ws_root)
+    moved = [(path, head) for path, head in up_to_date_repos if not is_unchanged(path, stamps)]
+    if not moved:
+        return
+
     async def _reconcile() -> None:
-        for repo_path, head in up_to_date_repos:
+        for repo_path, head in moved:
             await reconcile_repo_head_commit(repo_path, head)
 
     run_async(_reconcile())
@@ -726,26 +735,50 @@ def _refresh_workspace_editor_project_files(
     whole refresh: doing so froze the CLAUDE.md stamp for every workspace user
     who never passed ``--agents-md`` (the default), making the index look stale
     long after it was current. Mirrors the single-repo update path.
+
+    A repo whose fingerprint has not moved since its last refresh is skipped
+    (see :mod:`.member_refresh`), so a no-change update costs O(changed repos).
+    An explicit ``agents_md`` refreshes every repo, as it may change the files.
     """
     from repowise.cli.commands._index_outcome import refresh_read_snapshots
     from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
     from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
+
+    from .member_refresh import (
+        is_unchanged,
+        load_member_stamps,
+        member_fingerprint,
+        save_member_stamps,
+    )
 
     options: EditorSetupOptions | None = None
     if agents_md is not None:
         options = EditorSetupOptions(
             project_file_overrides=get_default_project_file_overrides(agents_md=agents_md),
         )
+    stamps = load_member_stamps(ws_root)
+    recorded = dict(stamps)
     for entry in ws_config.repos:
         if repo_filter and entry.alias != repo_filter:
             continue
         repo_path = (ws_root / entry.path).resolve()
         if not (repo_path / ".repowise").is_dir():
             continue
-        refresh_read_snapshots(repo_path)
+        if options is None and is_unchanged(repo_path, stamps):
+            continue
+        # A failed step drops the stamp, so the next update retries this repo.
+        stamps.pop(str(repo_path), None)
+        snapshots_written = refresh_read_snapshots(repo_path)
         try:
             refresh_editor_project_files(console, repo_path, options=options)
         except Exception as exc:
             console.print(
                 f"  [yellow]{entry.alias}: editor project-file refresh skipped: {exc}[/yellow]"
             )
+            continue
+        # Taken after the writes, so it describes the state they left.
+        fingerprint = member_fingerprint(repo_path) if snapshots_written else None
+        if fingerprint is not None:
+            stamps[str(repo_path)] = fingerprint
+    if stamps != recorded:
+        save_member_stamps(ws_root, stamps)

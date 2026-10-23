@@ -53,7 +53,7 @@ def record_index_outcome(
         return
 
 
-def refresh_read_snapshots(repo_path: Any) -> None:
+def refresh_read_snapshots(repo_path: Any) -> bool:
     """Store the Fix first queue and the next-actions view for the next reader.
 
     A named step at every outcome of ``repowise update`` and at the end of
@@ -63,7 +63,8 @@ def refresh_read_snapshots(repo_path: Any) -> None:
     "already up to date" path costs one primary-key read per view.
     Best-effort: without a snapshot a reader builds live, as before. A
     snapshot that is not written is named with its error, here rather than in
-    the core log, which an update keeps at ERROR.
+    the core log, which an update keeps at ERROR. Returns whether every view
+    was written, so a caller that skips unchanged repos retries a failure.
     """
     from repowise.cli.helpers import repo_index_session
     from repowise.core.persistence.crud.analysis.actions import write_read_snapshots
@@ -73,15 +74,16 @@ def refresh_read_snapshots(repo_path: Any) -> None:
             return [] if opened is None else await write_read_snapshots(*opened)
 
     try:
-        try:
-            failed = run_async(_run())
-        except Exception as exc:
-            failed = [("read snapshots", exc)]
+        failed = run_async(_run())
+    except Exception as exc:
+        failed = [("read snapshots", exc)]
+    try:
         for name, exc in failed:
             log.debug("read_snapshot_not_written", snapshot=name, error=repr(exc))
             console.print(f"[yellow]Snapshot not written: {_short_error(name, exc)}[/yellow]")
     except Exception:  # reporting must never fail the update
         log.debug("read_snapshot_report_failed", exc_info=True)
+    return not failed
 
 
 def _short_error(name: str, exc: BaseException) -> str:

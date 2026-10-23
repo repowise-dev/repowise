@@ -28,8 +28,6 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
-from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
-from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
 
@@ -429,6 +427,8 @@ def _rescore_stale_findings(
         # None over it when git gave us no timestamp.
         if head_ts is not None:
             last_full_rescore_at = head_ts
+        from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
         health_analyzer_version = HEALTH_ANALYZER_VERSION
     if force_full_rescore and not rescored:
         raise RuntimeError(
@@ -441,6 +441,8 @@ def _rescore_stale_findings(
     # persist above only rescanned the changed files.
     security_scanner_version = state.get("security_scanner_version")
     if security_scanner_changed(state):
+        from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
         with timed(timings, "security_rescan"):
             if run_full_security_rescan(repo_path, exclude_patterns or []):
                 security_scanner_version = SECURITY_SCANNER_VERSION
@@ -1220,6 +1222,8 @@ def _run_full_health_rescore(
         console.print(f"[yellow]Health re-score failed: {exc}[/yellow]")
         raise
 
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     # Same full-replace re-score the periodic gate runs, so it restarts the same
     # cadence. Left unstamped when git is unreadable: the gate cannot fire
     # without a head_ts either.
@@ -1338,6 +1342,8 @@ def health_analyzer_changed(state: dict) -> bool:
     stated defect. They pick the stamp up on their first re-score from any
     other trigger.
     """
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     stored = state.get("health_analyzer_version")
     return stored is not None and stored != HEALTH_ANALYZER_VERSION
 
@@ -1351,6 +1357,8 @@ def security_scanner_changed(state: dict) -> bool:
     unstamped forever, since only the rescan this gates writes the stamp.
     ``init`` stamps every fresh index, so a new install never reads as stale.
     """
+    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
     return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
 
 
@@ -1364,6 +1372,8 @@ def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: li
         return False
     if not run_full_security_rescan(repo_path, exclude_patterns):
         return False
+    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
     state["security_scanner_version"] = SECURITY_SCANNER_VERSION
     return True
 
