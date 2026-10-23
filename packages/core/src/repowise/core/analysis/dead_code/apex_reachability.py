@@ -193,7 +193,12 @@ class _ApexFacts:
     """Declared top-level type names and folded name mentions, read once."""
 
     def __init__(
-        self, graph: Any, files: list[str], source_map: Mapping[str, bytes], repo_root: Path | None
+        self,
+        graph: Any,
+        files: list[str],
+        source_map: Mapping[str, bytes],
+        repo_root: Path | None,
+        unread: frozenset[bytes],
     ) -> None:
         self.declared: dict[str, set[bytes]] = {}  # apex file -> folded top-level type names
         nested = self._read_declarations(graph, files)
@@ -207,7 +212,10 @@ class _ApexFacts:
                     self.users.setdefault(name, set()).add(path)
             elif not _is_listing(path) and not _is_doc(path):
                 self.external |= _mentions(blob, names)
-        self.complete = repo_root is None or self._read_metadata(repo_root, source_map, names)
+        # A name in a file ingestion skipped may be a use we could not read.
+        self.external |= names & unread
+        # Without the repository the metadata is unread, so nothing is judged.
+        self.complete = repo_root is not None and self._read_metadata(repo_root, source_map, names)
 
     def _read_declarations(self, graph: Any, files: list[str]) -> set[bytes]:
         """Fill :attr:`declared`; return the folded nested type names."""
@@ -345,21 +353,22 @@ class ApexLiveness:
         source_map: Mapping[str, bytes],
         parsed_files: Mapping[str, Any],
         repo_root: Path | None,
+        unread: frozenset[bytes] = frozenset(),
     ) -> None:
+        """*unread* holds the folded identifiers of files ingestion skipped."""
         files = _apex_files(graph)
         self.files = frozenset(files)
-        # With no source the names cannot be read: unchecked is reachable.
-        if not files or not source_map:
-            self.facts = None
-            self.live = self.files
+        self.facts: _ApexFacts | None = None
+        self.live = self.files
+        # Unread means unjudged: an Apex file, or the metadata, we could not read.
+        if not files or any(path not in source_map for path in files):
             return
-        # Assumes *source_map* holds every indexed file, as init and update pass it.
+        facts = _ApexFacts(graph, files, source_map, Path(repo_root) if repo_root else None, unread)
+        if not facts.complete:
+            return
+        self.facts = facts
         candidates = {path for path in files if not _is_root(graph, path, parsed_files)}
-        self.facts = _ApexFacts(graph, files, source_map, Path(repo_root) if repo_root else None)
-        if not self.facts.complete:
-            self.live = self.files
-            return
-        self.live = self.files - candidates | _Reach(graph, self.facts, candidates).run()
+        self.live = self.files - candidates | _Reach(graph, facts, candidates).run()
 
     def named_outside(self, name: str, path: str) -> bool:
         """Whether a live file other than *path*, or any non-Apex file, writes *name*."""

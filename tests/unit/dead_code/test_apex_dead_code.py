@@ -9,6 +9,7 @@ names stays dead.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,7 +60,11 @@ def _analyze(
     sources: dict[str, str],
     repo_root: Path | None = None,
     heritage: dict[str, list[HeritageRelation]] | None = None,
+    *,
+    unindexed: list[tuple[str, str]] | None = None,
 ):
+    # An empty checkout unless the test supplies one: metadata must be readable to judge.
+    repo_root = repo_root or Path(tempfile.mkdtemp())
     parsed = {
         path: _parsed((heritage or {}).get(path))
         for path, data in graph.nodes(data=True)
@@ -71,6 +76,7 @@ def _analyze(
         parsed_files=parsed,
         source_map={k: v.encode() for k, v in sources.items()},
         repo_root=repo_root,
+        unindexed_source_files=unindexed,
     ).analyze({"detect_zombie_packages": False, "min_confidence": 0.0})
 
 
@@ -352,3 +358,29 @@ def test_a_quoted_annotation_does_not_make_a_test() -> None:
 def test_an_annotation_after_a_quoted_argument_still_makes_a_test() -> None:
     text = "@SuppressWarnings('PMD.ApexDoc')\n@IsTest\nprivate class FooTests {}\n"
     assert declares_test("classes/FooTests.cls", text)
+
+
+def test_without_the_repository_nothing_is_judged() -> None:
+    # The metadata that may name a class cannot be read, so unread means unjudged.
+    graph, sources = _service_graph()
+    report = DeadCodeAnalyzer(
+        graph, git_meta_map={}, parsed_files={p: _parsed() for p in graph.nodes if p.endswith(".cls")},
+        source_map={k: v.encode() for k, v in sources.items()}, repo_root=None,
+    ).analyze({"detect_zombie_packages": False, "min_confidence": 0.0})
+    assert report.findings == []
+
+
+def test_an_apex_file_missing_from_the_source_map_leaves_apex_unjudged() -> None:
+    graph, sources = _service_graph()
+    del sources[f"{_CLASSES}/OrderServiceTest.cls"]
+    assert _analyze(graph, sources).findings == []
+
+
+def test_a_name_in_a_file_ingestion_skipped_is_a_use(tmp_path: Path) -> None:
+    graph, sources = _service_graph()
+    bundle = tmp_path / "force-app/main/default/staticresources/app.js"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("callApex('OrderService.place');")
+    rel = "force-app/main/default/staticresources/app.js"
+    report = _analyze(graph, sources, repo_root=tmp_path, unindexed=[(rel, "size")])
+    assert _dead_files(report) == set()

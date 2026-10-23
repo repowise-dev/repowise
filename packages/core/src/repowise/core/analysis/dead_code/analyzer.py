@@ -291,7 +291,11 @@ class DeadCodeAnalyzer:
         """Apex liveness, built on first use (see :mod:`apex_reachability`)."""
         if self._apex_liveness is None:
             self._apex_liveness = ApexLiveness(
-                self.graph, self._source_map, self._parsed_files, self._repo_root
+                self.graph,
+                self._source_map,
+                self._parsed_files,
+                self._repo_root,
+                frozenset(t.casefold().encode() for t in self._unindexed_identifier_tokens()),
             )
         return self._apex_liveness
 
