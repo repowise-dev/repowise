@@ -57,9 +57,12 @@ _RUN_AS = "run_as_statement"
 _CATCH = "catch_clause"
 _LOOPS = frozenset({"for_statement", "enhanced_for_statement", "while_statement", "do_statement"})
 _JUMPS = frozenset({"break_statement", "continue_statement"})
-# What an identifier's spelling is resolved in: a method, constructor or
-# property accessor. Trigger bodies and anonymous scripts are not methods.
-_SPELLING_SCOPES = frozenset({"method_declaration", "constructor_declaration", "accessor_declaration"})
+# What an identifier's spelling is resolved in: a method, constructor,
+# property accessor or trigger body (anonymous scripts keep their spelling).
+_SPELLING_SCOPES = frozenset(
+    {"method_declaration", "constructor_declaration", "accessor_declaration", "trigger_declaration"}
+)
+_METHODS = frozenset({"method_declaration", "constructor_declaration"})
 # Declarations whose ``name`` field binds a local.
 _NAMED_BINDERS = frozenset({"formal_parameter", "variable_declarator", "enhanced_for_statement"})
 _STOP = frozenset({"class_body"})
@@ -196,14 +199,11 @@ class ApexDefUseDialect(JavaDefUseDialect):
     # -- receiver -------------------------------------------------------------
 
     def _own_receiver(self, fn_node: Node, lmap: LanguageNodeMap) -> Receiver | None:
-        if fn_node.type not in _SPELLING_SCOPES:
-            return None  # a trigger body or anonymous script: no method to add a helper to
-        holder = fn_node
-        if fn_node.type == "accessor_declaration":  # a property's ``static`` sits on it
-            holder = fn_node.parent.parent if fn_node.parent is not None else None
-        if holder is None:
+        # A trigger declares no methods, so its plans carry no helper text; a
+        # property (``accessor_list``) has no ``body`` and is never sliced.
+        if fn_node.type not in _METHODS:
             return None
-        if _is_static(holder):
+        if _is_static(fn_node):
             return self._receiver(frozenset(), implicit=True)
         return self._receiver(lmap.self_identifiers, implicit=True)
 

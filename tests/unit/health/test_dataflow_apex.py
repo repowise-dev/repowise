@@ -19,6 +19,7 @@ from repowise.core.analysis.health.dataflow import (
     find_extractions,
     get_defuse_dialect,
 )
+from repowise.core.analysis.health.refactoring import extract_method as em
 from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
 
@@ -488,3 +489,32 @@ def test_apex_dynamic_query_iterable_does_not_read_its_own_loop_variable():
     header = _line(src, "Database.query(q)")
     read = {u.name for b in fn.def_use.blocks.values() for u in b.uses if u.line == header}
     assert "q" in read and "a" not in read
+
+
+def test_apex_trigger_plan_has_no_helper_text_and_property_is_not_sliced():
+    from repowise.core.ingestion.parser import _get_language
+
+    if _get_language("apex") is None:
+        pytest.skip("tree-sitter language pack missing for apex")
+    lines = ["trigger T on Account (before insert) {", "    Integer seen = 0;"]
+    for k in range(6):
+        lines += [f"    if (Trigger.new.size() > {k}) {{", f"        seen += {k};", "    }"]
+    lines += ["    System.debug(seen);", "    System.debug(seen);", "}"]
+    res = analyze_file("T.trigger", "apex", "\n".join(lines).encode(), flagged_only=False)
+    (fn,) = res.functions
+    assert get_defuse_dialect("apex").receiver(fn.fn_node, get_language_map("apex")) is None
+    x = _extractions(fn)[0]
+    symbol = em._symbol_fields(x, None)
+    assert symbol["new_symbol"]["kind"] is None
+    fields = em._render_fields(fn, x, get_defuse_dialect("apex"), "apex", "h", symbol, async_host=True)
+    assert fields["new_symbol"]["signature_text"] is None and fields["call_site"] is None
+    prop = _analyses(
+        """
+        public class Demo {
+            public Integer total {
+                get { if (cache == null) { cache = 0; } return cache; }
+            }
+        }
+        """
+    )
+    assert all(not _extractions(f) for f in prop)
