@@ -79,6 +79,8 @@ resolved case-insensitively within each sfdx project's namespace, and is
 excluded from dead-code claims the same way until triggers, annotations and
 platform interfaces are modelled as entry points. Apex test coverage from the
 Salesforce CLI is read as a coverage report ([formats](TEST_INTELLIGENCE.md#supported-formats)).
+Salesforce flows (`.flow-meta.xml`) are one symbol each, linked to the Apex
+invocable actions, subflows and screen components they name.
 
 ## How accurate is the graph per language
 

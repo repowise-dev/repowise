@@ -7,7 +7,7 @@ is not claimed by extension because Flow (the JavaScript type checker) ships
 directory instead.
 
 ``special_handlers`` reads each file into one function-kind symbol named by the
-flow's API name; ``framework_edges/salesforce_flow.py`` links it to the Apex
+flow's API name; ``framework_edges/salesforce_metadata.py`` links it to the Apex
 actions, subflows and screen components it names. ``is_code=False`` because
 the flow itself is placed by the org (a record trigger, a schedule, an App
 Builder page, a user), so dead code never reports one.
@@ -21,7 +21,8 @@ from ..spec import LanguageSpec
 def is_legacy_flow_path(path: str) -> bool:
     """True for a metadata API ``flows/<Name>-<version>.flow`` file."""
     p = PurePosixPath(path.replace("\\", "/"))
-    return p.suffix.lower() == ".flow" and p.parent.name == "flows"
+    # A flow API name has no dot, so ``flows/types.js.flow`` stays JavaScript's.
+    return p.suffix.lower() == ".flow" and p.parent.name == "flows" and "." not in p.stem
 
 
 SPEC = LanguageSpec(

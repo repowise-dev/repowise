@@ -221,6 +221,7 @@ def test_a_legacy_flow_routes_by_directory_and_js_flow_does_not(tmp_path: Path) 
     repo = _write(tmp_path, {
         "src/flows/Old_Flow-2.flow": _flow("    <processType>Flow</processType>\n"),
         "lib/types/index.js.flow": "// @flow\nexport type T = string;\n",
+        "src/flows/types.js.flow": "// @flow\nexport type T = string;\n",
     })  # fmt: skip
     langs = {fi.path: fi.language for fi in FileTraverser(repo).traverse()}
     assert langs == {"src/flows/Old_Flow-2.flow": "salesforce_flow"}

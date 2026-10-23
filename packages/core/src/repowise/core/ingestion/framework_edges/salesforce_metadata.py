@@ -84,17 +84,15 @@ _COMPONENT_TAGS = r"componentName|lightningComponent|lightningWebComponent|lwcCo
 _TAG_VALUE_RE = re.compile(
     rf"<({_COMPONENT_TAGS}|flowDefinition|apexClass)>\s*([^<\s]+)\s*</\1>"
 )
-_PLACEMENT_SUFFIXES = (
-    ".flexipage-meta.xml",
-    ".flexipage",
-    ".quickAction-meta.xml",
-    ".quickAction",
-    ".tab-meta.xml",
-    ".tab",
-)
+_PLACEMENT_SUFFIXES = (".flexipage-meta.xml", ".quickAction-meta.xml", ".tab-meta.xml")
+# Metadata API names are bare suffixes (``.tab`` is also tab-separated data),
+# so they count only in their metadata directory.
+_MDAPI_PLACEMENT = {".flexipage": "flexipages", ".quickAction": "quickActions", ".tab": "tabs"}
+# Placement metadata is small; a bigger file is not one.
+_MAX_PLACEMENT_BYTES = 1_000_000
 # The globs only narrow the walk; ``_is_placement_file`` decides what is read.
 _LIVENESS_GLOBS = (
-    *(f"*{s}" for s in _PLACEMENT_SUFFIXES),
+    *(f"*{s}" for s in (*_PLACEMENT_SUFFIXES, *_MDAPI_PLACEMENT)),
     "*.xml",  # emailservices/<Name>.xml-meta.xml, mdapi emailservices/<Name>.xml
     "*.json",  # Experience Builder views under experiences/
 )
@@ -190,6 +188,8 @@ class _Index:
         cands = self.apex.get(name.lower(), []) if name else []
         return _nearest(cands, referrer) if cands else None
 
+    # Ceiling: two legacy versions of one flow in one directory (``Foo-1.flow``,
+    # ``Foo-2.flow``) tie and bind neither; take the highest version if it matters.
     def flow(self, raw: str, referrer: str) -> str | None:
         name = self._strip_ns(raw, self.flows)
         cands = self.flows.get(name.lower(), []) if name else []
@@ -374,6 +374,8 @@ def _is_placement_file(rel: str) -> bool:
     p = PurePosixPath(rel)
     if p.name.endswith(_PLACEMENT_SUFFIXES):
         return True
+    if _MDAPI_PLACEMENT.get(p.suffix) == p.parent.name:
+        return True
     if p.parent.name == "emailservices":
         return p.name.endswith(".xml")
     return p.suffix == ".json" and "experiences" in p.parts
@@ -415,6 +417,8 @@ def _liveness_edges(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext, path_s
         if not _is_placement_file(rel):
             continue
         try:
+            if file.stat().st_size > _MAX_PLACEMENT_BYTES:
+                continue
             text = file.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
