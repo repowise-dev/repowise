@@ -932,6 +932,12 @@ _JAXRS_PATH_RE = re.compile(r"""@Path\s*\(\s*(?:value\s*=\s*)?["'](?P<path>[^"']
 
 _JAXRS_VERB_RE = re.compile(rf"@(?P<verb>{_JAXRS_VERBS})\b")
 
+# Any `@Path(...)`, literal or not.
+_JAXRS_PATH_OPEN_RE = re.compile(r"@Path\s*\(")
+
+# A MicroProfile REST client: a JAX-RS interface whose routes are calls out.
+_MICROPROFILE_CLIENT_RE = re.compile(r"@RegisterRestClient\b")
+
 _JAXRS_TYPE_RE = re.compile(
     r"^[^\S\n]*(?:public|final|abstract|open|internal|sealed|data|\s)*"
     r"(?:class|interface)\s+\w+",
@@ -970,15 +976,20 @@ def jaxrs_class_paths(content: str) -> list[tuple[int, str]]:
 def jaxrs_routes(content: str) -> Iterator[RouteMatch]:
     """Verb-annotated resource methods in *content*.
 
-    ``path`` is the method's own ``@Path`` or ``""``; the class prefix is
-    stitched on by the consumer, the only side that knows how to compose one.
+    ``path`` is the method's own ``@Path``, ``""`` when it has none and
+    ``None`` when it names one this cannot read (a constant); the class prefix
+    is stitched on by the consumer, the only side that knows how to compose one.
     """
     for m in _JAXRS_VERB_RE.finditer(content):
         end = _jaxrs_decl_end(content, m.start())
         sub = _JAXRS_PATH_RE.search(content, m.end(), end)
+        if sub is None and _JAXRS_PATH_OPEN_RE.search(content, m.end(), end):
+            path = None
+        else:
+            path = sub.group("path") if sub else ""
         yield RouteMatch(
             verb=m.group("verb").upper(),
-            path=sub.group("path") if sub else "",
+            path=path,
             receiver=None,
             handler=None,
             offset=m.start(),
@@ -1663,12 +1674,41 @@ def spring_feign_clients(
     The arguments are the annotation's parenthesised source text, ``""`` when
     it has none; the client's ``name``, ``url`` and ``path`` sit in it.
     """
-    if "@FeignClient" not in content:
+    return _client_types(content, annotations, _SPRING_CLIENT_RE, "@FeignClient")
+
+
+def microprofile_rest_clients(
+    content: str, annotations: set[int] | None = None
+) -> list[tuple[int, int, str, str | None]]:
+    """``(body start, body end, annotation arguments, prefix)`` per ``@RegisterRestClient`` type.
+
+    A MicroProfile client is a JAX-RS interface: its verb annotations are calls
+    out, not routes served. ``prefix`` is the type's own ``@Path``, ``""`` when
+    it has none and ``None`` when it names one this cannot read.
+    """
+    clients = _client_types(content, annotations, _MICROPROFILE_CLIENT_RE, "@RegisterRestClient")
+    if not clients:
+        return []
+    code = micronaut_annotations(content) if annotations is None else annotations
+    # A type-level @Path is the one whose declaration ends at the type's body.
+    paths: dict[int, str | None] = {}
+    for m in _JAXRS_PATH_OPEN_RE.finditer(content):
+        if m.start() in code:
+            literal = _JAXRS_PATH_RE.match(content, m.start())
+            paths[_jaxrs_decl_end(content, m.start())] = literal.group("path") if literal else None
+    return [(start, end, args, paths.get(start, "")) for start, end, args in clients]
+
+
+def _client_types(
+    content: str, annotations: set[int] | None, pattern: re.Pattern[str], marker: str
+) -> list[tuple[int, int, str]]:
+    """``(body start, body end, annotation arguments)`` per type annotated *pattern*."""
+    if marker not in content:
         return []
     code = micronaut_annotations(content) if annotations is None else annotations
     return [
         (start, end, _spring_args(content, name_end))
-        for name_end, start, end in _spring_type_bodies(content, code, _SPRING_CLIENT_RE)
+        for name_end, start, end in _spring_type_bodies(content, code, pattern)
     ]
 
 

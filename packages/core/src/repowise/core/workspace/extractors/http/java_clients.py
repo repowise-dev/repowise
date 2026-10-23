@@ -1,6 +1,6 @@
-"""Java HTTP consumer dialect.
+"""Java and Kotlin HTTP consumer dialects.
 
-Three call shapes, each with its own source for the verb:
+Five call shapes, each with its own source for the verb:
 
 * Feign declarative clients: ``@RequestLine("POST /v1/{entityType}/images")``.
   Verb and path both sit inside one annotation string and the placeholders are
@@ -11,7 +11,16 @@ Three call shapes, each with its own source for the verb:
   by walking the chain up to its ``;`` or its ``.build()``.
 * Spring ``RestTemplate``: ``getForObject`` / ``postForEntity`` and friends name
   the verb in the callee, ``exchange(uri, HttpMethod.GET, ...)`` names it in the
-  second argument.
+  second argument, or in the ``RequestEntity.get(uri)`` it is handed. The
+  template may be reached through a getter (``proxy.getRestTemplate()``).
+* Spring ``WebClient`` and ``RestClient``: ``client.get().uri(url, vars)``, the
+  verb step (or ``.method(HttpMethod.X)``) directly before the ``uri`` step.
+* Apache HttpClient: ``new HttpPost(url)``, the class naming the verb.
+
+A helper constructed with its base URL in another file
+(``new CartHelper(CART_URL)`` beside ``this.baseUrl = baseUrl``) has that base
+folded in: constructor calls passing a URL are collected repo-wide as mounts,
+and a call whose URL starts with such a field is a dataflow row.
 
 Spring's declarative clients, Java or Kotlin, are read by their own dialect:
 an ``@FeignClient`` interface written with the controller annotations, and a
@@ -28,13 +37,16 @@ a URL validated upstream, so no site carries a path this layer could read.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from repowise.core.ingestion.framework_routes import (
     SPRING_EXCHANGE,
     RouteMatch,
+    jaxrs_routes,
     micronaut_annotations,
+    microprofile_rest_clients,
     spring_class_paths,
     spring_feign_clients,
     spring_route_prefixes,
@@ -43,7 +55,15 @@ from repowise.core.ingestion.framework_routes import (
 from repowise.core.workspace.origins import ContractOrigin
 
 from ..langs import JAVA, KOTLIN
-from ..strings import JAVA_SYNTAX, call_arguments, match_paren, string_constants
+from ..strings import (
+    JAVA_SYNTAX,
+    call_arguments,
+    match_paren,
+    resolve_string,
+    split_top_level,
+    string_constants,
+    syntax_for_suffix,
+)
 from .client_calls import VERBS, ClientCallMatch, consumer_contracts, method_from_argument
 from .mounts import compose_prefix
 
@@ -69,12 +89,42 @@ _CHAIN_LIMIT = 2000
 # `delete` are not, which is why the file is gated on the class name and the
 # rows go through `path_only`.
 _REST_TEMPLATE_RE = re.compile(
-    r"\b(?:[A-Za-z_]\w*\s*\.\s*"
+    r"(?:(?:\b[A-Za-z_]\w*|\))\s*\.\s*"
     r"(getForObject|getForEntity|postForObject|postForEntity|patchForObject|exchange)"
-    r"|\w*[Tt]emplate\w*\s*\.\s*(put|delete))"
+    r"|\b\w*[Tt]emplate\w*(?:\(\s*\))?\s*\.\s*(put|delete))"
     r"\s*\("
 )
 
+# RequestEntity.get(url) / RequestEntity.method(HttpMethod.X, url): a request
+# whose builder head names its verb and URL.
+_REQUEST_ENTITY_RE = re.compile(
+    r"\bRequestEntity\s*\.\s*(get|post|put|delete|patch|head|options|method)\s*\("
+)
+_ENTITY_ASSIGN_RE = re.compile(r"(?<![.\w$])([A-Za-z_]\w*)\s*=(?!=)\s*(?=RequestEntity\s*\.)")
+
+# A WebClient / RestClient request: the verb step, then the `.uri(` naming the URL.
+_SPRING_REQUEST_RE = re.compile(
+    r"\.\s*(?:(?P<verb>get|post|put|delete|patch|head|options)\s*\(\s*\)"
+    r"|method\s*\(\s*(?P<method>[\w.]+)\s*\))\s*\.\s*uri\s*\("
+)
+
+# Apache HttpClient 4 and 5: the request class names the verb.
+_APACHE_REQUEST_RE = re.compile(r"\bnew\s+Http(Get|Post|Put|Delete|Patch|Head|Options)\s*\(")
+
+# A constructor call, whose arguments may carry a helper's base URL.
+_NEW_RE = re.compile(r"\bnew\s+([A-Z]\w*)\s*\(")
+_CLASS_RE = re.compile(r"\bclass\s+([A-Z]\w*)")
+# `this.base = base;` or `base = base;` in a constructor body.
+_FIELD_FROM_PARAM_RE = re.compile(
+    r"(?<![\w$])(?:this\s*\.\s*)?([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;"
+)
+# Mount key of the URL a `new C(...)` call passes: class, arity, position.
+_CTOR_KEY = "java-ctor-url:"
+# A generic argument list or a parameter annotation, dropped before parameters split.
+_GENERIC_RE = re.compile(r"<[^<>]*>")
+_PARAM_ANNOTATION_RE = re.compile(r"@\w+(?:\s*\([^()]*\))?")
+# Words that precede a name without declaring it.
+_NOT_TYPES = frozenset({"return", "throw", "case", "else", "new", "yield", "assert"})
 
 
 def feign_calls(content: str) -> Iterator[ClientCallMatch]:
@@ -153,6 +203,7 @@ def java_net_http_calls(content: str) -> Iterator[ClientCallMatch]:
 def resttemplate_calls(content: str) -> Iterator[ClientCallMatch]:
     if "RestTemplate" not in content:
         return
+    entities: dict[str, tuple[str, str]] | None = None
     for m in _REST_TEMPLATE_RE.finditer(content):
         callee = m.group(1) or m.group(2)
         paren = m.end() - 1
@@ -160,15 +211,22 @@ def resttemplate_calls(content: str) -> Iterator[ClientCallMatch]:
         if not args:
             continue
         method = None
+        url = args[0]
         if callee == "exchange":
             if len(args) < 2:
                 continue
             method = method_from_argument(args[1])
             if method is None:
-                continue  # a verb held in a variable is not one we know
+                # exchange(entity, type): the RequestEntity names verb and URL.
+                if entities is None:
+                    entities = _request_entities(content)
+                entity = _request_entity(url.strip()) or entities.get(url.strip())
+                if entity is None:
+                    continue  # a verb held in a variable is not one we know
+                method, url = entity
         yield ClientCallMatch(
             client="resttemplate",
-            url=args[0],
+            url=url,
             offset=m.start(),
             callee=callee,
             method=method,
@@ -176,23 +234,214 @@ def resttemplate_calls(content: str) -> Iterator[ClientCallMatch]:
         )
 
 
+def _request_entity(text: str, at: int = 0) -> tuple[str, str] | None:
+    """``(verb, URL text)`` of the ``RequestEntity`` builder starting at *at*, else ``None``."""
+    m = _REQUEST_ENTITY_RE.match(text, at)
+    if m is None:
+        return None
+    args = call_arguments(text, m.end() - 1)
+    if not args:
+        return None
+    if m.group(1) == "method":
+        verb = method_from_argument(args[0]) if len(args) == 2 else None
+        return (verb, args[1]) if verb else None
+    return (m.group(1).upper(), args[0]) if len(args) == 1 else None
+
+
+def _request_entities(content: str) -> dict[str, tuple[str, str]]:
+    """Names the file assigns exactly once, to a ``RequestEntity`` builder."""
+    out: dict[str, tuple[str, str]] = {}
+    for m in _ENTITY_ASSIGN_RE.finditer(content):
+        name = m.group(1)
+        entity = _request_entity(content, m.end())
+        assigned = re.findall(rf"(?<![.\w$]){name}\s*=(?!=)", content)
+        if entity is not None and len(assigned) == 1:
+            out[name] = entity
+    return out
+
+
+def spring_request_calls(content: str) -> Iterator[ClientCallMatch]:
+    """``WebClient`` and ``RestClient`` requests: a verb step, then ``.uri(url, ...)``.
+
+    A ``.uri(builder -> ...)`` function names no URL this can read and is
+    refused when it is resolved.
+    """
+    for m in _SPRING_REQUEST_RE.finditer(content):
+        verb = m.group("verb")
+        method = verb.upper() if verb else method_from_argument(m.group("method"))
+        args = call_arguments(content, m.end() - 1)
+        if method is None or not args:
+            continue
+        yield ClientCallMatch(
+            client="webclient",
+            url=args[0],
+            offset=m.start(),
+            method=method,
+            origin=ContractOrigin.CLIENT_CALL,
+        )
+
+
+def apache_calls(content: str) -> Iterator[ClientCallMatch]:
+    """Apache HttpClient requests: ``new HttpPost(url)`` and its siblings."""
+    for m in _APACHE_REQUEST_RE.finditer(content):
+        args = call_arguments(content, m.end() - 1)
+        if not args or len(args) != 1:
+            continue
+        yield ClientCallMatch(
+            client="apache-httpclient",
+            url=args[0],
+            offset=m.start(),
+            method=m.group(1).upper(),
+            origin=ContractOrigin.CLIENT_CALL,
+        )
+
+
+def ctor_url_arguments(content: str) -> dict[str, str]:
+    """The absolute URLs this file's ``new C(...)`` calls pass, keyed by class and position.
+
+    Ceiling: only a URL a file resolves is recorded, so another call site
+    passing a URL held in a variable does not make the key ambiguous. Two
+    sites passing different URLs do, and the merge drops the key.
+    """
+    out: dict[str, str] = {}
+    constants: dict[str, str] | None = None
+    for m in _NEW_RE.finditer(content):
+        args = call_arguments(content, m.end() - 1) or []
+        for i, arg in enumerate(args):
+            if "://" not in arg and not arg.strip().isidentifier():
+                continue  # neither a URL literal nor a name that could hold one
+            if constants is None:
+                constants = string_constants(content, JAVA_SYNTAX)
+            value = resolve_string(arg, JAVA_SYNTAX, constants)
+            if value is not None and "://" in value and '"' not in value:
+                out[_ctor_key(m.group(1), len(args), i)] = value
+    return out
+
+
+def _ctor_key(cls: str, arity: int, position: int) -> str:
+    # The arity keeps an overload's arguments apart from another's.
+    return f"{_CTOR_KEY}{cls}/{arity}:{position}"
+
+
+def _param_names(text: str) -> list[str]:
+    """The names a parameter list declares, generics and annotations dropped."""
+    text = _PARAM_ANNOTATION_RE.sub(" ", text)
+    while True:
+        stripped = _GENERIC_RE.sub(" ", text)
+        if stripped == text:
+            break
+        text = stripped
+    return [p.split()[-1].lstrip("*") for p in text.split(",") if p.split()]
+
+
+def _ctor_params(content: str, cls: str) -> Iterator[tuple[list[str], int, int, int]]:
+    """``(parameter names, parameters start, body start, body end)`` per constructor of *cls*.
+
+    A declaration opens its line or follows an access modifier, so a call
+    (``new Cls(``, ``x = Cls(``) is not read as one.
+    """
+    decl_re = rf"(?m)(?:^[ \t]*|\b(?:public|protected|private)\s+){cls}\s*\("
+    for decl in re.finditer(decl_re, content):
+        close = match_paren(content, decl.end() - 1)
+        if close < 0:
+            continue
+        brace = re.match(r"\s*(?:throws[^{;]*)?\{", content[close + 1 : close + 200])
+        if brace is None:
+            continue
+        start = close + brace.end()
+        end = match_paren(content, start, closer="}")
+        params = _param_names(content[decl.end() : close])
+        yield params, decl.end(), start, end if end > 0 else start
+
+
+def _ctor_bases(content: str, mounts: Mapping[str, str]) -> dict[str, str]:
+    """Fields a constructor here sets from a parameter a ``new`` call fills with a URL.
+
+    The value is the URL as a Java literal. A field assigned anywhere else in
+    the file (an initialiser, a setter) is left out: which value reaches the
+    call is then not settled.
+    """
+    out: dict[str, str] = {}
+    for cls in dict.fromkeys(_CLASS_RE.findall(content)):
+        for params, params_start, start, end in _ctor_params(content, cls):
+            for a in _FIELD_FROM_PARAM_RE.finditer(content, start, end):
+                field, param = a.group(1), a.group(2)
+                if param not in params:
+                    continue
+                value = mounts.get(_ctor_key(cls, len(params), params.index(param)))
+                if value is not None and _settled_field(content, field, params_start, start):
+                    out[field] = f'"{value}"'
+    return out
+
+
+def _settled_field(content: str, field: str, ctor_start: int, ctor_body: int) -> bool:
+    """Whether *field* is written once, and no parameter or local elsewhere shadows it.
+
+    The constructor's own parameter list is the one place the name may also
+    be declared: a ``base`` parameter of another method would be any URL.
+    """
+    if len(re.findall(rf"(?<![\w$]){field}\s*=(?!=)", content)) != 1:
+        return False
+    declared = [
+        m.start()
+        for m in re.finditer(rf"(\w+|[>\]])\s+{field}\s*[,)=;:]", content)
+        if m.group(1) not in _NOT_TYPES and not ctor_start <= m.start() < ctor_body
+    ]
+    return len(declared) == 1  # the field's own declaration
+
+
+def _with_bases(rows: list[ClientCallMatch], bases: dict[str, str]) -> list[ClientCallMatch]:
+    """*rows*, each URL led by a constructor-set base field put onto that base's literal."""
+    out = []
+    for row in rows:
+        pieces = split_top_level(row.url, "+")
+        head = pieces[0].strip()
+        if head in bases:
+            url = " + ".join([bases[head], *pieces[1:]])
+            row = replace(row, url=url, origin=ContractOrigin.DATAFLOW)
+        out.append(row)
+    return out
+
+
 class JavaClientsDialect:
     name = "java-clients"
-    extensions = JAVA
-    requires = ("@RequestLine", "HttpRequest", "RestTemplate")
+    extensions = JAVA | KOTLIN
+    requires = (
+        "@RequestLine",
+        "HttpRequest",
+        "RestTemplate",
+        "WebClient",
+        "RestClient",
+        "org.apache.http",
+        "org.apache.hc",
+    )
+    # The repo-wide pass reads constructor calls that pass a URL literal on.
+    mount_requires = ('"http://', '"https://')
+
+    def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
+        return ctor_url_arguments(ctx.content) if ctx.suffix in JAVA else {}
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
         named = [*feign_calls(content), *java_net_http_calls(content)]
+        if ctx.has_any(("WebClient", "RestClient")):
+            named.extend(spring_request_calls(content))
+        if ctx.has_any(("org.apache.http", "org.apache.hc")):
+            named.extend(apache_calls(content))
         # `.put`/`.delete` on any receiver could be a collection, so a URL with
         # no slash in it is a key rather than a route.
         ambiguous = list(resttemplate_calls(content))
         if not named and not ambiguous:
             return []
-        constants = string_constants(content, JAVA_SYNTAX)
+        syntax = syntax_for_suffix(ctx.suffix) or JAVA_SYNTAX
+        constants = string_constants(content, syntax)
+        if ctx.suffix in JAVA and ctx.mounts:
+            bases = _ctor_bases(content, ctx.mounts)
+            if bases:
+                named, ambiguous = _with_bases(named, bases), _with_bases(ambiguous, bases)
         return [
-            *consumer_contracts(ctx, named, JAVA_SYNTAX, constants=constants),
-            *consumer_contracts(ctx, ambiguous, JAVA_SYNTAX, constants=constants, path_only=True),
+            *consumer_contracts(ctx, named, syntax, constants=constants),
+            *consumer_contracts(ctx, ambiguous, syntax, constants=constants, path_only=True),
         ]
 
 
@@ -379,3 +628,46 @@ class SpringClientsDialect:
         # The URL text is built here, not read from the file, so it resolves as
         # a plain literal whatever the file's language.
         return consumer_contracts(ctx, rows, JAVA_SYNTAX)
+
+
+def _microprofile_base(args: str) -> str:
+    """The base a ``@RegisterRestClient`` names in ``baseUri``, else ``""``.
+
+    A ``configKey`` names configuration this file cannot read, so the call is
+    a bare path.
+    """
+    return _annotation_strings(_top_level(args)).get("baseUri", "").rstrip("/")
+
+
+def microprofile_client_calls(content: str, annotations: set[int]) -> Iterator[ClientCallMatch]:
+    """Calls a MicroProfile ``@RegisterRestClient`` interface declares with JAX-RS annotations."""
+    clients = microprofile_rest_clients(content, annotations)
+    if not clients:
+        return
+    class_paths = [
+        (start, end, None if prefix is None else (prefix.rstrip("/"),))
+        for start, end, _, prefix in clients
+    ]
+
+    def base_at(offset: int) -> tuple[str, str] | None:
+        inner = [args for start, end, args, _ in clients if start < offset < end]
+        return (_microprofile_base(inner[-1]), "") if inner else None
+
+    yield from _interface_rows(
+        jaxrs_routes(content),
+        class_paths,
+        base_at,
+        client="microprofile",
+        unrestricted=None,
+    )
+
+
+class MicroProfileClientsDialect:
+    name = "microprofile-clients"
+    extensions = JAVA | KOTLIN
+    requires = ("@RegisterRestClient",)
+
+    def extract(self, ctx: ScanContext) -> list[Contract]:
+        content = ctx.content
+        rows = list(microprofile_client_calls(content, micronaut_annotations(content)))
+        return consumer_contracts(ctx, rows, JAVA_SYNTAX) if rows else []
