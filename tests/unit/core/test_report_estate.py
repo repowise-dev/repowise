@@ -182,7 +182,7 @@ def test_assemble_appends_workspace_sections_after_the_repos():
 async def test_without_a_system_graph_every_estate_section_is_unresolved(tmp_path):
     found = await _estate(WorkspaceReportContext(tmp_path))
     items = [c for checks in found.values() for c in checks.values()]
-    assert len(found) == 3 and all(c["basis"] == "unresolved" for c in items)
+    assert len(found) == 6 and all(c["basis"] == "unresolved" for c in items)
     assert "repowise update --workspace" in items[0]["reason"]
 
 
@@ -283,7 +283,14 @@ def test_cli_estate_reads_the_stored_artifacts(tmp_path: Path, monkeypatch) -> N
     assert result.exit_code == 0, result.output
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["kind"] == "estate" and doc["scope"] == {"kind": "workspace", "name": "ws"}
-    assert [s["id"] for s in doc["sections"]] == ["estate-summary", "estate-map", "estate-contracts"]
+    assert [s["id"] for s in doc["sections"]] == [
+        "estate-summary",
+        "estate-map",
+        "estate-contracts",
+        "estate-health",
+        "estate-seams",
+        "estate-start",
+    ]
     assert all(s["repo"] is None for s in doc["sections"])
     assert [r.get("indexed", True) for r in doc["repos"]] == [False] * 4  # no member is indexed
     md = CliRunner().invoke(cli, ["report", "estate", str(ws), "--sections", "estate-map"])

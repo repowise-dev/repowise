@@ -174,7 +174,7 @@ both ways).
 | `breaking_change` | `contract_links`, previous and new stores | Provider breaks with the consumer files they reach |
 | `test_impact.analyze_workspace_test_impact` | `contract_links`, each consumer repo's test reachability from the link's `consumer_symbol_id` | Tests to run, unresolved rows with reasons |
 | `diagnostics.build_diagnostics` | Contracts, `contract_links`, extraction stats | Counts, unmatched reasons, weak links, coverage |
-| `report estate` (`report/sections/estate_*.py`) | `system_graph.json`, `contracts.json`, `graph_evidence`, the architecture metrics | Estate summary, system map and architecture, contracts and dangling calls |
+| `report estate` (`report/sections/estate_*.py`) | `system_graph.json`, `contracts.json`, `graph_evidence`, the architecture metrics, `workspace.db` health, each member index | Estate summary, system map and architecture, contracts and dangling calls, health and churn per repo, riskiest seams (`seams.rank_seams`), where to start |
 
 Service links reach the graph views (cycles, metrics, conformance, blast radius).
 Breaking changes, test impact and diagnostics read `contract_links` only, since a

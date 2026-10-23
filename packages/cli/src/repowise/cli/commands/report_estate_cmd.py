@@ -31,7 +31,8 @@ from repowise.cli.helpers import (
 @click.option("--out", "out_path", type=click.Path(dir_okay=False), help="Write to this file.")
 def estate_command(path: str | None, wanted: str | None, fmt: str, out_path: str | None) -> None:
     """Estate report: repositories and services, the system map and architecture with
-    the evidence behind them, contracts and the calls that reached no provider."""
+    the evidence behind them, contracts and the calls that reached no provider, health
+    and churn per repo, the riskiest seams and where to start."""
     from repowise.cli._helpers.target import WorkspaceNotFound
     from repowise.cli.commands.report_assessment_cmd import (
         _build,

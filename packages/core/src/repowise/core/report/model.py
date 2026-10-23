@@ -219,6 +219,46 @@ class WorkspaceReportContext:
         graph = self.system_graph()
         return self._load("evidence", lambda: graph_evidence(graph) if graph else None)
 
+    def repo_health(self) -> dict[str, dict[str, Any]] | None:
+        """Each member's stored health headline from ``workspace.db``, ``None`` without one."""
+        from repowise.core.workspace.store import read_repo_health, store_path
+
+        return self._load("health", lambda: read_repo_health(store_path(self.ws_root)))
+
+    async def each_index(
+        self, key: str, read: Callable[[Any, str], Awaitable[Any]]
+    ) -> dict[str, Any]:
+        """``alias -> await read(session, repository_id)`` over every member with an
+        index, cached under *key*. A member whose index cannot be opened or read
+        maps to the exception instead, so a section can say which one it missed.
+        """
+        if key in self._cache:
+            return self._cache[key]
+        from repowise.core.workspace.registry import open_repo_db, repo_db_path
+        from repowise.core.workspace.repo_index import checkout_repository
+
+        out: dict[str, Any] = {}
+        for entry in self.config().repos:
+            root = (self.ws_root / entry.path).resolve()
+            if not repo_db_path(root).is_file():
+                continue
+            try:
+                engine, sessions = await open_repo_db(root)
+            except Exception as exc:  # one unreadable index must not lose the rest
+                out[entry.alias] = exc
+                continue
+            try:
+                async with sessions() as session:
+                    repo = await checkout_repository(session, root)
+                    if repo is not None:
+                        out[entry.alias] = await read(session, repo.id)
+            except Exception as exc:
+                out[entry.alias] = exc
+            finally:
+                await engine.dispose()
+        self._cache[key] = out
+        return out
+
 
 #: Where a section runs: once per repository, or once per workspace.
 SCOPES = ("repo", "workspace")
