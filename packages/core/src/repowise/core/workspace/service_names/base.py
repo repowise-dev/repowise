@@ -85,7 +85,7 @@ class ServiceNameSource:
 
 
 def join_config_path(base: _P, ref: str) -> _P:
-    """*ref*, a path written in a config file, joined onto *base* on any OS.
+    r"""*ref*, a path written in a config file, joined onto *base* on any OS.
 
     Config written on Windows (an AppHost's ``..\Catalog.API``, a compose
     ``build: .\cart``) is indexed on Linux too, where a backslash is not a
