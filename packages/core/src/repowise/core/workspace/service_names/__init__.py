@@ -35,7 +35,18 @@ from typing import Any
 
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
-from . import aspire, compose, dockerfile, k8s_service, nginx, spring, spring_gateway
+from . import (
+    aspire,
+    compose,
+    dockerfile,
+    k8s_service,
+    nginx,
+    ocelot,
+    spring,
+    spring_gateway,
+    yarp,
+    yarp_forwarder,
+)
 from .base import ENV, HOST, Claim, Route, ServiceNameSource, SourceFile
 
 _log = logging.getLogger("repowise.workspace.service_names")
@@ -46,8 +57,11 @@ SOURCES: tuple[ServiceNameSource, ...] = (
     dockerfile.SOURCE,
     k8s_service.SOURCE,
     nginx.SOURCE,
+    ocelot.SOURCE,
     spring.SOURCE,
     spring_gateway.SOURCE,
+    yarp.SOURCE,
+    yarp_forwarder.SOURCE,
 )
 
 # Test, example and build-output trees declare services that are not the
@@ -287,6 +301,9 @@ def _settle_routes(
     A prefix sent two ways, to a service outside the workspace, or back to the
     gateway is kept as a blocker (no target, no rewrite) rather than dropped, so
     a shorter prefix of the same gateway cannot claim the paths under it.
+    Blockers alone at a prefix dispute nothing (each forwards some paths under it,
+    as ``/api/{version}/c/{all}`` and ``/api/{version}/b/{all}`` do), so each keeps
+    its target and its edge.
     """
     by_key: dict[tuple[str, str], dict[tuple[str, str | None], GatewayRoute]] = defaultdict(dict)
     for f in found:
@@ -295,6 +312,9 @@ def _settle_routes(
             by_key[(row.gateway, row.prefix)].setdefault((row.repo, row.upstream), row)
     settled: list[GatewayRoute] = []
     for (gateway, prefix), ways in sorted(by_key.items()):
+        if all(upstream is None for _, upstream in ways):
+            settled.extend(ways.values())
+            continue
         first = next(iter(ways.values()))
         if len(ways) > 1:
             targets = sorted({t for t, _ in ways})

@@ -415,6 +415,8 @@ add its case to `test_graph_evidence.py`.
   than the gateway's is not routed, since nothing says which gateway serves it.
   nginx regex locations are not read, and `${VAR}` resolves as an env key only in a
   `*.template` / `*.tmpl` file (envsubst); in a plain config it is an nginx variable.
+- YARP routes built in code (`LoadFromMemory`, Aspire `AddYarp`) are not read, and
+  `MapForwarder` only in `Program.cs` / `Startup.cs`.
 - A `host_only` edge is service-level: it has no provider route, so breaking-change
   diffs and test impact do not follow it.
 - The network probe is lexical. It reads only extensions some extractor walks,
