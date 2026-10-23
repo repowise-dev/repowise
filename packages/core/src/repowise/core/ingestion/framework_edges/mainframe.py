@@ -43,15 +43,20 @@ def _by_name(parsed_files: dict[str, Any], language: str, kind: str) -> dict[str
     return out
 
 
-def _proc_files(
-    parsed_files: dict[str, Any], declared: dict[str, list[str]]
-) -> dict[str, list[str]]:
-    """PROC name -> member: the file stem, else a name declared in exactly one file."""
+def _proc_files(parsed_files: dict[str, Any]) -> dict[str, list[str]]:
+    """PROC name -> member: the file stem, else a PROC (never a JOB) declared in one file."""
     out: dict[str, list[str]] = {}
+    declared: dict[str, list[str]] = {}
     for path in sorted(parsed_files):
+        parsed = parsed_files[path]
+        if parsed.file_info.language != "jcl":
+            continue
         p = PurePosixPath(path)
-        if parsed_files[path].file_info.language == "jcl" and p.suffix.lower() in _PROC_SUFFIXES:
+        if p.suffix.lower() in _PROC_SUFFIXES:
             out.setdefault(p.stem.upper(), []).append(path)
+        for sym in parsed.symbols:
+            if sym.kind == "module" and sym.signature.startswith("PROC "):
+                declared.setdefault(sym.name.upper(), []).append(path)
     for name, paths in declared.items():
         if name not in out and len(set(paths)) == 1:
             out[name] = paths
@@ -64,7 +69,7 @@ def _add_mainframe_edges(
     source_map: dict[str, bytes] = getattr(ctx, "source_map", None) or {}
     programs = _by_name(parsed_files, "cobol", "module")
     mapsets = _by_name(parsed_files, "bms", "module")
-    procs = _proc_files(parsed_files, _by_name(parsed_files, "jcl", "module"))
+    procs = _proc_files(parsed_files)
     count = 0
     for path in sorted(parsed_files):
         parsed = parsed_files[path]

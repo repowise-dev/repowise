@@ -87,3 +87,22 @@ def test_jobs_link_programs_and_procs_and_programs_link_mapsets() -> None:
         ("COSGN00", "module"),
         ("COSGN0A", "class"),
     }
+
+
+def test_a_step_never_runs_a_job_as_its_procedure() -> None:
+    files = {
+        "jcl/RUNNER.jcl": ("jcl", b"//RUNNER JOB CLASS=A\n//S1 EXEC BATCH1\n//S2 EXEC NIGHTLY\n"),
+        "jcl/BATCH1.jcl": ("jcl", b"//BATCH1 JOB CLASS=A\n//S1 EXEC PGM=IEFBR14\n"),
+        "jcl/LIB.jcl": ("jcl", b"//NIGHTLY PROC\n//S1 EXEC PGM=IEFBR14\n"),
+    }
+    parser = ASTParser()
+    parsed = {
+        p: parser.parse_file(_make_file_info(p, lang), src) for p, (lang, src) in files.items()
+    }
+    graph = nx.DiGraph()
+    graph.add_nodes_from(files)
+    ctx = SimpleNamespace(source_map={p: src for p, (_, src) in files.items()})
+
+    _add_mainframe_edges(graph, parsed, ctx)
+
+    assert set(graph.edges) == {("jcl/RUNNER.jcl", "jcl/LIB.jcl")}
