@@ -222,3 +222,24 @@ def test_apex_soql_dml_and_trigger_reference_schema_symbols(tmp_path: Path) -> N
     assert refs(f"{cls}::JobService::save") == {f"{job}::Job__c", f"{shift}::Shift__c"}
     assert refs(f"{trigger}::JobTrigger") == {f"{job}::Job__c"}
     assert g.get_edge_data(cls, job)["edge_type"] == "reads"
+
+
+def test_dml_target_type_respects_block_scope() -> None:
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from repowise.core.ingestion.salesforce_soql import apex_schema_refs
+
+    source = b"""class T {
+    void m(Boolean flag) {
+        if (flag) { Contact c = new Contact(); insert c; }
+        else { Lead c = new Lead(); insert c; }
+        update c;
+    }
+}
+"""
+    root = Parser(get_language("apex")).parse(source).root_node
+    refs = apex_schema_refs(root, [], "T.cls")
+    # Each branch's insert sees its own declaration; the update after both
+    # blocks sees neither, so it names nothing rather than guessing.
+    assert sorted((r.line, r.object_name) for r in refs) == [(3, "Contact"), (4, "Lead")]

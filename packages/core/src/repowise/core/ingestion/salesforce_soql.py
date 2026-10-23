@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import lru_cache
 
-from tree_sitter import Node, Parser
+from tree_sitter import Language, Node, Parser
 
 from .models import FileInfo, ParsedFile, SchemaReference, Symbol
 from .parser_helpers import _find_enclosing_symbol
@@ -58,13 +58,19 @@ def _text(node: Node | None) -> str:
 
 
 @lru_cache(maxsize=2)
-def _parser(grammar: str) -> Parser | None:
+def _language(grammar: str) -> Language | None:
     try:
         from tree_sitter_language_pack import get_language
 
-        return Parser(get_language(grammar))  # type: ignore[arg-type]
+        return get_language(grammar)  # type: ignore[arg-type]
     except Exception:
         return None
+
+
+def _parser(grammar: str) -> Parser | None:
+    """A fresh parser per use: a ``Parser`` is not safe to share across threads."""
+    language = _language(grammar)
+    return Parser(language) if language is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +216,26 @@ def _declared_names(decl: Node) -> list[str]:
     ]
 
 
+def _key(node: Node) -> tuple[int, int, str]:
+    return (node.start_byte, node.end_byte, node.type)
+
+
+def _visible(decl: Node, ancestors: set[tuple[int, int, str]]) -> bool:
+    if decl.type == "formal_parameter":
+        return True
+    holder = decl if decl.type == "enhanced_for_statement" else decl.parent
+    return holder is not None and _key(holder) in ancestors
+
+
 def _declared_type(use: Node, name: str) -> str | None:
     """The type the nearest earlier declaration of *name* gives it, method then class."""
     wanted = name.lower()
+    # Only a declaration whose scope encloses the use is visible: a local's
+    # enclosing block, a for-each's own statement, or the method's parameters.
+    ancestors: set[tuple[int, int, str]] = set()
     scope = use.parent
     while scope is not None and scope.type not in _SCOPES:
+        ancestors.add(_key(scope))
         scope = scope.parent
     best: Node | None = None
     if scope is not None:
@@ -226,6 +247,7 @@ def _declared_type(use: Node, name: str) -> str | None:
             if (
                 node.type in _DECLARATIONS
                 and wanted in (n.lower() for n in _declared_names(node))
+                and _visible(node, ancestors)
                 and (best is None or node.start_byte > best.start_byte)
             ):
                 best = node

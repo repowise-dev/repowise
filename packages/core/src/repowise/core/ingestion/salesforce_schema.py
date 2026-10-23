@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from xml.parsers import expat
 
 import networkx as nx
+import yaml
 
 from .models import FileInfo, ParsedFile, SchemaReference, Symbol
 
@@ -37,7 +38,6 @@ _CONFIDENCE = 0.95
 
 # CumulusCI rewrites these to the package namespace (or nothing) at deploy.
 _NAMESPACE_TOKEN_RE = re.compile(r"(?:%%%|___)[A-Z]+(?:_[A-Z]+)*(?:%%%|___)")
-_CUMULUSCI_NAMESPACE_RE = re.compile(r"^\s+namespace:\s*([A-Za-z0-9_]+)", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ def _read_xml(source: bytes) -> _Element | None:
     return roots[0] if roots else None
 
 
-def strip_namespace_tokens(name: str) -> str:
+def _strip_namespace_tokens(name: str) -> str:
     return _NAMESPACE_TOKEN_RE.sub("", name)
 
 
@@ -153,22 +153,22 @@ def parse_object_metadata(file_info: FileInfo, source: bytes) -> ParsedFile:
     symbols: list[Symbol] = []
     refs: list[SchemaReference] = []
     if lowered.endswith(_FIELD_META) and root.tag == "CustomField":
-        name = strip_namespace_tokens(pure.name[: -len(_FIELD_META)])
+        name = _strip_namespace_tokens(pure.name[: -len(_FIELD_META)])
         # objects/<Obj>/fields/<F>.field-meta.xml; any other layout names no object.
         obj = pure.parent.parent.name if pure.parent.name == "fields" else None
-        obj = strip_namespace_tokens(obj) if obj else None
+        obj = _strip_namespace_tokens(obj) if obj else None
         sym, refs = _field_symbol(f"{path}::{name}", obj, name, root, None)
         symbols.append(sym)
     elif root.tag == "CustomObject":
         suffix = _OBJECT_META if lowered.endswith(_OBJECT_META) else ".object"
-        obj = strip_namespace_tokens(pure.name[: -len(suffix)])
+        obj = _strip_namespace_tokens(pure.name[: -len(suffix)])
         symbols.append(_object_symbol(path, obj, root))
         # Only the legacy single-file format carries fields inline.
         for el in root.all("fields"):
             name = el.first("fullName")
             if not name:
                 continue
-            name = strip_namespace_tokens(name)
+            name = _strip_namespace_tokens(name)
             sym, field_refs = _field_symbol(f"{path}::{obj}::{name}", obj, name, el, obj)
             symbols.append(sym)
             refs.extend(field_refs)
@@ -193,7 +193,7 @@ class _Project:
 
     def key(self, name: str) -> str:
         """The platform's comparison key for an object or field API name."""
-        folded = strip_namespace_tokens(name.strip()).lower()
+        folded = _strip_namespace_tokens(name.strip()).lower()
         for prefix in self.namespaces:
             rest = folded[len(prefix) :]
             # ``ns__Foo__c``: strip only a prefix that leaves a custom name.
@@ -232,12 +232,11 @@ def _read_project(repo_path: Path | None) -> _Project:
         except (OSError, ValueError, AttributeError):
             pass
         try:
-            match = _CUMULUSCI_NAMESPACE_RE.search(
-                (repo_path / "cumulusci.yml").read_text(encoding="utf-8")
-            )
-            if match:
-                namespaces.add(match.group(1))
-        except OSError:
+            config = yaml.safe_load((repo_path / "cumulusci.yml").read_text(encoding="utf-8"))
+            namespace = config["project"]["package"]["namespace"]
+            if namespace:
+                namespaces.add(str(namespace))
+        except (OSError, yaml.YAMLError, KeyError, TypeError):
             pass
     return _Project(tuple(dirs), frozenset(f"{ns.lower()}__" for ns in namespaces))
 
