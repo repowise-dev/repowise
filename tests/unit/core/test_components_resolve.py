@@ -53,6 +53,8 @@ def test_a_repo_with_places_keeps_its_derived_components(files):
         ["README.md", "src/main/java/App.java", "src/main/java/Api.java", "test/AppTest.java"],
         # Most files at the root, beside a directory that names a place.
         ["a.go", "b.go", "c.go", "cmd/svc/main.go"],
+        # Code at the root, beside a larger folder of docs that names a place.
+        ["a.go", "b.go", "c.go", "d.go", "e.go", *(f"docs/p{i}.md" for i in range(6))],
     ],
 )
 def test_a_flat_or_layout_only_repo_is_one_repo_wide_component(files):

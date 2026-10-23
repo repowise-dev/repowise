@@ -9,8 +9,9 @@ knows, first source that yields any:
 
 A repo those sources cannot divide gets one component named after the repo
 (``repo``): no derived component that names a place claims a file (a flat
-repo, or only layout and test directories such as ``src`` and ``test``), or
-most files sit at the repo root.
+repo, or only layout and test directories such as ``src`` and ``test``), most
+files sit at the repo root, or more code sits at the root than under every
+place (a root-level service beside ``docs/`` or ``deploy/``).
 
 Declared components merge over derived ones:
 
@@ -31,6 +32,7 @@ import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
+from functools import cache
 
 import pathspec
 from pathspec.patterns.gitwildmatch import GitWildMatchPatternError
@@ -93,7 +95,11 @@ def repo_wide_when_flat(
         return derived
     at_root = sum(1 for p in files if "/" not in p)
     places = [c for c in derived if _names_place(c.root)]
-    if at_root * 2 <= len(files) and any(_under(p, c.root) for c in places for p in files):
+    placed = [p for p in files if any(_under(p, c.root) for c in places)]
+    code = _code_suffixes()
+    root_code = sum(1 for p in files if "/" not in p and p.lower().endswith(code))
+    placed_code = sum(1 for p in placed if p.lower().endswith(code))
+    if placed and at_root * 2 <= len(files) and root_code <= placed_code:
         return derived
     return [
         Component(
@@ -103,6 +109,13 @@ def repo_wide_when_flat(
             root=REPO_ROOT,
         )
     ]
+
+
+@cache
+def _code_suffixes() -> tuple[str, ...]:
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    return tuple(sorted(s.lower() for s in REGISTRY.all_code_extensions()))
 
 
 def _names_place(root: str | None) -> bool:
