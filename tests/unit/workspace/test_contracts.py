@@ -56,6 +56,14 @@ class TestNormalizeHttpPath:
     def test_root_path(self) -> None:
         assert normalize_http_path("/") == "/"
 
+    def test_catch_all_segment(self) -> None:
+        assert normalize_http_path("/swagger/*any") == "/swagger/{param}"
+        assert normalize_http_path("/static/*filepath") == "/static/{param}"
+
+    def test_star_inside_segment_or_bare_stays_literal(self) -> None:
+        assert normalize_http_path("/a*b") == "/a*b"
+        assert normalize_http_path("/files/*") == "/files/*"
+
 
 # ---------------------------------------------------------------------------
 # HttpExtractor
