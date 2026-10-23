@@ -322,17 +322,20 @@ def is_file_reachable(
         return True if packages is None else is_jvm_file_reachable(path, graph, packages.jvm)
     if is_cpp_path(path):
         return True if packages is None else is_cpp_file_reachable(path, graph, packages.cpp)
-    if path.endswith(CSHARP_SUFFIX) and (
-        rescues.csharp_named_files is None or path in rescues.csharp_named_files
-    ):
-        return True
-    if path.endswith(_SWIFT_SUFFIX) and (
-        rescues.swift_named_files is None or path in rescues.swift_named_files
-    ):
-        return True
-    if node_data.get("language") == "apex" and (
-        rescues.apex_live_files is None or path in rescues.apex_live_files
-    ):
+    if _named_rescue(path, node_data, rescues):
         return True
 
     return has_dependency_importer(graph, path)
+
+
+def _named_rescue(path: str, node_data: Mapping[str, Any], rescues: ReachabilityRescues) -> bool:
+    """Whether *path*'s name-granular rescue (C#, Swift, Apex) reaches it; unchecked reaches."""
+    if path.endswith(CSHARP_SUFFIX):
+        named = rescues.csharp_named_files
+    elif path.endswith(_SWIFT_SUFFIX):
+        named = rescues.swift_named_files
+    elif node_data.get("language") == "apex":
+        named = rescues.apex_live_files
+    else:
+        return False
+    return named is None or path in named

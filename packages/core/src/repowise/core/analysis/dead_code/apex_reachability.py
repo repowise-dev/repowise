@@ -196,19 +196,7 @@ class _ApexFacts:
         self, graph: Any, files: list[str], source_map: Mapping[str, bytes], repo_root: Path | None
     ) -> None:
         self.declared: dict[str, set[bytes]] = {}  # apex file -> folded top-level type names
-        nested: set[bytes] = set()  # folded nested type names, searched for the export rule
-        for path in files:
-            # The file stem names the class, and names a script kept as a
-            # ``.cls`` that a project config runs by path.
-            self.declared[path] = {_folded(PurePosixPath(path).stem)}
-            for data in _defined(graph, path):
-                name = _folded(data.get("name") or "")
-                if data.get("kind") not in _TYPE_KINDS or not name:
-                    continue
-                if data.get("parent_name"):
-                    nested.add(name)
-                else:
-                    self.declared.setdefault(path, set()).add(name)
+        nested = self._read_declarations(graph, files)
         names = frozenset(nested.union(*self.declared.values()))
         apex = set(files)
         self.users: dict[bytes, set[str]] = {}  # folded name -> apex files writing it
@@ -220,6 +208,22 @@ class _ApexFacts:
             elif not _is_listing(path) and not _is_doc(path):
                 self.external |= _mentions(blob, names)
         self.complete = repo_root is None or self._read_metadata(repo_root, source_map, names)
+
+    def _read_declarations(self, graph: Any, files: list[str]) -> set[bytes]:
+        """Fill :attr:`declared`; return the folded nested type names."""
+        nested: set[bytes] = set()
+        for path in files:
+            # The stem names the class, and a script kept as ``.cls`` that a config runs by path.
+            self.declared[path] = {_folded(PurePosixPath(path).stem)}
+            for data in _defined(graph, path):
+                name = _folded(data.get("name") or "")
+                if data.get("kind") not in _TYPE_KINDS or not name:
+                    continue
+                if data.get("parent_name"):
+                    nested.add(name)
+                else:
+                    self.declared[path].add(name)
+        return nested
 
     def _read_metadata(
         self, repo_root: Path, source_map: Mapping[str, bytes], names: frozenset[bytes]
@@ -398,10 +402,7 @@ def settle_apex_findings(
 
     kept: list[DeadCodeFindingData] = []
     for f in findings:
-        if f.file_path not in liveness.files or not f.symbol_name or f.kind not in (
-            DeadCodeKind.UNUSED_EXPORT,
-            DeadCodeKind.UNUSED_INTERNAL,
-        ):
+        if not _is_apex_symbol_finding(f, liveness):
             kept.append(f)
             continue
         if _apex_symbol_used(f, liveness, source_map, headers, token_lines):
@@ -411,6 +412,14 @@ def settle_apex_findings(
             f.safe_to_delete = False
         kept.append(f)
     return kept
+
+
+def _is_apex_symbol_finding(f: DeadCodeFindingData, liveness: ApexLiveness) -> bool:
+    return (
+        f.file_path in liveness.files
+        and bool(f.symbol_name)
+        and f.kind in (DeadCodeKind.UNUSED_EXPORT, DeadCodeKind.UNUSED_INTERNAL)
+    )
 
 
 def _apex_symbol_used(
