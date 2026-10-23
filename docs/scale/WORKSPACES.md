@@ -333,7 +333,7 @@ The report covers:
   - `external_host`, the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
 - **Orphan providers**, endpoints declared but never consumed by any repo.
 - **Weak links**, matched links below the confidence threshold.
-- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located. It is not total recall, because a call no dialect recognises is not in either number. It is the figure that turns a large orphan-provider count from alarming into explained.
+- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located, plus one per file that makes a network call (a client library, channel or raw request) no dialect read, so an unsupported client lowers the figure instead of dropping out of it. Each such file counts once, so it is a floor on what was missed, not total recall. It is the figure that turns a large orphan-provider count from alarming into explained.
 
 The same data is available over REST at `GET /api/workspace/diagnostics` and is embedded in the system graph artifact's `diagnostics` block.
 
