@@ -7,6 +7,11 @@ one pruned walk per repo plus the workspace root's own files) and states
 :class:`.base.Claim` rows; :func:`build_service_name_map` turns them into one
 entry per name, recording the source and file that produced it.
 
+A gateway source states route claims instead: a path prefix one gateway
+forwards to a named service. They resolve after the host map into
+:class:`GatewayRoute` rows, which the matcher applies as path rewrites and
+draws as gateway-to-service edges.
+
 A name two sources (or two files) place in different repos is dropped rather
 than guessed. Manual ``contracts.service_bases`` entries are not part of the map:
 the matcher (:func:`..matching.http.annotate_consumer_targets`) consults them
@@ -23,14 +28,15 @@ import json
 import logging
 import os
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
-from . import aspire, compose, k8s_service, spring
-from .base import ENV, HOST, Claim, ServiceNameSource, SourceFile
+from . import aspire, compose, k8s_service, spring, spring_gateway
+from .base import ENV, HOST, Claim, Route, ServiceNameSource, SourceFile
 
 _log = logging.getLogger("repowise.workspace.service_names")
 
@@ -39,6 +45,7 @@ SOURCES: tuple[ServiceNameSource, ...] = (
     compose.SOURCE,
     k8s_service.SOURCE,
     spring.SOURCE,
+    spring_gateway.SOURCE,
 )
 
 # Test, example and build-output trees declare services that are not the
@@ -75,6 +82,25 @@ class ServiceName:
     file: str
 
 
+@dataclass(frozen=True)
+class GatewayRoute:
+    """A path prefix the *gateway* repo forwards to *repo*, rewritten to *upstream*.
+
+    *name* is the service the route names, *source* and *file* say where it was read.
+    A route whose forwarded path is unknown (``upstream`` None) rewrites nothing but
+    still shadows shorter prefixes; one whose target is unknown or disputed has
+    ``repo`` ``""`` and draws no edge either.
+    """
+
+    gateway: str
+    prefix: str
+    upstream: str | None
+    repo: str
+    name: str
+    source: str
+    file: str
+
+
 @dataclass
 class ServiceNameMap:
     """Names to repos, by kind (:data:`.base.HOST` or :data:`.base.ENV`)."""
@@ -84,15 +110,37 @@ class ServiceNameMap:
     repos: frozenset[str] = frozenset()
     #: Names claimed for more than one repo, and those repos: left unmapped.
     ambiguous: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
+    #: Gateway routes, one per gateway and prefix.
+    routes: tuple[GatewayRoute, ...] = ()
 
     def lookup(self, name: str, kind: str = HOST) -> ServiceName | None:
         return self.entries.get((kind, name.lower()))
+
+    def route_for(self, gateway: str, path: str) -> tuple[GatewayRoute, str] | None:
+        """The longest route *gateway* forwards *path* (lowercase) under, and the path it forwards.
+
+        Ceiling: Spring Cloud Gateway picks the first route in its own order, not
+        the longest prefix; longest-prefix is the reading that holds whenever a
+        more specific route is listed before a broader one, as is usual.
+        """
+        under = [
+            r
+            for r in self.routes
+            if r.gateway == gateway and (path == r.prefix or path.startswith(r.prefix + "/"))
+        ]
+        if not under:
+            return None
+        best = max(under, key=lambda r: len(r.prefix))
+        if best.upstream is None or not best.repo:
+            return None
+        return best, (best.upstream + path[len(best.prefix) :]) or "/"
 
     def to_dict(self, fingerprint: str = "") -> dict[str, Any]:
         return {
             "fingerprint": fingerprint,
             "repos": sorted(self.repos),
             "entries": [asdict(e) for _, e in sorted(self.entries.items())],
+            "routes": [asdict(r) for r in self.routes],
         }
 
     @classmethod
@@ -101,6 +149,7 @@ class ServiceNameMap:
         return cls(
             entries={(e.kind, e.name): e for e in entries},
             repos=frozenset(data.get("repos", [])),
+            routes=tuple(GatewayRoute(**r) for r in data.get("routes", [])),
         )
 
 
@@ -212,6 +261,48 @@ def _settle(
             out.ambiguous[key] = tuple(sorted(by_repo))
 
 
+def _route_row(f: _Found, named: Callable[[str], str | None]) -> GatewayRoute | None:
+    """One route claim placed: its gateway repo and target repo (``""`` when unknown or itself)."""
+    route: Route = f.claim.route  # type: ignore[assignment]
+    if route.gateway:
+        gateway = next((r for r in map(named, route.gateway) if r is not None), None)
+    else:
+        gateway = f.file_repo
+    if gateway is None or not route.prefix:
+        return None
+    target = named(f.claim.name)
+    target = "" if target is None or target == gateway else target
+    return GatewayRoute(
+        gateway, route.prefix, route.upstream, target, f.claim.name, f.source.name, f.evidence
+    )
+
+
+def _settle_routes(
+    found: list[_Found], named: Callable[[str], str | None]
+) -> tuple[GatewayRoute, ...]:
+    """One route per gateway and prefix.
+
+    A prefix sent two ways, to a service outside the workspace, or back to the
+    gateway is kept as a blocker (no target, no rewrite) rather than dropped, so
+    a shorter prefix of the same gateway cannot claim the paths under it.
+    """
+    by_key: dict[tuple[str, str], dict[tuple[str, str | None], GatewayRoute]] = defaultdict(dict)
+    for f in found:
+        row = _route_row(f, named)
+        if row is not None:
+            by_key[(row.gateway, row.prefix)].setdefault((row.repo, row.upstream), row)
+    settled: list[GatewayRoute] = []
+    for (gateway, prefix), ways in sorted(by_key.items()):
+        first = next(iter(ways.values()))
+        if len(ways) > 1:
+            targets = sorted({t for t, _ in ways})
+            _log.debug("Gateway %s routes %s several ways: %s", gateway, prefix, targets)
+            target = targets[0] if len(targets) == 1 else ""
+            first = GatewayRoute(gateway, prefix, None, target, first.name, first.source, first.file)
+        settled.append(first)
+    return tuple(settled)
+
+
 def build_service_name_map(
     repo_paths: dict[str, Path], workspace_root: Path | None = None
 ) -> ServiceNameMap:
@@ -230,12 +321,16 @@ def build_service_name_map(
     own: dict[tuple[str, str], set[str]] = defaultdict(set)
     deferred_own: list[tuple[_Found, str]] = []
     refs: list[_Found] = []
+    routes: list[_Found] = []
 
     def claim(f: _Found, repo: str) -> None:
         claimed[(f.claim.kind, f.claim.name)].setdefault(repo, (f.source.name, f.evidence))
 
     for f in found:
         c = f.claim
+        if c.route is not None:
+            routes.append(f)
+            continue
         if c.ref is not None:
             refs.append(f)
             continue
@@ -257,14 +352,17 @@ def build_service_name_map(
     # Ceiling: keys and names are workspace-wide, not scoped to the stack that
     # declares them; two stacks reusing a name collide and are dropped. Scoping
     # by compose project is the upgrade if estates mix unrelated stacks.
+    def named(name: str) -> str | None:
+        hit = out.lookup(name, HOST)
+        return hit.repo if hit is not None else resolver.named((name.lower(),))
+
     env_claimed: dict[tuple[str, str], dict[str, tuple[str, str]]] = defaultdict(dict)
     for f in refs:
-        ref = f.claim.ref or ""
-        hit = out.lookup(ref, HOST)
-        repo = hit.repo if hit is not None else resolver.named((ref,))
+        repo = named(f.claim.ref or "")
         if repo is not None:
             env_claimed[(ENV, f.claim.name)].setdefault(repo, (f.source.name, f.evidence))
     _settle(env_claimed, out)
+    out.routes = _settle_routes(routes, named)
 
     if out.ambiguous:
         _log.debug("Service names left unmapped (claimed for several repos): %s", out.ambiguous)
@@ -275,6 +373,7 @@ __all__ = [
     "ENV",
     "HOST",
     "SOURCES",
+    "GatewayRoute",
     "ServiceName",
     "ServiceNameMap",
     "build_service_name_map",

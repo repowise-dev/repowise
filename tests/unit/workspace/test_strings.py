@@ -9,6 +9,7 @@ from repowise.core.workspace.extractors.strings import (
     PHP_SYNTAX,
     PYTHON_SYNTAX,
     Arg,
+    call_arguments,
     inline_names,
     resolve_argument,
     resolve_string,
@@ -31,10 +32,20 @@ class TestSelectArgument:
             (["['orders:a', 'orders:b']"], Arg(pos=0), ["'orders:a'", "'orders:b'"]),
             (["'a'"], Arg(pos=3), []),
             (["x == 'a'"], Arg(keys=("x",)), []),
+            (['new[] { "a", "b" }'], Arg(pos=0), ['"a"', '"b"']),
+            (['new List<string> { "a" }'], Arg(pos=0), ['"a"']),
+            (["ctx", '[]string{"a", "b"}'], Arg(pos=1), ['"a"', '"b"']),
+            (["'a'", "'b'", "group_id='g'"], Arg(pos=0, variadic=True), ["'a'", "'b'"]),
+            (['"a"', '[]string{"b"}'], Arg(pos=0, variadic=True), ['"a"', '"b"']),
         ],
     )
     def test_selection(self, args: list[str], arg: Arg, expected: list[str]) -> None:
         assert select_argument(args, arg) == expected
+
+
+def test_a_composite_literal_reads_its_fields_as_arguments() -> None:
+    src = 'm := &sarama.ProducerMessage{Topic: "orders", Value: enc(f(x))}'
+    assert call_arguments(src, src.index("{")) == ['Topic: "orders"', "Value: enc(f(x))"]
 
 
 class TestResolveArgument:

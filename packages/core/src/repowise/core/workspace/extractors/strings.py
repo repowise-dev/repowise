@@ -179,10 +179,13 @@ def call_arguments(content: str, paren_offset: int, close: int | None = None) ->
 
     ``None`` when the argument list does not close, so a recogniser can tell a
     scanner failure from a call with no arguments. *close* is the matching
-    ``)`` when the caller has already found it.
+    ``)`` when the caller has already found it. A ``{`` at *paren_offset*
+    opens a composite literal (Go ``sarama.ProducerMessage{Topic: t}``), whose
+    fields are read as its arguments.
     """
     if close is None:
-        close = match_paren(content, paren_offset)
+        closer = "}" if content[paren_offset] == "{" else ")"
+        close = match_paren(content, paren_offset, closer=closer)
     if close < 0:
         return None
     inner = content[paren_offset + 1 : close]
@@ -623,7 +626,7 @@ def object_members(content: str, brace: int, syntax: StringSyntax) -> dict[str, 
 
 
 # How far above a use a JS local's declaration is looked for.
-_LOCAL_WINDOW = 2_000
+_JS_LOCAL_WINDOW = 2_000
 
 
 @cache
@@ -659,11 +662,11 @@ def js_local_value(content: str, name: str, pos: int) -> str | None:
     request(options)``, where the file's constants refuse a name each handler
     declares again. A statement continued on the next line, an assignment to
     the name or one of its members, and a parameter of the same name between
-    the two all refuse. Ceiling: only the last :data:`_LOCAL_WINDOW`
+    the two all refuse. Ceiling: only the last :data:`_JS_LOCAL_WINDOW`
     characters are read.
     """
     decl: re.Match[str] | None = None
-    for m in _js_declaration_re(name).finditer(content, max(0, pos - _LOCAL_WINDOW), pos):
+    for m in _js_declaration_re(name).finditer(content, max(0, pos - _JS_LOCAL_WINDOW), pos):
         if not on_comment_line(content, m.start()):
             decl = m
     if decl is None:
@@ -683,6 +686,55 @@ def js_local_value(content: str, name: str, pos: int) -> str | None:
     if _js_rebinding_re(name).search(content, ends[0], pos):
         return None  # reassigned, mutated or shadowed before the use
     return rhs or None
+
+
+# A typed local declaration (`var uri = `, `string url = `, `Uri? u = `). The
+# word before the name is its type, unless it is a keyword (`else uri = x`).
+_LOCAL_DECL = r"\b(?P<type>\w+)[>\[\]?]*[ \t]+{name}[ \t]*=(?![=>])"
+_NOT_A_TYPE = frozenset({"else", "return", "await", "yield", "throw", "case", "do"})
+# A modifier marks a field, whose other assignments may sit in any method.
+_MEMBER_MODIFIER_RE = re.compile(r"\b(?:private|public|protected|internal|static|readonly|const)\b")
+_BRACE_RE = re.compile(r"[{}]")
+# How far above a use :func:`enclosing_local` looks for the declaration.
+LOCAL_WINDOW = 8_000
+
+
+def enclosing_local(content: str, code: str, name: str, offset: int) -> str | None:
+    """The right-hand side of the local *name* a use at *offset* reads, else ``None``.
+
+    For a brace language whose locals are block scoped (C#): the nearest
+    declaration of *name* above *offset* counts only when its block still
+    encloses the use and nothing reassigns *name* in between, so the same
+    ``var uri`` in each of a file's methods reads as each method's own. A
+    declaration with a modifier is a field and is not read here.
+    *code* is *content* with comments and string bodies blanked at the same
+    offsets. Only the :data:`LOCAL_WINDOW` characters above the use are read,
+    so a file of many calls stays linear; a declaration further up is refused.
+    """
+    n = re.escape(name)
+    decls = list(re.compile(_LOCAL_DECL.format(name=n)).finditer(code, max(0, offset - LOCAL_WINDOW), offset))
+    if not decls or decls[-1].group("type") in _NOT_A_TYPE:
+        return None
+    decl = decls[-1]
+    if _MEMBER_MODIFIER_RE.search(code, code.rfind("\n", 0, decl.start()) + 1, decl.start()):
+        return None
+    rhs = decl.end()
+    semi = code.find(";", rhs, offset)
+    if semi < 0:
+        return None
+    depth = 0
+    for brace in _BRACE_RE.finditer(code, semi, offset):
+        depth += 1 if brace.group() == "{" else -1
+        if depth < 0:
+            return None  # the declaring block closed before the use
+    # Reassigned (`x = `, `x += `, `out x`, `ref x`, `(x, y) = `) or shadowed
+    # by a lambda parameter (`x => `) between the declaration and the use.
+    rebound = re.compile(
+        rf"(?<![\w.]){n}\s*(?:[-+?]*=(?!=)|,[^;=]*\)\s*=(?![=>]))|\b(?:out|ref)\s+(?:var\s+)?{n}\b"
+    )
+    if rebound.search(code, semi, offset):
+        return None
+    return content[rhs:semi].strip()
 
 
 def on_comment_line(content: str, offset: int) -> bool:
@@ -726,11 +778,14 @@ class Arg:
 
     ``keys`` match a keyword argument (``queue='jobs'``, ``topics = "a"``) or a
     key of a map-literal argument (``{ topic: 'a' }``, ``['queue' => 'a']``).
-    A value that is an array literal yields each element.
+    A value that is an array literal yields each element. ``variadic`` reads
+    every positional argument from ``pos`` on (``ConsumeTopics("a", "b")``),
+    keyword arguments left out.
     """
 
     keys: tuple[str, ...] = ()
     pos: int | None = None
+    variadic: bool = False
 
 
 # One map entry's key: a quoted string or an identifier, then `:` or `=>`.
@@ -760,26 +815,47 @@ def _map_entries(text: str) -> list[str] | None:
     return None
 
 
+# A typed collection literal's head, before its `{`: `new[]`, `new string[]`,
+# `new List<string>` (C#, Java arrays), `[]string` (Go).
+_TYPED_COLLECTION_RE = re.compile(
+    r"(?:new\s*(?:[A-Za-z_][\w.]*\s*(?:<[^<>]*>)?)?\s*(?:\[\s*\])?|\[\]\s*[A-Za-z_][\w.]*)\s*(?=\{)"
+)
+# A keyword argument, which a variadic read leaves out (`bootstrap_servers=x`).
+_KEYWORD_ARG_RE = re.compile(r"^[A-Za-z_]\w*\s*=(?!=)")
+
+
+def _elements(value: str) -> list[str]:
+    """*value*'s elements if it is an array or typed collection literal, else ``[value]``."""
+    head = _TYPED_COLLECTION_RE.match(value)
+    if head is not None and value.endswith("}"):
+        value = value[head.end() :]
+    if _bracketed(value) and _map_entries(value) is None:
+        return [e.strip() for e in split_top_level(value[1:-1], ",") if e.strip()]
+    return [value]
+
+
+def _keyword_value(args: list[str], keys: tuple[str, ...]) -> str | None:
+    """The value of the first keyword argument or map entry named one of *keys*."""
+    pattern = _keyword_re(keys)
+    for a in args:
+        for entry in _map_entries(a) or [a]:
+            m = pattern.match(entry)
+            if m is not None:
+                return m.group("value").strip()
+    return None
+
+
 def select_argument(args: list[str], arg: Arg) -> list[str]:
     """The source text of the value(s) *arg* selects from *args*, arrays expanded."""
-    value: str | None = None
-    if arg.keys:
-        pattern = _keyword_re(arg.keys)
-        for a in args:
-            for entry in _map_entries(a) or [a]:
-                m = pattern.match(entry)
-                if m is not None:
-                    value = m.group("value").strip()
-                    break
-            if value is not None:
-                break
+    value = _keyword_value(args, arg.keys) if arg.keys else None
+    if value is None and arg.variadic and arg.pos is not None:
+        rest = [a for a in args[arg.pos :] if not _KEYWORD_ARG_RE.match(a)]
+        return [e for a in rest for e in _elements(a)]
     if value is None and arg.pos is not None and arg.pos < len(args):
         value = args[arg.pos]
     if value is None:
         return []
-    if _bracketed(value) and _map_entries(value) is None:
-        return [e.strip() for e in split_top_level(value[1:-1], ",") if e.strip()]
-    return [value]
+    return _elements(value)
 
 
 def resolve_argument(
@@ -869,12 +945,16 @@ RUST_SYNTAX = StringSyntax(
     placeholder=_BRACE_PLACEHOLDER_RE,
 )
 
+# No `assignment`: a C# name is folded only where a dialect checks it is a
+# field (see `http/csharp_http.py`), never by file-wide single assignment.
 CSHARP_SYNTAX = StringSyntax(
     quotes='"',
     prefixes="$@",
     template_prefixes="$",
     interpolation=_BRACE_INTERP_RE,
     refuse=_ESCAPED_BRACE_RE,
+    unwrap_heads=("new Uri",),
+    concat="+",
 )
 
 GO_SYNTAX = StringSyntax(
@@ -977,9 +1057,9 @@ __all__ = [
     "ClassFields",
     "StringSyntax",
     "call_arguments",
+    "enclosing_local",
     "inline_names",
     "js_class_fields",
-    "js_local_value",
     "js_local_value",
     "literal_span",
     "map_entry",

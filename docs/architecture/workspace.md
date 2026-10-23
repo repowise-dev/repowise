@@ -130,8 +130,8 @@ links are appended after it.
    pattern subscription, `service_mapped` when the provider sits in the consumer's
    resolved target. A target the map placed does not fall back to another repo that
    serves the same path (`common.prefer_target_repo`).
-4. **Type passes**, in `MATCHERS` order: HTTP `base_resolved_pass`, `candidate_pass`
-   (`unique_path`, `ambiguous_path`, `prefix_stripped`) and `service_pass`; topic
+4. **Type passes**, in `MATCHERS` order: HTTP `gateway_pass` (`gateway_route`),
+   `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`) and `service_pass`; topic
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
 5. **Service links**: `service_pass` gives each HTTP consumer whose target is a
    workspace repo, but whose path no provider serves, one `host_only` link with no
@@ -339,7 +339,9 @@ support a score, a cycle verdict or an empty impact set.
 1. Pick the contract type and create one module in `extractors/http/`, `topic/`,
    `socket/`, `grpc/` or `data/`. A broker or client that fits an existing table
    shape (`TopicCall`, `SocketCall`, the gRPC stub rules in `grpc/languages.py`) is
-   rows in a table, not new code.
+   rows in a table, not new code. A client whose methods are too common to read on
+   any receiver (`send`, `produce`) is a `ReceiverCall` row: read on the names the
+   file declares with the client's type.
 2. Declare `name` and `extensions` (from `extractors/langs.py`).
 3. Declare `requires`: tokens one of which every match needs, such as the library's
    import or the decorator's name. Each table row declares its own. Use
@@ -379,7 +381,10 @@ support a score, a cycle verdict or an empty impact set.
    built from), `aliases` (repo aliases the file names, such as an image basename),
    `ref` (an `ENV` key whose value is a host, resolved through the finished host
    map) or `own_repo` (the repo holding the file, kept only when it is the only name
-   the source places there). Use `base.host_of` to read address values.
+   the source places there). Use `base.host_of` to read address values. A gateway
+   states `route=Route(prefix, upstream)` claims instead, with `base.literal_prefix`
+   for its path patterns; the engine settles them into `GatewayRoute` rows the HTTP
+   matcher applies (`matching/http.py::gateway_pass`).
 4. Add `SOURCE` to `SOURCES`, keeping it sorted by `name`.
 5. Copy a real config file into `tests/fixtures/service_names/<estate>/`, with
    `.keep` files for the repo directories it names, and add a test in
@@ -406,6 +411,8 @@ add its case to `test_graph_evidence.py`.
   `ExternalName` services are not read.
 - Only HTTP consumers resolve targets through the map, and only HTTP has service
   links.
+- Gateway routes are prefix routes only. A relative call from a frontend repo other
+  than the gateway's is not routed, since nothing says which gateway serves it.
 - A `host_only` edge is service-level: it has no provider route, so breaking-change
   diffs and test impact do not follow it.
 - The network probe is lexical. It reads only extensions some extractor walks,
