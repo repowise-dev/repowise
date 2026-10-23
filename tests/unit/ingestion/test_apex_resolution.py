@@ -297,3 +297,14 @@ def test_a_malformed_manifest_still_resolves(tmp_path: Path) -> None:
     (tmp_path / "sfdx-project.json").write_text('{"packageDirectories": 5, "namespace": 7}')
     calls = _calls(_build(tmp_path), _id("Caller.cls", "Caller::go"))
     assert calls == {_id("AccountService.cls", "AccountService::run"): "receiver_same_package"}
+
+
+def test_a_property_is_never_the_callee(tmp_path: Path) -> None:
+    # The child's property ``status`` hides nothing: the call is the base's method.
+    _project(tmp_path, {
+        "Base.cls": "public virtual class Base {\n    public static String status() { return ''; }\n}\n",
+        "Child.cls": "public class Child extends Base {\n    public String status { get; set; }\n}\n",
+        "Caller.cls": "public class Caller {\n    void go() { Child.status(); }\n}\n",
+    })
+    calls = _calls(_build(tmp_path), _id("Caller.cls", "Caller::go"))
+    assert calls == {_id("Base.cls", "Base::status"): "receiver_same_package"}

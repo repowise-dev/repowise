@@ -747,10 +747,14 @@ class LanguageStrategiesMixin:
             return self._apex_type_call(
                 file_path, caller_id, member, call.line, "receiver_same_package"
             )
-        sym_id = sym_id or self._ancestor_method(
-            type_id, call.target_name, caller_id, class_chain_first=True
-        )
+        # A property of the name is data, never the callee: an ancestor's method may be.
+        if sym_id is None or self._symbols_by_id[sym_id].kind not in _FUNCTION_KINDS:
+            sym_id = self._ancestor_method(
+                type_id, call.target_name, caller_id, class_chain_first=True
+            )
         if sym_id is None or sym_id == caller_id:
+            return None
+        if self._symbols_by_id[sym_id].kind not in _FUNCTION_KINDS:
             return None
         if self._symbol_paths_by_id.get(sym_id) == file_path:
             return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
