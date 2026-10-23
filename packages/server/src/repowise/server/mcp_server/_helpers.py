@@ -110,6 +110,30 @@ def embed_timeout_s() -> float:
 # ---------------------------------------------------------------------------
 
 
+async def _find_repo_by_worktree(session: AsyncSession, candidate: Path) -> Repository | None:
+    """Find a known Repository whose common git dir matches *candidate*, or None."""
+    if not candidate.is_dir() or not (candidate / ".git").is_file():
+        return None
+    from repowise.core.git_head import git_common_dir
+
+    candidate_common = git_common_dir(candidate)
+    if candidate_common is None:
+        return None
+    if (
+        _state._repo_path
+        and _state._served_repo_id
+        and git_common_dir(_state._repo_path) == candidate_common
+    ):
+        obj = await session.get(Repository, _state._served_repo_id)
+        if obj:
+            return obj
+    all_repos = (await session.execute(select(Repository))).scalars().all()
+    for r in all_repos:
+        if r.local_path and git_common_dir(r.local_path) == candidate_common:
+            return r
+    return None
+
+
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
     """Resolve a repository — by path, by ID, or return the first one."""
     if repo:
@@ -133,24 +157,9 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         if obj:
             return obj
         # Try linked git worktree of a known repository
-        candidate = Path(repo)
-        if candidate.is_dir() and (candidate / ".git").is_file():
-            from repowise.core.git_head import git_common_dir
-
-            candidate_common = git_common_dir(candidate)
-            if candidate_common is not None:
-                if (
-                    _state._repo_path
-                    and _state._served_repo_id
-                    and git_common_dir(_state._repo_path) == candidate_common
-                ):
-                    obj = await session.get(Repository, _state._served_repo_id)
-                    if obj:
-                        return obj
-                all_repos = (await session.execute(select(Repository))).scalars().all()
-                for r in all_repos:
-                    if r.local_path and git_common_dir(r.local_path) == candidate_common:
-                        return r
+        obj = await _find_repo_by_worktree(session, Path(repo))
+        if obj:
+            return obj
         raise LookupError(f"Repository not found: {repo}")
 
     # Default: return the first (and often only) repository
@@ -215,11 +224,7 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
                     from repowise.core.git_head import git_common_dir
 
                     candidate_resolved = candidate.resolve()
-                    base = (
-                        Path(_state._repo_path).resolve()
-                        if _state._repo_path
-                        else (Path(r.local_path).resolve() if r.local_path else None)
-                    )
+                    base = Path(r.local_path).resolve() if r.local_path else None
                     if (
                         base is not None
                         and candidate_resolved != base
