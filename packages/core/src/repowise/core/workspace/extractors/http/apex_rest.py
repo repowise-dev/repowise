@@ -1,12 +1,8 @@
 """Salesforce Apex REST provider dialect.
 
-``@RestResource(urlMapping='/accounts/*')`` on a class and ``@HttpGet`` on one
-of its methods serve ``GET /services/apexrest/accounts/*`` on the org. A
-``*`` matches any run of characters, which the contract layer spells as one
-``{param}`` segment, the way a Next.js catch-all ``[...slug]`` is read.
-
-The annotations are recognised by ``ingestion.framework_routes``, shared with
-the graph-edge builder that binds each route to its handler method.
+``@RestResource(urlMapping='/accounts/*')`` with ``@HttpGet`` serves
+``GET /services/apexrest/accounts/{param}``: ``*`` is read as one path parameter.
+Recognition lives in ``ingestion.framework_routes``, shared with the graph edges.
 """
 
 from __future__ import annotations

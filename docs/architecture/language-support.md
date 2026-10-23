@@ -956,11 +956,10 @@ blanked byte for byte before parsing. Apex has no import statement, so
 cross-file calls resolve only through the repository-wide tiers.
 
 A `@RestResource` class's `@Http*` methods are HTTP providers at
-`/services/apexrest` plus its `urlMapping`, `*` read as one path parameter, and
-each is bound from its file's module symbol as a Spring route is. An
-`HttpRequest` is a consumer only when its endpoint and a single verb are literal
-inside one method, folding `final` fields and once-assigned locals but never a
-parameter; `callout:Name` keeps the Named Credential as the call's base token.
+`/services/apexrest` plus its `urlMapping`, and are entry points in the graph.
+An `HttpRequest` callout is a consumer when its endpoint and verb are literal
+within one method; `callout:Name` keeps the Named Credential as the base. The
+credential's own endpoint is not read.
 
 ### QML
 

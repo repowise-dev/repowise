@@ -7,25 +7,15 @@ An Apex callout is a ``System.HttpRequest`` configured statement by statement::
     req.setMethod('GET');
     new Http().send(req);
 
-A row needs both halves inside one method: an ``HttpRequest`` declared there
-(or taken as a parameter), its ``setEndpoint`` and exactly one literal verb
-across its ``setMethod`` calls. A verb held in a variable, or two verbs for one
-request, is refused rather than guessed.
+A row needs, inside one method, an ``HttpRequest`` declared there (or taken as
+a parameter), its ``setEndpoint`` and exactly one literal verb; anything else is
+refused rather than guessed. The endpoint must be an absolute URL or
+``callout:Name/path``, whose credential name becomes the call's base token
+(the ``${API_BASE}/users`` shape) for ``service_bases`` to map. A name folds
+only as a ``final`` field or a local the method assigns once, never a parameter.
 
-The endpoint must be literal once names fold: an absolute URL, or
-``callout:Name/path`` through a Named Credential. The credential's name becomes
-the call's base token, the same unresolved-base shape as ``${API_BASE}/users``,
-so ``service_bases`` can map it to a repo. An endpoint whose host or credential
-is a variable (``'callout:' + name + '/x'``) is refused.
-
-A name folds only as a ``final`` field or as a local the method assigns once.
-The strings layer's file-wide folding is not used: a parameter that shares its
-name with another method's local would read that local's value, which is the
-caller's URL at best and a different one at worst.
-
-Ceiling: the credential's own endpoint (``namedCredentials/*.namedCredential-meta.xml``)
-is not read, because the contract walk does not read ``.xml``; reading it would
-add a host and a path prefix to each ``callout:`` row.
+Ceiling: the Named Credential's own ``.xml`` endpoint is not read; reading it
+would add a host and path prefix to each ``callout:`` row.
 """
 
 from __future__ import annotations
@@ -58,8 +48,7 @@ _SET_ENDPOINT_RE = re.compile(
     r"(?<!\.)\b(?P<recv>[A-Za-z_]\w*)\s*\.\s*setEndpoint\s*\(", re.IGNORECASE
 )
 _TYPE_HEADER_RE = re.compile(r"\b(?:class|interface|enum)\b", re.IGNORECASE)
-# Only a test class may hold `@isTest` (or legacy `testMethod`); a request it
-# builds is a fixture (an `HttpCalloutMock` setting the endpoint it asserts on).
+# Only a test class holds `@isTest` or `testMethod`; its requests are fixtures.
 _IS_TEST_RE = re.compile(r"@isTest\b|\btestMethod\b", re.IGNORECASE)
 
 # `callout:Name/path`, the name an identifier and the rest a path or query.

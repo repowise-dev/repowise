@@ -1,10 +1,7 @@
 """Salesforce Apex REST route handlers.
 
-A ``@HttpGet`` (or ``@HttpPost`` ...) method of a ``@RestResource`` class is
-called by the platform when a request reaches its ``urlMapping``, so no call
-site names it. Each one is bound from its file's module symbol, the shape the
-Spring handler gives a ``@GetMapping`` method, read through the recogniser the
-HTTP contract dialect shares.
+The platform calls a ``@RestResource`` class's ``@Http*`` methods, so each one
+is bound from its file's module symbol, as Spring binds a ``@GetMapping`` method.
 """
 
 from __future__ import annotations

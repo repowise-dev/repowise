@@ -990,9 +990,8 @@ def jaxrs_routes(content: str) -> Iterator[RouteMatch]:
 # Apex REST (Salesforce)
 # ---------------------------------------------------------------------------
 
-# `@RestResource(urlMapping='/accounts/*')` on a class serves it under the org's
-# Apex REST base; `@HttpGet` and its siblings on the class's methods name the
-# verbs. Apex reads annotations without regard to case, and `'` is its only quote.
+# `@RestResource(urlMapping=...)` names the path and `@HttpGet` and siblings the
+# verbs. Apex annotations are case-insensitive and `'` is its only quote.
 _APEX_REST_RESOURCE_RE = re.compile(r"@RestResource\b", re.IGNORECASE)
 _APEX_URL_MAPPING_RE = re.compile(
     r"\s*\(\s*urlMapping\s*=\s*'(?P<path>[^'\\\n]*)'\s*\)", re.IGNORECASE
