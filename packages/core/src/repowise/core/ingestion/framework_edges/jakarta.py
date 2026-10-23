@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ...entry_candidacy import receives_execution
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -119,18 +120,18 @@ def _add_jakarta_edges(
         if not (has_stereotype or has_jpa):
             continue
 
-        # Stamp framework role for downstream consumers.
+        # Stamp framework role for downstream consumers. The runtime builds
+        # every one of these, so each is a reachability root; only a resource,
+        # servlet or listener is where requests enter, an entry point.
         node = graph.nodes.get(path)
         if node is not None:
             if has_jpa:
                 node["framework_role"] = "jpa_entity"
-                node["is_entry_point"] = True
             elif has_jax_rs:
                 node["framework_role"] = "jax_rs_resource"
-                node["is_entry_point"] = True
             else:
                 node["framework_role"] = node.get("framework_role") or "cdi_bean"
-                node["is_entry_point"] = True
+            node["is_entry_point" if receives_execution(text) else "is_reachability_root"] = True
 
         # @Inject / @Resource / @EJB / @PersistenceContext field injection
         for m in _JAKARTA_INJECT_FIELD_RE.finditer(text):

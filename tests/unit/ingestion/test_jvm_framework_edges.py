@@ -7,6 +7,7 @@ from pathlib import Path
 
 import networkx as nx
 
+from repowise.core.entry_candidacy import receives_execution
 from repowise.core.ingestion.framework_edges import add_framework_edges
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import ASTParser
@@ -59,7 +60,7 @@ def _seed_graph(parsed: dict[str, ParsedFile]) -> nx.DiGraph:
 
 
 class TestSpringDataRepository:
-    def test_jparepository_marked_entry_point(self, tmp_path: Path) -> None:
+    def test_jparepository_marked_reachability_root(self, tmp_path: Path) -> None:
         (tmp_path / "User.java").write_text(
             "package com.x;\n"
             "import jakarta.persistence.Entity;\n"
@@ -76,8 +77,51 @@ class TestSpringDataRepository:
         graph = _seed_graph(parsed)
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx, tech_stack=["spring"])
-        assert graph.nodes["UserRepo.java"].get("is_entry_point") is True
-        assert graph.nodes["UserRepo.java"].get("framework_role") == "spring_data_repository"
+        node = graph.nodes["UserRepo.java"]
+        assert node.get("is_reachability_root") is True
+        assert not node.get("is_entry_point")
+        assert node.get("framework_role") == "spring_data_repository"
+
+
+class TestSpringStereotypeEntries:
+    def test_only_request_and_job_classes_are_entry_points(self, tmp_path: Path) -> None:
+        files = {
+            "Api.java": "@RestController\npublic class Api {}\n",
+            "Resource.java": "@Component\n@Path(\"/loans\")\npublic class Resource {}\n",
+            "Job.java": "@Component\npublic class Job {\n  @Scheduled(fixedRate = 5)\n  void run() {}\n}\n",
+            "Listener.java": (
+                "@Service\npublic class Listener {\n"
+                "  @KafkaListener(topics = \"t\")\n  void on(String s) {}\n}\n"
+            ),
+            "Validator.java": "/** See {@link Path}. */\n@Component\npublic class Validator {}\n",
+            "Advice.java": "@ControllerAdvice\npublic class Advice {}\n",
+            "Client.java": (
+                "@Component\npublic class Client {\n  // No @Path here.\n"
+                "  Call<Void> get(@Path(\"id\") Long id);\n}\n"
+            ),
+            "Wrapped.java": (
+                "@Component\npublic class Wrapped {\n  Call<Void> get(\n"
+                "      @Path(\"id\") long id,\n      @Path(\"x\") String x);\n}\n"
+            ),
+            "Outer.java": (
+                "@Configuration\npublic class Outer {\n"
+                "  @RestController\n  public static class Inner {}\n}\n"
+            ),
+        }
+        for name, body in files.items():
+            (tmp_path / name).write_text("package com.x;\n" + body)
+        parsed = _build_parsed(tmp_path)
+        graph = _seed_graph(parsed)
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed), tech_stack=["spring"])
+        for name in ("Api.java", "Resource.java", "Job.java", "Listener.java", "Outer.java"):
+            assert graph.nodes[name].get("is_entry_point") is True, name
+        for name in ("Validator.java", "Advice.java", "Client.java", "Wrapped.java"):
+            assert not graph.nodes[name].get("is_entry_point"), name
+            assert graph.nodes[name].get("is_reachability_root") is True, name
+
+    def test_ejb_schedule_timer_is_an_entry_point(self) -> None:
+        text = "@Singleton\npublic class Timer {\n  @Schedule(hour = \"*\")\n  public void tick() {}\n}\n"
+        assert receives_execution(text)
 
 
 class TestLombokRAC:
@@ -148,6 +192,9 @@ class TestJakarta:
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx, tech_stack=["jakarta"])
         assert graph.has_edge("User.java", "Order.java")
+        # The runtime builds an entity, but no request enters there.
+        assert graph.nodes["User.java"].get("is_reachability_root") is True
+        assert not graph.nodes["User.java"].get("is_entry_point")
 
 
 class TestQuarkus:

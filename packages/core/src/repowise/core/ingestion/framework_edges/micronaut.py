@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ...entry_candidacy import receives_execution
 from ..framework_routes import micronaut_class_paths
 from ..resolvers import ResolverContext
 from .base import (
@@ -113,7 +114,7 @@ def _add_micronaut_edges(
 
         node = graph.nodes.get(path)
         if node is not None:
-            node["is_entry_point"] = True
+            node["is_entry_point" if receives_execution(text) else "is_reachability_root"] = True
             node["framework_role"] = node.get("framework_role") or "micronaut_component"
 
         for m in _MICRONAUT_INJECT_FIELD_RE.finditer(text):

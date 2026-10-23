@@ -15,7 +15,7 @@ Expanded in Phase 4 of the JVM parity plan. The handler now covers:
 - **``@Bean`` factories** — Java and Kotlin signatures.
 - **Spring Data repositories** — any interface extending
   ``CrudRepository`` / ``JpaRepository`` / ``MongoRepository`` /
-  friends becomes an entry point (the impl is generated at runtime).
+  friends becomes a reachability root (the impl is generated at runtime).
 - **Route handlers**: every ``@GetMapping`` / ``@RequestMapping`` method is
   bound from its file's module symbol, the shape Express routes take, read
   through the recogniser the HTTP contract dialect shares.
@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...entry_candidacy import receives_execution
 from ..framework_routes import spring_routes
 from ..resolvers import ResolverContext
 from ..type_names import strip_type_arguments
@@ -278,15 +279,15 @@ def _add_spring_edges(
                 results.append(impl)
         return results
 
-    # ---- 1. Spring Data repository entries ----
-    # Mark the interface file node ``is_entry_point=True`` so the dead-code
+    # ---- 1. Spring Data repository roots ----
+    # Mark the interface file node a reachability root so the dead-code
     # analyzer doesn't flag it. The generated impl never appears in source,
     # so the interface itself is the only thing we can anchor against.
     for path, parsed in parsed_files.items():
         if _is_spring_data_repo(parsed):
             node = graph.nodes.get(path)
             if node is not None:
-                node["is_entry_point"] = True
+                node["is_reachability_root"] = True
                 node["framework_role"] = "spring_data_repository"
 
     # ---- 1b. Servlet initializers ----
@@ -311,14 +312,15 @@ def _add_spring_edges(
         if not is_bean:
             continue
 
-        # Stamp the framework role + entry-point flag. Spring instantiates
-        # every stereotype-annotated class at startup via classpath scanning,
-        # so no source caller exists; the file must read as live regardless
-        # of in_degree.
+        # Spring instantiates every stereotype-annotated class at startup via
+        # classpath scanning, so no source caller exists and the file must
+        # read as live regardless of in_degree: a reachability root. Only a
+        # controller, JAX-RS resource, scheduled job or listener is also where
+        # requests enter, an entry point.
         node = graph.nodes.get(path)
         if node is not None:
             node["framework_role"] = node.get("framework_role") or "spring_stereotype"
-            node["is_entry_point"] = True
+            node["is_entry_point" if receives_execution(text) else "is_reachability_root"] = True
 
         # 2a. Field injection (@Autowired / @Inject / @Resource)
         for m in _SPRING_INJECT_FIELD_RE.finditer(text):
