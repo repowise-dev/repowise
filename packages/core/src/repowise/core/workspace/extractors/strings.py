@@ -45,7 +45,8 @@ class StringSyntax:
 
     ``format_heads`` name calls whose first argument is a template with
     ``placeholder`` holes. ``unwrap_heads`` name calls whose single argument
-    *is* the value. ``concat`` is the string-concatenation operator, empty when
+    *is* the value. ``join_heads`` name calls that join their arguments as URL
+    segments (``Url.Combine(base, "items")``). ``concat`` is the string-concatenation operator, empty when
     the language's dialects do not fold concatenation. ``assignment`` locates
     ``name = rhs`` statements for constant folding; ``assignment_strip`` drops a
     trailing decoration from the right-hand side (Ruby's ``.freeze``).
@@ -64,6 +65,7 @@ class StringSyntax:
     format_heads: tuple[str, ...] = ()
     placeholder: re.Pattern[str] | None = None
     unwrap_heads: tuple[str, ...] = ()
+    join_heads: tuple[str, ...] = ()
     concat: str = ""
     assignment: re.Pattern[str] | None = None
     assignment_strip: re.Pattern[str] | None = None
@@ -331,6 +333,37 @@ def _unwrap(text: str, syntax: StringSyntax) -> str | None:
     return args[0] if args and len(args) == 1 else None
 
 
+# A run of slashes a segment join leaves (`"api/catalog/" + "/items"`), not a scheme's.
+_SLASH_RUN_RE = re.compile(r"(?<!:)/{2,}")
+
+
+def _join(text: str, syntax: StringSyntax, constants: dict[str, str]) -> str | None:
+    """``Url.Combine(base, "items")`` as ``${base}/items``, or ``None``.
+
+    Each argument is a segment that must resolve, except the first: a bare
+    name there is the base and becomes a ``${name}`` hole. A later name the
+    file does not settle (``new Uri(url, UriKind.Relative)``) refuses the call.
+    """
+    m = _head_re(syntax.join_heads).match(text)
+    if m is None:
+        return None
+    args = _whole_call_arguments(text, m.end() - 1)
+    if not args or len(args) < 2:
+        return None
+    parts: list[str] = []
+    for i, arg in enumerate(a.strip() for a in args):
+        value = resolve_string(arg, syntax, constants)
+        if value is None:
+            if i or not NAME_RE.fullmatch(arg):
+                return None
+            value = _fold(arg, syntax, constants)
+        parts.append(value)
+    joined = parts[0]
+    for part in parts[1:]:
+        joined = joined.rstrip("/") + "/" + part.lstrip("/")
+    return _SLASH_RUN_RE.sub("/", joined)
+
+
 def _concat(text: str, syntax: StringSyntax, constants: dict[str, str]) -> str | None:
     """``a + "/x"`` as template text, or ``None`` when a piece is not readable."""
     if syntax.concat not in text:
@@ -375,6 +408,10 @@ def resolve_string(
         inner = _unwrap(text, syntax)
         if inner is not None:
             return resolve_string(inner, syntax, constants)
+    if syntax.join_heads:
+        joined = _join(text, syntax, constants)
+        if joined is not None:
+            return joined
     if syntax.concat:
         folded = _concat(text, syntax, constants)
         if folded is not None:
@@ -847,7 +884,12 @@ CSHARP_SYNTAX = StringSyntax(
     template_prefixes="$",
     interpolation=_BRACE_INTERP_RE,
     refuse=_ESCAPED_BRACE_RE,
-    unwrap_heads=("new Uri",),
+    # `new(...)` is target-typed: `Uri BaseAddress = new("http://x/")`.
+    unwrap_heads=("new Uri", "new"),
+    # `new Uri(baseUri, "items")`, Flurl's `Url.Combine`, and the `CombineUri`
+    # helper eShop-style clients define. Ceiling: a helper is known by name only;
+    # reading a same-repo helper's body is the upgrade if other names turn up.
+    join_heads=("new Uri", "new", "Url.Combine", "UriHelper.CombineUri", "CombineUri"),
     concat="+",
 )
 

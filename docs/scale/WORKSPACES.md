@@ -143,7 +143,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | PHP | Laravel | Guzzle, Laravel `Http` |
 | Java / Kotlin | Spring, JAX-RS, Micronaut | Feign, `java.net.http`, `RestTemplate`, Ktor (Kotlin) |
 | Go | gin, echo, chi, net/http | net/http |
-| C# | ASP.NET (attribute and minimal API) | HttpClient (`GetAsync`, `GetFromJsonAsync`, `PostAsJsonAsync`, `GetStringAsync`, `new HttpRequestMessage(HttpMethod.X, url)`; a URL held in a local or a `const` / `readonly` field), UnityWebRequest, Best.HTTP |
+| C# | ASP.NET (attribute and minimal API) | HttpClient (`GetAsync`, `GetFromJsonAsync`, `PostAsJsonAsync`, `GetStringAsync`, `new HttpRequestMessage(HttpMethod.X, url)`; a URL held in a local or a `const` / `readonly` field; `new Uri(base, path)` and `CombineUri` joins; typed, named and Refit client `BaseAddress`; HttpClient wrapper methods), Refit attributes, YARP `MapForwarder`, UnityWebRequest, Best.HTTP |
 | Ruby | | HTTParty, RestClient, Faraday, Net::HTTP |
 | Rust | Axum, Actix, Rocket | reqwest |
 | Apex | `@RestResource` classes (`/services/apexrest` + `urlMapping`) | `HttpRequest` callouts (literal endpoint and verb) |

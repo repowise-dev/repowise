@@ -104,7 +104,12 @@ its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix.
 axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when
 another file imports the instance. An Angular `HttpClient` call is read on any receiver typed
 or injected as `HttpClient`, with `environment.apiUrl` folded from `src/environments/` and class
-fields built on it; a base an interceptor prepends is not read. A client call
+fields built on it; a base an interceptor prepends is not read. A C# `HttpClient` call takes
+the `BaseAddress` its typed (`AddHttpClient<T>`), named (`AddHttpClient("name")` with
+`CreateClient("name")`) or Refit (`AddRefitClient<T>`, `RestService.For<T>`) registration sets in
+the same repo; a type registered twice with different or unreadable bases takes none. A call to a
+method whose body sends its string parameter through `HttpClient` is read with the URL that body
+builds. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path (`unique_path`) and a lower-confidence **candidate** when the target

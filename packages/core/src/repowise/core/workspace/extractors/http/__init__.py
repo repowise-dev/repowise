@@ -41,6 +41,7 @@ from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .php_clients import PhpClientsDialect
 from .python_clients import PythonClientsDialect
+from .refit import RefitDialect
 from .remix import RemixDialect
 from .ruby_clients import RubyClientsDialect
 from .rust_axum import RustAxumDialect
@@ -87,6 +88,7 @@ CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
     KotlinClientsDialect(),
     PhpClientsDialect(),
     ApexCalloutsDialect(),
+    RefitDialect(),
 )
 
 
