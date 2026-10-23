@@ -164,14 +164,19 @@ def test_several_copies_outside_the_package_bind_nothing(tmp_path: Path) -> None
             "unpackaged/config/dev/objects/Lead.object": _object("Lead"),
             lookup: _field("Lookup", "Contact"),
             cls: "public class Q {\n  void m() {\n    List<Contact> c = [SELECT Level__c FROM Contact];"
-            "\n    List<Lead> l = [SELECT Id FROM Lead];\n  }\n}\n",
+            "\n    List<Lead> l = [SELECT Id FROM Lead];"
+            "\n    List<Shift__c> s = [SELECT Who__r.Level__c FROM Shift__c];\n  }\n}\n",
         },
     )
 
     def refs(source: str) -> set[str]:
         return {t for _, t, d in g.out_edges(source, data=True) if d["edge_type"] == "references"}
 
-    assert refs(f"{cls}::Q::m") == {"unpackaged/config/dev/objects/Lead.object::Lead"}
+    # The packaged lookup binds; the hop to the ambiguous Contact's field does not.
+    assert refs(f"{cls}::Q::m") == {
+        "unpackaged/config/dev/objects/Lead.object::Lead",
+        f"{lookup}::Who__c",
+    }
     assert refs(f"{lookup}::Who__c") == set()
 
 

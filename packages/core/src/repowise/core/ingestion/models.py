@@ -442,9 +442,8 @@ EdgeType = Literal[
     # parser could have seen, and letting it read as one would put an inferred
     # wiring hop into an execution flow as if it were source.
     "framework_binds",
-    # A data reference rather than a call, file → file: C# member access, and
-    # Salesforce object references. It
-    # used to name two unrelated things — the Express route wiring emitted it
+    # A data reference rather than a call, file → file: C# member access and
+    # Salesforce schema references. It used to name two unrelated things — the Express route wiring emitted it
     # symbol → symbol — which is why one consumer set could not say which layer
     # it meant. That producer now emits `framework_binds`.
     "reads",
@@ -626,8 +625,8 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
         "dynamic_imports",
         "dynamic_url_route",
         # C# member access (`var x = new T(); x.Prop`) resolves to the file
-        # declaring the type, so this is a real file-level reference; so does
-        # a SOQL query or DML statement to the object's metadata.
+        # declaring the type, so this is a real file-level reference, as is a
+        # SOQL query or DML statement naming an object the repository defines.
         "reads",
     }
 )
