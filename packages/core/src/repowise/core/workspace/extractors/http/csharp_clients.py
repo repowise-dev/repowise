@@ -297,7 +297,9 @@ def created_client(names: _FileNames, name: str, offset: int) -> str | None:
     """The name token of the factory client *name* is bound to at *offset*, else ``None``.
 
     ``var client = _factory.CreateClient("catalog")`` gives ``"catalog"``; a
-    client created with no name gives an empty token.
+    client created with no name gives an empty token. The binding counts only
+    when no declaration of *name* sits between it and the use, so another
+    method's ``HttpClient client`` does not take this one's base.
     """
     key = ("client", name)
     sites = names.memo.get(key)
@@ -308,8 +310,14 @@ def created_client(names: _FileNames, name: str, offset: int) -> str | None:
             (m.start(), m.group("arg")) for m in re.finditer(pattern, names.content)
         ]
     # Only a binding above the use: a later `client = CreateClient(...)` is another client.
-    above = [value for start, value in sites if start < offset]
-    return above[-1] if above else None
+    above = [(start, value) for start, value in sites if start < offset]
+    if not above:
+        return None
+    bound_at, token = above[-1]
+    declared_type(names, name, offset)  # fills the declaration sites
+    if any(bound_at < start < offset for start, _ in names.memo[("type", name)]):
+        return None
+    return token
 
 
 def is_http_client(names: _FileNames, receiver: str | None, offset: int) -> bool:

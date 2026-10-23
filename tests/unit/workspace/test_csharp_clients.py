@@ -288,3 +288,31 @@ def test_review_shapes_that_must_not_take_a_base_or_a_wrapper() -> None:
     # Another overload's arity, a pass-through of a slash-free key, and a
     # parameter of another type with the same name are not wrapper calls.
     assert use == {8: "http::GET::/api/a/7"}
+
+
+def test_a_factory_binding_does_not_reach_another_methods_client() -> None:
+    found = _consumers({
+        "Setup.cs": """
+            class Setup { void Add(IServiceCollection s) {
+                s.AddHttpClient("catalog", c => c.BaseAddress = new Uri("http://catalog-api"));
+                s.AddHttpClient<Reader>(c => c.BaseAddress = new Uri("http://orders-api"));
+            } }
+        """,
+        "Reader.cs": """
+            public class Reader(IHttpClientFactory factory)
+            {
+                public Task<string> A()
+                {
+                    var client = factory.CreateClient("catalog");
+                    return client.GetStringAsync("/items/all");
+                }
+
+                public Task<string> B(HttpClient client)
+                {
+                    return client.GetStringAsync("/orders/all");
+                }
+            }
+        """,
+    })
+    assert found[("Reader.cs", 7)][1] == "catalog-api"
+    assert found[("Reader.cs", 12)][1] == "orders-api"
