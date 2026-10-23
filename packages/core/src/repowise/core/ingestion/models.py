@@ -89,15 +89,15 @@ LanguageTag = Literal[
     # [ext_resource path=...] and [autoload] are how a Godot project reaches
     # its scripts at all.
     "godot_resource",
-    # Salesforce Aura markup (.cmp/.app/.evt/.intf/.design/.tokens in an
-    # aura/<bundle>/ dir): no symbols, but it names the bundle's controller
-    # functions, Apex controller and child components.
+    # Salesforce Aura markup: no symbols, read for the names it wires.
     "aura",
     # Salesforce flows: one symbol per flow.
     "salesforce_flow",
     # Salesforce object and field metadata, and saved SOQL queries.
     "salesforce_object",
     "soql",
+    "jcl",
+    "bms",
     "unknown",
 ]
 
@@ -371,6 +371,8 @@ class CallSite:
     # Handed straight to a task scheduler (``asyncio.create_task(f())``): it runs
     # later, beside its caller, so the caller neither waits for it nor repeats it.
     spawned: bool = False
+    # COBOL ``CALL`` / ``LINK`` / ``XCTL``: names a PROGRAM-ID, never a paragraph.
+    program_call: bool = False
     # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
     # ``"null"``), else None; None overall when no argument is one.
     argument_types: tuple[str | None, ...] | None = None

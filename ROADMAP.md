@@ -34,7 +34,7 @@ Languages land on a five-rung ladder rather than a yes/no list, because "do you
 support X" has five different useful answers. Each rung is defined, with what it
 buys you, in
 [docs/layers/LANGUAGE_SUPPORT.md](docs/layers/LANGUAGE_SUPPORT.md). Today that
-ladder covers **41 languages, 27 of them parsed to a full AST**.
+ladder covers **42 languages, 28 of them parsed to a full AST**.
 
 ### New languages
 
@@ -44,7 +44,6 @@ ladder covers **41 languages, 27 of them parsed to a full AST**.
 | **ABAP** | Exploring | The same argument as COBOL, in SAP estates. |
 | **RPG / AS400** | Exploring | Named alongside COBOL often enough to track. |
 | **Fortran** | Exploring | Scientific and engineering codebases with long lifespans and thin documentation. |
-| **Apex** | Planned | Salesforce estates, where the org is often the least documented system a company runs. Apex is Java-shaped, and Lightning Web Components are already covered as JavaScript and HTML. |
 | **Ada** | Exploring | Defense and aerospace, long-lived and thinly documented, and usually in the same estates asking about COBOL. |
 | **Template dialects** (Django/Jinja, ERB, Blade, Thymeleaf, Go templates) | Planned | Today they parse cleanly as HTML and yield nothing, because `{% extends "base.html" %}` is plain text to an HTML parser. A stated ceiling, not an oversight. |
 

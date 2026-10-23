@@ -357,6 +357,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -372,6 +373,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "name"
@@ -389,6 +391,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "name"
@@ -406,6 +409,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -421,6 +425,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -436,6 +441,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -451,6 +457,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "acc"
@@ -468,6 +475,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -483,6 +491,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -498,6 +507,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "String"
         ],
@@ -515,6 +525,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -682,6 +693,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -697,6 +709,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -712,6 +725,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -956,6 +970,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -971,6 +986,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "Integer",
           null
@@ -992,6 +1008,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "Integer",
           null
@@ -1013,6 +1030,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "Integer",
           null
@@ -1034,6 +1052,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1049,6 +1068,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           null,
           "String"
@@ -1067,6 +1087,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1082,6 +1103,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "Integer",
           null
@@ -1103,6 +1125,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "Integer",
           null
@@ -1124,6 +1147,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1139,6 +1163,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "Integer",
           null
@@ -1160,6 +1185,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1175,6 +1201,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -1657,6 +1684,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1672,6 +1700,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "item"
@@ -1687,6 +1716,985 @@
     "registrars": [],
     "references": [],
     "schema_refs": []
+  },
+  "apex/health_markers.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/health_markers.cls",
+      "language": "apex",
+      "size_bytes": 2708,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers",
+        "name": "HealthMarkers",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers",
+        "kind": "class",
+        "signature": "class HealthMarkers",
+        "start_line": 4,
+        "end_line": 78,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::searchText",
+        "name": "searchText",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.searchText",
+        "kind": "variable",
+        "signature": "searchText",
+        "start_line": 7,
+        "end_line": 7,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::byName",
+        "name": "byName",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.byName",
+        "kind": "method",
+        "signature": "byName(String name) -> List<Account>",
+        "start_line": 12,
+        "end_line": 14,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::byBuiltClause",
+        "name": "byBuiltClause",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.byBuiltClause",
+        "kind": "method",
+        "signature": "byBuiltClause(String city) -> List<Account>",
+        "start_line": 16,
+        "end_line": 21,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::bySearchProperty",
+        "name": "bySearchProperty",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.bySearchProperty",
+        "kind": "method",
+        "signature": "bySearchProperty() -> List<List<SObject>>",
+        "start_line": 23,
+        "end_line": 25,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::byNames",
+        "name": "byNames",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.byNames",
+        "kind": "method",
+        "signature": "byNames(List<String> names) -> List<Account>",
+        "start_line": 27,
+        "end_line": 29,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::defaultRecordType",
+        "name": "defaultRecordType",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.defaultRecordType",
+        "kind": "method",
+        "signature": "defaultRecordType() -> Id",
+        "start_line": 31,
+        "end_line": 33,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::escaped",
+        "name": "escaped",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.escaped",
+        "kind": "method",
+        "signature": "escaped(String name) -> List<Account>",
+        "start_line": 37,
+        "end_line": 39,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::escapedFirst",
+        "name": "escapedFirst",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.escapedFirst",
+        "kind": "method",
+        "signature": "escapedFirst(String name) -> List<Account>",
+        "start_line": 41,
+        "end_line": 44,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::bound",
+        "name": "bound",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.bound",
+        "kind": "method",
+        "signature": "bound(String name) -> List<Account>",
+        "start_line": 46,
+        "end_line": 48,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::typedId",
+        "name": "typedId",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.typedId",
+        "kind": "method",
+        "signature": "typedId(Id recordId) -> List<Account>",
+        "start_line": 50,
+        "end_line": 52,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::fieldList",
+        "name": "fieldList",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.fieldList",
+        "kind": "method",
+        "signature": "fieldList(List<String> fields, String objectName) -> List<SObject>",
+        "start_line": 54,
+        "end_line": 57,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::privateField",
+        "name": "privateField",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.privateField",
+        "kind": "method",
+        "signature": "privateField() -> List<Account>",
+        "start_line": 59,
+        "end_line": 61,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "name": "inline",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.inline",
+        "kind": "method",
+        "signature": "inline() -> List<Account>",
+        "start_line": 63,
+        "end_line": 65,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::notIds",
+        "name": "notIds",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.notIds",
+        "kind": "method",
+        "signature": "notIds() -> void",
+        "start_line": 67,
+        "end_line": 71,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::Inner",
+        "name": "Inner",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.Inner",
+        "kind": "class",
+        "signature": "class Inner",
+        "start_line": 73,
+        "end_line": 77,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::Inner::touch",
+        "name": "touch",
+        "qualified_name": "lang_samples.apex.health_markers.Inner.touch",
+        "kind": "method",
+        "signature": "touch(List<Account> rows) -> void",
+        "start_line": 74,
+        "end_line": 76,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Inner",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "HealthMarkers"
+    ],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byName",
+        "line": 13,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "trim",
+        "receiver_name": "city",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byBuiltClause",
+        "line": 18,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byBuiltClause",
+        "line": 20,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "soql"
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Search",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::bySearchProperty",
+        "line": 24,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byNames",
+        "line": 28,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "join",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byNames",
+        "line": 28,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          null,
+          "String"
+        ],
+        "argument_names": [
+          "names",
+          null
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escaped",
+        "line": 38,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "escapeSingleQuotes",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escaped",
+        "line": 38,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "name"
+        ]
+      },
+      {
+        "target_name": "escapeSingleQuotes",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escapedFirst",
+        "line": 42,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "name"
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escapedFirst",
+        "line": 43,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::bound",
+        "line": 47,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::typedId",
+        "line": 51,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::fieldList",
+        "line": 56,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "join",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::fieldList",
+        "line": 56,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          null,
+          "String"
+        ],
+        "argument_names": [
+          "fields",
+          null
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::privateField",
+        "line": 60,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "437b2b8db7896dce8a88bc2921875fa183f555b2bf8992c4793c1f4da834601b",
+    "type_refs": [
+      {
+        "type_name": "Account",
+        "line": 12,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 16,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 27,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 37,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 41,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 46,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 50,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 59,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 63,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 74,
+        "origin": "param_type"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::Inner::touch",
+        "object_name": "Account",
+        "line": 75,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": [
+          "OwnerId"
+        ]
+      }
+    ]
+  },
+  "apex/HealthMarkersTest.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/HealthMarkersTest.cls",
+      "language": "apex",
+      "size_bytes": 545,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest",
+        "name": "HealthMarkersTest",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest",
+        "kind": "class",
+        "signature": "class HealthMarkersTest",
+        "start_line": 2,
+        "end_line": 19,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\nprivate"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "name": "readsOrgData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.readsOrgData",
+        "kind": "method",
+        "signature": "readsOrgData() -> void",
+        "start_line": 4,
+        "end_line": 8,
+        "docstring": null,
+        "decorators": [
+          "@isTest(seeAllData = true)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "name": "ownData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.ownData",
+        "kind": "method",
+        "signature": "ownData() -> void",
+        "start_line": 10,
+        "end_line": 13,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=false)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::suppressed",
+        "name": "suppressed",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.suppressed",
+        "kind": "method",
+        "signature": "suppressed() -> void",
+        "start_line": 15,
+        "end_line": 18,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\n    @SuppressWarnings('PMD.ApexUnitTestShouldNotUseSeeAllDataTrue')\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "assertNotEquals",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "line": 7,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          null,
+          "fixtureId"
+        ]
+      },
+      {
+        "target_name": "Account",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "line": 12,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "ee0b625d872285a30bc7a789d76e01feadef22aaacfda9214f6b1a36f94e9c5f",
+    "type_refs": [
+      {
+        "type_name": "Account",
+        "line": 12,
+        "origin": "composite_literal"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "object_name": "Account",
+        "line": 12,
+        "path": []
+      }
+    ]
   },
   "apex/nested.cls": {
     "file_info": {
@@ -2428,6 +3436,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "i"
@@ -2445,6 +3454,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "req"
@@ -2462,6 +3472,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2477,6 +3488,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "i"
@@ -2494,6 +3506,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "i"
@@ -2511,6 +3524,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2526,6 +3540,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "a"
@@ -2543,6 +3558,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2558,6 +3574,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2573,6 +3590,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2588,6 +3606,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           null,
           "Boolean"
@@ -2609,6 +3628,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "a"
@@ -2626,6 +3646,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2641,6 +3662,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2656,6 +3678,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2671,6 +3694,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "objectName"
@@ -2688,6 +3712,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2703,6 +3728,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -2718,6 +3744,7 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "t"

@@ -4,14 +4,17 @@ An LWC bundle is ``.../lwc/<name>/`` with main module ``<name>.js`` (or ``.ts``)
 JS imports reach it as ``c/<name>`` (or the sfdx namespace), templates as
 ``<c-kebab-name>``, looked up in a reverse index of ``kebab(name)`` because
 camelCase cannot be recovered from a tag. ``@salesforce/apex/[ns.]Cls.method``
-resolves to the Apex class file. A name two bundles declare goes to the one
-sharing the longest directory prefix with the referrer; a tie resolves nothing.
+resolves to the Apex class file the importer's sfdx project reaches. A bundle
+name two bundles declare goes to the one sharing the longest directory prefix
+with the referrer; a tie resolves nothing. Aura, Visualforce and flow edges
+share :func:`nearest`, :func:`lwc_namespaces` and :func:`lwc_bundles`.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from ...test_paths import is_test_related_path
@@ -87,10 +90,15 @@ def lwc_namespaces(ctx: ResolverContext) -> frozenset[str]:
     return result
 
 
-def nearest(candidates: tuple[str, ...], referrer: str) -> str | None:
-    """The candidate sharing the most leading directories with *referrer*; None on a tie."""
-    if len(candidates) == 1:
-        return candidates[0]
+def nearest(candidates: Sequence[str], referrer: str) -> str | None:
+    """The candidate sharing the most leading directories with *referrer*; None on a tie or none.
+
+    A repository can hold several sfdx projects, or a source and an mdapi copy
+    of one, declaring the same names; the nearest copy stands for the one
+    deployed with the referrer.
+    """
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
     ref = referrer.split("/")
 
     def shared(path: str) -> int:
@@ -105,23 +113,6 @@ def nearest(candidates: tuple[str, ...], referrer: str) -> str | None:
     if scored[0][0] == scored[1][0]:
         return None
     return scored[0][1]
-
-
-def _apex_classes(ctx: ResolverContext) -> dict[str, tuple[str, ...]]:
-    """Lowercased Apex class name -> ``.cls`` paths (Apex names are case-insensitive).
-
-    Ceiling: a local index; use a shared case-insensitive Apex index once one exists.
-    """
-    cached = getattr(ctx, "_lwc_apex_classes", None)
-    if cached is None:
-        found: dict[str, list[str]] = {}
-        for path in ctx.sorted_paths:
-            if path[-4:].lower() == ".cls":
-                stem = path.rpartition("/")[2][:-4].lower()
-                found.setdefault(stem, []).append(path)
-        cached = {name: tuple(paths) for name, paths in found.items()}
-        ctx._lwc_apex_classes = cached  # type: ignore[attr-defined]
-    return cached
 
 
 def apex_specifier(module_path: str) -> tuple[str | None, str, str] | None:
@@ -142,12 +133,11 @@ def apex_specifier(module_path: str) -> tuple[str | None, str, str] | None:
 def _resolve_apex_module(
     spec: tuple[str | None, str, str], importer_path: str, ctx: ResolverContext
 ) -> str | None:
-    """The class file; another package's namespace stays external."""
+    """The class file, by the Apex reach rules; another package's namespace stays external."""
+    from ..languages.apex_namespace import apex_namespaces
+
     ns, cls, _ = spec
-    if ns is not None and ns.lower() not in lwc_namespaces(ctx):
-        return None
-    candidates = _apex_classes(ctx).get(cls.lower())
-    return nearest(candidates, importer_path) if candidates else None
+    return apex_namespaces(ctx).referred_file(importer_path, f"{ns}.{cls}" if ns else cls)
 
 
 def resolve_lwc_module(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:

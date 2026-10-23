@@ -1,53 +1,34 @@
 """Salesforce Aura bundle edges.
 
-An Aura component is a directory ``aura/<name>/``: markup (``<name>.cmp``,
-``.app``, ``.evt``, ``.intf``, ``.design``, ``.tokens``) plus
-``<name>Controller.js`` / ``Helper.js`` / ``Renderer.js``. Nothing in it is an
-import. The platform wires the pieces by name, and this handler reads those
-names:
+An Aura bundle ``aura/<name>/`` (markup plus ``<name>Controller.js``,
+``Helper.js``, ``Renderer.js``) is wired by name, not imports. Edges:
 
-* ``controller="Cls"`` on ``aura:component`` / ``aura:application`` -> the Apex
-  class file.
-* ``component.get("c.m")`` (any receiver) in bundle JS -> Apex method ``m`` of
-  the bundle's controller class, found through ``extends="c:Base"`` when the
-  bundle declares none. When the class has no ``m`` but the bundle's
-  Controller.js does, it is a client-side action and binds there instead;
-  ``getReference("c.m")`` always does.
-* ``{!c.h}`` in markup -> function ``h`` of the bundle's Controller.js.
-* ``helper.x(`` in bundle JS, and ``this.x(`` in Helper.js -> function ``x`` of the
-  bundle's Helper.js, inherited through ``extends`` like the controller.
-* ``<c:X>``, ``extends="c:X"``, ``implements="c:X"`` and the event ``type`` /
-  ``event`` of ``aura:registerEvent`` / ``aura:handler`` -> bundle ``X``,
-  Aura first, else the LWC bundle's ``X.js``. Only the own namespaces (``c``
-  and the sfdx-project.json ``namespace``) are followed; ``force:``,
-  ``lightning:``, ``flexipage:`` and the rest are the platform's.
-* ``$A.createComponent("c:X", ...)`` and the ``["c:X", {...}]`` entries of
-  ``$A.createComponents`` -> bundle ``X`` as a ``dynamic_uses`` edge, string
-  literals only. A name built at run time is never guessed.
+* ``controller="Cls"`` -> the Apex class; ``get("c.m")`` in bundle JS -> its
+  method ``m``, or the Controller.js function when the class has none.
+* ``{!c.h}`` and other ``"c.h"`` literals -> Controller.js functions;
+  ``helper.x(`` -> Helper.js functions. Both inherit through ``extends``.
+* Own-namespace ``<c:X>``, ``extends``, ``implements`` and event types -> the
+  Aura bundle ``X``, else the LWC bundle; ``$A.createComponent(s)`` literals
+  -> ``dynamic_uses``.
 
-Aura names match by exact case (every reference in the validation corpora
-does); Apex names fold case, as the platform does. A name with two candidate
-bundles or classes binds to neither.
-
-Entry points: an ``.app`` and a component implementing a platform placement
-interface (App Builder, tabs, quick actions, communities, URL addressable)
-are placed from outside the source tree, so the markup node is marked
-``is_entry_point``; a Renderer's ``render`` / ``rerender`` / ``afterRender`` /
-``unrender`` overrides are bound from the bundle's markup because the
-framework calls them.
+Aura names match by exact case; Apex names fold case and follow the Apex reach
+rules (``languages.apex_namespace``). A name with two candidates binds neither.
+An ``.app`` and a component implementing a placement interface are entry
+points, and a Renderer's overrides are bound from the markup.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from ..extractors.synthetic_symbols.aura_bundle_js import aura_js_role
+from ..languages.apex_namespace import apex_namespaces
 from ..languages.specs.aura import aura_bundle
-from ..type_names import bare_type_name, type_qualifier
+from ..resolvers.lwc import lwc_namespaces, nearest
+from ..type_names import bare_type_name
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -73,24 +54,18 @@ _JS_COMMENT_OR_STRING_RE = re.compile(
 _TAG_RE = re.compile(r"""<([A-Za-z]\w*):([A-Za-z_]\w*)((?:[^>"']|"[^"]*"|'[^']*')*)>""")
 _ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _QUALIFIED_RE = re.compile(r"^\s*(\w+):(\w+)\s*$")
-# Formatters reflow `{!c.h}` across lines and append a `;` (NebulaLogger ships one).
-# A handler inside a larger expression (`{!v.x ? c.a : c.b}`) is not read;
-# none of the validation corpora writes one.
+# Formatters reflow `{!c.h}` and append a `;`. Ceiling: `{!v.x ? c.a : c.b}` is not read.
 _MARKUP_HANDLER_RE = re.compile(r"\{\s*[!#]\s*c\.([A-Za-z_]\w*)\s*;?\s*\}")
 # A "c.x" string literal; group 1 is set when it is the argument of `.get(`.
 _ACTION_RE = re.compile(r"""(\.get\(\s*)?(["'])c\.([A-Za-z_]\w*)\2""")
 _HELPER_CALL_RE = re.compile(r"(?<![\w.$])helper\s*\.\s*([A-Za-z_$][\w$]*)\s*\(")
-# Inside a helper, `this` is the (inherited) helper object. A `this.x(` in a
-# nested non-arrow callback is read the same way; its target must still be a
-# helper function, which bounds the cost.
+# Inside a helper, `this` is the (inherited) helper object.
 _THIS_CALL_RE = re.compile(r"(?<![\w.$])this\s*\.\s*([A-Za-z_$][\w$]*)\s*\(")
 _CREATE_ONE_RE = re.compile(r"""\$A\s*\.\s*createComponent\s*\(\s*(["'`])(\w+):(\w+)\1""")
 _CREATE_MANY_RE = re.compile(r"\$A\s*\.\s*createComponents\s*\(")
 _CREATE_MANY_ITEM_RE = re.compile(r"""\[\s*(["'`])(\w+):(\w+)\1""")
 
-# Interfaces that let an admin place the component without any source naming
-# it: App Builder pages, tabs, quick actions, overrides, communities, flows
-# and URL navigation.
+# Interfaces that let an admin place the component without any source naming it.
 _ENTRY_INTERFACE_PREFIXES = ("flexipage:", "forcecommunity:", "lightningsnapin:")
 _ENTRY_INTERFACES = frozenset(
     {
@@ -168,30 +143,15 @@ def _call_span_end(text: str, open_paren: int) -> int:
     return n
 
 
-def _own_namespaces(parsed_files: dict[str, Any], source_map: dict[str, bytes]) -> frozenset[str]:
-    """``c`` plus every ``namespace`` an sfdx-project.json declares, lowercased."""
-    names = {"c"}
-    for path, parsed in parsed_files.items():
-        if PurePosixPath(path).name != "sfdx-project.json":
-            continue
-        try:
-            ns = json.loads(source_text(path, parsed, source_map, "utf-8-sig")).get("namespace")
-        except (ValueError, AttributeError):
-            continue
-        if isinstance(ns, str) and ns.strip():
-            names.add(ns.strip().lower())
-    return frozenset(names)
-
-
 class _AuraIndex:
     def __init__(self, graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext) -> None:
         self.graph = graph
         self.parsed_files = parsed_files
         self.source_map: dict[str, bytes] = getattr(ctx, "source_map", None) or {}
-        self.own_ns = _own_namespaces(parsed_files, self.source_map)
+        self.own_ns = lwc_namespaces(ctx)
+        self.apex = apex_namespaces(ctx)
         self.bundles: dict[str, _Bundle] = {}  # bundle dir -> bundle
         self.lwc_by_name: dict[str, list[str]] = {}
-        self.apex_by_name: dict[str, list[str]] = {}
         for path in sorted(parsed_files):
             self._add_file(path, parsed_files[path].file_info.language)
         self.aura_by_name: dict[str, list[str]] = {}
@@ -202,12 +162,6 @@ class _AuraIndex:
         self._functions: dict[str, dict[str, str]] = {}
 
     def _add_file(self, path: str, lang: str) -> None:
-        if lang == "apex" and path.endswith(".cls"):
-            # Apex names fold case and a class file is named after its class.
-            # Deliberately local: the case-insensitive Apex class index the
-            # Apex resolution pass builds should replace this once it lands.
-            self.apex_by_name.setdefault(PurePosixPath(path).stem.lower(), []).append(path)
-            return
         bundle = aura_bundle(path)
         if bundle is None:
             parts = PurePosixPath(path).parts
@@ -252,18 +206,15 @@ class _AuraIndex:
     def bundle_target(self, name: str, src: str) -> str | None:
         """The file a ``c:name`` reference from *src* lands on: Aura main markup, else LWC main js."""
         mains = [m for d in self.aura_by_name.get(name, []) if (m := self.bundles[d].main)]
-        return _nearest(src, mains + self.lwc_by_name.get(name, []))
+        return nearest(mains + self.lwc_by_name.get(name, []), src)
 
     def apex_class(self, written: str, src: str) -> str | None:
-        """The Apex file of ``controller="[ns.]Cls"`` written in *src*, own namespace only."""
-        head, tail = type_qualifier(written), bare_type_name(written)
-        if head and head.lower() not in self.own_ns:
-            return None
-        return _nearest(src, self.apex_by_name.get(tail.lower(), []))
+        """The Apex file of ``controller="[ns.]Cls"`` written in *src*."""
+        return self.apex.referred_file(src, written)
 
     def aura_bundle_dir(self, name: str, src: str) -> str | None:
         """The bundle dir an own-namespace ``extends``/``implements`` name from *src* means."""
-        return _nearest(src, self.aura_by_name.get(name, []))
+        return nearest(self.aura_by_name.get(name, []), src)
 
     def chain(self, bdir: str) -> list[str]:
         """The bundle and the bundles it ``extends``, nearest first.
@@ -356,30 +307,6 @@ class _AuraIndex:
         return best.id if best is not None else f"{path}::__module__"
 
 
-def _nearest(src: str, candidates: list[str]) -> str | None:
-    """The one candidate sharing the longest directory prefix with *src*, else None.
-
-    A repository can hold several Salesforce projects, or a source and an
-    mdapi copy of one, each declaring the same names; the platform resolves a
-    name inside the package being deployed, which the nearest copy stands for.
-    Two candidates equally near is a collision we do not break by guessing.
-    """
-    if len(candidates) <= 1:
-        return candidates[0] if candidates else None
-    src_parts = PurePosixPath(src).parts
-
-    def shared(c: str) -> int:
-        n = 0
-        for a, b in zip(src_parts, PurePosixPath(c).parts, strict=False):
-            if a != b:
-                break
-            n += 1
-        return n
-
-    scores = sorted(((shared(c), c) for c in candidates), reverse=True)
-    return scores[0][1] if scores[0][0] > scores[1][0] else None
-
-
 def _file_edge(graph: nx.DiGraph, src: str, dst: str, names: set[str]) -> int:
     """A ``framework`` file edge vouching for *names*, merged into an earlier one."""
     if src == dst or src not in graph or dst not in graph:
@@ -467,9 +394,7 @@ def _root_edges(idx: _AuraIndex, bdir: str, main: str, edges: _Edges) -> None:
         target = idx.bundle_target(name, main) if name else None
         if target is not None:
             edges.file(main, target)
-    # The framework calls these: renderer overrides, the controller function an
-    # action-less `aura:method` of an implemented interface names, and the
-    # functions a platform interface obliges the component to define.
+    # The framework calls these: renderer overrides and interface-named controller functions.
     module = f"{main}::__module__"
     platform = {
         m

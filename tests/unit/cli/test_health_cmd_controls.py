@@ -179,10 +179,10 @@ def test_a_mostly_unanalysed_repo_gets_no_band_in_any_scope() -> None:
     """A narrowed recompute keeps the unanalysed files in the share."""
     for args in ((), ("--scope", "production")):
         out = _mostly_unanalysed_output(*args)
-        assert "Code health: 10.0/10 ·" in out, args
+        # Never a bare score: coverage sits on the headline itself.
+        assert "Code health: 10.0/10 across 4 of 435 code files ·" in out, args
         # No band anywhere on the line, the worst file's included.
         assert "Excellent" not in out, args
-        assert "analysed 4 of 435 code files" in out, args
 
 
 def test_the_headline_names_production_code_while_tests_are_in_it() -> None:

@@ -538,7 +538,7 @@ class ChangeDetector:
         from .parser import parse_file
         from .traverser import _detect_language
 
-        lang = _detect_language(Path(path))
+        lang = _detect_language(Path(path), source)
         file_info = FileInfo(
             path=path,
             abs_path=str(self.repo_path / path),

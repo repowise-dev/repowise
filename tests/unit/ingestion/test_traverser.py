@@ -19,6 +19,15 @@ from repowise.core.ingestion.traverser import (
     in_blocked_dir,
 )
 
+# A DCLGEN member for COBOL, with fixed-format sequence numbers in columns 1-6.
+_COBOL_DCLGEN = (
+    "      * DCLGEN TABLE(CARDDEMO.TRANSACTION_TYPE)\n"
+    "000100     EXEC SQL DECLARE CARDDEMO.TRANSACTION_TYPE TABLE\n"
+    "000200     ( TR_TYPE CHAR(2) NOT NULL ) END-EXEC.\n"
+    "000300 01  DCLTRTYP.\n"
+    "000400     10 TR-TYPE              PIC X(2).\n"
+)
+
 
 class TestCompileGitignore:
     def test_malformed_line_is_not_fatal_and_keeps_valid(self) -> None:
@@ -128,6 +137,36 @@ class TestLanguageDetection:
     def test_a_dot_m_needs_no_sniff(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "Widget.m") == "objectivec"
 
+    def test_a_cobol_dclgen_member_is_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLTRTYP.dcl"
+        f.write_text(_COBOL_DCLGEN)
+        assert _detect_language(f) == "cobol"
+
+    def test_a_pli_dclgen_member_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLEMP.dcl"
+        f.write_text(
+            " EXEC SQL DECLARE DSN8C10.EMP TABLE\n"
+            "   ( EMPNO CHAR(6) NOT NULL ) ;\n"
+            " DCL 1 DCLEMP,\n"
+            "     5 EMPNO CHAR(6);\n"
+        )
+        assert _detect_language(f) == "unknown"
+
+    def test_an_uppercase_dcl_extension_is_sniffed_too(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLTRTYP.DCL"
+        f.write_text(_COBOL_DCLGEN)
+        assert _detect_language(f) == "cobol"
+
+    def test_a_table_declaration_without_a_record_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "TABLE.dcl"
+        f.write_text("     EXEC SQL DECLARE CARDDEMO.T TABLE ( A CHAR(1) ) END-EXEC.\n")
+        assert _detect_language(f) == "unknown"
+
+    def test_a_vms_dcl_procedure_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "build.dcl"
+        f.write_text("$ SET VERIFY\n$ CC/DEBUG MAIN.C\n$ LINK MAIN\n$ EXIT\n")
+        assert _detect_language(f) == "unknown"
+
     def test_special_dockerfile(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "Dockerfile") == "dockerfile"
 
@@ -178,6 +217,14 @@ class TestFileTraverser:
         traverser = FileTraverser(simple_repo)
         paths = [f.path for f in traverser.traverse()]
         assert not any("__pycache__" in p for p in paths)
+
+    def test_only_a_cobol_dclgen_member_is_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "DCLTRTYP.dcl").write_text(_COBOL_DCLGEN)
+        (tmp_path / "build.dcl").write_text("$ SET VERIFY\n$ EXIT\n")
+        traverser = FileTraverser(tmp_path)
+        found = {f.path: f.language for f in traverser.traverse()}
+        assert found == {"DCLTRTYP.dcl": "cobol"}
+        assert traverser.stats.skipped_unknown_language == 1
 
     def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:
         (tmp_path / "ProjectSettings").mkdir()

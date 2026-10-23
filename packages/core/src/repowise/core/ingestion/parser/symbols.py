@@ -19,6 +19,7 @@ from ..extractors import (
     extract_symbol_docstring,
     node_text,
 )
+from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
@@ -528,6 +529,10 @@ def _resolve_parent_name(
     # Objective-C containers name themselves with a bare first identifier.
     if language == "objectivec":
         return _objc_container_parent(def_node, config.parent_class_types, src)
+
+    # COBOL: a level-88 condition name is a value of the item before it.
+    if language == "cobol":
+        return cobol_condition_parent(def_node)
     return None
 
 

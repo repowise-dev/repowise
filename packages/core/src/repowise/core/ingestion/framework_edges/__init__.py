@@ -41,6 +41,7 @@ from . import (
     jakarta,
     laravel,
     lwc,
+    mainframe,
     micronaut,
     next_app,
     pytest_edges,
@@ -109,6 +110,8 @@ _HANDLERS: list[FrameworkHandler] = [
     *aura.HANDLERS,
     # Salesforce Visualforce: markup names its Apex controller and bound members.
     *visualforce.HANDLERS,
+    # JCL steps to programs and PROCs, COBOL programs to BMS mapsets.
+    *mainframe.HANDLERS,
     # Last, so an LWC or Aura handler's own edge to the same file wins.
     *salesforce_metadata.HANDLERS,
 ]

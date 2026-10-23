@@ -222,6 +222,61 @@ def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
         return _check("Store format", True, f"Could not check: {e}")
 
 
+def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """One row per runtime-downloaded grammar the repo needs, read from the cache only."""
+    import subprocess
+
+    from repowise.core.ingestion.languages.registry import REGISTRY
+    from repowise.core.ingestion.parser.grammars import (
+        downloads_grammar_at_runtime,
+        runtime_grammar_cache,
+    )
+
+    by_ext = {
+        ext: tag
+        for ext, tag in REGISTRY.all_extensions().items()
+        if downloads_grammar_at_runtime(tag)
+    }
+    try:
+        listed = subprocess.run(
+            # Untracked, unignored files too: ingestion walks them as well.
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        ).stdout.decode("utf-8", errors="replace")
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    counts: dict[str, int] = {}
+    for path in filter(None, listed.split("\0")):
+        tag = by_ext.get(os.path.splitext(path)[1].lower())
+        if tag:
+            counts[tag] = counts.get(tag, 0) + 1
+
+    rows = []
+    for tag, count in sorted(counts.items()):
+        spec = REGISTRY.get(tag)
+        name = f"{spec.display_name if spec else tag} grammar"
+        try:
+            cached, cache_dir = runtime_grammar_cache(tag)
+        except Exception as exc:
+            rows.append(_check(name, False, f"could not read the grammar cache ({exc})"))
+            continue
+        if cached:
+            rows.append(_check(name, True, f"cached in {cache_dir}"))
+        else:
+            rows.append(
+                _check(
+                    name,
+                    False,
+                    f"not downloaded; {count:,} files would index without symbols. "
+                    "Re-run 'repowise init' with network access, or set "
+                    "REPOWISE_GRAMMAR_DIR to a pre-staged grammar cache first",
+                )
+            )
+    return rows
+
+
 def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     """Checks 1-4b, in order. Fills the database and state fields of *ctx*."""
     checks = [_git_check(ctx.repo_path)]
@@ -233,4 +288,5 @@ def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     checks.append(_state_row(ctx))
     if ctx.state_ok:
         checks.append(_store_format_row(ctx.repo_path))
+    checks.extend(_runtime_grammar_rows(ctx.repo_path))
     return checks

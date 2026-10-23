@@ -37,6 +37,7 @@ from .call_barrel_forwarding import (  # noqa: F401
     _flattened_wildcard_source,
     _renames_on_the_way,
 )
+from .call_cobol import CobolCallsMixin
 from .call_inheritance import (  # noqa: F401
     _EXTERNAL_PREFIX,
     _MAX_ANCESTOR_EXPAND_DEPTH,
@@ -279,6 +280,7 @@ def _same_translation_unit(decl_file: str, def_file: str) -> bool:
 
 
 class CallResolver(
+    CobolCallsMixin,
     LanguageStrategiesMixin,
     ReceiverTypingMixin,
     OverloadSelectionMixin,
@@ -872,6 +874,8 @@ class CallResolver(
         assert caller_id is not None
 
         language = self._language_of(file_path) or ""
+        if language == "cobol":
+            return self._resolve_cobol_call(file_path, call, caller_id)
         receiver_call = call.receiver_call
         if _is_super_call(call, language):
             return self._with_props(self._super_call(call, caller_id), call)

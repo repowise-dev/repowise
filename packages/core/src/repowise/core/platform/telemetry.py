@@ -86,6 +86,13 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _TRUTHY
 
 
+def network_disabled() -> bool:
+    """True when ``REPOWISE_OFFLINE``, ``DO_NOT_TRACK`` or ``REPOWISE_TELEMETRY_DISABLED`` is set."""
+    return any(
+        _env_truthy(n) for n in ("REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED")
+    )
+
+
 def debug_mode() -> bool:
     """``REPOWISE_TELEMETRY_DEBUG`` prints the payload to stderr instead of sending."""
     return _env_truthy("REPOWISE_TELEMETRY_DEBUG")
@@ -169,7 +176,7 @@ def record_event(event: str, properties: dict[str, Any] | None = None) -> None:
     """
     try:
         # Cheap synchronous gate: env hard-offs need neither disk nor a thread.
-        if _env_truthy("DO_NOT_TRACK") or _env_truthy("REPOWISE_TELEMETRY_DISABLED"):
+        if network_disabled():
             return
         props = dict(properties or {})
 

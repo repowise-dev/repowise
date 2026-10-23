@@ -7,9 +7,7 @@ SPEC = LanguageSpec(
     display_name="Apex",
     # .apex is an anonymous-Apex script: top-level statements, no class.
     extensions=frozenset({".cls", ".trigger", ".apex"}),
-    # The language pack ships the aheber/tree-sitter-sfapex Apex grammar
-    # (inline SOQL/SOSL and DML are structured nodes in it), loaded the same
-    # way as COBOL.
+    # tree-sitter-sfapex from the language pack, loaded as COBOL's is.
     grammar_package="tree_sitter_language_pack",
     grammar_loader="get_language",
     grammar_loader_args=("apex",),
@@ -25,9 +23,7 @@ SPEC = LanguageSpec(
     test_camel_suffixes=("Test", "Tests"),
     manifest_files=("sfdx-project.json",),
     blocked_dirs=(".sfdx", ".sf"),
-    # Platform types written as a constructor target (``new Map<..>`` and
-    # ``new List<..>`` are generic and never captured as one). Matched as
-    # written; the parser drops the call site.
+    # Platform types written as a constructor target; the parser drops the call site.
     builtin_calls=frozenset(
         {
             "System", "Database", "Schema", "Test", "Limits", "Math", "JSON",
@@ -41,15 +37,9 @@ SPEC = LanguageSpec(
             "SelectOption", "Url", "Version", "Savepoint",
         }
     ),
-    # Only the root exception type. Platform interfaces (Queueable, Batchable,
-    # Schedulable, Comparable, ...) stay in the heritage list on purpose: they
-    # are what marks a class's contract methods as runtime-invoked.
+    # Platform interfaces stay in heritage: they mark contract methods as runtime-invoked.
     builtin_parents=frozenset({"Exception"}),
-    # Primitives, collections and the System, Database and Schema types that
-    # never resolve to a class the repository declares. Apex type names are
-    # case-insensitive, so readers compare these folded (see type_heads).
-    # Standard sObjects (Account, Contact, ...) are absent: they are schema
-    # references, not platform classes.
+    # Platform types no repo class can be; compared folded. sObjects are schema, not here.
     builtin_types=frozenset(
         {
             # Primitives and the root types

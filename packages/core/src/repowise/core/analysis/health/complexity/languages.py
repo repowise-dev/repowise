@@ -1445,6 +1445,21 @@ _PHP = LanguageNodeMap(
 )
 
 
+# COBOL procedures are header leaves with sibling bodies, so ``cobol.py`` walks
+# them; this map only marks the language as walked.
+_COBOL = LanguageNodeMap(
+    function_kinds=frozenset(),
+    lambda_kinds=frozenset(),
+    branch_kinds=frozenset(),
+    loop_kinds=frozenset(),
+    try_kinds=frozenset(),
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset(),
+    case_kinds=frozenset(),
+    boolean_operator_kinds=frozenset(),
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -1478,6 +1493,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "objectivec": _OBJC,
     "php": _PHP,
     "swift": _SWIFT,
+    "cobol": _COBOL,
 }
 
 

@@ -82,6 +82,7 @@ indexed from source.
 | Rust | fd | dev | rust-analyzer | 231 | 0.899 | 0.619 |
 | Rust | ripgrep | dev | rust-analyzer | 4,555 | 0.852 | 0.532 |
 | C++ | fmt | dev | scip-clang (clang) | 1,636 | 0.777 | 0.385 |
+| Apex | 7 public Salesforce repositories | dev | census of literal references, 90 hand-graded edges | 40,907 | **90/90** | 0.999 |
 
 **Held out means never tuned on.** Dev repositories are the ones accuracy work
 is developed against. Held-out repositories are chosen in advance and never used
@@ -90,7 +91,10 @@ code. Java's held-out repositories read 0.87 to 0.92, within a few points of its
 dev repositories.
 
 **How it is scored.** An edge matches when the caller and the callee land on
-the same declaration line the compiler names. Python has no compiler that
+the same declaration line the compiler names. Apex has no public compiler index,
+so its recall is read against a census of literal `new X(` and `X.m(` references
+to classes in other files, and its precision from 30 hand-graded edges on each of
+three repositories. Python has no compiler that
 resolves calls, so its reference is jedi, the standard static analyser for
 Python. Every cell carries a 95% confidence interval in the published
 artifacts.

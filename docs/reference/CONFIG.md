@@ -1045,6 +1045,7 @@ Anonymous usage telemetry is **on by default** (opt-out).
 |----------|-------------|
 | `DO_NOT_TRACK` | Any truthy value disables it (cross-tool convention) |
 | `REPOWISE_TELEMETRY_DISABLED` | Disables it, Repowise-specific |
+| `REPOWISE_OFFLINE` | Disables it, plus the PyPI release check and the `init` probe of signed-in agent CLIs (`DO_NOT_TRACK` and `REPOWISE_TELEMETRY_DISABLED` turn those off too) |
 | `REPOWISE_TELEMETRY_DEBUG` | Prints the payload to stderr instead of sending |
 
 ### Misc

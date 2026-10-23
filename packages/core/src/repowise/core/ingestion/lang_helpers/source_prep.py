@@ -119,9 +119,7 @@ def prepare_objectivec_source(source: bytes) -> bytes:
     return _blank_objc_trailing_macros(_blank_matches(source, _OBJC_BARE_MACRO_LINE_RE))
 
 
-# CumulusCI namespace-injection tokens (``%%%NAMESPACE%%%``,
-# ``%%%NAMESPACE_DOT%%%``) that the build rewrites before deploy. The source
-# is not Apex until then, and the grammar errors on them.
+# CumulusCI ``%%%NAMESPACE%%%`` tokens, rewritten at deploy; the grammar errors on them.
 _APEX_NAMESPACE_TOKEN_RE = re.compile(rb"%%%[A-Z_]+%%%")
 
 

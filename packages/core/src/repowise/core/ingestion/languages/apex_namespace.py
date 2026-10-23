@@ -12,7 +12,10 @@ projects (LightningFlowComponents ships 192) declares the same class name in
 several of them, and a name is looked up in the caller's own project, then in
 the un-namespaced packages it declares a dependency on. A namespace prefix
 (``npsp.Foo``, ``usf3.Foo``) names the repo project of that namespace; any
-other prefix names a managed package's class. A
+other prefix names a managed package's class. Markup and metadata (LWC, Aura,
+Visualforce, flows) reach Apex by the same rules from the project they sit in,
+then any class exactly one un-namespaced project declares: they name action
+classes of packages installed separately in the same org. A
 project may also keep a second copy of its classes outside its package
 directories (a legacy ``mdapi/`` export); a name declared in both is read in the
 copy the caller is deployed with.
@@ -29,12 +32,12 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..symbol_identity import outer_scope, symbol_id_path
-from ..type_names import bare_type_name, dotted_type_segments
+from ..type_names import bare_type_name, dotted_type_segments, type_qualifier
 
 _SFDX_PROJECT = "sfdx-project.json"
 _TYPE_KINDS = frozenset({"class", "interface", "enum"})
@@ -66,9 +69,50 @@ class ApexNamespaces:
     dependencies: dict[str, tuple[str, ...]]
     #: lowercased namespace -> the projects declaring it.
     by_namespace: dict[str, tuple[str, ...]]
+    #: lowercased top-level type name -> the projects declaring it.
+    declarers: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Places files the index was not built over (markup, metadata).
+    finder: _ProjectFinder = field(default_factory=lambda: _ProjectFinder(), compare=False)
+    #: Non-Apex file -> its project, as placed so far.
+    placed: dict[str, str] = field(default_factory=dict, compare=False)
 
     def top_level_type(self, file_path: str, name: str) -> str | None:
-        """The one top-level type *name* means from *file_path*, or None.
+        """The one top-level type *name* means from Apex file *file_path*, or None."""
+        project = self.project_of.get(file_path)
+        return None if project is None else self._top_level(project, file_path, name)
+
+    def referred_file(self, path: str, written: str) -> str | None:
+        """The file of the top-level type ``[ns.]Name`` means from any repo file.
+
+        *path* belongs to the project whose ``sfdx-project.json`` is nearest
+        above it; ``c.`` names that project, like no prefix. A non-Apex file
+        reaches what an Apex file there would, else a name its project does not
+        declare and exactly one un-namespaced project does.
+        """
+        project = self._place(path)
+        prefix, name = type_qualifier(written), bare_type_name(written)
+        if project is None or not name:
+            return None
+        if prefix and prefix.lower() != "c":
+            found = self._prefixed(project, path, prefix, name)
+        else:
+            found = self._top_level(project, path, name)
+            if found is None and path not in self.project_of:
+                found = self._unique_elsewhere(project, name)
+        return symbol_id_path(found) if found else None
+
+    def _unique_elsewhere(self, project: str, name: str) -> str | None:
+        """The one type *name* names when one other, un-namespaced project declares it once."""
+        declarers = self.declarers.get(name.lower(), ())
+        if len(declarers) != 1 or declarers[0] == project:
+            return None
+        if self.manifests[declarers[0]].namespace:
+            return None
+        found = self._declared(declarers[0], name)
+        return found[0] if len(found) == 1 else None
+
+    def _top_level(self, project: str, file_path: str, name: str) -> str | None:
+        """The one top-level type *name* means from *file_path* in *project*, or None.
 
         Looked up in the caller's own project, else in the un-namespaced
         projects it declares a dependency on (a namespaced one is reached only
@@ -77,9 +121,6 @@ class ApexNamespaces:
         package directory, or outside them all for a caller outside them. Any
         other pair is a tie, and neither is chosen.
         """
-        project = self.project_of.get(file_path)
-        if project is None:
-            return None
         if (project, name.lower()) in self.top_level:
             found = self._declared(project, name, self._deploy_unit(project, file_path))
         else:
@@ -95,6 +136,9 @@ class ApexNamespaces:
         project = self.project_of.get(file_path)
         if project is None or not prefix:
             return None
+        return self._prefixed(project, file_path, prefix, name)
+
+    def _prefixed(self, project: str, file_path: str, prefix: str, name: str) -> str | None:
         if prefix.lower() == self.manifests[project].namespace:
             found = self._declared(project, name, self._deploy_unit(project, file_path))
             return found[0] if len(found) == 1 else None
@@ -143,6 +187,18 @@ class ApexNamespaces:
             (d for d in self.manifests[project].package_dirs if path.startswith(f"{d}/")), None
         )
 
+    def _place(self, path: str) -> str | None:
+        """*path*'s project, registering a project that holds no Apex; None with no Apex at all."""
+        project = self.project_of.get(path, self.placed.get(path))
+        if project is not None or self.finder.root is None:
+            return project
+        project = self.finder.project_of(path, str(self.finder.root / path))
+        self.placed[path] = project
+        if project not in self.manifests:
+            self.manifests[project] = self.finder.manifests.get(project, _Manifest())
+            self.dependencies[project] = _dependencies(project, self.manifests)
+        return project
+
 
 
 def build_apex_namespaces(parsed_files: dict[str, Any]) -> ApexNamespaces:
@@ -175,7 +231,18 @@ def build_apex_namespaces(parsed_files: dict[str, Any]) -> ApexNamespaces:
         by_namespace={ns: tuple(found) for ns, found in by_namespace.items()},
         top_level={key: tuple(ids) for key, ids in top_level.items()},
         members=members,
+        declarers=_declarers(top_level),
+        finder=projects,
     )
+
+
+def apex_namespaces(ctx: Any) -> ApexNamespaces:
+    """The index for a resolver context's parsed files, built once per context."""
+    index = getattr(ctx, "_apex_namespaces", None)
+    if index is None:
+        index = build_apex_namespaces(ctx.parsed_files or {})
+        ctx._apex_namespaces = index
+    return index
 
 
 class _ProjectFinder:
@@ -184,12 +251,14 @@ class _ProjectFinder:
     def __init__(self) -> None:
         self._dirs: dict[str, str] = {}
         self.manifests: dict[str, _Manifest] = {}
+        self.root: Path | None = None  # the repository root, once a file was placed
 
     def project_of(self, path: str, abs_path: str) -> str:
         rel = PurePosixPath(path)
         root = Path(abs_path)
         for _ in rel.parts:
             root = root.parent
+        self.root = root
         return self._project_of_dir(rel.parent.as_posix(), root)
 
     def _project_of_dir(self, directory: str, root: Path) -> str:
@@ -227,6 +296,14 @@ def _read_manifest(manifest: Path, project: str) -> _Manifest:
             d.get("package", "").partition("@")[0] for d in dependencies if isinstance(d, dict)
         ),
     )
+
+
+def _declarers(top_level: Iterable[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
+    """Lowercased type name -> the projects declaring it."""
+    found: dict[str, list[str]] = defaultdict(list)
+    for project, name in top_level:
+        found[name].append(project)
+    return {name: tuple(projects) for name, projects in found.items()}
 
 
 def _dependencies(project: str, manifests: dict[str, _Manifest]) -> tuple[str, ...]:

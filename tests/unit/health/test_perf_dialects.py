@@ -1900,7 +1900,9 @@ _APEX_CASES = [
 
 @pytest.mark.parametrize("src,expected,note", _APEX_CASES, ids=[c[2] for c in _APEX_CASES])
 def test_apex_cases(src, expected, note):
-    assert _hits("apex", src) == sorted(expected), note
+    # The cases' bare classes declare no sharing; that marker has its own tests.
+    hits = [h for h in _hits("apex", src) if h[0] != "apex_missing_sharing"]
+    assert hits == sorted(expected), note
 
 
 def test_apex_parameter_switched_sink_is_no_bare_sink():

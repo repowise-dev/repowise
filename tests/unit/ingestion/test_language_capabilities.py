@@ -161,6 +161,8 @@ _FULL = {
     # through the same SFC pass as svelte, so its imports are ordinary ESM.
     "astro",
     "c",
+    # COPY members resolve to copybooks by stem, nearest first.
+    "cobol",
     "cpp",
     "csharp",
     # dart promoted with the tree-sitter grammar (the regex tier stays as

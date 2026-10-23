@@ -30,7 +30,12 @@ def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(store, "_path", lambda: tmp_path / "platform.json")
     monkeypatch.setattr(spool, "_path", lambda: tmp_path / spool.SPOOL_FILENAME)
     # Clear any inherited telemetry env so each test controls precedence.
-    for var in ("DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED", "REPOWISE_TELEMETRY_DEBUG"):
+    for var in (
+        "DO_NOT_TRACK",
+        "REPOWISE_TELEMETRY_DISABLED",
+        "REPOWISE_TELEMETRY_DEBUG",
+        "REPOWISE_OFFLINE",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(emitter, "_flush_thread", None, raising=False)
 
@@ -48,6 +53,11 @@ class TestConsentPrecedence:
     def test_tool_specific_env_disables(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("REPOWISE_TELEMETRY_DISABLED", "true")
         assert settings.is_enabled() is False
+
+    def test_offline_env_disables(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("REPOWISE_OFFLINE", "1")
+        assert settings.is_enabled() is False
+        assert settings.disabled_reason() == "REPOWISE_OFFLINE is set"
 
     def test_stored_disable_then_enable(self):
         settings.set_enabled(False)

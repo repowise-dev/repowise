@@ -9,7 +9,8 @@
   Apex ``Page.X`` -> the page, a ``PageReference('/apex/X')`` literal as
   ``dynamic_uses``.
 
-Names fold case; two equally near candidates bind neither. Pages are entry points.
+Names fold case; Apex classes are those an Apex file of the same sfdx project
+reaches, and two equally near pages or components bind neither. Pages are entry points.
 """
 
 from __future__ import annotations
@@ -19,9 +20,11 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from ...analysis.security_scan import mask_comments_and_strings
+from ..languages.apex_namespace import apex_namespaces
+from ..resolvers.lwc import lwc_namespaces, nearest
 from ..return_types import signature_parameter_count
-from ..type_names import bare_type_name, type_qualifier
-from .aura import _file_edge, _mask_xml, _nearest, _own_namespaces
+from ..type_names import bare_type_name
+from .aura import _file_edge, _mask_xml
 from .base import DetectionContext, FrameworkHandler, add_symbol_edge, source_text
 
 if TYPE_CHECKING:
@@ -60,18 +63,6 @@ def _attrs(blob: str) -> dict[str, str]:
     }
 
 
-def _apex_class_files(parsed_files: dict[str, Any]) -> dict[str, list[str]]:
-    """Lowercased Apex class name -> its ``.cls`` files.
-
-    Ceiling: local index; replace with the Apex resolution pass's class index when it lands.
-    """
-    out: dict[str, list[str]] = {}
-    for path in sorted(parsed_files):
-        if parsed_files[path].file_info.language == "apex" and path.lower().endswith(".cls"):
-            out.setdefault(PurePosixPath(path).stem.lower(), []).append(path)
-    return out
-
-
 class _VfIndex:
     def __init__(
         self, graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext
@@ -79,8 +70,10 @@ class _VfIndex:
         self.graph = graph
         self.parsed_files = parsed_files
         self.source_map: dict[str, bytes] = getattr(ctx, "source_map", None) or {}
-        self.own_ns = _own_namespaces(parsed_files, self.source_map)
-        self.apex = _apex_class_files(parsed_files)
+        self.own_ns = lwc_namespaces(ctx)
+        self.apex = apex_namespaces(ctx)
+        # A repository class named Page would shadow the platform's.
+        self.shadows_page = any(name == "page" for _, name in self.apex.top_level)
         self.pages: dict[str, list[str]] = {}
         self.components: dict[str, list[str]] = {}
         for path in sorted(parsed_files):
@@ -103,19 +96,15 @@ class _VfIndex:
 
     def page(self, written: str, src: str) -> str | None:
         name = self._own_name(written)
-        return _nearest(src, self.pages.get(name.lower(), [])) if name else None
+        return nearest(self.pages.get(name.lower(), []), src) if name else None
 
     def component(self, name: str, src: str) -> str | None:
-        return _nearest(src, self.components.get(name.lower(), []))
+        return nearest(self.components.get(name.lower(), []), src)
 
     def apex_class(self, written: str, src: str) -> tuple[str, str] | None:
-        """``(class file, class name)`` for ``[ns.]Cls`` written in *src*, own namespace only."""
-        written = written.strip()
-        head, tail = type_qualifier(written), bare_type_name(written)
-        if not tail or (head and head.lower() not in self.own_ns):
-            return None
-        path = _nearest(src, self.apex.get(tail.lower(), []))
-        return (path, tail) if path else None
+        """``(class file, class name)`` for ``[ns.]Cls`` written in *src*."""
+        path = self.apex.referred_file(src, written)
+        return (path, bare_type_name(written)) if path else None
 
     def chain(self, cls_file: str, cls: str) -> list[tuple[str, str]]:
         """The class and its ``extends`` ancestors the repository declares, nearest first."""
@@ -340,8 +329,7 @@ def _bind_member(
 
 def _apex_edges(idx: _VfIndex, path: str, edges: _Edges) -> None:
     raw = idx.text(path)
-    # A repository class named Page would shadow the platform's.
-    if "page" not in idx.apex:
+    if not idx.shadows_page:
         code = mask_comments_and_strings(raw, hash_comments=False)
         for m in _APEX_PAGE_RE.finditer(code):
             target = idx.page(m.group(1), path)
