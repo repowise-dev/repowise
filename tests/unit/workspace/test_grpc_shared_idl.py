@@ -201,3 +201,27 @@ class TestProjectGrpcServices:
             {"src/Web/Web.csproj": project, "src/shared/shop.proto": _PROTO, "api/own.proto": _PROTO},
         )
         assert {c.file_path for c in contracts} == {"api/own.proto"}
+
+
+class TestCSharpClients:
+    def test_di_and_dotted_clients_reach_the_package_qualified_proto(self, tmp_path: Path) -> None:
+        # eShop split per project: the server's proto has a package, the clients do not.
+        proto = 'syntax = "proto3";\npackage BasketApi;\nservice Basket {\n  rpc GetBasket(Req) returns (Res) {}\n}\n'
+        web = {
+            "Extensions.cs": "builder.Services.AddGrpcClient<Basket.BasketClient>(o => o.Address = new(\"http://basket-api\"));\n",
+        }
+        app = {
+            "BasketService.cs": (
+                "using Grpc.Net.Client;\n"
+                "var client = new BasketGrpcClient.Basket.BasketClient(GrpcChannel.ForAddress(url));\n"
+            ),
+        }
+        contracts = [
+            *_repo(tmp_path, "basket", {"Proto/basket.proto": proto}),
+            *_repo(tmp_path, "webapp", web),
+            *_repo(tmp_path, "clientapp", app),
+        ]
+        assert _pairs(contracts) == {
+            ("webapp", "basket", "Proto/basket.proto"),
+            ("clientapp", "basket", "Proto/basket.proto"),
+        }
