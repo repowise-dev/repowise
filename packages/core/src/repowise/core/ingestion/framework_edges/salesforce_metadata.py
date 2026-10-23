@@ -25,6 +25,7 @@ from repowise.core.fs_walk import glob_via
 
 from ..framework_facts import SALESFORCE
 from ..salesforce_flow import FlowRefs, read_flow
+from ..type_names import bare_type_name, type_qualifier
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -157,8 +158,8 @@ class _Index:
         if name.lower() in index:
             return name
         if "." in name:
-            ns, _, rest = name.partition(".")
-            return rest if ns.lower() in self.own_ns else None
+            ns = type_qualifier(name)
+            return bare_type_name(name) if ns.lower() in self.own_ns else None
         m = _NS_UU_RE.match(name)
         if m:
             return m.group(2) if m.group(1).lower() in self.own_ns else None
