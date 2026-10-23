@@ -93,6 +93,8 @@ def parse_apex(text: str) -> CoverageReport:
                 n = int(line)
             except (TypeError, ValueError):
                 continue
+            if n <= 0:
+                continue
             coverable.append(n)
             if isinstance(hits, (int, float)) and hits > 0:
                 covered.append(n)

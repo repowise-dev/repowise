@@ -61,8 +61,10 @@ def test_codecoverage_file_matches_cli_result() -> None:
 
 
 def test_unknown_id_prefix_keeps_bare_name_and_bad_input_is_empty() -> None:
-    report = parse_apex('[{"name": "Foo", "lines": {"1": 1}}, {"id": "01p", "lines": {}}]')
-    assert [f.file_path for f in report.files] == ["Foo"]
+    report = parse_apex(
+        '[{"name": "Foo", "lines": {"1": 1, "0": 1, "x": 1}}, {"id": "01p", "lines": {}}]'
+    )
+    assert [(f.file_path, f.coverable_lines) for f in report.files] == [("Foo", [1])]
     assert parse_apex("not json").files == []
     assert parse_apex('{"result": {"tests": []}}').files == []
 
@@ -193,3 +195,10 @@ def test_utf16_report_from_powershell_redirect_is_read(tmp_path: Path) -> None:
     resolved, errors = build_coverage_map(tmp_path, [path], KEYS)
     assert errors == []
     assert len(resolved.coverage_map) == 2
+
+
+def test_test_file_stays_unset_when_the_test_class_does_not_resolve() -> None:
+    text = _read("sample.apex.json").replace("AccountTriggerHandler_Tests", "Dup")
+    res = resolve_test_reports(parse_apex_contexts(text), KEYS)
+    assert [r.test_file for r in res.records] == [None, None]
+    assert res.test_files_resolved == 0
