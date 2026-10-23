@@ -74,6 +74,9 @@ Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 
 \* COBOL is excluded from dead-code claims: JCL, schedulers and dynamic program
 calls are entry paths the repository graph cannot observe.
+The COBOL and Apex grammars download on first use; offline, set
+`REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise doctor` reports
+whether it is cached.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
 resolved case-insensitively within each sfdx project's namespace; its dead-code
 findings are review-only. Apex test coverage from the Salesforce CLI is read as a

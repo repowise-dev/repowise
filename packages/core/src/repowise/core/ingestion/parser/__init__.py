@@ -74,7 +74,6 @@ from .grammars import (
     _MISSING_GRAMMAR_REPORTED,
     _PASSTHROUGH_LANGUAGES,
     QUERIES_DIR,
-    _build_language_registry,
     _compile_query,
     _get_language,
     _load_compiled_query,
@@ -84,6 +83,7 @@ from .grammars import (
     grammar_tag_for,
     log,
     missing_grammar_languages,
+    unavailable_runtime_grammars,
 )
 from .imports import _extract_imports
 from .references import (
