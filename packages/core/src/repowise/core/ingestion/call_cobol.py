@@ -21,6 +21,8 @@ class CobolCallsMixin:
         self, file_path: str, call: CallSite, caller_id: str
     ) -> ResolvedCall | None:
         name = call.target_name
+        if call.program_call:
+            return self._cobol_program(name, call, caller_id)
         own = self._cobol_symbol(file_path, name, _PROCEDURE_KINDS)
         if own is not None:
             return (
@@ -32,6 +34,9 @@ class CobolCallsMixin:
             hit = self._cobol_symbol(copied, name, _PROCEDURE_KINDS)
             if hit is not None:
                 return ResolvedCall(caller_id, hit, 0.90, call.line, "import_scoped")
+        return None
+
+    def _cobol_program(self, name: str, call: CallSite, caller_id: str) -> ResolvedCall | None:
         programs = [
             sym_id
             for sym_id in self._global_symbols.get(name, ())  # type: ignore[attr-defined]

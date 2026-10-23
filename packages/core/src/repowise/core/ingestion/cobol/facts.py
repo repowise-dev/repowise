@@ -45,6 +45,7 @@ def cobol_call_sites(source: bytes, symbols: list[Symbol]) -> list[CallSite]:
             caller_symbol_id=_find_enclosing_symbol(transfer.line, ranges),
             line=transfer.line,
             argument_count=None,
+            program_call=True,
         )
         for transfer in program_transfers(code_view(source))
         for target in transfer.targets

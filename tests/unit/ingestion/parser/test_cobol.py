@@ -189,3 +189,36 @@ class TestCobolCallScope:
 """
         edges = self._resolve(parser, {"lgacdb01.cbl": caller, "lgacdb02.cbl": callee}, {})
         assert edges == {("lgacdb02.cbl::LGACDB02", "global_unique")}
+
+    def test_a_call_skips_a_same_named_paragraph(self, parser: ASTParser) -> None:
+        caller = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. A.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           CALL 'B'.
+       B.
+           EXIT.
+"""
+        callee = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. B.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           GOBACK.
+"""
+        edges = self._resolve(parser, {"a.cbl": caller, "b.cbl": callee}, {})
+        assert edges == {("b.cbl::B", "global_unique")}
+
+    def test_an_unresolved_perform_never_binds_to_a_program(self, parser: ASTParser) -> None:
+        caller = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. A.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           PERFORM B.
+"""
+        callee = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. B.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           GOBACK.
+"""
+        assert self._resolve(parser, {"a.cbl": caller, "b.cbl": callee}, {}) == set()

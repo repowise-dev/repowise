@@ -381,6 +381,7 @@ def _call_from_match(
         # Ceiling: schedulers matched by name, the task followed within its
         # own function only (see ``python_tasks``).
         spawned=language == "python" and is_fire_and_forget(site_node, src),
+        program_call=language == "cobol" and site_node.type == "call_statement",
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
 
