@@ -10,7 +10,7 @@ import structlog
 # ``repowise.core.pipeline.persist`` reaches this module too.
 from repowise.core.pipeline import persist as _persist
 
-from .graph import _edge_row, has_graph_edges, stamp_edges_parser_fingerprint
+from .graph import _edge_row, prune_absent_graph_rows, stamp_edges_parser_fingerprint
 
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
@@ -21,6 +21,8 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
 
     Every write here is an idempotent UPSERT keyed by ``(repo_id, …)``, so
     this is safe to call incrementally (per phase) and to re-run on resume.
+    Graph nodes and edges are then pruned to the fresh graph, which is always
+    the complete graph here (the incremental update path does not call this).
 
     Returns the number of symbols written (for the summary log). Mutates
     ``sym.file_path`` on symbols that lack one — callers should treat the
@@ -54,13 +56,17 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     # ---- Graph edges ---------------------------------------------------------
     graph = result.graph_builder.graph()
     edges = [_edge_row(u, v, data) for u, v, data in graph.edges(data=True)]
-    fresh_store = not await has_graph_edges(session, repo_id)
     if edges:
         await batch_upsert_graph_edges(session, repo_id, edges)
-    if fresh_store:
-        from repowise.core.ingestion.parse_cache import parser_fingerprint
+    # The upserts above never delete, so drop this repo's rows the fresh graph no
+    # longer has (a removed import, a re-resolved ``external:`` target, a renamed
+    # symbol). Same session, so it lands in the same transaction as the upsert.
+    await prune_absent_graph_rows(session, repo_id, set(graph.nodes), edges)
+    # The store now holds exactly this build's graph, whatever it held before, so
+    # it is parser-current and can be stamped.
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
 
-        await stamp_edges_parser_fingerprint(session, repo_id, parser_fingerprint())
+    await stamp_edges_parser_fingerprint(session, repo_id, parser_fingerprint())
 
     # ---- External systems (C4 L1) -------------------------------------------
     # Persist before symbols so the FK linkage step below sees the IDs.
