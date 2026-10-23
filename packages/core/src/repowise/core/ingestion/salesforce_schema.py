@@ -202,10 +202,11 @@ class _Project:
         return folded
 
     def preferred(self, paths_ids: Iterable[tuple[str, str]]) -> list[str]:
-        """Definitions inside the sfdx package directories, else all of them.
+        """Definitions inside the sfdx package directories, else the only one.
 
-        Copies under ``unpackaged/`` or ``config/`` describe the same org
-        object for test orgs; the deployed package's copy is the one to name.
+        Copies under ``unpackaged/config/*`` describe the same org object for
+        test orgs; the deployed package's copy is the one to name. With no
+        package copy, several such copies are ambiguous and bind nothing.
         """
         pairs = list(paths_ids)
         inside = [
@@ -213,7 +214,9 @@ class _Project:
             for path, sid in pairs
             if any(path == d or path.startswith(d + "/") for d in self.package_dirs)
         ]
-        return inside or [sid for _, sid in pairs]
+        if inside:
+            return inside
+        return [pairs[0][1]] if len(pairs) == 1 else []
 
 
 def _read_project(repo_path: Path | None) -> _Project:

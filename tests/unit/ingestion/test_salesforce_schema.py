@@ -142,6 +142,39 @@ def test_package_directory_copy_wins_and_namespace_tokens_strip(tmp_path: Path) 
     assert "unpackaged/config/objects/___NAMESPACE___Job__c.object::Job__c" in g
 
 
+def test_several_copies_outside_the_package_bind_nothing(tmp_path: Path) -> None:
+    (tmp_path / "sfdx-project.json").write_text(
+        json.dumps({"packageDirectories": [{"path": "force-app"}]})
+    )
+    contact = "objects/Contact.object"
+    mdapi_contact = _object("Contact").replace(
+        "</CustomObject>",
+        "    <fields>\n        <fullName>Level__c</fullName>\n        <type>Text</type>\n"
+        "    </fields>\n</CustomObject>",
+    )
+    lookup = f"{_ROOT}/Shift__c/fields/Who__c.field-meta.xml"
+    cls = "force-app/main/default/classes/Q.cls"
+    g = _build(
+        tmp_path,
+        {
+            # Two test-org copies, none in the package: ambiguous.
+            f"unpackaged/config/dev/{contact}": mdapi_contact,
+            f"unpackaged/config/qa/{contact}": mdapi_contact,
+            # One copy outside the package: still binds.
+            "unpackaged/config/dev/objects/Lead.object": _object("Lead"),
+            lookup: _field("Lookup", "Contact"),
+            cls: "public class Q {\n  void m() {\n    List<Contact> c = [SELECT Level__c FROM Contact];"
+            "\n    List<Lead> l = [SELECT Id FROM Lead];\n  }\n}\n",
+        },
+    )
+
+    def refs(source: str) -> set[str]:
+        return {t for _, t, d in g.out_edges(source, data=True) if d["edge_type"] == "references"}
+
+    assert refs(f"{cls}::Q::m") == {"unpackaged/config/dev/objects/Lead.object::Lead"}
+    assert refs(f"{lookup}::Who__c") == set()
+
+
 def test_malformed_metadata_yields_no_symbols(tmp_path: Path) -> None:
     g = _build(tmp_path, {f"{_ROOT}/Bad__c/Bad__c.object-meta.xml": "<CustomObject><label>"})
     assert f"{_ROOT}/Bad__c/Bad__c.object-meta.xml" in g
