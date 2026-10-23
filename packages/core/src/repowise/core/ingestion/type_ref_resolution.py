@@ -938,30 +938,36 @@ def _resolve_apex_type_refs(
     """
     if not parsed.type_refs or ctx.parsed_files is None:
         return 0
-    index = getattr(ctx, "_apex_namespaces", None)
-    if index is None:
-        from .languages.apex_namespace import build_apex_namespaces
-
-        index = build_apex_namespaces(ctx.parsed_files)
-        ctx._apex_namespaces = index  # type: ignore[attr-defined]
+    index = _apex_namespaces(ctx)
     from_path = parsed.file_info.path
-    own = {s.name.lower() for s in parsed.symbols if s.kind in _TYPE_DECLARATION_KINDS}
+    # Names the file declares itself, then each name already linked.
+    skip = {s.name.lower() for s in parsed.symbols if s.kind in _TYPE_DECLARATION_KINDS}
     emitted = 0
-    seen: set[str] = set()
     for ref in parsed.type_refs:
         name = ref.type_name
-        if not name or name.lower() in own or name.lower() in seen:
+        if not name or name.lower() in skip:
             continue
-        seen.add(name.lower())
+        skip.add(name.lower())
         type_id = index.top_level_type(from_path, name)
-        target = type_id.partition("::")[0] if type_id else None
-        if target is None or target == from_path or not graph.has_node(target):
+        target = type_id.partition("::")[0] if type_id else from_path
+        if target == from_path or not graph.has_node(target):
             continue
         _add_or_merge_type_use_edge(
             graph, src=from_path, dst=target, type_name=name, origin=ref.origin, widens_scope=False
         )
         emitted += 1
     return emitted
+
+
+def _apex_namespaces(ctx: ResolverContext) -> Any:
+    """The ApexNamespaces index, built once per resolver context."""
+    index = getattr(ctx, "_apex_namespaces", None)
+    if index is None:
+        from .languages.apex_namespace import build_apex_namespaces
+
+        index = build_apex_namespaces(ctx.parsed_files)
+        ctx._apex_namespaces = index  # type: ignore[attr-defined]
+    return index
 
 
 # ---------------------------------------------------------------------------
