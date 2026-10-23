@@ -67,11 +67,10 @@ Each inferred answer about a file is one of six states
 
 **LCOV**, **Cobertura**, **Clover** and **JaCoCo** XML, **Go coverprofile**
 (`go test -coverprofile`), **Salesforce Apex JSON** (`sf apex run test
---code-coverage --result-format json`, or `test-result-codecoverage.json`),
-**coverage.py `.coverage`** and **normalized JSON** (`repowise-coverage-v1`).
-Three carry a per-test map: LCOV when each record has a non-blank `TN:` test
-name, `.coverage` when recorded with per-test contexts, and the Apex run result
-(`test-result-<run id>.json`), keyed `TestClass.method`.
+--code-coverage --result-format json`), **coverage.py `.coverage`** and **normalized JSON**
+(`repowise-coverage-v1`). Three carry a per-test map: LCOV when each record has
+a non-blank `TN:` test name, `.coverage` when recorded with per-test contexts,
+and the Apex run result (`test-result-<run id>.json`).
 
 - The format is sniffed and found in the usual locations
   ([rules](../architecture/test-intelligence.md#report-formats-and-discovery)); force

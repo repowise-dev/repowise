@@ -1,6 +1,6 @@
 # Language Support
 
-**27 languages parsed to a full AST, 41 on the five-rung support ladder, and
+**28 languages parsed to a full AST, 42 on the five-rung support ladder, and
 framework-aware edges where an ecosystem handler exists.** Every language lands
 on one rung, and the rung tells you which parts of the pipeline produce real
 output for it. Files in any other language still appear in the wiki and are
@@ -12,7 +12,7 @@ resolution and health markers are all static.
   <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" /> <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" /> <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" /> <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
   <img src="https://img.shields.io/badge/Vue-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue" /> <img src="https://img.shields.io/badge/Astro-BC52EE?style=flat-square&logo=astro&logoColor=white" alt="Astro" /> <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" /> <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" /> <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
   <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" /> <img src="https://img.shields.io/badge/C++-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++" /> <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" /> <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
-  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
+  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" /> <img src="https://img.shields.io/badge/Apex-00A1E0?style=flat-square&logo=salesforce&logoColor=white" alt="Apex (Salesforce)" />
 </p>
 <p>
   <strong>Good tier &nbsp;</strong>
@@ -35,15 +35,15 @@ resolution and health markers are all static.
 
 | Tier | Languages | What you get |
 |------|-----------|--------------|
-| **Full** (14) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
+| **Full** (15) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby, Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
 | **Good** (11) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F# and Objective-C get the complexity-derived ones; the rest get none yet |
 | **Partial** (2) | Luau / Roblox, Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure, Haskell, Lean 4, Erlang, HTML, QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R, Zig, Julia, Elm, OCaml, Crystal, Nim, D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-Tree-sitter parsing covers the first three rungs: those are the **27 languages
+Tree-sitter parsing covers the first three rungs: those are the **28 languages
 parsed to a full AST**. The bottom two rungs come from git history and import
-extraction, and all five together make the **41** on the ladder.
+extraction, and all five together make the **42** on the ladder.
 
 [SQL / dbt](#sql--dbt) and [shell](#shell) sit outside the ladder, because
 neither fits a rung: SQL gets symbols and health markers but no call graph, and
@@ -68,7 +68,8 @@ listed per language and framework in
 
 Every Full and Good language has a dedicated import resolver except Object
 Pascal and Objective-C, which resolve through a generic unit-name or header-stem
-match.
+match, and Apex, which has no imports and resolves names case-insensitively
+within each sfdx project's namespace.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 [Limits](#limits).
 
@@ -91,16 +92,8 @@ mapsets (`.bms`) are linked from the programs that send or receive their maps.
 Health measures each paragraph and section as a function: `IF`, `WHEN` arms,
 `PERFORM UNTIL/VARYING` loops and `AND`/`OR` add to its complexity, and data-only
 copybooks have no functions to flag.
-Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
-resolved case-insensitively within each sfdx project's namespace; its dead-code
-findings are review-only. Apex test coverage from the Salesforce CLI is read as a
-coverage report ([formats](TEST_INTELLIGENCE.md#supported-formats)). Health covers Apex
-complexity, class cohesion, and SOQL, DML and callouts inside loops; SOQL injection, missing
-sharing keywords, hardcoded record Ids and `SeeAllData=true` tests are findings that never move the score.
-Salesforce flows (`.flow-meta.xml`) are one symbol each, linked to the Apex
-invocable actions, subflows, screen components and triggering objects they name.
-Salesforce object and field metadata become symbols that Apex SOQL, DML and
-triggers reference.
+Apex dead-code findings are review-only, since the platform also reaches classes
+by name.
 
 ## How accurate is the graph per language
 
@@ -190,11 +183,12 @@ reported as unreachable.
 | C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, gRPC server registration |
 | Rust | Axum, Actix |
-| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular, Lightning Web Components |
+| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |
 | PHP | Laravel, TYPO3 |
 | Dart | Flutter route tables, `runApp()` and widget trees |
 | GDScript | Godot scenes, autoloads, signal connections, `class_name` |
+| Apex (Salesforce) | Lightning Web Components, Aura, Visualforce, flows, Lightning pages and quick actions as entry points, object and field metadata, Apex REST resources |
 
 ## Beyond code files
 
@@ -235,11 +229,9 @@ invoked by name.
   Lambda handler edges.
 - Godot resource files (`.tscn`, `.tres`, `.escn`, `project.godot`,
   `plugin.cfg`) carry no symbols but are read for the script paths they name.
-- Salesforce Aura markup (`.cmp`, `.app`, `.evt`, `.intf`, `.design`, `.tokens` in
-  an `aura/<bundle>/` folder) carries no symbols but is read for the Apex
-  controller, controller functions, child components and events it names.
-- Salesforce Visualforce pages and components (`.page`, `.component`) carry no
-  symbols but link their Apex controllers and the members their expressions bind.
+- Salesforce flows and object and field metadata become symbols; Aura and
+  Visualforce markup carries none. All of them link the Apex, components and
+  objects they name.
 
 ## Code-health coverage
 
@@ -263,6 +255,7 @@ This table is why a language is Full and not Good.
 | PHP | ✅ | ✅ | ✅ | no | no | ✅ | no |
 | C | ✅ | no | no | no | no | ✅ | no |
 | F#, Objective-C | ✅ | ✅ | no | no | no | no | no |
+| Apex | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
 
 ✅ supported, "no" not available yet, n/a the language cannot carry that metric.
@@ -270,6 +263,8 @@ This table is why a language is Full and not Good.
 - Dart, F# and Objective-C report class size, method count and CCN (supporting
   detectors like God Class), but do not compute cohesion metrics (LCOM4).
 - An unmapped language produces no findings, never guessed ones.
+- Apex also gets four advisory markers: SOQL injection, a class with queries and
+  no sharing keyword, hardcoded record Ids and `SeeAllData=true` tests.
 - The two test-quality markers (mock saturation, assertion-free test) are
   advisory and never deduct from a score.
 
@@ -289,6 +284,8 @@ Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
   have known gaps.
 - COBOL dynamic `CALL` targets and free-format source produce no edges.
 - C has no performance risk support.
+- Salesforce references are followed when the name is literal: runtime-built
+  names and objects with no metadata file in the repository get no edge.
 
 The full list per language, with the mechanics behind each gap, is in
 [architecture/language-support.md](../architecture/language-support.md#known-gaps-per-language).
