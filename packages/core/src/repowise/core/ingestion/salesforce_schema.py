@@ -223,9 +223,9 @@ def _read_project(repo_path: Path | None) -> _Project:
     if repo_path is not None:
         try:
             data = json.loads((repo_path / "sfdx-project.json").read_text(encoding="utf-8"))
-            entries = data.get("packageDirectories") or []
+            entries = [e for e in data.get("packageDirectories") or [] if isinstance(e, dict)]
             # The default package directory ranks first, the rest in listed order.
-            for entry in sorted(entries, key=lambda e: not e.get("default")):
+            for entry in sorted(entries, key=lambda e: e.get("default") is not True):
                 d = str(entry.get("path") or "").replace("\\", "/").strip("/")
                 d = d[2:] if d.startswith("./") else d
                 if d:
@@ -283,9 +283,10 @@ def _resolve(index: _Index, ref: SchemaReference) -> Iterator[str]:
             return
         # ``Rel__r`` hops through lookup ``Rel__c`` (``Account`` through ``AccountId``) to one object.
         lookup = seg[:-3] + "__c" if seg.endswith("__r") else seg + "id"
-        hops = index.project.preferred(index.fields.get((current, lookup), ()))
-        yield from hops
-        targets = set().union(*(index.lookups.get(h, set()) for h in hops))
+        copies = index.fields.get((current, lookup), ())
+        yield from index.project.preferred(copies)
+        # Every copy is a fragment of one field, so any of them may carry the referenceTo.
+        targets = set().union(*(index.lookups.get(sid, set()) for _, sid in copies))
         if len(targets) != 1:
             return
         current = next(iter(targets))

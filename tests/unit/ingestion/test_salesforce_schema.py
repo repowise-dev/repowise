@@ -156,6 +156,8 @@ def test_copies_of_one_object_bind_one_canonical_copy(tmp_path: Path) -> None:
         "    </fields>\n</CustomObject>",
     )
     lookup = "pkg-b/objects/Shift__c/fields/Who__c.field-meta.xml"
+    # A packaged fragment of Pay__c with no referenceTo; the test-org copy carries it.
+    pay = "pkg-b/objects/Shift__c/fields/Pay__c.field-meta.xml"
     cls = "pkg-b/classes/Q.cls"
     qa_contact = f"unpackaged/config/qa/{contact}"
     g = _build(
@@ -169,9 +171,14 @@ def test_copies_of_one_object_bind_one_canonical_copy(tmp_path: Path) -> None:
             f"unpackaged/config/dev/{contact}": mdapi_contact,
             qa_contact: mdapi_contact,
             lookup: _field("Lookup", "Contact"),
+            pay: _field("Lookup"),
+            "unpackaged/config/qa/objects/Shift__c/fields/Pay__c.field-meta.xml": _field(
+                "Lookup", "Contact"
+            ),
             cls: "public class Q {\n  void m() {\n    List<Account> a = [SELECT Id FROM Account];"
             "\n    List<Contact> c = [SELECT Level__c FROM Contact];"
-            "\n    List<Shift__c> s = [SELECT Who__r.Level__c FROM Shift__c];\n  }\n}\n",
+            "\n    List<Shift__c> s = [SELECT Who__r.Level__c FROM Shift__c];"
+            "\n    List<Shift__c> p = [SELECT Pay__r.Level__c FROM Shift__c];\n  }\n}\n",
         },
     )
 
@@ -183,6 +190,7 @@ def test_copies_of_one_object_bind_one_canonical_copy(tmp_path: Path) -> None:
         f"{qa_contact}::Contact",
         f"{qa_contact}::Contact::Level__c",
         f"{lookup}::Who__c",
+        f"{pay}::Pay__c",
     }
     assert refs(f"{lookup}::Who__c") == {f"{qa_contact}::Contact"}
 
