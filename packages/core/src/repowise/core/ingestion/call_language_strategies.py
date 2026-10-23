@@ -28,7 +28,7 @@ from .resolvers.jvm_gradle import (
     source_set_dir,
 )
 from .symbol_identity import outer_scope
-from .type_names import bare_type_name
+from .type_names import bare_type_name, dotted_type_segments
 
 
 @dataclass(frozen=True, slots=True)
@@ -642,7 +642,7 @@ class LanguageStrategiesMixin:
         member type of the one before it.
         """
         index = self._get_apex_namespaces()
-        head, *rest = written.split(".")
+        head, *rest = dotted_type_segments(written)
         type_id = self._apex_head_type(file_path, caller_id, head)
         if type_id is None and rest:
             prefix, (head, *rest) = head, rest

@@ -157,6 +157,11 @@ def type_qualifier(raw: str) -> str:
     return head.rstrip("".join(_QUALIFIER_SEPARATORS))
 
 
+def dotted_type_segments(raw: str) -> list[str]:
+    """``ns.Outer.Inner<T>`` -> ``["ns", "Outer", "Inner"]``: a dotted type path, segment by segment."""
+    return [segment.strip() for segment in strip_type_arguments(raw.strip()).split(".")]
+
+
 # C++ template heads whose ``operator->`` forwards to their argument, so
 # ``shared_ptr<Foo> p`` makes ``p->m()`` a call on ``Foo``. Only these: a
 # container holds a ``T`` without being one, and unwrapping ``vector<Foo>``

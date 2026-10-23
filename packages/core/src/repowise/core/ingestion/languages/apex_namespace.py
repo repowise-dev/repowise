@@ -26,6 +26,7 @@ the spelling the repository declares. Declarations keep their own spelling.
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -33,6 +34,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..symbol_identity import outer_scope, symbol_id_path
+from ..type_names import bare_type_name, dotted_type_segments
 
 _SFDX_PROJECT = "sfdx-project.json"
 _TYPE_KINDS = frozenset({"class", "interface", "enum"})
@@ -60,8 +62,6 @@ class ApexNamespaces:
     top_level: dict[tuple[str, str], tuple[str, ...]]
     #: (outer type id, lowercased name) -> id of the member type declared so.
     members: dict[tuple[str, str], str]
-    #: (project, lowercased name) -> ids of the member types declared so, at any depth.
-    nested: dict[tuple[str, str], tuple[str, ...]]
     #: project -> the un-namespaced projects building a package it depends on.
     dependencies: dict[str, tuple[str, ...]]
     #: lowercased namespace -> the projects declaring it.
@@ -96,7 +96,8 @@ class ApexNamespaces:
         if project is None or not prefix:
             return None
         if prefix.lower() == self.manifests[project].namespace:
-            return self.top_level_type(file_path, name)
+            found = self._declared(project, name, self._deploy_unit(project, file_path))
+            return found[0] if len(found) == 1 else None
         found = tuple(
             type_id
             for other in self.by_namespace.get(prefix.lower(), ())
@@ -107,19 +108,23 @@ class ApexNamespaces:
     def member_type(self, owner_id: str, name: str) -> str | None:
         return self.members.get((owner_id, name.lower()))
 
-    def nested_type(self, file_path: str, name: str) -> str | None:
-        """The one member type *name* the caller's project, else its dependencies, declares.
+    def type_path(self, file_path: str, written: str) -> str | None:
+        """The type a written path (``Outer.Inner``, ``usf3.Outer.Inner``) names from *file_path*.
 
-        For a heritage clause, which keeps only the last segment of ``Outer.Inner``.
+        The head is a top-level type the caller reaches, else a namespace
+        prefix; each later segment is a member type of the one before. An
+        outer type that is unknown or external names nothing.
         """
-        project = self.project_of.get(file_path)
-        if project is None:
-            return None
-        for scope in ([project], self.dependencies.get(project, ())):
-            found = {t for p in scope for t in self.nested.get((p, name.lower()), ())}
-            if found:
-                return found.pop() if len(found) == 1 else None
-        return None
+        head, *rest = dotted_type_segments(written)
+        type_id = self.top_level_type(file_path, head)
+        if type_id is None and rest:
+            prefix, (head, *rest) = head, rest
+            type_id = self.prefixed_type(file_path, prefix, head)
+        for segment in rest:
+            if type_id is None:
+                return None
+            type_id = self.member_type(type_id, segment)
+        return type_id
 
     def _declared(self, project: str, name: str, unit: str | None = None) -> tuple[str, ...]:
         """*project*'s top-level types named *name*, narrowed to deploy *unit* when several."""
@@ -145,7 +150,6 @@ def build_apex_namespaces(parsed_files: dict[str, Any]) -> ApexNamespaces:
     project_of: dict[str, str] = {}
     top_level: dict[tuple[str, str], list[str]] = defaultdict(list)
     members: dict[tuple[str, str], str] = {}
-    nested: dict[tuple[str, str], list[str]] = defaultdict(list)
     projects = _ProjectFinder()
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "apex":
@@ -159,7 +163,6 @@ def build_apex_namespaces(parsed_files: dict[str, Any]) -> ApexNamespaces:
                 top_level[(project, symbol.name.lower())].append(symbol.id)
             else:
                 members.setdefault((outer_scope(symbol.id), symbol.name.lower()), symbol.id)
-                nested[(project, symbol.name.lower())].append(symbol.id)
     manifests = {p: projects.manifests.get(p, _Manifest()) for p in set(project_of.values())}
     by_namespace: dict[str, list[str]] = defaultdict(list)
     for project, manifest in manifests.items():
@@ -172,7 +175,6 @@ def build_apex_namespaces(parsed_files: dict[str, Any]) -> ApexNamespaces:
         by_namespace={ns: tuple(found) for ns, found in by_namespace.items()},
         top_level={key: tuple(ids) for key, ids in top_level.items()},
         members=members,
-        nested={key: tuple(ids) for key, ids in nested.items()},
     )
 
 
@@ -235,6 +237,21 @@ def _dependencies(project: str, manifests: dict[str, _Manifest]) -> tuple[str, .
         for other, manifest in manifests.items()
         if other != project and not manifest.namespace and manifest.packages & wanted
     )
+
+
+def written_parents(text: str, line: int, parent: str) -> list[str]:
+    """The paths a heritage clause on *line* writes for parents named *parent*.
+
+    The relation keeps only the last segment; the clause runs from the
+    declaration line to its opening brace. ``[parent]`` when none is found.
+    """
+    header = "\n".join(text.splitlines()[line - 1 : line + 9]).partition("{")[0]
+    clause = re.split(r"(?i)\b(?:extends|implements)\b", header, maxsplit=1)
+    paths = ["".join(m.split()) for m in _DOTTED_NAME.findall(clause[1] if len(clause) > 1 else "")]
+    return [p for p in paths if bare_type_name(p).lower() == parent.lower()] or [parent]
+
+
+_DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*")
 
 
 def _names(values: Iterable[Any]) -> frozenset[str]:

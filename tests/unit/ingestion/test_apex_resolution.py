@@ -412,3 +412,44 @@ def test_a_variable_in_another_case_and_a_builtin_named_member_type(tmp_path: Pa
     calls = _calls(_build(tmp_path), _id("Caller.cls", "Caller::go"))
     assert calls[_id("Plugin.cls", "Plugin::run")] == "receiver_typed_same_package"
     assert calls[_id("Plugin.cls", "Batchable::start")] == "receiver_typed_same_package"
+
+
+def test_a_qualified_parent_is_read_through_its_outer_type(tmp_path: Path) -> None:
+    _project(tmp_path, {
+        "Metadata.cls": "public class Metadata {\n    public virtual class FlowNode {}\n}\n",
+        "Other.cls": "public class Other {}\n",
+        "Right.cls": "public class Right extends Metadata.FlowNode {}\n",
+        "Wrong.cls": "public class Wrong extends Other.FlowNode {}\n",
+        "Managed.cls": "public class Managed extends pkg.Outer.FlowNode {}\n",
+    })
+    graph = _build(tmp_path)
+    flow_node = _id("Metadata.cls", "Metadata::FlowNode")
+    assert graph.has_edge(_id("Right.cls", "Right"), flow_node)
+    assert not graph.has_edge(_id("Wrong.cls", "Wrong"), flow_node)
+    assert not graph.has_edge(_id("Managed.cls", "Managed"), flow_node)
+
+
+def test_the_own_namespace_prefix_never_reaches_a_dependency(tmp_path: Path) -> None:
+    util = "public class Util {\n    public static void help() {}\n}\n"
+    _with_dependency(tmp_path / "base", {"Util.cls": util}, "BasePack", "")
+    _with_dependency(
+        tmp_path / "uses",
+        {
+            "Caller.cls": (
+                "public class Caller {\n"
+                "    void prefixed() { acme.Util.help(); }\n"
+                "    void bare() { Util.help(); }\n"
+                "}\n"
+            )
+        },
+        "Uses",
+        "BasePack",
+    )
+    manifest = tmp_path / "uses" / "sfdx-project.json"
+    manifest.write_text(manifest.read_text().replace('"namespace": ""', '"namespace": "acme"'))
+    graph = _build(tmp_path)
+    # Only the unprefixed call reaches the dependency's class.
+    assert _calls(graph, _id("Caller.cls", "Caller::prefixed", "uses")) == {}
+    assert _calls(graph, _id("Caller.cls", "Caller::bare", "uses")) == {
+        _id("Util.cls", "Util::help", "base"): "receiver_same_package"
+    }
