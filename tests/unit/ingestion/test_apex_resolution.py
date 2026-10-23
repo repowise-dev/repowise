@@ -277,3 +277,23 @@ def test_type_references_draw_file_edges(tmp_path: Path) -> None:
     graph = _build(tmp_path)
     data = graph.get_edge_data(f"{_CLASSES}/Caller.cls", f"{_CLASSES}/Shape.cls")
     assert data is not None and data["edge_type"] == "type_use"
+
+
+def test_a_lower_case_bare_call_is_not_a_constructor(tmp_path: Path) -> None:
+    # ``execute()`` inherited from a platform class is not ``new Execute()``.
+    _project(tmp_path, {
+        "Execute.cls": "public class Execute {}\n",
+        "Other.cls": "public class Other {\n    public void execute() {}\n}\n",
+        "Job.cls": "public class Job implements Queueable {\n    void go() { execute(); }\n}\n",
+    })
+    assert _calls(_build(tmp_path), _id("Job.cls", "Job::go")) == {}
+
+
+def test_a_malformed_manifest_still_resolves(tmp_path: Path) -> None:
+    _project(tmp_path, {
+        "AccountService.cls": _SERVICE,
+        "Caller.cls": "public class Caller {\n    void go() { AccountService.run(); }\n}\n",
+    })
+    (tmp_path / "sfdx-project.json").write_text('{"packageDirectories": 5, "namespace": 7}')
+    calls = _calls(_build(tmp_path), _id("Caller.cls", "Caller::go"))
+    assert calls == {_id("AccountService.cls", "AccountService::run"): "receiver_same_package"}

@@ -701,7 +701,9 @@ class LanguageStrategiesMixin:
         why the uniqueness-gated global tier refuses this call.
         """
         type_id = self._apex_head_type(file_path, caller_id, call.target_name)
-        if type_id is None:
+        # Only the type's own spelling: ``execute()`` inherited from a platform
+        # class is not ``new Execute()``.
+        if type_id is None or self._symbols_by_id[type_id].name != call.target_name:
             return None
         hit = self._apex_type_call(file_path, caller_id, type_id, call.line, "same_package")
         if hit is not None and hit.origin == "receiver_same_file":

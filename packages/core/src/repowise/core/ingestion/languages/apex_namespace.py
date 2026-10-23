@@ -154,17 +154,23 @@ class _ProjectFinder:
 def _read_manifest(manifest: Path, project: str) -> tuple[frozenset[str], tuple[str, ...]]:
     """``(own namespace prefixes, package directories)`` an ``sfdx-project.json`` declares."""
     try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data = json.loads(manifest.read_text(encoding="utf-8-sig"))
         namespace = data.get("namespace")
         entries = data.get("packageDirectories") or []
         written = [e.get("path") for e in entries if isinstance(e, dict)]
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, TypeError):
         return frozenset(), ()
     prefixes = frozenset({namespace.lower()}) if isinstance(namespace, str) and namespace else frozenset()
-    dirs = tuple(
-        PurePosixPath(project, path.strip("./")).as_posix()
+    relative = (
+        PurePosixPath(path.replace("\\", "/")).as_posix().removeprefix("./").rstrip("/")
         for path in written
-        if isinstance(path, str) and path.strip("./")
+        if isinstance(path, str)
+    )
+    # A package directory outside the project (``../shared``) is not read: a ceiling.
+    dirs = tuple(
+        PurePosixPath(project, path).as_posix()
+        for path in relative
+        if path not in ("", ".") and not path.startswith("..")
     )
     return prefixes, dirs
 
@@ -179,13 +185,14 @@ def spell_apex_names(parsed_files: Iterable[Any]) -> None:
     alone: it may be a variable that shares a class's folded name, which the
     resolver tells apart. Idempotent, so a cached parse may pass through twice.
 
-    A receiver-less call means its own file's declaration of the name first,
-    however another class spells it: ``ContactFromDi(..)`` in a class declaring
-    ``contactFromDi`` is that method, not another class's ``ContactFromDi``.
-    A call site does not record ``new``, so a receiver-less name is read by how
-    it is written: capitalised, a constructor, matched to a type's spelling
-    only (``new Contact()`` is the sObject, not a repo method ``contact``);
-    otherwise a method, matched to a member's. Ceiling: a constructor written
+    A receiver-less call means its own file's declaration of the name first
+    (of the same kind), however another class spells it: ``ContactFromDi(..)``
+    in a class declaring ``contactFromDi`` is that method. A call site does not
+    record ``new``, so a capitalised receiver-less name some type folds to is a
+    constructor (``new OrgConfig()`` inside a method ``orgConfig``), and any
+    other capitalised one matches only its own file's member (``new Contact()``,
+    the sObject, never becomes another class's method ``contact``). Ceiling: a
+    file declaring ``contact()`` reads its own ``new Contact()`` as that method. Ceiling: a constructor written
     in lower case (``new accountService()``) keeps its spelling and misses.
     """
     apex = [parsed for parsed in parsed_files if parsed.file_info.language == "apex"]
@@ -205,24 +212,32 @@ def spell_apex_names(parsed_files: Iterable[Any]) -> None:
         return next(iter(spellings))
 
     for parsed in apex:
-        own = _own_spellings(parsed)
+        own_types, own_members = _own_spellings(parsed)
         for index, call in enumerate(parsed.calls):
+            folded = call.target_name.lower()
             if call.receiver_name or call.receiver_call:
                 target = spelled(call.target_name, names)
-            elif call.target_name.lower() in own:
-                target = own[call.target_name.lower()]
+            elif call.target_name[:1].isupper():
+                if folded in types:
+                    target = own_types.get(folded) or spelled(call.target_name, types)
+                else:
+                    target = own_members.get(folded, call.target_name)
             else:
-                declared = types if call.target_name[:1].isupper() else members
-                target = spelled(call.target_name, declared)
+                target = own_members.get(folded) or spelled(call.target_name, members)
             if target != call.target_name:
                 parsed.calls[index] = replace(call, target_name=target)
         for relation in parsed.heritage:
             relation.parent_name = spelled(relation.parent_name, types)
 
 
-def _own_spellings(parsed: Any) -> dict[str, str]:
-    """``{folded name: spelling}`` for the names one file declares in one spelling only."""
-    spellings: dict[str, set[str]] = defaultdict(set)
+def _own_spellings(parsed: Any) -> tuple[dict[str, str], dict[str, str]]:
+    """``{folded name: spelling}`` of the types, then the members, one file declares in one spelling."""
+    types: dict[str, set[str]] = defaultdict(set)
+    members: dict[str, set[str]] = defaultdict(set)
     for symbol in parsed.symbols:
-        spellings[symbol.name.lower()].add(symbol.name)
-    return {folded: next(iter(found)) for folded, found in spellings.items() if len(found) == 1}
+        kind = types if symbol.kind in _TYPE_KINDS else members
+        kind[symbol.name.lower()].add(symbol.name)
+    return tuple(  # type: ignore[return-value]
+        {folded: next(iter(found)) for folded, found in table.items() if len(found) == 1}
+        for table in (types, members)
+    )
