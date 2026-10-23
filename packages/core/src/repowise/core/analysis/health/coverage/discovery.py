@@ -735,10 +735,8 @@ def _build_suffix_index(repo_keys: set[str]) -> dict[str, list[str]]:
 def _apex_names(norm_path: str) -> tuple[str, ...]:
     """The Apex file basenames a Salesforce coverage entry can mean, case-folded.
 
-    Salesforce reports name a class or trigger, not a file: ``Foo.cls`` /
-    ``Foo.trigger`` (the Apex JSON parser), or a bare ``Foo`` under
-    ``no-map/`` (the CLI's lcov / Cobertura reports when it found no source),
-    which may be either. Empty for anything else, including a dotted name.
+    ``Foo.cls`` / ``Foo.trigger`` from the Apex JSON parser, or a bare ``Foo``
+    (optionally under the CLI's ``no-map/``) meaning either. Empty otherwise.
     """
     segs = norm_path.split("/")
     if len(segs) == 2 and segs[0] == "no-map":
@@ -776,9 +774,7 @@ def _match_key(
     if norm_path in repo_keys:
         return norm_path, False
 
-    # A class or trigger name is unique in an org, so two files of that name
-    # are two copies: refuse rather than pick by directory. No Apex file of
-    # that name leaves a bare ``Makefile`` to the suffix match below.
+    # An Apex name is unique in an org, so two files of that name are copies: refuse.
     hits = [k for name in _apex_names(norm_path) for k in suffix_index.get(name, ())]
     if hits:
         return (hits[0], False) if len(hits) == 1 else (None, True)

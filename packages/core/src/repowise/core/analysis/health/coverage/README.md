@@ -34,11 +34,9 @@ from repowise.core.analysis.health.coverage import (
   test. Callers holding the stored `is_test` flag use that instead.
 - `paired_test_file(path, all_paths)`: find the conventional test partner for
   a source path.
-- `apex.py` (`parse_apex`, `parse_apex_contexts`): Salesforce CLI JSON (the
-  run result or `test-result-codecoverage.json`). Entries name a class or
-  trigger, so paths come out as `Name.cls` / `Name.trigger` by id prefix; the
-  resolver maps them to the one file of that name, case-folded, and refuses
-  duplicates. The run result's `ApexCodeCoverage` records are the per-test map.
+- `apex.py` (`parse_apex`, `parse_apex_contexts`): Salesforce CLI JSON. Paths
+  are `Name.cls` / `Name.trigger`, mapped to the one file of that name; the run
+  result's `ApexCodeCoverage` records are the per-test map.
 - `contexts.py` (`parse_contexts_file`, `parse_lcov_contexts`): per-test readers
   for a coverage.py `.coverage` SQLite file with contexts and for per-test LCOV
   `TN:` records; a report without contexts yields no records.

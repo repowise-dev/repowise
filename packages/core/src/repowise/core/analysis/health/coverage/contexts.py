@@ -64,9 +64,7 @@ def is_coverage_data_file(path: str | Path) -> bool:
 def read_report_text(path: str | Path) -> str:
     """A text report's contents: UTF-8, or UTF-16 when it opens with a UTF-16 BOM.
 
-    Windows PowerShell 5.1 writes UTF-16 for ``>`` redirection, so
-    ``sf apex run test --json > result.json`` lands that way. Raises
-    :class:`OSError` / :class:`UnicodeDecodeError` like ``read_text``.
+    Windows PowerShell 5.1 ``>`` redirection writes UTF-16. Raises like ``read_text``.
     """
     data = Path(path).read_bytes()
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
