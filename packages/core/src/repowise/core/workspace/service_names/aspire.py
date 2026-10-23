@@ -15,7 +15,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-from .base import Claim, ServiceNameSource, SourceFile
+from .base import Claim, ServiceNameSource, SourceFile, join_config_path
 
 _ADD_PROJECT_RE = re.compile(
     r"\.Add(?:Dotnet)?Project\s*(?:<\s*(?:global::)?([\w.]+)\s*>)?\s*\(\s*"
@@ -25,7 +25,7 @@ _PROJECT_REF_RE = re.compile(r"<ProjectReference\s+Include\s*=\s*\"([^\"]+\.cspr
 
 
 def _project_dir(apphost_dir: Path, ref: str) -> Path:
-    path = apphost_dir / ref.replace("\\", "/")
+    path = join_config_path(apphost_dir, ref)
     return path.parent if path.suffix.lower() == ".csproj" else path
 
 

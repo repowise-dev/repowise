@@ -14,7 +14,10 @@ import fnmatch
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
+from typing import TypeVar
+
+_P = TypeVar("_P", bound=PurePath)
 
 #: A name a consumer uses as its URL host (``http://catalogue:8080``).
 HOST = "host"
@@ -81,6 +84,17 @@ class ServiceNameSource:
         return not self.under or any(d in self.under for d in parent_dirs)
 
 
+def join_config_path(base: _P, ref: str) -> _P:
+    """*ref*, a path written in a config file, joined onto *base* on any OS.
+
+    Config written on Windows (an AppHost's ``..\Catalog.API``, a compose
+    ``build: .\cart``) is indexed on Linux too, where a backslash is not a
+    separator, so both separators split it here.
+    """
+    parts = [p for p in ref.replace("\\", "/").split("/") if p not in ("", ".")]
+    return base.joinpath(*parts)
+
+
 _URL_HOST_RE = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([A-Za-z0-9][^/:?#]*)", re.IGNORECASE)
 _HOST_PORT_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*):\d+/?$")
 _BARE_HOST_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*)$")
@@ -106,4 +120,4 @@ def host_of(key: str, value: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
-__all__ = ["ENV", "HOST", "Claim", "ServiceNameSource", "SourceFile", "host_of"]
+__all__ = ["ENV", "HOST", "Claim", "ServiceNameSource", "SourceFile", "host_of", "join_config_path"]

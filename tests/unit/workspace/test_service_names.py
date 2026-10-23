@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from pathlib import Path
+import posixpath
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -21,7 +22,11 @@ from repowise.core.workspace.service_names import (
     build_service_name_map,
     service_names_fingerprint,
 )
-from repowise.core.workspace.service_names.base import ServiceNameSource, host_of
+from repowise.core.workspace.service_names.base import (
+    ServiceNameSource,
+    host_of,
+    join_config_path,
+)
 from repowise.core.workspace.system_graph import build_system_graph
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "service_names"
@@ -408,3 +413,29 @@ def test_the_stored_map_round_trips_and_its_fingerprint_tracks_its_inputs(tmp_pa
     assert service_names_fingerprint({**heads, "b": "3"}, tmp_path) != fp
     (tmp_path / "docker-compose.yml").write_text("services: {}\n")
     assert service_names_fingerprint(heads, tmp_path) != fp
+
+
+@pytest.mark.parametrize(
+    ("ref", "expected"),
+    [
+        (r"..\Catalog.API\Catalog.API.csproj", "/w/Catalog.API/Catalog.API.csproj"),
+        ("../cart", "/w/cart"),
+        (r".\src\Web", "/w/host/src/Web"),
+    ],
+)
+def test_config_paths_written_on_windows_resolve_on_any_os(ref: str, expected: str) -> None:
+    # PurePosixPath keeps a backslash as a literal character on every OS.
+    joined = join_config_path(PurePosixPath("/w/host"), ref)
+    assert posixpath.normpath(str(joined)) == expected
+
+
+def test_a_backslash_path_with_other_case_finds_its_repo(tmp_path: Path) -> None:
+    host = tmp_path / "eshop.apphost"
+    host.mkdir()
+    (tmp_path / "catalog.api").mkdir()
+    (host / "AppHost.cs").write_text(
+        "var b = DistributedApplication.CreateBuilder(args);\n"
+        r'b.AddProject("catalog-api", @"..\Catalog.API\Catalog.API.csproj");' "\n"
+    )
+    m = build_service_name_map(_repos(tmp_path, "eshop.apphost", "catalog.api"))
+    assert _mapped(m) == {"catalog-api": ("catalog.api", "aspire_apphost")}

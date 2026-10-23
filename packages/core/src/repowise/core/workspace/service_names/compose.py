@@ -16,7 +16,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from .base import ENV, Claim, ServiceNameSource, SourceFile, host_of
+from .base import ENV, Claim, ServiceNameSource, SourceFile, host_of, join_config_path
 from .yaml_docs import load_yaml_docs
 
 _PLACEHOLDER_RE = re.compile(r"\$\{[^}]*\}")
@@ -37,9 +37,9 @@ def _build_dir(build: Any, base: Path) -> Path | None:
         return None
     if not isinstance(context, str) or "$" in context or "://" in context or context.startswith("git@"):
         return None
-    where = base / context
+    where = join_config_path(base, context)
     if isinstance(dockerfile, str) and "$" not in dockerfile and "/" in dockerfile.replace("\\", "/"):
-        where = (where / dockerfile).parent
+        where = join_config_path(where, dockerfile).parent
     return where
 
 

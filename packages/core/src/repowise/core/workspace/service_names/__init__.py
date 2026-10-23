@@ -175,16 +175,22 @@ def _workspace_root_files(workspace_root: Path) -> list[_Found]:
     return found
 
 
+def _path_key(path: Path) -> str:
+    # Case-insensitive on every OS: an AppHost or compose file written on
+    # Windows names ``../Catalog.API`` for a checkout that may be ``catalog.api``.
+    return os.path.abspath(path).casefold()
+
+
 class _Resolver:
     def __init__(self, repo_paths: dict[str, Path]) -> None:
         self.roots = sorted(
-            ((os.path.normcase(os.path.abspath(p)), a) for a, p in repo_paths.items()),
+            ((_path_key(p), a) for a, p in repo_paths.items()),
             key=lambda r: -len(r[0]),
         )
         self.aliases = {a.lower(): a for a in repo_paths}
 
     def repo_at(self, path: Path) -> str | None:
-        target = os.path.normcase(os.path.abspath(path))
+        target = _path_key(path)
         for root, alias in self.roots:  # deepest root first: a nested repo wins
             if target == root or target.startswith(root + os.sep):
                 return alias
