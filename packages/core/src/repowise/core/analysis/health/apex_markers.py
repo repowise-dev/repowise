@@ -5,7 +5,7 @@ not prove its claim):
 
 - ``apex_soql_injection``: a dynamic query (``Database.query`` and friends,
   ``Search.query``) whose string splices a value from outside the method (a
-  String parameter, a public String property, or a local built from one) inside
+  String parameter, a public String field or property, or a local built from one) inside
   a quoted SOQL literal, with no escape call and no bind. Values outside quotes
   (field lists, object names) are not flagged: escaping cannot protect them and
   they are almost always describe results.
@@ -17,8 +17,10 @@ not prove its claim):
   zero-filled or ``xx`` sample Id, outside fixture-named classes.
 - ``apex_see_all_data``: ``@IsTest(SeeAllData=true)``.
 
-Test code is skipped by the first three, and a ``@SuppressWarnings('PMD.<Rule>')``
-naming the matching PMD rule (or ``'PMD'``) on the class or method silences each.
+Test classes and methods are skipped by the first three, and a
+``@SuppressWarnings('PMD.<Rule>')`` naming the matching PMD rule (or ``'PMD'``) on
+the class or method silences each. Ceiling: any String parameter counts as from
+outside, so a private helper only ever called with constants still fires.
 Hits ride ``FileComplexity.perf_hits`` like the SQL smells.
 """
 
@@ -76,12 +78,12 @@ _UNSHARED_OBJECTS = frozenset(
 _METHODS = frozenset({"method_declaration", "constructor_declaration"})
 _TYPES = frozenset({"class_declaration", "interface_declaration", "enum_declaration"})
 _STRING_COLLECTIONS = frozenset({"list<string>", "set<string>", "string[]"})
-# String methods whose result still carries the receiver's characters.
+# String methods whose result still carries the receiver's characters (``replace``
+# and ``remove`` are left out: they are how code strips quotes).
 _PASS_THROUGH = frozenset(
     {
         "trim", "tolowercase", "touppercase", "normalizespace", "deletewhitespace",
-        "substring", "left", "right", "mid", "replace", "replaceall", "remove",
-        "capitalize", "abbreviate", "get",
+        "substring", "left", "right", "mid", "capitalize", "abbreviate", "get",
     }
 )
 
@@ -158,7 +160,9 @@ def _suppressed(node: Node, kind: str) -> bool:
         for ann in _annotations(decl):
             if _lower(ann.child_by_field_name("name")) != "suppresswarnings":
                 continue
-            names = {n.strip() for n in _lower(ann.child_by_field_name("arguments")).strip("()'\" ").split(",")}
+            args = ann.child_by_field_name("arguments")
+            values = [n for n in _walk(args) if n.type == "string_literal"] if args is not None else []
+            names = {n.strip() for v in values for n in _literal(v).lower().split(",")}
             if "pmd" in names or rule in names:
                 return True
     return False
@@ -243,7 +247,8 @@ def is_record_id(value: str) -> bool:
         return False
     if len(value) == 18:
         return _checksum(value[:15]) == value[15:]
-    return value[:3] in _KEY_PREFIXES
+    # A 15-char Id has no checksum: also ask for the zero run its pod and reserved digits leave.
+    return value[:3] in _KEY_PREFIXES and "000" in body
 
 
 def _hardcoded_ids(root: Node) -> list[PerfHit]:
@@ -321,7 +326,11 @@ def _shared_op(node: Node) -> bool:
         return not _unshared(typ)
     if node.type == "query_expression" or _static_call(node, _DYNAMIC_QUERY):
         return not all(obj and _unshared(obj) for obj in _query_objects(node))
-    return _static_call(node, _SHARED_OPS)
+    if not _static_call(node, _SHARED_OPS):
+        return False
+    args = node.child_by_field_name("arguments")
+    first = args.named_children[0] if args is not None and args.named_children else None
+    return first is None or first.type != "identifier" or not _unshared(_declared_type(first))
 
 
 def _first_db_op(cls: Node) -> Node | None:
@@ -329,6 +338,12 @@ def _first_db_op(cls: Node) -> Node | None:
     if body is None:
         return None
     return next((n for n in _walk(body, skip=_TYPES) if _shared_op(n)), None)
+
+
+def _has_test_method(cls: Node) -> bool:
+    """A legacy test class: ``testMethod`` members and no ``@IsTest`` on the class."""
+    body = cls.child_by_field_name("body")
+    return any(m.type in _METHODS and _is_test_decl(m) for m in (body.named_children if body else ()))
 
 
 def _missing_sharing(root: Node) -> list[PerfHit]:
@@ -339,6 +354,7 @@ def _missing_sharing(root: Node) -> list[PerfHit]:
             or _modifier_kinds(cls) & _SHARING
             or cls.child_by_field_name("superclass") is not None
             or _is_test_decl(cls)
+            or _has_test_method(cls)
             or _suppressed(cls, MISSING_SHARING)
         ):
             continue
@@ -442,12 +458,16 @@ def _is_escape(node: Node) -> bool:
 
 def _operands(expr: Node) -> list[Node]:
     """*expr* as the pieces a ``+`` chain concatenates, parentheses dropped."""
-    if expr.type == "parenthesized_expression" and expr.named_children:
-        return _operands(expr.named_children[0])
-    if expr.type == "binary_expression" and _text(expr.child_by_field_name("operator")) == "+":
-        left, right = expr.child_by_field_name("left"), expr.child_by_field_name("right")
-        return [*(_operands(left) if left else []), *(_operands(right) if right else [])]
-    return [expr]
+    out, stack = [], [expr]
+    while stack:  # iterative: generated code chains thousands of ``+``
+        cur = stack.pop()
+        if cur.type == "parenthesized_expression" and cur.named_children:
+            stack.append(cur.named_children[0])
+        elif cur.type == "binary_expression" and _text(cur.child_by_field_name("operator")) == "+":
+            stack += [c for c in (cur.child_by_field_name("right"), cur.child_by_field_name("left")) if c]
+        else:
+            out.append(cur)
+    return out
 
 
 class _Tracer:
@@ -585,14 +605,31 @@ class _Tracer:
             return None
         init = next((c for c in named[1].children if c.type == "array_initializer"), None)
         values = init.named_children if init is not None else []
-        template = _literal(named[0])
-        for m in re.finditer(r"\{(\d+)\}", template):
-            index = int(m.group(1))
-            if _soql_quotes(template[: m.start()]) % 2 == 1 and index < len(values):
-                found = self.tainted_name(values[index], method)
-                if found:
-                    return found
+        for index, quoted in _format_slots(_literal(named[0])):
+            found = self.tainted_name(values[index], method) if quoted and index < len(values) else None
+            if found:
+                return found
         return None
+
+
+def _format_slots(template: str) -> list[tuple[int, bool]]:
+    """``(argument index, inside a SOQL quote)`` for each placeholder of a
+    ``String.format`` template. Apex formats like Java's MessageFormat: ``''`` is
+    one quote, and a lone ``'`` quotes the text after it, placeholders included."""
+    slots, rendered, literal, i = [], 0, False, 0
+    while i < len(template):
+        if template.startswith("''", i):
+            rendered += 1
+            i += 2
+        elif template[i] == "'":
+            literal = not literal
+            i += 1
+        elif not literal and (m := re.match(r"\{(\d+)\}", template[i:])):
+            slots.append((int(m.group(1)), rendered % 2 == 1))
+            i += m.end()
+        else:
+            i += 1
+    return slots
 
 
 def _soql_injections(root: Node) -> list[PerfHit]:

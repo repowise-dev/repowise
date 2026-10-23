@@ -1692,7 +1692,7 @@
     "file_info": {
       "path": "lang_samples/apex/health_markers.cls",
       "language": "apex",
-      "size_bytes": 2805,
+      "size_bytes": 2708,
       "is_test": false,
       "is_config": false,
       "is_api_contract": false,
@@ -1708,7 +1708,7 @@
         "kind": "class",
         "signature": "class HealthMarkers",
         "start_line": 4,
-        "end_line": 83,
+        "end_line": 78,
         "docstring": null,
         "decorators": [],
         "visibility": "public",
@@ -2077,40 +2077,13 @@
         "alias_of": null
       },
       {
-        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::testMethodLiteral",
-        "name": "testMethodLiteral",
-        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.testMethodLiteral",
-        "kind": "method",
-        "signature": "testMethodLiteral() -> void",
-        "start_line": 73,
-        "end_line": 76,
-        "docstring": null,
-        "decorators": [
-          "@IsTest\n    static"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": "HealthMarkers",
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "static"
-        ],
-        "alias_of": null
-      },
-      {
         "id": "lang_samples/apex/health_markers.cls::HealthMarkers::Inner",
         "name": "Inner",
         "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.Inner",
         "kind": "class",
         "signature": "class Inner",
-        "start_line": 78,
-        "end_line": 82,
+        "start_line": 73,
+        "end_line": 77,
         "docstring": null,
         "decorators": [],
         "visibility": "public",
@@ -2134,8 +2107,8 @@
         "qualified_name": "lang_samples.apex.health_markers.Inner.touch",
         "kind": "method",
         "signature": "touch(List<Account> rows) -> void",
-        "start_line": 79,
-        "end_line": 81,
+        "start_line": 74,
+        "end_line": 76,
         "docstring": null,
         "decorators": [],
         "visibility": "public",
@@ -2407,7 +2380,7 @@
     "heritage": [],
     "docstring": null,
     "parse_errors": [],
-    "content_hash": "f5d0583f2d814753626c56ab0f6ad3ebc314d8f08a3a25dfc5525a47e321a329",
+    "content_hash": "437b2b8db7896dce8a88bc2921875fa183f555b2bf8992c4793c1f4da834601b",
     "type_refs": [
       {
         "type_name": "Account",
@@ -2456,7 +2429,7 @@
       },
       {
         "type_name": "Account",
-        "line": 79,
+        "line": 74,
         "origin": "param_type"
       }
     ],

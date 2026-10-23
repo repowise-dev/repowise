@@ -68,6 +68,9 @@ _INJECTION_QUIET = {
     "outside quotes": "List<Account> m(String where) { return Database.query('SELECT Id FROM Account WHERE ' + where); }",
     "suppressed": "@SuppressWarnings('PMD.ApexSOQLInjection') List<Account> m(String n) { return Database.query('SELECT Id FROM Account WHERE Name = \\'' + n + '\\''); }",
     "inline soql": "List<Account> m(String n) { return [SELECT Id FROM Account WHERE Name = :n]; }",
+    "quotes stripped": "List<Account> m(String n) { return Database.query('SELECT Id FROM Account WHERE Name = \\'' + n.replaceAll('[^a-z]', '') + '\\''); }",
+    "suppressed in a list": "@SuppressWarnings('PMD.ApexDoc', 'PMD.ApexSOQLInjection') List<Account> m(String n) { return Database.query('SELECT Id FROM Account WHERE Name = \\'' + n + '\\''); }",
+    "format, quoted placeholder": "List<Account> m(String n) { return Database.query(String.format('SELECT Id FROM Account WHERE Name = \\'{0}\\'', new List<Object>{ n })); }",
 }
 
 
@@ -89,7 +92,7 @@ def test_injection_through_a_field_built_in_the_constructor():
 def test_injection_through_string_format():
     src = """public with sharing class A {
         List<Account> m(String n) {
-            return Database.query(String.format('SELECT Id FROM Account WHERE Name = \\'{0}\\'', new List<Object>{ n }));
+            return Database.query(String.format('SELECT Id FROM Account WHERE Name = \\'\\'{0}\\'\\'', new List<Object>{ n }));
         }
     }"""
     assert _hits(src) == [("apex_soql_injection", "m", "n")]

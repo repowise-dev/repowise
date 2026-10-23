@@ -70,11 +70,6 @@ public class HealthMarkers {
         String sample = '001000000000000AAA';
     }
 
-    @IsTest
-    static void testMethodLiteral() {
-        Id fake = '0011t00000ABCDeAAP';
-    }
-
     public with sharing class Inner {
         public void touch(List<Account> rows) {
             update rows;
