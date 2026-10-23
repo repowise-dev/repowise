@@ -136,6 +136,20 @@ def _locations(blocks: list[_Block], rewritten: bool = False) -> Iterator[tuple[
             yield from _locations(b.children, rewritten)
 
 
+def _forwarded(path: str, prefix: str, uri: str | None) -> str | None:
+    """What a call under *path* is forwarded as: *uri* in place of the prefix, the path
+    unchanged without one, None when nginx would splice it oddly.
+
+    nginx appends the rest of the path to the URI as written (``/api/`` to ``/v2``
+    forwards ``/v2x``), so only a URI ending as the location does is read.
+    """
+    if uri is None:
+        return prefix
+    if path.endswith("/") != uri.endswith("/") or _ODD_URI_RE.search(uri):
+        return None
+    return uri.rstrip("/").lower()
+
+
 def _route(
     location: _Block, upstreams: dict[str, set[str]], envsubst: bool, rewritten: bool
 ) -> tuple[str, str, Route] | None:
@@ -147,19 +161,13 @@ def _route(
     if not prefix:
         return None  # a catch-all is never more specific than a real route
     proxy, unreadable = _proxy(location)
-    if proxy is None:
-        return HOST, "", Route(prefix, None)  # served here: only blocks shorter prefixes
-    m = _PROXY_RE.match(proxy.args[0])
-    kind, name = _target(m.group(1), upstreams, envsubst) if m else (HOST, "")
-    uri = m.group(2) if m else None
-    # nginx splices the rest of the path onto the URI as written (``/api/`` to
-    # ``/v2`` forwards ``/v2x``), so only a URI ending as the location does is read.
-    odd_uri = uri is not None and (path.endswith("/") != uri.endswith("/") or _ODD_URI_RE.search(uri))
-    if unreadable or rewritten or modifier == "=" or shape != EXACT or odd_uri:
-        upstream: str | None = None
-    else:
-        upstream = prefix if uri is None else uri.rstrip("/").lower()
-    return kind, name, Route(prefix, upstream)
+    m = _PROXY_RE.match(proxy.args[0]) if proxy is not None else None
+    if m is None:
+        # Served here, or proxied somewhere unreadable: only blocks shorter prefixes.
+        return HOST, "", Route(prefix, None)
+    kind, name = _target(m.group(1), upstreams, envsubst)
+    readable = not (unreadable or rewritten) and modifier != "=" and shape == EXACT
+    return kind, name, Route(prefix, _forwarded(path, prefix, m.group(2)) if readable else None)
 
 
 def read(file: SourceFile) -> Iterable[Claim]:
