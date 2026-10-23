@@ -55,6 +55,7 @@ def test_copy_and_sql_include_become_one_import_per_member() -> None:
         b"       COPY COCOM01Y.\n"
         b"       COPY COCOM01Y.\n"
         b"       COPY MEMBER1 OF MYLIB.\n"
+        b"       COPY MEMBER1 OF OTHERLIB.\n"
         b"           EXEC SQL INCLUDE DCLTRTYP END-EXEC.\n"
     )
 
@@ -63,5 +64,6 @@ def test_copy_and_sql_include_become_one_import_per_member() -> None:
     assert found == [
         ("COCOM01Y", "COPY COCOM01Y", ["*"]),
         ("MYLIB/MEMBER1", "COPY MEMBER1 OF MYLIB", ["*"]),
+        ("OTHERLIB/MEMBER1", "COPY MEMBER1 OF OTHERLIB", ["*"]),
         ("DCLTRTYP", "EXEC SQL INCLUDE DCLTRTYP", ["*"]),
     ]

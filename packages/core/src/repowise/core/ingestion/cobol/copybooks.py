@@ -12,15 +12,15 @@ def copy_imports(source: bytes) -> list[Import]:
     imports: list[Import] = []
     seen: set[str] = set()
     for statement in copy_statements(code_view(source)):
-        if statement.member in seen:
-            continue
-        seen.add(statement.member)
-        verb = "EXEC SQL INCLUDE" if statement.include else "COPY"
-        library = f" OF {statement.library}" if statement.library else ""
         # ``LIB/MEMBER`` lets the resolver prefer a library directory.
         module = (
             f"{statement.library}/{statement.member}" if statement.library else statement.member
         )
+        if module in seen:
+            continue
+        seen.add(module)
+        verb = "EXEC SQL INCLUDE" if statement.include else "COPY"
+        library = f" OF {statement.library}" if statement.library else ""
         imports.append(
             Import(
                 raw_statement=f"{verb} {statement.member}{library}",
