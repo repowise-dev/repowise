@@ -1007,9 +1007,10 @@ An LWC bundle is `lwc/<name>/` with main module `<name>.js`. Inside a bundle,
 templates as raw text: `<c-kebab-name>` is looked up in a reverse index of
 kebab-cased bundle names (the HTML grammar splits tags at `_`), `{member}`
 binds a template to its class's method or getter, `@wire(apexBinding)` binds
-the Apex method, and a `.js-meta.xml` that exposes the bundle anchors it to
-`framework:lwc`. A name two sfdx projects declare goes to the nearer one, and
-a tie gets no edge.
+the Apex method, and a `.js-meta.xml` with `isExposed` true anchors the bundle
+to `framework:lwc` (its `configurationEditor` links the editor bundle). A jest
+test's Apex import stays external, since jest only mocks Apex. A name two sfdx
+projects declare goes to the nearer one, and a tie gets no edge.
 
 ### Known gaps per language
 
