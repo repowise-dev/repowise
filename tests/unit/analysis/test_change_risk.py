@@ -17,6 +17,7 @@ from repowise.core.analysis.change_risk import (
     features_from_file_changes,
     score_change,
     score_live_change,
+    working_tree_is_dirty,
 )
 from repowise.core.analysis.change_risk.model import _CONSTANTS, _sigmoid
 
@@ -204,6 +205,15 @@ def git_repo(tmp_path: Path) -> Path:
     _git(["config", "user.email", "seed@e.com"], repo)
     _commit(repo, {"README.md": "# seed\n"}, "chore: seed", author="Seed")
     return repo
+
+
+def test_repowise_state_alone_does_not_make_the_tree_dirty(git_repo: Path) -> None:
+    """A fresh init leaves .repowise/ untracked; that is not a code change."""
+    (git_repo / ".repowise").mkdir()
+    (git_repo / ".repowise" / "wiki.db").write_text("x", encoding="utf-8")
+    assert not working_tree_is_dirty(str(git_repo))
+    (git_repo / "new.py").write_text("x = 1\n", encoding="utf-8")
+    assert working_tree_is_dirty(str(git_repo))
 
 
 def test_extract_commit_features_counts_diffusion(git_repo: Path) -> None:

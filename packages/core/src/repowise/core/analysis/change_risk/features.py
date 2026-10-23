@@ -215,11 +215,18 @@ def change_features_from_stored(
 
 
 def working_tree_is_dirty(repo_path: str) -> bool:
-    """Whether the checkout holds staged, unstaged or untracked changes."""
+    """Whether the checkout holds staged, unstaged or untracked changes.
+
+    The repo's own ``.repowise/`` does not count: it is repowise's state, never
+    a change to the code, and a fresh ``init`` leaves it untracked.
+    """
     # check=False so a non-repo path answers "not dirty" rather than raising:
     # the caller falls back to scoring a committed ref, which then reports the
     # real git error with its own revspec in the message.
-    return bool(_git(["status", "--porcelain"], repo_path, check=False).strip())
+    # The exclude pathspec is relative to repo_path, so a package's .repowise/
+    # inside a larger git repo is the one left out.
+    status = _git(["status", "--porcelain", "--", ":(exclude).repowise"], repo_path, check=False)
+    return bool(status.strip())
 
 
 def extract_worktree_features(
