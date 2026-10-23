@@ -980,6 +980,16 @@ Salesforce CLI coverage names a class or trigger, never a file, so it maps to
 the one `.cls` or `.trigger` file of that name, ignoring case. A name two files
 share, or no file has, stays unmapped.
 
+### Salesforce Visualforce
+
+Pages and components link the Apex classes their `controller=` and
+`extensions=` name, and each `{!expr}` binds the identifier before its first `.`
+to a public member (property, `getX`, or `setX` for inputs) of the controller,
+then each extension, up the `extends` chain. Custom component tags, included
+pages and Apex `Page.X` references link pages and components; a
+`PageReference('/apex/X')` literal is a `dynamic_uses` edge. Names fold case,
+and a name two equally near files declare binds nothing.
+
 ### QML
 
 Module specs resolve against an index built from the `qmldir` manifests in the

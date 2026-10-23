@@ -215,6 +215,8 @@ invoked by name.
 - Salesforce Aura markup (`.cmp`, `.app`, `.evt`, `.intf`, `.design`, `.tokens` in
   an `aura/<bundle>/` folder) carries no symbols but is read for the Apex
   controller, controller functions, child components and events it names.
+- Salesforce Visualforce pages and components (`.page`, `.component`) carry no
+  symbols but link their Apex controllers and the members their expressions bind.
 
 ## Code-health coverage
 

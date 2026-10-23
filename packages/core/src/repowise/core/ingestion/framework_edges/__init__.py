@@ -53,6 +53,7 @@ from . import (
     test_runner_setup,
     trpc,
     typo3,
+    visualforce,
     vscode_extension,
 )
 from .base import DetectionContext, FrameworkHandler, _add_edge_if_new, read_text
@@ -105,6 +106,8 @@ _HANDLERS: list[FrameworkHandler] = [
     # Salesforce Aura bundles: markup names its Apex controller, controller
     # functions and child components; nothing is an import.
     *aura.HANDLERS,
+    # Salesforce Visualforce: markup names its Apex controller and bound members.
+    *visualforce.HANDLERS,
 ]
 
 

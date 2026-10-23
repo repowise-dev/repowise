@@ -66,6 +66,7 @@ from .toml import SPEC as _TOML
 from .typescript import SPEC as _TYPESCRIPT
 from .unknown import SPEC as _UNKNOWN
 from .vbnet import SPEC as _VBNET
+from .visualforce import SPEC as _VISUALFORCE
 from .vue import SPEC as _VUE
 from .xaml import SPEC as _XAML
 from .yaml import SPEC as _YAML
@@ -134,6 +135,8 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # root-relative asset paths. Markup, so it is never reported as dead code
     # while its edges still anchor what it references.
     _HTML,
+    # Salesforce Visualforce markup: no symbols, edges from framework_edges/visualforce.py.
+    _VISUALFORCE,
     # XAML / AXAML markup for WPF, WinUI 3, UWP, MAUI, Avalonia, Uno.
     # No AST grammar — handled by the XamlDynamicHints extractor which
     # emits ``dynamic_uses`` edges to bound C# types. Registered here so

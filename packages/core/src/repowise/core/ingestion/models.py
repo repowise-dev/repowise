@@ -81,6 +81,8 @@ LanguageTag = Literal[
     "xaml",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
+    # Salesforce Visualforce (.page/.component): markup that names its Apex controller.
+    "visualforce",
     # Lightweight: qmldir-declared module imports and quoted references.
     "qml",
     # Godot .tscn/.tres/.escn + project.godot: data with no symbols, but
