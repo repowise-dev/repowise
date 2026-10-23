@@ -919,6 +919,52 @@ def _find_jvm_type_file(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Apex
+# ---------------------------------------------------------------------------
+
+def _resolve_apex_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve Apex type references to the type the caller's project declares.
+
+    Apex has no imports: a type name is a top-level class of the file's own
+    sfdx project, compared without case (see ``languages.apex_namespace``).
+    A name the file declares itself is its own, and draws no edge. The edges
+    do not widen call scope: Apex calls bind through the project namespace
+    in the call resolver, never through a file a type was read from.
+    """
+    if not parsed.type_refs or ctx.parsed_files is None:
+        return 0
+    index = getattr(ctx, "_apex_namespaces", None)
+    if index is None:
+        from .languages.apex_namespace import build_apex_namespaces
+
+        index = build_apex_namespaces(ctx.parsed_files)
+        ctx._apex_namespaces = index  # type: ignore[attr-defined]
+    from_path = parsed.file_info.path
+    own = {s.name.lower() for s in parsed.symbols if s.kind in _TYPE_DECLARATION_KINDS}
+    emitted = 0
+    seen: set[str] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name or name.lower() in own or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        type_id = index.top_level_type(from_path, name)
+        target = type_id.partition("::")[0] if type_id else None
+        if target is None or target == from_path or not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin, widens_scope=False
+        )
+        emitted += 1
+    return emitted
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -939,6 +985,7 @@ _STRATEGIES: dict[str, Strategy] = {
     "javascript": _resolve_ts_type_refs,
     "java": _resolve_jvm_type_refs,
     "kotlin": _resolve_jvm_type_refs,
+    "apex": _resolve_apex_type_refs,
 }
 
 

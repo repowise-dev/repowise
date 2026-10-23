@@ -149,6 +149,8 @@ class HeritageResolver:
 
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
+        # Built on the first Apex relation (see ``_apex_parent``).
+        self._apex_namespaces: Any = None
 
         self._build_indices(parsed_files)
 
@@ -276,6 +278,17 @@ class HeritageResolver:
                 line=rel.line,
             )
 
+        # Apex has no imports: the parent is a type of the child's own project.
+        apex_parent = self._apex_parent(file_path, parent_name)
+        if apex_parent is not None:
+            return ResolvedHeritage(
+                child_id=child_id,
+                parent_id=apex_parent,
+                edge_type=edge_type,
+                confidence=0.90,
+                line=rel.line,
+            )
+
         # Tier 3: global unique match — only within the same language
         candidates = self._global_types.get(parent_name, [])
         if len(candidates) == 1:
@@ -292,6 +305,16 @@ class HeritageResolver:
             )
 
         return None
+
+    def _apex_parent(self, file_path: str, parent_name: str) -> str | None:
+        parsed = self._parsed_files.get(file_path)
+        if parsed is None or parsed.file_info.language != "apex":
+            return None
+        if self._apex_namespaces is None:
+            from .languages.apex_namespace import build_apex_namespaces
+
+            self._apex_namespaces = build_apex_namespaces(self._parsed_files)
+        return self._apex_namespaces.top_level_type(file_path, parent_name)
 
 
 def _heritage_kind_to_edge_type(kind: str) -> str:

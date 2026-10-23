@@ -119,7 +119,7 @@ log = structlog.get_logger(__name__)
 # Languages with an implicit method receiver, where a bare ``foo()`` binds to
 # the caller's instance. Go, Python, PHP and JS/TS spell the receiver out, so a
 # bare call there is a free function and this tier would resolve it wrongly.
-_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
+_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
 
 # Languages where a call the caller's own class cannot answer is looked for on
 # its ancestors, for an explicit ``self``/``this`` receiver and an implicit one.
@@ -129,7 +129,9 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 #
 # C# is present: the tier answers with a name's overload set, and
 # ``resolve_file`` narrows it to the member the argument count names.
-_INHERITED_LANGUAGES = frozenset({"java", "kotlin", "python", "typescript", "swift", "csharp"})
+_INHERITED_LANGUAGES = frozenset(
+    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex"}
+)
 
 # VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
 _VBNET_SELF_RECEIVERS = frozenset({"me", "myclass"})
@@ -137,7 +139,8 @@ _VBNET_SELF_RECEIVERS = frozenset({"me", "myclass"})
 # Languages where a bare name is scoped lexically: it can only mean the
 # caller's own module, an explicit ``import`` or ``open``, or the prelude, so
 # repo-wide uniqueness is no evidence and only wildcard imports may merge names.
-_LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp"})
+# An Apex bare name is never another class's method, however unique.
+_LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp", "apex"})
 
 # Languages whose imports name what they bring into scope, so only wildcard
 # imports may merge an imported file's names: ``use a::{B, C}`` binds B and C,
@@ -204,7 +207,7 @@ _EXTENSION_KINDS = frozenset({"impl"})
 # Languages admitted to the full return-type chain lane; each is admitted
 # explicitly, once measured.
 PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset(
-    {"cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
+    {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"}
 )
 
 # Chain languages that type the inner call by the identity of the type it
@@ -213,7 +216,7 @@ _RETURNED_TYPE_ID_LANGUAGES = frozenset({"dart", "go", "kotlin", "python"})
 
 # Chain lanes that need a file or import/re-export identity for the head type:
 # a repository-global simple type name is not a language binding.
-_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript", "go"})
+_BOUND_CHAIN_LANGUAGES = frozenset({"java", "csharp", "typescript", "go", "apex"})
 
 
 def _overload_return_types(
@@ -1288,11 +1291,11 @@ class CallResolver(
 
         A receiver records one hop, but the parser keeps every link of a chain
         as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. C#, Dart, Go, Java and Kotlin read it, so a builder chain
-        types each link from the one before; elsewhere an inner call is still
-        typed as if nothing were chained under it.
+        off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
+        builder chain types each link from the one before; elsewhere an inner call
+        is still typed as if nothing were chained under it.
         """
-        if language not in ("csharp", "dart", "go", "java", "kotlin"):
+        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
             return None
         sites = self._chained_sites.get(file_path)
         if sites is None:

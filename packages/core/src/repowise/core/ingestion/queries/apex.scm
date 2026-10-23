@@ -119,13 +119,14 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; new Foo().bar(args) / new Outer.Inner().bar(args)
+; new Foo().bar(args) / new Outer.Inner().bar(args): the whole type path is
+; the receiver, so the member type is read in the class that qualifies it.
 (method_invocation
   object: (object_creation_expression
     type: [
-      (type_identifier) @call.receiver
-      (scoped_type_identifier (type_identifier) @call.receiver .)
-    ]
+      (type_identifier)
+      (scoped_type_identifier)
+    ] @call.receiver
   )
   name: (identifier) @call.target
   arguments: (argument_list) @call.arguments
@@ -144,10 +145,14 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; new Outer.Inner(args): the inner class is the target; its last segment is
-; the name it is declared under.
+; new Outer.Inner(args): the inner class is the target, declared under its
+; last segment, and the qualifier before it the receiver, so the member type
+; is looked up in the class the qualifier names (``ns.Outer`` included), never
+; by the bare name, which a same-named type in the caller's own file would take.
 (object_creation_expression
   type: (scoped_type_identifier
+    .
+    (_) @call.receiver
     (type_identifier) @call.target .)
   arguments: (argument_list) @call.arguments
 ) @call.site

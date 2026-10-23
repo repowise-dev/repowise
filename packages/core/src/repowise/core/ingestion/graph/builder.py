@@ -21,6 +21,7 @@ from ..cohesion import (
     UNIT_FANOUT_LANGUAGES,
     withdraw_declaration_hint,
 )
+from ..languages.apex_namespace import spell_apex_names
 from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext, resolve_import
@@ -400,6 +401,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         """
         self._invalidate_metric_caches()
         self._qualify_python_symbols()
+        # Apex names are case-insensitive; every resolver keys on the declared spelling.
+        spell_apex_names(self._parsed_files.values())
 
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [

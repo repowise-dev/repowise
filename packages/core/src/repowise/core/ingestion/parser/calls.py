@@ -371,7 +371,7 @@ def _call_from_match(
         line=line,
         argument_count=_count_arguments(arg_nodes[0]) if arg_nodes else None,
         receiver_call=receiver_call,
-        argument_types=_argument_literal_types(arguments, src),
+        argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
         scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else None,
         edge_type=(

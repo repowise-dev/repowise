@@ -348,7 +348,9 @@
         "bare_name_fallback": false,
         "spawned": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "name"
+        ]
       },
       {
         "target_name": "log",
@@ -363,7 +365,9 @@
         "bare_name_fallback": false,
         "spawned": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "name"
+        ]
       },
       {
         "target_name": "debug",
@@ -423,11 +427,13 @@
         "bare_name_fallback": false,
         "spawned": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "acc"
+        ]
       },
       {
         "target_name": "Builder",
-        "receiver_name": null,
+        "receiver_name": "Result",
         "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
         "line": 30,
         "argument_count": 0,
@@ -442,7 +448,7 @@
       },
       {
         "target_name": "build",
-        "receiver_name": "Builder",
+        "receiver_name": "Result.Builder",
         "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
         "line": 30,
         "argument_count": 0,
@@ -467,7 +473,9 @@
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "argument_types": [
+          "String"
+        ],
         "argument_names": null
       },
       {

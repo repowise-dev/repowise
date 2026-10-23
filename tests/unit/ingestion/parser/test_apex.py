@@ -161,7 +161,10 @@ class TestApexCalls:
             (None, "AccountSelector"),
             ("selector", "byName"),
             ("AccountSelector", "log"),
-            ("Builder", "build"),
+            # ``new Wrapper.Builder().build()``: the type path is the receiver,
+            # and the qualifier is the receiver of the inner class's construction.
+            ("Wrapper.Builder", "build"),
+            ("Wrapper", "Builder"),
             ("this", "helper"),
             (None, "helper"),
             ("System", "debug"),

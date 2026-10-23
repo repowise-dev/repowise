@@ -170,6 +170,28 @@ def _closest_fit(
     return best[0] if len(best) == 1 else None
 
 
+def _exact_apex_fit(
+    members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...]
+) -> str | None:
+    """The one Apex member whose parameters are exactly the typed arguments' types.
+
+    Apex widens and converts (``Integer`` to ``Long``, ``Id`` to ``String``) by
+    rules the Java tables do not hold, so only an exact match, compared
+    without case, is evidence: it is the most specific member whatever else
+    takes the call. Anything less leaves the tie unbroken.
+    """
+    exact = [
+        member
+        for member, parameters in members
+        if all(
+            index < len(parameters) and parameters[index].lower() == argument.lower()
+            for index, argument in enumerate(argument_types)
+            if argument is not None
+        )
+    ]
+    return exact[0] if len(exact) == 1 else None
+
+
 def _untyped_agree(
     members: list[tuple[str, list[str]]], argument_types: tuple[str | None, ...], expanded: bool
 ) -> bool:
@@ -461,7 +483,10 @@ class OverloadSelectionMixin:
         if len(found) < 2 or not argument_types:
             return found
         typed = [(m, erased_parameter_types(self._symbols_by_id[m])) for m in found]
-        closest = _closest_fit(typed, argument_types, expanded)
+        if self._symbols_by_id[found[0]].language == "apex":
+            closest = _exact_apex_fit(typed, argument_types)
+        else:
+            closest = _closest_fit(typed, argument_types, expanded)
         return found if closest is None else [closest]
 
     def _typed_arguments(self, file_path: str, call: CallSite) -> CallSite:

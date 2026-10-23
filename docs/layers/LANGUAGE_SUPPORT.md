@@ -75,8 +75,9 @@ Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 \* COBOL is excluded from dead-code claims: JCL, schedulers and dynamic program
 calls are entry paths the repository graph cannot observe.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
-and is excluded from dead-code claims the same way until triggers, annotations
-and platform interfaces are modelled as entry points. Apex test coverage from the
+resolved case-insensitively within each sfdx project's namespace, and is
+excluded from dead-code claims the same way until triggers, annotations and
+platform interfaces are modelled as entry points. Apex test coverage from the
 Salesforce CLI is read as a coverage report ([formats](TEST_INTELLIGENCE.md#supported-formats)).
 
 ## How accurate is the graph per language

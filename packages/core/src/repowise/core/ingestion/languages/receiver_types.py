@@ -347,8 +347,7 @@ _PY_FAMILY = (_PY_ANNOTATED, _PY_CONSTRUCTED, _PY_SELF_ANNOTATED, _PY_SELF_CONST
 _TS_FAMILY = (_TS_ANNOTATED, _TS_PARAMETER_PROPERTY, _TS_CONSTRUCTED)
 
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
-    # Apex declares Java's way (``Foo foo``) and has no ``var``. Read for
-    # overload choice now; no receiver strategy is registered for it yet.
+    # Apex declares Java's way (``Foo foo``) and has no ``var``.
     "apex": (_TYPED_DECLARATION,),
     "cpp": (_CPP_DECLARATION,),
     "csharp": _C_FAMILY,
@@ -374,7 +373,7 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # writes ``self.foo.bar()``, a dotted receiver the grammar mints no call site
 # for, so class scope could only bind a bare local to a field. Membership rests
 # on the scan actually finding typed fields in the language's idiom.
-IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "dart", "java", "kotlin", "swift"})
+IMPLICIT_FIELD_LANGUAGES = frozenset({"apex", "csharp", "dart", "java", "kotlin", "swift"})
 
 # Languages whose scan keeps a declaration of a builtin type, marked external,
 # so the resolver can refuse a call on it instead of matching the method name.
@@ -382,8 +381,9 @@ IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "dart", "java", "kotlin", "swift
 # extension methods, Kotlin and Swift extensions and Rust trait impls all can.
 EXTERNAL_TYPE_LANGUAGES = frozenset({"java"})
 # Those, and Kotlin, whose scan keeps the marked declaration without refusing:
-# a call on it may still reach a repo extension of the builtin.
-_MARKED_BUILTIN_LANGUAGES = EXTERNAL_TYPE_LANGUAGES | {"kotlin"}
+# a call on it may still reach a repo extension of the builtin. Apex keeps it so
+# a builtin-typed local still reads as a variable and types overload arguments.
+_MARKED_BUILTIN_LANGUAGES = EXTERNAL_TYPE_LANGUAGES | {"kotlin", "apex"}
 _EXTERNAL_TYPE = "external:"
 
 # A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
