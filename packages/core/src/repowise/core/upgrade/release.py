@@ -223,6 +223,8 @@ def latest_highlights_cached(
             return titles
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass  # no cache yet, or a malformed one: fetch
+    if network_disabled():
+        return []  # not cached, so the titles show once the switch is off
     titles = fetch_release_highlights(version, timeout=timeout)
     with contextlib.suppress(OSError):  # a read-only home only costs a refetch
         _HIGHLIGHTS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)

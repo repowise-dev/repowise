@@ -145,3 +145,23 @@ def test_network_off_switches_skip_release_fetches(monkeypatch, var):
     latest, error = rel.fetch_latest_version()
     assert latest is None and error
     assert rel.fetch_release_highlights("1.0.0") is None
+
+
+def test_an_off_switch_leaves_no_empty_highlights_cache(monkeypatch, tmp_path):
+    """Offline must not cache "no highlights", or they stay hidden once back online."""
+    cache = tmp_path / "highlights.json"
+    monkeypatch.setattr(rel, "_HIGHLIGHTS_CACHE_PATH", cache)
+    monkeypatch.setenv("REPOWISE_OFFLINE", "1")
+
+    assert rel.latest_highlights_cached("1.0.0") == []
+    assert not cache.exists()
+
+
+def test_do_not_track_zero_keeps_the_network_on(monkeypatch):
+    from repowise.core.platform.telemetry import network_disabled
+
+    for var in ("REPOWISE_OFFLINE", "REPOWISE_TELEMETRY_DISABLED"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DO_NOT_TRACK", "0")
+
+    assert network_disabled() is False
