@@ -55,7 +55,8 @@ def _parse(text: str) -> list[_Block]:
     stack = [root]
     words: list[str] = []
     for m in _TOKEN_RE.finditer(text):
-        quoted, punct, word = m.group(1) or m.group(2), m.group(3), m.group(4)
+        quoted = m.group(1) if m.group(1) is not None else m.group(2)  # "" is an argument
+        punct, word = m.group(3), m.group(4)
         if word is not None or quoted is not None:
             words.append(word if word is not None else quoted)  # type: ignore[arg-type]
         elif punct == ";" and words:

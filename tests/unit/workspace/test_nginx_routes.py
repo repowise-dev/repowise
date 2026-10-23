@@ -177,3 +177,11 @@ def test_a_key_compose_sets_to_another_host_is_dropped(tmp_path: Path) -> None:
     assert m.lookup("catalogue_host", ENV) is None
     # The route stays as a blocker: it rewrites nothing and draws no edge.
     assert _routes(m) == {("web", "/api/catalogue", "", "")}
+
+
+def test_an_empty_quoted_argument_keeps_its_place() -> None:
+    blocks = nginx._parse('location ^~ "" { }\nproxy_set_header Host "" ;')
+    assert [(b.name, b.args) for b in blocks] == [
+        ("location", ["^~", ""]),
+        ("proxy_set_header", ["Host", ""]),
+    ]
