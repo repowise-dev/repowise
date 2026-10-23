@@ -1311,7 +1311,8 @@ mislead the masker.
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
-workspace guide.
+workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,
+registries and contributor recipes.
 
 ---
 

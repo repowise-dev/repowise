@@ -33,6 +33,8 @@ Use a workspace when your project spans multiple git repositories that are relat
 
 With a single repo, `repowise init` needs no workspace.
 
+How the layer is built, and how to extend it: [architecture/workspace.md](../architecture/workspace.md).
+
 ---
 
 ## Quick Start

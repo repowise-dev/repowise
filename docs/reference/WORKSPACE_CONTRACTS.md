@@ -5,6 +5,8 @@ contracts, for when you need to know why a link did or did not form. Start from
 [Extraction Diagnostics](../scale/WORKSPACES.md#extraction-diagnostics), which
 names the reason for each unmatched consumer. The support matrix of frameworks
 and libraries is in [API Contract Extraction](../scale/WORKSPACES.md#api-contract-extraction).
+The pipeline behind it, and how to add a dialect or a service-name source, is in
+[architecture/workspace.md](../architecture/workspace.md).
 
 ## How a contract and a link were made
 
