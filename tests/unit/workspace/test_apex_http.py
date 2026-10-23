@@ -195,6 +195,39 @@ class TestApexCalloutConsumer:
         )
         assert ids(source) == set()
 
+    def test_a_parameter_shadows_a_final_field_of_the_same_name(self) -> None:
+        source = (
+            "public class C {\n"
+            "    static final String URL = 'https://a.example.com/x';\n"
+            "    static void send(String URL) {\n"
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint(URL);\n"
+            "        req.setMethod('GET');\n"
+            "    }\n"
+            "}\n"
+        )
+        assert ids(source) == set()
+
+    def test_a_legacy_test_method_class_emits_nothing(self) -> None:
+        source = (
+            "public class LegacyTests {\n"
+            "    static testMethod void t() {\n"
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('https://a.example.com/x');\n"
+            "        req.setMethod('GET');\n"
+            "    }\n"
+            "}\n"
+        )
+        assert ids(source) == set()
+
+    def test_a_request_held_by_another_object_is_not_the_local(self) -> None:
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        wrapper.req.setEndpoint('callout:Svc/items');\n"
+            "        req.setMethod('GET');\n"
+        )
+        assert ids(source) == set()
+
     def test_a_request_taken_as_a_parameter_counts(self) -> None:
         source = (
             "public class C {\n"

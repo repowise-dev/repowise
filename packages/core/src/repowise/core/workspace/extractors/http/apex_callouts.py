@@ -54,11 +54,13 @@ if TYPE_CHECKING:
     from ..base import ScanContext
 
 # Apex identifiers and method names are case-insensitive.
-_SET_ENDPOINT_RE = re.compile(r"\b(?P<recv>[A-Za-z_]\w*)\s*\.\s*setEndpoint\s*\(", re.IGNORECASE)
+_SET_ENDPOINT_RE = re.compile(
+    r"(?<!\.)\b(?P<recv>[A-Za-z_]\w*)\s*\.\s*setEndpoint\s*\(", re.IGNORECASE
+)
 _TYPE_HEADER_RE = re.compile(r"\b(?:class|interface|enum)\b", re.IGNORECASE)
-# Only a test class may hold `@isTest`; a request it builds is a fixture (an
-# `HttpCalloutMock` setting the endpoint it asserts on), not a call out.
-_IS_TEST_RE = re.compile(r"@isTest\b", re.IGNORECASE)
+# Only a test class may hold `@isTest` (or legacy `testMethod`); a request it
+# builds is a fixture (an `HttpCalloutMock` setting the endpoint it asserts on).
+_IS_TEST_RE = re.compile(r"@isTest\b|\btestMethod\b", re.IGNORECASE)
 
 # `callout:Name/path`, the name an identifier and the rest a path or query.
 _CALLOUT_RE = re.compile(
@@ -147,6 +149,12 @@ def _local_value(content: str, code: str, name: str, start: int, end: int) -> st
     return content[rhs:semi] if semi != -1 else None
 
 
+def _declared_in(code: str, name: str, start: int, end: int) -> bool:
+    """Whether *name* is declared as a local or parameter in ``[start, end)``."""
+    pattern = rf"[\w>]\s+{re.escape(name)}\s*[,)=;:]"
+    return re.search(pattern, code[start:end], re.IGNORECASE) is not None
+
+
 def _final_fields(content: str, code: str) -> dict[str, str]:
     """The file's single-assignment string names that are declared ``final``."""
     return {
@@ -196,8 +204,12 @@ class ApexCalloutsDialect:
             if constants is None:
                 constants = _final_fields(content, code)
             expr = args[0]
-            if NAME_RE.fullmatch(expr) and expr not in constants:
-                expr = _local_value(content, code, expr, start, end) or expr
+            if NAME_RE.fullmatch(expr) and _declared_in(code, expr, start, end):
+                # A local or parameter shadows any field of the same name.
+                local = _local_value(content, code, expr, start, end)
+                if local is None:
+                    continue
+                expr = local
             url = resolve_string(_cut_query(expr), APEX_SYNTAX, constants)
             endpoint = _endpoint(url) if url is not None else None
             if endpoint is None:
