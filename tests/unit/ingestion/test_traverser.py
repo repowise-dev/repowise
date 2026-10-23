@@ -152,6 +152,16 @@ class TestLanguageDetection:
         )
         assert _detect_language(f) == "unknown"
 
+    def test_an_uppercase_dcl_extension_is_sniffed_too(self, tmp_path: Path) -> None:
+        f = tmp_path / "DCLTRTYP.DCL"
+        f.write_text(_COBOL_DCLGEN)
+        assert _detect_language(f) == "cobol"
+
+    def test_a_table_declaration_without_a_record_is_not_cobol(self, tmp_path: Path) -> None:
+        f = tmp_path / "TABLE.dcl"
+        f.write_text("     EXEC SQL DECLARE CARDDEMO.T TABLE ( A CHAR(1) ) END-EXEC.\n")
+        assert _detect_language(f) == "unknown"
+
     def test_a_vms_dcl_procedure_is_not_cobol(self, tmp_path: Path) -> None:
         f = tmp_path / "build.dcl"
         f.write_text("$ SET VERIFY\n$ CC/DEBUG MAIN.C\n$ LINK MAIN\n$ EXIT\n")

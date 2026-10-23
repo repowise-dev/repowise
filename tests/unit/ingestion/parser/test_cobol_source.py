@@ -155,6 +155,57 @@ def test_a_dclgen_member_yields_its_record_after_the_table_declaration() -> None
     assert _names(parsed) == {"DCLTRTYP": 6, "TR-TYPE": 7}
 
 
+def _working_storage(*entries: bytes) -> bytes:
+    return (
+        b"       IDENTIFICATION DIVISION.\n"
+        b"       PROGRAM-ID. DEMO.\n"
+        b"       DATA DIVISION.\n"
+        b"       WORKING-STORAGE SECTION.\n"
+        + b"".join(entries)
+        + b"       PROCEDURE DIVISION.\n"
+        b"           STOP RUN.\n"
+    )
+
+
+def test_an_exec_block_inside_an_open_entry_keeps_its_terminating_period() -> None:
+    # The period after END-EXEC ends ``01 A``; blanking it would read B into A.
+    source = _working_storage(
+        b"       01 A PIC X\n",
+        b"           EXEC SQL INCLUDE SQLCA END-EXEC.\n",
+        b"       01 B PIC X.\n",
+    )
+
+    parsed = _parse(source)
+
+    assert parsed.parse_errors == []
+    assert _names(parsed) == {"DEMO": 1, "A": 5, "B": 7}
+
+
+def test_an_exec_block_between_entries_parses() -> None:
+    source = _working_storage(
+        b"       01 A PIC X.\n",
+        b"           EXEC SQL INCLUDE SQLCA END-EXEC.\n",
+        b"       01 B PIC X.\n",
+    )
+
+    parsed = _parse(source)
+
+    assert parsed.parse_errors == []
+    assert _names(parsed) == {"DEMO": 1, "A": 5, "B": 7}
+
+
+def test_a_data_copybook_opening_with_a_sql_include_is_data() -> None:
+    source = b"           EXEC SQL INCLUDE SQLCA END-EXEC.\n       01 A PIC X.\n"
+
+    assert not is_procedure_fragment(code_view(source))
+
+
+def test_a_procedure_copybook_opening_with_exec_cics_stays_procedure() -> None:
+    source = b"           EXEC CICS RETURN END-EXEC.\n       PARA-A.\n           EXIT.\n"
+
+    assert is_procedure_fragment(code_view(source))
+
+
 def test_a_free_format_data_copybook_is_not_read_as_procedure_text() -> None:
     source = b"\n\n>>SOURCE FORMAT FREE\n01 ACCOUNT-RECORD.\n   05 ACCT-ID PIC 9(11).\n"
 

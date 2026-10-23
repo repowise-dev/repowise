@@ -1081,7 +1081,18 @@ _C_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?(?:\*/|\Z)", re.DOTALL)
 _OBJC_HEADER_SNIFF_BYTES = 16384
 
 
-def _objc_header_language(abs_path: Path) -> LanguageTag | None:
+def _head(abs_path: Path, source: bytes | None, size: int) -> bytes | None:
+    """The first *size* bytes of *source* when given, else of the file; ``None`` if unreadable."""
+    if source is not None:
+        return source[:size]
+    try:
+        with open(abs_path, "rb") as f:
+            return f.read(size)
+    except OSError:
+        return None
+
+
+def _objc_header_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
     """``objectivec`` for a ``.h`` that reads as Objective-C, else ``None``.
 
     One extension maps to one language for the whole repository, and ``.h``
@@ -1095,41 +1106,47 @@ def _objc_header_language(abs_path: Path) -> LanguageTag | None:
     """
     if abs_path.suffix.lower() != ".h":
         return None
-    try:
-        with open(abs_path, "rb") as f:
-            head = f.read(_OBJC_HEADER_SNIFF_BYTES)
-    except OSError:
+    head = _head(abs_path, source, _OBJC_HEADER_SNIFF_BYTES)
+    if head is None:
         return None
     # Blank the comments in place so line starts are preserved.
     head = _C_COMMENT_RE.sub(lambda m: b" " * len(m.group(0)), head)
     return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
 
 
-def _dclgen_language(abs_path: Path) -> LanguageTag | None:
+# DCLGEN writes the table declaration, then the ``01`` record, at the top of a
+# member; a 750-column table (the DB2 maximum) declares in about 62 KB.
+_DCLGEN_SNIFF_BYTES = 131072
+
+
+def _dclgen_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
     """``cobol`` for a ``.dcl`` DCLGEN member written for COBOL, else ``None``.
 
     ``.dcl`` is also PL/I DCLGEN output and OpenVMS DCL, so the extension
-    alone claims nothing. The oversize check has already bounded the read.
+    alone claims nothing.
     """
     if abs_path.suffix.lower() != ".dcl":
         return None
-    try:
-        source = abs_path.read_bytes()
-    except OSError:
-        return None
-    return "cobol" if is_cobol_dclgen(source) else None
+    head = _head(abs_path, source, _DCLGEN_SNIFF_BYTES)
+    return "cobol" if head is not None and is_cobol_dclgen(head) else None
 
 
-def _content_language(abs_path: Path, language: LanguageTag | None) -> LanguageTag | None:
-    """*language* from the name, or what content says for a shared extension."""
+def _content_language(
+    abs_path: Path, language: LanguageTag | None, source: bytes | None = None
+) -> LanguageTag | None:
+    """*language* from the name, or what content says for a shared extension.
+
+    *source* is the file's bytes when the caller already holds them (a blob),
+    so the working tree is not read in their place.
+    """
     if language == "cpp":
-        return _objc_header_language(abs_path) or language
-    return language or _dclgen_language(abs_path)
+        return _objc_header_language(abs_path, source) or language
+    return language or _dclgen_language(abs_path, source)
 
 
-def _detect_language(abs_path: Path) -> LanguageTag:
+def _detect_language(abs_path: Path, source: bytes | None = None) -> LanguageTag:
     """Detect the language of a file from name, extension, content, or shebang."""
-    lang = _content_language(abs_path, _language_from_name_or_ext(abs_path))
+    lang = _content_language(abs_path, _language_from_name_or_ext(abs_path), source)
     return lang if lang is not None else _detect_by_shebang(abs_path)
 
 
