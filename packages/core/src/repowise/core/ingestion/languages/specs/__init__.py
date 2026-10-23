@@ -56,6 +56,7 @@ from .r import SPEC as _R
 from .razor import SPEC as _RAZOR
 from .ruby import SPEC as _RUBY
 from .rust import SPEC as _RUST
+from .salesforce_flow import SPEC as _SALESFORCE_FLOW
 from .scala import SPEC as _SCALA
 from .shell import SPEC as _SHELL
 from .sql import SPEC as _SQL
@@ -150,6 +151,9 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # Salesforce Aura markup, routed by path (aura/<bundle>/). Edges come from
     # framework_edges/aura.py. See the spec's docstring.
     _AURA,
+    # Salesforce flows: data whose symbol links Apex actions, subflows and
+    # screen components. See the spec's docstring.
+    _SALESFORCE_FLOW,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though

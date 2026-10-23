@@ -48,6 +48,7 @@ from . import (
     rails,
     remix,
     rust,
+    salesforce_metadata,
     spring,
     test_path_strings,
     test_runner_setup,
@@ -108,6 +109,9 @@ _HANDLERS: list[FrameworkHandler] = [
     *aura.HANDLERS,
     # Salesforce Visualforce: markup names its Apex controller and bound members.
     *visualforce.HANDLERS,
+    # Flows and the metadata that places Salesforce code. Last: an LWC or Aura
+    # handler's own edge to the same file wins.
+    *salesforce_metadata.HANDLERS,
 ]
 
 

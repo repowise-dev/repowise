@@ -27,6 +27,10 @@ class LanguageSpec:
     # -- File matching ---------------------------------------------------
     extensions: frozenset[str] = field(default_factory=frozenset)  # (".py", ".pyi")
     special_filenames: frozenset[str] = field(default_factory=frozenset)  # ("Dockerfile",)
+    # Lowercase multi-dot name endings, matched before the one-suffix lookup:
+    # Salesforce's ``.object-meta.xml`` is a schema file where every other
+    # ``.xml`` stays unclaimed.
+    name_suffixes: frozenset[str] = field(default_factory=frozenset)
 
     # -- Classification --------------------------------------------------
     is_code: bool = True  # False for yaml, json, markdown, etc.

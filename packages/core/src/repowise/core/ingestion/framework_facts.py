@@ -124,6 +124,10 @@ def detect_php_framework(manifest: ComposerManifest) -> FrameworkFacts | None:
     return next((facts for facts in PHP_FRAMEWORKS if facts.matches(manifest)), None)
 
 
+#: The Salesforce org, which places what flexipages, quick actions, tabs,
+#: email services and Experience sites name.
+SALESFORCE = FrameworkFacts(name="Salesforce", anchor="framework:salesforce")
+
 #: The runtime that starts the components an ``AndroidManifest.xml`` registers.
 ANDROID = FrameworkFacts(name="Android", anchor="framework:android")
 

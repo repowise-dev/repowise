@@ -54,8 +54,10 @@ from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .languages.specs.aura import is_aura_markup_path
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from .languages.specs.salesforce_flow import is_legacy_flow_path
 from .models import (
     EXTENSION_TO_LANGUAGE,
+    NAME_SUFFIX_TO_LANGUAGE,
     SPECIAL_FILENAMES,
     FileInfo,
     LanguageTag,
@@ -1039,12 +1041,26 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     filename = abs_path.name
     if filename in SPECIAL_FILENAMES:
         return SPECIAL_FILENAMES[filename]
-    language = EXTENSION_TO_LANGUAGE.get(abs_path.suffix.lower())
+    language = _language_from_name_suffix(filename) or EXTENSION_TO_LANGUAGE.get(
+        abs_path.suffix.lower()
+    )
     # Aura markup suffixes are generic (`.app`, `.tokens`), so they route by
     # their bundle directory rather than by a repository-wide extension claim.
     if language is None and is_aura_markup_path(abs_path.as_posix()):
         return "aura"
+    # ``.flow`` is also Flow's ``.js.flow``: a legacy Salesforce flow routes by its directory.
+    if language is None and is_legacy_flow_path(abs_path.as_posix()):
+        return "salesforce_flow"
     return language
+
+
+def _language_from_name_suffix(filename: str) -> LanguageTag | None:
+    """The language a multi-dot name ending (``.object-meta.xml``) claims, if any."""
+    lowered = filename.lower()
+    for suffix, tag in NAME_SUFFIX_TO_LANGUAGE.items():
+        if lowered.endswith(suffix):
+            return tag
+    return None
 
 
 # A declaration or an import that opens its own line, matched after comments
@@ -1805,7 +1821,7 @@ def is_candidate_source_path(
         return False
 
     name = parts[-1]
-    if name in SPECIAL_FILENAMES:
+    if name in SPECIAL_FILENAMES or _language_from_name_suffix(name) or is_legacy_flow_path(posix):
         return True
 
     suffix = Path(name).suffix.lower()

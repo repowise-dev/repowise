@@ -93,6 +93,9 @@ LanguageTag = Literal[
     # aura/<bundle>/ dir): no symbols, but it names the bundle's controller
     # functions, Apex controller and child components.
     "aura",
+    # Salesforce flows: one symbol per flow, named by the Apex actions,
+    # subflows and screen components it reaches.
+    "salesforce_flow",
     "unknown",
 ]
 
@@ -115,6 +118,12 @@ EXTENSION_TO_LANGUAGE: dict[str, LanguageTag] = {
 SPECIAL_FILENAMES: dict[str, LanguageTag] = {
     fn: tag  # type: ignore[misc]
     for fn, tag in _REGISTRY.all_special_filenames().items()
+    if tag in _LANGUAGE_TAG_VALUES
+}
+
+NAME_SUFFIX_TO_LANGUAGE: dict[str, LanguageTag] = {
+    sfx: tag  # type: ignore[misc]
+    for sfx, tag in _REGISTRY.all_name_suffixes().items()
     if tag in _LANGUAGE_TAG_VALUES
 }
 
