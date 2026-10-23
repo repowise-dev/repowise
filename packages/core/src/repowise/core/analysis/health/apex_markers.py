@@ -101,7 +101,14 @@ _KEY_PREFIXES = frozenset(
 _FIXTURE_NAME = re.compile(r"fixture|mock|stub|fake|testdata|testfactory|testutil|datafactory", re.I)
 _ID_SHAPE = re.compile(r"[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?")
 _CHECKSUM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
-_HAS_DYNAMIC_QUERY = re.compile(rb"(?i)\b(?:database|search)\s*\.\s*(?:query|countquery|getquerylocator)")
+# Built from ``_DYNAMIC_QUERY`` so the byte gate and the sink list cannot drift apart.
+_HAS_DYNAMIC_QUERY = re.compile(
+    "|".join(
+        rf"\b{receiver}\s*\.\s*(?:{'|'.join(sorted(methods))})\s*\("
+        for receiver, methods in _DYNAMIC_QUERY.items()
+    ).encode(),
+    re.I,
+)
 _HAS_ID_LITERAL = re.compile(rb"'[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?'")
 _HAS_SEE_ALL_DATA = re.compile(rb"(?i)seealldata")
 

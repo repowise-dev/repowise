@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.analysis.health.apex_markers import is_record_id
+from repowise.core.analysis.health.apex_markers import (
+    _DYNAMIC_QUERY,
+    _HAS_DYNAMIC_QUERY,
+    is_record_id,
+)
 from repowise.core.analysis.health.biomarkers.base import FileContext
 from repowise.core.analysis.health.biomarkers.registry import detect_all
 from repowise.core.analysis.health.complexity import walk_file
@@ -171,3 +175,19 @@ def test_findings_are_advisory_and_never_deduct():
     scores, deductions = score_file(results)
     assert set(deductions) == {0.0}
     assert scores["defect"] == scores["maintainability"] == scores["performance"] == 10.0
+
+
+@pytest.mark.parametrize("call", ["queryWithBinds", "countQueryWithBinds", "getQueryLocatorWithBinds"])
+def test_injection_in_a_with_binds_only_file(call):
+    src = f"""public with sharing class A {{
+        Object m(String n) {{
+            return Database.{call}('SELECT Id FROM Account WHERE Name = \\'' + n + '\\'', new Map<String, Object>(), AccessLevel.USER_MODE);
+        }}
+    }}"""
+    assert _hits(src) == [("apex_soql_injection", "m", "n")]
+
+
+def test_byte_gate_covers_every_dynamic_query_sink():
+    for receiver, methods in _DYNAMIC_QUERY.items():
+        for method in methods:
+            assert _HAS_DYNAMIC_QUERY.search(f"{receiver.title()}.{method} (q)".encode()), method
