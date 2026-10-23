@@ -34,6 +34,7 @@ _MAIN_FLOW = _flow(
     "    <screens><name>Scr</name><fields><name>F</name>"
     "<extensionName>c:pickerLwc</extensionName><fieldType>ComponentInstance</fieldType></fields>"
     "<fields><name>G</name><extensionName>c:legacyAura</extensionName></fields>"
+    "<fields><name>M</name><extensionName>c:markupAura</extensionName></fields>"
     "<fields><name>H</name><extensionName>flowruntime:fileUpload</extensionName></fields>"
     "</screens>\n"
     "    <start><object>Account</object><triggerType>RecordAfterSave</triggerType></start>\n"
@@ -98,6 +99,10 @@ _APP = {
         "import { LightningElement } from 'lwc';\nexport default class Orphan extends LightningElement {}\n"
     ),
     f"{_D}/aura/legacyAura/legacyAuraController.js": "({ init: function (c, e, h) {} })\n",
+    f"{_D}/aura/markupAura/markupAura.cmp": (
+        '<aura:component implements="lightning:availableForFlowScreens"/>\n'
+    ),
+    f"{_D}/aura/markupAura/markupAuraController.js": "({ init: function (c, e, h) {} })\n",
     f"{_D}/flexipages/Home.flexipage-meta.xml": (
         f"<FlexiPage {_NS}><flexiPageRegions><itemInstances><componentInstance>"
         "<componentName>acme:onPage</componentName></componentInstance>"
@@ -151,7 +156,9 @@ def test_read_flow_collects_names_and_skips_comments() -> None:
     assert refs is not None
     assert refs.apex_actions == ["acme__Mailer", "other__Mailer", "LegacyPlugin"]
     assert refs.flows == ["child_flow"]
-    assert refs.components == ["c:pickerLwc", "c:legacyAura", "flowruntime:fileUpload"]
+    assert refs.components == [
+        "c:pickerLwc", "c:legacyAura", "c:markupAura", "flowruntime:fileUpload"
+    ]  # fmt: skip
     assert refs.apex_types == ["Wrapper"]
     assert (refs.start_object, refs.trigger_type, refs.process_type) == (
         "Account", "RecordAfterSave", "Flow"
@@ -188,6 +195,8 @@ def test_flows_are_symbols_linked_to_apex_flows_and_components(tmp_path: Path) -
     # Screen components: LWC main module; Aura controller while its markup is unindexed.
     assert edge(main, f"{lwc}/pickerLwc/pickerLwc.js") == "framework"
     assert edge(main, f"{_D}/aura/legacyAura/legacyAuraController.js") == "framework"
+    # With its markup indexed, an Aura bundle is reached at the .cmp.
+    assert edge(main, f"{_D}/aura/markupAura/markupAura.cmp") == "framework"
 
     # Apex names flows by static type and by literal; a comment does not count.
     launcher = f"{cls}/Launcher.cls"

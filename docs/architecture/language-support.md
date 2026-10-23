@@ -986,7 +986,6 @@ Salesforce CLI coverage names a class or trigger, never a file, so it maps to
 the one `.cls` or `.trigger` file of that name, ignoring case. A name two files
 share, or no file has, stays unmapped.
 
-
 Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
 one symbol named by its API name, linked to the Apex invocable actions,
 subflows, screen components and Apex-defined types it names. Apex
