@@ -441,30 +441,41 @@ async def with_current_components(
     """*evidence* with its components and owners resolved under the catalog now.
 
     Path globs are cheap, so a catalog edit is applied on read from the files
-    kept on the change's row, and kept. When that list was capped the
-    components item reads unknown, naming ``--refresh``, and nothing is kept.
+    kept on the change's row, and kept. When that list was capped the catalog
+    is stamped as read: a checklist kept before digests were recorded keeps its
+    components, and one resolved under another catalog has its components item
+    kept as unknown, naming ``--refresh``.
     """
-    from repowise.core.changes.evidence import _components as components_item
-    from repowise.core.changes.evidence import _owners as owners_item
-    from repowise.core.changes.evidence import _unknown
-
     catalog = catalog or await asyncio.to_thread(catalog_digest, repo_root)
     if evidence.catalog_digest == catalog:
         return evidence
     paths = _stored_paths(row)
     if paths is None:
-        item = _unknown("components_touched", "Components touched", CATALOG_CHANGED, "components")
-        return with_item(evidence, item)
-    root = Path(repo_root)
-    components = await _guard(_components(session, repo_id, root, paths))
-    owners, sources = await _guard_pair(_owners(root, paths, components))
-    code = _code_paths(paths)
-    inputs = EvidenceInputs(
-        code_paths=code, components=components, owners=owners, owner_sources=sources
-    )
-    items = (components_item(inputs), owners_item(inputs, code))
-    if isinstance(components, Unavailable):
-        return with_item(evidence, *items)  # not kept: the next read tries again
+        return await _stamp_capped(session, repo_id, row, evidence, catalog)
+    return await _resolve_kept(session, repo_id, repo_root, row, evidence, catalog, paths)
+
+
+async def _stamp_capped(
+    session: Any, repo_id: str, row: Any, evidence: ChangeEvidence, catalog: str
+) -> ChangeEvidence:
+    """A capped checklist under *catalog*: kept, so the next read does no work."""
+    from repowise.core.changes.evidence import _unknown
+
+    item = _unknown("components_touched", "Components touched", CATALOG_CHANGED, "components")
+    # No digest: built before digests were recorded, likely under this catalog.
+    items = () if evidence.catalog_digest is None else (item,)
+    return await _keep_resolved(session, repo_id, row, evidence, catalog, items)
+
+
+async def _keep_resolved(
+    session: Any,
+    repo_id: str,
+    row: Any,
+    evidence: ChangeEvidence,
+    catalog: str,
+    items: Sequence[EvidenceItem],
+) -> ChangeEvidence:
+    """*items* merged into what is stored, stamped with *catalog*, and kept."""
     current = replace(with_item(evidence, *items), catalog_digest=catalog)
     await session.flush()
     kept = await _merge_kept(
@@ -479,6 +490,32 @@ async def with_current_components(
     )
     session.expire(row, ["evidence_json"])
     return kept or current
+
+
+async def _resolve_kept(
+    session: Any,
+    repo_id: str,
+    repo_root: Path | str,
+    row: Any,
+    evidence: ChangeEvidence,
+    catalog: str,
+    paths: list[str],
+) -> ChangeEvidence:
+    """Components and owners resolved again over *paths*, and kept."""
+    from repowise.core.changes.evidence import _components as components_item
+    from repowise.core.changes.evidence import _owners as owners_item
+
+    root = Path(repo_root)
+    components = await _guard(_components(session, repo_id, root, paths))
+    owners, sources = await _guard_pair(_owners(root, paths, components))
+    code = _code_paths(paths)
+    inputs = EvidenceInputs(
+        code_paths=code, components=components, owners=owners, owner_sources=sources
+    )
+    items = (components_item(inputs), owners_item(inputs, code))
+    if isinstance(components, Unavailable):
+        return with_item(evidence, *items)  # not kept: the next read tries again
+    return await _keep_resolved(session, repo_id, row, evidence, catalog, items)
 
 
 def cached_evidence(row: Any) -> ChangeEvidence | None:

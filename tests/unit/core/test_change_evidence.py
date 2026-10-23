@@ -674,7 +674,12 @@ async def _set_files(factory, repo_id: str, paths: list[str], total: int) -> Non
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("_private_user_config")
 async def test_a_catalog_edit_is_applied_to_a_kept_checklist_on_read(tmp_path, repo):
-    from repowise.core.changes.collect import CATALOG_CHANGED, cached_evidence, change_evidence
+    from repowise.core.changes.collect import (
+        CATALOG_CHANGED,
+        cached_evidence,
+        change_evidence,
+        components_stale,
+    )
     from repowise.core.persistence.crud import get_change
     from repowise.core.persistence.database import get_session
 
@@ -705,7 +710,8 @@ async def test_a_catalog_edit_is_applied_to_a_kept_checklist_on_read(tmp_path, r
             stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
         assert stored.to_dict() == got.to_dict()
 
-        # A capped file list cannot be resolved again: unknown, naming --refresh, not kept.
+        # A capped file list cannot be resolved again: unknown, naming --refresh,
+        # kept under the new digest so the next read does no work.
         await _set_files(factory, repo_id, paths, 5000)
         catalog.write_text(_CATALOG.format(name="core", paths="src/**"), encoding="utf-8")
         async with get_session(factory) as session:
@@ -714,6 +720,39 @@ async def test_a_catalog_edit_is_applied_to_a_kept_checklist_on_read(tmp_path, r
         assert comps.status == "unknown" and comps.details == [{"reason": CATALOG_CHANGED}]
         async with get_session(factory) as session:
             stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
-        assert stored.to_dict() == got.to_dict()
+        assert stored.to_dict() == capped.to_dict()
+        assert not await components_stale(root, stored)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_capped_checklist_kept_before_digests_keeps_its_components(tmp_path, repo):
+    from repowise.core.changes.collect import (
+        cached_evidence,
+        change_evidence,
+        components_stale,
+        save_evidence,
+    )
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    root, head = repo
+    engine, factory, repo_id = await _index(tmp_path, root, head)
+    await _set_files(factory, repo_id, ["src/core/a.py"], 5000)
+    comps = EvidenceItem("components_touched", "Components touched", "ok", "inferred", ["core"],
+                         [{"name": "core", "source": "directory", "files": ["src/core/a.py"]}], "components")
+    legacy = ChangeEvidence("pr-7", head, "2026-01-01T00:00:00+00:00", [comps])
+    try:
+        async with get_session(factory) as session:
+            await save_evidence(session, repo_id, "pr-7", legacy)
+        async with get_session(factory) as session:
+            got = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        assert got.item("components_touched") == comps
+        async with get_session(factory) as session:
+            stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
+        assert stored.item("components_touched") == comps and stored.catalog_digest is not None
+        assert not await components_stale(root, stored)
     finally:
         await engine.dispose()
