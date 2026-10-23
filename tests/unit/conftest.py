@@ -21,6 +21,19 @@ def cursor_hooks_json(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def network_switches_off(monkeypatch):
+    """Start every test with the network off switches cleared.
+
+    ``network_disabled()`` short-circuits the PyPI check and agent-CLI probes.
+    A shell ``DO_NOT_TRACK`` or ``uninstall`` writing ``os.environ`` directly
+    would otherwise turn those paths off for later tests. Tests of the gate set
+    the switch themselves.
+    """
+    for var in ("REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def fresh_test_map_cache():
     """In-memory stores reuse one URL and seed graph rows without moving the
     index stamp, so the process-wide index-state caches start empty per test."""
