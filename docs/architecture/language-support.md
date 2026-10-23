@@ -955,6 +955,13 @@ declared names keep their written case. CumulusCI `%%%NAMESPACE%%%` tokens are
 blanked byte for byte before parsing. Apex has no import statement, so
 cross-file calls resolve only through the repository-wide tiers.
 
+A `@RestResource` class's `@Http*` methods are HTTP providers at
+`/services/apexrest` plus its `urlMapping`, `*` read as one path parameter, and
+each is bound from its file's module symbol as a Spring route is. An
+`HttpRequest` is a consumer only when its endpoint and a single verb are literal
+inside one method, folding `final` fields and once-assigned locals but never a
+parameter; `callout:Name` keeps the Named Credential as the call's base token.
+
 ### QML
 
 Module specs resolve against an index built from the `qmldir` manifests in the

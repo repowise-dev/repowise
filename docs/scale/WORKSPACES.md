@@ -144,6 +144,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | C# | ASP.NET (attribute and minimal API) | HttpClient, UnityWebRequest, Best.HTTP |
 | Ruby | | HTTParty, RestClient, Faraday, Net::HTTP |
 | Rust | Axum, Actix, Rocket | reqwest |
+| Apex | `@RestResource` classes (`/services/apexrest` + `urlMapping`) | `HttpRequest` callouts with a literal endpoint and verb; `callout:Name` records the Named Credential |
 | Any | OpenAPI 3.x documents | |
 
 **Database tables:**
