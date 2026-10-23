@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING, Any
 from ..cobol import code_view
 from ..cobol.cics import mapset_uses
 from ..cobol.jcl import read_jcl
-from .aura import _file_edge, _nearest
+from ..resolvers.lwc import nearest
+from .aura import _file_edge
 from .base import DetectionContext, FrameworkHandler, source_text
 
 if TYPE_CHECKING:
@@ -80,19 +81,19 @@ def _add_mainframe_edges(
                 graph.nodes[path]["is_entry_point"] = True
             for step in member.steps:
                 if step.program:
-                    target = _nearest(path, programs.get(step.program, []))
+                    target = nearest(programs.get(step.program, []), path)
                     if target and target in graph:
                         graph.nodes[target]["is_reachability_root"] = True
                         count += _file_edge(graph, path, target, set())
                 elif step.procedure:
-                    target = _nearest(path, procs.get(step.procedure, []))
+                    target = nearest(procs.get(step.procedure, []), path)
                     if target:
                         count += _file_edge(graph, path, target, set())
         elif language == "cobol" and mapsets:
             raw = source_map.get(path) or source_text(path, parsed, source_map).encode()
             for use in mapset_uses(code_view(raw)):
                 for name in use.targets:
-                    target = _nearest(path, mapsets.get(name, []))
+                    target = nearest(mapsets.get(name, []), path)
                     if target:
                         count += _file_edge(graph, path, target, set())
     return count
