@@ -306,6 +306,9 @@ def _apex_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int
         text = _mask(text, _APEX_COMMENT_OR_STRING_RE, keep="'")  # comments only
         hits: list[tuple[int, str]] = []
         for m in _CREATE_INTERVIEW_RE.finditer(text):
+            # The call must start in code; only its argument is read from a literal.
+            if code[m.start()] == " ":
+                continue
             ns, name = (m.group(1), m.group(2)) if m.group(2) is not None else ("", m.group(1))
             hits.append((m.start(), f"{ns}__{name}" if ns else name))
         for m in _INTERVIEW_TYPE_RE.finditer(code):

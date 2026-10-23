@@ -63,6 +63,15 @@ _APP = {
         "    }\n"
         "}\n"
     ),
+    f"{_D}/flows/Quoted_Flow.flow-meta.xml": _flow("    <processType>Flow</processType>\n"),
+    f"{_D}/classes/Quoter.cls": (
+        "public class Quoter {\n"
+        "    public String text() {\n"
+        "        return 'Flow.Interview.createInterview(\\'Quoted_Flow\\', m)'\n"
+        "            + ' new Flow.Interview.Quoted_Flow(m)';\n"
+        "    }\n"
+        "}\n"
+    ),
     f"{_D}/classes/InboundHandler.cls": (
         "global class InboundHandler implements Messaging.InboundEmailHandler {}\n"
     ),
@@ -202,6 +211,10 @@ def test_flows_are_symbols_linked_to_apex_flows_and_components(tmp_path: Path) -
     launcher = f"{cls}/Launcher.cls"
     assert edge(f"{launcher}::Launcher::run", f"{child}::Child_Flow") == "framework_binds"
     assert edge(f"{launcher}::Launcher::run", f"{main}::Main_Flow") == "framework_binds"
+    # A call written inside a string literal names nothing.
+    quoted = f"{_D}/flows/Quoted_Flow.flow-meta.xml"
+    assert not {t for _, t in graph.out_edges(f"{cls}/Quoter.cls")} & {quoted}
+    assert not [s for s, _ in graph.in_edges(f"{quoted}::Quoted_Flow") if "Quoter" in s]
     # LWC <lightning-flow>, literal names only.
     assert edge(f"{lwc}/host/host.html", child) == "framework"
     targets = {t for _, t in graph.out_edges(f"{lwc}/host/host.html")}
