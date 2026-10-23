@@ -216,3 +216,20 @@ async def test_without_history_or_store_each_input_says_so(tmp_path):
     assert "workspace store is missing" in checks["health"]["reason"]
     assert checks["churn-hotspots"]["score"] == -1
     assert checks["churn-hotspots"]["reason"] == "no repo holds enough indexed history to measure churn"
+
+
+async def test_start_files_rank_on_exact_words_not_page_length(tmp_path):
+    from repowise.core.report.sections.estate_start import _targets
+
+    repo = tmp_path / "web"
+    files = {"long.py": (0.5, False, False, 0, "production", 1), "short.py": (0.4, False, False, 0, "production", 1)}
+    await _index(repo, "web", commits=2, health=None, files=files)
+    engine, factory = await open_repo_db(repo)
+    async with factory() as session:
+        # long.py: more characters, fewer words; short.py: fewer characters, more words
+        (await session.get(Page, "file_page:long.py")).content = "x" * 40
+        (await session.get(Page, "file_page:short.py")).content = "a b c d e"
+        await session.commit()
+        rows = await _targets(session, "repo-web")
+    await engine.dispose()
+    assert [(r["path"], r["doc_words"]) for r in rows] == [("long.py", 1), ("short.py", 5)]

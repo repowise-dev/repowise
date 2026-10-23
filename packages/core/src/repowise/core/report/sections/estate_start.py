@@ -86,7 +86,9 @@ async def _targets(session: Any, repository_id: str) -> list[dict[str, Any]]:
                 )
             )
         }
-    return [{**c, "doc_words": words.get(c["path"], 0)} for c in shortlist]
+    ranked = [{**c, "doc_words": words.get(c["path"], 0)} for c in shortlist]
+    # Re-ranked on exact words, the fold's own key: characters only made the cut.
+    return sorted(ranked, key=lambda c: (c["doc_words"], -c["pagerank"]))
 
 
 def _services(ctx: WorkspaceReportContext, graph: Any, reach: dict[str, int]) -> dict[str, Any]:
