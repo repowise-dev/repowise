@@ -441,6 +441,8 @@ def conformance_view(report: dict, *, repo: str | None = None) -> dict[str, Any]
         # The unscoped total: how many cycles the workspace has does not change
         # because the view was narrowed.
         "total_cycles": total_cycles,
+        "cycles_determined": report.get("cycles_determined"),
+        "evidence": report.get("evidence"),
         "violating_repos": sorted(
             {_node_repo(v.get("source", "")) for v in violations}
             | {_node_repo(v.get("target", "")) for v in violations}

@@ -6,17 +6,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
+from rich.markup import escape
 
 from repowise.cli.helpers import console, resolve_repo_path
 from repowise.cli.output import emit_json, format_option, json_option, resolve_format
 
-from ._shared import _report_artifact_provenance, _require_workspace
+from ._shared import _print_evidence, _report_artifact_provenance, _require_workspace
 from .group import workspace_group
 
 if TYPE_CHECKING:
     from repowise.core.workspace.breaking_change import BreakingChange, BreakingChangeReport
     from repowise.core.workspace.config import WorkspaceConfig
     from repowise.core.workspace.conformance import ConformanceReport
+    from repowise.core.workspace.cycles import DependencyCycle
     from repowise.core.workspace.system_graph import SystemGraph
 
 
@@ -87,7 +89,7 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
     _print_breaking_changes(breaking_changes, bc_report)
 
     if not report.has_findings and not breaking_changes:
-        _print_check_pass(report.rules_evaluated, bc_ran)
+        _print_check_pass(report, bc_ran)
         return
 
     # Only claim a breaking-change count when a detection pass produced one.
@@ -150,8 +152,13 @@ def _print_check_scope(
     them is a pass.
     """
     _report_artifact_provenance(
-        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
+        ws_root,
+        ws_config,
+        graph.generated_at,
+        sorted({n.repo for n in graph.nodes}),
+        graph.repo_provenance,
     )
+    _print_evidence(report.evidence)
     console.print(
         f"Checked [bold]{len(graph.nodes)}[/bold] service(s) across "
         f"[bold]{len({n.repo for n in graph.nodes})}[/bold] repo(s) against "
@@ -182,9 +189,27 @@ def _print_cycles(report: ConformanceReport) -> None:
     if not report.cycles:
         return
     console.print(f"\n[red]✗ {len(report.cycles)} dependency cycle(s):[/red]")
+    console.print(
+        "  [dim]a -\\[kind]-> b: a depends on b (a subscriber depends on its publisher).[/dim]"
+    )
     for c in report.cycles:
-        loop = " -> ".join([*c.nodes, c.nodes[0]]) if c.nodes else ""
-        console.print(f"  [red]{loop}[/red]")
+        console.print(f"  [red]{escape(_cycle_path(c))}[/red]")
+        if c.async_legs:
+            console.print(
+                f"      [dim]{c.async_legs} of {len(c.leg_kinds)} leg(s) only an event "
+                "joins; the loop still couples schemas and deploy order.[/dim]"
+            )
+
+
+def _cycle_path(cycle: DependencyCycle) -> str:
+    """``a -[http]-> b -[event]-> a``, each leg labelled with its edge kinds."""
+    if not cycle.nodes:
+        return ""
+    parts = [cycle.nodes[0]]
+    for i, kinds in enumerate(cycle.leg_kinds):
+        nxt = cycle.nodes[(i + 1) % len(cycle.nodes)]
+        parts.append(f" -[{'/'.join(kinds) or '?'}]-> {nxt}")
+    return "".join(parts)
 
 
 def _print_breaking_changes(
@@ -213,12 +238,25 @@ def _print_breaking_changes(
         )
 
 
-def _print_check_pass(rule_count: int, bc_ran: bool) -> None:
-    if rule_count:
-        console.print(
-            f"\n[green]✓[/green] No violations of {rule_count} rule(s); no dependency cycles."
-        )
+def _print_check_pass(report: ConformanceReport, bc_ran: bool) -> None:
+    """The pass line, which never calls an unmeasured graph acyclic.
+
+    Not determined is not a violation, so the check still exits 0; the reasons
+    are printed above it by :func:`_print_evidence`.
+    """
+    rule_count = report.rules_evaluated
+    state = (report.evidence or {}).get("state")
+    mark = "[green]✓[/green]"
+    if state == "insufficient":
+        mark = "[yellow]?[/yellow]"
+        cycles = "dependency cycles not determined (see above)"
+    elif state == "partial":
+        cycles = "no dependency cycles among the edges detected (partial evidence)"
     else:
-        console.print("\n[green]✓[/green] No dependency cycles.")
+        cycles = "no dependency cycles"
+    if rule_count:
+        console.print(f"\n{mark} No violations of {rule_count} rule(s); {cycles}.")
+    else:
+        console.print(f"\n{mark} {cycles[0].upper()}{cycles[1:]}.")
     if bc_ran:
         console.print("[green]✓[/green] No breaking contract changes.")

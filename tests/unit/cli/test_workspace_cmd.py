@@ -581,6 +581,7 @@ class TestWorkspaceDiagnosticsReport:
             providers_by_layer={} if clean else {"index": 20, "regex": 10},
             consumers_by_layer={} if clean else {"regex": 12},
             http_consumers_unresolved=3,
+            unrecognised_call_files={"web": 0},
         )
         if not clean:
             diag.unmatched_consumers = [
@@ -733,6 +734,45 @@ class TestWorkspaceCheck:
         assert "violation" in result.output.lower()
         assert "cycle" in result.output.lower()
         assert "frontend !-> db" in result.output
+
+    def test_a_cycle_closed_by_an_event_fails_and_names_each_leg(self, runner, tmp_path):
+        from repowise.core.workspace.system_graph import (
+            SystemEdge,
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        self._write_config_with_rule(tmp_path, [])
+
+        def edge(s, t, kind):
+            return SystemEdge(
+                id=f"{s}->{t}:{kind}",
+                source=s,
+                target=t,
+                kind=kind,
+                match_type="exact",
+                confidence=1.0,
+                weight=1,
+                structural=True,
+            )
+
+        save_system_graph(
+            SystemGraph(
+                nodes=[SystemNode(id=n, repo=n, service_path=None, name=n) for n in ("db", "frontend")],
+                edges=[edge("frontend", "db", "http"), edge("db", "frontend", "event")],
+            ),
+            tmp_path,
+        )
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        # networkx picks the loop's starting node, so either rotation is right.
+        assert (
+            "db -[event]-> frontend -[http]-> db" in result.output
+            or "frontend -[http]-> db -[event]-> frontend" in result.output
+        )
+        assert "1 of 2 leg(s) only an event joins" in result.output
+        assert "a subscriber depends on its publisher" in result.output
 
     def test_check_clean_passes(self, runner, tmp_path):
         self._write_config_with_rule(tmp_path, [{"source": "frontend", "target": "db"}])
@@ -1017,8 +1057,23 @@ class TestWorkspaceCheckBreaking:
         assert result.exit_code == 0, result.output
         assert "Checked 2 service(s) across 2 repo(s) against 0 declared rule(s)." in result.output
         assert "No conformance rules declared." in result.output
-        assert "No dependency cycles." in result.output
+        # Two services and no edge between them: "no cycles" would be vacuous.
+        assert "Not determined:" in result.output
+        assert "no dependency between services was detected" in result.output
+        assert "Dependency cycles not determined" in result.output
+        assert "No dependency cycles." not in result.output
         assert "No violations" not in result.output
+
+    def test_not_determined_json_says_so(self, runner, tmp_path):
+        import json
+
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["cycles_determined"] is False
+        assert data["evidence"]["state"] == "insufficient"
 
     def test_no_breaking_json_omits_the_breaking_half(self, runner, tmp_path):
         import json
@@ -1137,6 +1192,74 @@ class TestWorkspaceMetrics:
         assert data["core_size"] == 2
         assert data["conformance_violations"] == 1
         assert set(data["role_breakdown"]) >= {"core", "shared", "control", "peripheral"}
+
+    def test_metrics_with_no_edges_is_not_determined(self, runner, tmp_path):
+        import json
+
+        self._write(tmp_path, [], [])
+        from repowise.core.workspace.system_graph import (
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        save_system_graph(
+            SystemGraph(
+                nodes=[SystemNode(id=n, repo=n, service_path=None, name=n) for n in ("a", "b")],
+                repo_provenance={"a": {}, "b": {}, "c": {}},
+            ),
+            tmp_path,
+        )
+        result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Architecture score  not determined" in result.output
+        assert "10.0" not in result.output
+        assert "1 repo(s) were read but yielded no contracts" in result.output
+        assert "Service roles" not in result.output
+        data = json.loads(
+            runner.invoke(cli, ["workspace", "metrics", str(tmp_path), "--format", "json"]).output
+        )
+        assert data["score"] is None
+        assert data["cycle_count"] is None
+        assert data["evidence"]["state"] == "insufficient"
+
+    def test_a_repo_read_without_contracts_is_not_told_to_rerun(self, runner, tmp_path):
+        from repowise.core.workspace.system_graph import (
+            SystemEdge,
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        _write_workspace_config(
+            tmp_path, [{"path": n, "alias": n} for n in ("api", "web", "docs", "new")]
+        )
+        save_system_graph(
+            SystemGraph(
+                nodes=[SystemNode(id=n, repo=n, service_path=None, name=n) for n in ("api", "web")],
+                edges=[
+                    SystemEdge(
+                        id="web->api:http",
+                        source="web",
+                        target="api",
+                        kind="http",
+                        match_type="exact",
+                        confidence=1.0,
+                        weight=1,
+                        structural=True,
+                    )
+                ],
+                repo_provenance={"api": {}, "web": {}, "docs": {}},
+            ),
+            tmp_path,
+        )
+        result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        out = " ".join(result.output.split())
+        assert "docs was read but yielded no contracts" in out
+        assert "new is configured but absent from this artifact" in out
+        assert "docs is configured but absent" not in out
+        assert "Partial evidence" in out
 
     def test_metrics_empty_graph(self, runner, tmp_path):
         self._write(tmp_path, [], [])

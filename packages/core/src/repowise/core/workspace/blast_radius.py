@@ -30,6 +30,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+from repowise.core.workspace.graph_evidence import graph_evidence
 from repowise.core.workspace.system_graph import SystemGraph
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,11 @@ class CrossRepoBlastRadius:
     max_distance: int  # deepest hop reached
     total_impacted: int  # true count before MAX_IMPACTED capping
     unresolved_targets: list[str] = field(default_factory=list)
+    #: Resolved targets no structural edge touches in either direction. An
+    #: empty impact set for one of these is "not seen", not "nothing depends".
+    undetermined_targets: list[str] = field(default_factory=list)
+    #: :func:`.graph_evidence.graph_evidence` of the graph walked, as a dict.
+    evidence: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +124,8 @@ class CrossRepoBlastRadius:
             "max_distance": self.max_distance,
             "total_impacted": self.total_impacted,
             "unresolved_targets": self.unresolved_targets,
+            "undetermined_targets": self.undetermined_targets,
+            "evidence": self.evidence,
         }
 
 
@@ -181,6 +189,7 @@ def cross_repo_blast_radius(
     """
     depth = max(1, min(max_depth, MAX_DEPTH_LIMIT))
     resolved, unresolved = resolve_targets(graph, targets)
+    evidence = graph_evidence(graph).to_dict()
 
     nodes_by_id = {n.id: n for n in graph.nodes}
     target_set = set(resolved)
@@ -197,11 +206,15 @@ def cross_repo_blast_radius(
             max_distance=0,
             total_impacted=0,
             unresolved_targets=unresolved,
+            evidence=evidence,
         )
 
     # Impact direction: a change to a node reaches whatever depends on it, and
     # co-change edges are symmetric, so both endpoints reach each other.
     adj = graph.adjacency(behavioral=include_behavioral, impact=True)
+    touched = {
+        node for edge in graph.edges if edge.structural for node in (edge.source, edge.target)
+    }
 
     best: dict[str, _Accum] = {}
     # Frontier value per node: (propagated score, path-is-all-structural).
@@ -275,4 +288,6 @@ def cross_repo_blast_radius(
         max_distance=max_distance,
         total_impacted=total,
         unresolved_targets=unresolved,
+        undetermined_targets=[t for t in resolved if t not in touched],
+        evidence=evidence,
     )

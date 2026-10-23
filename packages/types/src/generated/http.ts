@@ -4428,22 +4428,28 @@ export interface WorkspaceActionsResponse {
   cross_repo: WorkspaceCrossRepoAction[];
 }
 
-/** Architecture-complexity metrics over the system graph (Phase 6). */
+/**
+ * Architecture-complexity metrics over the system graph (Phase 6).
+ *
+ * Every measured figure is ``None`` when there is no graph, or when its
+ * ``evidence`` is insufficient: nothing seen is not a 10/10.
+ */
 export interface WorkspaceArchitectureResponse {
   node_count?: number;
   structural_edge_count?: number;
-  propagation_cost?: number;
-  propagation_cost_pct?: number;
-  core_size?: number;
-  core_ratio?: number;
+  propagation_cost?: number | null;
+  propagation_cost_pct?: number | null;
+  core_size?: number | null;
+  core_ratio?: number | null;
   core_members?: string[];
-  cycle_count?: number;
+  cycle_count?: number | null;
   conformance_violations?: number;
   architecture_type?: string;
-  score?: number;
+  score?: number | null;
   role_breakdown?: Record<string, number>;
   roles?: WorkspaceNodeArchitectureRole[];
   generated_at?: string;
+  evidence?: WorkspaceGraphEvidence | null;
 }
 
 export interface WorkspaceBlastRadiusResponse {
@@ -4456,6 +4462,8 @@ export interface WorkspaceBlastRadiusResponse {
   max_distance?: number;
   total_impacted?: number;
   unresolved_targets?: string[];
+  undetermined_targets?: string[];
+  evidence?: WorkspaceGraphEvidence | null;
 }
 
 export interface WorkspaceBreakingChange {
@@ -4540,6 +4548,8 @@ export interface WorkspaceConformanceResponse {
   cycle_count?: number;
   total_cycles?: number;
   violating_repos?: string[];
+  cycles_determined?: boolean | null;
+  evidence?: WorkspaceGraphEvidence | null;
 }
 
 export interface WorkspaceConformanceViolation {
@@ -4643,6 +4653,14 @@ export interface WorkspaceDependencyCycle {
   async_legs?: number;
 }
 
+/** One reason a graph's evidence is short of measured. */
+export interface WorkspaceEvidenceReason {
+  code: string;
+  state: string;
+  message: string;
+  subjects?: string[];
+}
+
 export interface WorkspaceExtractionDiagnostics {
   total_providers?: number;
   total_consumers?: number;
@@ -4656,6 +4674,8 @@ export interface WorkspaceExtractionDiagnostics {
   consumers_by_layer?: Record<string, number>;
   http_consumers_unresolved?: number;
   http_consumer_coverage?: number | null;
+  unrecognised_call_files?: Record<string, number> | null;
+  unrecognised_call_file_count?: number | null;
   symbol_identity?: Record<string, WorkspaceSymbolIdentity>;
   schema_coverage?: WorkspaceSchemaCoverage;
   code_api?: WorkspaceCodeApiCoverage;
@@ -4668,6 +4688,25 @@ export interface WorkspaceGraphEdge {
   type: string;
   strength?: number;
   label?: string | null;
+}
+
+/**
+ * How much evidence the system graph rests on.
+ *
+ * Mirrors ``repowise.core.workspace.graph_evidence.GraphEvidence``. When
+ * ``determined`` is false, a score, cycle verdict or impact set over the
+ * graph would be vacuous and is reported as not determined.
+ */
+export interface WorkspaceGraphEvidence {
+  state: "measured" | "partial" | "insufficient";
+  determined: boolean;
+  summary?: string;
+  reasons?: WorkspaceEvidenceReason[];
+  services?: number;
+  runtime_edges?: number;
+  build_edges?: number;
+  providers?: number;
+  consumers?: number;
 }
 
 export interface WorkspaceGraphNode {

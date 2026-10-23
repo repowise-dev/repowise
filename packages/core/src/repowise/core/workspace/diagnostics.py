@@ -30,6 +30,7 @@ from repowise.core.workspace.contracts import (
     same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+from repowise.core.workspace.network_probe import UNRECOGNISED_CALL_FILES_STAT
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
 # ---------------------------------------------------------------------------
@@ -330,19 +331,36 @@ class ExtractionDiagnostics:
     code_api: CodeApiCoverage = field(default_factory=CodeApiCoverage)
     #: OpenAPI document, operation, per-side fidelity, and refusal coverage.
     openapi: OpenApiCoverage = field(default_factory=OpenApiCoverage)
+    #: Per repo, files with a network-call token that produced no consumer
+    #: contract (:mod:`.network_probe`): calls no dialect recognised. None when
+    #: no repo was probed (an artifact older than the probe).
+    unrecognised_call_files: dict[str, int] | None = None
+
+    @property
+    def unrecognised_call_file_count(self) -> int | None:
+        if self.unrecognised_call_files is None:
+            return None
+        return sum(self.unrecognised_call_files.values())
 
     @property
     def http_consumer_coverage(self) -> float | None:
-        """Share of located HTTP client calls that became a contract.
+        """Share of client calls that became an HTTP contract, misses included.
 
-        ``None`` when nothing was located, because 0/0 is not 100%. This is a
-        genuine ratio over calls extraction *saw*: it says nothing about calls
-        no dialect recognised, and must not be presented as total recall.
+        The denominator is every call extraction resolved or located, plus one
+        per file the network probe saw calling out with no contract read from
+        it, so a client library no dialect knows lowers the figure instead of
+        vanishing from it. Each such file counts once, a floor on its calls.
+        ``None`` when nothing was seen, because 0/0 is not 100%, and when the
+        artifact predates the probe, since a ratio over located calls alone
+        reads 100% whatever was missed.
         """
+        missed = self.unrecognised_call_file_count
+        if missed is None:
+            return None
         http_consumers = sum(
             r.consumers_by_type.get("http", 0) for r in self.repo_breakdown
         )
-        denominator = http_consumers + self.http_consumers_unresolved
+        denominator = http_consumers + self.http_consumers_unresolved + missed
         if denominator == 0:
             return None
         return http_consumers / denominator
@@ -365,6 +383,8 @@ class ExtractionDiagnostics:
             "schema_coverage": self.schema_coverage.to_dict(),
             "code_api": self.code_api.to_dict(),
             "openapi": self.openapi.to_dict(),
+            "unrecognised_call_files": self.unrecognised_call_files,
+            "unrecognised_call_file_count": self.unrecognised_call_file_count,
         }
 
     @classmethod
@@ -438,6 +458,7 @@ class ExtractionDiagnostics:
                 linked_providers=code.get("linked_providers", 0),
             ),
             openapi=OpenApiCoverage.from_dict(openapi),
+            unrecognised_call_files=data.get("unrecognised_call_files"),
         )
 
 
@@ -642,4 +663,17 @@ def build_diagnostics(
         schema_coverage=schema,
         code_api=code_api,
         openapi=OpenApiCoverage.from_stats(stats_by_repo),
+        unrecognised_call_files=_unrecognised_call_files(stats_by_repo),
     )
+
+
+def _unrecognised_call_files(
+    stats_by_repo: dict[str, dict[str, int]],
+) -> dict[str, int] | None:
+    """The probe's per-repo counts, or None when no repo carries one."""
+    counts = {
+        repo: stats[UNRECOGNISED_CALL_FILES_STAT]
+        for repo, stats in sorted(stats_by_repo.items())
+        if UNRECOGNISED_CALL_FILES_STAT in stats
+    }
+    return counts or None

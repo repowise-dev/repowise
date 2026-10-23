@@ -366,10 +366,20 @@ function Lede({
     <PageLede
       label={t("lede.label")}
       labelHint={t("lede.labelHint")}
-      value={architecture ? architecture.score.toFixed(1) : "–"}
+      value={architecture?.score != null ? architecture.score.toFixed(1) : "–"}
       unit={t("lede.unit")}
       layout="beside"
     >
+      {architecture?.evidence && architecture.evidence.state !== "measured" ? (
+        <p>
+          {t(
+            architecture.evidence.state === "insufficient"
+              ? "lede.notDetermined"
+              : "lede.partialEvidence",
+            { reason: architecture.evidence.summary },
+          )}
+        </p>
+      ) : null}
       <p>
         {t("lede.counts", {
           services: graph.nodes.length,
@@ -392,7 +402,9 @@ function Lede({
       ) : conformance?.generated_at ? (
         <p>{t("lede.noCycles")}</p>
       ) : null}
-      {architecture && (
+      {architecture &&
+        architecture.propagation_cost_pct != null &&
+        architecture.core_size != null && (
         <p>
           {t("lede.reachAndScore", {
             pct: architecture.propagation_cost_pct.toFixed(1),
@@ -431,7 +443,10 @@ function ribbon(
     },
     {
       label: t("ribbon.propagationCost"),
-      value: architecture ? `${architecture.propagation_cost_pct.toFixed(1)}%` : "–",
+      value:
+        architecture?.propagation_cost_pct != null
+          ? `${architecture.propagation_cost_pct.toFixed(1)}%`
+          : "–",
       sub: t("ribbon.propagationCostSub"),
       hint: t("ribbon.propagationCostHint"),
     },

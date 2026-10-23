@@ -11,7 +11,7 @@ from rich.table import Table
 from repowise.cli.helpers import console, resolve_repo_path
 from repowise.cli.output import emit_json, format_option, json_option, resolve_format
 
-from ._shared import _report_artifact_provenance, _require_workspace
+from ._shared import _print_evidence, _report_artifact_provenance, _require_workspace
 from .group import workspace_group
 
 if TYPE_CHECKING:
@@ -39,6 +39,7 @@ def workspace_diagnostics(
     the answer to "why are there so few links?". Reads the system graph built
     during 'repowise update --workspace'.
     """
+    from repowise.core.workspace.graph_evidence import graph_evidence
     from repowise.core.workspace.system_graph import load_system_graph
 
     fmt = resolve_format(fmt, as_json)
@@ -60,8 +61,13 @@ def workspace_diagnostics(
         return
 
     _report_artifact_provenance(
-        ws_root, ws_config, graph.generated_at, [r.repo for r in diag.repo_breakdown]
+        ws_root,
+        ws_config,
+        graph.generated_at,
+        [r.repo for r in diag.repo_breakdown],
+        graph.repo_provenance,
     )
+    _print_evidence(graph_evidence(graph).to_dict())
     _print_breakdown_table(ws_root.name, breakdown)
     _print_link_totals(diag)
     _print_extraction_coverage(diag)
@@ -96,6 +102,8 @@ def _emit_diagnostics_json(
     unmatched: list[UnmatchedConsumer],
     orphans: list[OrphanProvider],
 ) -> None:
+    from repowise.core.workspace.graph_evidence import graph_evidence
+
     diag = graph.diagnostics
     emit_json(
         {
@@ -112,6 +120,8 @@ def _emit_diagnostics_json(
             "consumers_by_layer": diag.consumers_by_layer,
             "http_consumers_unresolved": diag.http_consumers_unresolved,
             "http_consumer_coverage": diag.http_consumer_coverage,
+            "unrecognised_call_files": diag.unrecognised_call_files,
+            "evidence": graph_evidence(graph).to_dict(),
         }
     )
 
@@ -162,19 +172,46 @@ def _print_extraction_coverage(diag: ExtractionDiagnostics) -> None:
     if diag.consumers_by_layer:
         layers = _layers(diag.consumers_by_layer)
         console.print(f"    Consumers   {diag.total_consumers} ({layers})")
-    coverage = diag.http_consumer_coverage
-    if coverage is not None:
-        http_consumers = sum(r.consumers_by_type.get("http", 0) for r in diag.repo_breakdown)
-        console.print(
-            f"    HTTP calls  {http_consumers} of "
-            f"{http_consumers + diag.http_consumers_unresolved} resolved to an "
-            f"endpoint ([bold]{coverage * 100:.0f}%[/bold]); "
-            f"{diag.http_consumers_unresolved} located but not statically resolvable."
-        )
+    _print_call_coverage(diag)
     console.print(
         "    [dim]'index' contracts come from the parsed symbol table, 'regex' "
-        "from a text dialect. Calls no dialect recognises are not counted here.[/dim]"
+        "from a text dialect.[/dim]"
     )
+
+
+def _print_call_coverage(diag: ExtractionDiagnostics) -> None:
+    """Resolved calls over every call seen, misses named per repo.
+
+    The denominator carries one call per file the network probe found calling
+    out with no contract read from it, so an unknown client library lowers the
+    figure. An artifact older than the probe gets counts and no percentage.
+    """
+    http_consumers = sum(r.consumers_by_type.get("http", 0) for r in diag.repo_breakdown)
+    unresolved = diag.http_consumers_unresolved
+    missed = diag.unrecognised_call_file_count
+    coverage = diag.http_consumer_coverage
+    if missed is None:
+        console.print(
+            f"    HTTP calls  {http_consumers} resolved, {unresolved} located but not "
+            "statically resolvable; calls no dialect recognises were not counted "
+            "(re-run 'repowise update --workspace' to count them)."
+        )
+        return
+    if coverage is None:
+        console.print("    HTTP calls  none located, and no file makes a recognisable network call.")
+        return
+    console.print(
+        f"    HTTP calls  {http_consumers} of {http_consumers + unresolved + missed} resolved "
+        f"([bold]{coverage * 100:.0f}%[/bold]): {unresolved} located but not statically "
+        f"resolvable, {missed} file(s) calling out through code no dialect reads."
+    )
+    by_repo = [(repo, n) for repo, n in (diag.unrecognised_call_files or {}).items() if n]
+    if by_repo:
+        console.print(
+            "      [dim]unread network calls: "
+            + ", ".join(f"{repo} {n}" for repo, n in by_repo)
+            + "[/dim]"
+        )
 
 
 _REASON_LABELS = {

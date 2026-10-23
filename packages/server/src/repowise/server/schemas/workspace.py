@@ -360,15 +360,49 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     providers_by_layer: dict[str, int] = {}
     consumers_by_layer: dict[str, int] = {}
     http_consumers_unresolved: int = 0
-    #: Share of located HTTP client calls that became a contract. ``None`` when
-    #: none were located — 0/0 is not 100%.
+    #: Share of client calls that became an HTTP contract, counting one miss per
+    #: file that calls out through code no dialect reads. ``None`` when nothing
+    #: was seen (0/0 is not 100%) or the artifact predates that count.
     http_consumer_coverage: float | None = None
+    #: Per repo, files with a network-call token and no consumer contract.
+    #: ``None`` on an artifact written before the count existed.
+    unrecognised_call_files: dict[str, int] | None = None
+    unrecognised_call_file_count: int | None = None
 
     symbol_identity: dict[str, WorkspaceSymbolIdentity] = {}
     schema_coverage: WorkspaceSchemaCoverage = WorkspaceSchemaCoverage()
     code_api: WorkspaceCodeApiCoverage = WorkspaceCodeApiCoverage()
     openapi: WorkspaceOpenApiCoverage = WorkspaceOpenApiCoverage()
     model_config = ConfigDict(extra="forbid")
+
+
+class WorkspaceEvidenceReason(BaseModel):
+    """One reason a graph's evidence is short of measured."""
+
+    code: str
+    #: The state this reason alone implies: ``partial`` or ``insufficient``.
+    state: str
+    message: str
+    subjects: list[str] = []
+
+
+class WorkspaceGraphEvidence(BaseModel):
+    """How much evidence the system graph rests on.
+
+    Mirrors ``repowise.core.workspace.graph_evidence.GraphEvidence``. When
+    ``determined`` is false, a score, cycle verdict or impact set over the
+    graph would be vacuous and is reported as not determined.
+    """
+
+    state: Literal["measured", "partial", "insufficient"]
+    determined: bool
+    summary: str = ""
+    reasons: list[WorkspaceEvidenceReason] = []
+    services: int = 0
+    runtime_edges: int = 0
+    build_edges: int = 0
+    providers: int = 0
+    consumers: int = 0
 
 
 class WorkspaceSystemGraphResponse(BaseModel):
@@ -406,6 +440,10 @@ class WorkspaceBlastRadiusResponse(BaseModel):
     max_distance: int = 0
     total_impacted: int = 0
     unresolved_targets: list[str] = []
+    #: Resolved targets no structural edge touches: an empty reach for one of
+    #: these means "not seen", not "nothing depends on it".
+    undetermined_targets: list[str] = []
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +543,10 @@ class WorkspaceConformanceResponse(BaseModel):
     cycle_count: int = 0
     total_cycles: int = 0
     violating_repos: list[str] = []
+    #: False when the graph had too little evidence for "no cycles" to mean
+    #: anything; ``None`` on a report written before evidence was recorded.
+    cycles_determined: bool | None = None
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 class WorkspaceNodeArchitectureRole(BaseModel):
@@ -517,22 +559,27 @@ class WorkspaceNodeArchitectureRole(BaseModel):
 
 
 class WorkspaceArchitectureResponse(BaseModel):
-    """Architecture-complexity metrics over the system graph (Phase 6)."""
+    """Architecture-complexity metrics over the system graph (Phase 6).
+
+    Every measured figure is ``None`` when there is no graph, or when its
+    ``evidence`` is insufficient: nothing seen is not a 10/10.
+    """
 
     node_count: int = 0
     structural_edge_count: int = 0
-    propagation_cost: float = 0.0
-    propagation_cost_pct: float = 0.0
-    core_size: int = 0
-    core_ratio: float = 0.0
+    propagation_cost: float | None = None
+    propagation_cost_pct: float | None = None
+    core_size: int | None = None
+    core_ratio: float | None = None
     core_members: list[str] = []
-    cycle_count: int = 0
+    cycle_count: int | None = None
     conformance_violations: int = 0
-    architecture_type: str = "hierarchical"
-    score: float = 10.0
+    architecture_type: str = "undetermined"
+    score: float | None = None
     role_breakdown: dict[str, int] = {}
     roles: list[WorkspaceNodeArchitectureRole] = []
     generated_at: str = ""
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 # ---------------------------------------------------------------------------

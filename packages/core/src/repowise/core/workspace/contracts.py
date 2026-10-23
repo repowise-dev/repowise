@@ -70,7 +70,9 @@ CONTRACTS_FILENAME = "contracts.json"
 # strategy (see :mod:`.origins`), and stops linking a Laravel job class to a
 # publisher that is not Laravel; HTTP consumers resolve hosts through the
 # service-name map (:mod:`.service_names`), and ``service_links`` holds the
-# service-level edges for calls whose host is known but whose route is not.
+# service-level edges for calls whose host is known but whose route is not;
+# each repo also counts the files whose network calls produced no contract
+# (see :mod:`.network_probe`).
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -857,6 +859,7 @@ async def _extract_one_repo(
     from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
     from .extractors.base import iter_source_files
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+    from .network_probe import UNRECOGNISED_CALL_FILES_STAT, count_unrecognised_call_files
 
     code_surface = extraction.code_surface
     contracts: list[Contract] = []
@@ -913,6 +916,12 @@ async def _extract_one_repo(
 
     stats.update(bind_symbol_ids(contracts, repo_index))
     stats.update(attach_signature_schemas(contracts, repo_index))
+
+    # The calls no dialect read, the miss half of any coverage figure.
+    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
+    stats[UNRECOGNISED_CALL_FILES_STAT] = await asyncio.to_thread(
+        count_unrecognised_call_files, files, consumer_files
+    )
 
     unresolved = stats.get("http_consumer_unresolved", 0)
     if unresolved:
