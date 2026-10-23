@@ -27,7 +27,7 @@ Hits ride ``FileComplexity.perf_hits`` like the SQL smells.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
 from .complexity.models import PerfHit
@@ -206,22 +206,27 @@ def _soql_quotes(value: str) -> int:
 # -- apex_see_all_data ----------------------------------------------------------
 
 
+def _sees_all_data(ann: Node) -> bool:
+    """``ann`` is ``@IsTest(SeeAllData=true)``, any case."""
+    if ann.type != "annotation" or _lower(ann.child_by_field_name("name")) != "istest":
+        return False
+    args = ann.child_by_field_name("arguments")
+    pairs = {
+        _lower(kv.child_by_field_name("key")): _lower(kv.child_by_field_name("value"))
+        for kv in (args.named_children if args is not None else ())
+        if kv.type == "annotation_key_value"
+    }
+    return pairs.get("seealldata") == "true"
+
+
 def _see_all_data(root: Node) -> list[PerfHit]:
     hits = []
     for ann in _walk(root):
-        if ann.type != "annotation" or _lower(ann.child_by_field_name("name")) != "istest":
+        if not _sees_all_data(ann) or _suppressed(ann, SEE_ALL_DATA):
             continue
-        args = ann.child_by_field_name("arguments")
-        for kv in args.named_children if args is not None else ():
-            if (
-                kv.type == "annotation_key_value"
-                and _lower(kv.child_by_field_name("key")) == "seealldata"
-                and _lower(kv.child_by_field_name("value")) == "true"
-                and not _suppressed(ann, SEE_ALL_DATA)
-            ):
-                owner = ann.parent.parent if ann.parent is not None else None
-                what = "class" if owner is not None and owner.type in _TYPES else "method"
-                hits.append(_hit(SEE_ALL_DATA, ann.parent or ann, what, at=ann))
+        decl = ann.parent.parent if ann.parent is not None else None
+        what = "class" if decl is not None and decl.type in _TYPES else "method"
+        hits.append(_hit(SEE_ALL_DATA, ann.parent or ann, what, at=ann))
     return hits
 
 
@@ -292,27 +297,43 @@ def _declared_type(ident: Node) -> str:
     return ""
 
 
+def _inline_from(query: Node) -> str:
+    body = query.named_children[0] if query.named_children else None
+    source = body.child_by_field_name("from_clause") if body is not None else None
+    return _lower(source.named_children[0]) if source is not None and source.named_children else ""
+
+
+def _literal_from(value: Node) -> str | None:
+    """The FROM object of a query string built from literals, else ``None``."""
+    text = "".join(_literal(p) if p.type == "string_literal" else " ? " for p in _operands(value))
+    # Child subqueries name relationships, not the object read.
+    found = re.search(r"\bfrom\s+(\w+)", re.sub(r"\([^()]*\)", " ", text), re.I)
+    return found.group(1).lower() if found else None
+
+
+def _first_args(call: Node) -> list[Node]:
+    args = call.child_by_field_name("arguments")
+    return list(args.named_children[:1]) if args is not None else []
+
+
 def _query_objects(node: Node) -> list[str]:
     """The objects a query may read: the FROM of inline SOQL, or of a dynamic
     query built from literals (directly or through a local). ``""`` is unknown."""
     if node.type == "query_expression":
-        body = node.named_children[0] if node.named_children else None
-        source = body.child_by_field_name("from_clause") if body is not None else None
-        return [_lower(source.named_children[0]) if source is not None and source.named_children else ""]
-    args = node.child_by_field_name("arguments")
-    values = list(args.named_children[:1]) if args is not None else []
+        return [_inline_from(node)]
+    values = _first_args(node)
     if values and values[0].type == "identifier":
         method = next((a for a in _ancestors(values[0]) if a.type in _METHODS), None)
         values = _assigned(method, _lower(values[0])) if method is not None else []
-    objects = []
-    for value in values:
-        text = "".join(_literal(p) if p.type == "string_literal" else " ? " for p in _operands(value))
-        # Child subqueries name relationships, not the object read.
-        found = re.search(r"\bfrom\s+(\w+)", re.sub(r"\([^()]*\)", " ", text), re.I)
-        if found:
-            objects.append(found.group(1).lower())
     # A ``+=`` appending a filter names no object; no FROM anywhere is unknown.
-    return objects or [""]
+    return [obj for obj in map(_literal_from, values) if obj] or [""]
+
+
+def _shared_target(target: Node | None) -> bool:
+    """A DML target whose records sharing applies to (unknown counts)."""
+    if target is None:
+        return True
+    return not _unshared(_declared_type(target) if target.type == "identifier" else _lower(target))
 
 
 def _shared_op(node: Node) -> bool:
@@ -320,17 +341,10 @@ def _shared_op(node: Node) -> bool:
     if node.type == "dml_expression":
         kind = next((c for c in node.children if c.type == "dml_type"), None)
         target = node.child_by_field_name("target")
-        if _lower(kind) == "insert" or target is None:
-            return False
-        typ = _declared_type(target) if target.type == "identifier" else _lower(target)
-        return not _unshared(typ)
+        return _lower(kind) != "insert" and target is not None and _shared_target(target)
     if node.type == "query_expression" or _static_call(node, _DYNAMIC_QUERY):
         return not all(obj and _unshared(obj) for obj in _query_objects(node))
-    if not _static_call(node, _SHARED_OPS):
-        return False
-    args = node.child_by_field_name("arguments")
-    first = args.named_children[0] if args is not None and args.named_children else None
-    return first is None or first.type != "identifier" or not _unshared(_declared_type(first))
+    return _static_call(node, _SHARED_OPS) and _shared_target(next(iter(_first_args(node)), None))
 
 
 def _first_db_op(cls: Node) -> Node | None:
@@ -346,26 +360,28 @@ def _has_test_method(cls: Node) -> bool:
     return any(m.type in _METHODS and _is_test_decl(m) for m in (body.named_children if body else ()))
 
 
+def _sharing_candidate(cls: Node) -> bool:
+    """A top-level class with no sharing keyword that could carry one: not a
+    subclass (it inherits its parent's), not a test class, not suppressed."""
+    if cls.type != "class_declaration" or _modifier_kinds(cls) & _SHARING:
+        return False
+    if cls.child_by_field_name("superclass") is not None:
+        return False
+    tests = _is_test_decl(cls) or _has_test_method(cls)
+    return not tests and not _suppressed(cls, MISSING_SHARING)
+
+
 def _missing_sharing(root: Node) -> list[PerfHit]:
     hits = []
-    for cls in root.named_children:
-        if (
-            cls.type != "class_declaration"
-            or _modifier_kinds(cls) & _SHARING
-            or cls.child_by_field_name("superclass") is not None
-            or _is_test_decl(cls)
-            or _has_test_method(cls)
-            or _suppressed(cls, MISSING_SHARING)
-        ):
-            continue
+    for cls in filter(_sharing_candidate, root.named_children):
         op = _first_db_op(cls)
+        name = cls.child_by_field_name("name") or cls
         if op is not None:
-            name = cls.child_by_field_name("name") or cls
             hits.append(
                 PerfHit(
                     kind=MISSING_SHARING,
                     line=name.start_point[0] + 1,
-                    function=_text(cls.child_by_field_name("name")) or None,
+                    function=_text(name) or None,
                     detail=f"line {op.start_point[0] + 1}",
                 )
             )
@@ -400,25 +416,26 @@ class _Scope:
         if name not in self.fields:
             return []
         if name not in self.assigns:
-            found: list[tuple[Node, Node | None]] = []
             body = self.cls.child_by_field_name("body")
-            for member in body.named_children if body is not None else ():
-                if member.type in _METHODS and _local_type(member, name) is None:
-                    found += [(rhs, member) for rhs in _assigned(member, name)]
-            self.assigns[name] = found
+            methods = [m for m in (body.named_children if body is not None else ()) if m.type in _METHODS]
+            self.assigns[name] = [
+                (rhs, m) for m in methods if _local_type(m, name) is None for rhs in _assigned(m, name)
+            ]
         return self.assigns[name]
+
+
+def _declares(node: Node, name: str) -> bool:
+    if node.type == "formal_parameter":
+        return _lower(node.child_by_field_name("name")) == name
+    return node.type == "local_variable_declaration" and any(
+        _lower(d.child_by_field_name("name")) == name for d in node.children_by_field_name("declarator")
+    )
 
 
 def _local_type(method: Node, name: str) -> str | None:
     """The lowercased type *method* declares *name* with (parameter or local)."""
-    for node in _walk(method, skip=_TYPES):
-        if node.type == "formal_parameter" and _lower(node.child_by_field_name("name")) == name:
-            return "".join(_lower(node.child_by_field_name("type")).split())
-        if node.type == "local_variable_declaration":
-            for decl in node.children_by_field_name("declarator"):
-                if _lower(decl.child_by_field_name("name")) == name:
-                    return "".join(_lower(node.child_by_field_name("type")).split())
-    return None
+    decl = next((n for n in _walk(method, skip=_TYPES) if _declares(n, name)), None)
+    return "".join(_lower(decl.child_by_field_name("type")).split()) if decl is not None else None
 
 
 def _is_param(method: Node, name: str) -> bool:
@@ -473,7 +490,7 @@ def _operands(expr: Node) -> list[Node]:
 class _Tracer:
     def __init__(self, scope: _Scope) -> None:
         self.scope = scope
-        self.seen: set[tuple[int, str]] = set()
+        self.seen: set[tuple[int, int, str]] = set()
 
     # A value from outside the method --------------------------------------
 
@@ -498,34 +515,35 @@ class _Tracer:
         if node.type == "parenthesized_expression" and node.named_children:
             return self.tainted_name(node.named_children[0], method, depth)
         if node.type == "ternary_expression":
-            for branch in ("consequence", "alternative"):
-                child = node.child_by_field_name(branch)
-                found = self.tainted_name(child, method, depth + 1) if child else None
-                if found:
-                    return found
-            return None
+            return _first(self.tainted_name(b, method, depth + 1) for b in _branches(node))
         if node.type == "array_access":
             return self._collection(node.child_by_field_name("array"), method)
         if node.type == "method_invocation":
             return self._call(node, method, depth)
+        return self._tainted_name_of(node, method, depth)
+
+    def _tainted_name_of(self, node: Node, method: Node | None, depth: int) -> str | None:
+        """A plain name: a String source itself, or a String local or field built from one."""
         name = _target(node)
-        if name is None:
-            return None
-        typ, source = self._type_of(name, method)
-        if typ != "string" or self._sanitized(name, method):
+        typ, source = self._type_of(name, method) if name else (None, False)
+        if name is None or typ != "string" or self._sanitized(name, method):
             return None
         if source:
             return _text(node)
-        key = (method.id if method is not None else 0, name)
-        if key in self.seen:
+        if not self._first_visit(method, name):
             return None
+        return _first(
+            self.tainted_name(piece, where, depth + 1)
+            for rhs, where in self.scope.assignments(name, method)
+            for piece in _operands(rhs)
+        )
+
+    def _first_visit(self, method: Node | None, name: str, space: int = 0) -> bool:
+        key = (space, method.id if method is not None else 0, name)
+        if key in self.seen:
+            return False
         self.seen.add(key)
-        for rhs, where in self.scope.assignments(name, method):
-            for piece in _operands(rhs):
-                found = self.tainted_name(piece, where, depth + 1)
-                if found:
-                    return found
-        return None
+        return True
 
     def _collection(self, node: Node | None, method: Node | None) -> str | None:
         name = _target(node)
@@ -571,45 +589,50 @@ class _Tracer:
         return None
 
     def _built_from(self, piece: Node, method: Node | None, depth: int) -> str | None:
+        """A splice inside the String local, field, ternary or format *piece* builds on."""
         if piece.type == "ternary_expression":
-            for branch in ("consequence", "alternative"):
-                child = piece.child_by_field_name(branch)
-                found = self.quoted_splice(child, method, depth + 1) if child else None
-                if found:
-                    return found
-            return None
+            return _first(self.quoted_splice(b, method, depth + 1) for b in _branches(piece))
         if piece.type == "method_invocation":
             return self._format(piece, method)
         name = _target(piece)
         if name is None or self._type_of(name, method)[0] != "string":
             return None
-        key = (-1 - (method.id if method is not None else 0), name)
-        if key in self.seen:
+        if not self._first_visit(method, name, space=1):
             return None
-        self.seen.add(key)
-        for rhs, where in self.scope.assignments(name, method):
-            found = self.quoted_splice(rhs, where, depth + 1)
-            if found:
-                return found
-        return None
+        return _first(
+            self.quoted_splice(rhs, where, depth + 1)
+            for rhs, where in self.scope.assignments(name, method)
+        )
 
     def _format(self, call: Node, method: Node | None) -> str | None:
-        """``String.format('... \\'{0}\\'', new List<Object>{x})`` with *x* outside."""
-        if _lower(call.child_by_field_name("object")) != "string":
-            return None
-        if _lower(call.child_by_field_name("name")) != "format":
-            return None
-        args = call.child_by_field_name("arguments")
-        named = args.named_children if args is not None else []
-        if len(named) < 2 or named[0].type != "string_literal":
-            return None
-        init = next((c for c in named[1].children if c.type == "array_initializer"), None)
-        values = init.named_children if init is not None else []
-        for index, quoted in _format_slots(_literal(named[0])):
-            found = self.tainted_name(values[index], method) if quoted and index < len(values) else None
-            if found:
-                return found
-        return None
+        """``String.format`` whose quoted placeholder takes an outside value."""
+        template, values = _format_args(call)
+        return _first(
+            self.tainted_name(values[index], method)
+            for index, quoted in _format_slots(template)
+            if quoted and index < len(values)
+        )
+
+
+def _first(found: Iterable[str | None]) -> str | None:
+    return next((f for f in found if f), None)
+
+
+def _branches(ternary: Node) -> list[Node]:
+    return [c for c in (ternary.child_by_field_name(f) for f in ("consequence", "alternative")) if c]
+
+
+def _format_args(call: Node) -> tuple[str, list[Node]]:
+    """``String.format(template, new List<Object>{...})``'s template and values."""
+    args = call.child_by_field_name("arguments")
+    named = args.named_children if args is not None else []
+    is_format = _lower(call.child_by_field_name("object")) == "string" and (
+        _lower(call.child_by_field_name("name")) == "format"
+    )
+    if not is_format or len(named) < 2 or named[0].type != "string_literal":
+        return "", []
+    init = next((c for c in named[1].children if c.type == "array_initializer"), None)
+    return _literal(named[0]), list(init.named_children) if init is not None else []
 
 
 def _format_slots(template: str) -> list[tuple[int, bool]]:
@@ -632,21 +655,22 @@ def _format_slots(template: str) -> list[tuple[int, bool]]:
     return slots
 
 
+def _checked_query(call: Node) -> bool:
+    """A dynamic query call outside test code that no suppression covers."""
+    if not _static_call(call, _DYNAMIC_QUERY) or not _first_args(call):
+        return False
+    return not _in_test(call) and not _suppressed(call, SOQL_INJECTION)
+
+
 def _soql_injections(root: Node) -> list[PerfHit]:
     hits = []
     scopes: dict[int, _Scope] = {}
-    for call in _walk(root):
-        if not _static_call(call, _DYNAMIC_QUERY):
-            continue
-        args = call.child_by_field_name("arguments")
-        if args is None or not args.named_children or _in_test(call):
-            continue
+    for call in filter(_checked_query, _walk(root)):
         cls = next((a for a in _ancestors(call) if a.type == "class_declaration"), None)
         method = next((a for a in _ancestors(call) if a.type in _METHODS), None)
-        if cls is None or _suppressed(call, SOQL_INJECTION):
+        if cls is None:
             continue
-        scope = scopes.setdefault(cls.id, _Scope(cls))
-        found = _Tracer(scope).quoted_splice(args.named_children[0], method)
+        found = _Tracer(scopes.setdefault(cls.id, _Scope(cls))).quoted_splice(_first_args(call)[0], method)
         if found:
             hits.append(_hit(SOQL_INJECTION, call, found))
     return hits
