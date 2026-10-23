@@ -31,7 +31,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import HandlerHead, Occurrence, Receiver, StatementDefUse, node_text
+from .base import (
+    HandlerHead,
+    Occurrence,
+    Receiver,
+    StatementDefUse,
+    echoes,
+    may_defs,
+    node_text,
+)
 from .java import JavaDeclaredTypes, JavaDefUseDialect
 
 if TYPE_CHECKING:
@@ -74,6 +82,10 @@ _DYNAMIC_QUERIES = frozenset(
 # bounded dict is safe across files and threads (a lost race only recomputes).
 _SPELLING_CACHE: dict[bytes, dict[str, str]] = {}
 _SPELLING_CACHE_MAX = 256
+# The last scope asked about and its map: identifiers arrive method by method,
+# so this skips re-reading the method's text per identifier. Holding the node
+# keeps its tree alive, so ``==`` cannot match a node of a freed tree.
+_LAST_SCOPE: list[tuple[Node, dict[str, str]]] = []
 
 
 def _spelling_scope(node: Node) -> Node | None:
@@ -97,9 +109,13 @@ def _binder_name(node: Node) -> Node | None:
 
 def _spellings(scope: Node) -> dict[str, str]:
     """Per lowercased local name, the spelling to use for it in *scope*."""
+    last = _LAST_SCOPE[-1] if _LAST_SCOPE else None
+    if last is not None and last[0] == scope:
+        return last[1]
     key = scope.text or b""
     cached = _SPELLING_CACHE.get(key)
     if cached is not None:
+        _LAST_SCOPE[:] = [(scope, cached)]
         return cached
     declared: dict[str, set[str]] = {}
     stack = [scope]
@@ -114,7 +130,14 @@ def _spellings(scope: Node) -> dict[str, str]:
     if len(_SPELLING_CACHE) >= _SPELLING_CACHE_MAX:
         _SPELLING_CACHE.clear()
     _SPELLING_CACHE[key] = out
+    _LAST_SCOPE[:] = [(scope, out)]
     return out
+
+
+def _is_local(node: Node) -> bool:
+    """Whether identifier *node* names a local or parameter of its method."""
+    scope = _spelling_scope(node)
+    return scope is not None and node_text(node).lower() in _spellings(scope)
 
 
 def _canonical(node: Node) -> str:
@@ -249,12 +272,19 @@ class ApexDefUseDialect(JavaDefUseDialect):
     def _creation(
         self, node: Node, defs: list[Occurrence], uses: list[Occurrence], *, reads_only: bool
     ) -> None:
-        """``new T(args)``: a ``Field = value`` argument reads only its value."""
+        """``new T(args)``: a ``Field = value`` argument sets a field of an
+        SObject. Should the name also be a local of the method, the pair is
+        kept as a write that may happen (a may-def and its echo), which can
+        only refuse or widen a span, never hide a write."""
         for child in node.named_children:
             if child.type == "argument_list":
                 for arg in child.named_children:
                     target = arg.child_by_field_name("left") if arg.type == "assignment_expression" else None
                     if target is not None and target.type == "identifier":
+                        if not reads_only and _is_local(target):
+                            occ = [self._occ(target)]
+                            defs.extend(may_defs(occ))
+                            uses.extend(echoes(occ))
                         arg = arg.child_by_field_name("right")
                     self._walk(arg, defs, uses, reads_only=reads_only)
             elif child.type != "class_body":  # an anonymous class body is its own scope
@@ -284,7 +314,7 @@ class ApexDefUseDialect(JavaDefUseDialect):
             while stack:
                 node = stack.pop()
                 # A declarator the call initializes is not declared yet.
-                name = _binder_name(node) if node.type != "variable_declarator" or node.id != cur.id else None
+                name = None if node.id == cur.id and _binds_after(cur, child) else _binder_name(node)
                 if name is not None and name.type == "identifier":
                     names.add(_canonical(name))
                 for c in node.named_children:
@@ -331,6 +361,15 @@ def _dynamic_query(node: Node) -> bool:
         return False
     owner = node_text(obj).lower().replace(" ", "")
     return (owner, node_text(name).lower()) in _DYNAMIC_QUERIES
+
+
+def _binds_after(holder: Node, child: Node) -> bool:
+    """Whether *holder*'s own name is not yet bound in *child*: a declarator's
+    initializer, an enhanced ``for``'s iterable."""
+    if holder.type == "variable_declarator":
+        return True
+    value = holder.child_by_field_name("value") if holder.type == "enhanced_for_statement" else None
+    return value is not None and value.id == child.id
 
 
 def _catch_param(handler: Node) -> Node | None:

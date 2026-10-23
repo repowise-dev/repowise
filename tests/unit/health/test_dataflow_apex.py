@@ -455,3 +455,36 @@ def test_output_declared_over_several_lines_needs_no_declare_note():
     start = _line(src, "Account a = new Account(")
     span = Extraction(start, start + 2, (), ("a",), slice_nloc=3, ccn_removed=1)
     assert _undeclared_outputs_note(fn, span) == []
+
+
+def test_apex_constructor_pair_naming_a_local_is_a_may_def():
+    fn = _first(
+        """
+        public class Demo {
+            void f(Integer n) {
+                Foo f = new Foo(n = 5);
+                Account acc = new Account(Name = 'x');
+                System.debug(n);
+            }
+        }
+        """
+    )
+    n_defs = [d for d in fn.def_use.definitions if d.var == "n" and d.line > 3]
+    assert n_defs and all(d.may for d in n_defs)
+    assert "Name" not in _defs(fn)
+
+
+def test_apex_dynamic_query_iterable_does_not_read_its_own_loop_variable():
+    src = """
+    public class Demo {
+        void f(String q) {
+            for (Account a : Database.query(q)) {
+                System.debug(a);
+            }
+        }
+    }
+    """
+    fn = _first(src)
+    header = _line(src, "Database.query(q)")
+    read = {u.name for b in fn.def_use.blocks.values() for u in b.uses if u.line == header}
+    assert "q" in read and "a" not in read
