@@ -1011,6 +1011,17 @@ link back to it. Flexipages, quick actions, tabs, email services and Experience
 sites mark what they name as live; names in another package's namespace are not
 followed.
 
+Object and field metadata (`.object-meta.xml`, `.field-meta.xml`, legacy
+`.object`) are the `salesforce_object` passthrough language: a special handler
+makes each object a class symbol and each field a property symbol, matched by
+the multi-dot `name_suffixes` spec field so other `-meta.xml` sidecars stay
+unclaimed. `salesforce_soql.py` records the objects and field paths Apex names
+in SOQL/SOSL, DML targets (by declared type), `trigger ... on` and literal
+`Database.query` strings, plus `.soql` files; `salesforce_schema.py` binds them
+case-insensitively, following `__r` lookups through `<referenceTo>`, and emits a
+symbol `references` edge and a file `reads` edge. A name with no metadata in the
+repository (most standard objects and fields) gets no edge.
+
 ### Salesforce Visualforce
 
 Pages and components link the Apex classes their `controller=` and

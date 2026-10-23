@@ -163,3 +163,62 @@ def test_soql_file_references_object_and_fields(tmp_path: Path) -> None:
     targets = {t for _, t, d in g.out_edges(module, data=True) if d["edge_type"] == "references"}
     assert targets == {f"{obj_file}::Job__c", f"{field_file}::Due__c"}
     assert g.get_edge_data("scripts/soql/jobs.soql", obj_file)["edge_type"] == "reads"
+
+
+_APEX = """public with sharing class JobService {
+    private List<Job__c> pending;
+    public static List<Job__c> open(Set<Id> ids) {
+        return [SELECT Id, due__c, Shift__r.Hours__c, (SELECT Id FROM Shifts__r)
+                FROM job__c j WHERE j.Due__c != null AND Id IN :ids];
+    }
+    public void save(Job__c job) {
+        insert job;
+        update this.pending;
+        Database.query('SELECT Id FROM Shift__c');
+        Database.query('SELECT Id FROM ' + job.Name);
+        Account a = new Account();
+        insert a;
+    }
+}
+"""
+
+
+def test_apex_soql_dml_and_trigger_reference_schema_symbols(tmp_path: Path) -> None:
+    job = f"{_ROOT}/Job__c/Job__c.object-meta.xml"
+    due = f"{_ROOT}/Job__c/fields/Due__c.field-meta.xml"
+    shift_lookup = f"{_ROOT}/Job__c/fields/Shift__c.field-meta.xml"
+    shift = f"{_ROOT}/Shift__c/Shift__c.object-meta.xml"
+    hours = f"{_ROOT}/Shift__c/fields/Hours__c.field-meta.xml"
+    cls = "force-app/main/default/classes/JobService.cls"
+    trigger = "force-app/main/default/triggers/JobTrigger.trigger"
+    g = _build(
+        tmp_path,
+        {
+            job: _object("Job"),
+            due: _field("Date"),
+            shift_lookup: _field("Lookup", "Shift__c"),
+            shift: _object("Shift"),
+            hours: _field("Number"),
+            cls: _APEX,
+            trigger: "trigger JobTrigger on JOB__C (before insert) { }\n",
+        },
+    )
+
+    def refs(source: str) -> set[str]:
+        return {
+            t for _, t, d in g.out_edges(source, data=True) if d["edge_type"] == "references"
+        }
+
+    # FROM object, selected and filtered fields, and a lookup hop; the child
+    # relationship subquery (Shifts__r) names no object.
+    assert refs(f"{cls}::JobService::open") == {
+        f"{job}::Job__c",
+        f"{due}::Due__c",
+        f"{shift_lookup}::Shift__c",
+        f"{hours}::Hours__c",
+    }
+    # DML on a parameter and a field, and a literal Database.query; the
+    # concatenated query and the standard Account (no metadata) bind nothing.
+    assert refs(f"{cls}::JobService::save") == {f"{job}::Job__c", f"{shift}::Shift__c"}
+    assert refs(f"{trigger}::JobTrigger") == {f"{job}::Job__c"}
+    assert g.get_edge_data(cls, job)["edge_type"] == "reads"

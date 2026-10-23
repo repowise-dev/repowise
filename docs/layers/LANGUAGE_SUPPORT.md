@@ -81,6 +81,8 @@ coverage report ([formats](TEST_INTELLIGENCE.md#supported-formats)). Health cove
 complexity, class cohesion, and SOQL, DML and callouts inside loops.
 Salesforce flows (`.flow-meta.xml`) are one symbol each, linked to the Apex
 invocable actions, subflows and screen components they name.
+Salesforce object and field metadata become symbols that Apex SOQL, DML and
+triggers reference.
 
 ## How accurate is the graph per language
 
