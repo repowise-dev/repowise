@@ -135,10 +135,18 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         # Try linked git worktree of a known repository
         candidate = Path(repo)
         if candidate.is_dir() and (candidate / ".git").is_file():
-            from repowise.core.git_refs import git_common_dir
+            from repowise.core.git_head import git_common_dir
 
             candidate_common = git_common_dir(candidate)
-            if candidate_common:
+            if candidate_common is not None:
+                if (
+                    _state._repo_path
+                    and _state._served_repo_id
+                    and git_common_dir(_state._repo_path) == candidate_common
+                ):
+                    obj = await session.get(Repository, _state._served_repo_id)
+                    if obj:
+                        return obj
                 all_repos = (await session.execute(select(Repository))).scalars().all()
                 for r in all_repos:
                     if r.local_path and git_common_dir(r.local_path) == candidate_common:
@@ -203,14 +211,20 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
             async with _get_session(_state._session_factory) as session:
                 r = await _get_repo(session, repo)  # raises LookupError if invalid
                 candidate = Path(repo)
-                if candidate.is_dir():
+                if candidate.is_dir() and (candidate / ".git").is_file():
+                    from repowise.core.git_head import git_common_dir
+
                     candidate_resolved = candidate.resolve()
                     base = (
                         Path(_state._repo_path).resolve()
                         if _state._repo_path
                         else (Path(r.local_path).resolve() if r.local_path else None)
                     )
-                    if base is not None and candidate_resolved != base:
+                    if (
+                        base is not None
+                        and candidate_resolved != base
+                        and git_common_dir(candidate) == git_common_dir(base)
+                    ):
                         worktree_path = candidate_resolved
 
         resolved_path = worktree_path or (

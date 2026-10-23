@@ -90,3 +90,45 @@ async def test_get_change_risk_rejects_unrelated_directory(pr_checkout, tmp_path
 
     with pytest.raises(LookupError, match="Repository not found"):
         await get_change_risk(repo=str(unrelated))
+
+
+@pytest.mark.asyncio
+async def test_repo_name_matching_local_directory_does_not_redirect_worktree(
+    pr_checkout, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server._helpers import _resolve_repo_context
+
+    # Create a local directory named "test-repo" (matching repo name) inside cwd
+    fake_dir = tmp_path / "test-repo"
+    fake_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    # Resolving repo="test-repo" must NOT treat fake_dir as a linked worktree
+    ctx = await _resolve_repo_context(repo="test-repo")
+    assert ctx.path == tmp_path.resolve()
+
+    res = await get_change_risk(repo="test-repo")
+    assert "error" not in res
+    assert res["scored_repo"]["root"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_get_repo_and_served_root_linked_worktree_seam(pr_checkout, tmp_path, session):
+    from repowise.server.mcp_server._helpers import _get_repo
+    from repowise.server.mcp_server._meta import served_root
+
+    wt_path = tmp_path / "worktree-seam"
+    _git(["worktree", "add", "-b", "feature-seam", str(wt_path)], tmp_path)
+
+    # 1. _get_repo resolves worktree path to the same repository row as the main checkout
+    repo_main = await _get_repo(session, repo=str(tmp_path))
+    repo_wt = await _get_repo(session, repo=str(wt_path))
+    assert repo_main.id == repo_wt.id
+
+    # 2. served_root prefers worktree context path when it is a linked worktree
+    assert served_root(repo_main, ctx_path=wt_path) == str(wt_path.resolve())
+
+    # 3. served_root ignores non-worktree context path and keeps repository local_path
+    unrelated = tmp_path / "unrelated-dir"
+    unrelated.mkdir()
+    assert served_root(repo_main, ctx_path=unrelated) == str(tmp_path.resolve())

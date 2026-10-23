@@ -80,20 +80,14 @@ def toplevel(repo_path: str) -> str:
 
 
 def git_common_dir(repo_path: str | Path) -> str:
-    """The repository's common git dir (shared across worktrees), ``""`` when not a repo."""
-    try:
-        p = Path(repo_path)
-        if not p.is_dir():
-            return ""
-        out = _read(str(p), ["rev-parse", "--git-common-dir"])
-        if not out:
-            return ""
-        common = Path(out)
-        if not common.is_absolute():
-            common = (p / common).resolve()
-        return str(common)
-    except Exception:
-        return ""
+    """The repository's common git dir (shared across worktrees), ``""`` when not a repo.
+
+    Reads ``.git`` and ``commondir`` by plain file I/O; never spawns git.
+    """
+    from repowise.core.git_head import git_common_dir as _head_common_dir
+
+    p = _head_common_dir(repo_path)
+    return str(p) if p is not None else ""
 
 
 def remote_name(repo_path: str) -> str:
