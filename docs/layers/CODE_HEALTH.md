@@ -144,7 +144,7 @@ survives re-indexing, and a re-detected `resolved` finding reopens.
 
 ### Detector families
 
-The 54 detectors fall into families whose caps keep any one from dominating a file.
+The 58 detectors fall into families whose caps keep any one from dominating a file.
 Every id with its threshold and weight:
 [the full roster](../architecture/code-health.md#the-full-roster).
 
@@ -158,11 +158,12 @@ Every id with its threshold and weight:
 | Test coverage | 4 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a report), untested complex functions (advisory) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins |
+| Apex | 4 | none | SOQL injection, a class with queries and no sharing keyword, hardcoded record Ids, `SeeAllData=true` tests; all advisory |
 | Performance | 21 | none | See [PERFORMANCE.md](PERFORMANCE.md) |
 
 - Caps are code-health caps; SQL deducts only in maintainability (2.0) and performance
   findings, cartesian joins included, only in performance risk (2.0).
-- Twenty-four detectors move code health. Five are advisory: listed with zero impact,
+- Twenty-four detectors move code health. Nine are advisory: listed with zero impact,
   out of impact-ranked lists unless you ask for the advisory dimension. Three governance
   findings from the [decisions layer](DECISIONS.md) never deduct.
 - `dry_violation` and `duplicated_assertion_block` stay off every default surface (overview, priorities, MCP, REST lists) until

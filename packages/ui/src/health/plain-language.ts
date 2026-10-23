@@ -59,6 +59,10 @@ const BY_CATEGORY: Record<BiomarkerCategory, PlainIssue> = {
     title: "Risky SQL",
     why: "The query is hard to reason about or can touch more rows than meant.",
   },
+  apex: {
+    title: "Apex security or test risk",
+    why: "It can expose records, break in another org, or depend on org data.",
+  },
 };
 
 const BY_BIOMARKER: Record<string, PlainIssue> = {

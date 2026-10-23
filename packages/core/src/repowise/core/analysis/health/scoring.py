@@ -224,6 +224,11 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",
     "contradictory_decision": "organizational",
+    # Advisory Apex markers; one family so grouped surfaces file them together.
+    "apex_soql_injection": "apex",
+    "apex_missing_sharing": "apex",
+    "apex_hardcoded_id": "apex",
+    "apex_see_all_data": "apex",
 }
 
 
@@ -330,6 +335,11 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # coverage through coverage_gap and coverage_gradient. Uncalibrated; it ranks
     # which complex functions most need tests rather than moving the score.
     "untested_complexity": {ADVISORY_DIMENSION},
+    # Uncalibrated Apex markers: findings only until a defect corpus covers them.
+    "apex_soql_injection": {ADVISORY_DIMENSION},
+    "apex_missing_sharing": {ADVISORY_DIMENSION},
+    "apex_hardcoded_id": {ADVISORY_DIMENSION},
+    "apex_see_all_data": {ADVISORY_DIMENSION},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -557,6 +567,10 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
         "hidden_coupling",
         "brain_method",
         "untested_complexity",
+        "apex_soql_injection",
+        "apex_missing_sharing",
+        "apex_hardcoded_id",
+        "apex_see_all_data",
     }
 )
 

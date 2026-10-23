@@ -252,6 +252,10 @@ def walk_file(
     perf_hits, io_boundary_names, perf_fn_facts = _collect_perf_hits(
         tree.root_node, language, lmap, scan.io_names
     )
+    if language == "apex":
+        from ..apex_markers import apex_marker_hits
+
+        perf_hits = [*perf_hits, *apex_marker_hits(tree.root_node)]
     return FileComplexity(
         functions=functions,
         classes=classes,

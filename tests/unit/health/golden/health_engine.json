@@ -902,6 +902,25 @@
         "code_origin": "production"
       },
       {
+        "file_path": "apex/HealthMarkersTest.cls",
+        "score": 10.0,
+        "max_ccn": 1,
+        "max_nesting": 0,
+        "nloc": 16,
+        "has_test_file": true,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": true,
+        "code_origin": "test"
+      },
+      {
         "file_path": "apex/assertions.cls",
         "score": 10.0,
         "max_ccn": 1,
@@ -926,6 +945,25 @@
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 53,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "apex/health_markers.cls",
+        "score": 10.0,
+        "max_ccn": 1,
+        "max_nesting": 0,
+        "nloc": 60,
         "has_test_file": false,
         "module": "apex",
         "duplication_pct": null,
@@ -2252,6 +2290,150 @@
       }
     ],
     "findings": [
+      {
+        "biomarker_type": "apex_see_all_data",
+        "severity": "low",
+        "file_path": "apex/HealthMarkersTest.cls",
+        "function_name": "HealthMarkersTest",
+        "line_start": 2,
+        "line_end": 2,
+        "details": {
+          "value": "class",
+          "symbol_line": 2
+        },
+        "health_impact": 0.0,
+        "reason": "@IsTest(SeeAllData=true) on class HealthMarkersTest: the test reads the org's live data, so its result depends on the org it runs in",
+        "dimension": "advisory",
+        "id": "finding_36631da27da27fc56829"
+      },
+      {
+        "biomarker_type": "apex_see_all_data",
+        "severity": "low",
+        "file_path": "apex/HealthMarkersTest.cls",
+        "function_name": "readsOrgData",
+        "line_start": 4,
+        "line_end": 4,
+        "details": {
+          "value": "method",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "@IsTest(SeeAllData=true) on method readsOrgData: the test reads the org's live data, so its result depends on the org it runs in",
+        "dimension": "advisory",
+        "id": "finding_5ad2784c4b1e3692c080"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "byName",
+        "line_start": 13,
+        "line_end": 13,
+        "details": {
+          "value": "name",
+          "symbol_line": 12
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `name`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_f1341e96d7d388579f63"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "byBuiltClause",
+        "line_start": 20,
+        "line_end": 20,
+        "details": {
+          "value": "city",
+          "symbol_line": 16
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `city`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_4ae2e2ef6626a04cd197"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "bySearchProperty",
+        "line_start": 24,
+        "line_end": 24,
+        "details": {
+          "value": "searchText",
+          "symbol_line": 23
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `searchText`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_f43545b2aa74a6b7613f"
+      },
+      {
+        "biomarker_type": "apex_soql_injection",
+        "severity": "high",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "byNames",
+        "line_start": 28,
+        "line_end": 28,
+        "details": {
+          "value": "names",
+          "symbol_line": 27
+        },
+        "health_impact": 0.0,
+        "reason": "Dynamic query splices `names`, a String from outside the method, into a quoted SOQL literal with no escaping: bind it (`:value`) or pass it through String.escapeSingleQuotes",
+        "dimension": "advisory",
+        "id": "finding_8f755e834430112253f6"
+      },
+      {
+        "biomarker_type": "apex_missing_sharing",
+        "severity": "medium",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "HealthMarkers",
+        "line_start": 4,
+        "line_end": 4,
+        "details": {
+          "value": "line 13",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "Class HealthMarkers runs SOQL or DML (line 13) and declares no sharing keyword, so whether record sharing applies depends on its caller",
+        "dimension": "advisory",
+        "id": "finding_fa887492d1d88d4d4cb3"
+      },
+      {
+        "biomarker_type": "apex_hardcoded_id",
+        "severity": "medium",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "HealthMarkers",
+        "line_start": 6,
+        "line_end": 6,
+        "details": {
+          "value": "0051t000002bF3QAAU",
+          "symbol_line": 4
+        },
+        "health_impact": 0.0,
+        "reason": "Hardcoded record Id '0051t000002bF3QAAU': Ids differ between orgs and sandboxes",
+        "dimension": "advisory",
+        "id": "finding_231d102a50d21a2b4ba8"
+      },
+      {
+        "biomarker_type": "apex_hardcoded_id",
+        "severity": "medium",
+        "file_path": "apex/health_markers.cls",
+        "function_name": "defaultRecordType",
+        "line_start": 32,
+        "line_end": 32,
+        "details": {
+          "value": "012000000000AbcAAE",
+          "symbol_line": 31
+        },
+        "health_impact": 0.0,
+        "reason": "Hardcoded record Id '012000000000AbcAAE': Ids differ between orgs and sandboxes",
+        "dimension": "advisory",
+        "id": "finding_7df931acae6b893d752d"
+      },
       {
         "biomarker_type": "nested_complexity",
         "severity": "high",
@@ -5303,24 +5485,24 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 9.6,
+      "average_health": 9.62,
       "worst_performer_path": "scala/nested.scala",
       "worst_performer_score": 7.77,
-      "worst_test_path": "apex/assertions.cls",
+      "worst_test_path": "apex/HealthMarkersTest.cls",
       "worst_test_score": 10.0,
-      "file_count": 69,
-      "maintainability_average": 9.64,
+      "file_count": 71,
+      "maintainability_average": 9.65,
       "maintainability_hotspot": null,
-      "performance_average": 9.47,
+      "performance_average": 9.48,
       "performance_hotspot": null,
-      "structure_average": 0.4,
+      "structure_average": 0.38,
       "structure_hotspot": null,
       "history_average": 0.0,
       "history_hotspot": null,
-      "production_average": 9.6,
-      "production_file_count": 68,
+      "production_average": 9.61,
+      "production_file_count": 69,
       "unanalysed_file_count": 4,
-      "analysed_share": 0.9452
+      "analysed_share": 0.9467
     },
     "repo_function_mod_p80": null,
     "suggestions": [

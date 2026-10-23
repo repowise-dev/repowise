@@ -316,6 +316,23 @@ _TEMPLATES: dict[str, str] = {
         "Confirm the statement should touch every row. Add the WHERE clause it "
         "needs, or a comment stating that the full-table change is intended."
     ),
+    # Apex.
+    "apex_soql_injection": (
+        "Bind the value. Write it as a bind variable (`:value`) in the query "
+        "string, or pass it through String.escapeSingleQuotes before splicing it in."
+    ),
+    "apex_missing_sharing": (
+        "Declare the sharing mode. Add `with sharing` (or `inherited sharing`), or "
+        "`without sharing` with a comment saying why the class must see every record."
+    ),
+    "apex_hardcoded_id": (
+        "Look the record up instead. Query it by a stable field (DeveloperName, a "
+        "unique name) or read the Id from custom metadata or a custom setting."
+    ),
+    "apex_see_all_data": (
+        "Create the test's data. Insert the records the test needs (a test data "
+        "factory or @TestSetup) and drop SeeAllData=true."
+    ),
 }
 
 

@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from .apex_hardcoded_id import ApexHardcodedIdDetector
+from .apex_missing_sharing import ApexMissingSharingDetector
+from .apex_see_all_data import ApexSeeAllDataDetector
+from .apex_soql_injection import ApexSoqlInjectionDetector
 from .array_spread_in_reduce import ArraySpreadInReduceDetector
 from .assertion_free_test import AssertionFreeTestDetector
 from .base import Biomarker, BiomarkerResult, FileContext
@@ -131,6 +135,11 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     SqlSelectStarDetector,  # type: ignore[list-item]
     SqlUpdateDeleteWithoutWhereDetector,  # type: ignore[list-item]
     SqlCartesianJoinDetector,  # type: ignore[list-item]
+    # Apex markers (advisory: listed, never scored).
+    ApexSoqlInjectionDetector,  # type: ignore[list-item]
+    ApexMissingSharingDetector,  # type: ignore[list-item]
+    ApexHardcodedIdDetector,  # type: ignore[list-item]
+    ApexSeeAllDataDetector,  # type: ignore[list-item]
 ]
 
 
