@@ -20,7 +20,7 @@ def normalize_http_path(path: str) -> str:
       2. Remove query string
       3. Lowercase
       4. Strip trailing slash (but keep root ``/``)
-      5. Unify param styles: ``:param``, ``{param}``, ``[param]`` → ``{param}``
+      5. Unify param styles: ``:param``, ``{param}``, ``[param]``, ``*param`` → ``{param}``
     """
     s = path.strip().split("?")[0].lower()
     if s != "/":
@@ -38,6 +38,9 @@ def normalize_http_path(path: str) -> str:
     s = re.sub(r"\{[^}]+\}", "{param}", s)
     # Unify Next.js [name] → {param}
     s = re.sub(r"\[[^\]]+\]", "{param}", s)
+    # Unify a gin/echo catch-all segment (`/static/*filepath`) → {param}. Only a
+    # whole segment: a bare `*` and a `*` inside a segment (`/a*b`) stay literal.
+    s = re.sub(r"(?<=/)\*\w+(?=/|$)", "{param}", s)
     # Unify JS template literal ${expr} → {param}
     s = re.sub(r"\$\{[^}]+\}", "{param}", s)
     return s or "/"
