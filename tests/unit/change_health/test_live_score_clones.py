@@ -80,3 +80,28 @@ def test_with_duplication_disabled_no_clone_source_is_claimed(make_repo, monkeyp
     scores = live_score.score_live(Path(repo.path), [_SOURCE], None)
 
     assert scores.head.clone_source is None
+
+
+def test_a_failing_index_splice_is_logged_as_a_warning(make_repo, monkeypatch):
+    from structlog.testing import capture_logs
+
+    from repowise.core.analysis.health import engine
+
+    repo = make_repo()
+    repo.commit("seed", _FILES)
+    _full_pass(Path(repo.path))
+
+    def broken(*_args, **_kwargs):
+        raise KeyError("app/b.py")
+
+    monkeypatch.setattr(engine, "clones_against_index", broken)
+    inputs = IndexInputs(clone_index_dir=Path(repo.path) / ".repowise")
+    monkeypatch.setattr(live_score, "_index_inputs", lambda _path: inputs)
+
+    with capture_logs() as logs:
+        scores = live_score.score_live(Path(repo.path), [_SOURCE], None)
+
+    assert scores.head.clone_source == "analyzed_files"
+    assert any(
+        e["event"] == "health_index_clones_failed" and e["log_level"] == "warning" for e in logs
+    )

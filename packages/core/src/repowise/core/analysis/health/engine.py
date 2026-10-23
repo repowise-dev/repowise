@@ -841,6 +841,9 @@ class HealthAnalyzer:
             return DuplicationReport()
 
     def _clones_against_index(self) -> DuplicationReport | None:
+        # A missing, stale or truncated clone state is ``None`` without raising,
+        # so anything raised here is a defect: say so at warning rather than let
+        # the files-only fallback pass for the expected no-index case.
         try:
             report = clones_against_index(
                 self.parsed_files,
@@ -849,7 +852,7 @@ class HealthAnalyzer:
                 source_reader=self.read_source,
             )
         except Exception as exc:
-            log.debug("health_index_clones_failed", error=str(exc))
+            log.warning("health_index_clones_failed", error=repr(exc))
             return None
         return report
 
