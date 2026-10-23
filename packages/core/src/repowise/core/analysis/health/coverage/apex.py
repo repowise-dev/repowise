@@ -40,27 +40,26 @@ from .model import ContextCoverageReport, CoverageReport, TestCoverage, file_cov
 #: Salesforce key prefixes of the two Apex metadata types coverage names.
 _EXT_BY_ID_PREFIX = {"01p": ".cls", "01q": ".trigger"}
 
+_BOM = chr(0xFEFF)
+
+
+def _dicts(value: Any) -> list[dict]:
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
 
 def _load(text: str) -> tuple[list[dict], list[dict]]:
     """``(entries, records)`` from any of the CLI's JSON shapes, empty when unreadable."""
     try:
-        data = json.loads(text.lstrip("﻿"))
+        data = json.loads(text.lstrip(_BOM))
     except (ValueError, TypeError):
         return [], []
     if isinstance(data, list):
-        return [e for e in data if isinstance(e, dict)], []
-    if not isinstance(data, dict):
-        return [], []
-    result = data.get("result", data)
+        return _dicts(data), []
+    result = data.get("result", data) if isinstance(data, dict) else None
     coverage = result.get("coverage") if isinstance(result, dict) else None
     if not isinstance(coverage, dict):
         return [], []
-    entries = coverage.get("coverage")
-    records = coverage.get("records")
-    return (
-        [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else [],
-        [r for r in records if isinstance(r, dict)] if isinstance(records, list) else [],
-    )
+    return _dicts(coverage.get("coverage")), _dicts(coverage.get("records"))
 
 
 def _apex_path(name: Any, sf_id: Any) -> str | None:
