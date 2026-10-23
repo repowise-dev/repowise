@@ -259,14 +259,18 @@ def _eh_java_try_ends_in_fail(catch_clause: Node, language: str) -> bool:
     name_node = inv.child_by_field_name("name")
     if name_node is None:
         return False
-    name = _eh_text(name_node)
-    if language != "apex":
-        return name == "fail"
+    if language == "apex":
+        return _eh_apex_expects_throw(inv, _eh_text(name_node).lower())
+    return _eh_text(name_node) == "fail"
+
+
+def _eh_apex_expects_throw(inv: Node, name: str) -> bool:
+    """``Assert.fail(...)`` or ``System.assert(false, ...)``, any case."""
+    if name == "fail":
+        return True
     args = inv.child_by_field_name("arguments")
     first = _eh_named(args)[0] if args is not None and _eh_named(args) else None
-    return name.lower() == "fail" or (
-        name.lower() == "assert" and first is not None and _eh_text(first).lower() == "false"
-    )
+    return name == "assert" and first is not None and _eh_text(first).lower() == "false"
 
 
 # The node types ``_eh_rust_hit`` / ``_eh_go_hit`` can fire on.

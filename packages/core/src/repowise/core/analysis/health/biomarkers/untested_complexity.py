@@ -23,6 +23,10 @@ from .base import BiomarkerResult, FileContext
 _UNSEEN_TEST_REACH = frozenset({"apex"})
 
 _HIGH = 50.0
+
+
+def _unseen_reach(basis: str, tier: str, language: str) -> bool:
+    return basis != "measured" and tier == "none" and language in _UNSEEN_TEST_REACH
 _CRITICAL = 100.0
 
 _TIER_TEXT = {
@@ -72,7 +76,7 @@ class UntestedComplexityDetector:
             result = function_crap(ccn, measured, tier)
             if result.crap < CRAP_THRESHOLD:
                 continue
-            if result.basis != "measured" and tier == "none" and ctx.language in _UNSEEN_TEST_REACH:
+            if _unseen_reach(result.basis, tier, ctx.language):
                 continue
             is_measured = result.basis == "measured"
             refactor = ccn >= CRAP_THRESHOLD

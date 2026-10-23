@@ -365,6 +365,26 @@ def _cache_name(condition: Node | None, test: re.Pattern[str]) -> str | None:
     return next((g for g in found.groups() if g), None) if found else None
 
 
+def _sole_statement(branch: Node | None) -> Node | None:
+    """The one statement of an ``if`` branch, braced or not; ``None`` otherwise."""
+    if branch is None or branch.type != "block":
+        return branch
+    inner = branch.named_children
+    return inner[0] if len(inner) == 1 else None
+
+
+def _fills_when_missing(branch: Node, call: Node) -> bool:
+    """*branch* is ``if (x == null)`` whose consequence holds *call* and fills ``x``."""
+    name = _cache_name(branch.child_by_field_name("condition"), _MISSING)
+    consequence = branch.child_by_field_name("consequence")
+    return bool(
+        name
+        and consequence is not None
+        and consequence.start_byte <= call.start_byte < consequence.end_byte
+        and _fills(consequence, name)
+    )
+
+
 def _cached(call: Node) -> bool:
     """A lazily filled cache: *call* sits in ``if (x == null)`` (or ``x.get(k)``,
     ``!x.containsKey(k)``) whose branch fills ``x``, or its method opens with
@@ -372,26 +392,16 @@ def _cached(call: Node) -> bool:
     fn = _ancestor(call, _FN_KINDS)
     cur = call.parent
     while cur is not None and cur is not fn:
-        if cur.type == "if_statement":
-            name = _cache_name(cur.child_by_field_name("condition"), _MISSING)
-            consequence = cur.child_by_field_name("consequence")
-            if (
-                name
-                and consequence is not None
-                and consequence.start_byte <= call.start_byte < consequence.end_byte
-                and _fills(consequence, name)
-            ):
-                return True
+        if cur.type == "if_statement" and _fills_when_missing(cur, call):
+            return True
         cur = cur.parent
     body = fn.child_by_field_name("body") if fn is not None else None
     first = next(iter(body.named_children), None) if body is not None else None
     if first is None or first.type != "if_statement":
         return False
     name = _cache_name(first.child_by_field_name("condition"), _PRESENT)
-    branch = first.child_by_field_name("consequence")
-    inner = branch.named_children if branch is not None and branch.type == "block" else [branch]
-    returns = len(inner) == 1 and inner[0] is not None and inner[0].type == "return_statement"
-    return bool(name) and returns and _fills(body, name)
+    returns = _sole_statement(first.child_by_field_name("consequence"))
+    return bool(name) and returns is not None and returns.type == "return_statement" and _fills(body, name)
 
 
 def _parameter_switched(call: Node) -> bool:
@@ -456,37 +466,35 @@ def _loop_ends_after(call: Node) -> bool:
     its own block, or the next exit tests a flag the ``try`` around *call* sets
     (retry until one attempt succeeds). A ``break`` counts only when one loop
     surrounds *call*. An exit on any other condition keeps the hit."""
-    loops: list[Node] = []
-    statement = call
+    loops = 0
     cur = call.parent
     while cur is not None and cur.type not in _SCOPES:
-        if cur.type in _LOOP_KINDS:
-            loops.append(cur)
+        loops += cur.type in _LOOP_KINDS
         cur = cur.parent
     if not loops:
         return False
-    exits = ("return_statement", "break_statement") if len(loops) == 1 else ("return_statement",)
+    exits = ("return_statement", "break_statement") if loops == 1 else ("return_statement",)
+    statement = call
     while statement.parent is not None and statement.parent.type != "block":
         statement = statement.parent
-    if any(s.type in exits for s in _later_siblings(statement)):
-        return True
+    return any(s.type in exits for s in _later_siblings(statement)) or _retry_exit(call, exits)
+
+
+def _retry_exit(call: Node, exits: tuple[str, ...]) -> bool:
+    """``try { <call> } catch (...) { ok = false; }  if (ok) break;``."""
     attempt = _ancestor(call, _SCOPES | _LOOP_KINDS | {"try_statement"})
     if attempt is None or attempt.type != "try_statement":
+        return False
+    later = next((n for n in _later_siblings(attempt) if n.type == "if_statement"), None)
+    leave = _sole_statement(later.child_by_field_name("consequence")) if later is not None else None
+    if leave is None or leave.type not in exits:
         return False
     flags = {
         _normalised(n.child_by_field_name("left"))
         for n in ApexPerfDialect._walk(attempt)
         if n.type == "assignment_expression"
     }
-    for later in _later_siblings(attempt):
-        if later.type != "if_statement":
-            continue
-        consequence = later.child_by_field_name("consequence")
-        body = consequence.named_children if consequence is not None and consequence.type == "block" else [consequence]
-        if len(body) == 1 and body[0] is not None and body[0].type in exits:
-            return _normalised(later.child_by_field_name("condition")).strip("()!") in flags
-        return False
-    return False
+    return _normalised(later.child_by_field_name("condition")).strip("()!") in flags
 
 
 def _later_siblings(node: Node) -> list[Node]:
