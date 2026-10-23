@@ -26,6 +26,8 @@ import json
 import re
 from typing import TYPE_CHECKING
 
+from ...test_paths import is_test_related_path
+
 if TYPE_CHECKING:
     from .context import ResolverContext
 
@@ -153,6 +155,10 @@ def resolve_lwc_module(module_path: str, importer_path: str, ctx: ResolverContex
     """
     for prefix in APEX_MODULE_PREFIXES:
         if module_path.startswith(prefix):
+            # Jest cannot reach Apex: a test imports the module only to mock
+            # it, and an edge would read as the test exercising the class.
+            if is_test_related_path(importer_path, "javascript"):
+                return None
             return _resolve_apex_module(module_path[len(prefix) :], importer_path, ctx)
     m = _SPECIFIER_RE.fullmatch(module_path)
     if m is None or m.group(1) not in lwc_namespaces(ctx):

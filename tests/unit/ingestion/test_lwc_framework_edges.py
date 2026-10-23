@@ -51,11 +51,16 @@ _APP = {
     ),
     f"{_LWC}/parent/__tests__/parent.test.js": (
         "import { createElement } from 'lwc';\nimport Parent from 'c/parent';\n"
+        "import getThings from '@salesforce/apex/ThingController.getThings';\n"
         "it('renders', () => { createElement('c-parent', { is: Parent }); });\n"
     ),
     f"{_LWC}/childComp/childComp.js": (
-        "import { LightningElement, api } from 'lwc';\n"
-        "export default class ChildComp extends LightningElement { @api recordId; }\n"
+        "import { LightningElement, api, wire } from 'lwc';\n"
+        "import getThings from '@salesforce/apex/acme.thingController.getThings';\n"
+        "export default class ChildComp extends LightningElement {\n"
+        "  @api recordId;\n"
+        "  @wire(getThings) things;\n"
+        "}\n"
     ),
     f"{_LWC}/fsc_flowCombobox/fsc_flowCombobox.js": (
         "import { LightningElement } from 'lwc';\n"
@@ -64,6 +69,12 @@ _APP = {
     f"{_LWC}/rd2EntryForm/rd2EntryForm.js": (
         "import { LightningElement } from 'lwc';\n"
         "export default class Rd2EntryForm extends LightningElement {}\n"
+    ),
+    "force-app/main/default/classes/ThingController.cls": (
+        "public with sharing class ThingController {\n"
+        "    @AuraEnabled(cacheable=true)\n"
+        "    public static List<String> getThings() { return new List<String>(); }\n"
+        "}\n"
     ),
     f"{_LWC}/ldsUtils/ldsUtils.js": "export function reduceErrors(errors) { return errors; }\n",
     f"{_LWC}/orphan/orphan.js": (
@@ -139,6 +150,17 @@ def test_lwc_bundles_are_linked_bound_and_anchored(tmp_path: Path) -> None:
     # c/ldsUtils from a bundle, c/parent from a jest test.
     assert graph.has_edge(parent_js, f"{_LWC}/ldsUtils/ldsUtils.js")
     assert graph.has_edge(f"{_LWC}/parent/__tests__/parent.test.js", parent_js)
+    # @salesforce/apex: the class file, the imperative call and the @wire binding
+    # reach the method (namespace and class case-insensitive). A jest test only
+    # mocks Apex, so its import stays external.
+    cls = "force-app/main/default/classes/ThingController.cls"
+    method = f"{cls}::ThingController::getThings"
+    assert graph.has_edge(parent_js, cls)
+    call = graph.get_edge_data(f"{parent_js}::Parent::handleClick", method)
+    assert (call["edge_type"], call["resolution_origin"]) == ("calls", "import_scoped")
+    child_cls = f"{_LWC}/childComp/childComp.js::ChildComp"
+    assert graph.get_edge_data(child_cls, method)["edge_type"] == "framework_binds"
+    assert not graph.has_edge(f"{_LWC}/parent/__tests__/parent.test.js", cls)
     # Platform modules stay external.
     assert graph.has_edge(parent_js, "external:@salesforce/schema/Account.Name")
 
