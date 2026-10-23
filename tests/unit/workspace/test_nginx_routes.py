@@ -55,6 +55,11 @@ def test_robotshop_template_routes_each_prefix_through_its_env_host() -> None:
     assert _routes(m) == {
         ("web", f"/api/{svc}", "", svc)
         for svc in ("catalogue", "user", "cart", "shipping", "payment", "ratings")
+    } | {
+        # Served by nginx itself: blockers with no target.
+        ("web", "/images", None, ""),
+        ("web", "/50x.html", None, ""),
+        ("web", "/nginx_status", None, ""),
     }
     [route] = [r for r in m.routes if r.repo == "ratings"]
     assert (route.name, route.source, route.file) == (
@@ -100,6 +105,14 @@ def test_proxy_pass_shapes() -> None:
         location /api/nested/ {
             location /api/nested/deep/ { proxy_pass "http://catalogue:8080/deep/"; }
         }
+        location /api/static/ { root /srv; }
+        location /api/slash/ { proxy_pass http://user:8080/v2; }
+        location /api/frag/ { proxy_pass http://user:8080/x#y; }
+        location /api/port/ { proxy_pass http://backend:9000/; }
+    }
+    server {
+        rewrite ^/r/(.*)$ /$1 break;
+        location /r/ { proxy_pass http://user:8080; }
     }
     """
     assert _nginx(text) == [
@@ -112,7 +125,13 @@ def test_proxy_pass_shapes() -> None:
         (HOST, "user", Route("/api/var", None)),
         (HOST, "", Route("/api/rt", "/api/rt")),  # a runtime host: no target
         (HOST, "api.example.com", Route("/api/ext", "")),
+        (HOST, "", Route("/api/nested", None)),  # served here: a blocker
         (HOST, "catalogue", Route("/api/nested/deep", "/deep")),
+        (HOST, "", Route("/api/static", None)),
+        (HOST, "user", Route("/api/slash", None)),  # /api/x would go out as /v2x
+        (HOST, "user", Route("/api/frag", None)),  # a # inside a word is not a comment
+        (HOST, "backend", Route("/api/port", "")),  # with a port it is a host, not the group
+        (HOST, "user", Route("/r", None)),  # a server-level rewrite changes the path
     ]
 
 
