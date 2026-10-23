@@ -350,7 +350,7 @@ class _FunctionSlicer:
             slice_nloc = pre.code[j + 1] - pre.code[i]
             if not _MIN_SLICE_NLOC <= slice_nloc < self.max_slice_nloc:
                 continue
-            if _shares_a_line(stmts, i, j):
+            if _shares_a_line(self.fn_node, stmts[i], stmts[j]):
                 continue
             found = self._extraction(blk, i, j, decisions, slice_nloc, refused)
             if found is not None:
@@ -464,14 +464,24 @@ class _FunctionSlicer:
         )
 
 
-def _shares_a_line(stmts: list[Node], i: int, j: int) -> bool:
-    """Whether statements ``i..j`` start on the line the one before them ends,
-    or end on the line the one after them starts (``} // done`` puts a
-    comment on a closing brace's line). A plan names whole lines, so lifting
-    those lines would carry code that is not in the span."""
-    if i > 0 and stmts[i - 1].end_point[0] == stmts[i].start_point[0]:
+def _shares_a_line(fn_node: Node, first: Node, last: Node) -> bool:
+    """Whether the line *first* starts on holds code before it, or the line
+    *last* ends on holds code after it: a sibling (``} // done``), the header
+    or brace of a block written compactly (``if (x) { a = 1;``), any byte that
+    is not whitespace. A plan names whole lines, so lifting those lines would
+    carry code that is not in the span."""
+    rows = (fn_node.text or b"").split(b"\n")
+    top, left = fn_node.start_point
+
+    def row(at: tuple[int, int]) -> tuple[bytes, int]:
+        line = rows[at[0] - top] if 0 <= at[0] - top < len(rows) else b""
+        return line, at[1] - (left if at[0] == top else 0)
+
+    head, col = row(first.start_point)
+    if head[:col].strip():
         return True
-    return j + 1 < len(stmts) and stmts[j + 1].start_point[0] == stmts[j].end_point[0]
+    tail, col = row(last.end_point)
+    return bool(tail[col:].strip())
 
 
 def _scoped_resource_indexes(stmts: list[Node], lmap: LanguageNodeMap) -> list[int]:

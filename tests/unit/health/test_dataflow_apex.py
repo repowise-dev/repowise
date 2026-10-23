@@ -518,3 +518,32 @@ def test_apex_trigger_plan_has_no_helper_text_and_property_is_not_sliced():
         """
     )
     assert all(not _extractions(f) for f in prop)
+
+
+_COMPACT = """
+public class Demo {
+    Integer f(List<Integer> xs, Integer limit) {
+        Integer total = 0;
+        Integer extra = 0;
+        for (Integer x : xs) {
+            total += x;
+        }
+        if (limit > 0) { extra = limit * 2;
+            if (extra > 9) {
+                extra = 9;
+            }
+            total += extra;
+            total += 1; }
+        return total;
+    }
+}
+"""
+
+
+def test_apex_span_never_shares_a_line_with_a_compact_block_brace():
+    # The ``if`` header opens the block on the first statement's line and the
+    # closing brace sits on the last one's: lifting those lines takes them too.
+    src = _COMPACT
+    fn = _first(src)
+    header, brace = _line(src, "if (limit > 0) {"), _line(src, "total += 1; }")
+    assert all(e.start_line != header and e.end_line != brace for e in _extractions(fn))
