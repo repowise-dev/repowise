@@ -991,8 +991,8 @@ Apex dead code starts from triggers, tests, entry annotations such as
 such as `Schedulable`. A class is live when a live class or any Salesforce
 metadata, Lightning or project file writes its name in any case, strings
 included, since `Type.forName` reaches classes by name. Ceiling: a mention in a
-comment counts as a use, and a Visualforce-shaped class stays live until pages
-are parsed.
+comment counts as a use, and a class shaped like a Visualforce controller stays
+live.
 
 Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
 one symbol named by its API name, linked to the Apex invocable actions,
