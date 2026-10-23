@@ -212,9 +212,9 @@ def cross_repo_blast_radius(
     # Impact direction: a change to a node reaches whatever depends on it, and
     # co-change edges are symmetric, so both endpoints reach each other.
     adj = graph.adjacency(behavioral=include_behavioral, impact=True)
-    touched = {
-        node for edge in graph.edges if edge.structural for node in (edge.source, edge.target)
-    }
+    # Undetermined means the walk itself has no edge at the target, so this
+    # reads the same view: co-change counts exactly when the walk follows it.
+    touched = set(adj) | {node for neighbours in adj.values() for node in neighbours}
 
     best: dict[str, _Accum] = {}
     # Frontier value per node: (propagated score, path-is-all-structural).

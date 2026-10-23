@@ -61,6 +61,20 @@ def test_a_method_named_fetch_is_not_a_network_call():
     assert _count(files) == 1
 
 
+def test_a_fetch_method_declaration_is_not_a_call_but_real_calls_are():
+    declarations = {
+        "repo.js": "class Repo {\n  fetch(id) {\n    return this.db.get(id);\n  }\n}\n",
+        "api.ts": "const api = {\n  fetch(id: string) { return cache[id]; },\n};\n",
+    }
+    assert _count(declarations) == 0
+    calls = {
+        "a.js": "fetch(url).then((r) => r.json());\n",
+        "b.js": "const r = await fetch(url);\n",
+        "c.js": "if (ok) { fetch(`/api/${id}`, { method: 'POST' }); }\n",
+    }
+    assert _count(calls) == 3
+
+
 def test_files_with_no_network_token_or_language_are_ignored():
     files = {"util.js": "export const add = (a, b) => a + b;\n", "schema.sql": "SELECT 1;\n"}
     assert _count(files) == 0

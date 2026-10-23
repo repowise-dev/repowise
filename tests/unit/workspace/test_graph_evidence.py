@@ -128,3 +128,13 @@ def test_blast_radius_names_targets_it_cannot_judge():
     assert empty.total_impacted == 0
     assert empty.undetermined_targets == ["a"]
     assert empty.evidence["determined"] is False
+
+
+def test_a_co_change_partner_is_determined_when_the_walk_follows_co_change():
+    graph = _graph(["a", "b"], [_edge("a", "b", "co_change", structural=False)])
+    walked = cross_repo_blast_radius(graph, ["a"])
+    assert walked.undetermined_targets == []
+    assert [n.id for n in walked.impacted] == ["b"]
+    assert cross_repo_blast_radius(graph, ["a"], include_behavioral=False).undetermined_targets == [
+        "a"
+    ]
