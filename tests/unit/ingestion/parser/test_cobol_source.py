@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.ingestion.cobol import code_view, copy_statements
+from repowise.core.ingestion.cobol import code_view, copy_statements, exec_blocks
+from repowise.core.ingestion.cobol.fragments import is_procedure_fragment
 from repowise.core.ingestion.parser import ASTParser
 
 from ._helpers import _make_file_info
@@ -135,6 +136,33 @@ def test_a_procedure_copybook_yields_its_paragraphs() -> None:
 
     assert parsed.parse_errors == []
     assert _names(parsed) == {"YYYY-STORE-PFKEY": 3, "YYYY-STORE-PFKEY-EXIT": 5}
+
+
+def test_a_free_format_data_copybook_is_not_read_as_procedure_text() -> None:
+    source = b"\n\n>>SOURCE FORMAT FREE\n01 ACCOUNT-RECORD.\n   05 ACCT-ID PIC 9(11).\n"
+
+    assert not is_procedure_fragment(code_view(source))
+
+
+def test_floating_comments_hide_statements_and_keep_literals() -> None:
+    source = (
+        b">>SOURCE FORMAT FREE\n"
+        b"IDENTIFICATION DIVISION.\n"
+        b"PROGRAM-ID. DEMO.\n"
+        b"PROCEDURE DIVISION.\n"
+        b"MAIN-PARA. *> EXEC CICS is issued in LAST-PARA; COPY OLDMEM.\n"
+        b"    DISPLAY '*> kept'.\n"
+        b"    PERFORM LAST-PARA.\n"
+        b"LAST-PARA.\n"
+        b"    EXEC CICS RETURN END-EXEC.\n"
+    )
+
+    code = code_view(source)
+
+    assert copy_statements(code) == []
+    assert [block.line for block in exec_blocks(code)] == [9]
+    assert "'*> kept'" in code
+    assert len(code) == len(source)
 
 
 def test_copy_statements_are_found_in_code_and_not_in_comments() -> None:

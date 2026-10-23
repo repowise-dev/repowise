@@ -26,8 +26,10 @@ def is_fragment(code: str) -> bool:
 
 def is_procedure_fragment(code: str) -> bool:
     """Whether the first code line is procedure text rather than a data entry."""
-    first = next((line for line in code.split("\n") if line.strip()), "")
-    return _LEVEL_NUMBER.match(first[7:]) is None
+    # A code view has no sequence area to skip; a ``>>`` directive is not code.
+    lines = (line.strip() for line in code.split("\n"))
+    first = next((line for line in lines if line and not line.startswith(">>")), "")
+    return _LEVEL_NUMBER.match(first) is None
 
 
 def wrap_fragment(code: str) -> str:
