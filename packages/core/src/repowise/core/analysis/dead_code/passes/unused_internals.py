@@ -15,6 +15,12 @@ from ..symbol_rules import _ENTRY_POINT_SYMBOL_NAMES, _UNCALLABLE_TYPE_KINDS, _n
 if TYPE_CHECKING:
     from ..analyzer import DeadCodeAnalyzer
 
+# Rust: the compiler's ``dead_code`` lint already reports these, with macro
+# expansion and types a static graph cannot match. The exempt languages
+# (COBOL, Apex) are entered by a runtime the graph cannot see, as in the file
+# and export passes.
+_UNJUDGED_LANGUAGES = _DEAD_CODE_EXEMPT_LANGUAGES | {"rust"}
+
 
 class UnusedInternalPass:
     """Judges every private symbol node of the graph."""
@@ -84,13 +90,7 @@ class UnusedInternalPass:
         """Whether a graph node is a private symbol the unused-internal pass may judge."""
         if node_data.get("node_type") != "symbol":
             return False
-        # Rust: the compiler's ``dead_code`` lint already reports these, with
-        # macro expansion and types a static graph cannot match.
-        if node_data.get("language") == "rust":
-            return False
-        # Entered by a runtime the graph cannot see (COBOL, Apex), as in the
-        # file and export passes.
-        if node_data.get("language") in _DEAD_CODE_EXEMPT_LANGUAGES:
+        if node_data.get("language") in _UNJUDGED_LANGUAGES:
             return False
         # ``internal`` is assembly-, module- or crate-wide, so a missing call
         # edge is no evidence; no pass judges it, which drops an unmodified

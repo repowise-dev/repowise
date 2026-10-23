@@ -176,6 +176,11 @@ class TestApexCalls:
         assert (None, "size") not in calls
         assert (None, "build") not in calls
 
+    def test_constructor_chaining_is_not_a_call(self, parser: ASTParser) -> None:
+        # ``this(..)`` / ``super(..)`` make no call site, as in java.scm.
+        source = b"public class A extends B { public A() { this(1); } public A(Integer x) { super(x); } }"
+        assert _parse(parser, source, "A.cls").calls == []
+
     def test_soql_and_dml_are_not_calls(self, parser: ASTParser) -> None:
         targets = {t for _, t in self._calls(parser)}
         assert not targets & {"insert", "SELECT", "Account_insert"}

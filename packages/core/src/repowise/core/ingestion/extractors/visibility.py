@@ -227,6 +227,19 @@ _APEX_ACCESS = (
 )
 
 
+def _apex_modifier_keywords(def_node: Node) -> set[str]:
+    """The keyword node types under a declaration's ``modifiers``, any case."""
+    modifiers = next((c for c in def_node.children if c.type == "modifiers"), None)
+    if modifiers is None:
+        return set()
+    return {
+        keyword.type
+        for modifier in modifiers.children
+        if modifier.type == "modifier"
+        for keyword in modifier.children
+    }
+
+
 def refine_apex_visibility(def_node: Node) -> str:
     """The access keyword an Apex declaration writes, else its scope's default.
 
@@ -237,13 +250,7 @@ def refine_apex_visibility(def_node: Node) -> str:
     if def_node.type == "trigger_declaration":
         # Run by the platform on DML from any context; it takes no modifier.
         return "public"
-    modifiers = next((c for c in def_node.children if c.type == "modifiers"), None)
-    written = {
-        keyword.type
-        for modifier in (modifiers.children if modifiers is not None else ())
-        if modifier.type == "modifier"
-        for keyword in modifier.children
-    }
+    written = _apex_modifier_keywords(def_node)
     for keyword, visibility in _APEX_ACCESS:
         if keyword in written:
             return visibility
