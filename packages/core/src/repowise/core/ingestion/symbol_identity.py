@@ -301,6 +301,7 @@ def _rust_cfg_predicate(symbol: Symbol) -> str | None:
 # variant (C ``#if`` branches, Rust ``cfg``) registers here as its own function.
 _DISCRIMINATORS: dict[str, Callable[[Symbol], str | None]] = {
     "java": _parameter_count,
+    "apex": _parameter_count,
     "csharp": _parameter_count,
     "cpp": _parameter_count,
     "kotlin": _parameter_count,

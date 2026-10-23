@@ -46,3 +46,27 @@ def test_ordinary_code_language_remains_in_scope() -> None:
         {"detect_zombie_packages": False}
     )
     assert {finding.kind for finding in report.findings} == {"unreachable_file"}
+
+
+def _private_method_graph(language: str) -> nx.DiGraph:
+    graph = nx.DiGraph()
+    path = f"src/Payroll.{language}"
+    graph.add_node(path, node_type="file", language=language, is_entry_point=True,
+                   is_test=False, symbol_count=1)
+    graph.add_node(f"{path}::Helper", node_type="symbol", file_path=path, language=language,
+                   name="Helper", kind="class", visibility="private", start_line=5, end_line=8)
+    graph.add_edge(path, f"{path}::Helper", edge_type="defines")
+    return graph
+
+
+def test_exempt_language_private_symbol_is_not_an_unused_internal() -> None:
+    # Apex private symbols back triggers, @AuraEnabled and test classes the
+    # graph cannot see yet, so the internal pass honours the exemption too.
+    report = DeadCodeAnalyzer(_private_method_graph("apex"), git_meta_map={}).analyze(
+        {"detect_zombie_packages": False}
+    )
+    assert report.findings == []
+    control = DeadCodeAnalyzer(_private_method_graph("java"), git_meta_map={}).analyze(
+        {"detect_zombie_packages": False}
+    )
+    assert "unused_internal" in {finding.kind for finding in control.findings}

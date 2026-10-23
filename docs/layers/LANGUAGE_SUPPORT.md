@@ -74,6 +74,9 @@ Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 
 \* COBOL is excluded from dead-code claims: JCL, schedulers and dynamic program
 calls are entry paths the repository graph cannot observe.
+Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
+and is excluded from dead-code claims the same way until triggers, annotations
+and platform interfaces are modelled as entry points.
 
 ## How accurate is the graph per language
 

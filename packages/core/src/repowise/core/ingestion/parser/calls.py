@@ -174,7 +174,9 @@ def _dart_argument_count(selector: Node | None) -> int | None:
 # The receiver captures that are themselves a member access, by language (the
 # queries widen only these two), and what a plain dotted path of names looks
 # like once whitespace is gone.
-_PATH_RECEIVERS = frozenset({("typescript", "member_expression"), ("python", "attribute")})
+_PATH_RECEIVERS = frozenset(
+    {("typescript", "member_expression"), ("python", "attribute"), ("apex", "field_access")}
+)
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
 
 

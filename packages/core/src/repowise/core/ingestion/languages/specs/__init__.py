@@ -11,6 +11,7 @@ extension-to-language map is built first-spec-wins, so order is significant
 from __future__ import annotations
 
 from ..spec import LanguageSpec
+from .apex import SPEC as _APEX
 from .asciidoc import SPEC as _ASCIIDOC
 from .astro import SPEC as _ASTRO
 from .c import SPEC as _C
@@ -110,6 +111,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _COBOL,
     _GDSCRIPT,
     _VBNET,
+    _APEX,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------

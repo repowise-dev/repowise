@@ -944,6 +944,17 @@ XML literals, tuple literals used as expressions, a nested double quote inside a
 interpolation hole, an omitted argument in a call that also carries type
 arguments, and some multi-line LINQ layouts, each recovered from locally.
 
+### Apex
+
+The grammar is the language pack's `apex`, loaded as COBOL's is. It keeps
+Java's node and field names, so `apex.scm`, heritage and type heads follow Java;
+inline SOQL/SOSL and DML are their own nodes and never produce call sites.
+Keywords and type names are case-insensitive: visibility and heritage read the
+AST rather than keyword text, and builtin types are compared folded, while
+declared names keep their written case. CumulusCI `%%%NAMESPACE%%%` tokens are
+blanked byte for byte before parsing. Apex has no import statement, so
+cross-file calls resolve only through the repository-wide tiers.
+
 ### QML
 
 Module specs resolve against an index built from the `qmldir` manifests in the

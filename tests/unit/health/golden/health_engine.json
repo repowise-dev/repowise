@@ -864,6 +864,44 @@
   "lang_samples": {
     "metrics": [
       {
+        "file_path": "apex/AccountService.cls",
+        "score": null,
+        "max_ccn": null,
+        "max_nesting": null,
+        "nloc": 40,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": null,
+        "maintainability_score": null,
+        "performance_score": null,
+        "structure_deduction": null,
+        "history_deduction": null,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
+        "file_path": "apex/AccountTrigger.trigger",
+        "score": null,
+        "max_ccn": null,
+        "max_nesting": null,
+        "nloc": 4,
+        "has_test_file": false,
+        "module": "apex",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": null,
+        "maintainability_score": null,
+        "performance_score": null,
+        "structure_deduction": null,
+        "history_deduction": null,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
         "file_path": "cpp/assertions.cpp",
         "score": 10.0,
         "max_ccn": 1,
@@ -5000,8 +5038,8 @@
       "history_hotspot": null,
       "production_average": 9.59,
       "production_file_count": 63,
-      "unanalysed_file_count": 4,
-      "analysed_share": 0.9403
+      "unanalysed_file_count": 6,
+      "analysed_share": 0.913
     },
     "repo_function_mod_p80": null,
     "suggestions": [

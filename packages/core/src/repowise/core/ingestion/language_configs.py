@@ -34,6 +34,7 @@ from .extractors.imports import (
     ImportExtractor,
 )
 from .extractors.visibility import (
+    apex_visibility,
     csharp_visibility,
     dart_visibility,
     elixir_visibility,
@@ -399,6 +400,27 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
                 "enum_block",
                 "namespace_block",
             }
+        ),
+    ),
+    # Apex reads Java's node names; there are no imports to extract.
+    "apex": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "enum_declaration": "enum",
+            # A trigger is one body the platform runs on DML events.
+            "trigger_declaration": "function",
+            "method_declaration": "method",
+            "constructor_declaration": "function",
+            # Only a field with an accessor list is captured (a property).
+            "field_declaration": "variable",
+        },
+        import_node_types=[],
+        export_node_types=[],
+        visibility_fn=apex_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "enum_declaration"}
         ),
     ),
     "swift": LanguageConfig(

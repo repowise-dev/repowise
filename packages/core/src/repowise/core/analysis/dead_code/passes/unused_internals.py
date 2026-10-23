@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..constants import _is_fixture_path
+from ..constants import _DEAD_CODE_EXEMPT_LANGUAGES, _is_fixture_path
 from ..contract_methods import is_contract_method
 from ..decorator_rules import _declared_deliberately_unused, _is_framework_registered
 from ..finding_helpers import _symbol_span
@@ -87,6 +87,10 @@ class UnusedInternalPass:
         # Rust: the compiler's ``dead_code`` lint already reports these, with
         # macro expansion and types a static graph cannot match.
         if node_data.get("language") == "rust":
+            return False
+        # Entered by a runtime the graph cannot see (COBOL, Apex), as in the
+        # file and export passes.
+        if node_data.get("language") in _DEAD_CODE_EXEMPT_LANGUAGES:
             return False
         # ``internal`` is assembly-, module- or crate-wide, so a missing call
         # edge is no evidence; no pass judges it, which drops an unmodified

@@ -347,6 +347,9 @@ _PY_FAMILY = (_PY_ANNOTATED, _PY_CONSTRUCTED, _PY_SELF_ANNOTATED, _PY_SELF_CONST
 _TS_FAMILY = (_TS_ANNOTATED, _TS_PARAMETER_PROPERTY, _TS_CONSTRUCTED)
 
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    # Apex declares Java's way (``Foo foo``) and has no ``var``. Read for
+    # overload choice now; no receiver strategy is registered for it yet.
+    "apex": (_TYPED_DECLARATION,),
     "cpp": (_CPP_DECLARATION,),
     "csharp": _C_FAMILY,
     "dart": _DART_FAMILY,
@@ -868,6 +871,7 @@ _LANGUAGE_BLOCK_COMMENTS: dict[str, re.Pattern[str]] = {
 }
 
 _LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
+    "apex": _LINE_COMMENT,
     "cpp": _LINE_COMMENT,
     "csharp": _LINE_COMMENT,
     "dart": _LINE_COMMENT,

@@ -142,6 +142,11 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
+    # Apex has no strategy of its own yet. A member or chained call no tier
+    # claims stays unresolved rather than binding by bare name, which is the
+    # measured Java rule: ``System.debug()`` and ``acc.get('x')`` would
+    # otherwise bind any one repo method called ``debug`` or ``get``.
+    "apex": _LanguageCallStrategies(member_bare_fallback=False),
 }
 
 
