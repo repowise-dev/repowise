@@ -90,21 +90,71 @@ def test_per_test_records() -> None:
     assert not parse_apex_contexts(_read("sample.apex-codecoverage.json")).has_contexts
 
 
-@pytest.mark.parametrize("name", ["sample.apex.json", "sample.apex-codecoverage.json"])
+@pytest.mark.parametrize(
+    "name", ["sample.apex.json", "sample.apex-codecoverage.json", "sample.apex-deploy.json"]
+)
 def test_detect_and_dispatch(name: str) -> None:
     assert detect_format(_read(name)) == "apex"
-    assert detect_format("﻿" + _read(name)) == "apex"
-    assert parse("﻿" + _read(name)).source_format == "apex"
+    assert detect_format("\ufeff" + _read(name)) == "apex"
+    assert parse("\ufeff" + _read(name)).source_format == "apex"
 
 
 def test_detect_needs_the_cli_markers() -> None:
     assert detect_format('{"result": {"summary": {"outcome": "Passed"}}}') is None
     assert detect_format('[{"name": "x", "lines": {}}]') is None
+    assert detect_format('{"result": {"details": {"componentSuccesses": []}}}') is None
+
+
+def test_deploy_result_percentages_and_extensions() -> None:
+    report = parse(_read("sample.apex-deploy.json"))
+    assert report.source_format == "apex"
+    by_path = {f.file_path: f for f in report.files}
+    # The zero-location interface is skipped, not stored as 0%.
+    assert set(by_path) == {"AccountService.cls", "AccountTrigger.trigger", "FullyCovered.cls"}
+    svc = by_path["AccountService.cls"]
+    assert svc.line_coverage_pct == pytest.approx(78.57)
+    assert (svc.total_coverable_lines, svc.covered_line_count) == (28, 22)
+    assert by_path["AccountTrigger.trigger"].line_coverage_pct == pytest.approx(60.0)
+    assert by_path["FullyCovered.cls"].line_coverage_pct == pytest.approx(100.0)
+
+
+def test_deploy_result_states_counts_only() -> None:
+    for fc in parse_apex(_read("sample.apex-deploy.json")).files:
+        # No covered-line list in the payload: left empty, never invented.
+        assert fc.covered_lines == [] and fc.coverable_lines == []
+        assert fc.branch_coverage_pct is None
+
+
+def test_deploy_single_object_entry() -> None:
+    text = (
+        '{"result": {"details": {"runTestResult": {"codeCoverage": '
+        '{"name": "Solo", "type": "Class", "numLocations": "4", "numLocationsNotCovered": "1"}'
+        "}}}}"
+    )
+    assert detect_format(text) == "apex"
+    report = parse(text)
+    assert [(f.file_path, f.line_coverage_pct) for f in report.files] == [("Solo.cls", 75.0)]
+
+
+def test_deploy_bad_counts_are_skipped() -> None:
+    text = (
+        '{"result": {"details": {"runTestResult": {"codeCoverage": ['
+        '{"name": "A", "type": "Class", "numLocations": "x", "numLocationsNotCovered": "1"},'
+        '{"name": "B", "type": "Class", "numLocations": "5"},'
+        '{"name": "C", "type": "Class", "numLocations": "5", "numLocationsNotCovered": "9"}'
+        "]}}}}"
+    )
+    # C is clamped to 0% rather than going negative.
+    assert [(f.file_path, f.line_coverage_pct) for f in parse_apex(text).files] == [("C.cls", 0.0)]
+
+
+def test_deploy_result_has_no_per_test_records() -> None:
+    assert not parse_apex_contexts(_read("sample.apex-deploy.json")).has_contexts
 
 
 def test_parse_contexts_file_reads_apex(tmp_path: Path) -> None:
     path = tmp_path / "test-result-7070000000ABCDE.json"
-    path.write_text("﻿" + _read("sample.apex.json"), encoding="utf-8")
+    path.write_text("\ufeff" + _read("sample.apex.json"), encoding="utf-8")
     report = parse_contexts_file(path)
     assert report.source_format == "apex"
     assert len(report.records) == 2
