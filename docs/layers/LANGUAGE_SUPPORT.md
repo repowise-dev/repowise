@@ -92,6 +92,9 @@ mapsets (`.bms`) are linked from the programs that send or receive their maps.
 Health measures each paragraph and section as a function: `IF`, `WHEN` arms,
 `PERFORM UNTIL/VARYING` loops and `AND`/`OR` add to its complexity, and data-only
 copybooks have no functions to flag.
+A level-88 condition name is a child of the data item it tests, with an id such
+as `PROG.cbl::WS-RETURN-FLAG::APPL-AOK`, and stays findable by symbol search.
+These children do not count toward the 500-symbol warning for generated files.
 Apex dead-code findings are review-only, since the platform also reaches classes
 by name.
 

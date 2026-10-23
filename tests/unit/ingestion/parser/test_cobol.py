@@ -71,6 +71,68 @@ class TestCobolSymbols:
         assert ("CUSTOMER-NAME", "variable") in symbols
         assert not result.parse_errors
 
+    def test_level_88_condition_names_are_children_of_their_item(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. FLAGS.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-GROUP.
+          05 WS-STATUS PIC X.
+             88 STATUS-OK VALUE 'Y'.
+      * a comment between conditions
+             88 STATUS-BAD VALUE 'N'.
+          05 WS-OTHER PIC X.
+       01 WS-RETURN-FLAG PIC X.
+          88 APPL-AOK VALUE '0'.
+       01 FILLER PIC X.
+          88 ORPHAN-FLAG VALUE 'Z'.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           STOP RUN.
+"""
+        result = parser.parse_file(_cobol("flags.cbl"), source)
+        by_name = {s.name: s for s in result.symbols}
+
+        assert by_name["STATUS-OK"].parent_name == "WS-STATUS"
+        assert by_name["STATUS-BAD"].parent_name == "WS-STATUS"
+        assert by_name["APPL-AOK"].parent_name == "WS-RETURN-FLAG"
+        assert by_name["APPL-AOK"].id == "flags.cbl::WS-RETURN-FLAG::APPL-AOK"
+        assert by_name["APPL-AOK"].kind == "variable"
+        # A FILLER item has no name to own its conditions.
+        assert by_name["ORPHAN-FLAG"].parent_name is None
+        # Other levels keep their top-level ids.
+        for name in ("WS-GROUP", "WS-STATUS", "WS-OTHER", "WS-RETURN-FLAG", "MAIN-PARA"):
+            assert by_name[name].parent_name is None
+            assert by_name[name].id == f"flags.cbl::{name}"
+
+    def test_level_88_children_do_not_count_toward_symbol_bloat(
+        self, parser: ASTParser, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import repowise.core.ingestion.parser as parser_module
+
+        conditions = "".join(
+            f"          88 COND-{i:03d} VALUE '{i % 10}'.\n" for i in range(12)
+        )
+        source = (
+            "       IDENTIFICATION DIVISION.\n"
+            "       PROGRAM-ID. BLOAT.\n"
+            "       DATA DIVISION.\n"
+            "       WORKING-STORAGE SECTION.\n"
+            "       01 WS-CODE PIC X.\n" + conditions
+        ).encode()
+        warnings: list[dict] = []
+        monkeypatch.setattr(parser_module, "_SYMBOL_COUNT_WARN_THRESHOLD", 5)
+        monkeypatch.setattr(
+            parser_module.log, "warning", lambda event, **kw: warnings.append(kw)
+        )
+
+        result = parser.parse_file(_cobol("bloat.cbl"), source)
+
+        assert len(result.symbols) == 14
+        assert warnings == []
+
     def test_program_id_without_terminal_period_recovers_name(self, parser: ASTParser) -> None:
         source = b"""       IDENTIFICATION DIVISION.
        PROGRAM-ID. COURSE01

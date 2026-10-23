@@ -316,12 +316,15 @@ def _masked_call_sites(lang: str, original_source: bytes, symbols: list[Symbol])
 
 
 def _warn_symbol_bloat(file_info: FileInfo, symbols: list[Symbol]) -> None:
-    if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
+    # COBOL's only children are level-88 condition names: values of one data
+    # item, not declarations. Methods still count, so a generated class warns.
+    counted = sum(1 for s in symbols if not (s.language == "cobol" and s.parent_name))
+    if counted > _SYMBOL_COUNT_WARN_THRESHOLD:
         log.warning(
             "parser.symbol_bloat",
             path=file_info.path,
             language=file_info.language,
-            symbol_count=len(symbols),
+            symbol_count=counted,
             threshold=_SYMBOL_COUNT_WARN_THRESHOLD,
         )
 
