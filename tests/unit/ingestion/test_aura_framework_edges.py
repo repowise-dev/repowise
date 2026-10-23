@@ -48,6 +48,8 @@ _REPO = {
     f"{_A}/accountList/accountListHelper.js": (
         "({\n"
         "    load : function(component) {\n"
+        '        var action = component.get("c.getAccounts");\n'
+        '        var client = component.get("c.unbound");\n'
         '        $A.createComponents([["c:accountRow", {}], ["lightning:card", {}]], function() {});\n'
         "    },\n"
         "    notCalled : function(component) {},\n"
@@ -58,7 +60,18 @@ _REPO = {
         "    afterRender : function(cmp, helper) { this.superAfterRender(); },\n"
         "})\n"
     ),
-    f"{_A}/base/base.cmp": '<aura:component extensible="true" abstract="true">{!v.body}</aura:component>\n',
+    f"{_A}/base/base.cmp": (
+        '<aura:component extensible="true" abstract="true" controller="acme.AccountCtrl">'
+        "{!v.body}</aura:component>\n"
+    ),
+    "force-app/main/default/classes/AccountCtrl.cls": (
+        "public with sharing class AccountCtrl {\n"
+        "    @AuraEnabled public static List<Account> getAccounts() { return null; }\n"
+        "    private static void getAccounts(Integer n) {}\n"
+        "}\n"
+    ),
+    # Same name in another project: the nearer copy wins.
+    "other-app/classes/AccountCtrl.cls": "public class AccountCtrl {}\n",
     # A sub-component inherits its parent's helper.
     f"{_A}/base/baseHelper.js": (
         "({\n    shared : function(component) { this.inner(component); },\n"
@@ -159,6 +172,13 @@ def test_bundle_edges(tmp_path: Path) -> None:
         (f"{_A}/base/baseHelper.js::shared", f"{_A}/base/baseHelper.js::inner"),
     } <= binds
     assert (f"{ctrl}::onRow", f"{helper}::notCalled") not in binds
+    cls = "force-app/main/default/classes/AccountCtrl.cls"
+    assert (f"{_A}/base/base.cmp", cls) in framework
+    assert g.edges[helper, cls]["imported_names"] == ["getAccounts"]
+    getter = [t for s, t in binds if s == f"{helper}::load" and t.startswith(f"{cls}::")]
+    assert getter == [f"{cls}::AccountCtrl::getAccounts#0"]
+    # `get("c.x")` naming no Apex method but a controller function is a client action.
+    assert (f"{helper}::load", f"{ctrl}::unbound") in binds
     dynamic = _edges(g, "dynamic_uses")
     assert (ctrl, tile) in dynamic
     assert (helper, f"{_A}/accountRow/accountRow.cmp") in dynamic

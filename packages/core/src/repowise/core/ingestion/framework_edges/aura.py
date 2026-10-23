@@ -189,6 +189,9 @@ class _AuraIndex:
             parsed = parsed_files[path]
             lang = parsed.file_info.language
             if lang == "apex" and path.endswith(".cls"):
+                # Apex names fold case and a class file is named after its class.
+                # Deliberately local: the case-insensitive Apex class index the
+                # Apex resolution pass builds should replace this once it lands.
                 apex_by_name.setdefault(PurePosixPath(path).stem.lower(), []).append(path)
                 continue
             bundle = aura_bundle(path)
@@ -284,13 +287,13 @@ class _AuraIndex:
                 return (written.strip(), cls_file) if cls_file else None
         return None
 
-    def bundle_function(self, bdir: str, role: str, name: str) -> tuple[str, str] | None:
-        """``(file, symbol id)`` of function *name* in the *role* JS up the extends chain."""
+    def bundle_function(self, bdir: str, role: str, name: str) -> tuple[str, str, str] | None:
+        """``(file, symbol id, name)`` of function *name* in the *role* JS up the extends chain."""
         for b in self.chain(bdir):
             path = self.bundles[b].js.get(role)
             sym = self.functions(path).get(name)
             if path is not None and sym is not None:
-                return path, sym
+                return path, sym, name
         return None
 
     def interface_methods(self, bdir: str) -> set[str]:
@@ -419,11 +422,11 @@ class _Edges:
     def file(self, src: str, dst: str, names: set[str] | None = None) -> None:
         self.names.setdefault((src, dst), set()).update(names or ())
 
-    def bind(self, src: str, target: tuple[str, str], src_file: str) -> None:
-        """Bind symbol *src* to ``(file, symbol)`` *target* and note the file edge."""
-        path, sym = target
+    def bind(self, src: str, target: tuple[str, str, str], src_file: str) -> None:
+        """Bind symbol *src* to ``(file, symbol, name)`` *target* and note the file edge."""
+        path, sym, name = target
         self.count += add_symbol_edge(self.graph, src, sym)
-        self.file(src_file, path, {sym.rpartition("::")[2]})
+        self.file(src_file, path, {name})
 
     def flush(self) -> int:
         for (src, dst), names in sorted(self.names.items()):
