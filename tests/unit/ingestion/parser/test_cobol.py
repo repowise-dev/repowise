@@ -222,3 +222,12 @@ class TestCobolCallScope:
            GOBACK.
 """
         assert self._resolve(parser, {"a.cbl": caller, "b.cbl": callee}, {}) == set()
+
+    def test_a_program_naming_itself_is_not_a_transfer(self, parser: ASTParser) -> None:
+        caller = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. COCRDLIC.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           EXEC CICS XCTL PROGRAM('COCRDLIC') END-EXEC.
+"""
+        assert self._resolve(parser, {"cocrdlic.cbl": caller}, {}) == set()

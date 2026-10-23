@@ -97,3 +97,20 @@ def test_other_cics_commands_and_comments_are_not_transfers() -> None:
     )
 
     assert _transfers(source) == []
+
+
+def test_each_when_arm_transfers_to_the_program_it_moves() -> None:
+    source = _program(
+        "       01 NEXT-PROG PIC X(8).",
+        "           MOVE 'COCRDLIC' TO NEXT-PROG\n"
+        "           EVALUATE TRUE\n"
+        "             WHEN WS-VIEW\n"
+        "               MOVE 'COCRDSLC' TO NEXT-PROG\n"
+        "               EXEC CICS XCTL PROGRAM(NEXT-PROG) END-EXEC\n"
+        "             WHEN WS-EDIT\n"
+        "               MOVE 'COCRDUPC' TO NEXT-PROG\n"
+        "               EXEC CICS XCTL PROGRAM(NEXT-PROG) END-EXEC\n"
+        "           END-EVALUATE.",
+    )
+
+    assert [t.targets for t in _transfers(source)] == [("COCRDSLC",), ("COCRDUPC",)]

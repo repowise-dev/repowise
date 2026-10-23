@@ -22,7 +22,7 @@ class CobolCallsMixin:
     ) -> ResolvedCall | None:
         name = call.target_name
         if call.program_call:
-            return self._cobol_program(name, call, caller_id)
+            return self._cobol_program(file_path, name, call, caller_id)
         own = self._cobol_symbol(file_path, name, _PROCEDURE_KINDS)
         if own is not None:
             return (
@@ -36,14 +36,17 @@ class CobolCallsMixin:
                 return ResolvedCall(caller_id, hit, 0.90, call.line, "import_scoped")
         return None
 
-    def _cobol_program(self, name: str, call: CallSite, caller_id: str) -> ResolvedCall | None:
+    def _cobol_program(
+        self, file_path: str, name: str, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
         programs = [
             sym_id
             for sym_id in self._global_symbols.get(name, ())  # type: ignore[attr-defined]
             if self._symbols_by_id[sym_id].kind in _PROGRAM_KINDS  # type: ignore[attr-defined]
             and self._symbols_by_id[sym_id].language == "cobol"  # type: ignore[attr-defined]
         ]
-        if len(programs) != 1 or programs[0] == caller_id:
+        # A program naming itself (a bookkeeping constant) is not a transfer.
+        if len(programs) != 1 or self._symbol_paths_by_id.get(programs[0]) == file_path:  # type: ignore[attr-defined]
             return None
         return ResolvedCall(caller_id, programs[0], 0.50, call.line, "global_unique")
 
