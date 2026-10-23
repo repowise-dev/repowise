@@ -728,7 +728,7 @@ dependency surface their syntax supports.
 | Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
 | Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
-| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Literal `CALL` and `PERFORM` targets; dynamic calls and `COPY` stay silent |
+| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | `COPY` members to copybooks; literal `CALL` and `PERFORM` targets; dynamic calls stay silent |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
 | Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
@@ -1067,8 +1067,8 @@ point. A bundle two sfdx projects declare goes to the nearer one; a tie gets no 
   both, since props are set by the parent as markup attributes.
 - **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
   vs `implements` split follows the `I`-prefix naming convention.
-- **COBOL is COBOL-85 shaped.** `COPY` does not create an edge; dynamic program
-  names and dialect extensions stay silent.
+- **COBOL dynamic program names stay silent**, and free-format source is read
+  without column handling.
 - **Razor has no import edges**, because every directive is blanked by the
   projection.
 - **GDScript string dispatch is unresolved**, and a script without `class_name`

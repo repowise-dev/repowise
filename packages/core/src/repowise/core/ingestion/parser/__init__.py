@@ -167,12 +167,14 @@ class ASTParser:
             or _is_fsharp_signature(file_info)
         ):
             return self.parse_file(file_info, source).imports
+        original_source = source
         source = prepare_source(lang, source, path=file_info.path)
         root, _, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
         query = _load_compiled_query(lang, grammar_tag)
         matches = _run_query(query, root) if query is not None else []
         src = source.decode("utf-8", errors="replace")
-        return _extract_imports(matches, config, file_info, src)
+        imports = _extract_imports(matches, config, file_info, src)
+        return imports + _masked_imports(lang, original_source)
 
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
@@ -221,6 +223,7 @@ class ASTParser:
         )
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
+        imports.extend(_masked_imports(lang, original_source))
         calls = _extract_calls(matches, config, file_info, src, symbols)
         # An SFC's markup tags (``<Foo />``) are component calls the TS buffer lost.
         calls.extend(component_call_sites(lang, original_source, symbols))
@@ -291,6 +294,15 @@ def _parse_without_grammar(
         parse_errors=[],
         content_hash=content_hash,
     )
+
+
+def _masked_imports(lang: str, original_source: bytes) -> list[Import]:
+    """Imports ``prepare_source`` masked from the grammar, read from the original bytes."""
+    if lang == "cobol":
+        from ..cobol.copybooks import copy_imports
+
+        return copy_imports(original_source)
+    return []
 
 
 def _warn_symbol_bloat(file_info: FileInfo, symbols: list[Symbol]) -> None:

@@ -1,0 +1,47 @@
+"""COBOL ``COPY`` member resolution against copybook files in the repo.
+
+A member resolves case-insensitively to a COBOL file with that stem, a
+copybook extension first, then one under the named library, then the one
+nearest the copying file. An unresolved member (``DFHAID``, a vendor or
+system copybook) becomes an external node, never a guess.
+"""
+
+from __future__ import annotations
+
+import posixpath
+from typing import TYPE_CHECKING
+
+from ..languages.registry import REGISTRY
+
+if TYPE_CHECKING:
+    from .context import ResolverContext
+
+_COPYBOOK_SUFFIXES = frozenset({".cpy"})
+
+
+def resolve_cobol_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
+    library, _, member = module_path.rpartition("/")
+    spec = REGISTRY.get("cobol")
+    extensions = spec.extensions if spec else _COPYBOOK_SUFFIXES
+    candidates = [
+        path
+        for path in ctx.stem_map.get(member.lower(), ())
+        if posixpath.splitext(path)[1].lower() in extensions and path != importer_path
+    ]
+    if not candidates:
+        return ctx.add_external_node(f"copybook:{member}")
+    importer_dir = posixpath.dirname(importer_path).split("/")
+    order = {path: index for index, path in enumerate(candidates)}
+
+    def rank(path: str) -> tuple[int, int, int, int]:
+        parts = path.split("/")
+        shared = 0
+        for a, b in zip(parts[:-1], importer_dir, strict=False):
+            if a != b:
+                break
+            shared += 1
+        in_library = bool(library) and library.lower() in (p.lower() for p in parts[:-1])
+        is_copybook = posixpath.splitext(path)[1].lower() in _COPYBOOK_SUFFIXES
+        return (not is_copybook, not in_library, -shared, order[path])
+
+    return min(candidates, key=rank)

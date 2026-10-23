@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .clojure import resolve_clojure_import
+from .cobol import resolve_cobol_import
 from .context import ResolverContext
 from .cpp import resolve_cpp_import
 from .csharp import resolve_csharp_import
@@ -81,6 +82,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "html": resolve_html_asset,
     # VB.NET Imports resolve through the same DotNetProjectIndex as C#.
     "vbnet": resolve_vbnet_import,
+    # COPY / EXEC SQL INCLUDE members, matched to copybooks by stem.
+    "cobol": resolve_cobol_import,
 }
 
 

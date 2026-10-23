@@ -68,7 +68,7 @@ listed per language and framework in
 
 Every Full and Good language has a dedicated import resolver except Object
 Pascal and Objective-C, which resolve through a generic unit-name or header-stem
-match, and COBOL, which resolves literal program calls instead of imports.
+match.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 [Limits](#limits).
 
@@ -79,7 +79,8 @@ The COBOL and Apex grammars download on first use; offline, set
 whether it is cached.
 COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
 `COPY` statements masked before parsing; a copybook parses as a data or
-procedure fragment.
+procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
+nearest copybook with that name; system copybooks such as `DFHAID` stay external.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
 resolved case-insensitively within each sfdx project's namespace; its dead-code
 findings are review-only. Apex test coverage from the Salesforce CLI is read as a
@@ -275,8 +276,7 @@ Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 - Razor has no import edges.
 - Scala import resolution is partial, and the Elixir and F# import resolvers
   have known gaps.
-- COBOL support is COBOL-85 shaped: `COPY`, dynamic program names and dialect
-  extensions produce no edges.
+- COBOL dynamic program names and free-format source produce no edges.
 - C has no performance risk support.
 
 The full list per language, with the mechanics behind each gap, is in
@@ -291,7 +291,7 @@ The full list per language, with the mechanics behind each gap, is in
 | Scala, Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
 | Object Pascal | A dedicated `uses` resolver |
-| COBOL | Copybook resolution, dialect coverage, health markers |
+| COBOL | Dialect coverage, health markers |
 | VB.NET, Elixir | Health markers |
 | F#, Objective-C | Health markers beyond complexity |
 | SQL / dbt | Column-level blast radius |
