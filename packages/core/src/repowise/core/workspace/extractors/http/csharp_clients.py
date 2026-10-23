@@ -77,7 +77,7 @@ _NAMEOF_RE = re.compile(r"nameof\s*\(\s*([\w.]+)\s*\)")
 
 # A type declaration and the base list after its `:`, up to its body.
 _TYPE_DECL_RE = re.compile(
-    r"(?<![\w-])(?:class|record|struct|interface)\s+"
+    r"(?<![\w-])(?:record\s+(?:class|struct)|class|record|struct|interface)\s+"
     r"(?!(?:public|private|protected|internal|static|sealed|abstract|partial)\b)"
     r"(?P<name>[A-Za-z_]\w*)[^{;]*?(?::(?P<bases>[^{;]*))?\{"
 )
@@ -226,37 +226,99 @@ def type_at(
     return declared[1][i] if i >= 0 else None
 
 
+#: What :func:`receiver_at` returns for a call on a member chain or a call
+#: result (``o.Client.GetAsync``, ``Pick().GetAsync``): a receiver, not one named.
+CHAINED = ""
+
+
 def receiver_at(content: str, offset: int) -> str | None:
-    """The name a member call at *offset* is made on (``client`` in ``client.GetAsync``)."""
-    m = _RECEIVER_RE.search(content, max(0, offset - _RECEIVER_WINDOW), offset)
-    return m.group(1) if m else None
+    """The name a member call at *offset* is made on (``client`` in ``client.GetAsync``).
+
+    ``None`` for a call with no receiver; :data:`CHAINED` when the receiver is
+    not a plain name.
+    """
+    start = max(0, offset - _RECEIVER_WINDOW)
+    m = _RECEIVER_RE.search(content, start, offset)
+    if m is not None:
+        return m.group(1)
+    return CHAINED if content[start:offset].rstrip().endswith(".") else None
 
 
-def declared_type(code: str, name: str) -> str | None:
-    """The type *code* declares *name* with (a field, parameter or local), else ``None``."""
-    n = re.escape(name)
-    m = re.search(rf"(?<![\w.])(?:[\w]+\.)*([A-Z]\w*)(?:{GENERIC})?\??[ \t]+{n}[ \t]*[;=,)]", code)
-    return m.group(1) if m else None
+def _nearest(sites: list[tuple[int, str]], offset: int) -> str | None:
+    """The value of the site nearest above *offset*, else the one value every site agrees on."""
+    above = [value for start, value in sites if start < offset]
+    if above:
+        return above[-1]
+    values = {value for _, value in sites}
+    return values.pop() if len(values) == 1 else None
 
 
-def created_client(content: str, name: str) -> str | None:
-    """The name token of the factory client *name* is bound to, else ``None``.
+# Words that stand before a name without declaring it (`return client;`).
+_NOT_TYPES = frozenset(
+    {"return", "await", "yield", "throw", "else", "case", "in", "out", "ref", "is", "as", "new", "using"}
+)
+# What a `var` local is bound to: `new T(...)`, or a call whose name ends in
+# the type it returns (`GetOrCreateHttpClient()`).
+_VAR_RHS_RE = re.compile(r"[ \t]*(?:await\s+)?(?:new\s+(?:\w+\.)*(\w+)\b|[\w.]*?(HttpClient)\s*\()")
+
+
+def _site_type(code: str, m: re.Match[str]) -> str | None:
+    found = m.group(1)
+    if found in _NOT_TYPES:
+        return None
+    if found == "var" and code[m.end() - 1] == "=":
+        rhs = _VAR_RHS_RE.match(code, m.end())
+        return (rhs.group(1) or rhs.group(2)) if rhs else "var"
+    return found
+
+
+def declared_type(names: _FileNames, name: str, offset: int) -> str | None:
+    """The type *name* is declared with (a field, parameter or local) as seen from *offset*.
+
+    The declaration nearest above the use wins, so the same name in two methods
+    reads as each method's own; a field declared below its uses counts when the
+    file gives the name one type. A ``var`` local takes the type it is bound to
+    with ``new``, or ``HttpClient`` from a call named for one. Read once per
+    name and file.
+    """
+    key = ("type", name)
+    sites = names.memo.get(key)
+    if sites is None:
+        n = re.escape(name)
+        pattern = rf"(?<![\w.])(?:\w+\.)*(\w+)(?:{GENERIC})?\??[ \t]+{n}[ \t]*[;=,)]"
+        code = names.code
+        sites = names.memo[key] = [
+            (m.start(), t) for m in re.finditer(pattern, code) if (t := _site_type(code, m)) is not None
+        ]
+    return _nearest(sites, offset)
+
+
+def created_client(names: _FileNames, name: str, offset: int) -> str | None:
+    """The name token of the factory client *name* is bound to at *offset*, else ``None``.
 
     ``var client = _factory.CreateClient("catalog")`` gives ``"catalog"``; a
     client created with no name gives an empty token.
     """
-    n = re.escape(name)
-    m = re.search(rf"\b{n}\s*=\s*(?:await\s+)?[\w.]*CreateClient\s*\((?P<arg>[^()]*)\)", content)
-    return m.group("arg") if m else None
+    key = ("client", name)
+    sites = names.memo.get(key)
+    if sites is None:
+        n = re.escape(name)
+        pattern = rf"\b{n}\s*=\s*(?:await\s+)?[\w.]*CreateClient\s*\((?P<arg>[^()]*)\)"
+        sites = names.memo[key] = [
+            (m.start(), m.group("arg")) for m in re.finditer(pattern, names.content)
+        ]
+    # Only a binding above the use: a later `client = CreateClient(...)` is another client.
+    above = [value for start, value in sites if start < offset]
+    return above[-1] if above else None
 
 
-def is_http_client(names: _FileNames, receiver: str | None) -> bool:
-    """True when the file declares *receiver* an ``HttpClient`` or binds it to a factory client."""
-    if receiver is None:
+def is_http_client(names: _FileNames, receiver: str | None, offset: int) -> bool:
+    """True when *receiver* is declared an ``HttpClient`` or bound to a factory client."""
+    if not receiver:
         return False
-    if declared_type(names.code, receiver) == "HttpClient":
+    if declared_type(names, receiver, offset) == "HttpClient":
         return True
-    return created_client(names.content, receiver) is not None
+    return created_client(names, receiver, offset) is not None
 
 
 def _params(text: str) -> list[str]:
@@ -279,7 +341,8 @@ def _template(names: _FileNames, start: int, end: int, params: dict[str, int]) -
     content = names.content
     found: set[str] = set()
     for v in VERB_CALL_RE.finditer(content, start, end):
-        if v.group(2) not in JSON_FORMS and not is_http_client(names, receiver_at(content, v.start())):
+        receiver = receiver_at(content, v.start())
+        if v.group(2) not in JSON_FORMS and not is_http_client(names, receiver, v.start()):
             continue  # a cache's `GetStringAsync(key)` does not make its caller a URL
         args = call_arguments(content, v.end() - 1)
         if not args:
@@ -300,17 +363,19 @@ def _template(names: _FileNames, start: int, end: int, params: dict[str, int]) -
 
 
 def wrappers(names: _FileNames) -> dict[str, str]:
-    """This file's HttpClient wrapper methods, as mount entries."""
+    """This file's HttpClient wrapper methods, as mount entries.
+
+    A value is ``<VERB> <index> <min> <max> <template>``: a call site must pass
+    between *min* and *max* arguments, so an overload of another arity is not
+    read as this one. Two overloads the file declares differently drop the key.
+    """
     if "HttpClient" not in names.content:
         return {}
     code = names.code
-    out: dict[str, str] = {}
+    found: dict[str, set[str]] = {}
     for m in _METHOD_DECL_RE.finditer(code):
-        params = {
-            pm.group(1): i
-            for i, p in enumerate(_params(m.group("params")))
-            if (pm := _STRING_PARAM_RE.match(p))
-        }
+        declared = _params(m.group("params"))
+        params = {pm.group(1): i for i, p in enumerate(declared) if (pm := _STRING_PARAM_RE.match(p))}
         if not params:
             continue
         close = match_paren(code, m.end() - 1, closer="}")
@@ -320,14 +385,18 @@ def wrappers(names: _FileNames) -> dict[str, str]:
         owner = type_at(names.types, m.start()) if template is not None else None
         if owner is None:
             continue
+        verb, index, text = template.split(" ", 2)
+        required = sum(1 for p in declared if p.strip() and "=" not in p)
+        value = f"{verb} {index} {required} {len(declared)} {text}"
         type_name, interfaces = owner
         for t in (type_name, *interfaces):
-            out[f"{WRAPPER_KEY}{t}.{m.group('name')}"] = template
-    return out
+            found.setdefault(f"{WRAPPER_KEY}{t}.{m.group('name')}", set()).add(value)
+    return {key: values.pop() for key, values in found.items() if len(values) == 1}
 
 
 __all__ = [
     "ARG",
+    "CHAINED",
     "GENERIC",
     "JSON_FORMS",
     "NAMED_CLIENT_KEY",

@@ -161,6 +161,8 @@ class _FileNames:
 
     def __init__(self, content: str) -> None:
         self.content = content
+        #: Per-name lookups the client readers make, read once per file.
+        self.memo: dict[tuple[str, str], list[tuple[int, str]]] = {}
         self._code: str | None = None
         self._fields: dict[str, str] | None = None
         self._types: tuple[list[int], list[tuple[str, tuple[str, ...]]]] | None = None
@@ -242,16 +244,22 @@ def _base_for(
     """The ``BaseAddress`` a call at *offset* on *receiver* resolves against, else ``None``.
 
     A receiver bound to ``CreateClient("name")`` takes that named client's base;
-    otherwise an ``HttpClient`` receiver (or a request message, which has none)
-    takes the base registered for the type that holds the call.
+    a name the file declares ``HttpClient`` takes the base registered for the
+    type holding the call. A call with no receiver, or on a member chain, is
+    not known to be the client's and takes none.
     """
-    if receiver is not None:
-        token = created_client(names.content, receiver)
-        if token is not None:
-            name = client_name(token, names, offset)
-            return client_base(mounts, NAMED_CLIENT_KEY + name) if name else None
-        if declared_type(names.code, receiver) != "HttpClient":
-            return None
+    if not receiver:
+        return None
+    token = created_client(names, receiver, offset)
+    if token is not None:
+        name = client_name(token, names, offset)
+        return client_base(mounts, NAMED_CLIENT_KEY + name) if name else None
+    if declared_type(names, receiver, offset) != "HttpClient":
+        return None
+    return _owner_base(names, mounts, offset)
+
+
+def _owner_base(names: _FileNames, mounts: Mapping[str, str], offset: int) -> str | None:
     owner = type_at(names.types, offset)
     return client_base(mounts, TYPED_CLIENT_KEY + owner[0]) if owner else None
 
@@ -304,7 +312,7 @@ def request_message_calls(
         method = method_from_argument(args[0])
         if method is None:
             continue  # a verb held in a variable is not one we know
-        base = _base_for(names, mounts, m.start(), None) if bases else None
+        base = _owner_base(names, mounts, m.start()) if bases else None
         yield ClientCallMatch(
             client="httpclient",
             url=names.url(args[1], m.start()),
@@ -336,21 +344,22 @@ def wrapper_calls(
     for m in _wrapper_call_re(methods).finditer(content):
         offset = m.start("name")
         receiver = receiver_at(content, offset)
-        rtype = declared_type(names.code, receiver) if receiver else None
+        rtype = declared_type(names, receiver, offset) if receiver else None
         value = mounts.get(f"{WRAPPER_KEY}{rtype}.{m.group('name')}") if rtype else None
         if value is None:
             continue
-        verb, index, template = value.split(" ", 2)
+        verb, index, least, most, template = value.split(" ", 4)
         args = call_arguments(content, m.end() - 1)
-        if not args or int(index) >= len(args):
-            continue
+        if not args or not int(least) <= len(args) <= int(most):
+            continue  # another overload
         yield ClientCallMatch(
             client=m.group("name"),
             url=names.url(args[int(index)], offset),
             offset=offset,
             method=verb,
             origin=ContractOrigin.DATAFLOW,
-            compose=partial(_fill, template),
+            # A body that sends its argument as is adds nothing to compose.
+            compose=partial(_fill, template) if template != ARG else None,
         )
 
 
@@ -445,9 +454,11 @@ class CSharpHttpDialect:
             return []
         # A plain literal never pays for the file's fields.
         fields = names.fields([m.url for m in (*matches, *wrapped) if not m.url.startswith('"')])
-        # A slash-free string is a key or a name, not a route; a wrapper's
-        # argument is a URL piece by construction, so it is read as one.
+        # A slash-free string is a key or a name, not a route, unless a wrapper
+        # builds a URL around it; one that passes it through proves nothing.
+        built = [m for m in wrapped if m.compose is not None]
+        passed = [m for m in wrapped if m.compose is None]
         return [
-            *consumer_contracts(ctx, matches, CSHARP_SYNTAX, constants=fields, path_only=True),
-            *consumer_contracts(ctx, wrapped, CSHARP_SYNTAX, constants=fields),
+            *consumer_contracts(ctx, [*matches, *passed], CSHARP_SYNTAX, constants=fields, path_only=True),
+            *consumer_contracts(ctx, built, CSHARP_SYNTAX, constants=fields),
         ]

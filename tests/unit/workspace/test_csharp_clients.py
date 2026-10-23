@@ -148,7 +148,7 @@ def test_combined_uris_through_a_request_provider() -> None:
             {
                 public async Task<TResult?> GetAsync<TResult>(string uri, string token = "")
                 {
-                    HttpClient httpClient = GetOrCreateHttpClient(token);
+                    var httpClient = GetOrCreateHttpClient(token);
                     using var response = await httpClient.GetAsync(uri).ConfigureAwait(false);
                     return await response.Content.ReadFromJsonAsync<TResult>();
                 }
@@ -244,3 +244,47 @@ def test_segment_joins_resolve_and_refuse() -> None:
     assert text('new("http://h/")') == "http://h/"
     # A later piece the file does not settle is not a URL segment.
     assert text('new Uri("http://h/", UriKind.Absolute)') is None
+
+
+def test_review_shapes_that_must_not_take_a_base_or_a_wrapper() -> None:
+    found = _consumers({
+        "Program.cs": """
+            class Setup { void Add(IServiceCollection s) {
+                s.AddHttpClient<Svc>(c => c.BaseAddress = new Uri("http://catalog"));
+            } }
+        """,
+        "Svc.cs": """
+            public record class Svc(HttpClient http, Holder o)
+            {
+                public Task<string> A() => o.Client.GetStringAsync("/other/path");
+                public Task<string> B() => http.GetStringAsync("/items/all");
+            }
+        """,
+        "Api.cs": """
+            public class Api
+            {
+                private readonly HttpClient _h;
+                public Task<T> Get<T>(string id) { return _h.GetFromJsonAsync<T>($"api/a/{id}"); }
+                public Task<T> Fetch<T>(string key) { return _h.GetFromJsonAsync<T>(key); }
+            }
+        """,
+        "Use.cs": """
+            public class Use
+            {
+                public async Task Run(Api api, Other other)
+                {
+                    await api.Get<X>("5", "q");
+                    await api.Fetch<X>("cache-key");
+                    await api.Get<X>("7");
+                }
+
+                public async Task Later(Other api) { await api.Get<X>("zz"); }
+            }
+        """,
+    })
+    assert found[("Svc.cs", 4)][1] is None  # a member chain is not the typed client
+    assert found[("Svc.cs", 5)] == ("http::GET::/items/all", "catalog", ContractOrigin.INSTANCE_BASE)
+    use = {line: row[0] for (path, line), row in found.items() if path == "Use.cs"}
+    # Another overload's arity, a pass-through of a slash-free key, and a
+    # parameter of another type with the same name are not wrapper calls.
+    assert use == {8: "http::GET::/api/a/7"}

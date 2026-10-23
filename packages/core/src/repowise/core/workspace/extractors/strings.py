@@ -889,7 +889,7 @@ CSHARP_SYNTAX = StringSyntax(
     # `new Uri(baseUri, "items")`, Flurl's `Url.Combine`, and the `CombineUri`
     # helper eShop-style clients define. Ceiling: a helper is known by name only;
     # reading a same-repo helper's body is the upgrade if other names turn up.
-    join_heads=("new Uri", "new", "Url.Combine", "UriHelper.CombineUri", "CombineUri"),
+    join_heads=("new Uri", "Url.Combine", "UriHelper.CombineUri", "CombineUri"),
     concat="+",
 )
 
