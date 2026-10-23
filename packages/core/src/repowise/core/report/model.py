@@ -250,8 +250,11 @@ class WorkspaceReportContext:
             try:
                 async with sessions() as session:
                     repo = await checkout_repository(session, root)
-                    if repo is not None:
-                        out[entry.alias] = await read(session, repo.id)
+                    out[entry.alias] = (
+                        await read(session, repo.id)
+                        if repo is not None
+                        else LookupError("the index holds no repository row")
+                    )
             except Exception as exc:
                 out[entry.alias] = exc
             finally:

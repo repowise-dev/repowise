@@ -20,10 +20,11 @@ _SERVICES = (
     "structural edges (at most 3 hops), as the blast radius walks them"
 )
 _FILES = (
-    "each index's file graph: production code files (as the health and git indexes class them) "
-    "ranked by PageRank centrality within their own repo, the least documented first (words on the file's written page; a page rendered "
-    "from the code alone counts as none), as the knowledge map's onboarding targets; "
-    "centrality is not compared across repos"
+    "each index's file graph: production code files the health index scored (as the health "
+    "and git indexes class them), ranked by PageRank centrality within their own repo, the "
+    "least documented first (words on the file's written page; a page rendered from the code "
+    "alone counts as none), as the knowledge map's onboarding targets; centrality is not "
+    "compared across repos"
 )
 #: Files listed per repo in the text; the JSON keeps the full shortlist.
 _PER_REPO = 3

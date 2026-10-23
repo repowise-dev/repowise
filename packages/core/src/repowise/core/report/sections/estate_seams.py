@@ -24,7 +24,8 @@ _METHOD = (
     "joined by an edge scores link confidence x reach (services a change to the depended-on "
     "side reaches, at most 3 hops) x (1 + co-change no contract explains); a pair joined by "
     "co-change alone scores co-change x reach. Co-change is read from the graph's co-change "
-    "edges; it is not measured when a repo's index holds fewer than 2 commits"
+    "edges; for a pair no contract links, it is not measured when a repo's index holds fewer "
+    "than 2 commits, and that pair's score is then a floor"
 )
 #: Seams listed in the text; the JSON keeps every one.
 _LISTED = 10
@@ -33,15 +34,19 @@ _LISTED = 10
 def _line(seam: Any) -> str:
     a, b = seam.services
     score = f"{seam.score:g}" if seam.score is not None else "not scored"
+    if seam.score_is_floor:
+        score = f"at least {score}"
     parts = [f"{a} {seam.direction} {b}: seam score {score}"]
     parts.append(
         f"{'+'.join(seam.kinds)}, confidence {seam.confidence:.2f}" if seam.kinds else "no structural edge"
     )
     parts.append(f"reach {seam.reach} service(s)")
-    if seam.co_change is None:
-        parts.append("co-change not measured")
-    elif seam.declared and seam.co_change:
+    if seam.declared and seam.co_change:
         parts.append(f"co-change {seam.co_change:.2f}, behind a contract")
+    elif seam.declared:
+        parts.append("behind a contract")
+    elif seam.co_change is None:
+        parts.append("co-change not measured")
     elif seam.co_change:
         parts.append(f"co-change {seam.co_change:.2f} with no contract")
     else:
@@ -74,13 +79,14 @@ async def collect(ctx: WorkspaceReportContext) -> list[dict[str, Any]]:
         details.append(f"co-change not measured: {capped_names(unmeasured)}")
     if failed := unread(history):
         details.append(f"index could not be read, history unknown: {', '.join(failed)}")
-    measured = [s for s in seams if s.co_change is not None]
-    hidden = sum(1 for s in measured if not s.declared and s.co_change)
+    open_pairs = [s for s in seams if not s.declared]
+    measured = [s for s in open_pairs if s.co_change is not None]
+    hidden = sum(1 for s in measured if s.co_change)
     co_change = (
-        f"{hidden} of the {len(measured)} with co-change measured change together with no "
-        "contract between them"
-        if measured
-        else "co-change measured for none of them"
+        f"{len(open_pairs)} with no contract between them, of which {hidden} change together "
+        f"(co-change measured for {len(measured)})"
+        if open_pairs
+        else "every one behind a contract"
     )
     return [
         check(

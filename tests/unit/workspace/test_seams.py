@@ -56,15 +56,18 @@ def test_score_is_confidence_times_reach_times_undeclared_co_change():
 
 
 def test_short_history_is_shown_as_not_measured_not_scored_as_zero():
-    graph = _graph(_edge("web", "api"), _edge("api", "db"))
-    seams = {s.services: s for s in rank_seams(graph, {"web": 1, "api": 30, "db": 30})}
-    short = seams[("web", "api")]
+    graph = _graph(_edge("web", "api", "package", 1.0), _edge("api", "db"), _edge("ops", "db"))
+    commits = {"web": 1, "api": 30, "db": 30, "ops": 1}
+    seams = {s.services: s for s in rank_seams(graph, commits)}
+    short = seams[("web", "api")]  # no contract: co-change would count, and is unknown
     assert short.co_change is None and short.undeclared is None
     assert short.missing == ["co-change not measured: web has 1 commit indexed"]
-    assert short.score == 0.8  # confidence x reach; the missing factor is not counted
-    assert seams[("api", "db")].co_change == 0.0 and not seams[("api", "db")].missing
-    unknown = rank_seams(graph, None)[0]
-    assert all("no indexed history" in m for m in unknown.missing)
+    assert short.score == 1.0 and short.score_is_floor  # the missing factor can only raise it
+    declared = seams[("ops", "db")]  # a contract: co-change cannot change its score
+    assert declared.undeclared == 0.0 and not declared.missing and not declared.score_is_floor
+    assert seams[("api", "db")].co_change is None and not seams[("api", "db")].missing
+    unknown = rank_seams(graph, None)
+    assert all("no indexed history" in m for s in unknown for m in s.missing)
 
 
 def test_both_ways_takes_the_wider_reach():

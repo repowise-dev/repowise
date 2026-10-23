@@ -11,7 +11,9 @@ history. Its score is ``confidence x reach x (1 + undeclared co-change)``:
 * undeclared co-change: the pair's co-change strength (0-1) when no contract
   links them (a package dependency is not a contract); 0 when a contract does,
   or when history was read and no co-change was found; ``None`` when either
-  repo holds too little indexed history to show co-change, so it is not scored.
+  repo holds too little indexed history to show co-change. The score then
+  leaves the factor out and is a floor (:attr:`Seam.score_is_floor`), never
+  a zero.
 
 A pair joined by co-change alone scores ``co-change x reach``.
 
@@ -52,9 +54,14 @@ class Seam:
     @property
     def undeclared(self) -> float | None:
         """Co-change no contract explains: the score's third factor."""
-        if self.co_change is None:
-            return None
-        return 0.0 if self.declared else self.co_change
+        if self.declared:
+            return 0.0  # a contract explains whatever co-change there is
+        return self.co_change
+
+    @property
+    def score_is_floor(self) -> bool:
+        """The score left out a factor that could only raise it (co-change not measured)."""
+        return self.score is not None and self.confidence is not None and self.undeclared is None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +74,7 @@ class Seam:
             "declared": self.declared,
             "undeclared_co_change": self.undeclared,
             "score": self.score,
+            "score_is_floor": self.score_is_floor,
             "missing": self.missing,
         }
 
@@ -130,7 +138,8 @@ def _seam(
     seam_reach = max(1, *(reach.get(n, 0) for n in depended))
     missing: list[str] = []
     co_change = p["cc"]
-    if co_change is None:
+    declared = any(k != "package" for k in p["kinds"])
+    if co_change is None and not declared:
         short = dict.fromkeys(
             repo
             for repo in (repo_of.get(consumer, consumer), repo_of.get(provider, provider))
@@ -139,7 +148,6 @@ def _seam(
         missing.extend(f"co-change not measured: {r} has {_commits(commits, r)}" for r in short)
         if not short:
             co_change = 0.0
-    declared = any(k != "package" for k in p["kinds"])
     seam = Seam(
         services=(consumer, provider),
         direction=direction,

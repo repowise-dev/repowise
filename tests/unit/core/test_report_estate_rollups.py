@@ -181,14 +181,15 @@ async def test_estate_rollups_read_each_index_and_the_store(tmp_path):
     seams = found["estate-seams"]["seams"]
     assert seams["basis"] == "inferred" and "heuristic" in seams["method"]
     assert seams["reason"].startswith(
-        "3 service pair(s) joined by an edge, 1 of the 2 with co-change measured change "
-        "together with no contract between them"
+        "3 service pair(s) joined by an edge, 1 with no contract between them, of which 1 "
+        "change together (co-change measured for 1)"
     )
     assert seams["details"][0].startswith(
         "api -> lib: seam score 4.5, package, confidence 1.00, reach 3 service(s), "
         "co-change 0.50 with no contract"
     )
-    assert "co-change not measured: old has 1 commit indexed" in seams["details"]
+    # old -> api is a grpc contract: its short history does not touch its score
+    assert not any("not measured" in d for d in seams["details"])
 
     services = found["estate-start"]["start-services"]
     assert services["details"][0] == "lib (service): a change reaches 3 service(s)"
