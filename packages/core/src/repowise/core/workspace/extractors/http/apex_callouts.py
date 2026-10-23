@@ -174,6 +174,26 @@ def _endpoint(url: str) -> str | None:
     return None
 
 
+def _holds_request(code: str, recv: str, start: int, end: int) -> bool:
+    """Whether ``[start, end)`` declares *recv* as an ``HttpRequest`` (local or parameter)."""
+    declared = re.compile(rf"\bHttpRequest\s+{re.escape(recv)}\b", re.IGNORECASE)
+    return declared.search(code, start, end) is not None
+
+
+def _url(
+    content: str, code: str, expr: str, scope: tuple[int, int], constants: dict[str, str]
+) -> str | None:
+    """The text endpoint argument *expr* denotes, or None when it is not settled here."""
+    start, end = scope
+    if NAME_RE.fullmatch(expr) and _declared_in(code, expr, start, end):
+        # A local or parameter shadows any field of the same name.
+        local = _local_value(content, code, expr, start, end)
+        if local is None:
+            return None
+        expr = local
+    return resolve_string(_cut_query(expr), APEX_SYNTAX, constants)
+
+
 class ApexCalloutsDialect:
     name = "apex-callouts"
     extensions = APEX
@@ -194,8 +214,7 @@ class ApexCalloutsDialect:
             if scope is None:
                 continue
             start, end = scope
-            declared = re.compile(rf"\bHttpRequest\s+{re.escape(recv)}\b", re.IGNORECASE)
-            if declared.search(code, start, end) is None:
+            if not _holds_request(code, recv, start, end):
                 continue  # not a request this method holds
             method = _verb(content, code, recv, start, end)
             args = call_arguments(content, m.end() - 1)
@@ -203,14 +222,7 @@ class ApexCalloutsDialect:
                 continue
             if constants is None:
                 constants = _final_fields(content, code)
-            expr = args[0]
-            if NAME_RE.fullmatch(expr) and _declared_in(code, expr, start, end):
-                # A local or parameter shadows any field of the same name.
-                local = _local_value(content, code, expr, start, end)
-                if local is None:
-                    continue
-                expr = local
-            url = resolve_string(_cut_query(expr), APEX_SYNTAX, constants)
+            url = _url(content, code, args[0], scope, constants)
             endpoint = _endpoint(url) if url is not None else None
             if endpoint is None:
                 continue
