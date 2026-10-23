@@ -138,28 +138,31 @@ def _soql(body: Node, emit: _Emit) -> None:
     walk(body, False)
 
 
-def _sosl(body: Node, emit: _Emit) -> None:
-    stack = [body]
+def _descendants(node: Node, stop: frozenset[str] = frozenset()) -> list[Node]:
+    """Every named descendant, not entering node types in *stop*."""
+    out: list[Node] = []
+    stack = list(node.named_children)
     while stack:
-        node = stack.pop()
+        child = stack.pop()
+        out.append(child)
+        if child.type not in stop:
+            stack.extend(child.named_children)
+    return out
+
+
+def _sosl(body: Node, emit: _Emit) -> None:
+    for node in _descendants(body, frozenset({"sobject_return"})):
         if node.type != "sobject_return":
-            stack.extend(node.named_children)
             continue
         ident = next((c for c in node.named_children if c.type == "identifier"), None)
         obj = _text(ident)
         if ident is None or not obj:
             continue
         emit(ident, obj, ())
-        fields = [node]
-        while fields:
-            n = fields.pop()
-            for c in n.named_children:
-                if c.type == "field_identifier":
-                    path = _field_path(c, None)
-                    if path:
-                        emit(c, obj, path)
-                elif c.type not in ("bound_apex_expression", "identifier"):
-                    fields.append(c)
+        for field in _descendants(node, frozenset({"field_identifier", "bound_apex_expression"})):
+            path = _field_path(field, None) if field.type == "field_identifier" else ()
+            if path:
+                emit(field, obj, path)
 
 
 def _query(node: Node, emit: _Emit) -> None:
@@ -227,45 +230,53 @@ def _visible(decl: Node, ancestors: set[tuple[int, int, str]]) -> bool:
     return holder is not None and _key(holder) in ancestors
 
 
-def _declared_type(use: Node, name: str) -> str | None:
-    """The type the nearest earlier declaration of *name* gives it, method then class."""
-    wanted = name.lower()
-    # Only a declaration whose scope encloses the use is visible: a local's
-    # enclosing block, a for-each's own statement, or the method's parameters.
+def _declares(node: Node, wanted: str) -> bool:
+    return wanted in (n.lower() for n in _declared_names(node))
+
+
+def _local_declaration(scope: Node, use: Node, wanted: str) -> Node | None:
+    """The nearest earlier declaration of *wanted* in *scope* that is visible at *use*.
+
+    Visible means its scope encloses the use: a local's enclosing block, a
+    for-each's own statement, or the method's parameters.
+    """
     ancestors: set[tuple[int, int, str]] = set()
+    node = use.parent
+    while node is not None and _key(node) != _key(scope):
+        ancestors.add(_key(node))
+        node = node.parent
+    candidates = [
+        n
+        for n in _descendants(scope)
+        if n.start_byte < use.start_byte
+        and n.type in _DECLARATIONS
+        and _declares(n, wanted)
+        and _visible(n, ancestors)
+    ]
+    return max(candidates, key=lambda n: n.start_byte, default=None)
+
+
+def _field_declaration(node: Node, wanted: str) -> Node | None:
+    klass = node.parent
+    while klass is not None and klass.type != "class_body":
+        klass = klass.parent
+    if klass is None:
+        return None
+    return next(
+        (f for f in klass.named_children if f.type == "field_declaration" and _declares(f, wanted)),
+        None,
+    )
+
+
+def _declared_type(use: Node, name: str) -> str | None:
+    """The type the nearest visible declaration of *name* gives it, method then class."""
+    wanted = name.lower()
     scope = use.parent
     while scope is not None and scope.type not in _SCOPES:
-        ancestors.add(_key(scope))
         scope = scope.parent
-    best: Node | None = None
-    if scope is not None:
-        stack = [scope]
-        while stack:
-            node = stack.pop()
-            if node.start_byte >= use.start_byte:
-                continue
-            if (
-                node.type in _DECLARATIONS
-                and wanted in (n.lower() for n in _declared_names(node))
-                and _visible(node, ancestors)
-                and (best is None or node.start_byte > best.start_byte)
-            ):
-                best = node
-            stack.extend(node.named_children)
+    best = _local_declaration(scope, use, wanted) if scope is not None else None
     if best is None:
-        klass = (scope or use).parent
-        while klass is not None and klass.type != "class_body":
-            klass = klass.parent
-        if klass is not None:
-            best = next(
-                (
-                    f
-                    for f in klass.named_children
-                    if f.type == "field_declaration"
-                    and wanted in (n.lower() for n in _declared_names(f))
-                ),
-                None,
-            )
+        best = _field_declaration(scope or use, wanted)
     return _type_name(best.child_by_field_name("type")) if best is not None else None
 
 
