@@ -12,8 +12,9 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from repowise.core.workspace.contracts import normalize_contract_id
-from repowise.core.workspace.origins import LinkStrategy
+from repowise.core.workspace.contracts import ContractLink, normalize_contract_id
+from repowise.core.workspace.origins import LinkStrategy, link_confidence, match_type_for
+from repowise.core.workspace.service_names import ENV, HOST, ServiceName, ServiceNameMap
 
 from .common import find_matching_keys, internal, prefer_target_repo
 
@@ -81,73 +82,108 @@ _INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".svc.cluster.local")
 # ---------------------------------------------------------------------------
 
 
+#: ``meta["target_via"]`` for a target that came from config or a repo alias
+#: rather than from a :mod:`..service_names` source.
+VIA_SERVICE_BASES = "service_bases"
+VIA_REPO_ALIAS = "repo_alias"
+
+
 def _resolve_consumer_target(
     consumer: Contract,
     repo_aliases: set[str],
     service_bases: dict[str, str],
-) -> tuple[str | None, bool]:
-    """Resolve a consumer's target repo and whether it is a third-party call.
+    names: ServiceNameMap,
+) -> tuple[str | None, bool, ServiceName | None]:
+    """Resolve a consumer's target repo, whether it is a third-party call, and why.
 
-    Returns ``(target_repo, is_external)``:
+    Returns ``(target_repo, is_external, via)``, *via* naming the entry that
+    settled the target (its ``source``: ``service_bases``, ``repo_alias`` or a
+    service-name source such as ``compose``):
 
     - ``service_bases`` (host or ``${BASE}`` token) wins first;
     - a host equal to a workspace repo alias, or an internal-DNS host whose
       leading label is a repo alias (``backend.svc.cluster.local``), is internal;
-    - localhost and bare unknown hostnames (e.g. a docker-compose service we
-      can't map) return ``(None, False)`` so path matching still applies;
+    - a host or internal-DNS label the service-name map places, and a base
+      token it knows as an address key (``CATALOGUE_URL``), resolve to that repo;
+    - localhost and bare unknown hostnames (a compose service nothing maps)
+      return ``(None, False, None)`` so path matching still applies;
     - any other *public* dotted host is third-party (``is_external=True``).
     """
     meta = consumer.meta
     host = meta.get("host")
     if host:
         if host in service_bases:
-            return service_bases[host], False
-        if host in repo_aliases:
-            return host, False
+            return service_bases[host], False, ServiceName(host, HOST, service_bases[host], VIA_SERVICE_BASES, "")
         if host in _LOCALHOST_HOSTS:
-            return None, False
-        if host.endswith(_INTERNAL_HOST_SUFFIXES):
-            label = host.split(".")[0]
-            return (label, False) if label in repo_aliases else (None, False)
-        if "." not in host:
-            return None, False  # bare unknown hostname, not necessarily third-party
-        return None, True  # public dotted host, unmapped → third-party
+            return None, False, None
+        internal_dns = host not in repo_aliases and host.endswith(_INTERNAL_HOST_SUFFIXES)
+        label = host.split(".")[0] if internal_dns else host
+        mapped = names.lookup(label, HOST)
+        if label in repo_aliases:
+            # A map entry agreeing with the alias is the evidence; the alias alone is a name match.
+            if mapped is not None and mapped.repo == label:
+                return label, False, mapped
+            return label, False, ServiceName(label, HOST, label, VIA_REPO_ALIAS, "")
+        if mapped is not None:
+            return mapped.repo, False, mapped
+        if label != host or "." not in host:
+            return None, False, None  # unmapped internal or bare hostname, not third-party
+        return None, True, None  # public dotted host, unmapped → third-party
     token = meta.get("base_token")
-    if token and token.lower() in service_bases:
-        return service_bases[token.lower()], False
-    return None, False
+    if token:
+        if token.lower() in service_bases:
+            repo = service_bases[token.lower()]
+            return repo, False, ServiceName(token.lower(), ENV, repo, VIA_SERVICE_BASES, "")
+        mapped = names.lookup(token, ENV)
+        if mapped is not None:
+            return mapped.repo, False, mapped
+    return None, False, None
 
 
 def annotate_consumer_targets(
     contracts: list[Contract],
     service_bases: dict[str, str] | None = None,
+    names: ServiceNameMap | None = None,
 ) -> None:
     """Stamp each HTTP consumer's ``meta`` with its resolved target / external bit.
 
     Mutates the contracts in place so both :func:`..match_contracts` and the
     diagnostics builder read one resolution. ``service_bases`` maps a base token
-    or host (case-insensitive) to a repo alias.
+    or host (case-insensitive) to a repo alias and always wins; *names* is the
+    workspace's :class:`..service_names.ServiceNameMap`, read after the repo
+    aliases. A target that is a workspace repo also gets ``target_via`` (the
+    source that placed it) and, from a service-name source, ``target_evidence``
+    (the file), which is what lets :func:`service_pass` draw a service-level edge.
 
-    The two keys this owns are cleared before being recomputed, so the result is
-    a function of *contracts* and *service_bases* alone and not of whatever a
-    previous run stamped. That matters now that incremental extraction carries
-    contracts forward: a consumer resolved to ``gamma`` keeps that ``meta`` when
-    it is reused, and if ``gamma`` has since left the workspace the resolution
-    no longer fires — so without the clear, the stale target survives and the
-    contract claims to call a repo that is not in the workspace any more.
+    The keys this owns are cleared before being recomputed, so the result is
+    a function of *contracts*, *service_bases* and *names* alone and not of
+    whatever a previous run stamped. That matters now that incremental
+    extraction carries contracts forward: a consumer resolved to ``gamma`` keeps
+    that ``meta`` when it is reused, and if ``gamma`` has since left the
+    workspace the resolution no longer fires — so without the clear, the stale
+    target survives and the contract claims to call a repo that is not in the
+    workspace any more.
     """
-    repo_aliases = {c.repo for c in contracts}
+    names = names or ServiceNameMap()
+    repo_aliases = {c.repo for c in contracts} | names.repos
     sb = {k.lower(): v for k, v in (service_bases or {}).items()}
     for c in contracts:
         if c.role != "consumer" or c.contract_type != "http":
             continue
-        c.meta.pop("target_repo", None)
-        c.meta.pop("external", None)
-        target, external = _resolve_consumer_target(c, repo_aliases, sb)
+        for key in _TARGET_KEYS:
+            c.meta.pop(key, None)
+        target, external, via = _resolve_consumer_target(c, repo_aliases, sb, names)
         if external:
             c.meta["external"] = True
         elif target:
             c.meta["target_repo"] = target
+            if via is not None and target in repo_aliases:
+                c.meta["target_via"] = via.source
+                if via.file:
+                    c.meta["target_evidence"] = via.file
+
+
+_TARGET_KEYS = ("target_repo", "external", "target_via", "target_evidence")
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +305,52 @@ def candidate_pass(state: MatchState) -> None:
             state.add(consumer, provider, LinkStrategy.PREFIX_STRIPPED)
 
 
+def service_pass(state: MatchState) -> None:
+    """Draw a service-level edge for each consumer whose target is known but whose route is not.
+
+    The host (or base token) places the call in a workspace repo, yet no
+    provider there, or anywhere, serves its path: the dependency is real, the
+    route is unread. Each such consumer gets one :attr:`LinkStrategy.HOST_ONLY`
+    link to the target repo with no provider file, kept apart from route links
+    in :attr:`.common.MatchState.service_links`.
+    """
+    seen: set[tuple[str, ...]] = set()
+    for consumer in state.unmatched("http"):
+        meta = consumer.meta
+        target = meta.get("target_repo")
+        via = meta.get("target_via")
+        # A host that only equals a repo name is not evidence enough for an edge.
+        if not target or not via or via == VIA_REPO_ALIAS or target == consumer.repo:
+            continue
+        key = (consumer.repo, consumer.file_path, normalize_contract_id(consumer.contract_id), target)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = meta.get("host") or meta.get("base_token") or target
+        state.service_links.append(
+            ContractLink(
+                contract_id=consumer.contract_id,
+                contract_type=consumer.contract_type,
+                match_type=match_type_for(LinkStrategy.HOST_ONLY),
+                confidence=link_confidence(LinkStrategy.HOST_ONLY, consumer.confidence),
+                provider_repo=target,
+                provider_file="",
+                provider_symbol=f"{name} ({meta['target_via']})",
+                provider_service=None,
+                consumer_repo=consumer.repo,
+                consumer_file=consumer.file_path,
+                consumer_symbol=consumer.symbol_name,
+                consumer_service=consumer.service,
+                consumer_symbol_id=consumer.symbol_id,
+                strategy=LinkStrategy.HOST_ONLY,
+            )
+        )
+
+
 __all__ = [
     "annotate_consumer_targets",
     "base_resolved_pass",
     "candidate_pass",
     "is_deferred",
+    "service_pass",
 ]

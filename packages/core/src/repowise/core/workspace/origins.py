@@ -80,6 +80,9 @@ class LinkStrategy(StrEnum):
     SHARED_TABLE = "shared_table"
     #: The consumer's host or base token maps to the providing service.
     SERVICE_MAPPED = "service_mapped"
+    #: The consumer's host or base token maps to a service, but no route there serves
+    #: its path: a service-level dependency, not a route link.
+    HOST_ONLY = "host_only"
     #: The consumer's base is unread and exactly one service serves the path.
     UNIQUE_PATH = "unique_path"
     #: The consumer's base is unread and several services serve the path; linked to each.
@@ -98,6 +101,7 @@ STRATEGY_CONFIDENCE: dict[LinkStrategy, float] = {
     LinkStrategy.BINDING_ROUTED: 1.0,
     LinkStrategy.SHARED_TABLE: 1.0,
     LinkStrategy.SERVICE_MAPPED: 1.0,
+    LinkStrategy.HOST_ONLY: 0.5,
     LinkStrategy.UNIQUE_PATH: 1.0,
     LinkStrategy.AMBIGUOUS_PATH: 0.6,
     LinkStrategy.PREFIX_STRIPPED: 0.6,
@@ -105,7 +109,9 @@ STRATEGY_CONFIDENCE: dict[LinkStrategy, float] = {
     LinkStrategy.MANIFEST: 1.0,
 }
 
-_CANDIDATE = frozenset({LinkStrategy.AMBIGUOUS_PATH, LinkStrategy.PREFIX_STRIPPED})
+_CANDIDATE = frozenset(
+    {LinkStrategy.AMBIGUOUS_PATH, LinkStrategy.PREFIX_STRIPPED, LinkStrategy.HOST_ONLY}
+)
 
 
 def origin_confidence(origin: str) -> float:

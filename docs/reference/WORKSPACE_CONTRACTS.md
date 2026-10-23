@@ -39,6 +39,7 @@ follows from the strategy.
 | 1.0 | `unique_path` | exact | The consumer's base is unread and one service serves the path |
 | 0.6 | `ambiguous_path` | candidate | The base is unread and several services serve the path; linked to each |
 | 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes |
+| 0.5 | `host_only` | candidate | The host names a workspace service, but no route there serves the path; a service-level edge |
 | 1.0 | `manual` | manual | Declared in the workspace config |
 
 A new dialect picks an existing origin, not a number. A system-graph edge carries the
@@ -105,6 +106,28 @@ whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) mat
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path (`unique_path`) and a lower-confidence **candidate** when the target
 is ambiguous (`ambiguous_path`).
+
+## Service names
+
+A consumer that names its target (`http://catalogue:8080/...`, `${CATALOGUE_URL}/...`) is
+resolved to a repo in this order: a `contracts.service_bases` entry, a repo alias (also as
+the leading label of `<name>.svc.cluster.local`), then the service-name map the workspace
+reads from its own config. A host the map places links with strategy `service_mapped`; when
+no route in that repo serves the path, the call becomes a `host_only` service-level edge in
+the system graph (kept in `service_links`, apart from route links). The consumer's `meta`
+records `target_via` (the source) and `target_evidence` (the file).
+
+| Source | Files read | Name | Repo |
+|---|---|---|---|
+| `aspire_apphost` | `AppHost.cs`, `Program.cs` holding `DistributedApplication.CreateBuilder` | `AddProject("catalog-api", "../Catalog.API")`, or `AddProject<Projects.X>(...)` through the AppHost's `<ProjectReference>` | The project's directory |
+| `compose` | `docker-compose*.yml`, `compose*.yml` | Service name, `container_name`, `hostname`; `environment` keys whose value is an address | `build` context (or its Dockerfile's directory), else an image basename equal to a repo alias |
+| `k8s_service` | `*.yaml` under `k8s/`, `deploy/`, `manifests/`, ... | `kind: Service` `metadata.name` | A selector or label value equal to a repo alias, else the manifest's repo when it declares no other Service |
+| `spring_application_name` | `application` / `bootstrap` `.yml` or `.properties` | `spring.application.name` | The module the file sits in |
+
+Each repo is walked once per update for these file names; test, example and build-output
+directories are skipped, and files at the workspace root are read too. A name two files
+place in different repos is left unmapped rather than guessed. To override or fill a gap, add
+the host or base token to `service_bases`, which always wins.
 
 ## Contracts over REST
 

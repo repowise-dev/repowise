@@ -202,6 +202,9 @@ contracts:
   contract_project_pattern: '(?:.+\.)?contracts'
   # Map a consumer base token or absolute host to the repo it targets, so a
   # call whose base is unresolved at parse time links as an exact match.
+  # Most names are found without this, from compose, Kubernetes, Spring and
+  # Aspire config (see WORKSPACE_CONTRACTS.md, "Service names"); an entry
+  # here always wins.
   service_bases:
     API_BASE: backend          # ${API_BASE}/... -> the "backend" repo
     api.example.com: backend    # https://api.example.com/... -> "backend"

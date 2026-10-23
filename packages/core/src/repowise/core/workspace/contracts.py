@@ -68,7 +68,9 @@ CONTRACTS_FILENAME = "contracts.json"
 # Version 14 adds MassTransit message-type topic contracts (C# and VB.NET).
 # Version 15 stamps each contract with its origin and each link with its
 # strategy (see :mod:`.origins`), and stops linking a Laravel job class to a
-# publisher that is not Laravel.
+# publisher that is not Laravel; HTTP consumers resolve hosts through the
+# service-name map (:mod:`.service_names`), and ``service_links`` holds the
+# service-level edges for calls whose host is known but whose route is not.
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -251,6 +253,14 @@ class ContractStore:
     #: A repo absent from here has never been extracted by a provenance-aware
     #: run and must be re-extracted rather than trusted.
     repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Service-level edges (:attr:`.origins.LinkStrategy.HOST_ONLY`): a consumer
+    #: whose host names a workspace repo while no route there serves its path.
+    #: Kept out of ``contract_links``, which only ever pairs two contracts.
+    service_links: list[ContractLink] = field(default_factory=list)
+    #: The service-name map matching used (:mod:`.service_names`): each name, its
+    #: repo, and the source and file that placed it, plus the fingerprint that
+    #: lets a run re-reading no repo reuse it.
+    service_names: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -258,6 +268,8 @@ class ContractStore:
             "generated_at": self.generated_at,
             "contracts": [c.to_dict() for c in self.contracts],
             "contract_links": [lk.to_dict() for lk in self.contract_links],
+            "service_links": [lk.to_dict() for lk in self.service_links],
+            "service_names": self.service_names,
             "extraction_stats": self.extraction_stats,
             "repo_provenance": self.repo_provenance,
         }
@@ -275,6 +287,8 @@ class ContractStore:
             # freshness", so the next run re-extracts everything — the safe
             # direction for a one-off cost.
             repo_provenance=data.get("repo_provenance", {}),
+            service_links=[ContractLink.from_dict(lk) for lk in data.get("service_links", [])],
+            service_names=data.get("service_names", {}),
         )
 
     def rows_for_repo(self, alias: str) -> list[Contract]:
@@ -570,7 +584,8 @@ async def run_contract_extraction(
     from .extractors import build_message_type_index
     from .extractors.base import make_exclude_predicate
     from .extractors.masstransit import MessageTypeIndex
-    from .matching import annotate_consumer_targets, match_contracts
+    from .matching import annotate_consumer_targets, run_matching
+    from .service_names import ServiceNameMap, build_service_name_map, service_names_fingerprint
 
     contract_config = ws_config.contracts
     exclude = make_exclude_predicate(tuple(contract_config.exclude_globs))
@@ -644,8 +659,16 @@ async def run_contract_extraction(
     )
 
     # Resolve each consumer's target service / third-party host, then match.
-    annotate_consumer_targets(all_contracts, contract_config.service_bases)
-    links = match_contracts(all_contracts)
+    # The name map is read from repo files, so a run that re-reads no repo (a
+    # settings-only change) reuses the stored map when its fingerprint holds.
+    names_fp = service_names_fingerprint(heads, workspace_root)
+    if not to_extract and prior.service_names.get("fingerprint") == names_fp:
+        names = ServiceNameMap.from_dict(prior.service_names)
+    else:
+        names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
+    annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
+    matched = run_matching(all_contracts)
+    links = matched.links
 
     # Merge manual links
     if contract_config.manual_links:
@@ -658,6 +681,8 @@ async def run_contract_extraction(
         contract_links=links,
         extraction_stats=extraction_stats,
         repo_provenance=provenance,
+        service_links=matched.service_links,
+        service_names=names.to_dict(names_fp),
     )
 
     out_path = save_contract_store(store, workspace_root)

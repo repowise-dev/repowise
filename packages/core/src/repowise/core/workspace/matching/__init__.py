@@ -45,7 +45,7 @@ class TypeMatcher:
 MATCHERS: dict[str, TypeMatcher] = {
     "http": TypeMatcher(
         deferred=http.is_deferred,
-        passes=(http.base_resolved_pass, http.candidate_pass),
+        passes=(http.base_resolved_pass, http.candidate_pass, http.service_pass),
     ),
     "topic": TypeMatcher(
         deferred=topic.is_binding,
@@ -70,6 +70,8 @@ def _exact_pass(state: MatchState) -> None:
         else:
             keys = find_matching_keys(consumer.contract_id, state.provider_index)
         providers = [p for k in keys for p in state.provider_index[k]]
+        # A host or base token that names the provider's repo is what joined them.
+        target = consumer.meta.get("target_repo") if consumer.meta.get("target_via") else None
         for provider in prefer_target_repo(providers, consumer):
             if internal(provider, consumer):
                 state.mark_served(consumer)
@@ -81,12 +83,17 @@ def _exact_pass(state: MatchState) -> None:
             # provider's name. A new `keys` rule with another meaning names its
             # own strategy here.
             aliased = rules.keys is not None and normalize_contract_id(provider.contract_id) != own
-            strategy = LinkStrategy.PATTERN_MATCHED if aliased else LinkStrategy.EXACT_ID
+            if aliased:
+                strategy = LinkStrategy.PATTERN_MATCHED
+            elif provider.repo == target:
+                strategy = LinkStrategy.SERVICE_MAPPED
+            else:
+                strategy = LinkStrategy.EXACT_ID
             state.add(consumer, provider, strategy, via_alias=aliased)
 
 
-def match_contracts(contracts: list[Contract]) -> list[ContractLink]:
-    """Match providers to consumers across repos.
+def run_matching(contracts: list[Contract]) -> MatchState:
+    """Match providers to consumers across repos; the state holds links and service links.
 
     The exact pass runs first for every type, then each registered type's own
     passes in registry order. Target resolution for HTTP consumers is read from
@@ -97,7 +104,12 @@ def match_contracts(contracts: list[Contract]) -> list[ContractLink]:
     for rules in MATCHERS.values():
         for run in rules.passes:
             run(state)
-    return state.links
+    return state
+
+
+def match_contracts(contracts: list[Contract]) -> list[ContractLink]:
+    """The route-level links :func:`run_matching` makes."""
+    return run_matching(contracts).links
 
 
 __all__ = [
@@ -105,4 +117,5 @@ __all__ = [
     "TypeMatcher",
     "annotate_consumer_targets",
     "match_contracts",
+    "run_matching",
 ]

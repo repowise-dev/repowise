@@ -32,6 +32,9 @@ class MatchState:
     links: list[ContractLink] = field(default_factory=list)
     seen: set[tuple[str, ...]] = field(default_factory=set)
     matched: set[int] = field(default_factory=set)
+    #: Service-level edges for consumers whose target repo is known but whose
+    #: route is not (:func:`.http.service_pass`); never mixed into ``links``.
+    service_links: list[ContractLink] = field(default_factory=list)
 
     @classmethod
     def build(cls, contracts: list[Contract]) -> MatchState:
@@ -156,13 +159,21 @@ def prefer_target_repo(providers: list[Contract], consumer: Contract) -> list[Co
     """Narrow *providers* to the consumer's resolved ``target_repo`` when set.
 
     Falls back to the full list if the target declares no matching provider, so
-    a stale/typo'd ``service_bases`` entry never silently drops a real link.
+    a stale/typo'd ``service_bases`` entry never silently drops a real link. A
+    target the service-name map placed (it carries ``target_evidence``) does
+    not fall back: the file named that repo, so a same-path route elsewhere is
+    not the call's destination.
     """
     target = consumer.meta.get("target_repo")
     if not target:
         return providers
     preferred = [p for p in providers if p.repo == target]
-    return preferred or providers
+    if preferred or consumer.meta.get("target_evidence"):
+        # A target the workspace's own config placed does not fall back to
+        # another repo that happens to serve the path; the service pass draws
+        # the dependency instead.
+        return preferred
+    return providers
 
 
 __all__ = [

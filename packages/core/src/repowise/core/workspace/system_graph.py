@@ -421,12 +421,15 @@ def build_system_graph(
     version: int = 2,
     generated_at: str = "",
     repo_provenance: dict[str, dict[str, str]] | None = None,
+    service_links: list[ContractLink] | None = None,
 ) -> SystemGraph:
     """Assemble the service-granular system graph (pure, no I/O).
 
     Nodes are derived from each contract's service boundary; edges from matched
-    contract links (consumer→provider), package dependencies (dependent→
-    dependency), and cross-repo co-changes (undirected, behavioral).
+    contract links (consumer→provider), service-level links (a consumer to the
+    repo its host names, no route known; :attr:`.origins.LinkStrategy.HOST_ONLY`),
+    package dependencies (dependent→dependency), and cross-repo co-changes
+    (undirected, behavioral).
     """
     if diagnostics is None:
         diagnostics = build_diagnostics(contracts, links)
@@ -437,10 +440,11 @@ def build_system_graph(
     for c in contracts:
         builder.count_contract(c)
 
-    # 2. Contract edges — the consumer calls the provider.
-    for lk in links:
+    # 2. Contract edges — the consumer calls the provider (or, for a service
+    # link, the provider's repo: no provider file, so its repo-root node).
+    for lk in [*links, *(service_links or ())]:
         source = builder.resolve_node(lk.consumer_repo, lk.consumer_file)
-        target = builder.resolve_node(lk.provider_repo, lk.provider_file)
+        target = builder.resolve_node(lk.provider_repo, lk.provider_file or None)
         builder.add_edge(
             source=source,
             target=target,
@@ -568,6 +572,7 @@ async def run_system_graph_build(
         diagnostics,
         generated_at=datetime.now(UTC).isoformat(),
         repo_provenance=store.repo_provenance,
+        service_links=store.service_links,
     )
 
     out_path = save_system_graph(graph, workspace_root)
