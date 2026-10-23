@@ -804,6 +804,14 @@ JAVA_SYNTAX = StringSyntax(
     ),
 )
 
+# Apex: `'` is the only quote and nothing interpolates. Ceiling: a constant is
+# looked up in the case it is written, though Apex names are case-insensitive.
+APEX_SYNTAX = StringSyntax(
+    quotes="'",
+    concat="+",
+    assignment=JAVA_SYNTAX.assignment,
+)
+
 KOTLIN_SYNTAX = StringSyntax(
     quotes='"',
     template_quotes='"',
@@ -847,6 +855,7 @@ def syntax_for_suffix(suffix: str) -> StringSyntax | None:
 
 
 __all__ = [
+    "APEX_SYNTAX",
     "CSHARP_SYNTAX",
     "GO_SYNTAX",
     "JAVA_SYNTAX",

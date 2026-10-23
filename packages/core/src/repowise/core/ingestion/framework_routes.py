@@ -987,6 +987,56 @@ def jaxrs_routes(content: str) -> Iterator[RouteMatch]:
 
 
 # ---------------------------------------------------------------------------
+# Apex REST (Salesforce)
+# ---------------------------------------------------------------------------
+
+# `@RestResource(urlMapping='/accounts/*')` on a class serves it under the org's
+# Apex REST base; `@HttpGet` and its siblings on the class's methods name the
+# verbs. Apex reads annotations without regard to case, and `'` is its only quote.
+_APEX_REST_RESOURCE_RE = re.compile(r"@RestResource\b", re.IGNORECASE)
+_APEX_URL_MAPPING_RE = re.compile(
+    r"\s*\(\s*urlMapping\s*=\s*'(?P<path>[^'\\\n]*)'\s*\)", re.IGNORECASE
+)
+_APEX_REST_VERB_RE = re.compile(r"@Http(?P<verb>Get|Post|Put|Patch|Delete)\b", re.IGNORECASE)
+
+
+def apex_code(content: str) -> str:
+    """*content* with Apex comments and string literals blanked, offsets and newlines kept."""
+    out = [c if c == "\n" else " " for c in content]
+    for i, c, _depth in scan_code(content, quotes="'"):
+        out[i] = c
+    return "".join(out)
+
+
+def apex_rest_routes(content: str, code: str | None = None) -> Iterator[RouteMatch]:
+    """Verb-annotated methods under the file's ``@RestResource`` class.
+
+    ``path`` is the class's raw ``urlMapping``, or ``None`` when it is not one
+    literal. The platform allows the annotation on one top-level class per
+    file, so there is one mapping. A file whose ``@RestResource`` sits only in
+    a comment or a string serves nothing. *code* is :func:`apex_code` of
+    *content*, for a caller that already has it.
+    """
+    if "restresource" not in content.lower():
+        return
+    code = apex_code(content) if code is None else code
+    resource = _APEX_REST_RESOURCE_RE.search(code)
+    if resource is None:
+        return
+    mapping = _APEX_URL_MAPPING_RE.match(content, resource.end())
+    path = mapping.group("path") if mapping else None
+    for m in _APEX_REST_VERB_RE.finditer(code):
+        yield RouteMatch(
+            verb=m.group("verb").upper(),
+            path=path,
+            receiver=None,
+            handler=None,
+            offset=m.start(),
+            paren_offset=m.start(),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Next.js App Router
 # ---------------------------------------------------------------------------
 

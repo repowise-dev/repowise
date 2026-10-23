@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 from ..base import ScanContext, select_files
 from ..dialect import ContractDialect, union_extensions
 from ..langs import PYTHON
+from .apex_callouts import ApexCalloutsDialect
+from .apex_rest import ApexRestDialect
 from .aspnet import AspNetDialect
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
@@ -69,6 +71,7 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     MicronautDialect(),
     NextAppDialect(),
     RemixDialect(),
+    ApexRestDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).
@@ -82,6 +85,7 @@ CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
     JavaClientsDialect(),
     KotlinClientsDialect(),
     PhpClientsDialect(),
+    ApexCalloutsDialect(),
 )
 
 
