@@ -1877,6 +1877,24 @@ _APEX_CASES = [
         "a per-record retry after a failed bulk call",
     ),
     (_apex_loop("      Database.executeBatch(new Job(i));"), [], "batch submission is left out"),
+    (
+        _apex_loop("      update rec;\n      if (rec.Name == 'z') { break; }"),
+        [("io_in_loop", "db")],
+        "a guard exit on another condition keeps the hit",
+    ),
+    (
+        _apex_loop(
+            "      ok = true;\n      try { Database.convertLead(c); } catch (Exception e) { ok = false; }\n"
+            "      if (ok) { break; }"
+        ),
+        [],
+        "retry until one attempt succeeds",
+    ),
+    (
+        _apex_loop("      buf.add(i);\n      if (buf.size() > 100 || done) { update buf; }"),
+        [("io_in_loop", "db")],
+        "a size test mixed with another condition is no flush",
+    ),
 ]
 
 

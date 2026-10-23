@@ -5,8 +5,8 @@ them in ``call_kinds`` and :meth:`ApexPerfDialect.call_sink_kind` classifies
 them by node shape. The rest of the lexicon is the platform's static API
 (``Database.*``, callouts, ``Messaging.sendEmail``, ``System.enqueueJob``,
 same-class ``@future`` calls), matched case-insensitively. The Java dialect
-supplies the callee seam and the loop-source reading; only the ``io_in_loop``
-family is emitted.
+supplies the callee seam and the loop-source reading; only ``io_in_loop`` and
+``nested_loop_with_io`` are emitted.
 """
 
 from __future__ import annotations
@@ -164,8 +164,9 @@ class ApexPerfDialect(JavaPerfDialect):
         literal list), a walk over chunks (``i += size``, a list of lists, or
         ``for (List<Account> chunk : [SELECT ...])``, the platform's 200-row
         batch idiom), a retry inside a ``catch`` after a bulk call failed, and
-        ``while`` / ``do``, which walk a cursor or a chain. Ceiling: a SOQL per
-        hierarchy level in a ``while`` is not reported."""
+        ``while`` / ``do``, which walk a cursor or a chain. Ceiling: any loop
+        inside a ``catch`` and any ``while`` (a SOQL per hierarchy level) go
+        unreported."""
         if node.type in ("while_statement", "do_statement"):
             return True
         holder = _ancestor(node, _SCOPES | {"catch_clause"})
@@ -387,8 +388,10 @@ def _cached(call: Node) -> bool:
     if first is None or first.type != "if_statement":
         return False
     name = _cache_name(first.child_by_field_name("condition"), _PRESENT)
-    returned = _normalised(first.child_by_field_name("consequence")).strip("{}")
-    return bool(name) and returned.startswith("return") and _fills(body, name)
+    branch = first.child_by_field_name("consequence")
+    inner = branch.named_children if branch is not None and branch.type == "block" else [branch]
+    returns = len(inner) == 1 and inner[0] is not None and inner[0].type == "return_statement"
+    return bool(name) and returns and _fills(body, name)
 
 
 def _parameter_switched(call: Node) -> bool:
@@ -436,11 +439,12 @@ def _flushed_buffer(call: Node, target: Node) -> bool:
     size (``== 100``, ``>= BATCH``); an emptiness test (``> 0``) is no flush."""
     if target.type != "identifier":
         return False
-    threshold = re.compile(re.escape(_lower(target)) + r"\.size\(\)(?:==|>=|>)(\d+|[a-z_]\w*)")
+    threshold = re.compile(re.escape(_lower(target)) + r"\.size\(\)(?:==|>=|>)(\d+|[a-z_][\w.]*)")
     cur = call.parent
     while cur is not None and cur.type not in _SCOPES and cur.type not in _LOOP_KINDS:
         if cur.type == "if_statement":
-            found = threshold.search(_normalised(cur.child_by_field_name("condition")))
+            condition = _normalised(cur.child_by_field_name("condition")).removeprefix("(").removesuffix(")")
+            found = threshold.fullmatch(condition)
             if found and not (found[1].isdigit() and int(found[1]) < 2):
                 return True
         cur = cur.parent
@@ -448,9 +452,12 @@ def _flushed_buffer(call: Node, target: Node) -> bool:
 
 
 def _loop_ends_after(call: Node) -> bool:
-    """A ``return`` after *call* in its innermost loop, or a ``break`` there when
-    that loop is the only one around *call*."""
+    """The loop ends right after *call*: a ``return`` or ``break`` follows it in
+    its own block, or the next exit tests a flag the ``try`` around *call* sets
+    (retry until one attempt succeeds). A ``break`` counts only when one loop
+    surrounds *call*. An exit on any other condition keeps the hit."""
     loops: list[Node] = []
+    statement = call
     cur = call.parent
     while cur is not None and cur.type not in _SCOPES:
         if cur.type in _LOOP_KINDS:
@@ -458,20 +465,37 @@ def _loop_ends_after(call: Node) -> bool:
         cur = cur.parent
     if not loops:
         return False
-    body = loops[0].child_by_field_name("body")
-    # ``(node, nested)``: a ``break`` inside a nested loop leaves only that loop.
-    stack = [(body, False)] if body is not None else []
-    while stack:
-        node, nested = stack.pop()
-        if node.start_byte >= call.end_byte:
-            if node.type == "return_statement":
-                return True
-            if node.type == "break_statement" and not nested and len(loops) == 1:
-                return True
-        if node.type in _CLASS:
+    exits = ("return_statement", "break_statement") if len(loops) == 1 else ("return_statement",)
+    while statement.parent is not None and statement.parent.type != "block":
+        statement = statement.parent
+    if any(s.type in exits for s in _later_siblings(statement)):
+        return True
+    attempt = _ancestor(call, _SCOPES | _LOOP_KINDS | {"try_statement"})
+    if attempt is None or attempt.type != "try_statement":
+        return False
+    flags = {
+        _normalised(n.child_by_field_name("left"))
+        for n in ApexPerfDialect._walk(attempt)
+        if n.type == "assignment_expression"
+    }
+    for later in _later_siblings(attempt):
+        if later.type != "if_statement":
             continue
-        inner = nested or (node is not body and node.type in _LOOP_KINDS)
-        stack.extend((c, inner) for c in node.children)
+        consequence = later.child_by_field_name("consequence")
+        body = consequence.named_children if consequence is not None and consequence.type == "block" else [consequence]
+        if len(body) == 1 and body[0] is not None and body[0].type in exits:
+            return _normalised(later.child_by_field_name("condition")).strip("()!") in flags
+        return False
     return False
+
+
+def _later_siblings(node: Node) -> list[Node]:
+    out: list[Node] = []
+    nxt = node.next_named_sibling
+    while nxt is not None:
+        out.append(nxt)
+        nxt = nxt.next_named_sibling
+    return out
+
 
 DIALECT = ApexPerfDialect()

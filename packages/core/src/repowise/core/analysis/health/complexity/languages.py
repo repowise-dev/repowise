@@ -613,8 +613,8 @@ def _apex_auto_property(node: Node) -> object:
     )
 
 
-# Apex is Java-shaped. Triggers and code-holding property accessor lists are
-# units; inline SOQL/SOSL and DML join ``call_kinds`` for the perf dialect.
+# Apex is Java-shaped. A trigger is a unit, and so is a property whose get/set
+# holds code (one unit per property); inline SOQL/SOSL and DML join ``call_kinds``.
 _APEX = LanguageNodeMap(
     ctor_kinds=frozenset({"constructor_declaration"}),
     fixed_signature_markers=frozenset({"override"}),
