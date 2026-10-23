@@ -279,16 +279,24 @@ class ApexDefUseDialect(JavaDefUseDialect):
         for child in node.named_children:
             if child.type == "argument_list":
                 for arg in child.named_children:
-                    target = arg.child_by_field_name("left") if arg.type == "assignment_expression" else None
-                    if target is not None and target.type == "identifier":
-                        if not reads_only and _is_local(target):
-                            occ = [self._occ(target)]
-                            defs.extend(may_defs(occ))
-                            uses.extend(echoes(occ))
-                        arg = arg.child_by_field_name("right")
-                    self._walk(arg, defs, uses, reads_only=reads_only)
+                    value = self._pair_value(arg, defs, uses, reads_only=reads_only)
+                    self._walk(value, defs, uses, reads_only=reads_only)
             elif child.type != "class_body":  # an anonymous class body is its own scope
                 self._walk(child, defs, uses, reads_only=reads_only)
+
+    def _pair_value(
+        self, arg: Node, defs: list[Occurrence], uses: list[Occurrence], *, reads_only: bool
+    ) -> Node | None:
+        """The part of constructor argument *arg* to walk: a pair's value
+        (recording the may-def when its name is a local), else *arg*."""
+        target = arg.child_by_field_name("left") if arg.type == "assignment_expression" else None
+        if target is None or target.type != "identifier":
+            return arg
+        if not reads_only and _is_local(target):
+            occ = [self._occ(target)]
+            defs.extend(may_defs(occ))
+            uses.extend(echoes(occ))
+        return arg.child_by_field_name("right")
 
     def _walk(
         self, node: Node | None, defs: list[Occurrence], uses: list[Occurrence], *, reads_only: bool
