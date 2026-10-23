@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from repowise.core.workspace.extractors.topic import TopicExtractor
+from repowise.core.workspace.origins import ContractOrigin
 
 
 def _extract(tmp_path: Path, rel: str, content: str, alias: str = "svc"):
@@ -454,3 +456,154 @@ class TestNestMicroservices:
 
     def test_handlers_need_the_microservices_import(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "c.ts", "@EventPattern('x')\nf() {}\n") == []
+
+
+_ASYNCAPI_V3 = """\
+asyncapi: 3.0.0
+info: {title: Orders, version: 1.0.0}
+servers:
+  prod: {host: broker:9092, protocol: kafka}
+channels:
+  orderPlaced:
+    address: orders.placed
+  orderShipped:
+    address: orders.shipped
+  userEvents:
+    address: users.{userId}.events
+operations:
+  sendOrderPlaced:
+    action: send
+    channel: {$ref: '#/channels/orderPlaced'}
+  onOrderShipped:
+    action: receive
+    channel: {$ref: '#/channels/orderShipped'}
+  onUserEvent:
+    action: receive
+    channel: {$ref: '#/channels/userEvents'}
+"""
+
+_ASYNCAPI_V2 = """\
+asyncapi: '2.6.0'
+info: {title: Billing, version: 1.0.0}
+channels:
+  invoices.created:
+    subscribe:
+      message: {payload: {type: object}}
+  orders.placed:
+    publish:
+      message: {payload: {type: object}}
+"""
+
+
+class TestAsyncApi:
+    def test_v3_operations_name_the_role_of_each_channel_address(self, tmp_path: Path) -> None:
+        rows = _extract(tmp_path, "asyncapi.yaml", _ASYNCAPI_V3)
+        assert sorted((c.contract_id, c.role) for c in rows) == [
+            ("topic::orders.placed", "provider"),
+            ("topic::orders.shipped", "consumer"),
+        ]
+        sent = _one(rows, "provider")
+        assert sent.origin is ContractOrigin.IDL
+        assert sent.meta == {"topic": "orders.placed", "broker": "kafka", "kind": "topic"}
+        assert sent.line == 7  # the channel's address
+
+    def test_v2_subscribe_is_what_the_app_sends_and_publish_what_it_receives(
+        self, tmp_path: Path
+    ) -> None:
+        rows = _extract(tmp_path, "docs/asyncapi.yml", _ASYNCAPI_V2)
+        assert sorted((c.contract_id, c.role) for c in rows) == [
+            ("topic::invoices.created", "provider"),
+            ("topic::orders.placed", "consumer"),
+        ]
+        assert all(c.origin is ContractOrigin.IDL for c in rows)
+        # No servers: the document does not say which broker carries the channel.
+        assert {c.meta["broker"] for c in rows} == {"asyncapi"}
+
+    def test_a_json_document_is_read(self, tmp_path: Path) -> None:
+        doc = {
+            "asyncapi": "3.0.0",
+            "channels": {"a": {"address": "audit.log"}},
+            "operations": {"emit": {"action": "send", "channel": {"$ref": "#/channels/a"}}},
+        }
+        c = _one(_extract(tmp_path, "events.json", json.dumps(doc)), "provider")
+        assert c.contract_id == "topic::audit.log"
+
+    def test_a_channel_names_its_own_server(self, tmp_path: Path) -> None:
+        src = """\
+asyncapi: 3.0.0
+servers:
+  kafka: {host: k:9092, protocol: kafka}
+  rabbit: {host: r:5672, protocol: amqp}
+channels:
+  jobs:
+    address: jobs
+    servers: [{$ref: '#/servers/rabbit'}]
+operations:
+  push: {action: send, channel: {$ref: '#/channels/jobs'}}
+"""
+        c = _one(_extract(tmp_path, "asyncapi.yaml", src), "provider")
+        assert c.meta["broker"] == "rabbitmq"
+
+    def test_servers_of_two_protocols_settle_no_broker(self, tmp_path: Path) -> None:
+        src = """\
+asyncapi: 2.6.0
+servers:
+  a: {url: k:9092, protocol: kafka}
+  b: {url: m:1883, protocol: mqtt}
+channels:
+  readings:
+    subscribe: {message: {}}
+"""
+        c = _one(_extract(tmp_path, "asyncapi.yaml", src), "provider")
+        assert c.meta["broker"] == "asyncapi"
+
+    def test_a_v2_channel_with_a_parameter_is_refused(self, tmp_path: Path) -> None:
+        src = "asyncapi: 2.6.0\nchannels:\n  'user/{id}/signedup':\n    subscribe: {message: {}}\n"
+        assert _extract(tmp_path, "asyncapi.yaml", src) == []
+
+    def test_an_operation_without_a_known_channel_yields_nothing(self, tmp_path: Path) -> None:
+        src = """\
+asyncapi: 3.0.0
+channels:
+  a: {address: null}
+operations:
+  one: {action: send, channel: {$ref: '#/channels/a'}}
+  two: {action: send, channel: {$ref: '#/channels/missing'}}
+  three: {action: send, channel: {$ref: 'other.yaml#/channels/a'}}
+"""
+        assert _extract(tmp_path, "asyncapi.yaml", src) == []
+
+    def test_an_openapi_document_yields_nothing(self, tmp_path: Path) -> None:
+        src = "openapi: 3.0.0\ninfo: {title: asyncapi gateway, version: '1'}\npaths: {}\n"
+        assert _extract(tmp_path, "openapi.yaml", src) == []
+
+    def test_asyncapi_only_as_a_value_yields_nothing(self, tmp_path: Path) -> None:
+        src = "spec: asyncapi\nchannels:\n  orders.placed:\n    subscribe: {}\n"
+        assert _extract(tmp_path, "config.yaml", src) == []
+
+    def test_an_unknown_version_yields_nothing(self, tmp_path: Path) -> None:
+        src = "asyncapi: 1.2.0\nchannels:\n  orders:\n    subscribe: {}\n"
+        assert _extract(tmp_path, "asyncapi.yaml", src) == []
+
+    def test_a_document_that_does_not_parse_yields_nothing(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "asyncapi.yaml", "asyncapi: [3.0.0\n  : :") == []
+        assert _extract(tmp_path, "asyncapi.json", '{"asyncapi": "3.0.0",') == []
+
+    def test_a_documented_send_links_a_kafkajs_consumer(self, tmp_path: Path) -> None:
+        from repowise.core.workspace.matching import match_contracts
+
+        doc = (
+            "asyncapi: 3.0.0\nchannels:\n  placed:\n    address: orders.placed\n"
+            "operations:\n  emit:\n    action: send\n    channel: {$ref: '#/channels/placed'}\n"
+        )
+        orders = _extract(tmp_path / "orders", "asyncapi.yaml", doc, alias="async_orders")
+        billing = _extract(
+            tmp_path / "billing",
+            "src/consumer.ts",
+            "await consumer.subscribe({ topic: 'orders.placed' });",
+            alias="async_billing",
+        )
+        links = match_contracts(orders + billing)
+        assert [(link.provider_repo, link.consumer_repo) for link in links] == [
+            ("async_orders", "async_billing")
+        ]

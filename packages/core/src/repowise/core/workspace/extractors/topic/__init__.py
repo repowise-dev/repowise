@@ -9,6 +9,7 @@ downstream in :mod:`repowise.core.workspace.matching`.
 from __future__ import annotations
 
 from ..dialect import ContractDialect, DialectExtractor
+from .asyncapi import ASYNCAPI
 from .aws import SNS, SQS
 from .bullmq import BULLMQ
 from .dialect import topic_identity
@@ -32,6 +33,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     SNS,
     NESTJS,
     LARAVEL_QUEUES,
+    ASYNCAPI,
 )
 
 
