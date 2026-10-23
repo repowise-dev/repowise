@@ -153,3 +153,28 @@ def test_up_to_date_restamp_opens_only_moved_members(tmp_path, refreshed, monkey
         [((tmp_path / a).resolve(), "abc") for a in ("api", "web")],
     )
     assert stamped == ["web"]
+
+
+def test_a_member_whose_store_cannot_be_opened_is_not_stamped(tmp_path, monkeypatch):
+    """No store or no repository row writes no views, so the member is retried."""
+    from contextlib import asynccontextmanager
+
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "repowise.cli.editor_setup.refresh_editor_project_files",
+        lambda console, repo_path, *, options=None: calls.append(Path(repo_path).name),
+    )
+
+    @asynccontextmanager
+    async def _unopenable(_root):
+        yield None
+
+    monkeypatch.setattr("repowise.cli.helpers.repo_index_session", _unopenable)
+    ws_config = _ws(tmp_path, "api")
+    _refresh(tmp_path, ws_config)
+    assert member_refresh.load_member_stamps(tmp_path) == {}
+
+    _refresh(tmp_path, ws_config)
+    assert calls == ["api", "api"]
