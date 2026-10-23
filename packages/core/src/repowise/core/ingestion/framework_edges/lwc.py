@@ -140,10 +140,7 @@ def _template_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: Resolv
 
 
 def _apex_method(apex: Any, cls: str, method: str) -> str | None:
-    """The id of *cls*.*method* in a parsed Apex file, matched case-insensitively.
-
-    Ceiling: a local lookup; use a shared case-insensitive Apex index once one exists.
-    """
+    """The id of *cls*.*method* in a parsed Apex file, matched case-insensitively."""
     cls, method = cls.lower(), method.lower()
     found = [
         s

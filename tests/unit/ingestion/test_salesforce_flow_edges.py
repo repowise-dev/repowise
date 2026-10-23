@@ -251,21 +251,58 @@ def test_a_legacy_flow_routes_by_directory_and_js_flow_does_not(tmp_path: Path) 
     assert "src/flows/Old_Flow-2.flow::Old_Flow" in graph
 
 
-def test_a_name_in_two_projects_binds_to_the_nearest_and_refuses_a_tie(tmp_path: Path) -> None:
-    flow = _flow(
-        "    <actionCalls><name>A</name><actionName>Shared</actionName>"
+def _action_flow(name: str) -> str:
+    return _flow(
+        f"    <actionCalls><name>A</name><actionName>{name}</actionName>"
         "<actionType>apex</actionType></actionCalls>\n"
     )
-    cls = "public class Shared { @InvocableMethod public static void go(List<Id> x) {} }\n"
+
+
+_ACTION_CLS = "public class {} {{ @InvocableMethod public static void go(List<Id> x) {{}} }}\n"
+_PROJECT = '{"packageDirectories": [{"path": "force-app"}]}\n'
+
+
+def test_a_flow_binds_its_own_projects_copy_of_a_name_two_projects_declare(tmp_path: Path) -> None:
     repo = _write(tmp_path, {
-        "one/force-app/flows/F.flow-meta.xml": flow,
-        "one/force-app/classes/Shared.cls": cls,
-        "two/force-app/classes/Shared.cls": cls,
-        "top/flows/G.flow-meta.xml": flow,
+        "one/sfdx-project.json": _PROJECT,
+        "one/force-app/flows/F.flow-meta.xml": _action_flow("Shared"),
+        "one/force-app/classes/Shared.cls": _ACTION_CLS.format("Shared"),
+        "two/sfdx-project.json": _PROJECT,
+        "two/force-app/classes/Shared.cls": _ACTION_CLS.format("Shared"),
+        "three/sfdx-project.json": _PROJECT,
+        "three/force-app/flows/G.flow-meta.xml": _action_flow("Shared"),
     })  # fmt: skip
     graph, _ = _graph(repo)
     assert graph.has_edge("one/force-app/flows/F.flow-meta.xml", "one/force-app/classes/Shared.cls")
     assert not graph.has_edge("one/force-app/flows/F.flow-meta.xml", "two/force-app/classes/Shared.cls")
+    # Two other projects declare it and neither is a dependency: no edge.
     assert not any(
-        t.endswith("Shared.cls") for _, t in graph.out_edges("top/flows/G.flow-meta.xml")
+        t.endswith("Shared.cls") for _, t in graph.out_edges("three/force-app/flows/G.flow-meta.xml")
     )
+
+
+def test_a_flow_reaches_a_class_only_one_other_project_declares(tmp_path: Path) -> None:
+    repo = _write(tmp_path, {
+        "app/sfdx-project.json": _PROJECT,
+        "app/force-app/flows/F.flow-meta.xml": _action_flow("PostToTeams"),
+        "teams/sfdx-project.json": _PROJECT,
+        "teams/force-app/classes/PostToTeams.cls": _ACTION_CLS.format("PostToTeams"),
+        "ns/sfdx-project.json": '{"packageDirectories": [{"path": "force-app"}], "namespace": "zz"}\n',
+        "ns/force-app/classes/Prefixed.cls": _ACTION_CLS.format("Prefixed"),
+        "app/force-app/flows/G.flow-meta.xml": _action_flow("Prefixed"),
+    })  # fmt: skip
+    graph, _ = _graph(repo)
+    assert graph.has_edge("app/force-app/flows/F.flow-meta.xml", "teams/force-app/classes/PostToTeams.cls")
+    # A namespaced project's class is reached only through its prefix.
+    assert not graph.has_edge("app/force-app/flows/G.flow-meta.xml", "ns/force-app/classes/Prefixed.cls")
+
+
+def test_a_flow_prefix_from_cumulusci_yml_is_the_repositorys_own(tmp_path: Path) -> None:
+    repo = _write(tmp_path, {
+        "sfdx-project.json": _PROJECT,
+        "cumulusci.yml": "project:\n    package:\n        namespace: npsp\n",
+        "force-app/flows/F.flow-meta.xml": _action_flow("npsp__Mailer"),
+        "force-app/classes/Mailer.cls": _ACTION_CLS.format("Mailer"),
+    })  # fmt: skip
+    graph, _ = _graph(repo)
+    assert graph.has_edge("force-app/flows/F.flow-meta.xml", "force-app/classes/Mailer.cls")

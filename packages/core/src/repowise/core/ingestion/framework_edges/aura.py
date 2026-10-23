@@ -26,8 +26,9 @@ names:
   literals only. A name built at run time is never guessed.
 
 Aura names match by exact case (every reference in the validation corpora
-does); Apex names fold case, as the platform does. A name with two candidate
-bundles or classes binds to neither.
+does); Apex names fold case, as the platform does, and reach the classes an
+Apex file in the same sfdx project would. A name with two candidate bundles or
+classes binds to neither.
 
 Entry points: an ``.app`` and a component implementing a platform placement
 interface (App Builder, tabs, quick actions, communities, URL addressable)
@@ -39,15 +40,16 @@ framework calls them.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from ..extractors.synthetic_symbols.aura_bundle_js import aura_js_role
+from ..languages.apex_namespace import apex_namespaces
 from ..languages.specs.aura import aura_bundle
-from ..type_names import bare_type_name, type_qualifier
+from ..resolvers.lwc import lwc_namespaces, nearest
+from ..type_names import bare_type_name
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -168,30 +170,15 @@ def _call_span_end(text: str, open_paren: int) -> int:
     return n
 
 
-def _own_namespaces(parsed_files: dict[str, Any], source_map: dict[str, bytes]) -> frozenset[str]:
-    """``c`` plus every ``namespace`` an sfdx-project.json declares, lowercased."""
-    names = {"c"}
-    for path, parsed in parsed_files.items():
-        if PurePosixPath(path).name != "sfdx-project.json":
-            continue
-        try:
-            ns = json.loads(source_text(path, parsed, source_map, "utf-8-sig")).get("namespace")
-        except (ValueError, AttributeError):
-            continue
-        if isinstance(ns, str) and ns.strip():
-            names.add(ns.strip().lower())
-    return frozenset(names)
-
-
 class _AuraIndex:
     def __init__(self, graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext) -> None:
         self.graph = graph
         self.parsed_files = parsed_files
         self.source_map: dict[str, bytes] = getattr(ctx, "source_map", None) or {}
-        self.own_ns = _own_namespaces(parsed_files, self.source_map)
+        self.own_ns = lwc_namespaces(ctx)
+        self.apex = apex_namespaces(ctx)
         self.bundles: dict[str, _Bundle] = {}  # bundle dir -> bundle
         self.lwc_by_name: dict[str, list[str]] = {}
-        self.apex_by_name: dict[str, list[str]] = {}
         for path in sorted(parsed_files):
             self._add_file(path, parsed_files[path].file_info.language)
         self.aura_by_name: dict[str, list[str]] = {}
@@ -202,12 +189,6 @@ class _AuraIndex:
         self._functions: dict[str, dict[str, str]] = {}
 
     def _add_file(self, path: str, lang: str) -> None:
-        if lang == "apex" and path.endswith(".cls"):
-            # Apex names fold case and a class file is named after its class.
-            # Deliberately local: the case-insensitive Apex class index the
-            # Apex resolution pass builds should replace this once it lands.
-            self.apex_by_name.setdefault(PurePosixPath(path).stem.lower(), []).append(path)
-            return
         bundle = aura_bundle(path)
         if bundle is None:
             parts = PurePosixPath(path).parts
@@ -252,18 +233,15 @@ class _AuraIndex:
     def bundle_target(self, name: str, src: str) -> str | None:
         """The file a ``c:name`` reference from *src* lands on: Aura main markup, else LWC main js."""
         mains = [m for d in self.aura_by_name.get(name, []) if (m := self.bundles[d].main)]
-        return _nearest(src, mains + self.lwc_by_name.get(name, []))
+        return nearest(mains + self.lwc_by_name.get(name, []), src)
 
     def apex_class(self, written: str, src: str) -> str | None:
-        """The Apex file of ``controller="[ns.]Cls"`` written in *src*, own namespace only."""
-        head, tail = type_qualifier(written), bare_type_name(written)
-        if head and head.lower() not in self.own_ns:
-            return None
-        return _nearest(src, self.apex_by_name.get(tail.lower(), []))
+        """The Apex file of ``controller="[ns.]Cls"`` written in *src*."""
+        return self.apex.referred_file(src, written)
 
     def aura_bundle_dir(self, name: str, src: str) -> str | None:
         """The bundle dir an own-namespace ``extends``/``implements`` name from *src* means."""
-        return _nearest(src, self.aura_by_name.get(name, []))
+        return nearest(self.aura_by_name.get(name, []), src)
 
     def chain(self, bdir: str) -> list[str]:
         """The bundle and the bundles it ``extends``, nearest first.
@@ -354,30 +332,6 @@ class _AuraIndex:
             ):
                 best = s
         return best.id if best is not None else f"{path}::__module__"
-
-
-def _nearest(src: str, candidates: list[str]) -> str | None:
-    """The one candidate sharing the longest directory prefix with *src*, else None.
-
-    A repository can hold several Salesforce projects, or a source and an
-    mdapi copy of one, each declaring the same names; the platform resolves a
-    name inside the package being deployed, which the nearest copy stands for.
-    Two candidates equally near is a collision we do not break by guessing.
-    """
-    if len(candidates) <= 1:
-        return candidates[0] if candidates else None
-    src_parts = PurePosixPath(src).parts
-
-    def shared(c: str) -> int:
-        n = 0
-        for a, b in zip(src_parts, PurePosixPath(c).parts, strict=False):
-            if a != b:
-                break
-            n += 1
-        return n
-
-    scores = sorted(((shared(c), c) for c in candidates), reverse=True)
-    return scores[0][1] if scores[0][0] > scores[1][0] else None
 
 
 def _file_edge(graph: nx.DiGraph, src: str, dst: str, names: set[str]) -> int:

@@ -10,8 +10,9 @@ from disk (as ``android_manifest`` is) for liveness only: each file they name is
 anchored to ``framework:salesforce`` and marked an entry point.
 
 Only own namespaces (``c``, sfdx-project.json, cumulusci.yml) are followed.
-Apex and flow names fold case; component names match exactly. A name two
-projects declare binds to the nearest by path, and to none on a tie.
+Apex and flow names fold case; component names match exactly. An Apex class is
+one an Apex file of the referrer's sfdx project reaches; a flow or component
+two projects declare binds to the nearest by path, and to none on a tie.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 from repowise.core.fs_walk import glob_via
 
 from ..framework_facts import SALESFORCE
+from ..languages.apex_namespace import apex_namespaces
+from ..resolvers.lwc import lwc_bundles, nearest
 from ..salesforce_flow import FlowRefs, read_flow
 from ..type_names import bare_type_name, type_qualifier
 from .base import (
@@ -91,53 +94,26 @@ def _mask(text: str, pattern: re.Pattern[str], keep: str = "") -> str:
     return pattern.sub(blank, text)
 
 
-def _nearest(candidates: list[str], referrer: str) -> str | None:
-    """The candidate sharing the longest directory prefix with *referrer*; None on a tie."""
-    if len(candidates) == 1:
-        return candidates[0]
-    ref = PurePosixPath(referrer).parts
-
-    def shared(path: str) -> int:
-        n = 0
-        for a, b in zip(PurePosixPath(path).parts, ref, strict=False):
-            if a != b:
-                break
-            n += 1
-        return n
-
-    ranked = sorted(((shared(c), c) for c in candidates), reverse=True)
-    if not ranked or (len(ranked) > 1 and ranked[0][0] == ranked[1][0]):
-        return None
-    return ranked[0][1]
-
-
 class _Index:
     """Name -> file maps for one repository, built from the parsed file set."""
 
     def __init__(self, parsed_files: dict[str, Any], ctx: ResolverContext) -> None:
         self.parsed_files = parsed_files
-        self.apex: dict[str, list[str]] = {}  # lowercased class name -> .cls paths
+        self.apex = apex_namespaces(ctx)
         self.flows: dict[str, list[str]] = {}  # lowercased API name -> flow paths
-        self.lwc: dict[str, list[str]] = {}  # bundle name -> main module
+        self.lwc = lwc_bundles(ctx)  # bundle name -> main modules
         self.aura: dict[str, list[str]] = {}  # bundle name -> markup (or controller JS)
         aura_files: dict[str, dict[str, str]] = {}
         for path in sorted(parsed_files):
             parsed = parsed_files[path]
             p = PurePosixPath(path)
             lang = parsed.file_info.language
-            if lang == "apex" and p.suffix.lower() == ".cls":
-                # Ceiling: a local case-folded index; use a shared Apex class index once one exists.
-                self.apex.setdefault(p.stem.lower(), []).append(path)
-            elif lang == _FLOW:
+            if lang == _FLOW:
                 sym = next(iter(parsed.symbols), None)
                 if sym is not None:
                     self.flows.setdefault(sym.name.lower(), []).append(path)
-            elif len(p.parts) >= 3 and p.parts[-3] in ("lwc", "aura"):
-                bundle = p.parts[-2]
-                if p.parts[-3] == "lwc" and p.name in (f"{bundle}.js", f"{bundle}.ts"):
-                    self.lwc.setdefault(bundle, []).append(path)
-                elif p.parts[-3] == "aura":
-                    aura_files.setdefault(str(p.parent), {})[p.name] = path
+            elif len(p.parts) >= 3 and p.parts[-3] == "aura":
+                aura_files.setdefault(str(p.parent), {})[p.name] = path
         for bundle_dir, files in aura_files.items():
             bundle = PurePosixPath(bundle_dir).name
             # The markup is the bundle; without the Aura markup indexed, its
@@ -166,16 +142,19 @@ class _Index:
         return name
 
     def apex_class(self, raw: str, referrer: str) -> str | None:
-        name = self._strip_ns(raw, self.apex)
-        cands = self.apex.get(name.lower(), []) if name else []
-        return _nearest(cands, referrer) if cands else None
+        m = _NS_UU_RE.match(raw.strip())
+        found = self.apex.referred_file(referrer, f"{m.group(1)}.{m.group(2)}" if m else raw)
+        prefix, name = (m.group(1), m.group(2)) if m else (type_qualifier(raw), bare_type_name(raw))
+        # A namespace only cumulusci.yml declares is still this repository's own.
+        if found is None and prefix and prefix.lower() in self.own_ns:
+            found = self.apex.referred_file(referrer, name)
+        return found
 
     # Ceiling: two legacy versions of one flow in one directory (``Foo-1.flow``,
     # ``Foo-2.flow``) tie and bind neither; take the highest version if it matters.
     def flow(self, raw: str, referrer: str) -> str | None:
         name = self._strip_ns(raw, self.flows)
-        cands = self.flows.get(name.lower(), []) if name else []
-        return _nearest(cands, referrer) if cands else None
+        return nearest(self.flows.get(name.lower(), []), referrer) if name else None
 
     def components(self, raw: str, referrer: str) -> list[str]:
         """The LWC main module and Aura bundle file ``c:name`` (or a bare name) means."""
@@ -187,7 +166,7 @@ class _Index:
                 ns, name = m.group(1), m.group(2)
         if ns.lower() not in self.own_ns:
             return []
-        found = (_nearest(index.get(name, []), referrer) for index in (self.lwc, self.aura))
+        found = (nearest(index.get(name, ()), referrer) for index in (self.lwc, self.aura))
         return [f for f in found if f is not None]
 
     def symbol_of(self, path: str) -> str | None:
