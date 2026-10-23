@@ -115,3 +115,21 @@ def test_doctor_reports_an_uncached_grammar_without_downloading_it(
     assert [(r.name, r.ok) for r in rows] == [("COBOL grammar", False)]
     assert "1 files would index without symbols" in rows[0].detail
     assert offline_pack == []
+
+
+def test_doctor_counts_untracked_files_ingestion_would_index(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, offline_pack: list[str]
+) -> None:
+    from repowise.cli.commands.doctor_cmd._checks import core
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("build/\n")
+    (tmp_path / "PAYROLL.cbl").write_text("       IDENTIFICATION DIVISION.\n")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "GEN.cbl").write_text("")
+    monkeypatch.setattr(grammars, "runtime_grammar_cache", lambda tag: (False, "/cache"))
+
+    rows = core._runtime_grammar_rows(tmp_path)
+
+    assert [(r.name, r.ok) for r in rows] == [("COBOL grammar", False)]
+    assert "1 files would index without symbols" in rows[0].detail

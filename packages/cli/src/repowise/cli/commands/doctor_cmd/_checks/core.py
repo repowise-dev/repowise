@@ -239,7 +239,8 @@ def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
     }
     try:
         listed = subprocess.run(
-            ["git", "ls-files", "-z"],
+            # Untracked, unignored files too: ingestion walks them as well.
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=repo_path,
             capture_output=True,
             check=True,
