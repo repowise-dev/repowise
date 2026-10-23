@@ -621,9 +621,14 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         analysed_note,
         band_for,
         headline_band,
+        headline_scope,
     )
 
     share = kpis.get("analysed_share")
+    analysed = kpis.get("file_count") or 0
+    unanalysed_count = kpis.get("unanalysed_file_count") or 0
+    # A minority-analysed score never prints bare: its coverage rides beside it.
+    scope = headline_scope(analysed, unanalysed_count)
 
     def banded(label: str, score: Any, band: str | None) -> str:
         # Every score printed carries its band, so a Fair figure never sits
@@ -636,7 +641,7 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
 
     avg = kpis.get("average_health")
     avg_band = headline_band(avg, share)
-    parts = [banded("Code health", avg, avg_band)]
+    parts = [banded("Code health", avg, avg_band) + (f" {scope}" if scope else "")]
     # Production code beside the all-files figure, while tests are in it.
     production = kpis.get("production_average")
     has_tests = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
@@ -661,8 +666,8 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
             "their language yet.[/dim]"
         )
     # The share behind the headline, from the same counts as its band.
-    note = analysed_note(kpis.get("file_count") or 0, kpis.get("unanalysed_file_count") or 0)
-    if note:
+    note = analysed_note(analysed, unanalysed_count)
+    if note and not scope:
         console.print(f"[dim]Code health {note}.[/dim]")
 
 
