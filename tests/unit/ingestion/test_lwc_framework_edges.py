@@ -79,7 +79,8 @@ _APP = {
     "force-app/main/default/classes/ThingController.cls": (
         "public with sharing class ThingController {\n"
         "    @AuraEnabled(cacheable=true)\n"
-        "    public static List<String> getThings() { return new List<String>(); }\n"
+        "    public static List<String> getThings() { return getThings(1); }\n"
+        "    private static List<String> getThings(Integer n) { return new List<String>(); }\n"
         "}\n"
     ),
     f"{_LWC}/ldsUtils/ldsUtils.js": "export function reduceErrors(errors) { return errors; }\n",
@@ -160,7 +161,7 @@ def test_lwc_bundles_are_linked_bound_and_anchored(tmp_path: Path) -> None:
     # reach the method (namespace and class case-insensitive). A jest test only
     # mocks Apex, so its import stays external.
     cls = "force-app/main/default/classes/ThingController.cls"
-    method = f"{cls}::ThingController::getThings"
+    method = f"{cls}::ThingController::getThings#0"
     assert graph.has_edge(parent_js, cls)
     call = graph.get_edge_data(f"{parent_js}::Parent::handleClick", method)
     assert (call["edge_type"], call["resolution_origin"]) == ("calls", "import_scoped")

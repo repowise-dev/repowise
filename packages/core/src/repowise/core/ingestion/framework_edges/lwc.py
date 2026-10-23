@@ -124,11 +124,14 @@ def _apex_method(apex: Any, cls: str, method: str) -> str | None:
     case-insensitive Apex lookup (lane S2) lands; replace this with it then.
     """
     cls, method = cls.lower(), method.lower()
-    ids = {
-        s.id
+    found = [
+        s
         for s in apex.symbols
         if s.kind == "method" and s.name.lower() == method and (s.parent_name or "").lower() == cls
-    }
+    ]
+    # Only an @AuraEnabled method is callable from LWC, which settles an overload.
+    aura = [s for s in found if any(d.lower().startswith("@auraenabled") for d in s.decorators)]
+    ids = {s.id for s in (aura or found)}
     return ids.pop() if len(ids) == 1 else None
 
 
