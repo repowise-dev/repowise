@@ -35,7 +35,7 @@ from typing import Any
 
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
-from . import aspire, compose, k8s_service, spring, spring_gateway
+from . import aspire, compose, dockerfile, k8s_service, nginx, spring, spring_gateway
 from .base import ENV, HOST, Claim, Route, ServiceNameSource, SourceFile
 
 _log = logging.getLogger("repowise.workspace.service_names")
@@ -43,7 +43,9 @@ _log = logging.getLogger("repowise.workspace.service_names")
 SOURCES: tuple[ServiceNameSource, ...] = (
     aspire.SOURCE,
     compose.SOURCE,
+    dockerfile.SOURCE,
     k8s_service.SOURCE,
+    nginx.SOURCE,
     spring.SOURCE,
     spring_gateway.SOURCE,
 )
@@ -261,7 +263,7 @@ def _settle(
             out.ambiguous[key] = tuple(sorted(by_repo))
 
 
-def _route_row(f: _Found, named: Callable[[str], str | None]) -> GatewayRoute | None:
+def _route_row(f: _Found, named: Callable[..., str | None]) -> GatewayRoute | None:
     """One route claim placed: its gateway repo and target repo (``""`` when unknown or itself)."""
     route: Route = f.claim.route  # type: ignore[assignment]
     if route.gateway:
@@ -270,7 +272,7 @@ def _route_row(f: _Found, named: Callable[[str], str | None]) -> GatewayRoute | 
         gateway = f.file_repo
     if gateway is None or not route.prefix:
         return None
-    target = named(f.claim.name)
+    target = named(f.claim.name, f.claim.kind)
     target = "" if target is None or target == gateway else target
     return GatewayRoute(
         gateway, route.prefix, route.upstream, target, f.claim.name, f.source.name, f.evidence
@@ -278,7 +280,7 @@ def _route_row(f: _Found, named: Callable[[str], str | None]) -> GatewayRoute | 
 
 
 def _settle_routes(
-    found: list[_Found], named: Callable[[str], str | None]
+    found: list[_Found], named: Callable[..., str | None]
 ) -> tuple[GatewayRoute, ...]:
     """One route per gateway and prefix.
 
@@ -352,9 +354,11 @@ def build_service_name_map(
     # Ceiling: keys and names are workspace-wide, not scoped to the stack that
     # declares them; two stacks reusing a name collide and are dropped. Scoping
     # by compose project is the upgrade if estates mix unrelated stacks.
-    def named(name: str) -> str | None:
-        hit = out.lookup(name, HOST)
-        return hit.repo if hit is not None else resolver.named((name.lower(),))
+    def named(name: str, kind: str = HOST) -> str | None:
+        hit = out.lookup(name, kind)
+        if hit is not None or kind != HOST:
+            return hit.repo if hit is not None else None  # an env key names no alias
+        return resolver.named((name.lower(),))
 
     env_claimed: dict[tuple[str, str], dict[str, tuple[str, str]]] = defaultdict(dict)
     for f in refs:
