@@ -24,6 +24,7 @@ from . import (
     android_manifest,
     angular,
     aspnet,
+    aura,
     aws_lambda,
     django,
     dotnet_discovery,
@@ -97,6 +98,9 @@ _HANDLERS: list[FrameworkHandler] = [
     *rust.HANDLERS,
     *typo3.HANDLERS,
     *aws_lambda.HANDLERS,
+    # Salesforce Aura bundles: markup names its Apex controller, controller
+    # functions and child components; nothing is an import.
+    *aura.HANDLERS,
 ]
 
 

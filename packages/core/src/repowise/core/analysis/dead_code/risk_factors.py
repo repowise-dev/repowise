@@ -142,6 +142,10 @@ _DIRECTORY_RISK_TOKENS: dict[str, str] = {
     "public": "asset",
     "static": "asset",
     "www": "asset",
+    # A Salesforce Aura bundle: the Lightning runtime loads the whole bundle
+    # and also reads its JavaScript for `$Label` and component references, so
+    # a function nothing calls can still be load-bearing.
+    "aura": "aura",
 }
 
 # Human-readable one-liners per factor, used to build evidence strings.
@@ -152,6 +156,7 @@ _FACTOR_BLURB: dict[str, str] = {
     "database": "database/schema",
     "script": "script/task",
     "asset": "runtime-loaded web asset",
+    "aura": "Salesforce Aura bundle",
 }
 
 _SPLIT_RE = re.compile(r"[._\-]+")

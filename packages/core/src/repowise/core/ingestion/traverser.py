@@ -52,6 +52,7 @@ from ..pytest_roots import (
 )
 from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .languages.specs.aura import is_aura_markup_path
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .models import (
     EXTENSION_TO_LANGUAGE,
@@ -1038,7 +1039,12 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     filename = abs_path.name
     if filename in SPECIAL_FILENAMES:
         return SPECIAL_FILENAMES[filename]
-    return EXTENSION_TO_LANGUAGE.get(abs_path.suffix.lower())
+    language = EXTENSION_TO_LANGUAGE.get(abs_path.suffix.lower())
+    # Aura markup suffixes are generic (`.app`, `.tokens`), so they route by
+    # their bundle directory rather than by a repository-wide extension claim.
+    if language is None and is_aura_markup_path(abs_path.as_posix()):
+        return "aura"
+    return language
 
 
 # A declaration or an import that opens its own line, matched after comments

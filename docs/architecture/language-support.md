@@ -928,6 +928,21 @@ separate node-path forms, so the pair fails), and a bare call to a function name
 position for the GDScript 3 declaration forms. Error recovery keeps both to the
 enclosing statement.
 
+### Salesforce Aura
+
+Aura markup is routed to the `aura` passthrough tag by its folder, a markup suffix
+directly inside `aura/<bundle>/`, because `.app` and `.tokens` are not Aura's alone.
+Bundle JavaScript stays `javascript`; a synthetic-symbol provider makes each
+`key: function` of a `<bundle>Controller.js`, `Helper.js` or `Renderer.js` object
+literal a function symbol. `framework_edges/aura.py` then binds `controller=` to the
+Apex class, `get("c.m")` to the Apex method (through `extends` when the bundle
+declares no controller), `{!c.h}` and other `"c.h"` literals to controller functions,
+`helper.x(` to helper functions (both inherited through `extends`), and own-namespace
+tags, `extends`, `implements` and event types to the Aura bundle, or the LWC bundle of
+that name. `$A.createComponent(s)` string literals become `dynamic_uses` edges. Aura
+names match by exact case, Apex names fold case, and a name with two candidates binds
+to neither.
+
 ### VB.NET
 
 VB.NET shares the .NET project graph with C# rather than resolving on file stems.

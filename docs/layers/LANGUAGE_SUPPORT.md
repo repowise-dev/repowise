@@ -211,6 +211,9 @@ invoked by name.
   Lambda handler edges.
 - Godot resource files (`.tscn`, `.tres`, `.escn`, `project.godot`,
   `plugin.cfg`) carry no symbols but are read for the script paths they name.
+- Salesforce Aura markup (`.cmp`, `.app`, `.evt`, `.intf`, `.design`, `.tokens` in
+  an `aura/<bundle>/` folder) carries no symbols but is read for the Apex
+  controller, controller functions, child components and events it names.
 
 ## Code-health coverage
 

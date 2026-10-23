@@ -14,6 +14,7 @@ from ..spec import LanguageSpec
 from .apex import SPEC as _APEX
 from .asciidoc import SPEC as _ASCIIDOC
 from .astro import SPEC as _ASTRO
+from .aura import SPEC as _AURA
 from .c import SPEC as _C
 from .clojure import SPEC as _CLOJURE
 from .cobol import SPEC as _COBOL
@@ -143,6 +144,9 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # by another script, so these files carry nearly every inbound edge the
     # .gd graph has. See the spec's docstring.
     _GODOT_RESOURCE,
+    # Salesforce Aura markup, routed by path (aura/<bundle>/). Edges come from
+    # framework_edges/aura.py. See the spec's docstring.
+    _AURA,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though
