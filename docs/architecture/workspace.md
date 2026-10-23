@@ -86,7 +86,7 @@ extensions, and hands the file list to every extractor. Each file becomes one
 1. **Extension**, then **gate**: the file must hold one of the dialect's `requires`
    tokens. `ScanContext.has_any` memoizes each token per file, so a token named by
    several dialects or table rows is searched for once. A contract file format
-   (`.proto`, `.sql`, `.prisma`) declares `EVERY_FILE`.
+   (`.sql`, `.prisma`) declares `EVERY_FILE`; `.proto` gates on `service`.
 2. **Extract**: the dialect returns contracts built with `build_contract`, which
    takes an `origin` and sets the confidence from it.
 3. **Comment rule**: `run_dialect` drops a contract whose line is only a comment.
@@ -130,6 +130,11 @@ links are appended after it.
    pattern subscription, `service_mapped` when the provider sits in the consumer's
    resolved target. A target the map placed does not fall back to another repo that
    serves the same path (`common.prefer_target_repo`).
+   A package-less gRPC stub id (`grpc::CurrencyService/*`) meets the package-qualified
+   proto id (`grpc::shop.CurrencyService/Convert`) on the service's last segment. A proto
+   declared in 2+ repos is served only by the repo that registers the service in code
+   (`common.shared_idl`); the other copies are vendored IDL, never linked or listed as
+   orphans. A .NET project's `<Protobuf GrpcServices="Client">` proto provides nothing.
 4. **Type passes**, in `MATCHERS` order: HTTP `gateway_pass` (`gateway_route`),
    `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`) and `service_pass`; topic
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
