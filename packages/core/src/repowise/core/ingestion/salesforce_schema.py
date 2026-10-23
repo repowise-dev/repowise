@@ -1,17 +1,9 @@
-"""Salesforce SObject schema: object and field metadata as symbols.
+"""Salesforce object and field metadata as symbols, and the references bound to them.
 
-Reads ``objects/<Obj>/<Obj>.object-meta.xml`` (an object, class kind),
-``objects/<Obj>/fields/<F>.field-meta.xml`` (a field, property kind) and the
-legacy ``objects/<Obj>.object`` (the object with its fields inline), and binds
-:class:`~.models.SchemaReference` records, from Apex or from a lookup field's
-``<referenceTo>``, to those symbols.
-
-Names are compared the way the platform compares them: case-folded, with the
-repository's own namespace prefix (``npsp__Foo__c`` is ``Foo__c`` inside NPSP)
-and CumulusCI's ``%%%NAMESPACE%%%`` / ``___NAMESPACE___`` tokens removed. Any
-other ``ns__`` prefix belongs to an installed package and resolves to nothing.
-A standard object or field with no metadata in the repository also resolves to
-nothing: the edge exists only when the definition does.
+Objects (``.object-meta.xml``, legacy ``.object``) are class symbols and fields
+(``.field-meta.xml``, or inline in ``.object``) are property symbols. Names
+compare case-folded, without the repository's own namespace prefix or CumulusCI
+tokens; a name with no single definition in the repository binds nothing.
 """
 
 from __future__ import annotations
@@ -281,9 +273,7 @@ def _resolve(index: _Index, ref: SchemaReference) -> Iterator[str]:
         if i == len(ref.path) - 1:
             yield from index.project.preferred(index.fields.get((current, seg), ()))
             return
-        # A relationship hop: ``Rel__r`` is the lookup field ``Rel__c``; a
-        # standard ``Account`` is ``AccountId``. Followed only while the lookup
-        # names exactly one object.
+        # ``Rel__r`` hops through lookup ``Rel__c`` (``Account`` through ``AccountId``) to one object.
         lookup = seg[:-3] + "__c" if seg.endswith("__r") else seg + "id"
         hops = index.project.preferred(index.fields.get((current, lookup), ()))
         yield from hops
@@ -296,12 +286,9 @@ def _resolve(index: _Index, ref: SchemaReference) -> Iterator[str]:
 def add_schema_edges(
     graph: nx.DiGraph, parsed_files: dict[str, ParsedFile], repo_path: Path | None
 ) -> int:
-    """Add an edge per bound reference; return the symbol edges added.
+    """Add a symbol ``references`` and a file ``reads`` edge per bound reference.
 
-    A symbol ``references`` edge for the symbol that names the object or
-    field, plus a file ``reads`` edge, so a schema file's dependents include
-    the code that queries or writes it. Neither is ``calls``: a query runs no
-    code.
+    Returns the symbol edges added. Not ``calls``: a query runs no code.
     """
     if not any(p.schema_refs for p in parsed_files.values()):
         return 0

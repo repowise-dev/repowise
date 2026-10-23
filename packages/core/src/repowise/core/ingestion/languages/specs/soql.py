@@ -1,9 +1,4 @@
-"""LanguageSpec for ``.soql`` files: saved Salesforce SOQL queries.
-
-The sfdx project template ships ``scripts/soql/*.soql`` for running queries
-from the editor. ``special_handlers`` reads the objects and fields a query
-names (``salesforce_soql.parse_soql_file``); there are no symbols.
-"""
+"""LanguageSpec for ``.soql`` files: saved SOQL queries, read for the objects and fields they name."""
 
 from ..spec import LanguageSpec
 

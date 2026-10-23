@@ -1,24 +1,12 @@
 """SObject and field names written in Apex SOQL/SOSL, DML and triggers.
 
-Produces :class:`~.models.SchemaReference` records that
-``salesforce_schema.add_schema_edges`` binds to object and field metadata:
+Read: SOQL ``FROM`` objects and field paths (a select-list subquery names a
+child relationship, so it is skipped), SOSL ``RETURNING`` objects, DML targets
+by declared type, ``trigger ... on Obj``, single-literal ``Database.query`` /
+``Search.query`` strings and ``.soql`` files.
 
-* inline ``[SELECT ... FROM Obj]``: the top-level ``FROM`` object, and every
-  field path selected, filtered or ordered on it. A subquery in the select
-  list names a child relationship (``FROM Contacts``), never an object, so it
-  is skipped; a semi-join subquery in ``WHERE`` names a real object.
-* inline ``[FIND ... RETURNING Obj(fields)]``: each returned object and its fields.
-* ``insert acc;`` and ``Database.insert(acc)``: the declared type of the
-  target (``Account acc``, ``List<Account> accs``, ``new Account(...)``).
-* ``trigger T on Obj``: the object.
-* ``Database.query('...')`` and ``Search.query('...')`` with a single string
-  literal, re-parsed with the standalone SOQL/SOSL grammar. Anything built by
-  concatenation names nothing statically and yields nothing.
-* a ``.soql`` file, read the same way.
-
-Ceilings, deliberately: ``Account.Name.getDescribe()``-style schema tokens,
-``TYPEOF`` branches, and the child object behind a child relationship name
-are not read.
+Ceiling: ``Account.Name.getDescribe()`` tokens, ``TYPEOF`` branches and the
+child object behind a relationship name are not read.
 """
 
 from __future__ import annotations

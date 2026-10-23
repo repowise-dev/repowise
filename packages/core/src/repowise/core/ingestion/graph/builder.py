@@ -609,7 +609,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress)
 
-        # --- Salesforce schema: SOQL/DML/trigger objects and lookup fields ---
+        # --- Salesforce objects and fields named by Apex and lookup fields ---
         self._resolve_salesforce_schema()
 
         # --- Phase 4: Base method → the implementations that answer for it ---

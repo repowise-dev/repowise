@@ -443,7 +443,7 @@ EdgeType = Literal[
     # wiring hop into an execution flow as if it were source.
     "framework_binds",
     # A data reference rather than a call, file → file: C# member access, and
-    # Apex or metadata naming a Salesforce object or field. It
+    # Salesforce object references. It
     # used to name two unrelated things — the Express route wiring emitted it
     # symbol → symbol — which is why one consumer set could not say which layer
     # it meant. That producer now emits `framework_binds`.
@@ -626,8 +626,8 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
         "dynamic_imports",
         "dynamic_url_route",
         # C# member access (`var x = new T(); x.Prop`) resolves to the file
-        # declaring the type, so this is a real file-level reference. So is a
-        # SOQL query or DML statement on an object the repository defines.
+        # declaring the type, so this is a real file-level reference; so does
+        # a SOQL query or DML statement to the object's metadata.
         "reads",
     }
 )
@@ -787,8 +787,7 @@ class ParsedFile:
     # symbol enclosing it, and a line — and it lets these ride the same
     # resolution tiers. They become ``references`` edges, not ``calls``.
     references: list[CallSite] = field(default_factory=list)
-    # Salesforce SObjects and fields this file names: SOQL, DML and trigger
-    # targets in Apex, lookup targets in field metadata. See ``salesforce_schema``.
+    # Salesforce objects and fields this file names (see ``salesforce_schema``).
     schema_refs: list[SchemaReference] = field(default_factory=list)
 
     @property
