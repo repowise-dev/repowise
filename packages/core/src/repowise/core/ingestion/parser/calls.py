@@ -275,14 +275,14 @@ def _is_bare(call: CallSite) -> bool:
 
 
 def _dedupe_calls(calls: list[CallSite]) -> list[CallSite]:
-    """One call per ``(line, target, receiver)``, keeping the richest record.
+    """One call per ``(line, target, receiver, constructor)``, keeping the richest record.
 
     Two scoped-call patterns can match the same two-part call (one keeps the
     qualifier), so the richer record wins whichever order they arrive in.
     """
-    deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
+    deduplicated: dict[tuple[int, str, str | None, bool], CallSite] = {}
     for call in calls:
-        key = (call.line, call.target_name, call.receiver_name)
+        key = (call.line, call.target_name, call.receiver_name, call.constructor)
         existing = deduplicated.get(key)
         if (
             existing is None
@@ -382,6 +382,7 @@ def _call_from_match(
         # own function only (see ``python_tasks``).
         spawned=language == "python" and is_fire_and_forget(site_node, src),
         program_call=language == "cobol" and site_node.type == "call_statement",
+        constructor=language == "apex" and site_node.type == "object_creation_expression",
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
 

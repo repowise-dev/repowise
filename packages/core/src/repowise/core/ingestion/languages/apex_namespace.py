@@ -362,13 +362,12 @@ def spell_apex_names(parsed_files: Iterable[Any]) -> None:
 
     A receiver-less call means its own file's declaration of the name first
     (of the same kind), however another class spells it: ``ContactFromDi(..)``
-    in a class declaring ``contactFromDi`` is that method. A call site does not
-    record ``new``, so a capitalised receiver-less name some type folds to is a
-    constructor (``new OrgConfig()`` inside a method ``orgConfig``), and any
-    other capitalised one matches only its own file's member (``new Contact()``,
-    the sObject, never becomes another class's method ``contact``). Ceilings: a
-    file declaring ``contact()`` reads its own ``new Contact()`` as that method,
-    and a constructor written in lower case (``new accountService()``) misses.
+    in a class declaring ``contactFromDi`` is that method. The kind is read from
+    ``CallSite.constructor``, never from the capitalisation: ``new OrgConfig()``
+    and ``new orgConfig()`` both name the type, even inside a method
+    ``orgConfig``, and a ``new`` that no project type folds to (``new Contact()``,
+    the sObject) is left as written, so it never becomes a method ``contact``.
+    Any other receiver-less call is a method call, whatever its case.
     """
     apex = [parsed for parsed in parsed_files if parsed.file_info.language == "apex"]
     repo = _Spellings(symbol for parsed in apex for symbol in parsed.symbols)
@@ -394,10 +393,15 @@ class _Spellings:
             kind = self.types if symbol.kind in _TYPE_KINDS else self.members
             kind[symbol.name.lower()].add(symbol.name)
 
-    def spelled(self, name: str, declared: dict[str, set[str]]) -> str:
-        """*name* as *declared* spells it, when that is one spelling and *name* is none."""
+    def spelled(self, name: str, declared: dict[str, set[str]], *, same_kind: bool = False) -> str:
+        """*name* as *declared* spells it, when that is one spelling and *name* is none.
+
+        *name* counts as spelled when any symbol is declared as written, unless
+        *same_kind*: ``new contact()`` is not spelled by a method ``contact``.
+        """
         spellings = declared.get(name.lower())
-        if not spellings or name in self.names.get(name.lower(), ()) or len(spellings) > 1:
+        written = declared if same_kind else self.names
+        if not spellings or name in written.get(name.lower(), ()) or len(spellings) > 1:
             return name
         return next(iter(spellings))
 
@@ -407,10 +411,14 @@ class _Spellings:
         if call.receiver_name or call.receiver_call:
             return self.spelled(name, self.names)
         folded = name.lower()
-        if not name[:1].isupper():
-            table, mine = self.members, own.members
-        elif folded in self.types:
-            table, mine = self.types, own.types
-        else:
+        if call.constructor:
+            # ``new Foo(..)`` names a type and never a method. A name no project
+            # type folds to (``new Contact()``, the sObject) is left as written.
+            if folded not in self.types:
+                return name
+            if folded in own.types:
+                return own.spelled(name, own.types, same_kind=True)
+            return self.spelled(name, self.types, same_kind=True)
+        if folded in own.members:
             return own.spelled(name, own.members)
-        return own.spelled(name, mine) if folded in mine else self.spelled(name, table)
+        return self.spelled(name, self.members)

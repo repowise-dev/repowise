@@ -108,7 +108,10 @@ STORE_FORMAT_VERSION: int = 2
 #:
 #: v10: a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
 #: is not a test by that folder alone, which moves its stored ``is_test``.
-PARSER_SCHEMA_VERSION: int = 10
+#:
+#: v11: an Apex ``new`` call site carries ``constructor``, so a type name is no
+#: longer told from a method name by its capitalisation.
+PARSER_SCHEMA_VERSION: int = 11
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"

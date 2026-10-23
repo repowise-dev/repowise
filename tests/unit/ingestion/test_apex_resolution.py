@@ -453,3 +453,77 @@ def test_the_own_namespace_prefix_never_reaches_a_dependency(tmp_path: Path) -> 
     assert _calls(graph, _id("Caller.cls", "Caller::bare", "uses")) == {
         _id("Util.cls", "Util::help", "base"): "receiver_same_package"
     }
+
+
+# --- ``new`` is read from the syntax (``CallSite.constructor``), not from capitalisation ---
+
+
+def test_a_lower_case_new_binds_the_type(tmp_path: Path) -> None:
+    # Apex is case-insensitive: ``new gifts()`` is the class ``Gifts``. With no
+    # declared constructor there is no member of that name to fold it onto.
+    _project(tmp_path, {
+        "Gifts.cls": "public class Gifts {\n}\n",
+        "Other.cls": "public class Other {\n    public void gifts() {}\n}\n",
+        "Seeder.cls": "public class Seeder {\n    void run() { new gifts(); }\n}\n",
+    })
+    calls = _calls(_build(tmp_path), _id("Seeder.cls", "Seeder::run"))
+    assert calls == {_id("Gifts.cls", "Gifts"): "same_package"}
+
+
+def test_new_is_the_type_and_a_plain_call_is_the_method(tmp_path: Path) -> None:
+    # The class declares a method named like the type it builds.
+    _project(tmp_path, {
+        "Seeder.cls": (
+            "public class Seeder {\n"
+            "    Contact contact() { return null; }\n"
+            "    void run() { new Contact(); }\n"
+            "    void again() { contact(); Contact(); }\n"
+            "}\n"
+        ),
+    })
+    graph = _build(tmp_path)
+    # ``new Contact()`` is the sObject: it never binds the method ``contact``.
+    assert _calls(graph, _id("Seeder.cls", "Seeder::run")) == {}
+    # Plain calls stay on the member path, in either case.
+    assert set(_calls(graph, _id("Seeder.cls", "Seeder::again"))) == {
+        _id("Seeder.cls", "Seeder::contact")
+    }
+
+
+def test_a_project_type_wins_over_a_method_of_the_same_name(tmp_path: Path) -> None:
+    _project(tmp_path, {
+        "Contact.cls": "public class Contact {\n    public Contact() {}\n}\n",
+        "Seeder.cls": (
+            "public class Seeder {\n"
+            "    void contact() {}\n"
+            "    void run() { new Contact(); new contact(); }\n"
+            "}\n"
+        ),
+    })
+    calls = _calls(_build(tmp_path), _id("Seeder.cls", "Seeder::run"))
+    assert calls == {_id("Contact.cls", "Contact::Contact"): "same_package"}
+
+
+def test_a_scoped_new_binds_the_inner_type(tmp_path: Path) -> None:
+    _project(tmp_path, {
+        "Outer.cls": "public class Outer {\n    public class Inner {\n        public Inner() {}\n    }\n}\n",
+        "Caller.cls": "public class Caller {\n    void go() { new outer.inner(); }\n}\n",
+    })
+    calls = _calls(_build(tmp_path), _id("Caller.cls", "Caller::go"))
+    assert calls == {_id("Outer.cls", "Inner::Inner"): "receiver_same_package"}
+
+
+def test_only_a_new_site_is_flagged_as_a_constructor(tmp_path: Path) -> None:
+    _project(tmp_path, {
+        "A.cls": (
+            "public class A {\n"
+            "    void go() { new gifts(); Foo.bar(); baz(); new Outer.Inner(); new Foo().run(); }\n"
+            "}\n"
+        ),
+    })
+    info = next(fi for fi in FileTraverser(tmp_path).traverse() if fi.abs_path.endswith("A.cls"))
+    parsed = ASTParser().parse_file(info, Path(info.abs_path).read_bytes())
+    flagged = {(c.target_name, c.receiver_name) for c in parsed.calls if c.constructor}
+    plain = {(c.target_name, c.receiver_name) for c in parsed.calls if not c.constructor}
+    assert flagged == {("gifts", None), ("Inner", "Outer"), ("Foo", None)}
+    assert {("baz", None), ("bar", "Foo"), ("run", "Foo")} <= plain
