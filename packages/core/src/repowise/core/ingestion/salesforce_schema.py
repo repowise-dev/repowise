@@ -14,12 +14,15 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 from xml.parsers import expat
 
-import networkx as nx
 import yaml
 
 from .models import FileInfo, ParsedFile, SchemaReference, Symbol
+
+if TYPE_CHECKING:  # read paths import this module and must not load networkx
+    import networkx as nx
 
 _LANGUAGE = "salesforce_object"
 _OBJECT_META = ".object-meta.xml"
