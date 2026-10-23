@@ -124,16 +124,29 @@ def _apex_classes(ctx: ResolverContext) -> dict[str, tuple[str, ...]]:
     return cached
 
 
-def _resolve_apex_module(spec: str, importer_path: str, ctx: ResolverContext) -> str | None:
-    """``[ns.]Cls.method`` -> the class file; another package's namespace stays external."""
-    parts = spec.split(".")
-    if len(parts) == 3:
-        if parts[0].lower() not in lwc_namespaces(ctx):
-            return None
-        parts = parts[1:]
-    if len(parts) != 2 or not all(parts):
+def apex_specifier(module_path: str) -> tuple[str | None, str, str] | None:
+    """``(ns, Cls, method)`` for ``@salesforce/apex/[ns.]Cls.method``, else None.
+
+    The one place the specifier is taken apart: the resolver, the import
+    binding and the ``@wire`` edges all read it here.
+    """
+    prefix = next((p for p in APEX_MODULE_PREFIXES if module_path.startswith(p)), None)
+    if prefix is None:
         return None
-    candidates = _apex_classes(ctx).get(parts[0].lower())
+    parts = module_path[len(prefix) :].split(".")
+    if len(parts) not in (2, 3) or not all(parts):
+        return None
+    return (parts[0] if len(parts) == 3 else None, parts[-2], parts[-1])
+
+
+def _resolve_apex_module(
+    spec: tuple[str | None, str, str], importer_path: str, ctx: ResolverContext
+) -> str | None:
+    """The class file; another package's namespace stays external."""
+    ns, cls, _ = spec
+    if ns is not None and ns.lower() not in lwc_namespaces(ctx):
+        return None
+    candidates = _apex_classes(ctx).get(cls.lower())
     return nearest(candidates, importer_path) if candidates else None
 
 
@@ -142,12 +155,12 @@ def resolve_lwc_module(module_path: str, importer_path: str, ctx: ResolverContex
     ``@salesforce/apex/Cls.method`` -> the Apex class file. Other Salesforce
     modules (schema, labels, ``lightning/*``) are not files here and stay external.
     """
-    for prefix in APEX_MODULE_PREFIXES:
-        if module_path.startswith(prefix):
-            # Jest only mocks Apex, so a test's import is no use of the class.
-            if is_test_related_path(importer_path, "javascript"):
-                return None
-            return _resolve_apex_module(module_path[len(prefix) :], importer_path, ctx)
+    if module_path.startswith(APEX_MODULE_PREFIXES):
+        spec = apex_specifier(module_path)
+        # Jest only mocks Apex, so a test's import is no use of the class.
+        if spec is None or is_test_related_path(importer_path, "javascript"):
+            return None
+        return _resolve_apex_module(spec, importer_path, ctx)
     m = _SPECIFIER_RE.fullmatch(module_path)
     if m is None or m.group(1).lower() not in lwc_namespaces(ctx):
         return None

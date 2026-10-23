@@ -5,7 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import NamedBinding
-from ...resolvers.lwc import APEX_MODULE_PREFIXES
+from ...resolvers.lwc import apex_specifier
 from ..helpers import node_text
 
 
@@ -41,12 +41,8 @@ def _apex_method(stmt_node: Node, src: str) -> str | None:
     the binding publishes the method's name rather than ``default``.
     """
     source = stmt_node.child_by_field_name("source")
-    spec = node_text(source, src).strip("'\"`") if source is not None else ""
-    prefix = next((p for p in APEX_MODULE_PREFIXES if spec.startswith(p)), None)
-    if prefix is None:
-        return None
-    parts = spec[len(prefix) :].split(".")
-    return parts[-1] if len(parts) in (2, 3) and all(parts) else None
+    spec = apex_specifier(node_text(source, src).strip("'\"`")) if source is not None else None
+    return spec[2] if spec is not None else None
 
 
 def _bound_at(

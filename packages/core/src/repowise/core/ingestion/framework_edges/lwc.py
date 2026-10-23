@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..framework_facts import LWC
 from ..resolvers.lwc import (
-    APEX_MODULE_PREFIXES,
+    apex_specifier,
     lwc_bundle_dir,
     lwc_bundles,
     lwc_namespaces,
@@ -160,13 +160,11 @@ def _apex_bindings(parsed: Any, parsed_files: dict[str, Any]) -> dict[str, str]:
     """Local name -> Apex method id for each ``@salesforce/apex`` import that resolved."""
     bound: dict[str, str] = {}
     for imp in parsed.imports:
-        spec = next((imp.module_path[len(p) :] for p in APEX_MODULE_PREFIXES
-                     if imp.module_path.startswith(p)), None)  # fmt: skip
+        spec = apex_specifier(imp.module_path)
         apex = parsed_files.get(imp.resolved_file or "")
         if spec is None or apex is None:
             continue
-        cls, _, method = spec.rpartition(".")
-        target = _apex_method(apex, cls.rpartition(".")[2], method)
+        target = _apex_method(apex, spec[1], spec[2])
         if target is not None:
             bound.update((b.local_name, target) for b in imp.bindings if b.local_name)
     return bound
