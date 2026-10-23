@@ -120,7 +120,11 @@ def nearest(candidates: tuple[str, ...], referrer: str) -> str | None:
 
 
 def _apex_classes(ctx: ResolverContext) -> dict[str, tuple[str, ...]]:
-    """Lowercased Apex class name -> ``.cls`` paths (Apex names are case-insensitive)."""
+    """Lowercased Apex class name -> ``.cls`` paths (Apex names are case-insensitive).
+
+    A local index until the shared case-insensitive Apex lookup (lane S2)
+    lands; replace this with it then.
+    """
     cached = getattr(ctx, "_lwc_apex_classes", None)
     if cached is None:
         found: dict[str, list[str]] = {}
