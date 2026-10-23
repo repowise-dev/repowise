@@ -314,10 +314,7 @@ class ApexDefUseDialect(JavaDefUseDialect):
         names: set[str] = set()
         child, cur = call, call.parent
         while cur is not None and cur.type not in _STOP:
-            # What *cur* binds before the path down to the call: earlier
-            # declarations of a block, a loop header, a catch parameter, a
-            # ``when`` binder, the method's parameters. A finished nested
-            # block's own declarations are out of scope, so it is not entered.
+            # What *cur* binds before the call; a finished nested block is out of scope.
             stack = [cur]
             while stack:
                 node = stack.pop()
