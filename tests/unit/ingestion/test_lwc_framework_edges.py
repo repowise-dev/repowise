@@ -14,7 +14,11 @@ from repowise.core.ingestion.resolvers.lwc import kebab, lwc_bundle_dir, nearest
 
 _LWC = "force-app/main/default/lwc"
 _EXPOSED = "<LightningComponentBundle><isExposed>true</isExposed></LightningComponentBundle>\n"
-_HIDDEN = "<LightningComponentBundle><isExposed>false</isExposed></LightningComponentBundle>\n"
+# A target counts for nothing while the bundle is not exposed.
+_HIDDEN = (
+    "<LightningComponentBundle><isExposed>false</isExposed>"
+    "<targets><target>lightning__Tab</target></targets></LightningComponentBundle>\n"
+)
 
 _APP = {
     "sfdx-project.json": '{"packageDirectories": [{"path": "force-app"}], "namespace": "acme"}\n',
@@ -27,6 +31,7 @@ _APP = {
         "  get label() { return reduceErrors([]); }\n"
         "  handleClick() { return getThings(); }\n"
         "  notInTemplate() { return NAME; }\n"
+        "  get row() { return null; }\n"
         "}\n"
     ),
     f"{_LWC}/parent/parent.html": (
@@ -38,6 +43,7 @@ _APP = {
         "  <c-rd2-entry-form></c-rd2-entry-form>\n"
         "  <other-child-comp></other-child-comp>\n"
         "  <c-parent></c-parent>\n"
+        '  <template for:each={label} for:item="row"><p key={row.id}>{row.name}</p></template>\n'
         "</template>\n"
     ),
     f"{_LWC}/parent/parent.js-meta.xml": _EXPOSED.replace(

@@ -8,9 +8,9 @@ Three things reach an LWC bundle's code that no JS import says:
   the bundle's own class: a ``framework_binds`` edge from the template's module
   symbol to the method or getter, so a handler only the template names has a
   caller;
-* a ``.js-meta.xml`` with ``<isExposed>true</isExposed>`` or a ``<target>``
-  lets App Builder, Experience Builder or a Flow place the component: its main
-  module is anchored to ``framework:lwc`` and marked an entry point. Its
+* a ``.js-meta.xml`` with ``<isExposed>true</isExposed>`` lets App Builder,
+  Experience Builder or a Flow place the component (its targets count only
+  then): its main module is anchored to ``framework:lwc`` and marked an entry point. Its
   ``configurationEditor="c-x-cpe"`` names the bundle Flow Builder loads to
   edit it: a file edge from the component to that editor.
 
@@ -53,7 +53,10 @@ _TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9]*)-([A-Za-z0-9_-]+)")
 # `{name}` / `{name.field}`: the leading identifier is a member of the class.
 _BINDING_RE = re.compile(r"\{\s*([A-Za-z_$][\w$]*)")
 _WIRE_RE = re.compile(r"@wire\s*\(\s*([A-Za-z_$][\w$]*)")
-_EXPOSED_RE = re.compile(r"<isExposed>\s*true\s*</isExposed>|<target>\s*\w", re.IGNORECASE)
+# Targets are ignored unless the bundle is exposed.
+_EXPOSED_RE = re.compile(r"<isExposed>\s*true\s*</isExposed>", re.IGNORECASE)
+# `for:item="x"`, `for:index="i"`, `iterator:it={...}`: template-local names.
+_LOOP_VAR_RE = re.compile(r"""for:(?:item|index)\s*=\s*["']([A-Za-z_$][\w$]*)|iterator:([A-Za-z_$][\w$]*)""")
 # A Flow screen component's property editor, named by tag in its targetConfig.
 _EDITOR_RE = re.compile(r"""configurationEditor\s*=\s*["']([A-Za-z][A-Za-z0-9]*)-([A-Za-z0-9_-]+)["']""")
 
@@ -73,7 +76,7 @@ def _tag_target(ns: str, body: str, referrer: str, ctx: ResolverContext) -> str 
 
     HTML tag names are case-insensitive; kebab names are lowercase, so is the lookup.
     """
-    if ns.lower() not in {n.lower() for n in lwc_namespaces(ctx)}:
+    if ns.lower() not in lwc_namespaces(ctx):
         return None
     name = lwc_tag_index(ctx).get(body.lower())
     target = nearest(lwc_bundles(ctx)[name], referrer) if name is not None else None
@@ -83,13 +86,11 @@ def _tag_target(ns: str, body: str, referrer: str, ctx: ResolverContext) -> str 
     return target
 
 
-def _template_edges(
-    graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext, path_set: set[str]
-) -> int:
+def _template_edges(graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext) -> int:
     bundles = lwc_bundles(ctx)
     source_map = getattr(ctx, "source_map", None) or {}
     count = 0
-    for path in sorted(path_set):
+    for path in sorted(parsed_files):
         if not path.endswith(".html"):
             continue
         bundle_dir = lwc_bundle_dir(path)
@@ -105,6 +106,9 @@ def _template_edges(
         if main is None or main not in parsed_files:
             continue
         members = _members(parsed_files[main])
+        # A for:each / iterator variable shadows a same-named member.
+        for m in _LOOP_VAR_RE.finditer(text):
+            members.pop(m.group(1) or m.group(2), None)
         module_sym = f"{path}::__module__"
         for name in {m.group(1) for m in _BINDING_RE.finditer(text)}:
             member = members.get(name)
@@ -197,7 +201,7 @@ class _LwcHandler:
         path_set: set[str],
     ) -> int:
         return (
-            _template_edges(graph, parsed_files, ctx, path_set)
+            _template_edges(graph, parsed_files, ctx)
             + _wire_edges(graph, parsed_files, ctx)
             + _exposure_edges(graph, ctx)
         )

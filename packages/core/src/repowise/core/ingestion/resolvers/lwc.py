@@ -31,7 +31,6 @@ from ...test_paths import is_test_related_path
 if TYPE_CHECKING:
     from .context import ResolverContext
 
-_MAIN_SUFFIXES = (".js", ".ts")
 APEX_MODULE_PREFIXES = ("@salesforce/apex/", "@salesforce/apexContinuation/")
 _SPECIFIER_RE = re.compile(r"([A-Za-z]\w*)/([A-Za-z]\w*)")
 _UPPER_RE = re.compile(r"[A-Z]")
@@ -62,7 +61,7 @@ def lwc_bundles(ctx: ResolverContext) -> dict[str, tuple[str, ...]]:
         if len(parts) < 3 or parts[-3] != "lwc":
             continue
         name = parts[-2]
-        if parts[-1] in (name + _MAIN_SUFFIXES[0], name + _MAIN_SUFFIXES[1]):
+        if parts[-1] in (f"{name}.js", f"{name}.ts"):
             found.setdefault(name, []).append(path)
     bundles = {name: tuple(paths) for name, paths in found.items()}
     ctx._lwc_bundles = bundles  # type: ignore[attr-defined]
@@ -79,7 +78,7 @@ def lwc_tag_index(ctx: ResolverContext) -> dict[str, str]:
 
 
 def lwc_namespaces(ctx: ResolverContext) -> frozenset[str]:
-    """``c`` plus every sfdx ``namespace`` the repository declares for itself."""
+    """``c`` plus every sfdx ``namespace`` the repository declares for itself, lowercased."""
     cached = getattr(ctx, "_lwc_namespaces", None)
     if cached is not None:
         return cached
@@ -94,7 +93,7 @@ def lwc_namespaces(ctx: ResolverContext) -> frozenset[str]:
             except (OSError, ValueError, AttributeError):
                 continue
             if isinstance(namespace, str) and namespace.strip():
-                names.add(namespace.strip())
+                names.add(namespace.strip().lower())
     result = frozenset(names)
     ctx._lwc_namespaces = result  # type: ignore[attr-defined]
     return result
@@ -138,8 +137,7 @@ def _resolve_apex_module(spec: str, importer_path: str, ctx: ResolverContext) ->
     """``[ns.]Cls.method`` -> the class file; another package's namespace stays external."""
     parts = spec.split(".")
     if len(parts) == 3:
-        own = {n.lower() for n in lwc_namespaces(ctx)}
-        if parts[0].lower() not in own:
+        if parts[0].lower() not in lwc_namespaces(ctx):
             return None
         parts = parts[1:]
     if len(parts) != 2 or not all(parts):
@@ -161,7 +159,7 @@ def resolve_lwc_module(module_path: str, importer_path: str, ctx: ResolverContex
                 return None
             return _resolve_apex_module(module_path[len(prefix) :], importer_path, ctx)
     m = _SPECIFIER_RE.fullmatch(module_path)
-    if m is None or m.group(1) not in lwc_namespaces(ctx):
+    if m is None or m.group(1).lower() not in lwc_namespaces(ctx):
         return None
     candidates = lwc_bundles(ctx).get(m.group(2))
     return nearest(candidates, importer_path) if candidates else None
