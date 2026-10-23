@@ -101,6 +101,9 @@ _KEY_PREFIXES = frozenset(
 _FIXTURE_NAME = re.compile(r"fixture|mock|stub|fake|testdata|testfactory|testutil|datafactory", re.I)
 _ID_SHAPE = re.compile(r"[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?")
 _CHECKSUM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+_HAS_DYNAMIC_QUERY = re.compile(rb"(?i)\b(?:database|search)\s*\.\s*(?:query|countquery|getquerylocator)")
+_HAS_ID_LITERAL = re.compile(rb"'[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?'")
+_HAS_SEE_ALL_DATA = re.compile(rb"(?i)seealldata")
 
 
 def _text(node: Node | None) -> str:
@@ -219,9 +222,9 @@ def _sees_all_data(ann: Node) -> bool:
     return pairs.get("seealldata") == "true"
 
 
-def _see_all_data(root: Node) -> list[PerfHit]:
+def _see_all_data(annotations: list[Node]) -> list[PerfHit]:
     hits = []
-    for ann in _walk(root):
+    for ann in annotations:
         if not _sees_all_data(ann) or _suppressed(ann, SEE_ALL_DATA):
             continue
         decl = ann.parent.parent if ann.parent is not None else None
@@ -256,13 +259,11 @@ def is_record_id(value: str) -> bool:
     return value[:3] in _KEY_PREFIXES and "000" in body
 
 
-def _hardcoded_ids(root: Node) -> list[PerfHit]:
+def _hardcoded_ids(root: Node, literals: list[Node]) -> list[PerfHit]:
     hits: list[PerfHit] = []
     if any(c.type in _TYPES and _FIXTURE_NAME.search(_text(c.child_by_field_name("name"))) for c in root.named_children):
         return hits
-    for node in _walk(root):
-        if node.type != "string_literal":
-            continue
+    for node in literals:
         value = _literal(node)
         if is_record_id(value) and not _in_test(node) and not _suppressed(node, HARDCODED_ID):
             hits.append(_hit(HARDCODED_ID, node, value))
@@ -662,10 +663,10 @@ def _checked_query(call: Node) -> bool:
     return not _in_test(call) and not _suppressed(call, SOQL_INJECTION)
 
 
-def _soql_injections(root: Node) -> list[PerfHit]:
+def _soql_injections(calls: list[Node]) -> list[PerfHit]:
     hits = []
     scopes: dict[int, _Scope] = {}
-    for call in filter(_checked_query, _walk(root)):
+    for call in filter(_checked_query, calls):
         cls = next((a for a in _ancestors(call) if a.type == "class_declaration"), None)
         method = next((a for a in _ancestors(call) if a.type in _METHODS), None)
         if cls is None:
@@ -678,9 +679,17 @@ def _soql_injections(root: Node) -> list[PerfHit]:
 
 def apex_marker_hits(root: Node) -> list[PerfHit]:
     """Every Apex marker hit in the file whose tree is *root*."""
+    # A byte scan picks the node types a file can hit on; most files walk for none.
+    source = root.text or b""
+    gates = {"method_invocation": _HAS_DYNAMIC_QUERY, "string_literal": _HAS_ID_LITERAL, "annotation": _HAS_SEE_ALL_DATA}
+    wanted = {kind for kind, gate in gates.items() if gate.search(source)}
+    nodes: dict[str, list[Node]] = {kind: [] for kind in gates}
+    for node in _walk(root) if wanted else ():
+        if node.type in wanted:
+            nodes[node.type].append(node)
     return [
-        *_soql_injections(root),
+        *_soql_injections(nodes["method_invocation"]),
         *_missing_sharing(root),
-        *_hardcoded_ids(root),
-        *_see_all_data(root),
+        *_hardcoded_ids(root, nodes["string_literal"]),
+        *_see_all_data(nodes["annotation"]),
     ]
