@@ -831,6 +831,7 @@ async def test_evidence_for_a_stored_change_is_its_kept_record(tmp_path, monkeyp
 
     from sqlalchemy.exc import OperationalError
 
+    from repowise.core.components.catalog import catalog_digest
     from repowise.core.persistence import upsert_repository
     from repowise.core.persistence.crud import upsert_changes
 
@@ -849,6 +850,8 @@ async def test_evidence_for_a_stored_change_is_its_kept_record(tmp_path, monkeyp
         "generated_at": "2026-10-14T00:00:00+00:00",
         "index_commit": None,
         "items": [],
+        # Resolved under the catalog on disk, so components are not read again.
+        "catalog_digest": catalog_digest(repo),
     }
     async with factory() as session:
         row = await upsert_repository(session, name="repo", local_path=str(repo))

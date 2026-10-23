@@ -442,6 +442,7 @@
         "unknown": "Not known: {reason}",
         "unknownBare": "Not known",
         "components_touched": "{count, plural, one {# component} other {# components}}: {names}{more, plural, =0 {} other { and # more}}",
+        "components_outside": "Outside every component ({files, plural, one {# changed file} other {# changed files}})",
         "suggested_reviewers": "{names}{more, plural, =0 {} other { and # more}}",
         "owners": "{count, plural, =0 {No declared owner} other {{names}{more, plural, =0 {} other { and # more}}}}{unowned, plural, =0 {} one {; # changed file without one} other {; # changed files without one}}",
         "reaching_tests": "{files, plural, =0 {No changed source file} one {{reached} of # changed file reached by a test} other {{reached} of # changed files reached by a test}}{absent, plural, =0 {} other {; # with none}}{unknown, plural, =0 {} other {; # not known}}",

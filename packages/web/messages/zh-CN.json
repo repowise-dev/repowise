@@ -442,6 +442,7 @@
         "unknown": "未知：{reason}",
         "unknownBare": "未知",
         "components_touched": "{count} 个组件：{names}{more, plural, =0 {} other {等另外 # 个}}",
+        "components_outside": "不属于任何组件（{files} 个变更文件）",
         "suggested_reviewers": "{names}{more, plural, =0 {} other {等另外 # 人}}",
         "owners": "{count, plural, =0 {无声明的负责人} other {{names}{more, plural, =0 {} other {等另外 # 个}}}}{unowned, plural, =0 {} other {；# 个变更文件无负责人}}",
         "reaching_tests": "{files, plural, =0 {没有变更的源文件} other {# 个变更文件中有 {reached} 个被测试覆盖}}{absent, plural, =0 {} other {；# 个没有测试}}{unknown, plural, =0 {} other {；# 个未知}}",

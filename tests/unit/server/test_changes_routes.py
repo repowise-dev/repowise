@@ -116,6 +116,7 @@ def _fake_build(monkeypatch, seen: list[str], gate=None):
     import asyncio
 
     from repowise.core.changes.evidence import ChangeEvidence, EvidenceItem
+    from repowise.core.components.catalog import catalog_digest
     from repowise.server.routers import changes as route
 
     async def _build(session, repo_id, root, row):
@@ -138,6 +139,8 @@ def _fake_build(monkeypatch, seen: list[str], gate=None):
                     "change health",
                 )
             ],
+            # As a real build: resolved under the catalog on disk.
+            catalog_digest=catalog_digest(root),
         )
 
     async def _current(_root, _evidence):

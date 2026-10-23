@@ -629,3 +629,91 @@ async def test_without_an_index_only_git_items_are_filled(repo):
     assert by["owners"].details == [{"reason": "the repository has no index"}]
     assert by["health_delta"].status in {"ok", "attention"}
     assert evidence.index_commit is None
+
+
+def test_files_outside_every_component_are_a_known_answer():
+    outside = {"outside": True, "source": "declared", "files": ["README.md", ".github/ci.yml"]}
+    inputs = dataclasses.replace(_full_inputs(), components=[outside])
+    evidence = build_change_evidence(_bundle(["README.md", ".github/ci.yml"]), inputs, change_id="c", revspec="r")
+    item = evidence.item("components_touched")
+    assert (item.status, item.basis, item.value) == ("ok", "declared", [])
+    assert line_text(item_line(item.to_dict())) == "Outside every component (2 changed files)"
+    mixed = dataclasses.replace(_full_inputs(), components=[*_full_inputs().components, outside])
+    item = build_change_evidence(_bundle(["src/a.py"]), mixed, change_id="c", revspec="r").item(
+        "components_touched"
+    )
+    assert item.value == ["core"] and line_text(item_line(item.to_dict())) == "1 component: core"
+
+
+_CATALOG = """\
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: {name}
+  annotations:
+    repowise.dev/paths: {paths}
+spec: {{type: library, lifecycle: production, owner: group:default/{name}-team}}
+"""
+
+
+async def _set_files(factory, repo_id: str, paths: list[str], total: int) -> None:
+    from sqlalchemy import update
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Change
+
+    files = json.dumps([{"path": p, "added": 1, "deleted": 0} for p in paths])
+    async with get_session(factory) as session:
+        await session.execute(
+            update(Change)
+            .where(Change.repository_id == repo_id, Change.change_id == "pr-7")
+            .values(files_json=files, files_changed=total)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_catalog_edit_is_applied_to_a_kept_checklist_on_read(tmp_path, repo):
+    from repowise.core.changes.collect import CATALOG_CHANGED, cached_evidence, change_evidence
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    root, head = repo
+    catalog = root / ".repowise" / "components.yaml"
+    catalog.parent.mkdir()
+    catalog.write_text(_CATALOG.format(name="core", paths="src/core/**"), encoding="utf-8")
+    engine, factory, repo_id = await _index(tmp_path, root, head)
+    paths = ["src/core/a.py", "src/web.py"]
+    await _set_files(factory, repo_id, paths, len(paths))
+    try:
+        async with get_session(factory) as session:
+            first = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        comps = first.item("components_touched")
+        assert comps.value == ["core"]
+        assert comps.details[-1] == {"outside": True, "source": "declared", "files": ["src/web.py"]}
+
+        # The catalog gains a component for src/web.py: read back without a rebuild.
+        second = _CATALOG.format(name="web", paths="src/web.py")
+        catalog.write_text(catalog.read_text(encoding="utf-8") + "---\n" + second, encoding="utf-8")
+        async with get_session(factory) as session:
+            got = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        comps = got.item("components_touched")
+        assert comps.value == ["core", "web"] and not any(r.get("outside") for r in comps.details)
+        assert got.item("owners").value == ["@team-core", "web-team"]
+        assert got.generated_at == first.generated_at and got.catalog_digest != first.catalog_digest
+        async with get_session(factory) as session:
+            stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
+        assert stored.to_dict() == got.to_dict()
+
+        # A capped file list cannot be resolved again: unknown, naming --refresh, not kept.
+        await _set_files(factory, repo_id, paths, 5000)
+        catalog.write_text(_CATALOG.format(name="core", paths="src/**"), encoding="utf-8")
+        async with get_session(factory) as session:
+            capped = await change_evidence(session, repo_id, root, await get_change(session, repo_id, "pr-7"))
+        comps = capped.item("components_touched")
+        assert comps.status == "unknown" and comps.details == [{"reason": CATALOG_CHANGED}]
+        async with get_session(factory) as session:
+            stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
+        assert stored.to_dict() == got.to_dict()
+    finally:
+        await engine.dispose()

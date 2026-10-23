@@ -17,7 +17,9 @@ Detail rows a policy reads have fixed keys (the local change policy in
 
 * ``components_touched``: ``{name, source, owner, criticality, tags, files,
   bus_factor}``; ``owner`` is a team name or ``None``, ``bus_factor`` an int
-  when measured, else ``None``;
+  when measured, else ``None``; then one ``{outside: true, source, files}`` row
+  for the changed files no component holds (``source`` is ``declared`` when
+  a catalog is declared, else ``derived``). A reader of components skips it;
 * ``reaching_tests``: one row per changed source file, ``{path, tests, ...}``;
   ``tests`` lists test ids, ``[]`` only for a measured absence, ``None`` when
   nothing knows;
@@ -126,12 +128,15 @@ class ChangeEvidence:
     schema_version: int = EVIDENCE_SCHEMA_VERSION
     #: The indexed commit the index facts were read at; ``None`` when unknown.
     index_commit: str | None = None
+    #: The component catalog's digest when components were resolved
+    #: (``components.catalog.catalog_digest``); ``None`` when not recorded.
+    catalog_digest: str | None = None
 
     def item(self, kind: str) -> EvidenceItem | None:
         return next((i for i in self.items if i.kind == kind), None)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "schema_version": self.schema_version,
             "change_id": self.change_id,
             "revspec": self.revspec,
@@ -139,6 +144,9 @@ class ChangeEvidence:
             "index_commit": self.index_commit,
             "items": [i.to_dict() for i in self.items],
         }
+        if self.catalog_digest is not None:
+            out["catalog_digest"] = self.catalog_digest
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ChangeEvidence:
@@ -148,6 +156,7 @@ class ChangeEvidence:
             revspec=data.get("revspec"),
             generated_at=data["generated_at"],
             index_commit=data.get("index_commit"),
+            catalog_digest=data.get("catalog_digest"),
             items=[EvidenceItem.from_dict(i) for i in data.get("items") or []],
         )
 
@@ -261,7 +270,7 @@ def _components(inputs: EvidenceInputs) -> EvidenceItem:
         label,
         "ok",
         "declared" if declared else "inferred",
-        [r["name"] for r in rows],
+        [r["name"] for r in rows if not r.get("outside")],
         rows,
         source,
     )
@@ -585,6 +594,13 @@ def _named_list(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line |
     return (kind, {"count": len(value), **_names(value)}) if isinstance(value, list) else None
 
 
+def _components_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line | None:
+    if value == []:
+        files = sum(len(r.get("files") or ()) for r in rows if r.get("outside"))
+        return "components_outside", {"files": files}
+    return _named_list(kind, value, rows)
+
+
 def _owners_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line | None:
     if not isinstance(value, list):
         return None
@@ -649,7 +665,7 @@ def _outcomes_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Lin
 
 #: Each kind's line from its value and rows; ``None`` reads as unknown.
 _LINES: dict[str, Any] = {
-    "components_touched": _named_list,
+    "components_touched": _components_line,
     "suggested_reviewers": _named_list,
     "owners": _owners_line,
     "reaching_tests": _tests_line,
@@ -739,6 +755,7 @@ def _outcomes_text(key: str, p: Mapping[str, Any]) -> str:
 _TEXT: dict[str, Any] = {
     "unknown": lambda k, p: f"Not known: {p['reason']}" if p["reason"] else "Not known",
     "components_touched": lambda k, p: f"{_n(p['count'], 'component')}: {_listed(p)}",
+    "components_outside": lambda k, p: f"Outside every component ({_n(p['files'], 'changed file')})",
     "suggested_reviewers": lambda k, p: _listed(p),
     "owners": _owners_text,
     "reaching_tests": _tests_text,

@@ -19,6 +19,7 @@ left out of the catalog.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -163,6 +164,20 @@ def read_catalog(repo_root: Path | str) -> Catalog:
         catalog.sources.append(rel)
         parse_into(catalog, text, rel)
     return catalog
+
+
+def catalog_digest(repo_root: Path | str) -> str:
+    """A digest of the catalog files as they are on disk; one value when there are none."""
+    digest = hashlib.sha256()
+    root = Path(repo_root)
+    for rel in CATALOG_FILES:
+        try:
+            data = (root / rel).read_bytes()
+        except OSError:
+            continue
+        digest.update(f"{rel}\0{len(data)}\0".encode())
+        digest.update(data)
+    return digest.hexdigest()[:16]
 
 
 def parse_into(catalog: Catalog, text: str, source: str) -> None:

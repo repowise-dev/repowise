@@ -10,6 +10,7 @@ const LINES: [string, Record<string, unknown>][] = [
   ["unknown", { reason: "not gathered for this change" }],
   ["unknown", { reason: "" }],
   ["components_touched", { count: 2, names: "core, web", more: 0 }],
+  ["components_outside", { files: 3 }],
   ["suggested_reviewers", { count: 8, names: "a, b, c, d, e, f", more: 2 }],
   ["owners", { count: 1, names: "@core", more: 0, unowned: 3 }],
   ["owners", { count: 0, names: "", more: 0, unowned: 1 }],
