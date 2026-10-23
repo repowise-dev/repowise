@@ -190,41 +190,37 @@ class _AuraIndex:
         self.source_map: dict[str, bytes] = getattr(ctx, "source_map", None) or {}
         self.own_ns = _own_namespaces(parsed_files, self.source_map)
         self.bundles: dict[str, _Bundle] = {}  # bundle dir -> bundle
-        aura_by_name: dict[str, list[str]] = {}
-        lwc_by_name: dict[str, list[str]] = {}
-        apex_by_name: dict[str, list[str]] = {}
+        self.lwc_by_name: dict[str, list[str]] = {}
+        self.apex_by_name: dict[str, list[str]] = {}
         for path in sorted(parsed_files):
-            parsed = parsed_files[path]
-            lang = parsed.file_info.language
-            if lang == "apex" and path.endswith(".cls"):
-                # Apex names fold case and a class file is named after its class.
-                # Deliberately local: the case-insensitive Apex class index the
-                # Apex resolution pass builds should replace this once it lands.
-                apex_by_name.setdefault(PurePosixPath(path).stem.lower(), []).append(path)
-                continue
-            bundle = aura_bundle(path)
-            if bundle is None:
-                if lang == "javascript":
-                    parts = PurePosixPath(path).parts
-                    # LWC main module: lwc/<name>/<name>.js. Only the location
-                    # is read here; the LWC surface itself is not this module's.
-                    if len(parts) >= 3 and parts[-3] == "lwc" and parts[-1] == f"{parts[-2]}.js":
-                        lwc_by_name.setdefault(parts[-2], []).append(path)
-                continue
-            bdir, name = bundle
-            if lang == "aura":
-                b = self.bundles.setdefault(bdir, _Bundle(name))
-                b.markup[PurePosixPath(path).suffix.lower()] = path
-            elif lang == "javascript" and (role := aura_js_role(path)) is not None:
-                self.bundles.setdefault(bdir, _Bundle(name)).js[role] = path
+            self._add_file(path, parsed_files[path].file_info.language)
+        self.aura_by_name: dict[str, list[str]] = {}
         for bdir, b in self.bundles.items():
             if b.main is not None:
-                aura_by_name.setdefault(b.name, []).append(bdir)
-        self.aura_by_name = aura_by_name
-        self.lwc_by_name = lwc_by_name
-        self.apex_by_name = apex_by_name
+                self.aura_by_name.setdefault(b.name, []).append(bdir)
         self._root_attrs: dict[str, dict[str, str]] = {}
         self._functions: dict[str, dict[str, str]] = {}
+
+    def _add_file(self, path: str, lang: str) -> None:
+        if lang == "apex" and path.endswith(".cls"):
+            # Apex names fold case and a class file is named after its class.
+            # Deliberately local: the case-insensitive Apex class index the
+            # Apex resolution pass builds should replace this once it lands.
+            self.apex_by_name.setdefault(PurePosixPath(path).stem.lower(), []).append(path)
+            return
+        bundle = aura_bundle(path)
+        if bundle is None:
+            parts = PurePosixPath(path).parts
+            # LWC main module: lwc/<name>/<name>.js. Only the location is read
+            # here; the LWC surface itself is not this module's.
+            if lang == "javascript" and len(parts) >= 3 and parts[-3] == "lwc" and parts[-1] == f"{parts[-2]}.js":
+                self.lwc_by_name.setdefault(parts[-2], []).append(path)
+            return
+        bdir, name = bundle
+        if lang == "aura":
+            self.bundles.setdefault(bdir, _Bundle(name)).markup[PurePosixPath(path).suffix.lower()] = path
+        elif lang == "javascript" and (role := aura_js_role(path)) is not None:
+            self.bundles.setdefault(bdir, _Bundle(name)).js[role] = path
 
     # -- lookups -----------------------------------------------------------
 
@@ -448,92 +444,121 @@ class _Edges:
         return self.count
 
 
-def _markup_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None:
-    graph = idx.graph
+def _is_placeable(main: str, implements: list[str]) -> bool:
+    """An ``.app``, or a component an admin can place without any source naming it."""
+    return main.endswith(".app") or any(
+        i.lower() in _ENTRY_INTERFACES or i.lower().startswith(_ENTRY_INTERFACE_PREFIXES)
+        for i in implements
+    )
+
+
+def _root_edges(idx: _AuraIndex, bdir: str, main: str, edges: _Edges) -> None:
+    """Edges the root tag of the bundle's main markup declares."""
     attrs = idx.root_attrs(bdir)
-    main = b.main
+    cls = attrs.get("controller")
+    cls_file = idx.apex_class(cls, main) if cls else None
+    if cls_file is not None:
+        edges.file(main, cls_file, {bare_type_name(cls)})
+    implements = [i.strip() for i in attrs.get("implements", "").split(",") if i.strip()]
+    if _is_placeable(main, implements):
+        idx.graph.nodes[main]["is_entry_point"] = True
+    for written in [attrs.get("extends", ""), *implements]:
+        name = idx.own_name(written)
+        target = idx.bundle_target(name, main) if name else None
+        if target is not None:
+            edges.file(main, target)
+    # The framework calls these: renderer overrides, the controller function an
+    # action-less `aura:method` of an implemented interface names, and the
+    # functions a platform interface obliges the component to define.
+    module = f"{main}::__module__"
+    platform = {
+        m
+        for b_dir in idx.chain(bdir)
+        for i in idx.root_attrs(b_dir).get("implements", "").split(",")
+        for m in _PLATFORM_INTERFACE_METHODS.get(i.strip().lower(), ())
+    }
+    wanted = [("Renderer", n) for n in _RENDERER_OVERRIDES]
+    wanted += [("Controller", n) for n in sorted(idx.interface_methods(bdir) | platform)]
+    for role, n in wanted:
+        hit = idx.bundle_function(bdir, role, n)
+        if hit is not None:
+            edges.bind(module, hit, main)
 
-    if main is not None:
-        cls = attrs.get("controller")
-        cls_file = idx.apex_class(cls, main) if cls else None
-        if cls_file is not None:
-            edges.file(main, cls_file, {bare_type_name(cls)})
-        implements = [i.strip() for i in attrs.get("implements", "").split(",") if i.strip()]
-        if main.endswith(".app") or any(
-            i.lower() in _ENTRY_INTERFACES or i.lower().startswith(_ENTRY_INTERFACE_PREFIXES)
-            for i in implements
-        ):
-            graph.nodes[main]["is_entry_point"] = True
-        for written in [attrs.get("extends", ""), *implements]:
-            name = idx.own_name(written)
-            target = idx.bundle_target(name, main) if name else None
-            if target is not None:
-                edges.file(main, target)
-        # The framework calls these: renderer overrides, and the controller
-        # function an action-less `aura:method` of an implemented interface names.
-        module = f"{main}::__module__"
-        for n in _RENDERER_OVERRIDES:
-            hit = idx.bundle_function(bdir, "Renderer", n)
-            if hit is not None:
-                edges.bind(module, hit, main)
-        platform = {
-            m
-            for b_dir in idx.chain(bdir)
-            for i in idx.root_attrs(b_dir).get("implements", "").split(",")
-            for m in _PLATFORM_INTERFACE_METHODS.get(i.strip().lower(), ())
-        }
-        for n in sorted(idx.interface_methods(bdir) | platform):
-            hit = idx.bundle_function(bdir, "Controller", n)
-            if hit is not None:
-                edges.bind(module, hit, main)
 
+def _markup_file_edges(idx: _AuraIndex, bdir: str, path: str, edges: _Edges) -> None:
+    """Handler, tag and event edges of one markup file of the bundle."""
+    text = _mask_xml(idx.text(path))
+    module = f"{path}::__module__"
+    handlers = {m.group(1) for m in _MARKUP_HANDLER_RE.finditer(text)}
+    for n in sorted(handlers | _default_action_methods(text)):
+        hit = idx.bundle_function(bdir, "Controller", n)
+        if hit is not None:
+            edges.bind(module, hit, path)
+    for m in _TAG_RE.finditer(text):
+        name = _referenced_bundle(idx, m)
+        target = idx.bundle_target(name, path) if name else None
+        if target is not None:
+            edges.file(path, target)
+
+
+def _referenced_bundle(idx: _AuraIndex, m: re.Match[str]) -> str | None:
+    """The own-namespace bundle a tag names: as the tag itself, or as its event type."""
+    ns, tag, blob = m.group(1), m.group(2), m.group(3)
+    if ns == "aura" and tag in ("registerEvent", "handler"):
+        return idx.own_name(_attrs(blob).get("type" if tag == "registerEvent" else "event", ""))
+    return tag if ns.lower() in idx.own_ns else None
+
+
+def _markup_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None:
+    if b.main is not None:
+        _root_edges(idx, bdir, b.main, edges)
     for path in sorted(b.markup.values()):
-        text = _mask_xml(idx.text(path))
-        module = f"{path}::__module__"
-        handlers = {m.group(1) for m in _MARKUP_HANDLER_RE.finditer(text)}
-        for n in sorted(handlers | _default_action_methods(text)):
-            hit = idx.bundle_function(bdir, "Controller", n)
-            if hit is not None:
-                edges.bind(module, hit, path)
-        for m in _TAG_RE.finditer(text):
-            ns, tag, blob = m.group(1), m.group(2), m.group(3)
-            if ns == "aura" and tag in ("registerEvent", "handler"):
-                written = _attrs(blob).get("type" if tag == "registerEvent" else "event", "")
-                name = idx.own_name(written)
-            elif ns.lower() in idx.own_ns:
-                name = tag
-            else:
-                continue
-            target = idx.bundle_target(name, path) if name else None
-            if target is not None:
-                edges.file(path, target)
+        _markup_file_edges(idx, bdir, path, edges)
+
+
+class _ApexController:
+    """The bundle's Apex controller, resolved on first use."""
+
+    def __init__(self, idx: _AuraIndex, bdir: str) -> None:
+        self.idx, self.bdir = idx, bdir
+        self._resolved = False
+        self._value: tuple[str, str] | None = None
+
+    def get(self) -> tuple[str, str] | None:
+        if not self._resolved:
+            self._value, self._resolved = self.idx.controller_class(self.bdir), True
+        return self._value
+
+
+def _action_edge(
+    idx: _AuraIndex, bdir: str, path: str, m: re.Match[str], apex: _ApexController, edges: _Edges
+) -> None:
+    """Bind one "c.x" literal: the Apex action for `get(`, else a client controller function."""
+    name = m.group(3)
+    source = idx.enclosing(path, _line_of(m.string, m.start()))
+    client = idx.bundle_function(bdir, "Controller", name)
+    controller = apex.get() if m.group(1) else None
+    if controller is not None:
+        method_sym = idx.apex_method(controller[1], controller[0], name)
+        if method_sym is not None or client is None:
+            # The Apex action. A method the class does not declare itself may
+            # be inherited, so the class edge stands alone.
+            edges.file(path, controller[1], {name})
+            if method_sym is not None:
+                edges.count += add_symbol_edge(idx.graph, source, method_sym)
+            return
+    # Any other "c.x" literal (getReference, addHandler, enqueue of a client
+    # action) names a client-side controller function.
+    if client is not None:
+        edges.bind(source, client, path)
 
 
 def _js_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None:
-    graph = idx.graph
-    apex: tuple[str, str] | None = None
-    apex_resolved = False
+    apex = _ApexController(idx, bdir)
     for path in sorted(b.js.values()):
         text = _mask_js_comments(idx.text(path))
         for m in _ACTION_RE.finditer(text):
-            name = m.group(3)
-            source = idx.enclosing(path, _line_of(text, m.start()))
-            client = idx.bundle_function(bdir, "Controller", name)
-            if m.group(1):
-                if not apex_resolved:
-                    apex, apex_resolved = idx.controller_class(bdir), True
-                method_sym = idx.apex_method(apex[1], apex[0], name) if apex else None
-                if apex is not None and (method_sym is not None or client is None):
-                    # The Apex action. A method the class does not declare
-                    # itself may be inherited, so the class edge stands alone.
-                    edges.file(path, apex[1], {name})
-                    if method_sym is not None:
-                        edges.count += add_symbol_edge(graph, source, method_sym)
-                    continue
-            # Any other "c.x" literal (getReference, addHandler, enqueue of a
-            # client action) names a client-side controller function.
-            if client is not None:
-                edges.bind(source, client, path)
+            _action_edge(idx, bdir, path, m, apex, edges)
         helper_calls = list(_HELPER_CALL_RE.finditer(text))
         if path == b.js.get("Helper"):
             helper_calls += _THIS_CALL_RE.finditer(text)
@@ -545,7 +570,7 @@ def _js_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None:
             name = idx.own_name(written)
             target = idx.bundle_target(name, path) if name else None
             if target is not None:
-                edges.count += _dynamic_edge(graph, path, target)
+                edges.count += _dynamic_edge(idx.graph, path, target)
 
 
 def _created_components(text: str) -> list[str]:
