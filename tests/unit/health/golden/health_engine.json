@@ -907,7 +907,7 @@
         "max_ccn": 1,
         "max_nesting": 0,
         "nloc": 34,
-        "has_test_file": false,
+        "has_test_file": true,
         "module": "apex",
         "duplication_pct": null,
         "line_coverage_pct": null,
@@ -917,8 +917,8 @@
         "performance_score": 10.0,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
-        "is_test": false,
-        "code_origin": "production"
+        "is_test": true,
+        "code_origin": "test"
       },
       {
         "file_path": "apex/classes.cls",
@@ -5306,8 +5306,8 @@
       "average_health": 9.6,
       "worst_performer_path": "scala/nested.scala",
       "worst_performer_score": 7.77,
-      "worst_test_path": null,
-      "worst_test_score": null,
+      "worst_test_path": "apex/assertions.cls",
+      "worst_test_score": 10.0,
       "file_count": 69,
       "maintainability_average": 9.64,
       "maintainability_hotspot": null,
@@ -5318,7 +5318,7 @@
       "history_average": 0.0,
       "history_hotspot": null,
       "production_average": 9.6,
-      "production_file_count": 69,
+      "production_file_count": 68,
       "unanalysed_file_count": 4,
       "analysed_share": 0.9452
     },
