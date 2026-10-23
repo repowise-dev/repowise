@@ -109,20 +109,22 @@ with no consumer contract read from them.
 
 ### Matching
 
-Matching always runs over the whole merged contract set, never a subset.
+Matching always runs over the whole merged contract set, never a subset. The first
+two steps run in `run_contract_extraction` before `matching.run_matching`; manual
+links are appended after it.
 
-1. **Target resolution** (`matching/http.py::annotate_consumer_targets`): each HTTP
+1. **Service-name map** (`service_names/`): every source walks each repo once and
+   reads only files its gate admits, plus the workspace root's own files. Claims
+   settle into one `name -> repo` entry; a name claimed for two repos is left
+   unmapped. The sources and their rules are in
+   [WORKSPACE_CONTRACTS.md](../reference/WORKSPACE_CONTRACTS.md#service-names).
+2. **Target resolution** (`matching/http.py::annotate_consumer_targets`): each HTTP
    consumer's host or base token is resolved, in order, through a
    `contracts.service_bases` entry, a repo alias (also the leading label of an
    internal DNS name such as `catalog.svc.cluster.local`), and the service-name map.
    The consumer's `meta` records `target_repo`, `target_via` (the source) and, for a
    map entry, `target_evidence` (the file). A public dotted host nothing maps is
    `external` and never linked.
-2. **Service-name map** (`service_names/`): every source walks each repo once and
-   reads only files its gate admits, plus the workspace root's own files. Claims
-   settle into one `name -> repo` entry; a name claimed for two repos is left
-   unmapped. The sources and their rules are in
-   [WORKSPACE_CONTRACTS.md](../reference/WORKSPACE_CONTRACTS.md#service-names).
 3. **Exact pass** (`matching/__init__.py::_exact_pass`): normalized ids, HTTP method
    and gRPC service wildcards included. Strategy `exact_id`, `pattern_matched` for a
    pattern subscription, `service_mapped` when the provider sits in the consumer's
@@ -150,8 +152,11 @@ strongest link.
 structural edges in dependency direction by default, `impact=True` for the
 blast-radius direction, `behavioral=True` to add co-change both ways. Parallel edges
 between one pair stay separate, so a caller can tell an `event` leg
-(`ASYNC_EDGE_KINDS`) from a sync one. `tests/unit/workspace/test_system_graph.py`
-asserts that every walk reads it.
+(`ASYNC_EDGE_KINDS`) from a sync one. `cycles.py`, `architecture_metrics.py` and
+`blast_radius.py` build no adjacency of their own;
+`test_system_graph.py::test_adjacency_is_the_one_view_every_walk_reads` pins its
+shape (parallel edges kept, `impact` flips direction, `behavioral` adds co-change
+both ways).
 
 ### Consumers
 
@@ -187,7 +192,7 @@ does with it:
 
 | Output | `insufficient` | `partial` |
 |--------|----------------|-----------|
-| Architecture metrics | Score, propagation cost, core, cycle count and roles are `None`; type `undetermined` | Figures computed, reasons attached |
+| Architecture metrics | Score, propagation cost, core size and cycle count are `None`, core members and roles empty; type `undetermined` | Figures computed, reasons attached |
 | Conformance, `workspace check` | `cycles_determined: false`; "dependency cycles not determined", exit 0 | "no dependency cycles among the edges detected (partial evidence)" |
 | Blast radius | `evidence` attached | `evidence` attached |
 | MCP `get_architecture`, `get_blast_radius`, `get_conformance`, REST | Carry the same `evidence` block | Same |
@@ -210,7 +215,7 @@ Everything lives in `.repowise-workspace/`:
 | `contracts.json` | `contracts`, `contract_links`, `service_links`, `service_names`, `extraction_stats`, `repo_provenance` | `CONTRACTS_VERSION`; per repo `head`, `config_fp`, `extracted_at`; the service-name map's `fingerprint` |
 | `cross_repo_edges.json` | Co-change pairs, package dependencies, repo summaries | File mtime against each repo's `state.json` |
 | `system_graph.json` | Nodes, edges, diagnostics, `repo_provenance` | `version` |
-| `breaking_changes.json` | Provider breaks since the previous store | |
+| `breaking_changes.json` | Provider breaks since the previous store | `generated_at` |
 | `conformance.json` | Violations, cycles, `evidence` | |
 | `analysis_config.json` | The `contracts:` and `conformance:` settings the last analysis ran with | `WorkspaceConfig.analysis_fingerprint()` |
 | `member_refresh.json` | One digest per member repo | `update_cmd/member_refresh.py::member_fingerprint` |
@@ -226,9 +231,9 @@ schema reconcile.
 | Change | Re-extracts | Re-matches | Reuses |
 |--------|-------------|------------|--------|
 | A repo's HEAD moved, its tree is dirty, or upstream marked it changed | That repo | Everything | Every other repo's stored rows |
-| An extraction setting (`detect_*`, `exclude_globs`, `contract_project_pattern`), the published-package set or the message-type set | Every repo | Everything | Nothing |
+| An extraction setting (`detect_*`, `exclude_globs`, `contract_project_pattern`), the published-package set or the message-type set | Every repo | Everything | The co-change overlay, when no repo changed |
 | A matching setting (`service_bases`, `manual_links`) or a `conformance:` rule | Nothing | Everything | All stored rows; the service-name map when its fingerprint holds |
-| `CONTRACTS_VERSION` moved | Every repo, once | Everything | Nothing |
+| `CONTRACTS_VERSION` moved, or no stored contracts | Every repo, once | Everything | Nothing |
 | Nothing | Nothing; the cross-repo phases do not run | Nothing | Everything |
 
 Details the table compresses:
@@ -266,7 +271,7 @@ Details the table compresses:
 | Service-name sources | `service_names/__init__.py` `SOURCES`, sorted by name | `name`, `filenames`, optional `under` and `marker`, `read` | `test_service_names.py` |
 | Evidence rules | `graph_evidence.py` `_RULES` | One function returning a reason or `None` | `test_graph_evidence.py` |
 | Network probe | `network_probe.py` `PROBE_ROWS`, sorted by language | `language`, `extensions`, `tokens`, `hash_comments` | `test_network_probe.py` |
-| Edge kinds | `system_graph.py` `_CONTRACT_TYPE_TO_EDGE_KIND` | Contract type to edge kind | `test_system_graph.py` |
+| Edge kinds | `system_graph.py` `_CONTRACT_TYPE_TO_EDGE_KIND` | Contract type to edge kind | `test_system_graph.py::test_contract_type_to_edge_kind` |
 | Package ecosystems | `manifests.py` `ECOSYSTEMS` | Service markers and an optional manifest scanner | `test_manifests.py` |
 
 What the registry tests assert:
@@ -281,7 +286,8 @@ What the registry tests assert:
 - `test_service_names.py`: `SOURCES` is sorted and unique, every module's `SOURCE` is
   registered, a broad glob (`*.yaml`) carries `under` or a `marker`, and only gated
   files are opened.
-- `test_network_probe.py`: every row declares what the probe needs.
+- `test_network_probe.py`: rows are sorted and unique by language, no extension
+  belongs to two rows, and every token compiles.
 - `test_extraction_walk_budget.py`: one tree walk per repo, each file read once.
 
 ## Trust model
