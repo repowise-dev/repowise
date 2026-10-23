@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from repowise.core.ingestion.cobol import code_view
-from repowise.core.ingestion.cobol.cics import ProgramTransfer, program_transfers
+from repowise.core.ingestion.cobol.cics import CicsTarget, program_transfers
 from repowise.core.ingestion.cobol.facts import cobol_imports
 
 
@@ -20,14 +20,14 @@ def _program(data: str, procedure: str) -> bytes:
     ).encode()
 
 
-def _transfers(source: bytes) -> list[ProgramTransfer]:
+def _transfers(source: bytes) -> list[CicsTarget]:
     return program_transfers(code_view(source))
 
 
 def test_a_literal_program_is_its_target() -> None:
     source = _program("", "           EXEC CICS XCTL PROGRAM('COMEN01C') END-EXEC.")
 
-    assert _transfers(source) == [ProgramTransfer("XCTL", 8, ("COMEN01C",))]
+    assert _transfers(source) == [CicsTarget("XCTL", 8, ("COMEN01C",))]
 
 
 def test_literal_moves_into_the_variable_are_its_targets() -> None:
@@ -40,7 +40,7 @@ def test_literal_moves_into_the_variable_are_its_targets() -> None:
         "           END-EXEC.",
     )
 
-    assert _transfers(source) == [ProgramTransfer("XCTL", 10, ("COADM01C", "COMEN01C"))]
+    assert _transfers(source) == [CicsTarget("XCTL", 10, ("COADM01C", "COMEN01C"))]
 
 
 def test_a_constant_moved_into_the_variable_is_followed() -> None:
@@ -50,7 +50,7 @@ def test_a_constant_moved_into_the_variable_is_followed() -> None:
         "           EXEC CICS LINK PROGRAM(CDEMO-TO-PROGRAM) END-EXEC.",
     )
 
-    assert _transfers(source) == [ProgramTransfer("LINK", 10, ("COMEN01C",))]
+    assert _transfers(source) == [CicsTarget("LINK", 10, ("COMEN01C",))]
 
 
 def test_a_variable_assigned_from_another_variable_is_dynamic() -> None:
@@ -62,7 +62,7 @@ def test_a_variable_assigned_from_another_variable_is_dynamic() -> None:
     )
 
     assert _transfers(source) == [
-        ProgramTransfer("XCTL", 10, ("COSGN00C",), dynamic="CDEMO-TO-PROGRAM")
+        CicsTarget("XCTL", 10, ("COSGN00C",), dynamic="CDEMO-TO-PROGRAM")
     ]
     dynamic = [i.module_path for i in cobol_imports(source) if i.module_path.startswith("dyn")]
     assert dynamic == ["dynamic:CDEMO-TO-PROGRAM"]
@@ -74,7 +74,7 @@ def test_a_reassigned_value_is_not_a_constant() -> None:
         "           MOVE INPUT-PGM TO WS-PGM\n           EXEC CICS XCTL PROGRAM(WS-PGM) END-EXEC.",
     )
 
-    assert _transfers(source) == [ProgramTransfer("XCTL", 9, (), dynamic="WS-PGM")]
+    assert _transfers(source) == [CicsTarget("XCTL", 9, (), dynamic="WS-PGM")]
 
 
 def test_a_literal_later_overwritten_by_another_verb_is_dynamic() -> None:
@@ -85,7 +85,7 @@ def test_a_literal_later_overwritten_by_another_verb_is_dynamic() -> None:
         "           EXEC CICS XCTL PROGRAM(WS-PGM) END-EXEC.",
     )
 
-    assert _transfers(source) == [ProgramTransfer("XCTL", 10, ("COMEN01C",), dynamic="WS-PGM")]
+    assert _transfers(source) == [CicsTarget("XCTL", 10, ("COMEN01C",), dynamic="WS-PGM")]
 
 
 def test_other_cics_commands_and_comments_are_not_transfers() -> None:

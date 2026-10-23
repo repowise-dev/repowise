@@ -96,6 +96,8 @@ LanguageTag = Literal[
     # Salesforce object and field metadata, and saved SOQL queries.
     "salesforce_object",
     "soql",
+    "jcl",
+    "bms",
     "unknown",
 ]
 

@@ -1,9 +1,9 @@
-"""CICS ``LINK`` / ``XCTL`` program transfers, with in-program constant tracking.
+"""CICS ``LINK`` / ``XCTL`` programs and ``SEND`` / ``RECEIVE MAP`` mapsets, with constant tracking.
 
 ``PROGRAM('X')`` names its target. ``PROGRAM(VAR)`` names every value the
 program moves into ``VAR`` that is a literal or a constant (a data item with a
 ``VALUE`` literal that nothing reassigns). Any other assignment makes the
-transfer dynamic, reported as such and never guessed.
+target dynamic, reported as such and never guessed. ``MAPSET`` reads the same way.
 
 Ceiling: only the program's own text is read, so a constant defined in a
 copybook, or a value arriving through a group move (a COMMAREA), is dynamic.
@@ -23,7 +23,11 @@ DYNAMIC_PREFIX = "dynamic:"
 _NAME = r"[A-Z0-9#@$][A-Z0-9#@$-]*"
 _LITERAL = r"'[^']*'|\"[^\"]*\""
 _TRANSFER = re.compile(r"^\s*(LINK|XCTL)\b", re.IGNORECASE)
-_PROGRAM = re.compile(rf"\bPROGRAM\s*\(\s*(?:(?P<lit>{_LITERAL})|(?P<var>{_NAME}))\s*\)", re.I)
+_OPERAND = rf"\s*\(\s*(?:(?P<lit>{_LITERAL})|(?P<var>{_NAME}))\s*\)"
+_PROGRAM = re.compile(r"\bPROGRAM" + _OPERAND, re.IGNORECASE)
+_MAP_COMMAND = re.compile(r"^\s*(SEND|RECEIVE)\s+MAP\b", re.IGNORECASE)
+_MAPSET = re.compile(r"\bMAPSET" + _OPERAND, re.IGNORECASE)
+_MAP = re.compile(r"\bMAP" + _OPERAND, re.IGNORECASE)
 _MOVE = re.compile(
     # The receivers are a lookahead, so a MOVE inside them is matched on its own.
     rf"(?<![\w-])MOVE\s+(?P<src>{_LITERAL}|{_NAME}(?:\s*\([^)]*\))?)\s+TO\s+(?=(?P<dst>[^.]*))",
@@ -78,8 +82,8 @@ _VERBS = frozenset(
 
 
 @dataclass(frozen=True)
-class ProgramTransfer:
-    """One ``EXEC CICS LINK|XCTL``: its static targets, and the variable when dynamic."""
+class CicsTarget:
+    """One CICS command's named program or mapset: static values, and the variable when dynamic."""
 
     verb: str
     line: int
@@ -87,8 +91,22 @@ class ProgramTransfer:
     dynamic: str | None = None
 
 
-def program_transfers(code: str) -> list[ProgramTransfer]:
-    """Every LINK/XCTL in *code* (a code view), its targets resolved where static."""
+def program_transfers(code: str) -> list[CicsTarget]:
+    """Every LINK/XCTL in *code* (a code view), its program resolved where static."""
+    return _cics_targets(code, _TRANSFER, _PROGRAM)
+
+
+def mapset_uses(code: str) -> list[CicsTarget]:
+    """Every SEND/RECEIVE MAP in *code*, by its MAPSET (CICS defaults it to the MAP)."""
+    return _cics_targets(code, _MAP_COMMAND, _MAPSET, fallback=_MAP)
+
+
+def _cics_targets(
+    code: str,
+    command: re.Pattern[str],
+    option: re.Pattern[str],
+    fallback: re.Pattern[str] | None = None,
+) -> list[CicsTarget]:
     statements = mask_statements(code)
     moves = _moves(statements)
     other_writes = {m.group(1).upper() for m in _OTHER_WRITE.finditer(statements)}
@@ -98,25 +116,22 @@ def program_transfers(code: str) -> list[ProgramTransfer]:
         for m in _VALUE.finditer(statements)
         if m.group("name").upper() not in rewritten
     }
-    out: list[ProgramTransfer] = []
+    out: list[CicsTarget] = []
     for block in exec_blocks(code):
-        verb = _TRANSFER.match(block.body) if block.kind == "CICS" else None
-        program = _PROGRAM.search(block.body) if verb else None
-        if program is None:
+        verb = command.match(block.body) if block.kind == "CICS" else None
+        operand = option.search(block.body) if verb else None
+        if verb and operand is None and fallback is not None:
+            operand = fallback.search(block.body)
+        if operand is None:
             continue
-        if program.group("lit"):
-            out.append(
-                ProgramTransfer(
-                    verb.group(1).upper(), block.line, (_unquote(program.group("lit")),)
-                )
-            )
+        name = verb.group(1).upper()
+        if operand.group("lit"):
+            out.append(CicsTarget(name, block.line, (_unquote(operand.group("lit")),)))
             continue
-        var = program.group("var").upper()
+        var = operand.group("var").upper()
         targets, dynamic = _values_of(var, moves, constants)
         dynamic = dynamic or var in other_writes
-        out.append(
-            ProgramTransfer(verb.group(1).upper(), block.line, targets, var if dynamic else None)
-        )
+        out.append(CicsTarget(name, block.line, targets, var if dynamic else None))
     return out
 
 

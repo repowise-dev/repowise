@@ -85,7 +85,9 @@ nearest copybook with that name; system copybooks such as `DFHAID` stay external
 constant moved into the program variable; any other target shows as a
 `cics-dynamic:` reference rather than a guess. A `PERFORM` binds only within
 its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
-unique PROGRAM-ID.
+unique PROGRAM-ID. JCL (`.jcl`, `.prc`, `.proc`) links each job step to the
+program or PROC it runs, which makes that program an entry point, and BMS
+mapsets (`.bms`) are linked from the programs that send or receive their maps.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
 resolved case-insensitively within each sfdx project's namespace; its dead-code
 findings are review-only. Apex test coverage from the Salesforce CLI is read as a

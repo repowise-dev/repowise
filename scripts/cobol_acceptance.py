@@ -24,7 +24,7 @@ _COPYBOOK_EXTS = {".cpy"}
 _JCL_EXTS = {".jcl", ".prc", ".proc"}
 _BMS_EXTS = {".bms"}
 _NOT_A_PARAGRAPH = {"UNTIL", "VARYING", "WITH", "TEST", "FOREVER", "THRU", "THROUGH"}
-_STRUCTURAL = ("calls", "imports")
+_STRUCTURAL = ("calls", "imports", "framework")
 
 
 def _walk(root: str) -> dict[str, dict[str, list[str]]]:

@@ -15,6 +15,7 @@ from .apex import SPEC as _APEX
 from .asciidoc import SPEC as _ASCIIDOC
 from .astro import SPEC as _ASTRO
 from .aura import SPEC as _AURA
+from .bms import SPEC as _BMS
 from .c import SPEC as _C
 from .clojure import SPEC as _CLOJURE
 from .cobol import SPEC as _COBOL
@@ -36,6 +37,7 @@ from .haskell import SPEC as _HASKELL
 from .html import SPEC as _HTML
 from .java import SPEC as _JAVA
 from .javascript import SPEC as _JAVASCRIPT
+from .jcl import SPEC as _JCL
 from .json import SPEC as _JSON
 from .julia import SPEC as _JULIA
 from .kotlin import SPEC as _KOTLIN
@@ -158,6 +160,9 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # Salesforce object/field metadata and saved SOQL queries.
     _SALESFORCE_OBJECT,
     _SOQL,
+    # Mainframe job control and CICS screen maps; edges from framework_edges/mainframe.py.
+    _JCL,
+    _BMS,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though

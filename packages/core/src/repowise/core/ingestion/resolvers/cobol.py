@@ -2,8 +2,9 @@
 
 A member resolves case-insensitively to a COBOL file with that stem, a
 copybook extension first, then one under the named library, then the one
-nearest the copying file. An unresolved member (``DFHAID``, a vendor or
-system copybook) becomes an external node, never a guess.
+nearest the copying file. With no copybook, a lone BMS mapset of that name
+(the source of a generated symbolic map) answers. An unresolved member
+(``DFHAID``, a vendor or system copybook) becomes an external node, never a guess.
 """
 
 from __future__ import annotations
@@ -33,7 +34,9 @@ def resolve_cobol_import(module_path: str, importer_path: str, ctx: ResolverCont
         if posixpath.splitext(path)[1].lower() in extensions and path != importer_path
     ]
     if not candidates:
-        return ctx.add_external_node(f"copybook:{member}")
+        # A symbolic map copybook is generated from the BMS mapset of that name.
+        maps = [p for p in ctx.stem_map.get(member.lower(), ()) if p.lower().endswith(".bms")]
+        return maps[0] if len(maps) == 1 else ctx.add_external_node(f"copybook:{member}")
     importer_dir = posixpath.dirname(importer_path).split("/")
     order = {path: index for index, path in enumerate(candidates)}
 
