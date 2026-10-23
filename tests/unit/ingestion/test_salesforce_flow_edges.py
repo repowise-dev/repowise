@@ -306,3 +306,25 @@ def test_a_flow_prefix_from_cumulusci_yml_is_the_repositorys_own(tmp_path: Path)
     })  # fmt: skip
     graph, _ = _graph(repo)
     assert graph.has_edge("force-app/flows/F.flow-meta.xml", "force-app/classes/Mailer.cls")
+
+
+def _trigger_flow(obj: str) -> str:
+    return _flow(
+        f"    <start><object>{obj}</object><triggerType>RecordAfterSave</triggerType></start>\n"
+    )
+
+
+def test_a_record_triggered_flow_references_its_object(tmp_path: Path) -> None:
+    obj = f'<?xml version="1.0"?>\n<CustomObject {_NS}>\n    <label>L</label>\n</CustomObject>\n'
+    repo = _write(tmp_path, {
+        "sfdx-project.json": '{"packageDirectories": [{"path": "force-app"}], "namespace": "acme"}\n',
+        f"{_D}/objects/Job__c/Job__c.object-meta.xml": obj,
+        f"{_D}/flows/On_Job.flow-meta.xml": _trigger_flow("acme__JOB__c"),
+        f"{_D}/flows/On_Case.flow-meta.xml": _trigger_flow("Case"),
+    })  # fmt: skip
+    graph, _ = _graph(repo)
+    flow, target = f"{_D}/flows/On_Job.flow-meta.xml", f"{_D}/objects/Job__c/Job__c.object-meta.xml"
+    assert graph.get_edge_data(f"{flow}::On_Job", f"{target}::Job__c")["edge_type"] == "references"
+    assert graph.has_edge(flow, target)
+    # No metadata for the object: nothing to bind.
+    assert not list(graph.successors(f"{_D}/flows/On_Case.flow-meta.xml::On_Case"))

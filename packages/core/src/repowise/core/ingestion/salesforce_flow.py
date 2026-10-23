@@ -6,7 +6,8 @@ the file stem, and it is what a subflow, ``Flow.Interview.<Name>``, a quick
 action or ``<lightning-flow flow-api-name>`` calls the flow by. This module
 reads the file once into a :class:`FlowRefs`: ``special_handlers`` turns it
 into the flow's symbol and ``framework_edges/salesforce_metadata.py`` resolves
-its names into edges.
+its names into edges. A triggering object is a schema reference
+(``salesforce_schema``).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from .models import FileInfo, ParsedFile, Symbol
+from .models import FileInfo, ParsedFile, SchemaReference, Symbol
 
 # A legacy metadata API flow carries its version number: ``Foo-3.flow``.
 _LEGACY_VERSION_RE = re.compile(r"-\d+$")
@@ -131,7 +132,6 @@ def read_flow(source: bytes) -> FlowRefs | None:
 def _signature(name: str, refs: FlowRefs) -> str:
     detail = [refs.process_type] if refs.process_type else []
     if refs.start_object:
-        # The object is kept here until SObject metadata symbols can take an edge.
         trigger = refs.trigger_type or "triggered"
         detail.append(f"{trigger} on {refs.start_object}")
     return f"flow {name}" + (f" ({', '.join(detail)})" if detail else "")
@@ -163,6 +163,10 @@ def parse_flow_file(file_info: FileInfo, source: bytes) -> ParsedFile:
         visibility="public",
         language="salesforce_flow",
     )
+    schema_refs = []
+    if refs.start_object:
+        line = source.count(b"\n", 0, max(source.find(b"<start>"), 0)) + 1
+        schema_refs.append(SchemaReference(symbol.id, refs.start_object, line))
     return ParsedFile(
         file_info=file_info,
         symbols=[symbol],
@@ -170,4 +174,5 @@ def parse_flow_file(file_info: FileInfo, source: bytes) -> ParsedFile:
         exports=[name],
         docstring=refs.label or None,
         parse_errors=[],
+        schema_refs=schema_refs,
     )
