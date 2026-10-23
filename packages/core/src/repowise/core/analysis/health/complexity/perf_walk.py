@@ -611,6 +611,7 @@ class _PerfWalk:
         self.do_bound = _overrides(dialect, "concurrency_bound")
         self.do_loop_facts = self.do_chunked or self.do_magnitude or self.do_batch or self.do_bound
         self.do_in_place = _overrides(dialect, "runs_in_place")
+        self.do_runs_once = _overrides(dialect, "runs_once_in_loop")
         # Node kinds a loop, scope or call handler can apply to: one set test per node.
         self.loop_probe = self.loop_kinds | (self.call_kinds if self.do_block_loop else frozenset())
         self.scope_probe = self.scope_kinds | self.async_fn_kinds
@@ -978,7 +979,11 @@ class _PerfWalk:
                         subject=call.root_name if marker == _MEMBERSHIP else "",
                     )
                 )
-            elif call.method and not (call.awaited and call.line in self.awaits_allowed):
+            elif (
+                call.method
+                and not (call.awaited and call.line in self.awaits_allowed)
+                and not (self.do_runs_once and self.dialect.runs_once_in_loop(call.node))
+            ):
                 self._record_loop_call(call, cur, nxt)
         if self.do_lock_io and cur.lock_depth >= 1 and call.method:
             lock_targets = self._acc(nxt.start, nxt.func)[1]

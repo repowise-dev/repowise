@@ -1067,3 +1067,69 @@ def test_catch_still_nests_its_body():
     assert fn.max_nesting == 1
     # The nesting locator names the except clause, not the try around it.
     assert fn.deepest_block == (4, 7)
+
+
+def test_apex_nesting_and_ccn():
+    results = _walk("apex/nested.cls", "apex")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    # if > for > if > while > catch: a try opens no level of its own.
+    assert deep.max_nesting == 5
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # if + else-if + if + ternary + && + || over the base path; ``??`` is no decision.
+    assert many.ccn == 7
+    # A ``switch on`` counts once for the dispatch, not per ``when``.
+    dispatch = _find(results, "dispatch")
+    assert dispatch is not None and dispatch.ccn == 2
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0 and shallow.param_count == 1
+
+
+def test_apex_property_accessors_are_one_unit_named_for_the_property():
+    results = _walk("apex/nested.cls", "apex")
+    names = [r.name for r in results]
+    # ``total { get { ... } set; }`` is one unit; ``label { get; set; }`` holds
+    # no code and is none.
+    assert names.count("total") == 1
+    assert "label" not in names
+    assert _find(results, "total").ccn == 2
+
+
+def test_apex_trigger_is_a_unit():
+    source = (
+        "trigger AccountTrigger on Account (before insert) {\n"
+        "    for (Account a : Trigger.new) {\n"
+        "        if (a.Name == null) { a.addError('x'); }\n"
+        "    }\n"
+        "}\n"
+    )
+    fn = _walk_source(source, "apex", "AccountTrigger.trigger")["AccountTrigger"]
+    assert (fn.ccn, fn.max_nesting) == (3, 2)
+
+
+def test_apex_class_cohesion():
+    classes = _walk_classes("apex/classes.cls", "apex")
+    assert classes["Cohesive"].lcom4 == 1
+    # Bare ``a`` and ``this.b`` both reach a member.
+    assert classes["Splintered"].lcom4 == 2
+    assert classes["Splintered"].method_count == 4
+    # The accessor unit is a method; the auto-property is a field only.
+    assert classes["WithProperties"].method_count == 2
+    # Interfaces and enums nested in a class are not cohesion units.
+    assert "Shape" not in classes and "Mode" not in classes
+
+
+def test_apex_assertions_and_test_cases():
+    results = _walk("apex/assertions.cls", "apex")
+    many = _find(results, "testManyAsserts")
+    assert many is not None and many.assertion_count == 5
+    # ``Assert.areEqual`` / ``Assert.isTrue`` form a run; ``System.assertEquals``
+    # counts as an assertion but, like any split ``x.assertY`` call, joins no run.
+    assert many.assertion_blocks == [(9, 10, 2)]
+    by_name = {r.name: r for r in results}
+    # ``@IsTest`` in any case, and the legacy ``testMethod`` modifier.
+    for case in ("testManyAsserts", "testFewAsserts", "legacyCase", "checksNothing"):
+        assert by_name[case].is_test_case, case
+    for helper in ("makeData", "compute"):
+        assert not by_name[helper].is_test_case, helper

@@ -604,6 +604,51 @@ _JAVA = LanguageNodeMap(
     continue_kinds=frozenset({"continue_statement"}),
 )
 
+
+def _apex_auto_property(node: Node) -> object:
+    """``{ get; set; }``: an accessor list with no accessor body declares state,
+    not code, so it is walked like a container and never scored."""
+    return node.type == "accessor_list" and not any(
+        c.child_by_field_name("body") is not None for c in node.named_children
+    )
+
+
+# Apex is Java-shaped. Triggers and code-holding property accessor lists are
+# units; inline SOQL/SOSL and DML join ``call_kinds`` for the perf dialect.
+_APEX = LanguageNodeMap(
+    ctor_kinds=frozenset({"constructor_declaration"}),
+    fixed_signature_markers=frozenset({"override"}),
+    function_kinds=frozenset(
+        {"method_declaration", "constructor_declaration", "trigger_declaration", "accessor_list"}
+    ),
+    misread_scope=_apex_auto_property,
+    lambda_kinds=frozenset(),
+    branch_kinds=frozenset({"if_statement", "ternary_expression"}),
+    loop_kinds=frozenset(
+        {"for_statement", "enhanced_for_statement", "while_statement", "do_statement"}
+    ),
+    try_kinds=frozenset({"try_statement"}),
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_expression"}),
+    case_kinds=frozenset({"switch_rule"}),
+    boolean_operator_kinds=frozenset(),
+    boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    class_kinds=frozenset({"class_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    member_access_kinds=frozenset({"field_access", "method_invocation"}),
+    # A property is a ``field_declaration`` carrying an ``accessor_list``.
+    field_decl_kinds=frozenset({"field_declaration"}),
+    # A catch parameter is a ``formal_parameter`` too.
+    binding_kinds=frozenset({"variable_declarator", "formal_parameter", "enhanced_for_statement"}),
+    identifier_kinds=frozenset({"identifier"}),
+    nested_type_kinds=frozenset({"enum_declaration", "interface_declaration"}),
+    # ``Assert.*`` forms assertion runs; ``System.assert*`` counts but joins none.
+    assert_call_kinds=frozenset({"method_invocation"}),
+    call_kinds=frozenset(
+        {"method_invocation", "object_creation_expression", "query_expression", "dml_expression"}
+    ),
+)
+
 _RUST = LanguageNodeMap(
     trait_impl_kinds=frozenset({"impl_item"}),
     scalar_type_names=frozenset(
@@ -1406,6 +1451,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "jsx": _JS,
     "go": _GO,
     "java": _JAVA,
+    "apex": _APEX,
     "rust": _RUST,
     "kotlin": _KOTLIN,
     "cpp": _CPP,

@@ -77,7 +77,8 @@ calls are entry paths the repository graph cannot observe.
 Apex (`.cls`, `.trigger`, `.apex`) is parsed for symbols, heritage and calls,
 resolved case-insensitively within each sfdx project's namespace; its dead-code
 findings are review-only. Apex test coverage from the Salesforce CLI is read as a
-coverage report ([formats](TEST_INTELLIGENCE.md#supported-formats)).
+coverage report ([formats](TEST_INTELLIGENCE.md#supported-formats)). Health covers Apex
+complexity, class cohesion, and SOQL, DML and callouts inside loops.
 Salesforce flows (`.flow-meta.xml`) are one symbol each, linked to the Apex
 invocable actions, subflows and screen components they name.
 

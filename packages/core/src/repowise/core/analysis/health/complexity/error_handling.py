@@ -236,7 +236,9 @@ def _eh_go_hit(node: Node) -> bool:
 
 
 def _eh_java_try_ends_in_fail(catch_clause: Node, language: str) -> bool:
-    """True when the enclosing Java try block's last real statement is a fail(...) call."""
+    """True when the enclosing Java or Apex try block's last real statement is a
+    ``fail(...)`` call, or Apex's ``System.assert(false, ...)``: the test expects
+    the throw, and the empty catch is where it lands."""
     parent = catch_clause.parent
     if parent is None or parent.type not in ("try_statement", "try_with_resources_statement"):
         return False
@@ -255,7 +257,16 @@ def _eh_java_try_ends_in_fail(catch_clause: Node, language: str) -> bool:
     if inv is None or inv.type != "method_invocation":
         return False
     name_node = inv.child_by_field_name("name")
-    return name_node is not None and _eh_text(name_node) == "fail"
+    if name_node is None:
+        return False
+    name = _eh_text(name_node)
+    if language != "apex":
+        return name == "fail"
+    args = inv.child_by_field_name("arguments")
+    first = _eh_named(args)[0] if args is not None and _eh_named(args) else None
+    return name.lower() == "fail" or (
+        name.lower() == "assert" and first is not None and _eh_text(first).lower() == "false"
+    )
 
 
 # The node types ``_eh_rust_hit`` / ``_eh_go_hit`` can fire on.
@@ -324,7 +335,7 @@ def _eh_catch_visit(node: Node, language: str, hits: list[ErrorHandlingHit]) -> 
         block is not None
         and _eh_body_is_swallowed(block, language)
         and swallowed_unsuppressed
-        and not (language == "java" and _eh_java_try_ends_in_fail(node, language))
+        and not (language in ("java", "apex") and _eh_java_try_ends_in_fail(node, language))
     ):
         hits.append(ErrorHandlingHit("swallowed_catch", node.start_point[0] + 1))
     if (

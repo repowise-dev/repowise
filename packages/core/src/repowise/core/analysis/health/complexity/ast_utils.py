@@ -158,6 +158,11 @@ def _find_name(node: Node) -> str:
     # ``deinit`` has no name node at all.
     if node.type in _SWIFT_PROPERTY_UNITS:
         return _swift_property_name(node)
+    # Apex: a property's accessor list is named for the property.
+    if node.type == "accessor_list" and node.parent is not None:
+        decl = node.parent.child_by_field_name("declarator")
+        if decl is not None:
+            return _find_name(decl)
     if node.type == "deinit_declaration":
         return "deinit"
     # C / C++: the function name is not a direct child but nested inside a

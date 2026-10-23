@@ -994,6 +994,14 @@ included, since `Type.forName` reaches classes by name. Ceiling: a mention in a
 comment counts as a use, and a class shaped like a Visualforce controller stays
 live.
 
+Health scores Apex methods, constructors, triggers and property accessors that
+hold code, and reports SOQL, DML, callouts, `Messaging.sendEmail`,
+`System.enqueueJob` and same-class `@future` calls inside loops. It stays quiet on
+the bulk idioms (a query in the loop header, SOQL for-loops over lists, chunked or
+literal-bound loops) and on calls that run once, such as a lazily filled cache.
+Ceiling: `while` loops, `Database.executeBatch` and `System.schedule` are not
+reported, and untested complexity needs measured coverage or a test the graph sees.
+
 Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
 one symbol named by its API name, linked to the Apex invocable actions,
 subflows, screen components and Apex-defined types it names. Apex
