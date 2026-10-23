@@ -455,6 +455,7 @@
         "provenance": "来源：{label}，{commits} 个提交中已知 {known} 个",
         "provenance_named": "来源：{label}，{commits} 个提交中已知 {known} 个（{names}）",
         "risk_score": "大于 {percentile}% 的近期提交",
+        "risk_score_before": "大于此变更之前的 {sample} 个提交中的 {percentile}%（截至 {as_of}）",
         "outcomes": "{reverts} 次回滚，{references} 次被引为原因",
         "outcomes_rate": "{reverts} 次回滚，{references} 次被引为原因；{files} 个文件中有 {fixed} 个在 {days} 天内被修复"
       },

@@ -509,7 +509,11 @@ def _risk(bundle: ChangeReviewBundle) -> EvidenceItem:
         [
             {
                 "baseline_sample_size": risk.baseline_sample_size,
-                "note": "ranks diff size against recent commits; not a defect probability",
+                # The commit the sample runs back from: the change's parent
+                # (a range's merge-base), so the rank is fixed at the change
+                # and matches ``repowise risk`` however the change is spelled.
+                "baseline_as_of": risk.baseline_as_of,
+                "note": "ranks diff size against the commits before it; not a defect probability",
             }
         ],
         source,
@@ -636,7 +640,14 @@ def _provenance_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _L
 
 
 def _risk_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line:
-    return kind, {"percentile": value.get("percentile")}
+    params = {"percentile": value.get("percentile")}
+    row = rows[0] if rows else {}
+    # A checklist kept before the sample was stamped ranked against HEAD at
+    # build time, so it keeps the unlabelled line rather than claim a cohort.
+    if not row.get("baseline_as_of"):
+        return kind, params
+    sample = {"sample": row.get("baseline_sample_size", 0), "as_of": row["baseline_as_of"][:10]}
+    return "risk_score_before", {**params, **sample}
 
 
 def _outcomes_line(kind: str, value: Any, rows: list[Mapping[str, Any]]) -> _Line:
@@ -756,6 +767,10 @@ _TEXT: dict[str, Any] = {
     "provenance": _provenance_text,
     "provenance_named": _provenance_text,
     "risk_score": lambda k, p: f"Larger than {p['percentile']}% of recent commits",
+    "risk_score_before": lambda k, p: (
+        f"Larger than {p['percentile']}% of the {_n(p['sample'], 'commit')} before this change "
+        f"(as of {p['as_of']})"
+    ),
     "outcomes": _outcomes_text,
     "outcomes_rate": _outcomes_text,
 }

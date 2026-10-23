@@ -455,6 +455,7 @@
         "provenance": "provenance: {label}, known for {known} of {commits, plural, one {# commit} other {# commits}}",
         "provenance_named": "provenance: {label}, known for {known} of {commits, plural, one {# commit} other {# commits}} ({names})",
         "risk_score": "Larger than {percentile}% of recent commits",
+        "risk_score_before": "Larger than {percentile}% of the {sample, plural, one {# commit} other {# commits}} before this change (as of {as_of})",
         "outcomes": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}",
         "outcomes_rate": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}; {fixed} of {files, plural, one {# file} other {# files}} fixed within {days} days"
       },

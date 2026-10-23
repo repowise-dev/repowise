@@ -25,6 +25,7 @@ const LINES: [string, Record<string, unknown>][] = [
   ["provenance", { label: "human attested", known: 3, commits: 4 }],
   ["provenance_named", { label: "agent", known: 1, commits: 1, names: "claude-code, claude-opus-4-5" }],
   ["risk_score", { percentile: 97.5 }],
+  ["risk_score_before", { percentile: 72.5, sample: 200, as_of: "6bb3c0c293" }],
   ["outcomes", { reverts: 0, references: 1 }],
   ["outcomes_rate", { reverts: 1, references: 0, fixed: 2, files: 5, days: 90 }],
 ];

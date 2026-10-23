@@ -153,7 +153,7 @@ def test_statuses_follow_the_facts():
         paths,
         health=_delta([_finding()]),
         tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown", "tests/test_a.py": "unknown"}),
-        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200),
+        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200, baseline_as_of="6bb3c0c293" * 4),
     )
     inputs = EvidenceInputs(
         code_paths=["src/a.py", "src/b.py"],
@@ -254,7 +254,7 @@ def test_every_item_reads_as_a_plain_line():
         ["src/a.py", "src/b.py"],
         health=_delta([_finding()]),
         tests=_tests({"src/a.py": "inferred", "src/b.py": "unknown"}),
-        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200),
+        risk=SimpleNamespace(percentile=97.5, baseline_sample_size=200, baseline_as_of="6bb3c0c293" * 4),
     )
     inputs = dataclasses.replace(_full_inputs(), code_paths=None)
     evidence = build_change_evidence(bundle, inputs, change_id="c", revspec="r").to_dict()
@@ -266,7 +266,10 @@ def test_every_item_reads_as_a_plain_line():
     assert lines["contracts"] == "1 workspace contract touched; signatures not compared"
     assert lines["decisions_crossed"] == "1 accepted decision, 0 candidates"
     assert lines["cross_repo_consumers"] == "No consumer in another repo"
-    assert lines["risk_score"] == "Larger than 97.5% of recent commits"
+    assert lines["risk_score"] == "Larger than 97.5% of the 200 commits before this change (as of 6bb3c0c293)"
+    # A row kept before the sample was stamped ranked against HEAD at build time: unlabelled.
+    kept = {"kind": "risk_score", "value": {"percentile": 79.8}, "details": [{"baseline_sample_size": 200}]}
+    assert line_text(item_line(kept)) == "Larger than 79.8% of recent commits"
     assert lines["outcomes"].startswith("Not known: ")
     assert lines["provenance"] == "provenance: agent, known for 0 of 0 commits"
     named = item_line(
