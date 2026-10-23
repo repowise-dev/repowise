@@ -142,29 +142,35 @@ def test_package_directory_copy_wins_and_namespace_tokens_strip(tmp_path: Path) 
     assert "unpackaged/config/objects/___NAMESPACE___Job__c.object::Job__c" in g
 
 
-def test_several_copies_outside_the_package_bind_nothing(tmp_path: Path) -> None:
+def test_copies_of_one_object_bind_one_canonical_copy(tmp_path: Path) -> None:
     (tmp_path / "sfdx-project.json").write_text(
-        json.dumps({"packageDirectories": [{"path": "force-app"}]})
+        json.dumps(
+            {"packageDirectories": [{"path": "pkg-a"}, {"path": "pkg-b", "default": True}]}
+        )
     )
+    account = "objects/Account/Account.object-meta.xml"
     contact = "objects/Contact.object"
     mdapi_contact = _object("Contact").replace(
         "</CustomObject>",
         "    <fields>\n        <fullName>Level__c</fullName>\n        <type>Text</type>\n"
         "    </fields>\n</CustomObject>",
     )
-    lookup = f"{_ROOT}/Shift__c/fields/Who__c.field-meta.xml"
-    cls = "force-app/main/default/classes/Q.cls"
+    lookup = "pkg-b/objects/Shift__c/fields/Who__c.field-meta.xml"
+    cls = "pkg-b/classes/Q.cls"
+    qa_contact = f"unpackaged/config/qa/{contact}"
     g = _build(
         tmp_path,
         {
-            # Two test-org copies, none in the package: ambiguous.
+            # Package copies in two dirs and a test-org copy: the default dir wins.
+            f"pkg-a/{account}": _object("Account"),
+            f"pkg-b/{account}": _object("Account"),
+            f"unpackaged/config/dev/{account}": _object("Account"),
+            # Only test-org copies: the shortest path wins.
             f"unpackaged/config/dev/{contact}": mdapi_contact,
-            f"unpackaged/config/qa/{contact}": mdapi_contact,
-            # One copy outside the package: still binds.
-            "unpackaged/config/dev/objects/Lead.object": _object("Lead"),
+            qa_contact: mdapi_contact,
             lookup: _field("Lookup", "Contact"),
-            cls: "public class Q {\n  void m() {\n    List<Contact> c = [SELECT Level__c FROM Contact];"
-            "\n    List<Lead> l = [SELECT Id FROM Lead];"
+            cls: "public class Q {\n  void m() {\n    List<Account> a = [SELECT Id FROM Account];"
+            "\n    List<Contact> c = [SELECT Level__c FROM Contact];"
             "\n    List<Shift__c> s = [SELECT Who__r.Level__c FROM Shift__c];\n  }\n}\n",
         },
     )
@@ -172,12 +178,13 @@ def test_several_copies_outside_the_package_bind_nothing(tmp_path: Path) -> None
     def refs(source: str) -> set[str]:
         return {t for _, t, d in g.out_edges(source, data=True) if d["edge_type"] == "references"}
 
-    # The packaged lookup binds; the hop to the ambiguous Contact's field does not.
     assert refs(f"{cls}::Q::m") == {
-        "unpackaged/config/dev/objects/Lead.object::Lead",
+        f"pkg-b/{account}::Account",
+        f"{qa_contact}::Contact",
+        f"{qa_contact}::Contact::Level__c",
         f"{lookup}::Who__c",
     }
-    assert refs(f"{lookup}::Who__c") == set()
+    assert refs(f"{lookup}::Who__c") == {f"{qa_contact}::Contact"}
 
 
 def test_malformed_metadata_yields_no_symbols(tmp_path: Path) -> None:

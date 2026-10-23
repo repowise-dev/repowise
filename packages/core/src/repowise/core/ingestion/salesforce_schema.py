@@ -3,7 +3,7 @@
 Objects (``.object-meta.xml``, legacy ``.object``) are class symbols and fields
 (``.field-meta.xml``, or inline in ``.object``) are property symbols. Names
 compare case-folded, without the repository's own namespace prefix or CumulusCI
-tokens; a name with no single definition in the repository binds nothing.
+tokens. A reference binds one canonical copy; a name with no definition binds nothing.
 """
 
 from __future__ import annotations
@@ -194,21 +194,27 @@ class _Project:
         return folded
 
     def preferred(self, paths_ids: Iterable[tuple[str, str]]) -> list[str]:
-        """Definitions inside the sfdx package directories, else the only one.
+        """The one canonical copy of an org-wide object or field, or nothing.
 
-        Copies under ``unpackaged/config/*`` describe the same org object for
-        test orgs; the deployed package's copy is the one to name. With no
-        package copy, several such copies are ambiguous and bind nothing.
+        Copies across package dirs and ``unpackaged/config/*`` are fragments of
+        the same object. Ranked: package dir (default first, then listed order),
+        then anything else; within a rank the shortest path, then lexicographic.
         """
-        pairs = list(paths_ids)
-        inside = [
-            sid
-            for path, sid in pairs
-            if any(path == d or path.startswith(d + "/") for d in self.package_dirs)
-        ]
-        if inside:
-            return inside
-        return [pairs[0][1]] if len(pairs) == 1 else []
+
+        def rank(pair: tuple[str, str]) -> tuple[int, int, str]:
+            path = pair[0]
+            place = next(
+                (
+                    i
+                    for i, d in enumerate(self.package_dirs)
+                    if path == d or path.startswith(d + "/")
+                ),
+                len(self.package_dirs),
+            )
+            return (place, len(path), path)
+
+        best = min(paths_ids, key=rank, default=None)
+        return [best[1]] if best is not None else []
 
 
 def _read_project(repo_path: Path | None) -> _Project:
@@ -217,7 +223,9 @@ def _read_project(repo_path: Path | None) -> _Project:
     if repo_path is not None:
         try:
             data = json.loads((repo_path / "sfdx-project.json").read_text(encoding="utf-8"))
-            for entry in data.get("packageDirectories") or []:
+            entries = data.get("packageDirectories") or []
+            # The default package directory ranks first, the rest in listed order.
+            for entry in sorted(entries, key=lambda e: not e.get("default")):
                 d = str(entry.get("path") or "").replace("\\", "/").strip("/")
                 d = d[2:] if d.startswith("./") else d
                 if d:
