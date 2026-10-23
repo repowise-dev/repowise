@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from .statements import exec_blocks
+
 FRAGMENT_PROGRAM = "REPOWISE-COPYBOOK"
 
 _PROGRAM_HEADER = re.compile(r"\b(IDENTIFICATION|ID)\s+DIVISION\b|\bPROGRAM-ID\b", re.I)
@@ -25,9 +27,15 @@ def is_fragment(code: str) -> bool:
 
 
 def is_procedure_fragment(code: str) -> bool:
-    """Whether the first code line is procedure text rather than a data entry."""
+    """Whether the first code line is procedure text rather than a data entry.
+
+    EXEC blocks are skipped: a DCLGEN member opens with ``EXEC SQL DECLARE``
+    ahead of its record.
+    """
+    for block in reversed(exec_blocks(code)):
+        code = code[: block.start] + code[block.end :]
     # A code view has no sequence area to skip; a ``>>`` directive is not code.
-    lines = (line.strip() for line in code.split("\n"))
+    lines = (line.strip().strip(".").strip() for line in code.split("\n"))
     first = next((line for line in lines if line and not line.startswith(">>")), "")
     return _LEVEL_NUMBER.match(first) is None
 

@@ -728,7 +728,7 @@ dependency surface their syntax supports.
 | Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
 | Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
-| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
+| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
 | Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |

@@ -67,3 +67,9 @@ def test_copy_and_sql_include_become_one_import_per_member() -> None:
         ("OTHERLIB/MEMBER1", "COPY MEMBER1 OF OTHERLIB", ["*"]),
         ("DCLTRTYP", "EXEC SQL INCLUDE DCLTRTYP", ["*"]),
     ]
+
+
+def test_a_sql_include_resolves_to_a_dclgen_member() -> None:
+    ctx = _ctx("app/cbl/COTRTUPC.cbl", "app/dcl/DCLTRTYP.dcl")
+
+    assert resolve_cobol_import("DCLTRTYP", "app/cbl/COTRTUPC.cbl", ctx) == "app/dcl/DCLTRTYP.dcl"

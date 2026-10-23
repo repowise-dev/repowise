@@ -81,6 +81,9 @@ COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
 `COPY` statements masked before parsing; a copybook parses as a data or
 procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
 nearest copybook with that name; system copybooks such as `DFHAID` stay external.
+A DB2 DCLGEN member (`.dcl`) is a copybook when it holds an
+`EXEC SQL DECLARE ... TABLE` and level-numbered data entries. PL/I DCLGEN
+output and OpenVMS DCL procedures share the extension and are not indexed.
 `EXEC CICS LINK` and `XCTL` link to their program when it is a literal or a
 constant moved into the program variable; any other target shows as a
 `cics-dynamic:` reference rather than a guess. A `PERFORM` binds only within

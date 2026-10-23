@@ -18,7 +18,8 @@ from ..languages.registry import REGISTRY
 if TYPE_CHECKING:
     from .context import ResolverContext
 
-_COPYBOOK_SUFFIXES = frozenset({".cpy"})
+# A ``.dcl`` is indexed only when its content reads as a COBOL DCLGEN member.
+_COPYBOOK_SUFFIXES = frozenset({".cpy", ".dcl"})
 
 
 def resolve_cobol_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
@@ -27,7 +28,7 @@ def resolve_cobol_import(module_path: str, importer_path: str, ctx: ResolverCont
         return ctx.add_external_node(f"cics-{module_path}")
     library, _, member = module_path.rpartition("/")
     spec = REGISTRY.get("cobol")
-    extensions = spec.extensions if spec else _COPYBOOK_SUFFIXES
+    extensions = (spec.extensions if spec else frozenset()) | _COPYBOOK_SUFFIXES
     candidates = [
         path
         for path in ctx.stem_map.get(member.lower(), ())

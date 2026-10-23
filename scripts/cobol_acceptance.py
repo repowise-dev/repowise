@@ -20,7 +20,8 @@ import sqlite3
 import sys
 
 _PROGRAM_EXTS = {".cbl", ".cob", ".cobol"}
-_COPYBOOK_EXTS = {".cpy"}
+# A ``.dcl`` is taken as a COBOL DCLGEN member, which every CardDemo one is.
+_COPYBOOK_EXTS = {".cpy", ".dcl"}
 _JCL_EXTS = {".jcl", ".prc", ".proc"}
 _BMS_EXTS = {".bms"}
 _NOT_A_PARAGRAPH = {"UNTIL", "VARYING", "WITH", "TEST", "FOREVER", "THRU", "THROUGH"}
@@ -99,6 +100,7 @@ def truth(root: str) -> dict:
                     pairs["copied"].add((rel, cpy))
             for m in re.finditer(r"EXEC\s+SQL\s+INCLUDE\s+([A-Z0-9#@$-]+)", text, re.I):
                 for cpy in cpys.get(m.group(1).upper(), []):
+                    pairs["include"].add((rel, cpy))
                     pairs["copied"].add((rel, cpy))
             for m in re.finditer(r"\bCALL\s+'([A-Z0-9#@$-]+)'", text, re.I):
                 for dst in progs.get(m.group(1).upper(), []):
@@ -218,10 +220,10 @@ def metrics(root: str, db: str) -> dict:
     touched = {f for pair in any_pairs for f in pair}
     pair_hits = {
         kind: ratio(
-            len(t["pairs"][kind] & (imports if kind == "copy" else any_pairs)),
+            len(t["pairs"][kind] & (imports if kind in ("copy", "include") else any_pairs)),
             len(t["pairs"][kind]),
         )
-        for kind in ("copy", "call", "cics", "jcl", "bms")
+        for kind in ("copy", "include", "call", "cics", "jcl", "bms")
     }
     return {
         "cobol_symbols": ix["cobol_symbols"],

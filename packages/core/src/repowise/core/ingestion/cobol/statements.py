@@ -28,6 +28,7 @@ _COPY = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _PROCEDURE_DIVISION = re.compile(r"\bPROCEDURE\s+DIVISION\b", re.IGNORECASE)
+_CLOSING_PERIOD = re.compile(r"[ \t]*\.")
 _FILLER = "CONTINUE"
 _DATA_PLACEHOLDER = "01 FILLER PIC X."
 
@@ -111,7 +112,12 @@ def mask_statements(code: str, procedure_from: int | None = None) -> str:
         procedure_from = division.end() if division else len(code)
     chars = list(code)
     for block in exec_blocks(code):
-        _blank(chars, block.start, block.end)
+        end = block.end
+        if block.start < procedure_from and (period := _CLOSING_PERIOD.match(code, end)):
+            # Outside the procedure division the period ends no entry, and one
+            # straight after a section header (a DCLGEN member) does not parse.
+            end = period.end()
+        _blank(chars, block.start, end)
         if block.start >= procedure_from and not _SQL_INCLUDE.match(block.body):
             chars[block.start : block.start + len(_FILLER)] = _FILLER
     masked = "".join(chars)

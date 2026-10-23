@@ -51,6 +51,7 @@ from ..pytest_roots import (
     pytest_roots,
 )
 from ..test_paths import is_test_related_path
+from .cobol.source import is_cobol_dclgen
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .languages.specs.aura import is_aura_markup_path
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
@@ -826,10 +827,7 @@ class FileTraverser:
         """The file's language, or None (counted) when it is binary or unparseable."""
         # Name/extension lookup does no I/O; only an unrecognised extension
         # pays for binary and shebang sniffing.
-        language = _language_from_name_or_ext(abs_path)
-        # A .h may be Objective-C by content.
-        if language == "cpp":
-            return _objc_header_language(abs_path) or language
+        language = _content_language(abs_path, _language_from_name_or_ext(abs_path))
         if language is not None:
             return language
         if _is_binary(abs_path):
@@ -1107,14 +1105,32 @@ def _objc_header_language(abs_path: Path) -> LanguageTag | None:
     return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
 
 
+def _dclgen_language(abs_path: Path) -> LanguageTag | None:
+    """``cobol`` for a ``.dcl`` DCLGEN member written for COBOL, else ``None``.
+
+    ``.dcl`` is also PL/I DCLGEN output and OpenVMS DCL, so the extension
+    alone claims nothing. The oversize check has already bounded the read.
+    """
+    if abs_path.suffix.lower() != ".dcl":
+        return None
+    try:
+        source = abs_path.read_bytes()
+    except OSError:
+        return None
+    return "cobol" if is_cobol_dclgen(source) else None
+
+
+def _content_language(abs_path: Path, language: LanguageTag | None) -> LanguageTag | None:
+    """*language* from the name, or what content says for a shared extension."""
+    if language == "cpp":
+        return _objc_header_language(abs_path) or language
+    return language or _dclgen_language(abs_path)
+
+
 def _detect_language(abs_path: Path) -> LanguageTag:
     """Detect the language of a file from name, extension, content, or shebang."""
-    lang = _language_from_name_or_ext(abs_path)
-    if lang is not None:
-        if lang == "cpp":
-            return _objc_header_language(abs_path) or lang
-        return lang
-    return _detect_by_shebang(abs_path)
+    lang = _content_language(abs_path, _language_from_name_or_ext(abs_path))
+    return lang if lang is not None else _detect_by_shebang(abs_path)
 
 
 def _detect_by_shebang(abs_path: Path) -> LanguageTag:

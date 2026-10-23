@@ -23,6 +23,18 @@ def code_view(source: bytes) -> str:
     return _INLINE_COMMENT.sub(lambda m: m.group(1) or " " * len(m.group(0)), code)
 
 
+# DCLGEN output for COBOL: the table declaration, then a level-numbered record.
+# A PL/I member declares ``DCL 1 NAME,`` and a VMS DCL procedure has neither.
+_SQL_DECLARE_TABLE = re.compile(r"\bEXEC\s+SQL\s+DECLARE\s+[\w.$#@-]+\s+TABLE\b", re.I)
+_DATA_ENTRY = re.compile(r"^[ \t]*\d{1,2}[ \t]+[A-Z0-9][A-Z0-9-]*[ \t]*\.", re.I | re.M)
+
+
+def is_cobol_dclgen(source: bytes) -> bool:
+    """Whether a ``.dcl`` member is a DCLGEN copybook written for COBOL."""
+    code = code_view(source)
+    return _SQL_DECLARE_TABLE.search(code) is not None and _DATA_ENTRY.search(code) is not None
+
+
 def prepare_cobol_source(source: bytes) -> bytes:
     """The parse input: a code view with EXEC/COPY masked, copybooks wrapped."""
     code = code_view(source)

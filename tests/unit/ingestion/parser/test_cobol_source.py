@@ -138,6 +138,23 @@ def test_a_procedure_copybook_yields_its_paragraphs() -> None:
     assert _names(parsed) == {"YYYY-STORE-PFKEY": 3, "YYYY-STORE-PFKEY-EXIT": 5}
 
 
+def test_a_dclgen_member_yields_its_record_after_the_table_declaration() -> None:
+    source = (
+        b"      * DCLGEN TABLE(CARDDEMO.TRANSACTION_TYPE)\n"
+        b"      *\n"
+        b"           EXEC SQL DECLARE CARDDEMO.TRANSACTION_TYPE TABLE\n"
+        b"           ( TR_TYPE CHAR(2) NOT NULL\n"
+        b"           ) END-EXEC.\n"
+        b"       01  DCLTRTYP.\n"
+        b"           10 TR-TYPE              PIC X(2).\n"
+    )
+
+    parsed = _parse(source, "DCLTRTYP.dcl")
+
+    assert parsed.parse_errors == []
+    assert _names(parsed) == {"DCLTRTYP": 6, "TR-TYPE": 7}
+
+
 def test_a_free_format_data_copybook_is_not_read_as_procedure_text() -> None:
     source = b"\n\n>>SOURCE FORMAT FREE\n01 ACCOUNT-RECORD.\n   05 ACCT-ID PIC 9(11).\n"
 
