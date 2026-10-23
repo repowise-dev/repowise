@@ -1055,7 +1055,7 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
 
 
 def _language_from_name_suffix(filename: str) -> LanguageTag | None:
-    """The language a multi-dot name ending (``.object-meta.xml``) claims, if any."""
+    """The language a multi-dot name ending (``.flow-meta.xml``) claims, if any."""
     lowered = filename.lower()
     for suffix, tag in NAME_SUFFIX_TO_LANGUAGE.items():
         if lowered.endswith(suffix):

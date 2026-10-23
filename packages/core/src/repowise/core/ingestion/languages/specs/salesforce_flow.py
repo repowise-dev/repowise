@@ -1,16 +1,8 @@
 """LanguageSpec for Salesforce flows.
 
-Source format keeps one flow per ``flows/<ApiName>.flow-meta.xml``; the legacy
-metadata API format writes ``flows/<ApiName>-<version>.flow``. ``.flow`` alone
-is not claimed by extension because Flow (the JavaScript type checker) ships
-``*.js.flow`` declaration files: a legacy flow routes here by its ``flows/``
-directory instead.
-
-``special_handlers`` reads each file into one function-kind symbol named by the
-flow's API name; ``framework_edges/salesforce_metadata.py`` links it to the Apex
-actions, subflows and screen components it names. ``is_code=False`` because
-the flow itself is placed by the org (a record trigger, a schedule, an App
-Builder page, a user), so dead code never reports one.
+Claims ``*.flow-meta.xml``, and a legacy ``flows/<ApiName>-<version>.flow`` by its
+directory, since ``.flow`` alone is also Flow's (the JS type checker) ``*.js.flow``.
+``is_code=False``: the org places every flow, so dead code never reports one.
 """
 
 from pathlib import PurePosixPath

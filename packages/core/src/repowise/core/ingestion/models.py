@@ -93,8 +93,7 @@ LanguageTag = Literal[
     # aura/<bundle>/ dir): no symbols, but it names the bundle's controller
     # functions, Apex controller and child components.
     "aura",
-    # Salesforce flows: one symbol per flow, named by the Apex actions,
-    # subflows and screen components it reaches.
+    # Salesforce flows: one symbol per flow.
     "salesforce_flow",
     "unknown",
 ]

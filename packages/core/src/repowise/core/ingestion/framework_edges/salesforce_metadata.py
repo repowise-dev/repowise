@@ -1,35 +1,17 @@
 """Salesforce flows and the metadata that places code.
 
-Flows (``salesforce_flow`` files, one symbol each) name code by string:
+A flow links to the Apex classes its actions name (and their one
+``@InvocableMethod``), its subflows, its screen components and its Apex-defined
+types. Apex ``Flow.Interview`` references and LWC ``<lightning-flow>`` tags
+with a literal name link back to the flow.
 
-* ``<actionCalls>`` with ``actionType`` apex, and legacy ``<apexPluginCalls>``,
-  name an Apex class: a file edge to the class and a ``framework_binds`` edge
-  from the flow to the class's ``@InvocableMethod`` (the platform allows one
-  per class), or to the class itself when it has none (a ``Process.Plugin``);
-* ``<subflows>``, ``actionType`` flow and Orchestrator stage steps name
-  another flow;
-* screen ``<extensionName>c:comp</extensionName>`` names an LWC or Aura bundle;
-* ``<apexClass>`` on a variable names an Apex-defined type.
+Flexipages, quick actions, tabs, email services and Experience sites are read
+from disk (as ``android_manifest`` is) for liveness only: each file they name is
+anchored to ``framework:salesforce`` and marked an entry point.
 
-Code names flows too: Apex ``Flow.Interview.My_Flow`` / ``new
-Flow.Interview.My_Flow(...)`` / ``Flow.Interview.createInterview('My_Flow',
-...)`` (string literals only) and an LWC template's ``<lightning-flow
-flow-api-name="My_Flow">``.
-
-Other metadata is read from disk (the traverser does not index it, the
-``android_manifest`` precedent) for liveness only: flexipage
-``<componentName>``, quick action ``<lightningComponent>`` /
-``<lightningWebComponent>`` / ``<flowDefinition>``, tab ``<lwcComponent>`` /
-``<auraComponent>``, email service ``<apexClass>`` and Experience site
-``"definition": "c:comp"``. Each named file is anchored to
-``framework:salesforce`` and marked an entry point. Utility bars are
-flexipages, so they are covered.
-
-Only the own namespaces (``c``, every sfdx-project.json ``namespace`` and the
-cumulusci.yml one) are followed; a name in another namespace is a managed
-package's. Apex and flow names fold case, as the platform does; component
-names match exactly. A name with two candidates in different projects binds
-to the nearest by path, and to none on a tie.
+Only own namespaces (``c``, sfdx-project.json, cumulusci.yml) are followed.
+Apex and flow names fold case; component names match exactly. A name two
+projects declare binds to the nearest by path, and to none on a tie.
 """
 
 from __future__ import annotations
@@ -143,9 +125,7 @@ class _Index:
             p = PurePosixPath(path)
             lang = parsed.file_info.language
             if lang == "apex" and p.suffix.lower() == ".cls":
-                # Apex names fold case and a class file is named after its class.
-                # A local index until the case-insensitive Apex class index of the
-                # Apex resolution pass lands; replace this with it then.
+                # Ceiling: a local case-folded index; use a shared Apex class index once one exists.
                 self.apex.setdefault(p.stem.lower(), []).append(path)
             elif lang == _FLOW:
                 sym = next(iter(parsed.symbols), None)

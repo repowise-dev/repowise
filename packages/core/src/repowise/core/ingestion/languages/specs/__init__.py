@@ -151,8 +151,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # Salesforce Aura markup, routed by path (aura/<bundle>/). Edges come from
     # framework_edges/aura.py. See the spec's docstring.
     _AURA,
-    # Salesforce flows: data whose symbol links Apex actions, subflows and
-    # screen components. See the spec's docstring.
+    # Salesforce flows. See the spec's docstring.
     _SALESFORCE_FLOW,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)

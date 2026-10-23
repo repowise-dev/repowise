@@ -986,16 +986,14 @@ Salesforce CLI coverage names a class or trigger, never a file, so it maps to
 the one `.cls` or `.trigger` file of that name, ignoring case. A name two files
 share, or no file has, stays unmapped.
 
-Flows are the `salesforce_flow` tag: `.flow-meta.xml` by name ending, a legacy
-`.flow` only inside a `flows/` directory (Flow the type checker ships
-`.js.flow`). `special_handlers` reads each into one symbol named by API name;
-`framework_edges/salesforce_metadata.py` links it to the Apex class and its one
-`@InvocableMethod`, subflows, LWC or Aura bundles and Apex-defined types, and
-links Apex `Flow.Interview` references and LWC `<lightning-flow>` literals back
-to it. Flexipages, quick actions, tabs, email services and Experience views are
-read from disk for liveness only: what they name is anchored to
-`framework:salesforce`. Apex and flow names fold case; only own namespaces
-(`c`, sfdx-project.json, cumulusci.yml) are followed.
+
+Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
+one symbol named by its API name, linked to the Apex invocable actions,
+subflows, screen components and Apex-defined types it names. Apex
+`Flow.Interview` references and LWC `<lightning-flow>` tags with a literal name
+link back to it. Flexipages, quick actions, tabs, email services and Experience
+sites mark what they name as live; names in another package's namespace are not
+followed.
 
 ### Salesforce Visualforce
 
