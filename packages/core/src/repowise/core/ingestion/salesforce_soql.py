@@ -272,7 +272,8 @@ def _declared_type(use: Node, name: str) -> str | None:
 def _dml_type(target: Node | None) -> str | None:
     if target is None:
         return None
-    if target.type == "object_creation_expression":
+    # ``new Account(...)``, ``new Account[]{..}``, ``new List<Account>{..}``
+    if target.type in ("object_creation_expression", "array_creation_expression"):
         return _type_name(target.child_by_field_name("type"))
     if target.type == "identifier":
         return _declared_type(target, _text(target))

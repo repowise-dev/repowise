@@ -235,11 +235,13 @@ def test_dml_target_type_respects_block_scope() -> None:
         if (flag) { Contact c = new Contact(); insert c; }
         else { Lead c = new Lead(); insert c; }
         update c;
+        insert new Case[]{ new Case() };
     }
 }
 """
     root = Parser(get_language("apex")).parse(source).root_node
     refs = apex_schema_refs(root, [], "T.cls")
     # Each branch's insert sees its own declaration; the update after both
-    # blocks sees neither, so it names nothing rather than guessing.
-    assert sorted((r.line, r.object_name) for r in refs) == [(3, "Contact"), (4, "Lead")]
+    # blocks sees neither, so it names nothing rather than guessing. An array
+    # literal's element type is the target.
+    assert sorted((r.line, r.object_name) for r in refs) == [(3, "Contact"), (4, "Lead"), (6, "Case")]
