@@ -58,6 +58,58 @@ def _child_text(el: ET.Element, name: str) -> str:
     return ""
 
 
+def _read_element(refs: FlowRefs, el: ET.Element) -> None:
+    """Add the names one top-level flow element reaches to *refs*."""
+    tag = _local(el.tag)
+    if tag == "actionCalls":
+        _read_action(refs, el)
+    elif tag == "apexPluginCalls":
+        # Legacy Process.Plugin: the class is the action, not a variable type.
+        if name := _child_text(el, "apexClass"):
+            refs.apex_actions.append(name)
+        return
+    elif tag == "subflows":
+        if name := _child_text(el, "flowName"):
+            refs.flows.append(name)
+    elif tag == "start":
+        refs.start_object = _child_text(el, "object")
+        refs.trigger_type = _child_text(el, "triggerType")
+    elif tag == "orchestratedStages":
+        refs.flows.extend(_stage_step_flows(el))
+    for sub in el.iter():
+        sub_tag = _local(sub.tag)
+        text = (sub.text or "").strip()
+        if sub_tag == "extensionName" and text:
+            refs.components.append(text)
+        elif sub_tag == "apexClass" and text:
+            refs.apex_types.append(text)
+
+
+def _read_action(refs: FlowRefs, el: ET.Element) -> None:
+    name = _child_text(el, "actionName")
+    if not name:
+        return
+    target = {
+        "apex": refs.apex_actions,
+        "flow": refs.flows,
+        # A local action: an Aura bundle (``c:showToast``) the flow runs.
+        "component": refs.components,
+    }.get(_child_text(el, "actionType").lower())
+    if target is not None:
+        target.append(name)
+
+
+def _stage_step_flows(stage: ET.Element) -> list[str]:
+    """The flows an Orchestrator stage's steps run."""
+    return [
+        name
+        for step in stage.iter()
+        if _local(step.tag) == "stageSteps"
+        and _child_text(step, "actionType").lower() in _STEP_ACTION_TYPES
+        and (name := _child_text(step, "actionName"))
+    ]
+
+
 def read_flow(source: bytes) -> FlowRefs | None:
     """The names *source* reaches, or None when it is not a well-formed ``<Flow>``."""
     try:
@@ -72,42 +124,7 @@ def read_flow(source: bytes) -> FlowRefs | None:
         description=_child_text(root, "description"),
     )
     for el in root:
-        tag = _local(el.tag)
-        if tag == "actionCalls":
-            kind = _child_text(el, "actionType").lower()
-            name = _child_text(el, "actionName")
-            if name and kind == "apex":
-                refs.apex_actions.append(name)
-            elif name and kind == "flow":
-                refs.flows.append(name)
-            elif name and kind == "component":
-                # A local action: an Aura bundle (``c:showToast``) the flow runs.
-                refs.components.append(name)
-        elif tag == "apexPluginCalls":
-            # Legacy Process.Plugin: the class is the action.
-            if name := _child_text(el, "apexClass"):
-                refs.apex_actions.append(name)
-            continue
-        elif tag == "subflows":
-            if name := _child_text(el, "flowName"):
-                refs.flows.append(name)
-        elif tag == "start":
-            refs.start_object = _child_text(el, "object")
-            refs.trigger_type = _child_text(el, "triggerType")
-        elif tag == "orchestratedStages":
-            for step in el.iter():
-                if _local(step.tag) != "stageSteps":
-                    continue
-                name = _child_text(step, "actionName")
-                if name and _child_text(step, "actionType").lower() in _STEP_ACTION_TYPES:
-                    refs.flows.append(name)
-        for sub in el.iter():
-            sub_tag = _local(sub.tag)
-            text = (sub.text or "").strip()
-            if sub_tag == "extensionName" and text:
-                refs.components.append(text)
-            elif sub_tag == "apexClass" and text:
-                refs.apex_types.append(text)
+        _read_element(refs, el)
     return refs
 
 

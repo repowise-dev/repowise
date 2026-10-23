@@ -35,13 +35,14 @@ to the nearest by path, and to none on a tie.
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
+from collections.abc import Iterator
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from repowise.core.fs_walk import glob_via
 
 from ..framework_facts import SALESFORCE
-from ..salesforce_flow import read_flow
+from ..salesforce_flow import FlowRefs, read_flow
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -278,27 +279,25 @@ def _flow_edges(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int:
     for path, parsed in idx.parsed_files.items():
         if parsed.file_info.language != _FLOW:
             continue
-        flow_sym = idx.symbol_of(path)
         raw = source_map.get(path)
         refs = read_flow(raw if raw is not None else source_text(path, parsed, {}).encode())
-        if refs is None or flow_sym is None:
-            continue
-        for name in refs.apex_actions:
-            cls = idx.apex_class(name, path)
-            if cls is not None:
-                target_sym = idx.invocable(cls) or idx.symbol_of(cls)
-                count += _link(graph, path, cls, [PurePosixPath(cls).stem], flow_sym, target_sym)
-        for name in refs.apex_types:
-            cls = idx.apex_class(name, path)
-            if cls is not None:
-                count += _add_edge_if_new(graph, path, cls, [PurePosixPath(cls).stem])
-        for name in refs.flows:
-            target = idx.flow(name, path)
-            if target is not None:
-                count += _link(graph, path, target, [], flow_sym, idx.symbol_of(target))
-        for name in refs.components:
-            for target in idx.components(name, path):
-                count += _add_edge_if_new(graph, path, target)
+        flow_sym = idx.symbol_of(path)
+        if refs is not None and flow_sym is not None:
+            count += _one_flow_edges(graph, idx, path, flow_sym, refs)
+    return count
+
+
+def _one_flow_edges(graph: nx.DiGraph, idx: _Index, path: str, flow_sym: str, refs: FlowRefs) -> int:
+    count = 0
+    for cls in filter(None, (idx.apex_class(n, path) for n in refs.apex_actions)):
+        target_sym = idx.invocable(cls) or idx.symbol_of(cls)
+        count += _link(graph, path, cls, [PurePosixPath(cls).stem], flow_sym, target_sym)
+    for cls in filter(None, (idx.apex_class(n, path) for n in refs.apex_types)):
+        count += _add_edge_if_new(graph, path, cls, [PurePosixPath(cls).stem])
+    for target in filter(None, (idx.flow(n, path) for n in refs.flows)):
+        count += _link(graph, path, target, [], flow_sym, idx.symbol_of(target))
+    for name in refs.components:
+        count += sum(_add_edge_if_new(graph, path, t) for t in idx.components(name, path))
     return count
 
 
@@ -402,11 +401,8 @@ def _placed_names(rel: str, text: str) -> list[tuple[str, str]]:
     return out
 
 
-def _liveness_edges(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext, path_set: set[str]) -> int:
-    if ctx.repo_path is None:
-        return 0
-    root = ctx.repo_path.resolve()
-    count = 0
+def _placement_texts(ctx: ResolverContext, root: Path) -> Iterator[tuple[str, str]]:
+    """``(repo-relative path, text)`` of every placement metadata file."""
     for file in glob_via(
         ctx.walk_snapshot, root, _LIVENESS_GLOBS, prune_nested_git=ctx.prune_nested_git
     ):
@@ -417,19 +413,27 @@ def _liveness_edges(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext, path_s
         if not _is_placement_file(rel):
             continue
         try:
-            if file.stat().st_size > _MAX_PLACEMENT_BYTES:
-                continue
-            text = file.read_text(encoding="utf-8-sig", errors="replace")
+            if file.stat().st_size <= _MAX_PLACEMENT_BYTES:
+                yield rel, file.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
+
+
+def _placed_targets(idx: _Index, kind: str, value: str, rel: str) -> list[str]:
+    if kind == "apex":
+        return [t] if (t := idx.apex_class(value, rel)) else []
+    if kind == "flow":
+        return [t] if (t := idx.flow(value, rel)) else []
+    return idx.components(value, rel)
+
+
+def _liveness_edges(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext, path_set: set[str]) -> int:
+    if ctx.repo_path is None:
+        return 0
+    count = 0
+    for rel, text in _placement_texts(ctx, ctx.repo_path.resolve()):
         for kind, value in _placed_names(rel, text):
-            if kind == "apex":
-                targets = [t] if (t := idx.apex_class(value, rel)) else []
-            elif kind == "flow":
-                targets = [t] if (t := idx.flow(value, rel)) else []
-            else:
-                targets = idx.components(value, rel)
-            for target in targets:
+            for target in _placed_targets(idx, kind, value, rel):
                 if target not in path_set:
                     continue
                 count += anchor_edge(graph, SALESFORCE, target)
