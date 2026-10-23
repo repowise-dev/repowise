@@ -10,7 +10,9 @@ Three things reach an LWC bundle's code that no JS import says:
   caller;
 * a ``.js-meta.xml`` with ``<isExposed>true</isExposed>`` or a ``<target>``
   lets App Builder, Experience Builder or a Flow place the component: its main
-  module is anchored to ``framework:lwc`` and marked an entry point.
+  module is anchored to ``framework:lwc`` and marked an entry point. Its
+  ``configurationEditor="c-x-cpe"`` names the bundle Flow Builder loads to
+  edit it: a file edge from the component to that editor.
 
 Tags are read from raw text, not the HTML grammar, which splits
 ``<c-fsc_flow-combobox>`` at the underscore. The template is not linked to its
@@ -51,7 +53,9 @@ _TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9]*)-([A-Za-z0-9_-]+)")
 # `{name}` / `{name.field}`: the leading identifier is a member of the class.
 _BINDING_RE = re.compile(r"\{\s*([A-Za-z_$][\w$]*)")
 _WIRE_RE = re.compile(r"@wire\s*\(\s*([A-Za-z_$][\w$]*)")
-_EXPOSED_RE =re.compile(r"<isExposed>\s*true\s*</isExposed>|<target>\s*\w", re.IGNORECASE)
+_EXPOSED_RE = re.compile(r"<isExposed>\s*true\s*</isExposed>|<target>\s*\w", re.IGNORECASE)
+# A Flow screen component's property editor, named by tag in its targetConfig.
+_EDITOR_RE = re.compile(r"""configurationEditor\s*=\s*["']([A-Za-z][A-Za-z0-9]*)-([A-Za-z0-9_-]+)["']""")
 
 
 def _members(parsed: Any) -> dict[str, str]:
@@ -64,12 +68,25 @@ def _members(parsed: Any) -> dict[str, str]:
     }
 
 
+def _tag_target(ns: str, body: str, referrer: str, ctx: ResolverContext) -> str | None:
+    """The main module a ``<ns-body>`` tag written in *referrer* instantiates, or None.
+
+    HTML tag names are case-insensitive; kebab names are lowercase, so is the lookup.
+    """
+    if ns.lower() not in {n.lower() for n in lwc_namespaces(ctx)}:
+        return None
+    name = lwc_tag_index(ctx).get(body.lower())
+    target = nearest(lwc_bundles(ctx)[name], referrer) if name is not None else None
+    # A component's own tag (recursion) says nothing about who reaches it.
+    if target is None or lwc_bundle_dir(target) == lwc_bundle_dir(referrer):
+        return None
+    return target
+
+
 def _template_edges(
     graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext, path_set: set[str]
 ) -> int:
     bundles = lwc_bundles(ctx)
-    tags = lwc_tag_index(ctx)
-    namespaces = lwc_namespaces(ctx)
     source_map = getattr(ctx, "source_map", None) or {}
     count = 0
     for path in sorted(path_set):
@@ -80,12 +97,8 @@ def _template_edges(
             continue
         text = _COMMENT_RE.sub(" ", source_text(path, parsed_files[path], source_map))
         for m in _TAG_RE.finditer(text):
-            name = tags.get(m.group(2)) if m.group(1) in namespaces else None
-            if name is None:
-                continue
-            target = nearest(bundles[name], path)
-            # A recursive component's own tag says nothing about who reaches it.
-            if target is not None and lwc_bundle_dir(target) != bundle_dir:
+            target = _tag_target(m.group(1), m.group(2), path, ctx)
+            if target is not None:
                 count += _add_edge_if_new(graph, path, target)
         own = bundle_dir.rpartition("/")[2]
         main = next((p for p in bundles.get(own, ()) if lwc_bundle_dir(p) == bundle_dir), None)
@@ -158,7 +171,12 @@ def _exposure_edges(graph: nx.DiGraph, ctx: ResolverContext) -> int:
                 text = (ctx.repo_path / meta).read_text(encoding="utf-8-sig", errors="replace")
             except OSError:
                 continue
-            if not _EXPOSED_RE.search(_COMMENT_RE.sub(" ", text)):
+            text = _COMMENT_RE.sub(" ", text)
+            for m in _EDITOR_RE.finditer(text):
+                editor = _tag_target(m.group(1), m.group(2), main, ctx)
+                if editor is not None:
+                    count += _add_edge_if_new(graph, main, editor)
+            if not _EXPOSED_RE.search(text):
                 continue
             count += anchor_edge(graph, LWC, main)
             node = graph.nodes.get(main)

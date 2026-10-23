@@ -40,7 +40,15 @@ _APP = {
         "  <c-parent></c-parent>\n"
         "</template>\n"
     ),
-    f"{_LWC}/parent/parent.js-meta.xml": _EXPOSED,
+    f"{_LWC}/parent/parent.js-meta.xml": _EXPOSED.replace(
+        "</LightningComponentBundle>",
+        '<targetConfigs><targetConfig targets="lightning__FlowScreen"'
+        ' configurationEditor="c-parent-C-P-E"/></targetConfigs></LightningComponentBundle>',
+    ),
+    f"{_LWC}/parentCPE/parentCPE.js": (
+        "import { LightningElement } from 'lwc';\n"
+        "export default class ParentCPE extends LightningElement {}\n"
+    ),
     f"{_LWC}/parent/__tests__/parent.test.js": (
         "import { createElement } from 'lwc';\nimport Parent from 'c/parent';\n"
         "it('renders', () => { createElement('c-parent', { is: Parent }); });\n"
@@ -148,12 +156,20 @@ def test_lwc_bundles_are_linked_bound_and_anchored(tmp_path: Path) -> None:
     binds = {t for _, t, d in graph.out_edges(module, data=True) if d["edge_type"] == "framework_binds"}
     assert binds == {f"{parent_js}::Parent::label", f"{parent_js}::Parent::handleClick"}
 
+    # The Flow property editor its meta names, matched case-insensitively.
+    assert graph.has_edge(parent_js, f"{_LWC}/parentCPE/parentCPE.js")
+
     # Exposure anchors the bundle; an unexposed bundle nothing names stays dead.
     assert graph.has_edge("framework:lwc", parent_js)
     assert graph.nodes[parent_js]["is_entry_point"] is True
     unreachable = {path for kind, path in dead if kind == "unreachable_file"}
     assert f"{_LWC}/orphan/orphan.js" in unreachable
-    assert not unreachable & {parent_js, f"{_LWC}/childComp/childComp.js", f"{_LWC}/ldsUtils/ldsUtils.js"}
+    assert not unreachable & {
+        parent_js,
+        f"{_LWC}/childComp/childComp.js",
+        f"{_LWC}/ldsUtils/ldsUtils.js",
+        f"{_LWC}/parentCPE/parentCPE.js",
+    }
 
 
 def test_a_name_shared_by_two_projects_resolves_within_the_importer_s(tmp_path: Path) -> None:
