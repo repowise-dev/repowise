@@ -647,6 +647,17 @@ _APEX = LanguageNodeMap(
     call_kinds=frozenset(
         {"method_invocation", "object_creation_expression", "query_expression", "dml_expression"}
     ),
+    # Dataflow (Extract Method): Java's statement shapes.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"local_variable_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
+    # ``System.runAs(u) { }`` always runs its block once, like Python's ``with``.
+    with_kinds=frozenset({"run_as_statement"}),
 )
 
 _RUST = LanguageNodeMap(

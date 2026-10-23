@@ -641,7 +641,9 @@ def _symbol_fields(extraction: Extraction, receiver: Receiver | None) -> dict[st
     hazard = _receiver_hazard(receiver, uses, assigns)
     kind: str | None = None
     if receiver is not None and hazard != "receiver_unbound":
-        kind = "method" if receiver.implicit or uses else "function"
+        # An implicit receiver with no name (an Apex static method) has no
+        # instance: its bare names are static fields, and its helper is static.
+        kind = "method" if receiver.names and (receiver.implicit or uses) else "function"
     name = min(receiver.names) if kind == "method" and receiver is not None else None
     fields: dict[str, Any] = {
         "new_symbol": {

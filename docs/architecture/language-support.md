@@ -1003,6 +1003,15 @@ literal-bound loops) and on calls that run once, such as a lazily filled cache.
 Ceiling: `while` loops, `Database.executeBatch` and `System.schedule` are not
 reported, and untested complexity needs measured coverage or a test the graph sees.
 
+Extract Method's Apex dialect extends Java's. Every local takes the spelling of
+its declaration, so `toInsert` and `toinsert` are one name. Inline SOQL reads only
+its `:bind` expressions, an SObject constructor's `Name = x` pairs write no local,
+and `when Account a` binds `a` for its arm. `System.runAs(u) { }` is built as a
+block that always runs. A `break` or `continue` in a `when` arm leaves the
+enclosing loop, which the CFG (keeping the switch whole) does not draw, so the
+dialect records a read of the loop's names at the switch. A static method's bare
+names are static fields, never parameters, and its helper is written static.
+
 Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
 one symbol named by its API name, linked to the Apex invocable actions,
 subflows, screen components and Apex-defined types it names. Apex

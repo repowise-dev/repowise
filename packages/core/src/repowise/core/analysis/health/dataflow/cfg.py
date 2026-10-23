@@ -618,17 +618,15 @@ class _CFGBuilder:
         """Process a context-manager head and recurse into its body.
 
         A with-body always executes. If every path in the body terminates,
-        statements following the with-statement cannot fall through.
+        statements following the with-statement cannot fall through. Apex's
+        ``System.runAs(u) { }`` labels no ``body``: its block child is one.
         """
         self._record_head(cur, with_node)
 
         body_entry = self._new()
         self._edge(cur, body_entry)
 
-        body_out = self._process_seq(
-            self._body_stmts(with_node.child_by_field_name("body")),
-            body_entry,
-        )
+        body_out = self._process_seq(self._body_stmts(self._block_of(with_node)), body_entry)
         if body_out is None:
             return None
 

@@ -250,6 +250,7 @@ This table is why a language is Full and not Good.
 - Dart, F# and Objective-C report class size, method count and CCN (supporting
   detectors like God Class), but do not compute cohesion metrics (LCOM4).
 - An unmapped language produces no findings, never guessed ones.
+- Apex has Extract Method: helpers are written as Apex methods, static where the host is.
 - The two test-quality markers (mock saturation, assertion-free test) are
   advisory and never deduct from a score.
 
