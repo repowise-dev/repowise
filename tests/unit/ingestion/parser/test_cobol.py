@@ -107,31 +107,134 @@ class TestCobolSymbols:
             assert by_name[name].parent_name is None
             assert by_name[name].id == f"flags.cbl::{name}"
 
-    def test_level_88_children_do_not_count_toward_symbol_bloat(
-        self, parser: ASTParser, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    @staticmethod
+    def _parse_with_bloat_threshold(
+        parser: ASTParser, monkeypatch: pytest.MonkeyPatch, entries: str
+    ) -> tuple[list, list[dict]]:
         import repowise.core.ingestion.parser as parser_module
 
-        conditions = "".join(
-            f"          88 COND-{i:03d} VALUE '{i % 10}'.\n" for i in range(12)
-        )
         source = (
             "       IDENTIFICATION DIVISION.\n"
             "       PROGRAM-ID. BLOAT.\n"
             "       DATA DIVISION.\n"
-            "       WORKING-STORAGE SECTION.\n"
-            "       01 WS-CODE PIC X.\n" + conditions
+            "       WORKING-STORAGE SECTION.\n" + entries
         ).encode()
         warnings: list[dict] = []
         monkeypatch.setattr(parser_module, "_SYMBOL_COUNT_WARN_THRESHOLD", 5)
         monkeypatch.setattr(
             parser_module.log, "warning", lambda event, **kw: warnings.append(kw)
         )
+        return parser.parse_file(_cobol("bloat.cbl"), source).symbols, warnings
 
-        result = parser.parse_file(_cobol("bloat.cbl"), source)
+    def test_level_88_children_do_not_count_toward_symbol_bloat(
+        self, parser: ASTParser, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        conditions = "".join(
+            f"          88 COND-{i:03d} VALUE '{i % 10}'.\n" for i in range(12)
+        )
+        symbols, warnings = self._parse_with_bloat_threshold(
+            parser, monkeypatch, "       01 WS-CODE PIC X.\n" + conditions
+        )
 
-        assert len(result.symbols) == 14
+        assert len(symbols) == 14
         assert warnings == []
+
+    def test_other_cobol_data_items_still_count_toward_symbol_bloat(
+        self, parser: ASTParser, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        items = "".join(f"       01 WS-ITEM-{i:03d} PIC X.\n" for i in range(12))
+        symbols, warnings = self._parse_with_bloat_threshold(parser, monkeypatch, items)
+
+        assert len(symbols) == 13
+        assert [w["symbol_count"] for w in warnings] == [13]
+
+    def test_same_condition_under_same_named_items(self, parser: ASTParser) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DUP.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 GRP-A.
+          05 WS-FLAG PIC X.
+             88 IS-ON VALUE 'Y'.
+       01 GRP-B.
+          05 WS-FLAG PIC X.
+             88 IS-ON VALUE 'Y'.
+"""
+        result = parser.parse_file(_cobol("dup.cbl"), source)
+        conditions = [s for s in result.symbols if s.name == "IS-ON"]
+
+        # COBOL ids carry no discriminator, so the store keeps the last twin.
+        assert [s.id for s in conditions] == ["dup.cbl::WS-FLAG::IS-ON"] * 2
+        assert [s.parent_name for s in conditions] == ["WS-FLAG", "WS-FLAG"]
+
+    def test_condition_after_redefines_and_occurs(self, parser: ASTParser) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SHAPES.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-NUM PIC 9(4).
+       01 WS-NUM-X REDEFINES WS-NUM PIC X(4).
+          88 NUM-BLANK VALUE SPACES.
+       01 WS-TABLE.
+          05 WS-ENTRY PIC X OCCURS 10 TIMES.
+             88 ENTRY-SET VALUE 'Y'.
+"""
+        result = parser.parse_file(_cobol("shapes.cbl"), source)
+        by_name = {s.name: s for s in result.symbols}
+
+        assert by_name["NUM-BLANK"].parent_name == "WS-NUM-X"
+        assert by_name["ENTRY-SET"].parent_name == "WS-ENTRY"
+
+    def test_condition_after_copy_or_section_start_stays_top_level(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. EDGES.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+          88 FIRST-COND VALUE 'A'.
+       01 WS-A PIC X.
+       COPY CPYA.
+          88 AFTER-COPY VALUE 'B'.
+       LINKAGE SECTION.
+          88 LINK-COND VALUE 'C'.
+       01 LK-A PIC X.
+"""
+        result = parser.parse_file(_cobol("edges.cbl"), source)
+        by_name = {s.name: s for s in result.symbols}
+
+        for name in ("FIRST-COND", "AFTER-COPY", "LINK-COND"):
+            assert by_name[name].parent_name is None
+            assert by_name[name].id == f"edges.cbl::{name}"
+
+    def test_conditions_in_a_two_program_file(self, parser: ASTParser) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. ONE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-ONE PIC X.
+          88 ONE-ON VALUE 'Y'.
+       PROCEDURE DIVISION.
+       P1.
+           GOBACK.
+       END PROGRAM ONE.
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TWO.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-TWO PIC X.
+          88 TWO-ON VALUE 'Y'.
+       PROCEDURE DIVISION.
+       P2.
+           GOBACK.
+       END PROGRAM TWO.
+"""
+        result = parser.parse_file(_cobol("two.cbl"), source)
+        by_name = {s.name: s for s in result.symbols}
+
+        assert {"ONE", "TWO"} <= {s.name for s in result.symbols if s.kind == "module"}
+        assert by_name["ONE-ON"].id == "two.cbl::WS-ONE::ONE-ON"
+        assert by_name["TWO-ON"].id == "two.cbl::WS-TWO::TWO-ON"
 
     def test_program_id_without_terminal_period_recovers_name(self, parser: ASTParser) -> None:
         source = b"""       IDENTIFICATION DIVISION.
