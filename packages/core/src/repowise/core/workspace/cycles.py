@@ -119,14 +119,31 @@ def _cycle(
     return DependencyCycle(nodes=list(nodes), edge_ids=edge_ids, leg_kinds=leg_kinds)
 
 
+def _canonical_rotation(nodes: list[str]) -> list[str]:
+    """Rotate the cycle so the lexicographically smallest service id starts it.
+
+    NetworkX's ``simple_cycles`` begins each cycle at whatever node its own
+    iteration order lands on, which follows set iteration order and therefore
+    varies with PYTHONHASHSEED. A cycle is the same loop regardless of where
+    the rotation starts, so normalising the start node makes the reported
+    ``nodes``, ``edge_ids`` and ``leg_kinds`` identical on every run.
+    """
+    if not nodes:
+        return nodes
+    start = nodes.index(min(nodes))
+    return nodes[start:] + nodes[:start]
+
+
 def detect_cycles(graph: SystemGraph) -> tuple[list[DependencyCycle], int]:
     """Return the structural dependency cycles in *graph*, and how many exist.
 
     Cycles are ordered shortest-first (the tightest loops are the most
-    actionable), then lexicographically for stability. The returned list is
-    capped at :data:`MAX_CYCLES`; the second element is the true count before
-    that cap, so a caller reporting "N cycles" cannot accidentally report the
-    cap instead. Returns ``([], 0)`` when the structural subgraph is acyclic or
+    actionable), then lexicographically for stability. Every cycle is rotated
+    to start at its smallest node id, so the same graph always produces the
+    same cycles regardless of hash seed. The returned list is capped at
+    :data:`MAX_CYCLES`; the second element is the true count before that cap,
+    so a caller reporting "N cycles" cannot accidentally report the cap
+    instead. Returns ``([], 0)`` when the structural subgraph is acyclic or
     NetworkX is unavailable.
     """
     adjacency = graph.adjacency()
@@ -146,7 +163,7 @@ def detect_cycles(graph: SystemGraph) -> tuple[list[DependencyCycle], int]:
     cycles: list[DependencyCycle] = []
     try:
         for raw in nx.simple_cycles(digraph):
-            cycle = _cycle(raw, adjacency)
+            cycle = _cycle(_canonical_rotation(raw), adjacency)
             if cycle.edge_ids:
                 cycles.append(cycle)
     except Exception:  # pragma: no cover - defensive

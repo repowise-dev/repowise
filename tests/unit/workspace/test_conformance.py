@@ -197,6 +197,27 @@ def test_longer_cycle():
     assert cycles[0].length == 3
 
 
+def test_cycles_start_at_smallest_node_id():
+    # Regression test for #4507: nx.simple_cycles begins each cycle at whatever
+    # node its iteration order lands on (varies with PYTHONHASHSEED). Every
+    # rotation of the same loop must canonicalize to the same cycle, so the
+    # loop printed by `repowise workspace check` and the `cycles` in
+    # conformance.json never change between runs on the same graph.
+    import networkx as nx
+
+    g = _graph(
+        [_node("b"), _node("c"), _node("a")],
+        [_edge("a", "b"), _edge("b", "c"), _edge("c", "a")],
+    )
+    for rotation in (["a", "b", "c"], ["b", "c", "a"], ["c", "a", "b"]):
+        with patch.object(nx, "simple_cycles", return_value=[rotation]):
+            (cycle,), total = detect_cycles(g)
+        assert cycle.nodes == ["a", "b", "c"]
+        assert cycle.edge_ids == ["a->b:http", "b->c:http", "c->a:http"]
+        assert cycle.leg_kinds == [["http"], ["http"], ["http"]]
+        assert total == 1
+
+
 def test_acyclic_graph_has_no_cycles():
     g = _graph(
         [_node("a"), _node("b"), _node("c")],
