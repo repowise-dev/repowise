@@ -96,6 +96,10 @@ def truth(root: str) -> dict:
             for m in re.finditer(r"^\s*COPY\s+'?([A-Z0-9#@$-]+)'?", text, re.I | re.M):
                 for cpy in cpys.get(m.group(1).upper(), []):
                     pairs["copy"].add((rel, cpy))
+                    pairs["copied"].add((rel, cpy))
+            for m in re.finditer(r"EXEC\s+SQL\s+INCLUDE\s+([A-Z0-9#@$-]+)", text, re.I):
+                for cpy in cpys.get(m.group(1).upper(), []):
+                    pairs["copied"].add((rel, cpy))
             for m in re.finditer(r"\bCALL\s+'([A-Z0-9#@$-]+)'", text, re.I):
                 for dst in progs.get(m.group(1).upper(), []):
                     pairs["call"].add((rel, dst))
@@ -168,7 +172,8 @@ def index_view(db: str) -> dict:
     ).fetchall()
     symbols = [r for r in nodes.values() if r[1] == "symbol" and r[2] == "cobol"]
     procs = {(r[3], r[4].upper()) for r in symbols if r[5] == "function"}
-    same_file_calls, cross_perform = set(), 0
+    same_file_calls: set[tuple[str, str]] = set()
+    cross_perform: list[tuple[str, str]] = []
     file_pairs: dict[str, set[tuple[str, str]]] = collections.defaultdict(set)
     for src, dst, etype in edges:
         fs, ft = file_of(src), file_of(dst)
@@ -177,7 +182,7 @@ def index_view(db: str) -> dict:
             if fs == ft and target is not None:
                 same_file_calls.add((fs, (target[4] or "").upper()))
             elif target is not None and target[5] == "function" and target[2] == "cobol":
-                cross_perform += 1
+                cross_perform.append((fs, ft))
         if etype in _STRUCTURAL and fs != ft and dst in nodes:
             file_pairs[etype].add((fs, ft))
     return {
@@ -201,7 +206,11 @@ def metrics(root: str, db: str) -> dict:
     per_prog = collections.defaultdict(set)
     for rel, name in t["paragraphs"]:
         per_prog[rel].add(name)
-    whole = sum(1 for rel, names in per_prog.items() if all((rel, n) in ix["procs"] for n in names))
+    whole = sum(
+        1
+        for rel in t["files"]["program"]
+        if all((rel, n) in ix["procs"] for n in per_prog.get(rel, ()))
+    )
     cobol_files = t["files"]["program"] + t["files"]["copybook"]
     touched = {f for pair in any_pairs for f in pair}
     pair_hits = {
@@ -217,7 +226,10 @@ def metrics(root: str, db: str) -> dict:
         "paragraph_recall": ratio(len(t["paragraphs"] & ix["procs"]), len(t["paragraphs"])),
         "perform_recall": ratio(len(t["performs"] & ix["same_file_calls"]), len(t["performs"])),
         **{f"{k}_pairs": v for k, v in pair_hits.items()},
-        "cross_program_perform_edges": ix["cross_perform"],
+        # A PERFORM into a copybook the program copies is right; any other is not.
+        "cross_program_perform_edges": sum(
+            1 for pair in ix["cross_perform"] if pair not in t["pairs"]["copied"]
+        ),
         "cobol_files_isolated": ratio(
             sum(1 for f in cobol_files if f not in touched), len(cobol_files)
         ),
