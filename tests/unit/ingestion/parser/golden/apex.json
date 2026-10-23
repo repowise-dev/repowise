@@ -2435,7 +2435,37 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::Inner::touch",
+        "object_name": "Account",
+        "line": 75,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": [
+          "OwnerId"
+        ]
+      }
+    ]
   },
   "apex/HealthMarkersTest.cls": {
     "file_info": {
@@ -2610,7 +2640,15 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "object_name": "Account",
+        "line": 12,
+        "path": []
+      }
+    ]
   },
   "apex/nested.cls": {
     "file_info": {
