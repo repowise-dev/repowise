@@ -242,22 +242,21 @@ class _AuraIndex:
             return None
         return m.group(2)
 
-    def bundle_target(self, name: str) -> str | None:
-        """The file a ``c:name`` reference lands on: Aura main markup, else LWC main js."""
-        aura = self.aura_by_name.get(name, [])
-        lwc = self.lwc_by_name.get(name, [])
-        # Two candidates is a collision we do not break by guessing.
-        if len(aura) + len(lwc) != 1:
-            return None
-        return self.bundles[aura[0]].main if aura else lwc[0]
+    def bundle_target(self, name: str, src: str) -> str | None:
+        """The file a ``c:name`` reference from *src* lands on: Aura main markup, else LWC main js."""
+        mains = [m for d in self.aura_by_name.get(name, []) if (m := self.bundles[d].main)]
+        return _nearest(src, mains + self.lwc_by_name.get(name, []))
 
-    def apex_class(self, written: str) -> str | None:
-        """The Apex file of ``controller="[ns.]Cls"``, own namespace only."""
+    def apex_class(self, written: str, src: str) -> str | None:
+        """The Apex file of ``controller="[ns.]Cls"`` written in *src*, own namespace only."""
         head, tail = type_qualifier(written), bare_type_name(written)
         if head and head.lower() not in self.own_ns:
             return None
-        files = self.apex_by_name.get(tail.lower(), [])
-        return files[0] if len(files) == 1 else None
+        return _nearest(src, self.apex_by_name.get(tail.lower(), []))
+
+    def aura_bundle_dir(self, name: str, src: str) -> str | None:
+        """The bundle dir an own-namespace ``extends``/``implements`` name from *src* means."""
+        return _nearest(src, self.aura_by_name.get(name, []))
 
     def chain(self, bdir: str) -> list[str]:
         """The bundle and the bundles it ``extends``, nearest first.
@@ -270,10 +269,10 @@ class _AuraIndex:
         out = [bdir]
         while len(out) < _EXTENDS_DEPTH:
             base = self.own_name(self.root_attrs(out[-1]).get("extends", ""))
-            parents = self.aura_by_name.get(base, []) if base else []
-            if len(parents) != 1 or parents[0] in out:
+            parent = self.aura_bundle_dir(base, out[-1]) if base else None
+            if parent is None or parent in out:
                 break
-            out.append(parents[0])
+            out.append(parent)
         return out
 
     def controller_class(self, bdir: str) -> tuple[str, str] | None:
@@ -281,7 +280,7 @@ class _AuraIndex:
         for b in self.chain(bdir):
             written = self.root_attrs(b).get("controller")
             if written:
-                cls_file = self.apex_class(written)
+                cls_file = self.apex_class(written, b)
                 return (written.strip(), cls_file) if cls_file else None
         return None
 
@@ -301,7 +300,8 @@ class _AuraIndex:
             written = self.root_attrs(b).get("implements", "")
             for item in written.split(","):
                 intf = self.own_name(item)
-                for idir in self.aura_by_name.get(intf, []) if intf else []:
+                idir = self.aura_bundle_dir(intf, b) if intf else None
+                if idir is not None:
                     main = self.bundles[idir].main
                     if main is not None:
                         names |= _default_action_methods(_mask_xml(self.text(main)))
@@ -323,13 +323,16 @@ class _AuraIndex:
         """Symbol id of *method* declared directly on the controller class (case folded)."""
         cls = bare_type_name(written_cls).lower()
         hits = [
-            s.id
+            s
             for s in self.parsed_files[cls_file].symbols
             if s.kind == "method"
             and s.name.lower() == method.lower()
             and (s.parent_name or "").lower() == cls
         ]
-        return hits[0] if hits else None
+        # An Aura action is public or global, so a private overload of the same
+        # name is never the one the component calls.
+        hits.sort(key=lambda s: s.visibility == "private")
+        return hits[0].id if hits else None
 
     def enclosing(self, path: str, line: int) -> str:
         """Innermost symbol of *path* spanning *line*, else its ``__module__``."""
@@ -340,6 +343,30 @@ class _AuraIndex:
             ):
                 best = s
         return best.id if best is not None else f"{path}::__module__"
+
+
+def _nearest(src: str, candidates: list[str]) -> str | None:
+    """The one candidate sharing the longest directory prefix with *src*, else None.
+
+    A repository can hold several Salesforce projects, or a source and an
+    mdapi copy of one, each declaring the same names; the platform resolves a
+    name inside the package being deployed, which the nearest copy stands for.
+    Two candidates equally near is a collision we do not break by guessing.
+    """
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    src_parts = PurePosixPath(src).parts
+
+    def shared(c: str) -> int:
+        n = 0
+        for a, b in zip(src_parts, PurePosixPath(c).parts, strict=False):
+            if a != b:
+                break
+            n += 1
+        return n
+
+    scores = sorted(((shared(c), c) for c in candidates), reverse=True)
+    return scores[0][1] if scores[0][0] > scores[1][0] else None
 
 
 def _file_edge(graph: nx.DiGraph, src: str, dst: str, names: set[str]) -> int:
@@ -411,7 +438,7 @@ def _markup_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None
 
     if main is not None:
         cls = attrs.get("controller")
-        cls_file = idx.apex_class(cls) if cls else None
+        cls_file = idx.apex_class(cls, main) if cls else None
         if cls_file is not None:
             edges.file(main, cls_file, {bare_type_name(cls)})
         implements = [i.strip() for i in attrs.get("implements", "").split(",") if i.strip()]
@@ -422,7 +449,7 @@ def _markup_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None
             graph.nodes[main]["is_entry_point"] = True
         for written in [attrs.get("extends", ""), *implements]:
             name = idx.own_name(written)
-            target = idx.bundle_target(name) if name else None
+            target = idx.bundle_target(name, main) if name else None
             if target is not None:
                 edges.file(main, target)
         # The framework calls these: renderer overrides, and the controller
@@ -454,7 +481,7 @@ def _markup_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None
                 name = tag
             else:
                 continue
-            target = idx.bundle_target(name) if name else None
+            target = idx.bundle_target(name, path) if name else None
             if target is not None:
                 edges.file(path, target)
 
@@ -493,7 +520,7 @@ def _js_edges(idx: _AuraIndex, bdir: str, b: _Bundle, edges: _Edges) -> None:
                 edges.bind(idx.enclosing(path, _line_of(text, m.start())), hit, path)
         for written in _created_components(text):
             name = idx.own_name(written)
-            target = idx.bundle_target(name) if name else None
+            target = idx.bundle_target(name, path) if name else None
             if target is not None:
                 edges.count += _dynamic_edge(graph, path, target)
 
