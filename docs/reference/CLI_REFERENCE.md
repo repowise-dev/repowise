@@ -881,7 +881,7 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 | `--counts` | `everything` or `code_shape` (drops the git-derived half, which rises as a file is worked on: is the code itself improving?). | `everything` |
 | `--refactoring-targets` | Stored queue: per file, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps, Break Cycle advisory; MCP and web UI order. Needs `repowise init`; [REFACTORING.md](../layers/REFACTORING.md). | off |
 | `--recompute` | Analyze the working tree in-process (slow on large repos; needed without an index); see notes. | off |
-| `--score <path>` | Score on-disk files pre-update or PR; repeatable. Bytes give structure, the index the rest (history, coverage, test pairing, dependents), as the next update would; no index: code shape. JSON: `files`, `score_change`. | |
+| `--score <path>` | Score on-disk files pre-update or PR; repeatable. Bytes give structure, the index the rest (history, coverage, test pairing, dependents, clone partners), as the next update would, so an unedited file scores what the index stores; no index: code shape. JSON: `files`, `score_change`, `clone_source`. | |
 | `--against <rev>` | With `--score`: before, after, change, nloc-weighted average at `<rev>`. | |
 | `--generate-code <selector>` | Patch for one `path::symbol` target; the only LLM flag (needs a provider). | |
 | `--plan <id>` | Stored plan as an agent prompt; JSON: recipe (preconditions, steps, postconditions). Reads the index. | |

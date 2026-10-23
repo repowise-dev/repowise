@@ -685,7 +685,7 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
         score_color = BAND_TERMINAL_COLOR[band_for(m.score)]
         table.add_row(
             m.file_path,
-            f"[{score_color}]{m.score:.1f}[/{score_color}]"
+            f"[{score_color}]{m.score:.2f}[/{score_color}]"
             + ("*" if m.file_path in short_history else ""),
             str(m.max_ccn),
             str(m.max_nesting),

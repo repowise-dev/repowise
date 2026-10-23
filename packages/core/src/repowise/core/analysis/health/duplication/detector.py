@@ -320,6 +320,51 @@ def detect_clones(
     )
 
 
+def clones_against_index(
+    parsed_files: Iterable[Any],
+    git_meta_map: dict[str, dict[str, Any]] | None,
+    cache_dir: Path,
+    *,
+    window_tokens: int = DEFAULT_WINDOW_TOKENS,
+    min_lines: int = DEFAULT_MIN_LINES,
+    limits: DuplicationLimits | None = None,
+    source_reader: Any | None = None,
+) -> DuplicationReport | None:
+    """Clone pairs for *parsed_files* against every file the index holds, read-only.
+
+    The same splice ``repowise update`` runs with these files as the changed
+    ones, so a file scores as the next update would score it, with its clone
+    partners as the index last read them. Nothing in *cache_dir* is written.
+    ``None`` when the index's pair state cannot be spliced (missing, from
+    another analyzer version, truncated, or too many files moved).
+    """
+    from ..engine import HEALTH_ANALYZER_VERSION
+    from .pair_index import load_pair_index
+    from .token_cache import DuplicationTokenCache
+
+    lim = limits or DuplicationLimits()
+    index = load_pair_index(cache_dir, window_tokens, lim)
+    if index is None:
+        return None
+    cache = DuplicationTokenCache(cache_dir, window_tokens, HEALTH_ANALYZER_VERSION)
+    cache.load()
+    parsed_list = list(parsed_files)
+    return _detect_clones_incremental(
+        parsed_list,
+        git_meta_map or {},
+        {pf.file_info.path for pf in parsed_list},
+        window_tokens,
+        min_lines,
+        lim,
+        DuplicationDiagnostics(),
+        cache,
+        index,
+        cache_dir,
+        source_reader,
+        persist=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stage 1 — windowing
 # ---------------------------------------------------------------------------
@@ -561,6 +606,8 @@ def _detect_clones_incremental(
     index: Any,
     cache_dir: Path,
     read_source: Any | None = None,
+    *,
+    persist: bool = True,
 ) -> DuplicationReport | None:
     """Splice the persisted raw-pair multiset instead of recomputing it.
 
@@ -579,6 +626,10 @@ def _detect_clones_incremental(
     safely (truncated/timed-out runs, missing cache entries, too many
     changes, accounting mismatch); the caller falls back to the full
     pipeline.
+
+    *persist* false is the read-only form (:func:`clones_against_index`):
+    *parsed_files* are the only files read, every other file the index holds
+    is taken as unchanged rather than deleted, and nothing is written back.
     """
     from collections import Counter
 
@@ -587,14 +638,15 @@ def _detect_clones_incremental(
 
     current = {pf.file_info.path: pf for pf in parsed_files}
     old_files: dict[str, str] = index.files
+    present = set(current) if persist else set(current) | set(old_files)
     # Files the previous run considered but gated out are not "new";
     # unchanged ones stay gated (same bytes, same gates), changed ones
     # arrive via changed_files and re-evaluate the gates live.
     new_paths = set(current) - set(old_files) - index.nonsurvivors
-    deleted = set(old_files) - set(current)
+    deleted = set(old_files) - present
     changed = (changed_files & set(current)) | new_paths
     moved = len(changed) + len(deleted)
-    if moved > max(_CHANGED_COUNT_FLOOR, _MAX_CHANGED_FRACTION * len(current)):
+    if moved > max(_CHANGED_COUNT_FLOOR, _MAX_CHANGED_FRACTION * len(present)):
         return None
     # Paths whose OLD windows leave the state (modified or deleted).
     affected_old = (changed | deleted) & set(old_files)
@@ -699,8 +751,18 @@ def _detect_clones_incremental(
     # 7. Splice the multiset. A negative count means the persisted state
     #    disagrees with the recomputed old contribution — fall back.
     paths_table: list[str] = index.paths
+    if not persist:
+        # Read-only wants only the read files' pairs. A pair between two other
+        # files is spliced independently of these, so leaving it out changes
+        # nothing kept and skips counting the whole repository's pairs.
+        read = {i for i, path in enumerate(paths_table) if path in current}
+        rows = [r for r in index.pairs if r[0] in read or r[1] in read]
+        old_contrib = [p for p in old_contrib if p.file_a in current or p.file_b in current]
+        new_contrib = [p for p in new_contrib if p.file_a in current or p.file_b in current]
+    else:
+        rows = index.pairs
     pair_counter: Counter[_PairKey] = Counter()
-    for pid_a, pid_b, a_sl, a_el, b_sl, b_el, count in index.pairs:
+    for pid_a, pid_b, a_sl, a_el, b_sl, b_el, count in rows:
         pair_counter[(paths_table[pid_a], paths_table[pid_b], a_sl, a_el, b_sl, b_el)] += count
     pair_counter.subtract(Counter(_pair_key(p) for p in old_contrib))
     if -pair_counter:  # truthy when any count went negative
@@ -724,6 +786,16 @@ def _detect_clones_incremental(
         for key, count in pair_counter.items()
         if count > 0
     ]
+
+    if not persist:
+        final = _finalize_pairs(_merge_adjacent_pairs(raw_pairs), min_lines, meta_map)
+        pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)
+        return DuplicationReport(
+            pairs=final,
+            duplication_pct=duplication_pct,
+            pairs_by_file=pairs_by_file,
+            diagnostics={**diag.as_log_fields(), "incremental": True, "read_only": True},
+        )
 
     # 8. Persist the spliced state and the retained token cache before
     #    finalizing, mirroring the full path's ordering.
