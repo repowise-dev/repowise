@@ -8,6 +8,7 @@ footing regardless of the framework's parameter syntax.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 from ..strings import match_paren
 
@@ -197,6 +198,27 @@ def is_unusable_consumer_path(path: str) -> bool:
         return True
     segments = [s for s in path.split("/") if s]
     return not any(s != "{param}" for s in segments)
+
+
+# Hosts that name the local machine, not a specific service. A consumer URL
+# pointing here carries no service identity (the matcher resolves it by path).
+LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+
+
+def names_a_target(host: str | None, base_token: str, bound_bases: Collection[str] = ()) -> bool:
+    """True when a consumer URL carries something that can place it on a service.
+
+    A literal host other than the local machine is that evidence. A base
+    placeholder is only when the dialect read its name from a binding
+    (*bound_bases*, e.g. the env keys a Go ``mustMapEnv`` fills): in
+    ``${endpoint}`` the name is a local variable and says nothing about where
+    the call goes. A path alone is never enough: ``/`` is served by nearly
+    every service, so a root call with neither would link anywhere.
+    """
+    if host is not None and host not in LOCALHOST_HOSTS:
+        return True
+    ident = base_token_identifier(base_token)
+    return bool(ident) and ident in bound_bases
 
 
 def consumer_meta(
