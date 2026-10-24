@@ -23,7 +23,7 @@ export const DEFAULT_EDGE_FAMILIES: ReadonlySet<EdgeFamily> = new Set<EdgeFamily
  */
 export const LINKED_FAMILIES: ReadonlySet<EdgeFamily> = DEFAULT_EDGE_FAMILIES;
 
-/** The family of an edge kind; an unknown future kind is drawn as Runtime rather than hidden. */
+/** The family of an edge kind from the registry; an unknown kind is History, as in core. */
 export function edgeFamily(kind: string): EdgeFamily {
   return edgeKindStyle(kind).family;
 }
@@ -34,7 +34,7 @@ const FAMILIES: ReadonlySet<string> = new Set(EDGE_FAMILY_ORDER);
  * An edge's family: the `family` the server sent when it is one we know,
  * else the kind registry's (payloads written before the field existed).
  */
-export function edgeFamilyOf(edge: { kind: string; family?: string | null }): EdgeFamily {
+export function edgeFamilyOf(edge: { kind: string; family?: string | null | undefined }): EdgeFamily {
   const sent = edge.family;
   return sent && FAMILIES.has(sent) ? (sent as EdgeFamily) : edgeFamily(edge.kind);
 }
@@ -48,7 +48,7 @@ export interface FamilyCount {
 
 /** Edge and link counts per family, for the chips and the "hidden" caption. Only families present appear. */
 export function familyCounts(
-  edges: Iterable<{ kind: string; family?: string | null; weight: number }>,
+  edges: Iterable<{ kind: string; family?: string | null | undefined; weight: number }>,
 ): Partial<Record<EdgeFamily, FamilyCount>> {
   const out: Partial<Record<EdgeFamily, FamilyCount>> = {};
   for (const e of edges) {

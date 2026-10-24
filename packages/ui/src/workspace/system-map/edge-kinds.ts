@@ -13,7 +13,7 @@
  */
 
 import { ArrowRight, Boxes, Database, Link2, Radio, Signal, Zap, type LucideIcon } from "lucide-react";
-import type { SystemEdge, SystemEdgeKind, SystemEdgeMatchType } from "@repowise-dev/types";
+import type { SystemEdge, SystemEdgeFamily, SystemEdgeKind, SystemEdgeMatchType } from "@repowise-dev/types";
 
 /** Whether an edge reflects a structural contract/dependency or behavioral co-change. */
 export type EdgeCategory = "structural" | "behavioral";
@@ -21,9 +21,10 @@ export type EdgeCategory = "structural" | "behavioral";
 /**
  * The filter family an edge kind belongs to. The map offers families, not
  * kinds, as its first filter row: Runtime and Data are drawn by default, Build
- * (package) and History (co-change) are opt-in. See `edge-families.ts`.
+ * (package) and History (co-change) are opt-in. Core sends it on each edge;
+ * the registry's `family` answers only for payloads written before that.
  */
-export type EdgeFamily = "runtime" | "data" | "build" | "history";
+export type EdgeFamily = SystemEdgeFamily;
 
 export interface SystemEdgeKindStyle {
   kind: SystemEdgeKind;
@@ -57,7 +58,8 @@ const FALLBACK_KIND: SystemEdgeKindStyle = {
   color: "var(--color-text-tertiary)",
   icon: ArrowRight,
   category: "structural",
-  family: "runtime",
+  // Matches core: a kind it does not know is History, so it starts hidden.
+  family: "history",
 };
 
 /** Resolve the style for an edge kind, tolerant of an unknown future kind. */

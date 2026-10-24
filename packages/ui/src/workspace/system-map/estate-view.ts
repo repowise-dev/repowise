@@ -194,34 +194,24 @@ function placeOpen(containerId: string, ids: readonly string[], keep: number, mo
 const limited = (size: number): BudgetContainer =>
   size > OPEN_GROUP_LIMIT.over ? { size, limit: OPEN_GROUP_LIMIT.keep } : { size };
 
-/** The estate, with any opened groups and the tray, drawing only `visible` edges. */
-export function buildEstateView(
-  graph: LevelsGraph,
-  state: LevelViewState,
-  visible: readonly LevelsEdge[],
-  edgesById: ReadonlyMap<string, LevelsEdge>,
-  budget: DrawBudget,
-): EstateView {
-  const p = partition(graph);
-  const { members, groupIds, rootServices, trayServices } = p;
-  const opened = new Set([...(state.open ?? [])].filter((g) => members.has(g)));
-  const trayOpen = Boolean(state.openTray) && trayServices.length > 0;
-  const openGroups = groupIds.filter((g) => opened.has(g));
-
-  // Budget containers: the root (closed group cards, then the tray card, then
-  // services, in fold priority), each open group, and the open tray.
+/**
+ * Fit the estate to the node budget. Containers: the root (closed group
+ * cards, then the tray card, then services, in fold priority), each open
+ * group, and the open tray; open containers themselves always draw.
+ */
+function place(p: Partition, opened: ReadonlySet<string>, trayOpen: boolean, budget: DrawBudget): Placement {
+  const openGroups = p.groupIds.filter((g) => opened.has(g));
   const rootItems: RootItem[] = [
-    ...groupIds.filter((g) => !opened.has(g)).map((id) => ({ kind: "group" as const, id })),
-    ...(trayServices.length > 0 && !trayOpen ? [{ kind: "tray" as const }] : []),
-    ...rootServices.map((id) => ({ kind: "service" as const, id })),
+    ...p.groupIds.filter((g) => !opened.has(g)).map((id) => ({ kind: "group" as const, id })),
+    ...(p.trayServices.length > 0 && !trayOpen ? [{ kind: "tray" as const }] : []),
+    ...p.rootServices.map((id) => ({ kind: "service" as const, id })),
   ];
   const containers: BudgetContainer[] = [
     { size: rootItems.length },
-    ...openGroups.map((g) => limited(members.get(g)!.length)),
-    ...(trayOpen ? [limited(trayServices.length)] : []),
+    ...openGroups.map((g) => limited(p.members.get(g)!.length)),
+    ...(trayOpen ? [limited(p.trayServices.length)] : []),
   ];
   const kept = allocateSlots(containers, budget.nodes - openGroups.length - (trayOpen ? 1 : 0));
-
   const placed: Placement = {
     drawnAt: new Map(),
     cards: new Set(),
@@ -231,16 +221,30 @@ export function buildEstateView(
     openFolded: new Map(),
   };
   placeRoot(p, rootItems, kept[0]!, placed);
-  openGroups.forEach((g, i) => placeOpen(groupNodeId(g), members.get(g)!, kept[i + 1]!, groupMoreId(g), placed));
-  if (trayOpen) placeOpen(TRAY_NODE_ID, trayServices, kept[kept.length - 1]!, TRAY_MORE_ID, placed);
+  openGroups.forEach((g, i) => placeOpen(groupNodeId(g), p.members.get(g)!, kept[i + 1]!, groupMoreId(g), placed));
+  if (trayOpen) placeOpen(TRAY_NODE_ID, p.trayServices, kept[kept.length - 1]!, TRAY_MORE_ID, placed);
+  return placed;
+}
+
+/** The estate, with any opened groups and the tray, drawing only `visible` edges. */
+export function buildEstateView(
+  graph: LevelsGraph,
+  state: LevelViewState,
+  visible: readonly LevelsEdge[],
+  edgesById: ReadonlyMap<string, LevelsEdge>,
+  budget: DrawBudget,
+): EstateView {
+  const p = partition(graph);
+  const opened = new Set([...(state.open ?? [])].filter((g) => p.members.has(g)));
+  const trayOpen = Boolean(state.openTray) && p.trayServices.length > 0;
+  const placed = place(p, opened, trayOpen, budget);
 
   const edges = connectEdges(visible, (id) => placed.drawnAt.get(id) ?? null, (id) => placed.cards.has(id));
   const capped = capEdges(edges, budget.edges, edgesById);
   const stats = groupLinkStats(visible, p.groupOf);
   const nodes = assembleNodes(graph, p, { opened, trayOpen, stats, placed });
 
-  let foldedServices = placed.rootMore.services.length;
-  for (const f of placed.openFolded.values()) foldedServices += f.length;
+  const foldedServices = [...placed.openFolded.values()].reduce((n, f) => n + f.length, placed.rootMore.services.length);
   return {
     level: opened.size > 0 || trayOpen ? "group" : "estate",
     grouped: p.groupOf !== null,
@@ -289,29 +293,50 @@ function groupCard(graph: LevelsGraph, p: Partition, g: string, open: boolean, s
  * ungrouped services, then the estate's "+N more".
  */
 function assembleNodes(graph: LevelsGraph, p: Partition, args: AssembleArgs): DrawnNode[] {
-  const { opened, trayOpen, stats, placed } = args;
-  const nodes: DrawnNode[] = [];
-  const pushChildren = (ids: readonly string[], parentId: string, moreId: string) => {
-    for (const id of ids) if (placed.cards.has(id)) nodes.push({ type: "service", id, serviceId: id, parentId });
-    const folded = placed.openFolded.get(parentId) ?? [];
-    if (folded.length > 0) nodes.push({ type: "more", id: moreId, parentId, serviceIds: folded, groupIds: [] });
-  };
-  for (const g of p.groupIds) {
-    if (opened.has(g)) {
-      nodes.push(groupCard(graph, p, g, true, stats));
-      pushChildren(p.members.get(g)!, groupNodeId(g), groupMoreId(g));
-    } else if (placed.keptGroups.has(g)) nodes.push(groupCard(graph, p, g, false, stats));
+  const { trayOpen, placed } = args;
+  const tray: DrawnNode[] =
+    trayOpen || placed.trayCard
+      ? [
+          { type: "tray", id: TRAY_NODE_ID, open: trayOpen, serviceIds: p.trayServices },
+          ...(trayOpen ? childNodes(p.trayServices, TRAY_NODE_ID, TRAY_MORE_ID, placed) : []),
+        ]
+      : [];
+  return [
+    ...p.groupIds.flatMap((g) => groupNodes(graph, p, g, args)),
+    ...tray,
+    ...cardNodes(p.rootServices, null, placed),
+    ...rootMoreNode(placed),
+  ];
+}
+
+/** A group: nothing when folded, a card when closed, a container followed by its children when open. */
+function groupNodes(graph: LevelsGraph, p: Partition, g: string, args: AssembleArgs): DrawnNode[] {
+  if (args.opened.has(g)) {
+    return [
+      groupCard(graph, p, g, true, args.stats),
+      ...childNodes(p.members.get(g)!, groupNodeId(g), groupMoreId(g), args.placed),
+    ];
   }
-  if (trayOpen || placed.trayCard) {
-    nodes.push({ type: "tray", id: TRAY_NODE_ID, open: trayOpen, serviceIds: p.trayServices });
-    if (trayOpen) pushChildren(p.trayServices, TRAY_NODE_ID, TRAY_MORE_ID);
-  }
-  for (const id of p.rootServices) {
-    if (placed.cards.has(id)) nodes.push({ type: "service", id, serviceId: id, parentId: null });
-  }
-  const more = placed.rootMore;
-  if (more.services.length > 0) {
-    nodes.push({ type: "more", id: ESTATE_MORE_ID, parentId: null, serviceIds: more.services, groupIds: more.groups });
-  }
-  return nodes;
+  return args.placed.keptGroups.has(g) ? [groupCard(graph, p, g, false, args.stats)] : [];
+}
+
+/** Service cards for the ids that kept a card, in the order given. */
+function cardNodes(ids: readonly string[], parentId: string | null, placed: Placement): DrawnNode[] {
+  return ids
+    .filter((id) => placed.cards.has(id))
+    .map((id) => ({ type: "service" as const, id, serviceId: id, parentId }));
+}
+
+/** An open container's cards, then its "+N more" when the budget folded some. */
+function childNodes(ids: readonly string[], parentId: string, moreId: string, placed: Placement): DrawnNode[] {
+  const folded = placed.openFolded.get(parentId) ?? [];
+  const more: DrawnNode[] =
+    folded.length > 0 ? [{ type: "more", id: moreId, parentId, serviceIds: folded, groupIds: [] }] : [];
+  return [...cardNodes(ids, parentId, placed), ...more];
+}
+
+function rootMoreNode(placed: Placement): DrawnNode[] {
+  const { services, groups } = placed.rootMore;
+  if (services.length === 0) return [];
+  return [{ type: "more", id: ESTATE_MORE_ID, parentId: null, serviceIds: services, groupIds: groups }];
 }

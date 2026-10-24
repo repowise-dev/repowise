@@ -23,8 +23,8 @@ describe("edge families", () => {
     expect([...DEFAULT_EDGE_FAMILIES]).toEqual(["runtime", "data"]);
   });
 
-  it("draws an unknown future kind as Runtime rather than hiding it", () => {
-    expect(edgeFamily("graphql")).toBe("runtime");
+  it("files an unknown kind under History, as core does", () => {
+    expect(edgeFamily("graphql")).toBe("history");
   });
 
   it("counts edges and links per family present", () => {

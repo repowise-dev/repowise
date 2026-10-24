@@ -23,12 +23,13 @@ import {
   type FamilyCount,
 } from "./edge-families";
 import { buildEstateView } from "./estate-view";
-import { focusColumns, focusMoreId, focusNodeId, type FocusLayout } from "./focus-columns";
+import { focusColumns, focusMoreId, focusNodeId, type FocusColumn, type FocusLayout } from "./focus-columns";
 import type {
   DrawBudget,
   DrawnEdge,
   DrawnNode,
   LevelViewState,
+  LevelsEdge,
   LevelsGraph,
   MapLevel,
   TruncationReport,
@@ -91,80 +92,99 @@ function stableKey(record: object): string {
   return JSON.stringify(record, Object.keys(record).sort());
 }
 
+/** What every level reads: the normalized graph, the families shown, and the edges they keep. */
+interface LevelInput {
+  graph: LevelsGraph;
+  families: ReadonlySet<EdgeFamily>;
+  visible: LevelsEdge[];
+  edgesById: Map<string, LevelsEdge>;
+  budget: DrawBudget;
+}
+
+type LevelResult = Pick<LevelView, "level" | "grouped" | "nodes" | "edges" | "truncation" | "focus" | "between">;
+
+/** Between (L3): the pair and the services on its paths, every drawn link among them. Null when a or b is unknown. */
+function betweenLevel(input: LevelInput, pair: { a: string; b: string }): LevelResult | null {
+  const between = servicesBetween(input.graph, pair.a, pair.b, { families: input.families });
+  if (!between) return null;
+  const drawn = new Set([between.a, between.b]);
+  for (const p of [...between.pathsAToB, ...between.pathsBToA]) p.nodes.forEach((id) => drawn.add(id));
+  const edges = connectEdges(input.visible, (id) => (drawn.has(id) ? id : null), () => true);
+  const capped = capEdges(edges, input.budget.edges, input.edgesById);
+  return {
+    level: "between",
+    grouped: false,
+    focus: null,
+    between,
+    nodes: [...drawn].sort().map((id) => ({ type: "service", id, serviceId: id, parentId: null })),
+    edges: capped.edges,
+    truncation: truncationReport(input.budget, 0, 0, capped.droppedEdges, capped.droppedLinks),
+  };
+}
+
+/** A focus column's cards, then its "+N more" when the budget folded some. */
+function columnNodes(column: FocusColumn): DrawnNode[] {
+  const nodes: DrawnNode[] = column.entries.map((e) => ({
+    type: "service",
+    id: focusNodeId(column.id, e.serviceId),
+    serviceId: e.serviceId,
+    parentId: null,
+    column: column.id,
+    links: e.summary,
+    bothWays: e.bothWays,
+  }));
+  if (column.folded.length > 0) {
+    nodes.push({ type: "more", id: focusMoreId(column.id), parentId: null, serviceIds: column.folded, groupIds: [] });
+  }
+  return nodes;
+}
+
+/** Focus (L2): left columns, the focus card, right columns. Null when the focus is unknown. */
+function focusLevel(input: LevelInput, focusId: string, hops: 1 | 2 | undefined): LevelResult | null {
+  const focus = focusColumns(input.graph, focusId, { families: input.families, hops, budget: input.budget });
+  if (!focus) return null;
+  const isLeft = (c: FocusColumn) => c.id === "callers" || c.id === "callers2";
+  const focusCard: DrawnNode = { type: "service", id: focus.focus, serviceId: focus.focus, parentId: null, column: "focus" };
+  const nodes = [
+    ...focus.columns.filter(isLeft).flatMap(columnNodes),
+    focusCard,
+    ...focus.columns.filter((c) => !isLeft(c)).flatMap(columnNodes),
+  ];
+  const folded = new Set(focus.columns.flatMap((c) => c.folded));
+  const edges: DrawnEdge[] = focus.connectors.map((c) => ({ type: "band", ...c }));
+  const capped = capEdges(edges, input.budget.edges, input.edgesById);
+  return {
+    level: "focus",
+    grouped: false,
+    focus,
+    between: null,
+    nodes,
+    edges: capped.edges,
+    truncation: truncationReport(input.budget, folded.size, 0, capped.droppedEdges, capped.droppedLinks),
+  };
+}
+
 /** The drawn graph for a view state. Exported helpers below it expect a normalized graph. */
 export function buildLevelView(
   graph: LevelsGraph,
   state: LevelViewState = {},
   budget: DrawBudget = DRAW_BUDGET,
 ): LevelView {
-  graph = normalizeGraph(graph);
+  const normalized = normalizeGraph(graph);
   const families = state.families ?? DEFAULT_EDGE_FAMILIES;
-  const base = { families, familyCounts: familyCounts(graph.edges), focus: null, between: null };
-  const visible = graph.edges.filter((e) => families.has(edgeFamilyOf(e)));
-  const edgesById = new Map(graph.edges.map((e) => [e.id, e]));
-
-  if (state.between) {
-    const between = servicesBetween(graph, state.between.a, state.between.b, { families });
-    if (between) {
-      const drawn = new Set([between.a, between.b]);
-      for (const p of [...between.pathsAToB, ...between.pathsBToA]) p.nodes.forEach((id) => drawn.add(id));
-      const order = [...drawn].sort();
-      const edges = connectEdges(visible, (id) => (drawn.has(id) ? id : null), () => true);
-      const capped = capEdges(edges, budget.edges, edgesById);
-      return {
-        ...base,
-        level: "between",
-        grouped: false,
-        between,
-        nodes: order.map((id) => ({ type: "service", id, serviceId: id, parentId: null })),
-        edges: capped.edges,
-        truncation: truncationReport(budget, 0, 0, capped.droppedEdges, capped.droppedLinks),
-      };
-    }
-  }
-
-  if (state.focus) {
-    const focus = focusColumns(graph, state.focus, { families, hops: state.hops, budget });
-    if (focus) {
-      const nodes: DrawnNode[] = [];
-      const folded = new Set<string>();
-      const pushColumn = (index: number) => {
-        const c = focus.columns[index];
-        if (!c) return;
-        for (const e of c.entries) {
-          nodes.push({
-            type: "service",
-            id: focusNodeId(c.id, e.serviceId),
-            serviceId: e.serviceId,
-            parentId: null,
-            column: c.id,
-            links: e.summary,
-            bothWays: e.bothWays,
-          });
-        }
-        if (c.folded.length > 0) {
-          c.folded.forEach((id) => folded.add(id));
-          nodes.push({ type: "more", id: focusMoreId(c.id), parentId: null, serviceIds: c.folded, groupIds: [] });
-        }
-      };
-      const leftCount = focus.hops === 2 ? 2 : 1;
-      for (let i = 0; i < leftCount; i++) pushColumn(i);
-      nodes.push({ type: "service", id: focus.focus, serviceId: focus.focus, parentId: null, column: "focus" });
-      for (let i = leftCount; i < focus.columns.length; i++) pushColumn(i);
-      const edges: DrawnEdge[] = focus.connectors.map((c) => ({ type: "band", ...c }));
-      const capped = capEdges(edges, budget.edges, edgesById);
-      return {
-        ...base,
-        level: "focus",
-        grouped: false,
-        focus,
-        nodes,
-        edges: capped.edges,
-        truncation: truncationReport(budget, folded.size, 0, capped.droppedEdges, capped.droppedLinks),
-      };
-    }
-  }
-
-  return { ...base, ...buildEstateView(graph, state, visible, edgesById, budget) };
+  const input: LevelInput = {
+    graph: normalized,
+    families,
+    visible: normalized.edges.filter((e) => families.has(edgeFamilyOf(e))),
+    edgesById: new Map(normalized.edges.map((e) => [e.id, e])),
+    budget,
+  };
+  const result =
+    (state.between ? betweenLevel(input, state.between) : null) ??
+    (state.focus ? focusLevel(input, state.focus, state.hops) : null) ?? {
+      ...buildEstateView(normalized, state, input.visible, input.edgesById, budget),
+      focus: null,
+      between: null,
+    };
+  return { ...result, families, familyCounts: familyCounts(normalized.edges) };
 }
-
