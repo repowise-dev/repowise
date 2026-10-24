@@ -59,6 +59,17 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         if params_text:
             base += params_text
         return base
+    if node_type == "extension_declaration":
+        found_on = False
+        extended = ""
+        for child in def_node.children:
+            if child.type == "on":
+                found_on = True
+                continue
+            if found_on and child.type not in ("extension_body", ";"):
+                extended = node_text(child, src).strip()
+                break
+        return f"extension {name} on {extended}" if extended else f"extension {name}"
     if node_type == "interface_declaration":
         return f"interface {name}"
     if node_type == "annotation_type_declaration":
