@@ -438,3 +438,50 @@ class TestAdvancedExcludeMergesWithFlag:
     def test_no_flag_uses_typed_patterns(self, tmp_path):
         got = self._exclude_patterns(tmp_path, [], ("build/",))
         assert got == ["build/"]
+
+
+class TestCommitLimitRange:
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    @pytest.mark.parametrize("limit", ["0", "-5", "20000"])
+    def test_out_of_range_commit_limit_is_rejected_without_writing_config(
+        self, runner, tmp_path, limit
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(tmp_path),
+                "--mode",
+                "fast",
+                "--yes",
+                "--no-editor-setup",
+                "--commit-limit",
+                limit,
+            ],
+        )
+        assert result.exit_code == 2
+        assert "--commit-limit" in result.output
+        assert not (tmp_path / ".repowise" / "config.yaml").exists()
+
+    @pytest.mark.parametrize("limit", ["1", "10000"])
+    def test_boundary_commit_limits_are_accepted(self, runner, tmp_path, limit):
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(tmp_path),
+                "--mode",
+                "fast",
+                "--yes",
+                "--no-editor-setup",
+                "--dry-run",
+                "--commit-limit",
+                limit,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+

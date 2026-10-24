@@ -252,7 +252,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
 )
 @click.option(
     "--commit-limit",
-    type=int,
+    type=click.IntRange(1, 10000),
     default=None,
     help="Max commits to analyze per file and for co-change detection (default: 5000, max: 10000). Saved to config.",
 )
