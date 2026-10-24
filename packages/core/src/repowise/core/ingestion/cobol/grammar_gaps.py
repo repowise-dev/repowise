@@ -7,6 +7,9 @@ import re
 _I = re.IGNORECASE
 # ``IF A NOT= B``: the grammar only tokenises ``NOT =``.
 _NOT_EQUAL = re.compile(r"(?<![\w-])NOT= ", _I)
+# ``"SAY ""HI"""``: the grammar reads a doubled quote only in an apostrophe literal. An
+# apostrophe literal matches first so a quote inside it is left alone.
+_LITERAL = re.compile(r"'(?:[^'\n]|'')*'|\"((?:[^\"\n]|\"\")*)\"")
 # ``x'00'``: the grammar reads only an upper-case X prefix.
 _HEX_PREFIX = re.compile(r"(?<![\w-])x(?=['\"])")
 # ``FUNCTION CURRENT-DATE(1:4)``: no reference modification on a function.
@@ -33,6 +36,7 @@ _COMMENT_ENTRY = re.compile(
 
 
 def rewrite_gaps(code: str) -> str:
+    code = _LITERAL.sub(_undouble_quotes, code)
     code = _NOT_EQUAL.sub(lambda m: m.group(0)[:3] + " =", code)
     code = _HEX_PREFIX.sub("X", code)
     code = _FUNCTION_REFMOD.sub(lambda m: m.group(1) + _blank(m.group(2)), code)
@@ -40,6 +44,13 @@ def rewrite_gaps(code: str) -> str:
     code = _EMPTY_SECTION.sub(lambda m: _blank(m.group(0)), code)
     code = _PROGRAM_ID_NO_PERIOD.sub(r"\1.", code)
     return _COMMENT_ENTRY.sub(lambda m: _blank(m.group(0)), code)
+
+
+def _undouble_quotes(match: re.Match[str]) -> str:
+    body = match.group(1)
+    if body is None or '""' not in body:
+        return match.group(0)
+    return '"' + body.replace('""', "''") + '"'
 
 
 def _blank(text: str) -> str:
