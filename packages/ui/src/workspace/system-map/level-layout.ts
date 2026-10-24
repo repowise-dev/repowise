@@ -29,9 +29,13 @@ import type { LevelsEdge } from "./level-types";
 
 export type LevelPositions = Map<string, C4LayoutPosition>;
 
-/** ELK options added to the C4 defaults for the map: keep the input order where crossings allow. */
+/**
+ * ELK options added to the C4 defaults for the map: keep the cards' input
+ * (previous) order where crossings allow. Node order only: placement edges
+ * go to ELK in id order, which carries no meaning to preserve.
+ */
 export const LEVEL_LAYOUT_OPTIONS: Record<string, string> = {
-  "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+  "elk.layered.considerModelOrder.strategy": "PREFER_NODES",
 };
 
 /** Scope layouts by signature, least recently used dropped first. */

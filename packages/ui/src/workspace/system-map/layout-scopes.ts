@@ -13,7 +13,7 @@
 
 import type { C4LayoutEdge, C4LayoutNode, C4LayoutPosition } from "../../c4/layout/elk-c4-layout";
 import { compareIds } from "./bands";
-import { edgeFamilyOf } from "./edge-families";
+import { edgeFamilyOf, linkWeight } from "./edge-families";
 import type { DrawnNode, LevelsEdge } from "./level-types";
 
 interface Size {
@@ -49,7 +49,7 @@ export interface LayoutScope {
   id: string;
   /** In drawn order. In the root, an open container has a zero size until its interior is laid out. */
   nodes: C4LayoutNode[];
-  /** One per ordered pair of drawn ids, in id order. */
+  /** Placement edges: at most one per pair of drawn ids, the strongest kept, in id order. */
   edges: C4LayoutEdge[];
 }
 
@@ -111,9 +111,52 @@ function liftEdge(e: LevelsEdge, { parentOf, drawnAt }: Placement): [string, str
 }
 
 /**
+ * Placement edges a scope keeps per card. ELK's layered layout grows with
+ * edges far faster than with cards: a 30-card estate over a 3,000-edge
+ * graph lifts to about 750 card pairs, which took ELK about 50 s; capped at
+ * two per card it is 60 edges and well under 100 ms.
+ */
+export const PLACEMENT_EDGES_PER_CARD = 2;
+
+/**
+ * One edge per unordered card pair, pointing the way most links go (ties to
+ * the lower id first), then the strongest `perCard` times the card count,
+ * ties by id. Deterministic and independent of input order.
+ */
+export function placementEdges(
+  weights: ReadonlyMap<string, { source: string; target: string; links: number }>,
+  cards: number,
+  perCard: number = PLACEMENT_EDGES_PER_CARD,
+): C4LayoutEdge[] {
+  const pairs = new Map<string, { source: string; target: string; links: number; net: number }>();
+  for (const w of weights.values()) {
+    const forward = compareIds(w.source, w.target) < 0;
+    const key = forward ? `${w.source}|${w.target}` : `${w.target}|${w.source}`;
+    let p = pairs.get(key);
+    if (!p) {
+      const [a, b] = forward ? [w.source, w.target] : [w.target, w.source];
+      pairs.set(key, (p = { source: a, target: b, links: 0, net: 0 }));
+    }
+    p.links += w.links;
+    p.net += forward ? w.links : -w.links;
+  }
+  const ranked = [...pairs.values()].map((p) => {
+    const [source, target] = p.net >= 0 ? [p.source, p.target] : [p.target, p.source];
+    return { id: `${source}>${target}`, source, target, links: p.links };
+  });
+  ranked.sort((x, y) => y.links - x.links || compareIds(x.id, y.id));
+  return ranked
+    .slice(0, Math.max(0, Math.ceil(cards * perCard)))
+    .map(({ id, source, target }) => ({ id, source, target }))
+    .sort((x, y) => compareIds(x.id, y.id));
+}
+
+type PairWeights = Map<string, { source: string; target: string; links: number }>;
+
+/**
  * Scopes for an estate, group or between view (focus uses fixed columns).
  * `edges` are the graph's system edges, each lifted to the drawn ids that
- * show its ends.
+ * show its ends and summed per card pair (see `placementEdges`).
  */
 export function planLevelLayout(
   nodes: readonly DrawnNode[],
@@ -121,10 +164,10 @@ export function planLevelLayout(
   sizes: LevelNodeSizes = LEVEL_NODE_SIZES,
 ): LevelLayoutPlan {
   const placed = placement(nodes);
-  const scopes = new Map<string, { nodes: C4LayoutNode[]; edges: Map<string, C4LayoutEdge> }>();
+  const scopes = new Map<string, { nodes: C4LayoutNode[]; weights: PairWeights }>();
   const scope = (id: string) => {
     let s = scopes.get(id);
-    if (!s) scopes.set(id, (s = { nodes: [], edges: new Map() }));
+    if (!s) scopes.set(id, (s = { nodes: [], weights: new Map() }));
     return s;
   };
   scope(ROOT_SCOPE);
@@ -135,13 +178,16 @@ export function planLevelLayout(
     const lifted = shapesLayout(e) ? liftEdge(e, placed) : null;
     if (!lifted) continue;
     const [scopeId, source, target] = lifted;
+    const weights = scope(scopeId).weights;
     const id = `${source}>${target}`;
-    scope(scopeId).edges.set(id, { id, source, target });
+    const w = weights.get(id);
+    if (w) w.links += linkWeight(e);
+    else weights.set(id, { source, target, links: linkWeight(e) });
   }
 
   const toScope = (id: string): LayoutScope => {
     const s = scopes.get(id)!;
-    return { id, nodes: s.nodes, edges: [...s.edges.values()].sort((a, b) => compareIds(a.id, b.id)) };
+    return { id, nodes: s.nodes, edges: placementEdges(s.weights, s.nodes.length) };
   };
   const interiors = [...scopes.keys()].filter((id) => id !== ROOT_SCOPE && scopes.get(id)!.nodes.length > 0);
   return { interiors: interiors.map(toScope), root: toScope(ROOT_SCOPE) };
