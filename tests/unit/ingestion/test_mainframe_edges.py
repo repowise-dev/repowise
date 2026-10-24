@@ -297,3 +297,41 @@ def test_in_stream_data_ends_at_its_dlm_delimiter() -> None:
         "DEFINE PROGRAM(P1) GROUP(G)",
     ]
     assert [s.program for s in member.steps] == ["DFHCSDUP", "IEFBR14"]
+
+
+PLT_CSD = b"""DEFINE _PGMLIST(PI) GROUP(G)
+       _PGMPH(UBNKPLT1,1) _PGMPH(UBNKPLT2,2)
+DEFINE PROGRAM(BANKMAIN) GROUP(G)
+"""
+
+
+def test_pgmlist_startup_programs_are_roots_linked_from_their_definition() -> None:
+    graph = _edges(
+        {
+            "csd/R.csd": ("csd", PLT_CSD),
+            "cbl/UBNKPLT1.cbl": ("cobol", _program(b"UBNKPLT1")),
+            "cbl/UBNKPLT2.cbl": ("cobol", _program(b"UBNKPLT2")),
+            "cbl/BANKMAIN.cbl": ("cobol", _program(b"BANKMAIN")),
+        }
+    )
+    assert set(graph.edges) == {
+        ("csd/R.csd", "cbl/UBNKPLT1.cbl"),
+        ("csd/R.csd", "cbl/UBNKPLT2.cbl"),
+        ("csd/R.csd", "cbl/BANKMAIN.cbl"),
+    }
+    roots = {p for p, d in graph.nodes(data=True) if d.get("is_reachability_root")}
+    assert roots == {"cbl/UBNKPLT1.cbl", "cbl/UBNKPLT2.cbl", "cbl/BANKMAIN.cbl"}
+
+
+def test_pgmlist_names_only_its_pgmph_entries() -> None:
+    text = (
+        "DEFINE _PGMLIST(PI) GROUP(G) _PGMPH(FIRST,1)\n"
+        "       _PGMOTHER(NOTAPROG) _pgmph( second , 2 )\n"
+        "DEFINE TRANSACTION(T1) GROUP(G) PROGRAM(TPROG)\n"
+    )
+    defs = read_csd(enumerate(text.splitlines(), 1))
+    assert [(d.resource, d.name, d.program, d.programs) for d in defs] == [
+        ("_PGMLIST", "PI", None, ("FIRST", "SECOND")),
+        ("TRANSACTION", "T1", "TPROG", ()),
+    ]
+    assert defined_programs(defs) == ["FIRST", "SECOND", "TPROG"]
