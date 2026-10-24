@@ -23,6 +23,7 @@ import structlog
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
 from repowise.cli.helpers import (
+    adopt_moved_repo_best_effort,
     clear_update_queued,
     console,
     consume_update_pending,
@@ -2121,6 +2122,10 @@ def run_update(
     run.repo_path = target.repo_path
     assert run.repo_path is not None  # single mode always sets repo_path
     _prepare_repo(run.repo_path)
+    if not opts.dry_run:
+        # A moved or copied checkout still names its old path; adopt the store's
+        # only row before any write keys on the new one and adds a second row.
+        run_async(adopt_moved_repo_best_effort(run.repo_path))
 
     # --full reuses the persisted graph instead of diffing changed files.
     if opts.full:

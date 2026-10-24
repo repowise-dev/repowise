@@ -277,6 +277,41 @@ async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repo
     return result.scalar_one_or_none()
 
 
+async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repository | None:
+    """Return the repository row for *local_path*, adopting a moved store's only row.
+
+    A copied or moved checkout carries its repo-local store with it, and that
+    store still names the old ``local_path``. Matching by exact path alone
+    would miss it, and :func:`upsert_repository` would then insert a second
+    row, after which no single-row rule can tell which row is the served one.
+
+    Resolution, which is the same rule the CLI read side applies in
+    ``repo_index_session``:
+
+    1. A row whose ``local_path`` equals *local_path* is returned as is.
+    2. Otherwise, in a repo-local store (no configured ``REPOWISE_DB_URL``)
+       holding exactly one row, that row is the moved repository: its
+       ``local_path`` is rewritten to *local_path* and it is returned.
+    3. Anything else returns ``None``. A configured or shared store, or a
+       store with two or more rows, never infers identity from a path miss.
+    """
+    from ..database import get_configured_db_url
+
+    repo = await get_repository_by_path(session, local_path)
+    if repo is not None:
+        return repo
+    if get_configured_db_url() is not None:
+        return None
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if len(rows) != 1:
+        return None
+    repo = rows[0]
+    repo.local_path = local_path
+    repo.updated_at = _now_utc()
+    await session.flush()
+    return repo
+
+
 async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
     """Delete a repository and all cascaded children.
 
