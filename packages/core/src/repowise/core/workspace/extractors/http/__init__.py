@@ -14,6 +14,7 @@ the one gate and comment check every contract type shares.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
@@ -177,7 +178,7 @@ class HttpExtractor:
 
         contracts: list[Contract] = []
         for rel_path, suffix, content in scanned:
-            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index)
+            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index, repo_root=Path(repo_path))
             # Python sits in both sets now, so one test covers the provider
             # pass (which reads the declarations above a span) and the consumer
             # pass (which reads the span itself).

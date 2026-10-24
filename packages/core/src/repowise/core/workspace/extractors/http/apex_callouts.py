@@ -16,15 +16,19 @@ only as a ``final`` field or a local the method assigns once. An endpoint
 parameter can instead read literal arguments at unambiguous same-class calls
 to its wrapper, one level only; a verb parameter must resolve at that call too.
 
-Ceiling: the Named Credential's own ``.xml`` endpoint is not read; reading it
-would add a host and path prefix to each ``callout:`` row.
+When ``namedCredentials/<Name>.namedCredential-meta.xml`` is present and declares
+a literal ``<endpoint>``, the callout's base URL is resolved directly from it.
+Otherwise, the credential name is retained as a ``${Name}`` base token for
+``service_bases`` to map.
 """
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repowise.core.fs_walk import iter_glob
 from repowise.core.ingestion.framework_routes import apex_code
 from repowise.core.workspace.origins import ContractOrigin
 
@@ -167,11 +171,76 @@ def _final_fields(content: str, code: str) -> dict[str, str]:
     }
 
 
-def _endpoint(url: str) -> str | None:
+_ENDPOINT_TAG_RE = re.compile(r"<endpoint\b[^>]*>(.*?)</endpoint>", re.DOTALL | re.IGNORECASE)
+
+
+def _find_named_credential_file(repo_root: Path, xml_name: str) -> Path | None:
+    candidates = (
+        repo_root / "namedCredentials" / xml_name,
+        repo_root / "force-app" / "main" / "default" / "namedCredentials" / xml_name,
+    )
+    for c in candidates:
+        if c.is_file():
+            return c
+    try:
+        matches = list(iter_glob(repo_root, f"**/namedCredentials/{xml_name}"))
+        return matches[0] if matches and matches[0].is_file() else None
+    except OSError:
+        return None
+
+
+def _parse_endpoint_from_xml(file_path: Path) -> str | None:
+    try:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = _ENDPOINT_TAG_RE.search(text)
+    if not m:
+        return None
+    endpoint = m.group(1).strip()
+    if "${" in endpoint or not _ABSOLUTE_RE.match(endpoint):
+        return None
+    return endpoint.rstrip("/")
+
+
+def _read_named_credential(repo_root: Path | None, name: str) -> str | None:
+    if repo_root is None:
+        return None
+    target = _find_named_credential_file(repo_root, f"{name}.namedCredential-meta.xml")
+    return _parse_endpoint_from_xml(target) if target is not None else None
+
+
+def _resolve_cred_base(
+    name: str,
+    repo_root: Path | None,
+    cred_cache: dict[str, str | None] | None,
+) -> str | None:
+    if repo_root is None:
+        return None
+    if cred_cache is not None and name in cred_cache:
+        return cred_cache[name]
+    base = _read_named_credential(repo_root, name)
+    if cred_cache is not None:
+        cred_cache[name] = base
+    return base
+
+
+def _endpoint(
+    url: str,
+    repo_root: Path | None = None,
+    cred_cache: dict[str, str | None] | None = None,
+) -> str | None:
     """*url* as the consumer layer reads it, or None when its target is not literal."""
     callout = _CALLOUT_RE.fullmatch(url)
     if callout is not None:
-        return "${" + callout.group("name") + "}" + (callout.group("rest") or "")
+        name = callout.group("name")
+        rest = callout.group("rest") or ""
+        base = _resolve_cred_base(name, repo_root, cred_cache)
+        if base:
+            if rest and not rest.startswith(("/", "?")):
+                rest = f"/{rest}"
+            return f"{base}{rest}"
+        return "${" + name + "}" + rest
     if _ABSOLUTE_RE.match(url):
         return url
     return None
@@ -300,6 +369,40 @@ def _wrapper_calls(
     return out
 
 
+def _resolve_repo_root(ctx: ScanContext) -> Path | None:
+    if ctx.repo_root is not None:
+        return ctx.repo_root
+    if ctx.index and ctx.index.repo_path:
+        return Path(ctx.index.repo_path)
+    return None
+
+
+def _build_site_contracts(
+    ctx: ScanContext,
+    content: str,
+    sites: list[tuple[str, str, int]],
+    repo_root: Path | None,
+    cred_cache: dict[str, str | None],
+) -> list[Contract]:
+    out: list[Contract] = []
+    for method, url, offset in sites:
+        endpoint = _endpoint(url, repo_root, cred_cache)
+        if endpoint is None:
+            continue
+        c = build_consumer_contract(
+            ctx,
+            method=method,
+            url=endpoint,
+            client="apex-callout",
+            line=line_at(content, offset),
+            origin=ContractOrigin.CLIENT_CALL,
+        )
+        if c is not None:
+            c.symbol_name = f"apex-callout:{method} {url}"  # as written, not rewritten
+            out.append(c)
+    return out
+
+
 class ApexCalloutsDialect:
     name = "apex-callouts"
     extensions = APEX
@@ -315,6 +418,8 @@ class ApexCalloutsDialect:
             return []
         blocks = _blocks(code)
         constants: dict[str, str] | None = None
+        repo_root = _resolve_repo_root(ctx)
+        cred_cache: dict[str, str | None] = {}
         out: list[Contract] = []
         for m in _SET_ENDPOINT_RE.finditer(code):
             recv = m.group("recv")
@@ -336,19 +441,5 @@ class ApexCalloutsDialect:
                 if method is not None and url is not None
                 else _wrapper_calls(content, code, blocks, scope, recv, args[0])
             )
-            for method, url, offset in sites:
-                endpoint = _endpoint(url)
-                if endpoint is None:
-                    continue
-                c = build_consumer_contract(
-                    ctx,
-                    method=method,
-                    url=endpoint,
-                    client="apex-callout",
-                    line=line_at(content, offset),
-                    origin=ContractOrigin.CLIENT_CALL,
-                )
-                if c is not None:
-                    c.symbol_name = f"apex-callout:{method} {url}"  # as written, not rewritten
-                    out.append(c)
+            out.extend(_build_site_contracts(ctx, content, sites, repo_root, cred_cache))
         return out
