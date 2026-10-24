@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -34,6 +35,7 @@ from repowise.server.schemas import (
     WorkspaceContractsResponse,
     WorkspaceContractSummary,
     WorkspaceCrossRepoSummary,
+    WorkspaceEstateResponse,
     WorkspaceExtractionDiagnostics,
     WorkspaceGraphEdge,
     WorkspaceGraphNode,
@@ -42,6 +44,7 @@ from repowise.server.schemas import (
     WorkspaceRepoRemovedResponse,
     WorkspaceResponse,
     WorkspaceSyncResponse,
+    WorkspaceSystemGraphMapResponse,
     WorkspaceSystemGraphResponse,
     WorkspaceTestImpactResponse,
 )
@@ -513,20 +516,35 @@ async def get_workspace_graph(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/system-graph", response_model=WorkspaceSystemGraphResponse)
+@router.get(
+    "/system-graph",
+    response_model=WorkspaceSystemGraphResponse | WorkspaceSystemGraphMapResponse,
+)
 async def get_system_graph(
     ws_config=Depends(get_workspace_config),
     enricher=Depends(get_cross_repo_enricher),
+    view: Literal["map"] | None = Query(
+        None,
+        description=(
+            "`map`: the map's lean view, without diagnostics or structural edge "
+            "refs and with `ref_count` on every edge"
+        ),
+    ),
 ):
     """Service-granular system graph: typed service nodes + directed edges.
 
     Read straight from the ``system_graph.json`` artifact built during workspace
     update. Edge direction is uniform — ``source`` depends on / calls ``target``.
     Returns an empty graph (not 404) when no graph has been built yet.
+    ``view=map`` returns :func:`lean_system_graph` of it instead.
     """
     _require_workspace(ws_config)
 
     graph = enricher.get_system_graph() if enricher is not None else None
+    if view == "map":
+        from repowise.core.workspace.system_map_view import lean_system_graph
+
+        return WorkspaceSystemGraphMapResponse(**lean_system_graph(graph or {}))
     if not graph:
         return WorkspaceSystemGraphResponse()
     return WorkspaceSystemGraphResponse(**graph)
@@ -838,6 +856,33 @@ async def get_architecture(
         generated_at=raw.get("generated_at", ""),
     )
     return WorkspaceArchitectureResponse(**metrics.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/estate
+# ---------------------------------------------------------------------------
+
+
+@router.get("/estate", response_model=WorkspaceEstateResponse)
+async def get_estate(
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+) -> WorkspaceEstateResponse:
+    """The estate report ``repowise report estate --format json`` prints.
+
+    Built on request by the same core function the CLI calls, from the stored
+    workspace artifacts and each member's index; nothing is extracted again.
+    Opens every member index, so it costs about 0.1 to 0.3 s per repo once the
+    server is warm. Without a stored system graph the graph sections come back
+    inconclusive and say which command builds it.
+    """
+    _require_workspace(ws_config)
+
+    from repowise.core.report.estate import build_estate_document
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    _require_workspace(ws_root)
+    return WorkspaceEstateResponse(**await build_estate_document(Path(ws_root)))
 
 
 # ---------------------------------------------------------------------------

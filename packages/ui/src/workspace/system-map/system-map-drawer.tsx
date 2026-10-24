@@ -16,6 +16,7 @@
 import { useMemo, useState, type ElementType, type ReactNode } from "react";
 import type {
   DependencyCycle,
+  ExtractionDiagnostics,
   NodeArchitectureRole,
   SystemEdge,
   SystemGraph,
@@ -84,6 +85,8 @@ export interface SystemMapDrawerData {
   coChangesHref?: string | undefined;
   LinkComponent?: ElementType | undefined;
   onShowBlastRadius?: ((nodeId: string) => void) | undefined;
+  /** Extraction diagnostics, when the graph came without them (the lean map view). */
+  diagnostics?: ExtractionDiagnostics | null | undefined;
 }
 
 export interface SystemMapDrawerProps extends SystemMapDrawerData {
@@ -259,6 +262,7 @@ function NodeBody({
   repoHref,
   LinkComponent,
   onShowBlastRadius,
+  diagnostics,
   onSelect,
   resolve,
   onPrompt,
@@ -275,7 +279,7 @@ function NodeBody({
   const out = neighbourGroups(graph, node.id, "out");
   const incoming = neighbourGroups(graph, node.id, "in");
   const myCycles = collapsed ? [] : cyclesThrough(cycles, node.id);
-  const diag = serviceDiagnostics(rawGraph.diagnostics, node.id, resolve);
+  const diag = serviceDiagnostics(diagnostics ?? rawGraph.diagnostics, node.id, resolve);
   const summary = useMemo(
     () => (repoContracts ? summarizeServiceContracts(repoContracts, node.id, resolve) : null),
     [repoContracts, node.id, resolve],
@@ -604,6 +608,8 @@ function EdgeBody({
   );
   const refs = uniqueRefs(edge);
   const pairs = edge.structural ? [] : coChangePairs(edge);
+  // The lean map view sends a structural edge's count, not its refs.
+  const keptRefs = edge.contract_refs ? refs.length : (edge.ref_count ?? 0);
   const myCycles = collapsed ? [] : cyclesWithEdge(cycles, edge.id);
   const name = (id: string) => nodeOf(id)?.name ?? id;
 
@@ -622,6 +628,7 @@ function EdgeBody({
           weightLabel: weightLabel(edge),
           evidence: links ?? [],
           refs,
+          refCount: keptRefs,
           pairs,
           cycles: myCycles.map((c) => c.nodes.map(name)),
           flavor,
@@ -676,7 +683,7 @@ function EdgeBody({
             label: "Evidence kept",
             value: (
               <span className="tabular-nums">
-                {plural(edge.structural ? refs.length : pairs.length, "reference", "references")}
+                {plural(edge.structural ? keptRefs : pairs.length, "reference", "references")}
               </span>
             ),
           },
@@ -778,6 +785,10 @@ function EdgeBody({
                 {`Showing ${Math.min(refs.length, DRAWER_EVIDENCE_ROWS)} of ${refs.length} contract ids the graph kept for this edge; it aggregates ${weightLabel(edge)}.`}
               </p>
             </>
+          ) : keptRefs > 0 ? (
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              {`The graph kept ${plural(keptRefs, "contract id", "contract ids")} for this edge; it aggregates ${weightLabel(edge)}.`}
+            </p>
           ) : (
             <p className="text-xs text-[var(--color-text-tertiary)]">The graph kept no evidence for this edge.</p>
           )}

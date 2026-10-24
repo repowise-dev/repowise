@@ -143,6 +143,7 @@
   "scripts": {
     "type-check": "tsc --noEmit",
     "test": "vitest run",
+    "bench": "vitest bench --run",
     "gates": "bash ./scripts/ui-gates.sh"
   },
   "dependencies": {

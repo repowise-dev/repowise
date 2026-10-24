@@ -37,6 +37,7 @@ import { SystemMapDrawer, type SystemMapDrawerData } from "./system-map-drawer";
 import { SystemMapFocusContext, createSystemMapFocusStore } from "./system-map-focus";
 import { edgeKindStyle, isGatewayRouted } from "./edge-kinds";
 import { useSystemMapLayout } from "./use-system-map-layout";
+import { useSystemMapPhases, type SystemMapPhase } from "./use-system-map-phases";
 import { resolveViewSelection } from "./system-map-model";
 import { SYSTEM_MAP_MAX_LAYOUT_NODES, SYSTEM_MAP_NODE_SIZE, applyCollapse, type SystemMapView } from "./layout";
 import type { RepoHealth, SystemMapOverlay, SystemMapSelection } from "./types";
@@ -70,6 +71,8 @@ export interface SystemMapProps {
   /** Controlled selection, so the host can put it in the URL. */
   selection?: SystemMapSelection;
   onSelectionChange?: (selection: SystemMapSelection) => void;
+  /** Called as each render phase completes, for host-side timing. */
+  onPhase?: (phase: SystemMapPhase) => void;
 }
 
 export function SystemMap(props: SystemMapProps) {
@@ -95,6 +98,7 @@ function SystemMapInner({
   drawer,
   selection: controlledSelection,
   onSelectionChange,
+  onPhase,
 }: SystemMapProps) {
   const [hiddenKinds, setHiddenKinds] = useState<Set<SystemEdgeKind>>(() => new Set());
   const [collapsed, setCollapsed] = useState(false);
@@ -140,6 +144,7 @@ function SystemMapInner({
     ...(overlay && !collapsed ? { overlay } : {}),
     ...(roleByNodeId ? { roleByNodeId } : {}),
   });
+  useSystemMapPhases(onPhase, viewGraph, layoutLoading);
 
   // Lists and the URL name raw ids; map them onto what is drawn, and show a
   // hidden kind or the service view when that is the only way to draw them.

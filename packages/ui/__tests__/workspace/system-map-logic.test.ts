@@ -106,6 +106,16 @@ describe("collapseToRepos", () => {
     expect(e.match_type).toBe("exact"); // strongest
   });
 
+  it("merges the lean map view's counts where it has no refs to merge", () => {
+    const { contract_refs: _a, ...a } = edge("web", "api::a", { ref_count: 2 });
+    const { contract_refs: _b, ...b } = edge("web", "api::b", { ref_count: 3 });
+    const { diagnostics: _d, ...lean } = graph([node("api::a", "api"), node("api::b", "api"), node("web", "web")], [a, b]);
+    const collapsed = collapseToRepos(lean);
+    expect(collapsed.edges[0]!.ref_count).toBe(5);
+    expect(collapsed.edges[0]!.contract_refs).toBeUndefined();
+    expect(collapsed.diagnostics).toBeUndefined();
+  });
+
   it("keeps different edge kinds between the same repos distinct", () => {
     const g = graph(
       [node("web", "web"), node("api", "api")],

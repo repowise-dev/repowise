@@ -1208,6 +1208,8 @@ class TestGetSystemGraph:
         }
         assert data["groups"] == []  # two services: too few to group
         assert {n["group"] for n in data["nodes"]} == {None}
+        assert "diagnostics" in data
+        assert all("contract_refs" in e and "ref_count" not in e for e in data["edges"])
 
     @pytest.mark.asyncio
     async def test_fills_family_on_an_older_artifact(self, tmp_path: Path) -> None:
@@ -1263,6 +1265,36 @@ class TestGetSystemGraph:
         assert {n["group"] for n in data["nodes"] if n["repo"].startswith("search")} == {
             "name:search"
         }
+
+    @pytest.mark.asyncio
+    async def test_map_view_is_lean(self, tmp_path: Path) -> None:
+        enricher = _make_system_graph_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            full = (await c.get("/api/workspace/system-graph")).json()
+            resp = await c.get("/api/workspace/system-graph", params={"view": "map"})
+        assert resp.status_code == 200
+        lean = resp.json()
+        assert "diagnostics" not in lean
+        assert [n["id"] for n in lean["nodes"]] == [n["id"] for n in full["nodes"]]
+        assert [e["id"] for e in lean["edges"]] == [e["id"] for e in full["edges"]]
+        http = next(e for e in lean["edges"] if e["kind"] == "http")
+        assert http["contract_refs"] is None
+        assert http["ref_count"] == 1
+        assert lean["groups"] == full["groups"]
+        assert all("family" in e for e in lean["edges"])
+
+    @pytest.mark.asyncio
+    async def test_map_view_empty_when_no_graph(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=None)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/system-graph", params={"view": "map"})
+            bad = await c.get("/api/workspace/system-graph", params={"view": "nope"})
+        assert resp.status_code == 200
+        assert resp.json() == {"version": 1, "generated_at": "", "nodes": [], "edges": [], "groups": []}
+        assert bad.status_code == 422
 
 
 class TestGetBlastRadius:

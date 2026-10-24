@@ -72,6 +72,7 @@ export {
   type RoleStyle,
 } from "./architecture";
 export { useSystemMapLayout, type SystemMapLayout, type UseSystemMapLayoutArgs } from "./use-system-map-layout";
+export type { SystemMapPhase } from "./use-system-map-phases";
 export {
   applyView,
   applyCollapse,

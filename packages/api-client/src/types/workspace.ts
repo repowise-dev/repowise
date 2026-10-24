@@ -283,7 +283,7 @@ import type {
   ArchitectureMetrics,
 } from "@repowise-dev/types";
 
-/** `GET /api/workspace/system-graph` — the full service-granular system graph. */
+/** `GET /api/workspace/system-graph` — the service-granular system graph (`?view=map`: its lean view). */
 export type WorkspaceSystemGraphResponse = SystemGraph;
 
 /** `GET /api/workspace/blast-radius` — cross-repo downstream impact set. */
@@ -297,3 +297,6 @@ export type WorkspaceConformanceResponse = ConformanceReport;
 
 /** `GET /api/workspace/architecture` — architecture-complexity metrics + roles. */
 export type WorkspaceArchitectureResponse = ArchitectureMetrics;
+
+/** `GET /api/workspace/estate` — the estate report `repowise report estate` prints. */
+export type { EstateReport as WorkspaceEstateResponse } from "@repowise-dev/types";

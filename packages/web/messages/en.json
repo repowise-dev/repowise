@@ -150,6 +150,7 @@
     "conformance": "Conformance",
     "contracts": "Contracts",
     "coChanges": "Co-Changes",
+    "estateReport": "Estate report",
     "groupPeopleAndHistory": "People & History",
     "groupSettings": "Settings",
     "groupUnderstand": "Understand",
@@ -1609,6 +1610,153 @@
       "label": "Fix violations with AI",
       "title": "AI conformance fix",
       "description": "A ready-to-paste prompt that has your AI agent resolve these architecture rule violations by removing the disallowed dependencies."
+    }
+  },
+  "estate": {
+    "indexBehind": "index behind, run repowise update",
+    "indexUnreadable": "index could not be read",
+    "indexBehindLabel": "Index behind",
+    "indexBehindSentence": "{count, plural, one {# repo has an index written by an older repowise, so it was not read} other {# repos have an index written by an older repowise, so they were not read}}. Run repowise update in each to bring it up to date.",
+    "title": "Estate report",
+    "description": "One read across every repository in the workspace: the system map and the evidence behind it, contracts and the calls that reached no provider, health and churn per repo, the riskiest seams and where to start.",
+    "unavailableTitle": "Estate report unavailable",
+    "unavailableDescription": "The server could not build the report ({error}). A server older than this page does not serve it; upgrade repowise and restart repowise serve.",
+    "noGraphLabel": "No system graph",
+    "noGraphSentence": "No system graph is stored for this workspace yet, so the map, contracts, seams and service reach are not determined. Run repowise update --workspace once two or more member repos are indexed. Health, churn and the files to start with still read from each index.",
+    "evidencePartial": "Partial evidence",
+    "evidencePartialSentence": "The figures below are computed with part of the estate out of sight: {reason}.",
+    "evidenceInsufficient": "Not determined",
+    "evidenceInsufficientSentence": "The architecture score, cycle verdicts, seams and service reach are not determined: {reason}.",
+    "staleLabel": "Stale",
+    "staleSentence": "{count, plural, one {# repo has its contracts read at another commit than its index} other {# repos have their contracts read at another commit than their index}}. Run repowise update --workspace to read them again.",
+    "failedLabel": "Failed",
+    "failedSentence": "This section failed to build, so the report marks it inconclusive.",
+    "generated": "Built {when} by repowise {version} from the stored workspace artifacts and each member's index.",
+    "shownOf": "Showing {shown} of {total}. repowise report estate --format json lists every one.",
+    "notIndexed": "not indexed",
+    "notRead": "not read",
+    "noSnapshot": "no snapshot",
+    "notMeasured": "not measured",
+    "notMeasuredNote": "A dash means not measured: no health snapshot, too little indexed history, or the repo is not indexed. The sentences below name which.",
+    "none": "none",
+    "contractsBehind": "behind the index",
+    "snapshotBehind": "older than the index",
+    "dependsOn": "depends on",
+    "targetUnresolved": "target not resolved",
+    "undocumented": "undocumented",
+    "docWords": "{count, plural, one {# doc word} other {# doc words}}",
+    "behindContract": "behind a contract",
+    "coChangeOnly": "co-change only",
+    "coChangeUnexplained": "{value}, no contract",
+    "scoreFloor": "at least {score}",
+    "serviceLinksNote": "{count, plural, one {# service-level link names a workspace repo whose routes do not serve the path.} other {# service-level links name a workspace repo whose routes do not serve the path.}}",
+    "orphanNote": "{count, plural, one {# provider is reached by no consumer in the workspace; it may be called from outside it.} other {# providers are reached by no consumer in the workspace; they may be called from outside it.}}",
+    "externalNote": "{count, plural, one {# call to a public host outside the workspace is not counted.} other {# calls to public hosts outside the workspace are not counted.}}",
+    "ribbon": {
+      "repos": "Repositories",
+      "reposSub": "{indexed} of {total} indexed",
+      "services": "Services",
+      "servicesSub": "in the system graph",
+      "links": "Cross-repo links",
+      "linksSub": "contracts matched between repos",
+      "dangling": "Dangling calls",
+      "danglingSub": "matched no provider in another service",
+      "architecture": "Architecture score",
+      "architectureSub": "out of 10, a fixed formula",
+      "notDetermined": "not determined"
+    },
+    "section": {
+      "summary": {
+        "title": "Estate summary",
+        "description": "Repositories, services and how much evidence the system graph rests on."
+      },
+      "map": {
+        "title": "System map and architecture",
+        "description": "How the services depend on each other, and what that structure scores."
+      },
+      "contracts": {
+        "title": "Contracts and dangling calls",
+        "description": "Contracts read and linked across repos, and each call that reached no provider."
+      },
+      "health": {
+        "title": "Health, churn and bug magnets by repository",
+        "description": "Each repo reads on its own; repos are never averaged together. Lowest health first."
+      },
+      "seams": {
+        "title": "Riskiest seams",
+        "description": "Service pairs ranked by link confidence, reach and co-change no contract explains. A fixed heuristic, not a calibrated risk."
+      },
+      "start": {
+        "title": "Where to start",
+        "description": "The services most others depend on, then each repo's central, least documented files."
+      }
+    },
+    "check": {
+      "estate": "System graph",
+      "repositories": "Repositories",
+      "services": "Services",
+      "evidence": "Evidence",
+      "dependencies": "Dependencies",
+      "architecture": "Architecture",
+      "contracts": "Contracts",
+      "http-calls": "HTTP calls",
+      "dangling-calls": "Dangling calls",
+      "health": "Health",
+      "churn-hotspots": "Churn hotspots",
+      "bug-magnets": "Bug magnets",
+      "seams": "Seams",
+      "start-services": "Services to read first",
+      "start-files": "Files to read first",
+      "system-map": "System map"
+    },
+    "basis": {
+      "measured": "Measured",
+      "inferred": "Inferred",
+      "declared": "Declared",
+      "unresolved": "Not determined",
+      "gated": "Held back"
+    },
+    "band": {
+      "healthy": "Healthy",
+      "warning": "Warning",
+      "alert": "Alert"
+    },
+    "danglingReason": {
+      "no_provider": "no provider in the workspace",
+      "unlinked": "a provider exists, no link formed"
+    },
+    "col": {
+      "repo": "Repository",
+      "indexedAt": "Index at",
+      "contractsAt": "Contracts read at",
+      "services": "Services",
+      "dependency": "Dependency",
+      "kind": "Kind",
+      "links": "Links",
+      "strategy": "How linked",
+      "confidence": "Confidence",
+      "type": "Type",
+      "providers": "Providers",
+      "consumers": "Consumers",
+      "consumer": "Consumer",
+      "file": "File",
+      "target": "Target",
+      "contract": "Contract",
+      "why": "Why",
+      "health": "Health",
+      "maintainability": "Maintainability",
+      "hotspotHealth": "Over hotspots",
+      "churnHotspots": "Churn hotspots",
+      "bugMagnets": "Bug magnets",
+      "snapshot": "Snapshot",
+      "pair": "Services",
+      "edge": "Edge",
+      "reach": "Reach",
+      "coChange": "Co-change",
+      "seamScore": "Seam score",
+      "service": "Service",
+      "reaches": "Services a change reaches",
+      "docs": "Documentation"
     }
   },
   "contracts": {

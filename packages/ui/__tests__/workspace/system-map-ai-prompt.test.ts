@@ -203,6 +203,21 @@ describe("system map AI prompts", () => {
     expect(text).not.toContain("get_blast_radius");
   });
 
+  it("edge prompt for a lean edge states the kept count instead of no evidence", () => {
+    const text = buildEdgeAiPrompt({
+      edge: { id: "web->api:http", kind: "http", match_type: "exact", confidence: 0.9, weight: 4, structural: true },
+      source: { id: "web", name: "web" },
+      target: { id: "api", name: "api" },
+      sentence: "web calls api over HTTP.",
+      weightLabel: "4 endpoints called",
+      evidence: [],
+      refs: [],
+      refCount: 3,
+    });
+    expect(text).toContain("The graph kept 3 contract ids for this edge");
+    expect(text).not.toContain("No evidence rows were returned");
+  });
+
   it("edge prompt for co-change asks about a hidden dependency", () => {
     const text = buildEdgeAiPrompt({
       edge: { id: "a->b:co_change", kind: "co_change", match_type: "inferred", confidence: 0.7, weight: 2, structural: false },

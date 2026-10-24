@@ -1557,8 +1557,13 @@ repowise report estate --format html --out estate.html
 | `estate-seams` | Service pairs joined by an edge, ranked by link confidence x reach x (1 + co-change no contract explains), every input shown per pair; a fixed heuristic, not a calibrated risk | `inferred`; `unresolved` when evidence is insufficient |
 | `estate-start` | Services ranked by how many others a change to them reaches; per repo, the most central production files with the least written documentation | `inferred` |
 
-Outside a workspace it exits 1. A section is a `Section(scope="workspace", report="estate")` in
+Outside a workspace it exits 1. A member with no index is listed as not indexed; one whose index was
+written by an older repowise is listed as behind (run `repowise update` there), and one whose index
+cannot be opened as unreadable. A section is a `Section(scope="workspace", report="estate")` in
 `repowise/core/report/sections/`; it runs once with a `WorkspaceReportContext`.
+
+The local server returns the same document as JSON at `GET /api/workspace/estate`, and the web UI
+shows it on the workspace **Estate report** page. Both call `report/estate.py::build_estate_document`.
 
 ---
 

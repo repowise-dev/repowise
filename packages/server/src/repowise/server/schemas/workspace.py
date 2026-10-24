@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -443,6 +443,25 @@ class WorkspaceSystemGraphResponse(BaseModel):
     groups: list[WorkspaceServiceGroup] = []
 
 
+class WorkspaceSystemMapEdge(WorkspaceSystemEdge):
+    """An edge of the map's lean view. Mirrors ``core.workspace.system_map_view``."""
+
+    #: A co-change edge's file pairs; None on a structural edge, whose evidence
+    #: the contracts routes serve.
+    contract_refs: list[str] | None = None
+    #: Distinct refs the full edge keeps.
+    ref_count: int = 0
+
+
+class WorkspaceSystemGraphMapResponse(BaseModel):
+    """``GET /api/workspace/system-graph?view=map``: the graph without diagnostics."""
+
+    version: int = 1
+    generated_at: str = ""
+    nodes: list[WorkspaceSystemNode] = []
+    edges: list[WorkspaceSystemMapEdge] = []
+
+
 # ---------------------------------------------------------------------------
 # Cross-repo blast radius (reachability over the system graph)
 # Mirrors repowise.core.workspace.blast_radius.
@@ -687,3 +706,83 @@ class WorkspaceTestImpactResponse(BaseModel):
     #: Free-form counters and the state that produced an empty answer, so an
     #: empty response always names its reason.
     summary: dict = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Estate report: the ``repowise report estate`` document, as
+# repowise.core.report.estate.build_estate_document returns it.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceEstateCheckDocs(BaseModel):
+    url: str
+    short: str
+
+
+class WorkspaceEstateCheck(BaseModel):
+    """One evidence item: OpenSSF Scorecard check keys plus ``method`` and ``basis``.
+
+    ``score`` is 0-10, -1 when inconclusive, ``None`` on a descriptive item.
+    ``data`` holds the item's full figures; its keys depend on ``name``.
+    """
+
+    name: str
+    score: float | None = None
+    reason: str
+    details: list[str] = []
+    method: str
+    basis: Literal["measured", "inferred", "declared", "unresolved", "gated"]
+    data: dict[str, Any] | None = None
+    documentation: WorkspaceEstateCheckDocs | None = None
+
+
+class WorkspaceEstateSection(BaseModel):
+    id: str
+    title: str
+    summary: str
+    #: ``None`` for a workspace-scope section, else the member's alias.
+    repo: str | None = None
+    checks: list[WorkspaceEstateCheck] = []
+    #: The section raised; its one check says why and is inconclusive.
+    failed: bool = False
+
+
+class WorkspaceEstateSnapshot(BaseModel):
+    taken_at: str
+    stamp: str | None = None
+
+
+class WorkspaceEstateRepo(BaseModel):
+    alias: str | None = None
+    name: str
+    head_commit: str | None = None
+    last_snapshot: WorkspaceEstateSnapshot | None = None
+    #: ``False`` when the member has no index at all.
+    indexed: bool = True
+    #: Set when an index exists but was not read: ``behind`` (written by an
+    #: older repowise; run ``repowise update``) or ``unreadable``.
+    index_state: Literal["behind", "unreadable"] | None = None
+
+
+class WorkspaceEstateGenerator(BaseModel):
+    name: str
+    version: str
+    stamp: str
+
+
+class WorkspaceEstateScope(BaseModel):
+    kind: Literal["workspace"]
+    name: str
+
+
+class WorkspaceEstateResponse(BaseModel):
+    """``GET /api/workspace/estate``: the estate report document."""
+
+    schema_version: int
+    kind: Literal["estate"]
+    generated_at: str
+    generator: WorkspaceEstateGenerator
+    scope: WorkspaceEstateScope
+    notice: str
+    repos: list[WorkspaceEstateRepo] = []
+    sections: list[WorkspaceEstateSection] = []

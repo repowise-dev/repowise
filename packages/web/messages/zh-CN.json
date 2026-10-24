@@ -150,6 +150,7 @@
     "conformance": "一致性",
     "contracts": "契约",
     "coChanges": "共变分析",
+    "estateReport": "全局报告",
     "groupPeopleAndHistory": "人员与历史",
     "groupSettings": "设置",
     "groupUnderstand": "理解",
@@ -1609,6 +1610,153 @@
       "label": "用 AI 修复违规",
       "title": "AI 一致性修复",
       "description": "一段可直接粘贴的提示词，让你的 AI 代理通过移除不被允许的依赖来解决这些架构规则违规。"
+    }
+  },
+  "estate": {
+    "indexBehind": "索引已过旧，请运行 repowise update",
+    "indexUnreadable": "索引无法读取",
+    "indexBehindLabel": "索引过旧",
+    "indexBehindSentence": "{count, plural, other {# 个仓库的索引由旧版 repowise 生成，因此未被读取}}。请在每个仓库中运行 repowise update 进行更新。",
+    "title": "全局报告",
+    "description": "一次读完工作区内的每个仓库：系统地图及其依据、契约与未找到提供方的调用、各仓库的健康度与变更热度、风险最高的服务接缝，以及从哪里入手。",
+    "unavailableTitle": "全局报告不可用",
+    "unavailableDescription": "服务器无法生成该报告（{error}）。比此页面旧的服务器不提供该报告；请升级 repowise 并重启 repowise serve。",
+    "noGraphLabel": "无系统图",
+    "noGraphSentence": "此工作区尚未保存系统图，因此系统地图、契约、服务接缝和服务影响范围均无法确定。至少两个成员仓库建立索引后，运行 repowise update --workspace。健康度、变更热度和建议优先阅读的文件仍从各仓库索引读取。",
+    "evidencePartial": "部分依据",
+    "evidencePartialSentence": "以下数据是在部分系统不可见的情况下计算的：{reason}。",
+    "evidenceInsufficient": "无法确定",
+    "evidenceInsufficientSentence": "架构评分、循环判断、服务接缝和服务影响范围无法确定：{reason}。",
+    "staleLabel": "已过期",
+    "staleSentence": "{count, plural, other {# 个仓库的契约读取提交与其索引提交不一致}}。运行 repowise update --workspace 重新读取。",
+    "failedLabel": "失败",
+    "failedSentence": "此部分生成失败，报告将其标记为无法得出结论。",
+    "generated": "由 repowise {version} 于 {when} 根据已保存的工作区产物和各成员索引生成。",
+    "shownOf": "显示 {shown} / {total}。repowise report estate --format json 会列出全部。",
+    "notIndexed": "未索引",
+    "notRead": "未读取",
+    "noSnapshot": "无快照",
+    "notMeasured": "未测量",
+    "notMeasuredNote": "短横线表示未测量：没有健康度快照、已索引的历史过短，或仓库未索引。下方的说明会指出具体原因。",
+    "none": "无",
+    "contractsBehind": "落后于索引",
+    "snapshotBehind": "早于索引",
+    "dependsOn": "依赖",
+    "targetUnresolved": "目标未解析",
+    "undocumented": "无文档",
+    "docWords": "{count, plural, other {# 个文档词}}",
+    "behindContract": "有契约约束",
+    "coChangeOnly": "仅共同变更",
+    "coChangeUnexplained": "{value}，无契约",
+    "scoreFloor": "至少 {score}",
+    "serviceLinksNote": "{count, plural, other {# 条服务级链接指向某个工作区仓库，但该仓库的路由不提供对应路径。}}",
+    "orphanNote": "{count, plural, other {# 个提供方没有被工作区内任何消费方调用；可能由工作区外部调用。}}",
+    "externalNote": "{count, plural, other {# 次对工作区外公共主机的调用未计入。}}",
+    "ribbon": {
+      "repos": "仓库",
+      "reposSub": "{total} 个中 {indexed} 个已索引",
+      "services": "服务",
+      "servicesSub": "位于系统图中",
+      "links": "跨仓库链接",
+      "linksSub": "仓库之间匹配的契约",
+      "dangling": "悬空调用",
+      "danglingSub": "未匹配到其他服务的提供方",
+      "architecture": "架构评分",
+      "architectureSub": "满分 10，按固定公式计算",
+      "notDetermined": "无法确定"
+    },
+    "section": {
+      "summary": {
+        "title": "全局概览",
+        "description": "仓库、服务，以及系统图所依据的证据有多少。"
+      },
+      "map": {
+        "title": "系统地图与架构",
+        "description": "服务之间如何相互依赖，以及该结构的评分。"
+      },
+      "contracts": {
+        "title": "契约与悬空调用",
+        "description": "跨仓库读取和链接的契约，以及每个未找到提供方的调用。"
+      },
+      "health": {
+        "title": "各仓库的健康度、变更热点与缺陷磁铁",
+        "description": "每个仓库单独评估，从不合并平均。健康度最低的排在最前。"
+      },
+      "seams": {
+        "title": "风险最高的服务接缝",
+        "description": "按链接置信度、影响范围以及无契约解释的共同变更对服务对排序。这是固定的启发式规则，不是经过校准的风险值。"
+      },
+      "start": {
+        "title": "从哪里入手",
+        "description": "被最多其他服务依赖的服务，以及每个仓库中最核心、文档最少的文件。"
+      }
+    },
+    "check": {
+      "estate": "系统图",
+      "repositories": "仓库",
+      "services": "服务",
+      "evidence": "依据",
+      "dependencies": "依赖",
+      "architecture": "架构",
+      "contracts": "契约",
+      "http-calls": "HTTP 调用",
+      "dangling-calls": "悬空调用",
+      "health": "健康度",
+      "churn-hotspots": "变更热点",
+      "bug-magnets": "缺陷磁铁",
+      "seams": "服务接缝",
+      "start-services": "优先阅读的服务",
+      "start-files": "优先阅读的文件",
+      "system-map": "系统地图"
+    },
+    "basis": {
+      "measured": "实测",
+      "inferred": "推断",
+      "declared": "声明",
+      "unresolved": "无法确定",
+      "gated": "暂不提供"
+    },
+    "band": {
+      "healthy": "健康",
+      "warning": "警告",
+      "alert": "告警"
+    },
+    "danglingReason": {
+      "no_provider": "工作区内没有提供方",
+      "unlinked": "存在提供方，但未形成链接"
+    },
+    "col": {
+      "repo": "仓库",
+      "indexedAt": "索引提交",
+      "contractsAt": "契约读取提交",
+      "services": "服务",
+      "dependency": "依赖",
+      "kind": "类型",
+      "links": "链接",
+      "strategy": "链接方式",
+      "confidence": "置信度",
+      "type": "类型",
+      "providers": "提供方",
+      "consumers": "消费方",
+      "consumer": "消费方",
+      "file": "文件",
+      "target": "目标",
+      "contract": "契约",
+      "why": "原因",
+      "health": "健康度",
+      "maintainability": "可维护性",
+      "hotspotHealth": "热点健康度",
+      "churnHotspots": "变更热点",
+      "bugMagnets": "缺陷磁铁",
+      "snapshot": "快照",
+      "pair": "服务",
+      "edge": "边",
+      "reach": "影响范围",
+      "coChange": "共同变更",
+      "seamScore": "接缝评分",
+      "service": "服务",
+      "reaches": "变更可波及的服务数",
+      "docs": "文档"
     }
   },
   "contracts": {

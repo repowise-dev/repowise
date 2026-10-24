@@ -214,8 +214,13 @@ export interface SystemEdge {
   weight: number;
   /** True for contract/package edges, false for behavioral co-change edges. */
   structural: boolean;
-  /** Back-pointers to the underlying evidence, for drill-down (bounded). */
-  contract_refs: string[];
+  /**
+   * Back-pointers to the underlying evidence, for drill-down (bounded). The
+   * map's lean view (`?view=map`) sends null on structural edges.
+   */
+  contract_refs?: string[] | null;
+  /** Distinct refs the full edge keeps; set by the lean view in place of the list. */
+  ref_count?: number;
   /** Strategy of the link that gave the edge its confidence; null on a co-change edge. */
   strategy?: LinkStrategyWire | null;
   /** The kind's family, set by core (an unknown kind is `history`). */
@@ -227,7 +232,8 @@ export interface SystemGraph {
   generated_at: string;
   nodes: SystemNode[];
   edges: SystemEdge[];
-  diagnostics: ExtractionDiagnostics;
+  /** Absent from the map's lean view, which reads `/api/workspace/diagnostics`. */
+  diagnostics?: ExtractionDiagnostics;
   /** Service groups; absent or empty when the estate is too small to group. */
   groups?: ServiceGroup[];
 }

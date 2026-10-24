@@ -179,7 +179,7 @@ export function edgeLinks(
 ): WorkspaceContractLinkEntry[] {
   if (!edge.structural) return [];
   const type = KIND_CONTRACT_TYPE[edge.kind];
-  const refs = new Set(edge.contract_refs);
+  const refs = new Set(edge.contract_refs ?? []);
   const seen = new Set<string>();
   const out: WorkspaceContractLinkEntry[] = [];
   for (const lk of links) {
@@ -197,7 +197,7 @@ export function edgeLinks(
 
 /** Co-change refs are `source_file~target_file`. */
 export function coChangePairs(edge: SystemEdge): [string, string | null][] {
-  return edge.contract_refs.map((ref) => {
+  return (edge.contract_refs ?? []).map((ref) => {
     const split = ref.indexOf("~");
     return split === -1 ? [ref, null] : [ref.slice(0, split), ref.slice(split + 1)];
   });
@@ -205,7 +205,7 @@ export function coChangePairs(edge: SystemEdge): [string, string | null][] {
 
 /** Structural refs repeat when two files use one contract; the list shows it once. */
 export function uniqueRefs(edge: SystemEdge): string[] {
-  return [...new Set(edge.contract_refs)];
+  return [...new Set(edge.contract_refs ?? [])];
 }
 
 // ---------------------------------------------------------------------------

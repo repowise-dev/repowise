@@ -30,9 +30,15 @@ import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { unmatchedOutsideService } from "@repowise-dev/ui/workspace/contract-facts";
-import type { NodeArchitectureRole, SystemGraph, ConformanceReport } from "@/lib/api/types";
+import type {
+  ConformanceReport,
+  ExtractionDiagnostics,
+  NodeArchitectureRole,
+  SystemGraph,
+} from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
+  useWorkspaceDiagnostics,
   useWorkspaceGraph,
   useWorkspaceBlastRadius,
   useWorkspaceBreakingChanges,
@@ -40,6 +46,7 @@ import {
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
 import { httpLinkedStat } from "@/lib/http-link-coverage";
+import { markSystemMap, useSystemMapPerfMarks } from "@/lib/system-map-perf";
 import { useRepoContracts } from "./use-repo-contracts";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
@@ -63,14 +70,19 @@ export default function SystemMapPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // One wave above the fold: the graph, repo health, and the three small
-  // reports the lede, the lens counts and "Needs attention" all read. Blast
-  // radius and per-repo contracts are fetched only when asked for.
-  const { data: graph, isLoading, error } = useWorkspaceSystemGraph();
+  // One wave above the fold: the map's lean graph, repo health, and the three
+  // small reports the lede, the lens counts and "Needs attention" all read.
+  // Diagnostics follow the graph; a server without the lean view sends them
+  // inside it. Blast radius and per-repo contracts are fetched only when asked for.
+  const { data: graph, isLoading, error } = useWorkspaceSystemGraph("map");
+  const { data: fetchedDiagnostics } = useWorkspaceDiagnostics(Boolean(graph && !graph.diagnostics));
+  const diagnostics = graph?.diagnostics ?? fetchedDiagnostics;
   const { data: repoGraph } = useWorkspaceGraph();
   const { data: architecture, error: architectureError } = useWorkspaceArchitecture();
   const { data: conformance, error: conformanceError } = useWorkspaceConformance();
   const { data: breaking, error: breakingError } = useWorkspaceBreakingChanges();
+
+  useSystemMapPerfMarks(graph);
 
   // Selection, lens and blast target live in the URL, so a view can be linked to.
   const selection = useMemo<SystemMapSelection>(() => {
@@ -193,8 +205,9 @@ export default function SystemMapPage() {
       coChangesHref: "/workspace/co-changes",
       LinkComponent: Link,
       onShowBlastRadius: (id: string) => setLens("blast", id),
+      diagnostics,
     }),
-    [repoContracts, repoContractsLoading, conformance, repoIdByAlias, setLens],
+    [repoContracts, repoContractsLoading, conformance, repoIdByAlias, setLens, diagnostics],
   );
 
   return (
@@ -207,7 +220,7 @@ export default function SystemMapPage() {
       {graph && (
         <Lede graph={graph} architecture={architecture} conformance={conformance} t={t} />
       )}
-      {graph && <StatRibbon stats={ribbon(t, tLinks, graph, architecture)} LinkComponent={Link} />}
+      {graph && <StatRibbon stats={ribbon(t, tLinks, graph, architecture, diagnostics)} LinkComponent={Link} />}
 
       <OverviewSection title={t("section.title")} description={t("section.description")}>
         {/* Said once, beside the map it qualifies; the score above reads "–" when not determined. */}
@@ -233,6 +246,7 @@ export default function SystemMapPage() {
             {...(overlay ? { overlay } : {})}
             selection={selection}
             onSelectionChange={onSelectionChange}
+            onPhase={markSystemMap}
             drawer={drawer}
             toolbar={
               <SystemMapLensControl
@@ -274,7 +288,7 @@ export default function SystemMapPage() {
           graph={graph}
           conformance={conformance}
           breaking={breaking}
-          diagnostics={graph.diagnostics}
+          diagnostics={diagnostics}
           conformanceError={Boolean(conformanceError)}
           breakingError={Boolean(breakingError)}
           onSelect={onSelectionChange}
@@ -425,8 +439,8 @@ function ribbon(
   tLinks: Translator,
   graph: SystemGraph,
   architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
+  diag: ExtractionDiagnostics | null | undefined,
 ): RibbonStat[] {
-  const diag = graph.diagnostics;
   const repos = new Set(graph.nodes.map((n) => n.repo)).size;
   const structural = graph.edges.filter((e) => e.structural).length;
   return [

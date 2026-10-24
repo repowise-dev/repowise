@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { CrossRepoBlastRadius, GraphEvidence, SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
 import { SystemMap } from "../../src/workspace/system-map/system-map";
 import { Segmented, SystemMapFilters } from "../../src/workspace/system-map/system-map-filters";
@@ -415,6 +415,36 @@ describe("SystemMapDrawer", () => {
     expect(screen.queryByRole("link", { name: /overview\.py/ })).not.toBeInTheDocument();
   });
 
+  it("states a lean edge's evidence count without claiming it kept none", () => {
+    const { contract_refs: _refs, ...lean } = edge("web", "api", { weight: 2, ref_count: 2 });
+    const g2 = graph([node("web"), node("api")], [lean]);
+    render(
+      <SystemMapDrawer graph={g2} rawGraph={g2} collapsed={false} onClose={() => {}} onSelect={() => {}} selection={{ type: "edge", id: "web->api" }} />,
+    );
+    expect(screen.getByText("2 references")).toBeInTheDocument();
+    expect(screen.getByText(/The graph kept 2 contract ids for this edge/)).toBeInTheDocument();
+    expect(screen.queryByText(/kept no evidence/)).not.toBeInTheDocument();
+  });
+
+  it("reads a service's diagnostics from the host when the graph has none", () => {
+    const { diagnostics: _d, ...lean } = g;
+    render(
+      <SystemMapDrawer
+        {...base}
+        graph={lean}
+        rawGraph={lean}
+        selection={{ type: "node", id: "web" }}
+        onSelect={() => {}}
+        diagnostics={{
+          unmatched_consumers: [
+            { repo: "web", file_path: "client.ts", contract_id: "http::GET::/x", contract_type: "http", reason: "no_provider" },
+          ],
+        } as never}
+      />,
+    );
+    expect(screen.getByText(/1 call from here match/)).toBeInTheDocument();
+  });
+
   it("renders nothing when there is no selection", () => {
     render(<SystemMapDrawer {...base} selection={null} onSelect={() => {}} />);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -449,6 +479,31 @@ describe("SystemMap chrome placement", () => {
     expect(within(dialog).getByText(/api provides 2 contracts/i)).toBeInTheDocument();
     const flow = container.querySelector(".react-flow")!;
     expect(flow.contains(dialog)).toBe(false);
+  });
+
+  it("reports aggregate, layout and paint to onPhase, in order", async () => {
+    const onPhase = vi.fn();
+    render(<SystemMap graph={g} onPhase={onPhase} />);
+    await waitFor(() => expect(onPhase).toHaveBeenLastCalledWith("paint"));
+    expect(onPhase.mock.calls.map(([p]) => p)).toEqual(["aggregate", "layout", "paint"]);
+  });
+
+  it("reports no phase when there is no graph to lay out", async () => {
+    const onPhase = vi.fn();
+    render(<SystemMap graph={null} error={new Error("boom")} onPhase={onPhase} />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onPhase).not.toHaveBeenCalled();
+  });
+
+  it("reports layout only once the new graph's layout has run", async () => {
+    const onPhase = vi.fn();
+    const { rerender } = render(<SystemMap graph={g} onPhase={onPhase} />);
+    await waitFor(() => expect(onPhase).toHaveBeenLastCalledWith("paint"));
+    onPhase.mockClear();
+    const next = graph([...g.nodes, node("db")], [...g.edges, edge("api", "db", { kind: "db" })]);
+    rerender(<SystemMap graph={next} onPhase={onPhase} />);
+    await waitFor(() => expect(onPhase).toHaveBeenLastCalledWith("paint"));
+    expect(onPhase.mock.calls.map(([p]) => p)).toEqual(["aggregate", "layout", "paint"]);
   });
 
   it("puts the host's toolbar in the section header, not on the canvas", () => {

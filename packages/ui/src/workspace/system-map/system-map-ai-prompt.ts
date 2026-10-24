@@ -186,6 +186,8 @@ export interface BuildEdgePromptOptions {
   evidence: PromptEdgeEvidence[];
   /** Contract ids from the edge itself, used when no links were resolved. */
   refs: string[];
+  /** Distinct contract ids the graph kept, when `refs` came without them (the lean map view). */
+  refCount?: number;
   /** Co-change file pairs, for behavioral edges. */
   pairs?: [string, string | null][];
   /** Cycles this edge sits on, as service names. */
@@ -212,7 +214,9 @@ export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
         )
       : o.refs.length > 0
         ? capped(o.refs, (r) => `- \`${r}\``, "contract ids")
-        : "No evidence rows were returned for this edge."
+        : (o.refCount ?? 0) > 0
+          ? `The graph kept ${o.refCount} contract ids for this edge; list them from the contracts between \`${o.source.name}\` and \`${o.target.name}\` before you start.`
+          : "No evidence rows were returned for this edge."
     : (o.pairs ?? []).length > 0
       ? capped(o.pairs ?? [], ([a, b]) => `- \`${a}\`${b ? ` with \`${b}\`` : ""}`, "file pairs")
       : "No file pairs were returned for this edge.";

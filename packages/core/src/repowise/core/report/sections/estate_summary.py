@@ -38,10 +38,16 @@ def _repositories(ctx: WorkspaceReportContext, graph: Any) -> dict[str, Any]:
                 "indexed_commit": head,
                 "contracts_commit": extracted,
                 "services": sorted(services.get(alias, [])),
+                "index_state": entry.get("index_state"),
             }
         )
     not_indexed = [r["alias"] for r in rows if not r["indexed"]]
-    unread = [r["alias"] for r in rows if r["indexed"] and r["alias"] not in walked]
+    behind_index = [r["alias"] for r in rows if r["index_state"] == "behind"]
+    unopened = [r["alias"] for r in rows if r["index_state"] == "unreadable"]
+    unread = [
+        r["alias"] for r in rows
+        if r["indexed"] and not r["index_state"] and r["alias"] not in walked
+    ]
     empty = [r["alias"] for r in rows if r["alias"] in walked and not r["services"]]
     behind = [
         r
@@ -52,6 +58,13 @@ def _repositories(ctx: WorkspaceReportContext, graph: Any) -> dict[str, Any]:
     details = []
     if not_indexed:
         details.append(f"not indexed, so nothing about them is known: {capped_names(not_indexed)}")
+    if behind_index:
+        details.append(
+            "index written by an older repowise, so its commit was not read; run "
+            f"'repowise update' there: {capped_names(behind_index)}"
+        )
+    if unopened:
+        details.append(f"index could not be opened or holds no repository: {capped_names(unopened)}")
     if unread:
         details.append(f"indexed but not read by the last workspace update: {capped_names(unread)}")
     if empty:
