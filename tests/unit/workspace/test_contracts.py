@@ -281,6 +281,21 @@ class TestHttpExtractor:
         assert len(consumers) == 1
         assert consumers[0].contract_id == "http::POST::/api/data"
 
+    def test_requests_fstring_folds_class_attribute_base(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "client.py", """
+            class Client:
+                BASE = "https://api.fantasypros.com/v2"
+
+                def rankings(self):
+                    return requests.get(f"{self.BASE}/2026/consensus-rankings")
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "worker")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "http::GET::/v2/2026/consensus-rankings"
+        assert consumers[0].meta.get("host") == "api.fantasypros.com"
+        assert "base_stripped" not in consumers[0].meta
+
     def test_fetch_consumer_strips_leading_base_expr(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
             const users = await fetch(`${API_BASE}/api/users`);
@@ -1234,6 +1249,40 @@ class TestCandidateMatching:
         ]
         links = match_contracts(contracts)
         assert links == []
+
+    def test_service_bases_external_target_excludes_consumer(self) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/rankings"),
+            self._c(repo="worker", role="consumer", contract_id="http::GET::/rankings",
+                    file_path="c.py", meta={"base_stripped": True, "base_token": "FANTASYPROS_BASE"}),
+            self._c(repo="worker", role="consumer", contract_id="http::GET::/rankings",
+                    file_path="c2.py", meta={"base_stripped": True, "base_token": "SLEEPER_BASE"}),
+        ]
+        annotate_consumer_targets(
+            contracts,
+            {"FANTASYPROS_BASE": "external", "SLEEPER_BASE": "https://api.sleeper.app/v1"},
+        )
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert all(c.meta.get("external") is True for c in consumers)
+        assert match_contracts(contracts) == []
+
+    def test_folded_tokens_warns_while_matching_case_insensitively(self, caplog) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="payments", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c1.ts", meta={"base_stripped": True, "base_token": "base"}),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c2.ts", meta={"base_stripped": True, "base_token": "BASE"}),
+        ]
+        with caplog.at_level("WARNING", logger="repowise.workspace.matching.http"):
+            annotate_consumer_targets(contracts, {"BASE": "backend"})
+        assert any("fold to one lower-cased" in rec.message for rec in caplog.records)
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert all(c.meta.get("target_repo") == "backend" for c in consumers)
+        links = match_contracts(contracts)
+        assert len(links) == 2
+        assert all(lk.provider_repo == "backend" and lk.match_type == "exact" for lk in links)
 
 
 # ---------------------------------------------------------------------------

@@ -8,11 +8,13 @@ or version segment one side carries and the other does not (``/api/v1``).
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.contracts import ContractLink, normalize_contract_id
+from repowise.core.workspace.extractors.http.paths import absolute_host
 from repowise.core.workspace.origins import (
     ORIGIN_CONFIDENCE,
     ContractOrigin,
@@ -36,6 +38,8 @@ if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
 
     from .common import MatchState
+
+_log = logging.getLogger("repowise.workspace.matching.http")
 
 # Common API mount / version path prefixes. When exact matching fails, the
 # candidate pass strips these leading segments (plus unresolved base ``{param}``
@@ -117,6 +121,10 @@ _LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
 # like ``backend.stripe.com`` must never be mistaken for the ``backend`` repo.
 _INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".svc.cluster.local")
 
+# ``service_bases`` values that explicitly mark a base token or host as an
+# external third-party service rather than a workspace repo alias.
+_EXTERNAL_SERVICE_TARGETS = frozenset({"external", "third_party", "third-party"})
+
 
 # ---------------------------------------------------------------------------
 # Consumer target resolution
@@ -127,6 +135,58 @@ _INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".svc.cluster.local")
 #: rather than from a :mod:`..service_names` source.
 VIA_SERVICE_BASES = "service_bases"
 VIA_REPO_ALIAS = "repo_alias"
+
+
+def _resolve_host_target(
+    host: str,
+    repo_aliases: set[str],
+    names: ServiceNameMap,
+) -> tuple[str | None, bool, ServiceName | None]:
+    """Resolve a lower-cased *host* against *repo_aliases*, *names*, and DNS rules."""
+    if host in _LOCALHOST_HOSTS:
+        return None, False, None
+    internal_dns = host not in repo_aliases and host.endswith(_INTERNAL_HOST_SUFFIXES)
+    label = host.split(".")[0] if internal_dns else host
+    mapped = names.lookup(label, HOST)
+    if label in repo_aliases:
+        # A map entry agreeing with the alias is the evidence; the alias alone is a name match.
+        if mapped is not None and mapped.repo == label:
+            return label, False, mapped
+        return label, False, ServiceName(label, HOST, label, VIA_REPO_ALIAS, "")
+    if mapped is not None:
+        return mapped.repo, False, mapped
+    if label != host or "." not in host:
+        return None, False, None  # unmapped internal or bare hostname, not third-party
+    return None, True, None  # public dotted host, unmapped → third-party
+
+
+def _resolve_service_base_value(
+    key: str,
+    kind: str,
+    target: str,
+    repo_aliases: set[str],
+    names: ServiceNameMap,
+) -> tuple[str | None, bool, ServiceName | None]:
+    """Interpret a ``service_bases`` target value as ``(target_repo, is_external, via)``."""
+    cleaned = target.strip()
+    if not cleaned:
+        return None, False, None
+    if cleaned.lower() in _EXTERNAL_SERVICE_TARGETS:
+        return None, True, None
+    if cleaned in repo_aliases:
+        return cleaned, False, ServiceName(key, kind, cleaned, VIA_SERVICE_BASES, "")
+    host = absolute_host(cleaned) or (cleaned.lower() if "." in cleaned else None)
+    if host is not None:
+        resolved_repo, is_external, _ = _resolve_host_target(host, repo_aliases, names)
+        if is_external:
+            return None, True, None
+        if resolved_repo is not None:
+            return (
+                resolved_repo,
+                False,
+                ServiceName(key, kind, resolved_repo, VIA_SERVICE_BASES, ""),
+            )
+    return cleaned, False, ServiceName(key, kind, cleaned, VIA_SERVICE_BASES, "")
 
 
 def _resolve_consumer_target(
@@ -154,31 +214,51 @@ def _resolve_consumer_target(
     host = meta.get("host")
     if host:
         if host in service_bases:
-            return service_bases[host], False, ServiceName(host, HOST, service_bases[host], VIA_SERVICE_BASES, "")
-        if host in _LOCALHOST_HOSTS:
-            return None, False, None
-        internal_dns = host not in repo_aliases and host.endswith(_INTERNAL_HOST_SUFFIXES)
-        label = host.split(".")[0] if internal_dns else host
-        mapped = names.lookup(label, HOST)
-        if label in repo_aliases:
-            # A map entry agreeing with the alias is the evidence; the alias alone is a name match.
-            if mapped is not None and mapped.repo == label:
-                return label, False, mapped
-            return label, False, ServiceName(label, HOST, label, VIA_REPO_ALIAS, "")
-        if mapped is not None:
-            return mapped.repo, False, mapped
-        if label != host or "." not in host:
-            return None, False, None  # unmapped internal or bare hostname, not third-party
-        return None, True, None  # public dotted host, unmapped → third-party
+            return _resolve_service_base_value(
+                host, HOST, service_bases[host], repo_aliases, names
+            )
+        return _resolve_host_target(host, repo_aliases, names)
     token = meta.get("base_token")
     if token:
-        if token.lower() in service_bases:
-            repo = service_bases[token.lower()]
-            return repo, False, ServiceName(token.lower(), ENV, repo, VIA_SERVICE_BASES, "")
+        lower_token = token.lower()
+        if lower_token in service_bases:
+            return _resolve_service_base_value(
+                lower_token, ENV, service_bases[lower_token], repo_aliases, names
+            )
         mapped = names.lookup(token, ENV)
         if mapped is not None:
             return mapped.repo, False, mapped
     return None, False, None
+
+
+def _warn_folded_tokens(
+    contracts: list[Contract], service_bases: dict[str, str] | None
+) -> None:
+    """Warn when distinct base tokens or ``service_bases`` keys fold to one lower-cased key."""
+    if service_bases:
+        config_by_lower: dict[str, list[str]] = defaultdict(list)
+        for k in service_bases:
+            config_by_lower[k.lower()].append(k)
+        for lower_key, keys in sorted(config_by_lower.items()):
+            if len(keys) > 1:
+                _log.warning(
+                    "contracts.service_bases keys %s fold to one lower-cased key %r",
+                    ", ".join(sorted(keys)),
+                    lower_key,
+                )
+    tokens_by_lower: dict[str, set[str]] = defaultdict(set)
+    for c in contracts:
+        if c.role == "consumer" and c.contract_type == "http":
+            token = c.meta.get("base_token")
+            if token:
+                tokens_by_lower[token.lower()].add(token)
+    for lower_key, tokens in sorted(tokens_by_lower.items()):
+        if len(tokens) > 1:
+            _log.warning(
+                "Base tokens %s fold to one lower-cased service_bases key %r",
+                ", ".join(sorted(tokens)),
+                lower_key,
+            )
 
 
 def annotate_consumer_targets(
@@ -190,11 +270,12 @@ def annotate_consumer_targets(
 
     Mutates the contracts in place so both :func:`..match_contracts` and the
     diagnostics builder read one resolution. ``service_bases`` maps a base token
-    or host (case-insensitive) to a repo alias and always wins; *names* is the
-    workspace's :class:`..service_names.ServiceNameMap`, read after the repo
-    aliases. A target that is a workspace repo also gets ``target_via`` (the
-    source that placed it) and, from a service-name source, ``target_evidence``
-    (the file), which is what lets :func:`service_pass` draw a service-level edge.
+    or host (case-insensitive) to a repo alias or ``external`` and always wins;
+    *names* is the workspace's :class:`..service_names.ServiceNameMap`, read
+    after the repo aliases. A target that is a workspace repo also gets
+    ``target_via`` (the source that placed it) and, from a service-name source,
+    ``target_evidence`` (the file), which is what lets :func:`service_pass` draw
+    a service-level edge.
 
     The keys this owns are cleared before being recomputed, so the result is
     a function of *contracts*, *service_bases* and *names* alone and not of
@@ -207,6 +288,7 @@ def annotate_consumer_targets(
     """
     names = names or ServiceNameMap()
     repo_aliases = {c.repo for c in contracts} | names.repos
+    _warn_folded_tokens(contracts, service_bases)
     sb = {k.lower(): v for k, v in (service_bases or {}).items()}
     for c in contracts:
         if c.role != "consumer" or c.contract_type != "http":
