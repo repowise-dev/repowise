@@ -103,7 +103,7 @@ const ORIGINS = {
   },
   instance_base: {
     label: "Client base URL",
-    meaning: "A call on a client instance whose base URL the file sets.",
+    meaning: "A call on a client instance whose base URL the file reads.",
   },
   dataflow: {
     label: "Traced value",
@@ -119,7 +119,7 @@ const ORIGINS = {
   },
   name_convention: {
     label: "Naming convention",
-    meaning: "Derived from a naming convention, such as an ORM's default table name.",
+    meaning: "Derived from a naming convention, such as an ORM's default table name or a unique short type name.",
   },
 } as const satisfies Record<ContractOrigin, ProvenanceCopy>;
 
