@@ -11,6 +11,7 @@ from __future__ import annotations
 from ..dialect import ContractDialect, DialectExtractor
 from .aws import SNS, SQS
 from .bullmq import BULLMQ
+from .cloud_stream import CLOUD_STREAM
 from .csharp_events import CSHARP_EVENTS
 from .dialect import topic_identity
 from .jms import JMS
@@ -36,6 +37,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     LARAVEL_QUEUES,
     CSHARP_EVENTS,
     JMS,
+    CLOUD_STREAM,
 )
 
 
