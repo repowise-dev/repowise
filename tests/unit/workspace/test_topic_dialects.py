@@ -268,6 +268,104 @@ class TestPhpAmqplib:
         assert _extract(tmp_path, "X.php", "<?php\n$x->basic_publish($m, 'orders');\n") == []
 
 
+class TestGoAmqp:
+    _IMPORT = 'package main\n\nimport "github.com/streadway/amqp"\n\n'
+
+    def test_publish_consume_and_a_bind_on_the_declared_queue(self, tmp_path: Path) -> None:
+        src = self._IMPORT + (
+            'q, err := ch.QueueDeclare("orders", true, false, false, false, nil)\n'
+            'err = ch.QueueBind(q.Name, "orders", "robot-shop", false, nil)\n'
+            'msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)\n'
+            'ch.Publish("robot-shop", "order.created", false, false, msg)\n'
+        )
+        rows = {
+            (c.role, c.contract_id, c.meta["kind"]): c for c in _extract(tmp_path, "main.go", src)
+        }
+        assert set(rows) == {
+            ("consumer", "topic::robot-shop", "binding"),
+            ("consumer", "topic::orders", "queue"),
+            ("provider", "topic::robot-shop", "exchange"),
+        }
+        assert rows["consumer", "topic::robot-shop", "binding"].meta["queue"] == "orders"
+        provider = rows["provider", "topic::robot-shop", "exchange"]
+        assert provider.meta["routing_key"] == "order.created"
+
+    def test_with_context_calls_skip_the_context(self, tmp_path: Path) -> None:
+        src = 'import amqp "github.com/rabbitmq/amqp091-go"\n' + (
+            'ch.PublishWithContext(ctx, "", "jobs", false, false, msg)\n'
+            'ch.ConsumeWithContext(ctx, "jobs", "", true, false, false, false, nil)\n'
+        )
+        rows = {(c.role, c.contract_id, c.meta["kind"]) for c in _extract(tmp_path, "w.go", src)}
+        assert rows == {("provider", "topic::jobs", "queue"), ("consumer", "topic::jobs", "queue")}
+
+    @pytest.mark.parametrize(
+        "declare",
+        [
+            'q, err := ch.QueueDeclare("", false, false, true, false, nil)\n',  # server-named
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            'q, err = ch.QueueDeclare("b", true, false, false, false, nil)\n',
+            "",  # declared in another file
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            "q := other()\n",  # bound to something else too
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            "func bind(ch *amqp.Channel, q amqp.Queue) {\n",  # a parameter of that name
+            'q, err := ch.QueueDeclare("a", true, false, false, false, nil)\n'
+            "for _, q := range queues {\n",  # a loop variable of that name
+        ],
+    )
+    def test_an_unsettled_declared_queue_binds_nothing(self, tmp_path: Path, declare: str) -> None:
+        src = self._IMPORT + declare + 'ch.QueueBind(q.Name, "", "logs", false, nil)\n'
+        assert _extract(tmp_path, "main.go", src) == []
+
+    def test_nothing_without_the_library(self, tmp_path: Path) -> None:
+        src = 'package main\n\nch.Publish("orders", "k", false, false, msg)\nch.Consume("jobs")\n'
+        assert _extract(tmp_path, "main.go", src) == []
+
+
+class TestDeclaredQueues:
+    def test_amqplib_assert_queue_names_the_bound_and_consumed_queue(
+        self, tmp_path: Path
+    ) -> None:
+        src = _AMQP + (
+            "const q = await ch.assertQueue('audit');\n"
+            "await ch.bindQueue(q.queue, 'orders', 'order.*');\n"
+            "await ch.consume(q.queue, h);\n"
+        )
+        rows = {
+            (c.contract_id, c.meta["kind"], c.meta.get("queue"))
+            for c in _extract(tmp_path, "w.ts", src)
+        }
+        assert rows == {("topic::orders", "binding", "audit"), ("topic::audit", "queue", None)}
+
+    def test_pika_queue_declare_result_names_the_queue(self, tmp_path: Path) -> None:
+        src = (
+            "result = channel.queue_declare(queue='audit', durable=True)\n"
+            "channel.queue_bind(exchange='orders', queue=result.method.queue)\n"
+        )
+        c = _one(_extract(tmp_path, "w.py", src), "consumer")
+        assert (c.contract_id, c.meta["queue"]) == ("topic::orders", "audit")
+
+    def test_another_member_of_the_result_is_not_the_queue(self, tmp_path: Path) -> None:
+        src = _AMQP + "const q = await ch.assertQueue('audit');\nawait ch.consume(q.other, h);\n"
+        assert _extract(tmp_path, "w.ts", src) == []
+
+
+class TestPythonClassConstants:
+    def test_pika_publish_reads_unspaced_class_constants_through_self(
+        self, tmp_path: Path
+    ) -> None:
+        src = (
+            "import pika\n\nclass Publisher:\n"
+            "    EXCHANGE='robot-shop'\n"
+            "    ROUTING_KEY = 'orders'\n\n"
+            "    def publish(self, msg):\n"
+            "        self._channel.basic_publish(exchange=self.EXCHANGE,\n"
+            "                                    routing_key=self.ROUTING_KEY, body=msg)\n"
+        )
+        c = _one(_extract(tmp_path, "rabbitmq.py", src), "provider")
+        assert (c.contract_id, c.meta["routing_key"]) == ("topic::robot-shop", "orders")
+
+
 class TestNats:
     def test_subscribe_and_publish(self, tmp_path: Path) -> None:
         src = 'nc.Subscribe("events.created", h)\nnc.Publish("events.deleted", d)\n'

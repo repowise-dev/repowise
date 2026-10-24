@@ -86,10 +86,16 @@ def member_fingerprint(repo_path: Path) -> str | None:
     for name in _MEMBER_FILES:
         try:
             st = (repo_path / name).stat()
-            # Size as well as mtime: NTFS can give two quick writes one mtime.
-            parts.append(f"{name}:{st.st_mtime_ns}:{st.st_size}")
         except OSError:
             parts.append(f"{name}:-")
+            continue
+        # An empty WAL holds no writes: a read-only reader (the workspace's
+        # sync-time probe) leaves one behind, which must not read as a write.
+        if name.endswith("-wal") and st.st_size == 0:
+            parts.append(f"{name}:-")
+        else:
+            # Size as well as mtime: NTFS can give two quick writes one mtime.
+            parts.append(f"{name}:{st.st_mtime_ns}:{st.st_size}")
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 

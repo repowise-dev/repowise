@@ -59,7 +59,8 @@ class Claim:
 
     A claim with a ``route`` says instead that a gateway forwards that path
     prefix to *name*; *name* resolves like a ``ref``, through the finished host
-    map and then the repo aliases.
+    map and then the repo aliases, or with ``kind`` :data:`ENV` through the
+    finished env keys (an nginx template's ``${CATALOGUE_HOST}``).
     """
 
     name: str

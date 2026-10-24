@@ -932,6 +932,12 @@ _JAXRS_PATH_RE = re.compile(r"""@Path\s*\(\s*(?:value\s*=\s*)?["'](?P<path>[^"']
 
 _JAXRS_VERB_RE = re.compile(rf"@(?P<verb>{_JAXRS_VERBS})\b")
 
+# Any `@Path(...)`, literal or not.
+_JAXRS_PATH_OPEN_RE = re.compile(r"@Path\s*\(")
+
+# A MicroProfile REST client: a JAX-RS interface whose routes are calls out.
+_MICROPROFILE_CLIENT_RE = re.compile(r"@RegisterRestClient\b")
+
 _JAXRS_TYPE_RE = re.compile(
     r"^[^\S\n]*(?:public|final|abstract|open|internal|sealed|data|\s)*"
     r"(?:class|interface)\s+\w+",
@@ -970,15 +976,20 @@ def jaxrs_class_paths(content: str) -> list[tuple[int, str]]:
 def jaxrs_routes(content: str) -> Iterator[RouteMatch]:
     """Verb-annotated resource methods in *content*.
 
-    ``path`` is the method's own ``@Path`` or ``""``; the class prefix is
-    stitched on by the consumer, the only side that knows how to compose one.
+    ``path`` is the method's own ``@Path``, ``""`` when it has none and
+    ``None`` when it names one this cannot read (a constant); the class prefix
+    is stitched on by the consumer, the only side that knows how to compose one.
     """
     for m in _JAXRS_VERB_RE.finditer(content):
         end = _jaxrs_decl_end(content, m.start())
         sub = _JAXRS_PATH_RE.search(content, m.end(), end)
+        if sub is None and _JAXRS_PATH_OPEN_RE.search(content, m.end(), end):
+            path = None
+        else:
+            path = sub.group("path") if sub else ""
         yield RouteMatch(
             verb=m.group("verb").upper(),
-            path=sub.group("path") if sub else "",
+            path=path,
             receiver=None,
             handler=None,
             offset=m.start(),
@@ -1498,6 +1509,49 @@ _SPRING_ARRAY_REST_RE = re.compile(r'"\s*"|[\s,]')
 _SPRING_VERB_WORD_RE = re.compile(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE)\b")
 
 
+@dataclass(frozen=True)
+class SpringMappingFamily:
+    """One annotation family that maps a Java or Kotlin method to an HTTP route.
+
+    ``method`` matches the method-level annotation with a ``verb`` group, whose
+    ``generic`` spelling names its verbs in ``method = ...`` instead; ``type_``
+    matches the type-level annotation whose path is the prefix; ``path_key``
+    is where a named path argument starts; ``marker`` is a substring every
+    method annotation in the family holds and ``type_marker`` one the type
+    annotation holds, the cheap gates.
+    """
+
+    method: re.Pattern[str]
+    type_: re.Pattern[str]
+    path_key: re.Pattern[str]
+    generic: str
+    marker: str
+    type_marker: str
+
+
+#: Spring MVC / WebFlux: ``@RequestMapping`` and its verb shortcuts.
+SPRING_MVC = SpringMappingFamily(
+    method=_SPRING_MAPPING_RE,
+    type_=_SPRING_CLASS_RE,
+    path_key=_SPRING_PATH_KEY_RE,
+    generic="Request",
+    marker="Mapping",
+    type_marker="@RequestMapping",
+)
+
+#: Spring 6 HTTP interfaces: ``@HttpExchange`` and its verb shortcuts. A client
+#: declaration, so every route it reads is a call out. The path is ``value``
+#: or ``url`` and the verb is a string, ``method = "GET"``.
+SPRING_EXCHANGE = SpringMappingFamily(
+    method=re.compile(r"@(?P<verb>Get|Post|Put|Delete|Patch|Http)Exchange\b"),
+    type_=re.compile(r"@HttpExchange\b"),
+    path_key=re.compile(r"[(,]\s*(?:value|url)\s*=\s*"),
+    generic="Http",
+    marker="Exchange",
+    type_marker="@HttpExchange",
+)
+
+
 def _blank_strings(text: str) -> str:
     """*text* with every string literal's body blanked, offsets kept."""
     return _JVM_STRING_RE.sub(lambda m: '"' + " " * (len(m.group()) - 2) + '"', text)
@@ -1512,7 +1566,7 @@ def _spring_args(content: str, at: int) -> str:
     return content[opened.end() - 1 : len(content) if close == -1 else close + 1]
 
 
-def _spring_paths(args: str) -> tuple[str, ...] | None:
+def _spring_paths(args: str, path_key: re.Pattern[str] = _SPRING_PATH_KEY_RE) -> tuple[str, ...] | None:
     """The paths a mapping's *args* declare.
 
     ``("",)`` when they name none, which Spring serves at the type prefix.
@@ -1520,7 +1574,7 @@ def _spring_paths(args: str) -> tuple[str, ...] | None:
     is a path, just not this file's to know.
     """
     masked = _blank_strings(args)
-    key = _SPRING_PATH_KEY_RE.search(masked) or _SPRING_POSITIONAL_RE.match(masked)
+    key = path_key.search(masked) or _SPRING_POSITIONAL_RE.match(masked)
     if key is None:
         return ("",)
     read = _spring_literals(args, masked, key.end())
@@ -1542,18 +1596,21 @@ def _spring_literals(args: str, masked: str, at: int) -> tuple[tuple[str, ...], 
     return tuple(s.group()[1:-1] for s in _JVM_STRING_RE.finditer(args, m.end(), close)), close + 1
 
 
-def _spring_verbs(verb: str, args: str) -> tuple[str, ...]:
-    """The verbs a mapping serves; ``ALL`` for a ``@RequestMapping`` naming none."""
-    if verb != "Request":
+def _spring_verbs(verb: str, args: str, generic: str = "Request") -> tuple[str, ...]:
+    """The verbs a mapping serves; ``ALL`` for a *generic* mapping naming none."""
+    if verb != generic:
         return (verb.upper(),)
     masked = _blank_strings(args)
     key = _SPRING_METHOD_KEY_RE.search(masked)
     if key is None:
         return ("ALL",)
+    # The value's extent is read with strings blanked, its words from the text:
+    # `RequestMethod.GET` and `"GET"` both name the verb.
     if masked.startswith(("{", "["), key.end()):
-        value = masked[key.end() : _jvm_match_paren(masked, key.end()) + 1]
+        value = args[key.end() : _jvm_match_paren(masked, key.end()) + 1]
     else:
-        value = re.split(r"[,)]", masked[key.end() :], maxsplit=1)[0]
+        end = re.search(r"[,)]", masked[key.end() :])
+        value = args[key.end() : key.end() + end.start()] if end else args[key.end() :]
     return tuple(dict.fromkeys(_SPRING_VERB_WORD_RE.findall(value))) or ("ALL",)
 
 
@@ -1581,19 +1638,19 @@ def _spring_type_bodies(
 
 
 def spring_class_paths(
-    content: str, annotations: set[int] | None = None
+    content: str, annotations: set[int] | None = None, family: SpringMappingFamily = SPRING_MVC
 ) -> list[tuple[int, int, tuple[str, ...] | None]]:
-    """``(body start, body end, prefixes)`` per type-level ``@RequestMapping``, ascending.
+    """``(body start, body end, prefixes)`` per type-level mapping of *family*, ascending.
 
     ``prefixes`` is ``None`` when the mapping names a path this cannot read; the
     routes under it are refused rather than served at their bare sub-path.
     """
-    if "@RequestMapping" not in content:
+    if family.type_marker not in content:
         return []
     code = micronaut_annotations(content) if annotations is None else annotations
     out: list[tuple[int, int, tuple[str, ...] | None]] = []
-    for name_end, start, end in _spring_type_bodies(content, code, _SPRING_CLASS_RE):
-        paths = _spring_paths(_spring_args(content, name_end))
+    for name_end, start, end in _spring_type_bodies(content, code, family.type_):
+        paths = _spring_paths(_spring_args(content, name_end), family.path_key)
         out.append((start, end, None if paths is None else tuple(p.rstrip("/") for p in paths)))
     return out
 
@@ -1609,38 +1666,96 @@ def spring_route_prefixes(
     return found
 
 
-def _spring_method_mappings(content: str, annotations: set[int]) -> Iterator[re.Match[str]]:
-    """Mapping annotations written as code on a method outside any Feign client."""
+def spring_feign_clients(
+    content: str, annotations: set[int] | None = None
+) -> list[tuple[int, int, str]]:
+    """``(body start, body end, annotation arguments)`` per ``@FeignClient`` type, ascending.
+
+    The arguments are the annotation's parenthesised source text, ``""`` when
+    it has none; the client's ``name``, ``url`` and ``path`` sit in it.
+    """
+    return _client_types(content, annotations, _SPRING_CLIENT_RE, "@FeignClient")
+
+
+def microprofile_rest_clients(
+    content: str, annotations: set[int] | None = None
+) -> list[tuple[int, int, str, str | None]]:
+    """``(body start, body end, annotation arguments, prefix)`` per ``@RegisterRestClient`` type.
+
+    A MicroProfile client is a JAX-RS interface: its verb annotations are calls
+    out, not routes served. ``prefix`` is the type's own ``@Path``, ``""`` when
+    it has none and ``None`` when it names one this cannot read.
+    """
+    clients = _client_types(content, annotations, _MICROPROFILE_CLIENT_RE, "@RegisterRestClient")
+    if not clients:
+        return []
+    code = micronaut_annotations(content) if annotations is None else annotations
+    # A type-level @Path is the one whose declaration ends at the type's body.
+    paths: dict[int, str | None] = {}
+    for m in _JAXRS_PATH_OPEN_RE.finditer(content):
+        if m.start() in code:
+            literal = _JAXRS_PATH_RE.match(content, m.start())
+            paths[_jaxrs_decl_end(content, m.start())] = literal.group("path") if literal else None
+    return [(start, end, args, paths.get(start, "")) for start, end, args in clients]
+
+
+def _client_types(
+    content: str, annotations: set[int] | None, pattern: re.Pattern[str], marker: str
+) -> list[tuple[int, int, str]]:
+    """``(body start, body end, annotation arguments)`` per type annotated *pattern*."""
+    if marker not in content:
+        return []
+    code = micronaut_annotations(content) if annotations is None else annotations
+    return [
+        (start, end, _spring_args(content, name_end))
+        for name_end, start, end in _spring_type_bodies(content, code, pattern)
+    ]
+
+
+def _spring_method_mappings(
+    content: str, annotations: set[int], family: SpringMappingFamily, feign: bool
+) -> Iterator[re.Match[str]]:
+    """Method mapping annotations written as code, inside Feign clients or outside them."""
     clients = (
-        [(s, e) for _, s, e in _spring_type_bodies(content, annotations, _SPRING_CLIENT_RE)]
-        if "@FeignClient" in content
+        [(s, e) for s, e, _ in spring_feign_clients(content, annotations)]
+        if family is SPRING_MVC
         else []
     )
-    for m in _SPRING_MAPPING_RE.finditer(content):
-        if m.start() not in annotations or any(s < m.start() < e for s, e in clients):
+    for m in family.method.finditer(content):
+        if m.start() not in annotations:
+            continue
+        if any(s < m.start() < e for s, e in clients) != feign:
             continue
         # A type's own mapping is its prefix, read by spring_class_paths.
         if not _JVM_TYPE_RE.search(content, m.end(), _jaxrs_decl_end(content, m.start())):
             yield m
 
 
-def spring_routes(content: str, annotations: set[int] | None = None) -> Iterator[RouteMatch]:
-    """Method-level mappings in *content*, one per verb and path.
+def spring_routes(
+    content: str,
+    annotations: set[int] | None = None,
+    family: SpringMappingFamily = SPRING_MVC,
+    *,
+    feign: bool = False,
+) -> Iterator[RouteMatch]:
+    """Method-level mappings of *family* in *content*, one per verb and path.
 
     ``path`` is the method's own sub-path, ``""`` when it names none and
     ``None`` when it names one this cannot read; the type prefix is the
     consumer's to stitch, from :func:`spring_class_paths`. The handler is the
     method the annotation sits on, which every Spring route has, so ``offset``
-    is all a consumer needs to find it. Mappings inside a ``@FeignClient`` type
-    are calls out and are skipped.
+    is all a consumer needs to find it.
+
+    Spring MVC mappings inside a ``@FeignClient`` type are calls out: they are
+    skipped by default and are the only ones read with *feign*.
     """
-    if "Mapping" not in content:
+    if family.marker not in content:
         return
     code = micronaut_annotations(content) if annotations is None else annotations
-    for m in _spring_method_mappings(content, code):
+    for m in _spring_method_mappings(content, code, family, feign):
         args = _spring_args(content, m.end())
-        paths: tuple[str | None, ...] = _spring_paths(args) or (None,)
-        for verb in _spring_verbs(m.group("verb"), args):
+        paths: tuple[str | None, ...] = _spring_paths(args, family.path_key) or (None,)
+        for verb in _spring_verbs(m.group("verb"), args, family.generic):
             for path in paths:
                 yield RouteMatch(
                     verb=verb,
