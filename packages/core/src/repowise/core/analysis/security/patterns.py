@@ -312,6 +312,7 @@ _KEYWORD_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_sec
 # ``git_url_credentials`` ranks lowest so it only adds findings: a keyword finding
 # that kept its kind keeps its baseline fingerprint.
 _SECRET_SPECIFICITY: dict[str, int] = {
+    "public_env_secret": -1,
     "git_url_credentials": 0,
     "hardcoded_password": 1,
     "hardcoded_secret": 1,
