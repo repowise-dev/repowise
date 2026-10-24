@@ -612,6 +612,7 @@ def _get_head_short_sha(repo_path: Path) -> str:
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=5,
         )

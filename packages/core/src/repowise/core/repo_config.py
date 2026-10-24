@@ -473,6 +473,7 @@ def _git_ignores(repo_path: Path | str, pattern: str) -> bool:
             ["git", "check-ignore", "-v", "--no-index", pattern],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=10,
         )
