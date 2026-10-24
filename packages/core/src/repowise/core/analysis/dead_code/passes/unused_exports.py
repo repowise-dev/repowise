@@ -253,6 +253,8 @@ class UnusedExportPass:
             return False
         if _is_declaration_only(sym):
             return False
+        if sym.get("generated"):
+            return False
         # Dotted names are namespace path fragments, not exports.
         if "." in sym_name:
             return False

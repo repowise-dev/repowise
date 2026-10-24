@@ -147,3 +147,75 @@ class TestJvmCodegen:
         assert "PlainImpl" not in names, names
         assert "AutoValue_Plain" not in names, names
         assert "ImmutablePlain" not in names, names
+
+    def test_codegen_stubs_carry_generated_flag(self, tmp_path: Path) -> None:
+        src = (
+            "import org.immutables.value.Value;\n"
+            "import org.mapstruct.Mapper;\n"
+            "import com.google.auto.value.AutoValue;\n"
+            "@Value.Immutable public abstract class Order {}\n"
+            "@Mapper public interface OrderMapper { String map(String s); }\n"
+            "@AutoValue public abstract class OrderBox {}\n"
+        )
+        f = tmp_path / "Order.java"
+        f.write_text(src)
+        pf = parse_file(_fi("Order.java", f, "java"), src.encode("utf-8"))
+        by_name = {s.name: s for s in pf.symbols}
+        assert by_name["OrderMapperImpl"].generated is True
+        assert by_name["AutoValue_OrderBox"].generated is True
+        assert by_name["ImmutableOrder"].generated is True
+        assert by_name["OrderMapper"].generated is False
+        assert by_name["OrderBox"].generated is False
+        assert by_name["Order"].generated is False
+
+        from repowise.core.ingestion.graph.builder import GraphBuilder
+
+        gb = GraphBuilder(repo_path=tmp_path)
+        gb.add_file(pf)
+        assert gb._graph.nodes["Order.java::OrderMapperImpl"]["generated"] is True
+        assert gb._graph.nodes["Order.java::OrderMapper"]["generated"] is False
+
+    def test_lombok_and_sfc_synthetic_symbols_not_generated(self, tmp_path: Path) -> None:
+        lombok_src = (
+            "import lombok.Getter;\n"
+            "@Getter public class UserDto { private String name; }\n"
+        )
+        lombok_f = tmp_path / "UserDto.java"
+        lombok_f.write_text(lombok_src)
+        lombok_pf = parse_file(_fi("UserDto.java", lombok_f, "java"), lombok_src.encode("utf-8"))
+        lombok_by_name = {s.name: s for s in lombok_pf.symbols}
+        assert "getName" in lombok_by_name
+        assert lombok_by_name["getName"].generated is False
+
+        vue_src = "<template><button>Click</button></template>\n<script setup>\nconst x = 1;\n</script>\n"
+        vue_f = tmp_path / "Button.vue"
+        vue_f.write_text(vue_src)
+        vue_pf = parse_file(_fi("Button.vue", vue_f, "vue"), vue_src.encode("utf-8"))
+        vue_by_name = {s.name: s for s in vue_pf.symbols}
+        assert "Button" in vue_by_name
+        assert vue_by_name["Button"].generated is False
+
+    def test_lombok_builder_class_is_generated_while_members_are_not(
+        self, tmp_path: Path
+    ) -> None:
+        src = (
+            "import lombok.Builder;\n"
+            "import lombok.experimental.SuperBuilder;\n"
+            "@Builder public class ListedComment { String comment; }\n"
+            "@SuperBuilder public class BaseComment { String id; }\n"
+        )
+        f = tmp_path / "ListedComment.java"
+        f.write_text(src)
+        pf = parse_file(_fi("ListedComment.java", f, "java"), src.encode("utf-8"))
+        by_id = {(s.parent_name, s.name): s for s in pf.symbols}
+        assert by_id[("ListedComment", "ListedCommentBuilder")].generated is True
+        assert by_id[("BaseComment", "BaseCommentBuilder")].generated is True
+        assert by_id[(None, "ListedComment")].generated is False
+        assert by_id[(None, "BaseComment")].generated is False
+        assert by_id[("ListedComment", "builder")].generated is False
+        assert by_id[("ListedCommentBuilder", "comment")].generated is False
+        assert by_id[("ListedCommentBuilder", "build")].generated is False
+        assert by_id[("BaseComment", "builder")].generated is False
+        assert by_id[("BaseCommentBuilder", "id")].generated is False
+        assert by_id[("BaseCommentBuilder", "build")].generated is False
+
