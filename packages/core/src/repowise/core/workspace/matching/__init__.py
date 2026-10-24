@@ -46,6 +46,7 @@ class TypeMatcher:
 MATCHERS: dict[str, TypeMatcher] = {
     "http": TypeMatcher(
         deferred=http.is_deferred,
+        accepts=http.accepts,
         passes=(
             http.gateway_pass,
             http.base_resolved_pass,

@@ -118,7 +118,10 @@ builds. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path (`unique_path`) and a lower-confidence **candidate** when the target
-is ambiguous (`ambiguous_path`).
+is ambiguous (`ambiguous_path`). A generic operational path (`/health`, `/healthz`, `/ready`,
+`/metrics`, `/status`, `/version`, `/actuator/info`, the root) names no service, so it links
+only to the repo its host or base resolves to or, with neither, to a server in the caller's
+own repo; it never links to another repo by path alone.
 
 ## Service names
 
