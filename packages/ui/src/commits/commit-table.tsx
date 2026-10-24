@@ -11,6 +11,11 @@ import { cn } from "../lib/cn";
 import type { Commit } from "@repowise-dev/types/git";
 import type { HealthDeltaLabels } from "./health-delta-mark";
 import { commitColumns } from "./commit-columns";
+import {
+  COMMITS_FILTER_LABEL,
+  HIGH_SIZE_AND_SPREAD_LABEL,
+  SIZE_AND_SPREAD_LABEL,
+} from "./risk-copy";
 
 export type CommitSort = "risk" | "date";
 export type CommitAuthorship = "all" | "human" | "agent" | "unknown";
@@ -29,11 +34,11 @@ export function CommitKindControl({
 }) {
   return (
     <Segmented<CommitKind>
-      label="Review priority and fixes"
+      label={COMMITS_FILTER_LABEL}
       value={value}
       options={[
         { value: "all", label: "All", count: counts?.all.toLocaleString() },
-        { value: "high", label: "High priority", count: counts?.high.toLocaleString() },
+        { value: "high", label: HIGH_SIZE_AND_SPREAD_LABEL, count: counts?.high.toLocaleString() },
         { value: "fixes", label: "Fixes", count: counts?.fixes.toLocaleString() },
       ]}
       onChange={onChange}
@@ -55,7 +60,7 @@ export function CommitSortControl({
       value={value}
       options={[
         { value: "date", label: "Most recent" },
-        { value: "risk", label: "Review priority" },
+        { value: "risk", label: SIZE_AND_SPREAD_LABEL },
       ]}
       onChange={onChange}
     />

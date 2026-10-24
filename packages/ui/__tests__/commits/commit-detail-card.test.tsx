@@ -93,7 +93,7 @@ describe("commit detail card", () => {
     render(<CommitDetailCard commit={commit} fixPercentile={89.4} />);
 
     expect(screen.getByText(/heavy fix record/)).toBeInTheDocument();
-    expect(screen.getByText(/89th percentile/)).toBeInTheDocument();
+    expect(screen.queryByText(/89th percentile/)).toBeNull();
   });
 
   it("stays silent about the disagreement when the two rankings agree", () => {

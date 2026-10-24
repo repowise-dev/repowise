@@ -128,7 +128,7 @@ In addition to standard MCP tools, the VS Code extension registers **6 native La
 | `repowise_searchCodebase` | `query` (string), `limit` (optional number) | Hybrid semantic + full-text search over indexed wiki pages. Returns ranked snippets and file targets. |
 | `repowise_getFileHealth` | `filePath` (string) | Defect, maintainability, and performance scores for a file, plus active biomarker findings. |
 | `repowise_getRefactoringPlans` | `filePath` (string) | Refactoring plans targeting symbols in the file, including effort bucket, confidence, and blast radius. |
-| `repowise_getBranchRisk` | `base` (optional string) | Scores uncommitted changes / working HEAD against the base branch, returning risk percentile, review priority, and risk drivers. |
+| `repowise_getBranchRisk` | `base` (optional string) | Scores uncommitted changes / working HEAD against the base branch, returning size-and-spread percentile and risk drivers. |
 | `repowise_getSymbolInfo` | `filePath` (string), `symbolName` (optional string) | Line bounds, primary owner, callers, callees, and governing ADR decisions for indexed symbols. |
 | `repowise_getFileDocs` | `filePath` (string) | Reads the generated Repowise wiki page content for a specified file. |
 
