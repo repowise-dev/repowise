@@ -59,8 +59,8 @@ export function edgeKindStyle(kind: string): SystemEdgeKindStyle {
 /**
  * A link a gateway's route config made (`gateway_route` strategy). It keeps
  * its transport kind and its match dash: routing is how the link was found,
- * not a third line style, so it is named in words on hover, in the legend and
- * in the drawer instead.
+ * not a third line style, so it is named in words on hover and in the legend
+ * instead.
  */
 export function isGatewayRouted(edge: Pick<SystemEdge, "strategy">): boolean {
   return edge.strategy === "gateway_route";
