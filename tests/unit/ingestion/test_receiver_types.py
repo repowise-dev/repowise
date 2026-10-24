@@ -6,6 +6,8 @@ is a wrong edge the resolver's validator has to catch.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from repowise.core.ingestion.languages.receiver_types import (
@@ -347,7 +349,6 @@ class TestKotlinRefusals:
         source = "class C {\n    fun f() {\n        val local: Logger = make()\n    }\n}"
         assert "local" not in fields(source, "kotlin", [(2, 4)])
 
-
     def test_a_chained_construction_types_nothing(self) -> None:
         """``val x = Builder().build()`` makes ``x`` whatever ``build()``
         returns, so typing it as a ``Builder`` is a wrong answer rather than a
@@ -431,7 +432,6 @@ class TestKotlinFieldScope:
     def test_an_uninitialised_property_is_a_field(self) -> None:
         source = "abstract class Repo {\n    abstract val api: Api\n}"
         assert fields(source, "kotlin", [])["api"] == "Api"
-
 
 
 class TestSwiftShapes:
@@ -681,9 +681,9 @@ class TestGoShapes:
 def go_fields(source: str) -> dict[str, str | None]:
     """The fields of one struct spanning the whole text; Go methods sit outside it."""
     lines = source.count("\n") + 1
-    return types_by_class(
-        scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go"
-    ).get("f.go::C", {})
+    return types_by_class(scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go").get(
+        "f.go::C", {}
+    )
 
 
 class TestGoFields:
@@ -883,9 +883,7 @@ class TestKotlinSwiftDartCallAssignments:
             ("while let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
         ],
     )
-    def test_swift_optional_binding(
-        self, statement: str, expected: CallAssignment
-    ) -> None:
+    def test_swift_optional_binding(self, statement: str, expected: CallAssignment) -> None:
         body = f"f() {{\n  {statement}\n}}"
         assert scan_call_assignments(body, "swift") == (expected,)
 
@@ -939,7 +937,9 @@ class TestClassScope:
         assert fields(source, "java", [])["factory"] == "NodeFactory"
 
     def test_an_inner_class_field_answers_for_the_inner_class(self) -> None:
-        source = "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        source = (
+            "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        )
         by_class = types_by_class(
             scan_declarations(source, "java"),
             {"f.java::C": (1, 6), "f.java::C::D": (3, 5)},
@@ -1153,3 +1153,95 @@ class TestRustRefusals:
     def test_rust_is_not_a_field_language(self) -> None:
         """A field is read through ``self.``, a dotted receiver not walked yet."""
         assert "rust" not in IMPLICIT_FIELD_LANGUAGES
+
+
+def test_kotlin_plain_constructor_parameter_used_in_property_initializer(tmp_path: Path) -> None:
+    from repowise.core.ingestion.call_resolver import CallResolver
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import parse_file
+
+    source = """\
+package app
+
+class UserDataRepository {
+    fun userData(): String = ""
+}
+
+class PlainParamViewModel(
+    repository: UserDataRepository,
+) {
+    val data = repository.userData()
+
+    class Nested(other: UserDataRepository) {
+        val nestedData = repository.userData()
+    }
+}
+"""
+    path = tmp_path / "App.kt"
+    path.write_text(source, encoding="utf-8")
+    info = FileInfo(
+        path="App.kt",
+        abs_path=str(path),
+        language="kotlin",
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=None,
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    parsed = {"App.kt": parse_file(info, source.encode("utf-8"))}
+    resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
+    calls_by_caller = {
+        rc.caller_id: rc.callee_id for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
+    }
+    assert (
+        calls_by_caller.get("App.kt::PlainParamViewModel::data")
+        == "App.kt::UserDataRepository::userData"
+    )
+    # Nested class property does NOT see outer constructor parameter
+    assert "App.kt::Nested::nestedData" not in calls_by_caller
+
+
+def test_kotlin_plain_constructor_parameter_after_default_lambda(tmp_path: Path) -> None:
+    """A plain constructor parameter following a default lambda expression is typed for property initializers."""
+    from repowise.core.ingestion.call_resolver import CallResolver
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import parse_file
+
+    source = """
+class UserDataRepository {
+    fun userData(): String = "data"
+}
+
+class PlainParamLambdaViewModel(
+    callback: () -> Unit = {},
+    repository: UserDataRepository,
+) {
+    val data = repository.userData()
+}
+"""
+    path = tmp_path / "App.kt"
+    path.write_text(source, encoding="utf-8")
+    info = FileInfo(
+        path="App.kt",
+        abs_path=str(path),
+        language="kotlin",
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=None,
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    parsed = {"App.kt": parse_file(info, source.encode("utf-8"))}
+    resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
+    calls_by_caller = {
+        rc.caller_id: rc.callee_id for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)
+    }
+    assert (
+        calls_by_caller.get("App.kt::PlainParamLambdaViewModel::data")
+        == "App.kt::UserDataRepository::userData"
+    )
