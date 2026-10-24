@@ -815,6 +815,13 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
 
 - `monkeypatch.setattr(mod.Cls, "name", ...)` on an imported module or its
   class in an autouse fixture is left to the import check.
+- So is a bare cache reset there (`clear_*cache*()`, `reset_*cache*()`,
+  `invalidate_*cache*()`, no arguments, result unused). Ceiling: the name is
+  trusted, so a "reset" that also reconfigures shared state reaches tests
+  without their own import of it only through the import check.
+- `request.getfixturevalue(name)` is read when `name` is a test parameter that
+  one `parametrize` supplies from a literal list of names, or from a module
+  constant bound once to one.
 - Reading an imported module's literal constant, or calling its function that
   uses nothing it imports beyond standard modules that cannot load code by name
   (emptying a `functools` cache or standard container counts), reaches only a
