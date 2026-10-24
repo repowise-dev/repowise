@@ -66,7 +66,7 @@ describe("server-sent families", () => {
   });
 
   it("falls back to the registry for a family it does not know", () => {
-    const g = graphOf([{ ...edge("a", "b", "http"), family: "telepathy" }]);
+    const g = graphOf([{ ...edge("a", "b", "http"), family: "telepathy" as never }]);
     expect(servicesBetween(g, "a", "b")!.aToB?.links).toBe(1);
   });
 });

@@ -16,12 +16,10 @@ export type LevelsNode = Pick<SystemNode, "id" | "name" | "repo"> & { group?: st
 
 /**
  * An edge as the levels model reads it. `source` depends on / calls `target`.
- * `family` is the server's filter family when the payload carries it; the
- * kind registry answers for payloads that do not.
+ * `family` is core's filter family when the payload carries it; the kind
+ * registry answers for payloads that do not.
  */
-export type LevelsEdge = Pick<SystemEdge, "id" | "source" | "target" | "kind" | "weight" | "strategy"> & {
-  family?: string | null;
-};
+export type LevelsEdge = Pick<SystemEdge, "id" | "source" | "target" | "kind" | "weight" | "strategy" | "family">;
 
 /** Summary of one group, when the graph carries one. Only `id` is required. */
 export interface LevelsGroupMeta {
