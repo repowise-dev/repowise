@@ -63,7 +63,11 @@ class Item:
     """
 
     group: Group
-    path: Path
+    #: Usually a filesystem path. The configured-database row carries a URL
+    #: locator such as ``db.example:5432/wiki`` instead, and must not be
+    #: wrapped in ``Path``: on Windows that renders the separator as ``\`` and
+    #: prints a URL with a backslash in it (#4347).
+    path: Path | str
     #: Short label for the row, e.g. "Claude Code (user)" or "index".
     label: str
     exists: bool
@@ -467,7 +471,7 @@ def _store_item() -> Item | None:
         pass
     return Item(
         group=Group.INDEX,
-        path=Path(locator),
+        path=locator,
         label=f"index in the configured {dialect} database",
         exists=True,
         blocked=(

@@ -589,10 +589,28 @@ def test_a_configured_database_is_listed_as_kept_with_a_reason(repo: Path, monke
     rows = _store_rows(payload["plan"]["items"])
     assert len(rows) == 1
     assert rows[0]["group"] == "index"
-    assert "db.example:5432/wiki" in rows[0]["path"]
+    assert rows[0]["path"] == "db.example:5432/wiki"
     assert "shared" in rows[0]["blocked"] and "other repositories" in rows[0]["blocked"]
     assert "s3cret" not in result.output
     assert "alice" not in result.output
+
+
+def test_the_configured_database_locator_is_not_a_filesystem_path(monkeypatch) -> None:
+    """The locator is a URL, so it must not be wrapped in ``Path``.
+
+    ``Path("db.example:5432/wiki")`` renders as ``db.example:5432\\wiki`` on
+    Windows, which is the bug in #4347, but on POSIX it renders the same as the
+    string. Asserting the type is what keeps the regression test red on every
+    platform rather than only on Windows.
+    """
+    from repowise.cli.uninstall.inventory import _store_item
+
+    monkeypatch.setenv("REPOWISE_DB_URL", "postgresql://alice:s3cret@db.example:5432/wiki")
+    item = _store_item()
+
+    assert item is not None
+    assert isinstance(item.path, str)
+    assert item.path == "db.example:5432/wiki"
 
 
 def test_a_real_run_keeps_the_database_and_exits_with_leftovers(

@@ -38,7 +38,9 @@ class Result:
     """What happened to one path."""
 
     group: Group
-    path: Path
+    #: Carried over from the item: a ``Path`` for files, and the URL locator
+    #: string for the configured-database row. See ``inventory.Item.path``.
+    path: Path | str
     action: FileAction
     label: str
     reason: str | None = None
@@ -148,7 +150,13 @@ def _remove_agents(repo_path: Path, plan: Plan) -> tuple[list[Result], list[str]
 def _remove_repo_files(repo_path: Path, plan: Plan) -> list[Result]:
     from .generated_files import generated_blocks, remove_block
 
-    by_path = {item.path: item for item in plan.for_groups(frozenset({Group.REPO_FILES}))}
+    # These items are files on disk, so their paths are always ``Path``. The
+    # one item whose path is a URL locator is blocked and never reaches here.
+    by_path = {
+        item.path: item
+        for item in plan.for_groups(frozenset({Group.REPO_FILES}))
+        if isinstance(item.path, Path)
+    }
     block_paths = {block.path(repo_path) for block in generated_blocks()}
     results: list[Result] = []
     for block in generated_blocks():
@@ -257,11 +265,15 @@ def _remove_tree(item: Item) -> Result:
             label=item.label,
             reason=item.blocked,
         )
-    if not item.path.exists():
+    # Everything still reachable here is a real path: the configured-database
+    # row is blocked and returned above, so its URL locator never gets treated
+    # as a filesystem path.
+    path = Path(item.path)
+    if not path.exists():
         return Result(
             group=item.group, path=item.path, action=FileAction.NOT_FOUND, label=item.label
         )
-    if _is_link(item.path):
+    if _is_link(path):
         return Result(
             group=item.group,
             path=item.path,
@@ -271,7 +283,7 @@ def _remove_tree(item: Item) -> Result:
             "outside the tree this command enumerated",
         )
     try:
-        shutil.rmtree(item.path)
+        shutil.rmtree(path)
     except OSError as exc:
         return Result(
             group=item.group,
@@ -284,7 +296,7 @@ def _remove_tree(item: Item) -> Result:
     # can return having left files behind on Windows when something holds a
     # handle, and reporting REMOVED over a directory that is still there is the
     # false success this track has already shipped once.
-    if item.path.exists():
+    if path.exists():
         return Result(
             group=item.group,
             path=item.path,
