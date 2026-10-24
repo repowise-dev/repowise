@@ -64,6 +64,7 @@ def _workspace_update(
     no_cost_tracking: bool = False,
     progress: str = "rich",
     include_working_tree: bool = False,
+    degraded: list[str] | None = None,
 ) -> None:
     """Update stale repos in a workspace.
 
@@ -149,6 +150,7 @@ def _workspace_update(
             no_cost_tracking=no_cost_tracking,
             progress=progress,
             include_working_tree=include_working_tree,
+            degraded=degraded,
         )
         return
     _workspace_index_only_update(
@@ -159,6 +161,7 @@ def _workspace_update(
         started_at=started_at,
         agents_md=agents_md,
         include_working_tree=include_working_tree,
+        degraded=degraded,
     )
 
 
@@ -330,6 +333,7 @@ def _workspace_index_only_update(
     started_at: datetime,
     agents_md: bool | None,
     include_working_tree: bool,
+    degraded: list[str] | None = None,
 ) -> None:
     """Update every stale repo on the fast parallel index-only path."""
     from repowise.core.workspace import update_workspace
@@ -363,6 +367,10 @@ def _workspace_index_only_update(
 
     updated = sum(1 for r in results if r.updated)
     errors = sum(1 for r in results if r.error)
+    if degraded is not None:
+        for r in results:
+            if getattr(r, "error", None):
+                degraded.append(f"{r.alias}: {r.error}")
     skipped = sum(1 for r in results if r.skipped_reason)
     total_files = sum(r.file_count for r in results if r.updated)
     total_symbols = sum(r.symbol_count for r in results if r.updated)
@@ -492,6 +500,7 @@ def _workspace_docs_update(
     no_cost_tracking: bool,
     progress: str,
     include_working_tree: bool = False,
+    degraded: list[str] | None = None,
 ) -> None:
     """Update a workspace where at least one stale repo wants docs.
 
@@ -515,6 +524,10 @@ def _workspace_docs_update(
     core_results = _update_core_members(
         ws_root, ws_config, repo_filter, docs_aliases, include_working_tree=include_working_tree
     )
+    if degraded is not None:
+        for r in core_results:
+            if getattr(r, "error", None):
+                degraded.append(f"{r.alias}: {r.error}")
     changed_aliases: list[str] = [r.alias for r in core_results if r.updated]
     docs = _update_docs_members(
         ws_root,
@@ -543,6 +556,7 @@ def _workspace_docs_update(
             skip_cross_repo_hooks=True,
             include_working_tree=include_working_tree,
         ),
+        degraded=degraded,
     )
     changed_aliases.extend(docs.changed)
 
@@ -622,7 +636,11 @@ def _update_core_members(
 
 
 def _update_docs_members(
-    ws_root: Path, ws_config: Any, docs_aliases: set[str], update_kwargs: dict[str, Any]
+    ws_root: Path,
+    ws_config: Any,
+    docs_aliases: set[str],
+    update_kwargs: dict[str, Any],
+    degraded: list[str] | None = None,
 ) -> _DocsTally:
     """Docs members, one at a time, through the full single-repo update."""
     from .command import UpdateOutcome, run_update
@@ -634,9 +652,11 @@ def _update_docs_members(
         repo_path = (ws_root / entry.path).resolve()
         console.print(f"  Updating [bold]{entry.alias}[/bold] (docs)...")
         try:
-            outcome = run_update(path=str(repo_path), **update_kwargs)
+            outcome = run_update(path=str(repo_path), degraded_out=degraded, **update_kwargs)
         except Exception as exc:
             tally.failed += 1
+            if degraded is not None:
+                degraded.append(f"{entry.alias}: {exc}")
             console.print(f"    [red]✗ {entry.alias}: {exc}[/red]")
             continue
         # A deferred run regenerated nothing, and run_update already printed
