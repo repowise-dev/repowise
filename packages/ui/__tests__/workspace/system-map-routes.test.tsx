@@ -297,6 +297,13 @@ describe("focus level", () => {
     expect(await screen.findByText("Called by · 1")).toBeInTheDocument();
     expect(screen.queryByText(/Depends on/)).toBeNull(); // the package link is in a hidden family
     expect(await screen.findByText("3 · HTTP 2, Event 1")).toBeInTheDocument();
+    // Columns read left to right, so every focus card joins its connectors at its sides.
+    for (const id of ["callers:webapp", "ordering"]) {
+      const card = container.querySelector(`.react-flow__node[data-id="${id}"]`)!;
+      expect(card.querySelector(".react-flow__handle-left")).not.toBeNull();
+      expect(card.querySelector(".react-flow__handle-right")).not.toBeNull();
+      expect(card.querySelector(".react-flow__handle-top")).toBeNull();
+    }
     await act(async () => {
       fireEvent.keyDown(container.querySelector(".react-flow")!, { key: "Escape" });
     });
@@ -311,6 +318,8 @@ describe("focus level", () => {
       if (!el) throw new Error("not drawn yet");
       return el;
     });
+    // Off the focus level cards keep their top and bottom handles.
+    expect(card.querySelector(".react-flow__handle-top")).not.toBeNull();
     fireEvent.doubleClick(card);
     expect(onViewChange).toHaveBeenCalledWith(expect.objectContaining({ focus: "webapp" }));
   });
