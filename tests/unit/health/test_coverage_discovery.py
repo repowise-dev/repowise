@@ -631,6 +631,87 @@ def test_ignore_drops_per_test_records() -> None:
     assert res.ignored == 1
 
 
+def test_coverage_dynamic_context_dotted_test_id_resolves_to_test_file() -> None:
+    from repowise.core.analysis.health.coverage import resolve_test_reports
+    from repowise.core.analysis.health.coverage.model import (
+        ContextCoverageReport,
+        TestCoverage,
+    )
+
+    report = ContextCoverageReport(
+        source_format="coverage.py",
+        has_contexts=True,
+        records=[
+            TestCoverage("tests.test_calc.test_add", "pkg/calc.py", [1]),
+            TestCoverage("tests.test_calc.TestCalc.test_add", "pkg/calc.py", [1]),
+            TestCoverage("tests.test_other.test_fn", "pkg/calc.py", [1]),
+            TestCoverage("tests.test_ambig.test_foo", "pkg/calc.py", [1]),
+            TestCoverage("tests/test_calc.py::test_add|run", "pkg/calc.py", [1]),
+        ],
+    )
+    keys = {
+        "pkg/calc.py",
+        "src/tests/test_calc.py",
+        "root_a/tests/test_ambig.py",
+        "root_b/tests/test_ambig.py",
+    }
+    res = resolve_test_reports(report, keys)
+    # tests.test_calc.test_add -> src/tests/test_calc.py (via suffix match)
+    assert res.records[0].test_file == "src/tests/test_calc.py"
+    # tests.test_calc.TestCalc.test_add -> src/tests/test_calc.py
+    assert res.records[1].test_file == "src/tests/test_calc.py"
+    # tests.test_other.test_fn -> no match -> None
+    assert res.records[2].test_file is None
+    # tests.test_ambig.test_foo -> ambiguous candidates -> None
+    assert res.records[3].test_file is None
+    # pytest-cov path format unchanged
+    assert res.records[4].test_file == "src/tests/test_calc.py"
+    assert res.test_files_resolved == 3
+
+
+def test_coverage_dynamic_context_non_python_bare_label_stays_none() -> None:
+    from repowise.core.analysis.health.coverage import resolve_test_reports
+    from repowise.core.analysis.health.coverage.model import (
+        ContextCoverageReport,
+        TestCoverage,
+    )
+
+    report = ContextCoverageReport(
+        source_format="lcov",
+        has_contexts=True,
+        records=[
+            TestCoverage("unit.suite.test_x", "src/a.ts", [1]),
+        ],
+    )
+    keys = {"src/a.ts", "unit/suite.ts"}
+    res = resolve_test_reports(report, keys)
+    assert res.records[0].test_file is None
+    assert res.test_files_resolved == 0
+
+
+def test_coverage_dynamic_context_does_not_fall_back_to_single_part_source_file() -> None:
+    from repowise.core.analysis.health.coverage import resolve_test_reports
+    from repowise.core.analysis.health.coverage.model import (
+        ContextCoverageReport,
+        TestCoverage,
+    )
+
+    report = ContextCoverageReport(
+        source_format="coverage.py",
+        has_contexts=True,
+        records=[
+            TestCoverage("pkg.calc.test_add", "pkg/feature.py", [1]),
+        ],
+    )
+    # Repo contains pkg.py (a source file), but no pkg/calc.py.
+    # Candidate search must stop at k >= 2 and not fall back to pkg.py.
+    keys = {"pkg/feature.py", "pkg.py"}
+    res = resolve_test_reports(report, keys)
+    assert res.records[0].test_file is None
+    assert res.test_files_resolved == 0
+
+
+
 def _go_repo(tmp_path: Path) -> Path:
     backend = tmp_path / "backend"
     (backend / "pkg").mkdir(parents=True)
