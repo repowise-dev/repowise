@@ -596,14 +596,8 @@ class CrossRepoEnricher:
                     _log.debug("Graph evidence unavailable", exc_info=True)
         return self._evidence_brief
 
-    def http_call_split(self, repo: str | None = None) -> dict | None:
-        """HTTP calls read, and of those not linked how many are served in-service.
-
-        ``not_linked`` excludes in-service calls, which ``in_service`` counts, as
-        the CLI diagnostics headline does. ``linked`` is workspace wide, so only
-        an unscoped call carries it. ``None`` without diagnostics, or for a
-        *repo* with no HTTP call.
-        """
+    def _diagnostics_model(self) -> Any:
+        """The graph's diagnostics as :class:`ExtractionDiagnostics`, parsed once; else ``None``."""
         if self._parsed_diagnostics is _ABSENT:
             self._parsed_diagnostics = None
             if raw := self.get_diagnostics():
@@ -612,8 +606,19 @@ class CrossRepoEnricher:
                 try:
                     self._parsed_diagnostics = ExtractionDiagnostics.from_dict(raw)
                 except Exception:
+                    # An additive field: unreadable diagnostics drop only the counts.
                     _log.debug("Extraction diagnostics unreadable", exc_info=True)
-        diag = self._parsed_diagnostics
+        return self._parsed_diagnostics
+
+    def http_call_split(self, repo: str | None = None) -> dict | None:
+        """HTTP calls read, and of those not linked how many are served in-service.
+
+        ``not_linked`` excludes in-service calls, which ``in_service`` counts, as
+        the CLI diagnostics headline does. ``linked`` is workspace wide, so only
+        an unscoped call carries it. ``None`` without diagnostics, or for a
+        *repo* with no HTTP call.
+        """
+        diag = self._diagnostics_model()
         if diag is None:
             return None
         by_reason, in_service = diag.http_unlinked(repo)

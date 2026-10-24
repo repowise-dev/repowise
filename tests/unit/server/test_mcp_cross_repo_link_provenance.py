@@ -240,3 +240,11 @@ def test_a_measured_graph_adds_no_evidence_field(tmp_path: Path):
         analysis = _cross_repo_relationships("web")["analysis"]
     assert "graph_evidence" not in block
     assert "graph_evidence" not in analysis
+
+
+def test_unreadable_diagnostics_drop_only_the_counts():
+    graph = {"nodes": [], "edges": [], "diagnostics": {"repo_breakdown": [{"repo": 1}], "x": None}}
+    graph["diagnostics"]["symbol_identity"] = {"provider": None}  # from_dict cannot read it
+    enricher = CrossRepoEnricher.from_data(system_graph=graph)
+    assert enricher.http_call_split() is None
+    assert enricher.get_diagnostics() is graph["diagnostics"]
