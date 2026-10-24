@@ -16,7 +16,9 @@ KEY`` / ``ON SIZE ERROR`` / ``ON EXCEPTION`` / ``ON OVERFLOW`` handler are +1
 CCN and a flat +1 cognitive; ``AND`` / ``OR`` are +1 each; ``EVALUATE`` and
 ``SEARCH`` open a level and ``WHEN`` / ``WHEN OTHER`` open another, like a
 switch and its cases. ``GO TO`` and ``ALTER`` are breaks in flow: a flat +1
-cognitive. A handler's statements stay at its statement's depth (the ceiling
+cognitive. A ``GO TO`` with ``DEPENDING ON`` is also a dispatch: +1 CCN per
+target, as an ``EVALUATE`` adds one per ``WHEN`` (N targets and the
+fall-through are N + 1 outcomes). A handler's statements stay at its statement's depth (the ceiling
 of not scoping them to their ``END-READ``). NLOC counts the non-blank lines of
 the code view (comments and sequence areas blank) from the first statement to
 the last, so a masked ``EXEC`` block counts every line it spans.
@@ -339,6 +341,10 @@ def _measure(name: str, header: Node, body: list[Node], lines: list[str]) -> Fun
             cognitive += 1
         elif kind in _JUMPS:
             cognitive += 1
+            if kind == "goto_statement" and _depending_on(node):
+                # One outcome per target plus the fall-through, as an
+                # ``EVALUATE`` with that many ``WHEN`` arms.
+                charge(sum(1 for c in node.named_children if c.type == "label"))
         operators = _boolean_operators(node)
         charge(operators)
         cognitive += operators
@@ -380,6 +386,11 @@ def _tests_one_value(evaluate: Node) -> bool:
     return len(subjects) == 1 and all(
         c.type not in ("TRUE", "FALSE") for c in subjects[0].named_children
     )
+
+
+def _depending_on(goto: Node) -> bool:
+    """``GO TO a b c DEPENDING ON x``: a dispatch, not a single jump."""
+    return "DEPENDING" in (goto.text or b"").decode("utf-8", "replace").upper().split()
 
 
 def _selections(when: Node) -> int:

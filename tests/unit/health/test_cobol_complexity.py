@@ -188,3 +188,38 @@ def test_stacked_when_selections_each_count() -> None:
     )
     # Two stacked selections (the literal 'WHEN' is not one) and WHEN OTHER.
     assert rows["P1"][2] == 4
+
+
+def test_go_to_depending_on_counts_a_branch_per_target() -> None:
+    goto = _rows(_program("       MAIN-P.", "           GO TO P1 P2 P3 DEPENDING ON WS-A."))
+    evaluate = _rows(
+        _program(
+            "       MAIN-P.",
+            "           EVALUATE WS-A",
+            "              WHEN 1 GO TO P1",
+            "              WHEN 2 GO TO P2",
+            "              WHEN 3 GO TO P3",
+            "           END-EVALUATE.",
+        )
+    )
+    # Three targets and the fall-through: the CCN of its EVALUATE twin, while
+    # cognitive stays one flat jump.
+    assert goto["MAIN-P"][2] == evaluate["MAIN-P"][2] == 4
+    assert goto["MAIN-P"][3:5] == (0, 1)
+
+
+def test_a_single_target_go_to_and_alter_add_no_branch() -> None:
+    rows = _rows(
+        _program(
+            "       P1.",
+            "           GO TO P2.",
+            "       P2.",
+            "           ALTER P3 TO PROCEED TO P1.",
+            "       P3.",
+            "           GO TO P1 DEPENDING ON WS-A.",
+        )
+    )
+    assert rows["P1"][2:5] == (1, 0, 1)
+    assert rows["P2"][2:5] == (1, 0, 1)
+    # One target is still a dispatch: P1 or the fall-through.
+    assert rows["P3"][2:5] == (2, 0, 1)
