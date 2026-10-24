@@ -625,12 +625,62 @@ class TestUnrecordedRequests:
             "def test_x(request):\n    gfv = request.getfixturevalue\n    gfv('db')\n",
             "import pytest\n\npytestmark = pytest.mark.usefixtures(*names())\n\n\n"
             "def test_x():\n    pass\n",
+            # A parametrized name the text cannot pin to its literal values.
+            "import pytest\n\n\n@pytest.mark.parametrize('f', ['db'])\n"
+            "def test_x(f, request):\n    f = 'other'\n    request.getfixturevalue(f)\n",
+            "import pytest\n\nNAMES = ['db']\nNAMES.append('other')\n\n\n"
+            "@pytest.mark.parametrize('f', NAMES)\n"
+            "def test_x(f, request):\n    request.getfixturevalue(f)\n",
+            "import pytest\n\n\n@pytest.mark.parametrize('f', names())\n"
+            "def test_x(f, request):\n    request.getfixturevalue(f)\n",
+            "import pytest\n\n\n@pytest.mark.parametrize('f', ['db'])\n"
+            "@pytest.mark.parametrize('f', ['other'])\n"
+            "def test_x(f, request):\n    request.getfixturevalue(f)\n",
+            "import pytest\n\n\n@pytest.mark.parametrize('f, g', [('db', 1)])\n"
+            "def test_x(f, g, request):\n    request.getfixturevalue(f)\n",
         ],
     )
     def test_a_hidden_request_marks_its_own_edge(self, tmp_path: Path, body: str) -> None:
         hints = self._hints(self._repo(tmp_path, body))
         assert hints["tests/test_odd.py"] == "pytest_conftest_unrecorded"
         assert hints["tests/test_plain.py"] == "pytest_conftest"
+
+    @pytest.mark.parametrize(
+        "values, prelude",
+        [("['db', 'cache']", ""), ("NAMES", "NAMES = ('db', 'cache')\n\n\n")],
+    )
+    def test_a_parametrized_fixture_name_is_recorded(
+        self, tmp_path: Path, values: str, prelude: str
+    ) -> None:
+        body = (
+            f"import pytest\n\n{prelude}"
+            f"@pytest.mark.parametrize('name', {values})\nclass TestEach:\n"
+            "    def test_x(self, name, request):\n"
+            "        assert request.getfixturevalue(name)\n"
+        )
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef db():\n    return 1\n\n\n"
+            "@pytest.fixture\ndef cache():\n    return 2\n"
+        )
+        (tests / "test_odd.py").write_text(body)
+        graph = _build(tmp_path)
+
+        assert self._hints(graph)["tests/test_odd.py"] == "pytest_conftest"
+        bound = _bound(graph)
+        assert ("tests/test_odd.py::TestEach::test_x", "tests/conftest.py::db") in bound
+        assert ("tests/test_odd.py::TestEach::test_x", "tests/conftest.py::cache") in bound
+
+    def test_a_call_inside_a_string_or_comment_in_a_test_is_no_request(
+        self, tmp_path: Path
+    ) -> None:
+        body = (
+            "def test_x(db):\n"
+            "    src = 'request.getfixturevalue(NAME)'  # getfixturevalue(other)\n"
+            "    assert src\n"
+        )
+        assert self._hints(self._repo(tmp_path, body))["tests/test_odd.py"] == "pytest_conftest"
 
     def test_a_helper_asking_for_a_fixture_marks_every_edge(self, tmp_path: Path) -> None:
         graph = self._repo(

@@ -8,7 +8,8 @@ Every way a test or fixture asks for a fixture by name becomes a
 ``framework_binds`` edge stamped :data:`FIXTURE_HINT`: a test's parameters, a
 fixture's own parameters, ``@pytest.mark.usefixtures(...)`` on a test or its
 class, a module's ``pytestmark`` usefixtures, and ``request.getfixturevalue``
-with a literal name. Test selection reads these edges to find every test that
+with a literal name, or with a test parameter whose parametrize values are
+literal names (:func:`_parametrized_names`). Test selection reads these edges to find every test that
 uses a fixture, and trusts them only when the stamp shows all of these forms
 were recorded. A request no edge can record (a computed name, a test inherited
 from a base class declared elsewhere, a class-level ``pytestmark``, marks inside
@@ -22,6 +23,7 @@ keeps every test under those conftests.
 
 from __future__ import annotations
 
+import ast
 import io
 import re
 import tokenize
@@ -63,8 +65,11 @@ _USEFIXTURES_RE = re.compile(r"^@(?:[\w.]+\.)?usefixtures\b")
 # marks): the statement up to the next top-level line.
 _PYTESTMARK_RE = re.compile(r"^pytestmark\b[^\n]*(?:\n[ \t)\]][^\n]*)*", re.MULTILINE)
 _USEFIXTURES_CALL_RE = re.compile(r"usefixtures\(([^)]*)\)")
-# The name is captured only when it is a literal alone in the call.
-_GETFIXTUREVALUE_RE = re.compile(r"""getfixturevalue\(\s*(?:["'](\w+)["']\s*(?=\)))?""")
+# The name is captured only when it is a literal (group 1) or a bare
+# identifier (group 2) alone in the call.
+_GETFIXTUREVALUE_RE = re.compile(
+    r"""getfixturevalue\(\s*(?:(?:["'](\w+)["']|([A-Za-z_]\w*))\s*(?=\)))?"""
+)
 # Names through which code can ask for a fixture. A use of one that is not a
 # form this module records (a literal decorator, a module ``pytestmark``, a
 # literal ``getfixturevalue`` call in a test or fixture) hides a request.
@@ -479,20 +484,199 @@ def _hidden_request(text: str) -> str | None:
     return None
 
 
-def _runtime_requests(text: str, symbols: list[Any]) -> tuple[list[tuple[Any, str]], bool]:
-    """``(enclosing function, name)`` per literal ``getfixturevalue``, and whether any is computed."""
-    out: list[tuple[Any, str]] = []
+def _runtime_requests(text: str, parsed: Any) -> tuple[list[tuple[Any, list[str]]], bool]:
+    """``(enclosing function, names)`` per readable ``getfixturevalue``, and whether any is not."""
+    out: list[tuple[Any, list[str]]] = []
     unknown = False
-    functions = [s for s in symbols if s.kind in ("function", "method")]
+    code = _code_offsets(text, "getfixturevalue")
+    trees: dict[str, ast.Module | None] = {}  # parsed once, on the first parameter request
     for match in _GETFIXTUREVALUE_RE.finditer(text):
-        name = match.group(1)
-        line = text.count("\n", 0, match.start()) + 1
-        enclosing = [s for s in functions if s.start_line <= line <= s.end_line]
-        if name is None or not enclosing:
+        if code is not None and match.start() not in code:
+            continue  # inside a string or a comment: no request
+        sym = _enclosing(parsed, text.count("\n", 0, match.start()) + 1)
+        names = _call_names(match, text, parsed, sym, trees)
+        if names is None:
             unknown = True
-            continue
-        out.append((max(enclosing, key=lambda s: s.start_line), name))
+        else:
+            out.append((sym, names))
     return out, unknown
+
+
+def _enclosing(parsed: Any, line: int) -> Any:
+    """The innermost function or method symbol holding *line*, ``None`` outside any."""
+    return max(
+        (
+            s for s in parsed.symbols
+            if s.kind in ("function", "method") and s.start_line <= line <= s.end_line
+        ),
+        key=lambda s: s.start_line,
+        default=None,
+    )  # fmt: skip
+
+
+def _call_names(
+    match: re.Match[str], text: str, parsed: Any, sym: Any, trees: dict[str, ast.Module | None]
+) -> list[str] | None:
+    """The fixtures one ``getfixturevalue`` call in *sym* asks for, ``None`` when unreadable."""
+    if sym is None:
+        return None
+    if match.group(1):
+        return [match.group(1)]
+    if not match.group(2):
+        return None
+    if "tree" not in trees:
+        trees["tree"] = _parse(text)
+    return _parametrized_names(parsed, trees["tree"], sym, match.group(2))
+
+
+def _code_offsets(text: str, name: str) -> set[int] | None:
+    """Offsets in *text* where code (not a string or comment) names *name*.
+
+    ``None`` when the text does not tokenize: every textual match then counts,
+    so an unreadable file stays unrecorded.
+    """
+    starts = [0]
+    for line in io.StringIO(text):  # the same lines the tokenizer reads
+        starts.append(starts[-1] + len(line))
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        return {
+            starts[t.start[0] - 1] + t.start[1]
+            for t in tokens
+            if t.type == tokenize.NAME and t.string == name
+        }
+    except (tokenize.TokenError, SyntaxError):
+        return None
+
+
+def _parse(text: str) -> ast.Module | None:
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+
+
+def _parametrized_names(
+    parsed: Any, tree: ast.Module | None, sym: Any, param: str
+) -> list[str] | None:
+    """The fixtures ``request.getfixturevalue(param)`` in test *sym* asks for, else ``None``.
+
+    Read only when *param* is a parameter of *sym* that exactly one direct
+    ``parametrize`` (on the test or a class it runs in) supplies alone, its
+    values a literal list of names or a module constant bound once to one and
+    read nowhere but as a ``parametrize`` value, and nothing in the test
+    rebinds it. pytest then runs the test once per value, and each run asks
+    for that fixture. Any other shape stays unrecorded (``None``).
+    """
+    params = [raw.split(":")[0].strip() for raw in _call_arguments(sym.signature or "")]
+    if tree is None or param not in params or not _keeps_binding(tree, sym, param):
+        return None
+    values = _parametrize_values(parsed, sym, param)
+    if values is None:
+        return None
+    if _LITERAL_LIST_RE.fullmatch(values):
+        return _QUOTED_RE.findall(values)
+    return _constant_names(tree, values)
+
+
+def _parametrize_values(parsed: Any, sym: Any, param: str) -> str | None:
+    """The argvalues text of the one direct parametrize that supplies *param* alone."""
+    classes = {s.name: s for s in parsed.symbols if s.kind == "class"}
+    decorators = [*sym.decorators] + [
+        d for c in _fixture_scopes(parsed, sym.parent_name) if c in classes
+        for d in classes[c].decorators
+    ]  # fmt: skip
+    specs = [
+        args
+        for dec in decorators
+        if _PARAMETRIZE_RE.match(dec.strip())
+        and (args := _call_arguments(dec.strip()))
+        and param in _argnames(args[0])
+    ]
+    if len(specs) != 1:
+        return None
+    args = specs[0]
+    if _argnames(args[0]) != [param] or len(args) < 2:
+        return None
+    return args[1] if _indirect_argument(args) in (None, "False") else None
+
+
+def _keeps_binding(tree: ast.Module, sym: Any, param: str) -> bool:
+    """Whether the body of test *sym* never rebinds or shadows its parameter *param*."""
+    node = next(
+        (
+            n for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == sym.name and sym.start_line <= n.lineno <= sym.end_line
+        ),
+        None,
+    )  # fmt: skip
+    if node is None:
+        return False
+    args = sum(isinstance(n, ast.arg) and n.arg == param for n in ast.walk(node))
+    stores = any(
+        isinstance(n, ast.Name) and n.id == param and not isinstance(n.ctx, ast.Load)
+        for n in ast.walk(node)
+    )
+    return args == 1 and not stores and f"nonlocal {param}" not in ast.unparse(node)
+
+
+def _constant_names(tree: ast.Module, name: str) -> list[str] | None:
+    """The string values of module constant *name*, when its only read is a parametrize value."""
+    if not re.fullmatch(r"[A-Za-z_]\w*", name):
+        return None
+    parents = {id(c): p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    values: list[str] | None = None
+    for n in ast.walk(tree):
+        if _binds_otherwise(n, name):
+            return None
+        if not (isinstance(n, ast.Name) and n.id == name):
+            continue
+        parent = parents.get(id(n))
+        if isinstance(n.ctx, ast.Load):
+            if not _is_parametrize_values(n, parent):
+                return None
+            continue
+        if values is not None:
+            return None
+        values = _assigned_strings(tree, parent, n)
+        if values is None:
+            return None
+    return values
+
+
+def _binds_otherwise(node: ast.AST, name: str) -> bool:
+    """Whether *node* binds *name* by a definition, an import or a ``global``."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name
+    if isinstance(node, ast.alias):
+        return (node.asname or node.name.split(".")[0]) == name
+    return isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names
+
+
+def _is_parametrize_values(name: ast.Name, parent: ast.AST | None) -> bool:
+    """Whether *name* is the second positional argument of a ``parametrize`` call."""
+    func = getattr(parent, "func", None)
+    called = getattr(func, "attr", getattr(func, "id", None))
+    return called == "parametrize" and len(parent.args) > 1 and parent.args[1] is name
+
+
+def _assigned_strings(
+    tree: ast.Module, stmt: ast.AST | None, target: ast.Name
+) -> list[str] | None:
+    """The strings a module-level ``target = [...]`` binds, ``None`` for any other binding."""
+    value = getattr(stmt, "value", None)
+    top = (
+        isinstance(stmt, ast.Assign)
+        and any(stmt is s for s in tree.body)
+        and stmt.targets == [target]
+    )
+    if not top or not isinstance(value, (ast.List, ast.Tuple)):
+        return None
+    strings = [
+        e.value for e in value.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)
+    ]
+    return strings if len(strings) == len(value.elts) else None
 
 
 def _add_fixture_injection_edges(
@@ -756,14 +940,14 @@ def _link_runtime_requests(
     fixture_ids: set[str],
     recorded: Counter[str],
 ) -> tuple[bool, bool]:
-    """Link literal ``getfixturevalue`` calls; ``(any computed, a helper asks)``."""
+    """Link readable ``getfixturevalue`` calls; ``(any computed, a helper asks)``."""
     if "getfixturevalue" not in text:
         return False, False
-    runtime, unknown = _runtime_requests(text, linker.parsed.symbols)
+    runtime, unknown = _runtime_requests(text, linker.parsed)
     everywhere = False
-    for sym, name in runtime:
+    for sym, names in runtime:
         if sym in tests or sym.id in fixture_ids:
-            linker.link(sym, [name])
+            linker.link(sym, names)
             recorded["getfixturevalue"] += 1
         else:
             # A helper asking for a fixture serves whichever test calls it.
