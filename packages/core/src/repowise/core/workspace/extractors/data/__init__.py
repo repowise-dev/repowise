@@ -16,6 +16,7 @@ from .ddl import DdlDialect
 from .drizzle import DrizzleDialect
 from .knex import KnexDialect
 from .laravel import EloquentDialect, LaravelMigrationDialect, LaravelQueryDialect
+from .mybatis import MyBatisDialect
 from .names import normalize_table_name
 from .orm_models import (
     ActiveRecordDialect,
@@ -50,6 +51,7 @@ CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
     SqlStringsDialect(),
     LaravelQueryDialect(),
     KnexDialect(),
+    MyBatisDialect(),
 )
 
 

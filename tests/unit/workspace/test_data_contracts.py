@@ -325,6 +325,66 @@ class TestSqlStringConsumers:
         consumers = [c for c in contracts if c.role == "consumer"]
         assert [c.contract_id for c in consumers] == ["data::orders"]
 
+    def test_csharp_verbatim_sql(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "src/Verbatim.cs",
+            'const string sql = @"\n'
+            "    SELECT *\n"
+            "    FROM Orders o\n"
+            "    JOIN Customers c ON o.CustomerId = c.Id\n"
+            '";\n',
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"data::orders", "data::customers"}
+
+
+class TestMyBatisConsumers:
+    def test_mybatis_mapper_xml(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "src/main/resources/OrderMapper.xml",
+            """<?xml version="1.0" encoding="UTF-8" ?>
+            <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+            <mapper namespace="com.shop.mapper.OrderMapper">
+                <select id="findOrders">
+                    SELECT * FROM orders WHERE id = #{id}
+                </select>
+                <select id="findLines">
+                    SELECT * FROM order_lines WHERE order_id = #{orderId}
+                </select>
+                <!--
+                <select id="deletedOrders">
+                    SELECT * FROM archived_orders
+                </select>
+                -->
+            </mapper>
+            """,
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"data::orders", "data::order_lines"}
+
+    def test_mybatis_array_annotation(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "src/main/java/com/shop/mapper/CustomerMapper.java",
+            """package com.shop.mapper;
+            public interface CustomerMapper {
+                @Update({
+                    "UPDATE customers",
+                    "SET name = #{name}",
+                    "WHERE id = #{id}"
+                })
+                int update(Customer c);
+            }
+            """,
+        )
+        contracts = DataExtractor().extract(tmp_path, "api")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"data::customers"}
+
 
 class TestDataMatching:
     def test_normalize_contract_id_lowercases(self) -> None:

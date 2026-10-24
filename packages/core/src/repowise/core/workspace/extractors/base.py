@@ -12,6 +12,7 @@ descend into sibling/vendored repos rooted under the workspace.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -73,6 +74,7 @@ def make_exclude_predicate(
 #: open a comment the masker cannot close. VB and SQL are left out too. A match
 #: in an unmasked file is never treated as commented out.
 _SLASH_COMMENT_SUFFIXES = JAVA | KOTLIN | GO | CSHARP | RUST | PHP | APEX | PROTO | {".prisma"}
+_XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def _comment_mask(suffix: str, content: str) -> str | None:
@@ -84,6 +86,8 @@ def _comment_mask(suffix: str, content: str) -> str | None:
         return mask_source(content, suffix)
     if suffix in JS_TS:
         return mask_source(content, ".js")
+    if suffix == ".xml":
+        return _XML_COMMENT_RE.sub(lambda m: " " * len(m.group(0)), content)
     if suffix not in _SLASH_COMMENT_SUFFIXES:
         return None
     from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
