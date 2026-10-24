@@ -13,7 +13,7 @@ COBOL programs to BMS mapsets and to the programs their TRANSIDs run.
   when every definition of T names the same one.
 
 A job member is an entry point. Names fold case; two equally near candidates
-bind neither, and a utility (``IDCAMS``, ``SORT``) the repo does not hold links
+bind neither unless a COBOL mapset variant is unique, and a utility (``IDCAMS``, ``SORT``) the repo does not hold links
 to nothing. A program returning to its own transaction gets no edge.
 """
 
@@ -123,7 +123,17 @@ def _add_mainframe_edges(
             code = code_view(raw)
             for use in mapset_uses(code):
                 for name in use.targets:
-                    target = nearest(mapsets.get(name, []), path)
+                    candidates = mapsets.get(name, [])
+                    target = nearest(candidates, path)
+                    if target is None:
+                        # Language variants may be equally near the COBOL sender.
+                        cobol = [
+                            p
+                            for p in candidates
+                            if "cobol" in {part.lower() for part in PurePosixPath(p).parts[:-1]}
+                        ]
+                        if len(cobol) == 1:
+                            target = cobol[0]
                     if target:
                         count += _file_edge(graph, path, target, set())
             for use in transid_uses(code):

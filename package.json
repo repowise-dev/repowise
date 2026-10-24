@@ -12,8 +12,8 @@
     "packages/claude-mod"
   ],
   "scripts": {
-    "dev": "cd packages/web && npm run dev",
-    "build": "npm run build --workspaces --if-present",
+    "dev": "node api.js && cd packages/web && npm run dev",
+    "build": "node api.js && npm run build --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "type-check": "npm run type-check --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

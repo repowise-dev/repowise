@@ -297,3 +297,39 @@ def test_in_stream_data_ends_at_its_dlm_delimiter() -> None:
         "DEFINE PROGRAM(P1) GROUP(G)",
     ]
     assert [s.program for s in member.steps] == ["DFHCSDUP", "IEFBR14"]
+
+
+@pytest.mark.parametrize("operation", ["SEND", "RECEIVE"])
+@pytest.mark.parametrize("directory", ["cobol", "COBOL"])
+def test_cobol_mapset_wins_a_tie_with_pli(operation: str, directory: str) -> None:
+    program = "sources/cobol/core/SBANK10P.cbl"
+    cobol_map = f"sources/bms/{directory}/COSGN00.bms"
+    pli_map = "sources/bms/pli/COSGN00.bms"
+    graph = _edges({
+        program: ("cobol", _program(b"SBANK10P", (
+            f"           EXEC CICS {operation} MAP('COSGN0A') "
+            "MAPSET('COSGN00') END-EXEC.\n"
+        ).encode())),
+        cobol_map: ("bms", MAPSET),
+        pli_map: ("bms", MAPSET.replace(b"LANG=COBOL", b"LANG=PLI")),
+    })
+    assert set(graph.edges) == {(program, cobol_map)}
+
+
+@pytest.mark.parametrize(("candidates", "expected"), [
+    (["sources/bms/cobol/a/COSGN00.bms", "sources/bms/cobol/b/COSGN00.bms",
+      "sources/bms/pli/COSGN00.bms"], None),
+    (["sources/bms/mycobol/COSGN00.bms", "sources/bms/pli/COSGN00.bms"], None),
+    (["sources/bms/pli/COSGN00.bms"], "sources/bms/pli/COSGN00.bms"),
+    (["sources/cobol/core/maps/pli/COSGN00.bms", "sources/bms/cobol/COSGN00.bms"],
+     "sources/cobol/core/maps/pli/COSGN00.bms"),
+])
+def test_mapset_tie_break_preserves_ambiguity_and_existing_choices(
+    candidates: list[str], expected: str | None,
+) -> None:
+    program = "sources/cobol/core/SBANK10P.cbl"
+    graph = _edges({
+        program: ("cobol", PROGRAM),
+        **{path: ("bms", MAPSET) for path in candidates},
+    })
+    assert set(graph.edges) == ({(program, expected)} if expected else set())

@@ -1,0 +1,33 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "fix/cobol-bms-mapset-4478",
+    "fix/editor-block-literal-4502",
+    "fix/gin-echo-catchall-path-4564",
+    "fix/go-generated-header-license-4568",
+    "main",
+    "validation/codex23-repowise4478",
+    "validation/codex23-repowise4502",
+    "validation/codex24-repowise4574"
+  ],
+  "parent": {
+    "fix/cobol-bms-mapset-4478": "main",
+    "fix/editor-block-literal-4502": "main",
+    "fix/gin-echo-catchall-path-4564": "main",
+    "fix/go-generated-header-license-4568": "main",
+    "main": null,
+    "validation/codex23-repowise4478": "main",
+    "validation/codex23-repowise4502": "main",
+    "validation/codex24-repowise4574": "main"
+  },
+  "order": [
+    "main",
+    "fix/cobol-bms-mapset-4478",
+    "fix/editor-block-literal-4502",
+    "fix/gin-echo-catchall-path-4564",
+    "fix/go-generated-header-license-4568",
+    "validation/codex23-repowise4478",
+    "validation/codex23-repowise4502",
+    "validation/codex24-repowise4574"
+  ]
+}
