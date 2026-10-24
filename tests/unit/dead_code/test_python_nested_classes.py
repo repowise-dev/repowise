@@ -8,7 +8,10 @@ options blocks, which the model metaclass reads and no code names.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
+
+import pytest
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.ingestion.models import FileInfo
@@ -159,6 +162,7 @@ def use():
     assert "Other.Inner" not in refs
 
 
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 type syntax requires Python 3.12+")
 def test_pep_695_type_alias_quoted_local_ref():
     src = """
 class Worker:
@@ -197,9 +201,33 @@ class WorkerManager(Generic["Worker"]):
     assert "Worker" in refs
 
 
+def test_literal_and_call_kwarg_strings_do_not_rescue_classes():
+    src = """
+from typing import Literal, TypeAlias
+
+class Worker:
+    pass
+
+Kind: TypeAlias = Literal["Worker"]
+"""
+    refs = extract_python_local_refs(src, frozenset(["Worker"]))
+    assert "Worker" not in refs
+
+    src_base = """
+class Worker:
+    pass
+
+class MyClass(Base(name="Worker")):
+    pass
+"""
+    refs_base = extract_python_local_refs(src_base, frozenset(["Worker"]))
+    assert "Worker" not in refs_base
+
+
 def test_self_referential_type_alias_excluded():
-    src = 'type NodeList = list["NodeList"]'
-    assert extract_python_local_refs(src, frozenset(["NodeList"])) == frozenset()
+    if sys.version_info >= (3, 12):
+        src = 'type NodeList = list["NodeList"]'
+        assert extract_python_local_refs(src, frozenset(["NodeList"])) == frozenset()
 
     src_ann = """
 from typing import TypeAlias

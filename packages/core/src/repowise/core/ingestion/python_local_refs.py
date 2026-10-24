@@ -217,10 +217,36 @@ def _collect_forward_refs(
             out.add(ref.id)
 
 
+def _non_type_string_nodes(expr: ast.expr) -> set[int]:
+    """Return ids of string Constant nodes that represent values, not types."""
+    ignored: set[int] = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Subscript):
+            val = node.value
+            name = val.id if isinstance(val, ast.Name) else getattr(val, "attr", None)
+            if name == "Literal":
+                for sub in ast.walk(node.slice):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        ignored.add(id(sub))
+        elif isinstance(node, ast.Call):
+            for arg in node.args:
+                for sub in ast.walk(arg):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        ignored.add(id(sub))
+            for kw in node.keywords:
+                for sub in ast.walk(kw.value):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        ignored.add(id(sub))
+    return ignored
+
+
 def _forward_ref_nodes(annotation: ast.expr) -> Iterator[tuple[ast.AST, int]]:
     """Each node of each quoted forward ref in *annotation*, with the quote's line."""
+    ignored = _non_type_string_nodes(annotation)
     for sub in ast.walk(annotation):
         if not (isinstance(sub, ast.Constant) and isinstance(sub.value, str)):
+            continue
+        if id(sub) in ignored:
             continue
         try:
             inner = parse_python(sub.value, mode="eval")
