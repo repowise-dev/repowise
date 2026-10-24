@@ -37,7 +37,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.fsutils import atomic_write_text
 from repowise.core.workspace.config import (
@@ -55,6 +55,9 @@ from repowise.core.workspace.extractors.service_boundary import (
 )
 from repowise.core.workspace.grouping import ServiceGroup, group_services
 from repowise.core.workspace.origins import LinkStrategy, legacy_strategy
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _log = logging.getLogger("repowise.workspace.system_graph")
 
@@ -339,6 +342,48 @@ def _node_id(repo: str, service_path: str | None) -> str:
     return repo if service_path is None else f"{repo}::{service_path}"
 
 
+def resolve_service_id(
+    repo: str,
+    file_path: str | None,
+    boundaries_by_repo: dict[str, list[ServiceBoundary]],
+) -> str:
+    """The node id *file_path* in *repo* belongs to: its deepest service, else the repo root.
+
+    ``file_path is None`` resolves to the repo-root node (repo-level facts
+    like a package dependency on a whole repo). The builder and every read
+    that maps a file to a service call this, so they cannot disagree.
+    """
+    return _node_id(repo, _service_path(repo, file_path, boundaries_by_repo))
+
+
+def _service_path(
+    repo: str, file_path: str | None, boundaries_by_repo: dict[str, list[ServiceBoundary]]
+) -> str | None:
+    if file_path is None:
+        return None
+    return assign_service(file_path, boundaries_by_repo.get(repo, []))
+
+
+def boundaries_from_nodes(nodes: Iterable[dict[str, Any]]) -> dict[str, list[ServiceBoundary]]:
+    """The service boundaries a stored graph's nodes stand for, by repo.
+
+    The graph does not persist boundary detection, but it does not need to:
+    every link end the builder resolved became a node, so the deepest boundary
+    holding that end is among the nodes, and longest-prefix matching against
+    the nodes alone resolves the same end to the same id.
+    That holds for nodes and links written by the same build, which a
+    workspace update always does.
+    """
+    out: dict[str, list[ServiceBoundary]] = {}
+    for node in nodes:
+        path = node.get("service_path")
+        if path:
+            out.setdefault(node["repo"], []).append(
+                ServiceBoundary(service_path=path, service_name=path.rsplit("/", 1)[-1])
+            )
+    return out
+
+
 class _GraphBuilder:
     """Accumulates nodes and aggregated edges as contracts/edges are walked.
 
@@ -360,11 +405,7 @@ class _GraphBuilder:
         ``file_path is None`` resolves to the repo-root node (repo-level facts
         like a package dependency on a whole repo).
         """
-        service = (
-            assign_service(file_path, self._boundaries.get(repo, []))
-            if file_path is not None
-            else None
-        )
+        service = _service_path(repo, file_path, self._boundaries)
         nid = _node_id(repo, service)
         if nid not in self._nodes:
             self._nodes[nid] = SystemNode(

@@ -10,6 +10,7 @@ import type {
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
   WorkspaceBlastRadiusResponse,
+  WorkspaceLinksBetweenResponse,
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
   WorkspaceArchitectureResponse,
@@ -128,6 +129,36 @@ export async function getWorkspaceSystemGraph(
   return apiGet<WorkspaceSystemGraphResponse>(
     "/api/workspace/system-graph",
     opts?.view ? { view: opts.view } : undefined,
+    fetchOptions,
+  );
+}
+
+/**
+ * Everything behind the edges between two service nodes (contract links,
+ * package dependencies, co-changes), both directions, one page at a time.
+ * Each end is resolved to its service server-side, the way the graph was built.
+ */
+export async function getWorkspaceLinksBetween(
+  opts: {
+    a: string;
+    b: string;
+    /** One edge kind: `http`, `grpc`, `event`, `db`, `package`, `co_change`... */
+    kind?: string;
+    /** Every whitespace-separated term must match the row's ids, files, symbols or packages. */
+    q?: string;
+    limit?: number;
+    offset?: number;
+  },
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceLinksBetweenResponse> {
+  const params: Record<string, string | number> = { a: opts.a, b: opts.b };
+  if (opts.kind) params.kind = opts.kind;
+  if (opts.q) params.q = opts.q;
+  if (opts.limit != null) params.limit = opts.limit;
+  if (opts.offset != null) params.offset = opts.offset;
+  return apiGet<WorkspaceLinksBetweenResponse>(
+    "/api/workspace/system-graph/links",
+    params,
     fetchOptions,
   );
 }

@@ -4816,6 +4816,21 @@ export interface WorkspaceImpactedNode {
   edge_kinds?: string[];
 }
 
+/**
+ * Links between two services, read from ``system_graph.json``, ``contracts.json``
+ * and ``cross_repo_edges.json``. The three are written together by one
+ * workspace update; ``stale_graph`` is true when the graph and the contracts
+ * record different repo heads, and rows may then be missing.
+ */
+export interface WorkspaceLinksBetweenResponse {
+  a: string;
+  b: string;
+  stale_graph?: boolean;
+  links: WorkspaceServiceLinkEntry[];
+  total: number;
+  totals: WorkspaceServiceLinksTotal[];
+}
+
 export interface WorkspaceNodeArchitectureRole {
   id: string;
   repo?: string;
@@ -4844,6 +4859,19 @@ export interface WorkspaceOrphanProvider {
   contract_id: string;
   contract_type: string;
   other_files?: string[];
+}
+
+/** One manifest dependency of one repo on another, as ``cross_repo_edges.json`` stores it. */
+export interface WorkspacePackageDepEntry {
+  source_repo: string;
+  source_manifest?: string;
+  target_repo: string;
+  target_package?: string;
+  kind?: string;
+  target_manifest?: string;
+  requested_version?: string | null;
+  scope?: string;
+  resolution_basis?: string;
 }
 
 export interface WorkspaceRepoActions {
@@ -4918,6 +4946,28 @@ export interface WorkspaceServiceGroup {
   label: string;
   source: string;
   member_count?: number;
+}
+
+/**
+ * One piece of evidence behind an edge between two services.
+ *
+ * ``evidence`` says which of ``link``, ``package_dep`` or ``co_change`` is set.
+ */
+export interface WorkspaceServiceLinkEntry {
+  kind: string;
+  direction: "a_to_b" | "b_to_a" | "both";
+  evidence: "contract" | "package" | "co_change";
+  link?: WorkspaceContractLinkEntry | null;
+  provider_origin?: string | null;
+  consumer_origin?: string | null;
+  package_dep?: WorkspacePackageDepEntry | null;
+  co_change?: WorkspaceCoChangeEntry | null;
+}
+
+export interface WorkspaceServiceLinksTotal {
+  kind: string;
+  direction: "a_to_b" | "b_to_a" | "both";
+  count: number;
 }
 
 export interface WorkspaceSymbolIdentity {
