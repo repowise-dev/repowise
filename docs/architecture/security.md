@@ -24,7 +24,7 @@ comment or a quoted string can fire it.
 
 A keyword secret value is skipped when it is elided or templated (`...`,
 `<your key>`, `xxx`, `example`, `placeholder`, `dummy`, `fake`, `redacted`,
-`changeme`, `{{ }}`, `${}`), shorter than eight characters, a short single-case
+`changeme`, `{{ }}`, `${}`, a Salesforce `{!merge.field}`), a regular expression, shorter than eight characters, a short single-case
 word, or a snake_case key name. A value a vendor kind already reports is not
 reported twice.
 

@@ -155,7 +155,7 @@ def _find_name(node: Node) -> str:
                     return names[-1].text.decode("utf-8", errors="replace")
     # Swift: a computed property and a ``willSet`` / ``didSet`` block are named
     # for the property that holds them, a subscript's body ``subscript``, and
-    # ``deinit`` has no name node at all.
+    # ``deinit`` has no name node at all. An Apex accessor list is named the same way.
     if node.type in _SWIFT_PROPERTY_UNITS:
         return _swift_property_name(node)
     if node.type == "deinit_declaration":
@@ -179,7 +179,7 @@ def _find_name(node: Node) -> str:
     return "<anonymous>"
 
 
-_SWIFT_PROPERTY_UNITS = frozenset({"computed_property", "willset_didset_block"})
+_SWIFT_PROPERTY_UNITS = frozenset({"computed_property", "willset_didset_block", "accessor_list"})
 
 
 def _swift_property_name(unit: Node) -> str:
@@ -188,7 +188,11 @@ def _swift_property_name(unit: Node) -> str:
         return "<anonymous>"
     if holder.type == "subscript_declaration":
         return "subscript"
-    name = holder.child_by_field_name("name")
+    # Apex keeps the property's name on its ``field_declaration``'s declarator.
+    declarator = holder.child_by_field_name("declarator")
+    name = holder.child_by_field_name("name") or (
+        declarator.child_by_field_name("name") if declarator is not None else None
+    )
     text = "".join((name.text or b"").decode("utf-8", errors="replace").split()) if name else ""
     return text or "<anonymous>"
 

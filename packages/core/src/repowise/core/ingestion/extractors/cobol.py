@@ -6,10 +6,13 @@ import re
 
 from tree_sitter import Node
 
+from ..cobol.fragments import FRAGMENT_PROGRAM
+
 _SECTION_SUFFIX = re.compile(r"\s+SECTION\s*\.\s*$", re.IGNORECASE)
 _PARAGRAPH_SUFFIX = re.compile(r"\s*\.\s*$")
 _PROGRAM_ID_IN_ERROR = re.compile(r"\bPROGRAM-ID\s*\.\s*([A-Z0-9][A-Z0-9-]*)", re.IGNORECASE)
 _PROCEDURE_HEADERS = frozenset({"section_header", "paragraph_header"})
+_UNNAMED = frozenset({"FILLER", FRAGMENT_PROGRAM})
 
 
 def normalize_cobol_symbol_name(raw_name: str, node_type: str) -> str:
@@ -23,7 +26,37 @@ def normalize_cobol_symbol_name(raw_name: str, node_type: str) -> str:
         name = _SECTION_SUFFIX.sub("", name)
     elif node_type == "paragraph_header":
         name = _PARAGRAPH_SUFFIX.sub("", name)
-    return name.upper()
+    name = name.upper()
+    # FILLER is an unnamed data item, and the wrapper program is synthetic; "" drops both.
+    return "" if name in _UNNAMED else name
+
+
+def _level(node: Node) -> str:
+    level = node.named_children[0] if node.named_children else None
+    if level is None or level.type != "level_number" or level.text is None:
+        return ""
+    return level.text.decode("utf-8", errors="replace").strip()
+
+
+def cobol_condition_parent(def_node: Node) -> str | None:
+    """The data item a level-88 condition name belongs to, else None.
+
+    The grammar lists data entries as flat siblings, and an 88 entry follows
+    the item it tests or another 88 of that item. A FILLER item has no name
+    to hang the condition on, so its 88s stay top level.
+    """
+    if def_node.type != "data_description" or _level(def_node) != "88":
+        return None
+    item = def_node.prev_named_sibling
+    while item is not None and item.type == "data_description" and _level(item) == "88":
+        item = item.prev_named_sibling
+    if item is None or item.type != "data_description":
+        return None
+    name = next((c for c in item.named_children if c.type == "entry_name"), None)
+    if name is None or name.text is None:
+        return None
+    raw = name.text.decode("utf-8", errors="replace")
+    return normalize_cobol_symbol_name(raw, item.type) or None
 
 
 def normalize_cobol_call_target(raw_name: str, _node_type: str) -> str:

@@ -119,9 +119,7 @@ def _call_origins(
     # so a test reaching an unrelated symbol in the same file does not count.
     # An empty entry names no symbol, so that file is unseeded and keeps the
     # ``defines`` lookup; treating it as seeded would silence the file entirely.
-    seeded = {
-        seed: symbol_seeds[seed] for seed in seeds if symbol_seeds and symbol_seeds.get(seed)
-    }
+    seeded = {seed: symbol_seeds[seed] for seed in seeds if symbol_seeds and symbol_seeds.get(seed)}
     for seed, symbol_ids in seeded.items():
         for symbol in symbol_ids:
             origins.setdefault(symbol, {})[seed] = 0
@@ -215,7 +213,12 @@ def import_walk(
     return found, entries
 
 
-def helper_walk(targets: list[str], test_files: Collection[str]) -> Walk[dict[str, ReachedBy]]:
+def helper_walk(
+    targets: list[str],
+    test_files: Collection[str],
+    *,
+    rank: bool = True,
+) -> Walk[dict[str, ReachedBy]]:
     """Tests that import a file only tests import, or a barrel, which imports the target.
 
     A second import hop, kept off hubs: a blanket second hop was measured and
@@ -239,8 +242,9 @@ def helper_walk(targets: list[str], test_files: Collection[str]) -> Walk[dict[st
         if tests and (tests == who or PurePosixPath(middle).name in BARREL_FILENAMES):
             for target in middles[middle]:
                 reached.setdefault(target, set()).update(tests)
+    edited = frozenset(c.split("::", 1)[0] for c in targets)
     return {
-        target: capped(target, tests, "import-graph", changed=targets)
+        target: capped(target, tests, "import-graph", changed=targets, edited=edited, rank=rank)
         for target, tests in reached.items()
     }
 
@@ -255,6 +259,7 @@ def tier_walk(
     avoid: Collection[str] = frozenset(),
     helpers: bool = False,
     hubs: Collection[str] = frozenset(),
+    rank: bool = True,
 ) -> Walk[dict[str, ReachedBy]]:
     """The call walk, then the import walk for what it left, then (*helpers*) the helper hop.
 
@@ -270,6 +275,7 @@ def tier_walk(
     if not seeds or not test_files:
         return {}
     out: dict[str, ReachedBy] = {}
+    edited = frozenset(c.split("::", 1)[0] for c in seeds)
     if call_depth >= 1:
         found = yield from call_walk(
             seeds, test_files, call_depth, symbol_seeds=symbol_seeds, avoid=avoid
@@ -286,7 +292,9 @@ def tier_walk(
                 "call-graph",
                 reach=reach,
                 changed=seeds,
+                edited=edited,
                 transitive=tagged.get(seed, ()),
+                rank=rank,
             )
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
@@ -297,11 +305,18 @@ def tier_walk(
             # A test importing the target itself, not a file on the way to it.
             direct = {t for t, via in by_test.items() if file in via}
             out[seed] = capped(
-                seed, tests, "import-graph", direct=direct, changed=seeds, entries=by_test
+                seed,
+                tests,
+                "import-graph",
+                direct=direct,
+                changed=seeds,
+                edited=edited,
+                entries=by_test,
+                rank=rank,
             )
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and helpers:
-        out |= yield from helper_walk(unanswered, test_files)
+        out |= yield from helper_walk(unanswered, test_files, rank=rank)
     return out
 
 
@@ -371,15 +386,29 @@ def reaching_by_tier(
     )
 
 
-def closure_walk(targets: list[str], test_files: Collection[str]) -> Walk[dict[str, ReachedBy]]:
+def closure_walk(
+    targets: list[str],
+    test_files: Collection[str],
+    *,
+    rank: bool = True,
+) -> Walk[dict[str, ReachedBy]]:
     """Tests anywhere up the import closure of each target, in batches of ``CLOSURE_SEED_CAP``."""
     out: dict[str, ReachedBy] = {}
+    edited = frozenset(c.split("::", 1)[0] for c in targets)
     for start in range(0, len(targets), CLOSURE_SEED_CAP):
         batch = targets[start : start + CLOSURE_SEED_CAP]
         found, entries = yield from import_walk(batch, test_files, CLOSURE_DEPTH)
         for seed, tests in found.items():
             by_test = {t: frozenset(via) for t, via in entries[seed].items()}
-            out[seed] = capped(seed, tests, "import-graph", changed=targets, entries=by_test)
+            out[seed] = capped(
+                seed,
+                tests,
+                "import-graph",
+                changed=targets,
+                edited=edited,
+                entries=by_test,
+                rank=rank,
+            )
     return out
 
 
@@ -390,6 +419,7 @@ def states_walk(
     changed_tests: Collection[str] = frozenset(),
     contents: Mapping[str, str | bytes] | None = None,
     masks: Mapping[str, Collection[str]] | None = None,
+    rank: bool = True,
 ) -> Walk[dict[str, ReachRow]]:
     """A :class:`~.model.ReachRow` per path, the negative claim made only when it holds.
 
@@ -414,9 +444,7 @@ def states_walk(
             go_tests.setdefault(str(PurePosixPath(t).parent), []).append(t)
     # Only a test a runner collects is evidence; a touched conftest or helper is not.
     touched = sorted(
-        t
-        for t in set(changed_tests)
-        if is_runnable_test(t, is_test=(t in test_files) or None)
+        t for t in set(changed_tests) if is_runnable_test(t, is_test=(t in test_files) or None)
     )
     imported_by = yield from _touched_imports(paths, touched)
     for path in dict.fromkeys(paths):
@@ -432,11 +460,13 @@ def states_walk(
             mocked.setdefault(path, set()).update(replacing)
             named = [t for t in named if t not in replacing]
         if named:
-            rows[path] = ReachRow("reached", capped(path, named, "changed-test", changed=named))
+            rows[path] = ReachRow(
+                "reached", capped(path, named, "changed-test", changed=named, rank=rank)
+            )
             continue
         own = inline_tests(path, content, go_tests.get(str(PurePosixPath(path).parent), ()))
         if own:
-            rows[path] = ReachRow("reached", capped(path, own, "inline"))
+            rows[path] = ReachRow("reached", capped(path, own, "inline", rank=rank))
             continue
         rest.append(path)
     known = (yield Need("known", tuple(rest))) if rest else set()
@@ -446,9 +476,11 @@ def states_walk(
         elif not test_files:
             rows[path] = ReachRow("no_signal")
     rest = [p for p in rest if p not in rows]
-    found = _unmasked((yield from tier_walk(rest, test_files, helpers=True)), masks, mocked)
+    found = _unmasked(
+        (yield from tier_walk(rest, test_files, helpers=True, rank=rank)), masks, mocked
+    )
     left = [p for p in rest if p not in found]
-    found |= _unmasked((yield from closure_walk(left, test_files)), masks, mocked)
+    found |= _unmasked((yield from closure_walk(left, test_files, rank=rank)), masks, mocked)
     for path in rest:
         hit = found.get(path)
         if hit:
@@ -517,6 +549,7 @@ def reach_states(
     changed_tests: Collection[str] = frozenset(),
     contents: Mapping[str, str | bytes] | None = None,
     masks: Mapping[str, Collection[str]] | None = None,
+    rank: bool = True,
 ) -> dict[str, ReachRow]:
     """:func:`states_walk` over *maps*: whether tests reach each path, as a typed claim.
 
@@ -532,6 +565,7 @@ def reach_states(
             changed_tests=changed_tests,
             contents=contents,
             masks=masks,
+            rank=rank,
         ),
         maps,
     )

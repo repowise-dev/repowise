@@ -66,7 +66,13 @@ export default async function ConformancePage() {
   // Cycle *membership* comes from the report, but the count is recomputed from
   // the graph on every request, so it stays true even when nothing has run.
   const cycles = report?.cycles ?? [];
+  // Null when the graph's evidence is insufficient: a count of zero over a
+  // graph with no edges would read as "no cycles", which nothing measured.
+  const undetermined = metrics != null && metrics.score === null;
   const cycleCount = metrics?.cycle_count ?? cycles.length;
+  const notDetermined = t("notDetermined");
+  const fixed = (value: number | null | undefined, digits: number) =>
+    value == null ? "—" : value.toFixed(digits);
 
   const matrix = buildDsm(graph, report);
 
@@ -83,19 +89,23 @@ export default async function ConformancePage() {
     },
     {
       label: t("ribbon.propagationCost"),
-      value: metrics ? `${metrics.propagation_cost_pct.toFixed(1)}%` : "—",
+      value:
+        metrics?.propagation_cost_pct != null
+          ? `${metrics.propagation_cost_pct.toFixed(1)}%`
+          : "—",
       sub: t("ribbon.propagationCostSub"),
     },
     {
       label: t("ribbon.coreSize"),
-      value: metrics ? formatNumber(metrics.core_size) : "—",
-      sub: metrics
-        ? t("ribbon.coreSizeSubPct", { pct: Math.round(metrics.core_ratio * 100) })
-        : t("ribbon.coreSizeSub"),
+      value: metrics?.core_size != null ? formatNumber(metrics.core_size) : "—",
+      sub:
+        metrics?.core_ratio != null
+          ? t("ribbon.coreSizeSubPct", { pct: Math.round(metrics.core_ratio * 100) })
+          : t("ribbon.coreSizeSub"),
     },
     {
       label: t("ribbon.cycles"),
-      value: metrics ? formatNumber(cycleCount) : "—",
+      value: metrics && !undetermined ? formatNumber(cycleCount) : "—",
       sub: t("ribbon.cyclesSub"),
     },
   ];
@@ -108,10 +118,14 @@ export default async function ConformancePage() {
     >
       <PageLede
         label={t("ledeLabel")}
-        value={metrics ? metrics.score.toFixed(1) : "—"}
+        value={fixed(metrics?.score, 1)}
         unit={t("ledeUnit")}
         {...(metrics?.architecture_type
-          ? { band: { label: metrics.architecture_type } }
+          ? {
+              band: {
+                label: undetermined ? notDetermined : metrics.architecture_type,
+              },
+            }
           : {})}
         layout="beside"
         action={
@@ -120,10 +134,12 @@ export default async function ConformancePage() {
           </LedeLink>
         }
       >
-        {metrics ? (
+        {undetermined ? (
+          <p>{t("ledeNotDetermined", { reason: metrics?.evidence?.summary ?? "" })}</p>
+        ) : metrics ? (
           <p>
             {t("ledeSentence", {
-              pct: metrics.propagation_cost_pct.toFixed(1),
+              pct: fixed(metrics.propagation_cost_pct, 1),
               links: formatNumber(metrics.structural_edge_count),
               services: formatNumber(metrics.node_count),
             })}
@@ -204,10 +220,16 @@ export default async function ConformancePage() {
       </OverviewSection>
 
       <OverviewSection
-        title={t("cyclesTitle", { count: cycleCount })}
+        title={undetermined ? t("cyclesTitleUndetermined") : t("cyclesTitle", { count: cycleCount })}
         description={t("cyclesDescription")}
       >
-        {cycles.length === 0 ? (
+        {cycles.length === 0 && undetermined ? (
+          <EmptyState
+            className="p-6"
+            title={t("cyclesNotDeterminedTitle")}
+            description={metrics?.evidence?.summary ?? ""}
+          />
+        ) : cycles.length === 0 ? (
           <EmptyState
             className="p-6"
             title={

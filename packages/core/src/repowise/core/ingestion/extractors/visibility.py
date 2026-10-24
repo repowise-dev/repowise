@@ -207,6 +207,57 @@ def public_by_default(_name: str, _mods: list[str]) -> str:
     return "public"
 
 
+def apex_visibility(_name: str, _mods: list[str]) -> str:
+    """Apex's default access, private; ``refine_apex_visibility`` reads the keyword.
+
+    The modifier text is not searched: it carries the annotations, and
+    ``@SuppressWarnings('PMD.AvoidGlobalModifier')`` would read as ``global``.
+    """
+    return "private"
+
+
+# ``global`` (managed-package API) and ``webservice`` (SOAP, global only) are
+# wider than ``public``; the vocabulary has nothing wider, so they record as it.
+_APEX_ACCESS = (
+    ("global", "public"),
+    ("webservice", "public"),
+    ("public", "public"),
+    ("protected", "protected"),
+    ("private", "private"),
+)
+
+
+def _apex_modifier_keywords(def_node: Node) -> set[str]:
+    """The keyword node types under a declaration's ``modifiers``, any case."""
+    modifiers = next((c for c in def_node.children if c.type == "modifiers"), None)
+    if modifiers is None:
+        return set()
+    return {
+        keyword.type
+        for modifier in modifiers.children
+        if modifier.type == "modifier"
+        for keyword in modifier.children
+    }
+
+
+def refine_apex_visibility(def_node: Node) -> str:
+    """The access keyword an Apex declaration writes, else its scope's default.
+
+    Keywords are ``modifier`` children of ``modifiers``, typed by the keyword
+    whatever case it is written in. With none, an interface member is public
+    and anything else is private. A trigger is public.
+    """
+    if def_node.type == "trigger_declaration":
+        # Run by the platform on DML from any context; it takes no modifier.
+        return "public"
+    written = _apex_modifier_keywords(def_node)
+    for keyword, visibility in _APEX_ACCESS:
+        if keyword in written:
+            return visibility
+    parent = def_node.parent
+    return "public" if parent is not None and parent.type == "interface_body" else "private"
+
+
 # Elixir spells privacy in the definition keyword rather than in a modifier:
 # `defp` / `defmacrop` / `defguardp` are module-private, their unsuffixed
 # forms are public. elixir.scm captures the keyword as @symbol.modifiers.

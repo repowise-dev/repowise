@@ -29,6 +29,7 @@ NATS = TopicDialect(
             name=Arg(pos=0),
             kind=TOPIC_KIND_SUBJECT,
             pattern=TOPIC_PATTERN_NATS,
+            requires=("Subscribe", "subscribe"),
         ),
         TopicCall(
             head=re.compile(_RECEIVER + r"(?:Publish|publish)\s*\("),
@@ -37,6 +38,7 @@ NATS = TopicDialect(
             extensions=_LANGUAGES,
             name=Arg(pos=0),
             kind=TOPIC_KIND_SUBJECT,
+            requires=("Publish", "publish"),
         ),
     ),
 )

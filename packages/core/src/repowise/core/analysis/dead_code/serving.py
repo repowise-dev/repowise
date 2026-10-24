@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import posixpath
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Protocol
@@ -179,18 +179,16 @@ def apply_filters(findings: list, filters: FindingFilters) -> list:
     return [f for f in findings if all(check(f) for check in checks)]
 
 
-def summary_counts(
-    shown: list, withdrawn: Callable[[Any], bool] | None = None
-) -> dict[str, Any]:
+def summary_counts(shown: list) -> dict[str, Any]:
     """Counts over every shown open finding; merge per-repo parts with
     :func:`merge_summary_counts` so no caller holds every repo's rows at once.
-    *withdrawn* (see :func:`cross_repo_withdraws`) keeps safe counts in step with the tiers.
+    Pass :func:`serve_findings` rows so safe counts agree with the tiers.
     """
     by_kind: dict[str, int] = {}
     for f in shown:
         kind = field(f, "kind")
         by_kind[kind] = by_kind.get(kind, 0) + 1
-    safe = [f for f in shown if is_safe(f) and not (withdrawn and withdrawn(f))]
+    safe = [f for f in shown if is_safe(f)]
     return {
         "total_findings": len(shown),
         "deletable_lines": sum(field(f, "lines") or 0 for f in safe),
@@ -332,6 +330,9 @@ def serialize_finding(
     label = verification_label(result["kind"])
     if label:
         result["verification"] = label
+    note = field(f, "cross_repo_note")
+    if note:
+        result["cross_repo_note"] = note
     if git_meta_map:
         meaningful = last_meaningful_change(git_meta_map.get(result["file_path"]))
         if meaningful:
@@ -339,7 +340,8 @@ def serialize_finding(
     return result
 
 
-def _tier_of(confidence: float) -> str:
+def tier_of(confidence: float) -> str:
+    """The tier *confidence* falls in, by :data:`TIER_FLOORS`."""
     if confidence >= TIER_FLOORS["high"]:
         return "high"
     if confidence >= TIER_FLOORS["medium"]:
@@ -361,7 +363,7 @@ def build_tiers(
     """
     banded: dict[str, list[dict]] = {"high": [], "medium": [], "low": []}
     for f in findings:
-        banded[_tier_of(f["confidence"])].append(f)
+        banded[tier_of(f["confidence"])].append(f)
 
     tiers: dict[str, Any] = {}
     for name, items in banded.items():
@@ -449,7 +451,7 @@ def _recommendation(tiers: dict) -> str:
 
 
 class CrossRepoLookup(Protocol):
-    """What :func:`adjust_cross_repo` needs from the workspace's cross-repo data."""
+    """What :func:`serve_findings` needs from the workspace's cross-repo data."""
 
     def has_cross_repo_consumers(self, repo_alias: str, file_path: str) -> list[dict]: ...
 
@@ -460,77 +462,127 @@ class CrossRepoLookup(Protocol):
     def get_contract_links_as_provider(self, repo_alias: str, file_path: str) -> list[dict]: ...
 
 
-def cross_repo_withdraws(
+@dataclass(frozen=True)
+class CrossRepoCut:
+    """What another repo's use does to a finding: never safe, maybe lower, and why."""
+
+    factor: float
+    note: str
+
+
+# A contract link names the file another repo calls; co-change and package
+# links only say a consumer may exist, so they withdraw safety and leave the
+# confidence alone. Measured on a three-repo workspace: 7 of 7 findings those
+# weaker links had cut had no consumer in another repo.
+_CONTRACT_FACTOR = 0.3
+
+
+def cross_repo_cut(
     lookup: CrossRepoLookup | None, alias: str | None, file_path: str, kind: Any
-) -> bool:
-    """Whether :func:`adjust_cross_repo` would withdraw ``safe_to_delete``."""
+) -> CrossRepoCut | None:
+    """What another workspace repo's use of *file_path* does to its finding, or None.
+
+    A contract link (HTTP route, generated client) from another repo lowers
+    confidence for every kind. Co-change partners in another repo, or a
+    package dependent of an export's repo, only withdraw ``safe_to_delete``.
+    """
     if lookup is None or not alias:
-        return False
-    if lookup.has_cross_repo_consumers(alias, file_path):
-        return True
-    return kind == "unused_export" and bool(lookup.get_repos_depending_on(alias))
-
-
-def adjust_cross_repo(
-    findings: list[dict], lookup: CrossRepoLookup | None, repo_alias: str | None = None
-) -> None:
-    """Lower confidence on serialized findings that other repos consume, in place.
-
-    Runs before :func:`build_tiers`, so a lowered finding lands in the tier its
-    new confidence belongs to. A finding's own ``repo`` wins over *repo_alias*,
-    so one call covers both a single repo and the workspace-wide merge.
-    """
-    if lookup is None:
-        return
-    for finding in findings:
-        alias = finding.get("repo", repo_alias)
-        if alias:
-            _adjust_one(finding, lookup, alias)
-
-
-def _adjust_one(finding: dict, lookup: CrossRepoLookup, alias: str) -> None:
-    consumers = lookup.has_cross_repo_consumers(alias, finding.get("file_path", ""))
-    if consumers:
-        finding["confidence"] = round(finding["confidence"] * 0.5, 2)
-        finding["safe_to_delete"] = False
-        consumer_repos = sorted({c["repo"] for c in consumers})
-        finding["cross_repo_note"] = (
-            f"Confidence reduced: {len(consumers)} cross-repo consumer(s) "
-            f"in {', '.join(consumer_repos)}."
+        return None
+    if contract_repos := _contract_consumers(lookup, alias, file_path):
+        noun = "export" if kind == "unused_export" else "file"
+        return CrossRepoCut(
+            _CONTRACT_FACTOR,
+            f"This {noun} may be consumed by: {', '.join(sorted(contract_repos))}. "
+            "Verify before deletion.",
         )
-        return
-    # Package-level dependents may consume an export without a file edge.
-    if finding.get("kind") != "unused_export":
-        return
-    if lookup.get_repos_depending_on(alias):
-        finding["confidence"] = round(finding["confidence"] * 0.3, 2)
-        finding["safe_to_delete"] = False
-        finding["cross_repo_note"] = _package_dependent_note(
-            lookup, alias, finding.get("file_path", "")
+    if partners := lookup.has_cross_repo_consumers(alias, file_path):
+        repos = sorted({c["repo"] for c in partners})
+        return CrossRepoCut(
+            1.0,
+            f"Not cleanup-ready: changes together with {len(partners)} file(s) in "
+            f"{', '.join(repos)}. Verify before deletion.",
         )
+    if kind == "unused_export" and lookup.get_repos_depending_on(alias):
+        return CrossRepoCut(1.0, _package_dependent_note(lookup, alias, file_path))
+    return None
 
 
-def _package_dependent_note(lookup: CrossRepoLookup, alias: str, file_path: str) -> str:
-    """Name only the dependents whose recorded link reaches *file_path*.
+class ServedFinding:
+    """A stored finding as every surface shows it: the cross-repo cut applied.
 
-    The cut itself stays repo-wide: package links miss consumers (an
-    unresolved PyPI pin, a CLI call), so they can name a consumer but never
-    prove there is none.
+    Reads through to the row for every other field, so filters, serializers
+    and response models take it wherever they take the row.
     """
-    reaching = {
+
+    __slots__ = ("confidence", "cross_repo_note", "row", "safe_to_delete")
+
+    def __init__(self, row: Any, cut: CrossRepoCut | None) -> None:
+        self.row = row
+        self.confidence = field(row, "confidence")
+        self.safe_to_delete = field(row, "safe_to_delete")
+        self.cross_repo_note = None
+        if cut is not None:
+            if cut.factor != 1.0:
+                self.confidence = round(self.confidence * cut.factor, 2)
+            self.safe_to_delete = False
+            self.cross_repo_note = cut.note
+
+    def __getattr__(self, name: str) -> Any:
+        row = object.__getattribute__(self, "row")
+        if isinstance(row, Mapping):
+            try:
+                return row[name]
+            except KeyError:
+                raise AttributeError(name) from None
+        return getattr(row, name)
+
+
+def serve_findings(
+    rows: list,
+    lookup: CrossRepoLookup | None,
+    alias: str | None,
+    filters: FindingFilters | None = None,
+) -> list[ServedFinding]:
+    """The one read every surface serves findings through.
+
+    The cross-repo cut runs first, so the confidence floor, ``safe_only`` and
+    the tiers all see the confidence the finding is shown with (#4196).
+    """
+    served = [
+        ServedFinding(r, cross_repo_cut(lookup, alias, field(r, "file_path"), field(r, "kind")))
+        for r in rows
+    ]
+    return apply_filters(served, filters) if filters is not None else served
+
+
+def _contract_consumers(lookup: CrossRepoLookup, alias: str, file_path: str) -> set[str]:
+    """The other repos a recorded contract link from *file_path* reaches."""
+    return {
         link["consumer_repo"]
         for link in lookup.get_contract_links_as_provider(alias, file_path)
         if link.get("consumer_repo") not in (None, alias)
     }
-    reaching.update(
+
+
+def _package_dependent_note(lookup: CrossRepoLookup, alias: str, file_path: str) -> str:
+    """Name only the dependents whose package link reaches *file_path*.
+
+    Safety is withdrawn either way: package links miss consumers (an
+    unresolved PyPI pin, a CLI call), so they can name a consumer but never
+    prove there is none.
+    """
+    reaching = {
         link["source_repo"]
         for link in lookup.get_package_consumers(alias)
         if _inside_manifest(file_path, link.get("target_manifest"))
-    )
+    }
     if reaching:
-        return f"This export may be consumed by: {', '.join(sorted(reaching))}. Verify before deletion."
+        return (
+            f"Not cleanup-ready: {', '.join(sorted(reaching))} may consume this export. "
+            "Verify before deletion."
+        )
     return (
-        "Confidence lowered: another workspace repo depends on this one, though no recorded "
+        "Not cleanup-ready: another workspace repo depends on this one, though no recorded "
         "package or contract link reaches this file. Verify before deletion."
     )
 

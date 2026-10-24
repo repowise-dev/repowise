@@ -12,6 +12,7 @@ import type {
   WorkspaceTestImpactResponse,
 } from "@repowise-dev/types/workspace";
 import { contractTypeLabel } from "@repowise-dev/ui/workspace/contract-type-label";
+import { linkStrategyCopy } from "@repowise-dev/ui/workspace/link-provenance";
 import { ContractTestsSection } from "@repowise-dev/ui/workspace/contract-tests-section";
 import {
   asContractSchema,
@@ -301,6 +302,12 @@ async function LinkTable({
   repoIds: Record<string, string>;
 }) {
   const t = await getTranslations("contracts");
+  // A strategy this build predates reads as its humanised token; a link stored
+  // before strategies reads as its match type.
+  const strategyLabel = (link: WorkspaceContractLinkEntry) =>
+    link.strategy && t.has(`detail.strategy.${link.strategy}`)
+      ? t(`detail.strategy.${link.strategy}`)
+      : (linkStrategyCopy(link.strategy)?.label ?? link.match_type);
   // A local table rather than `ContractLinksTable`: that one leads with the
   // contract id and its type, and on this page both of those are the heading.
   // What is left to say is the other side of each link.
@@ -356,7 +363,7 @@ async function LinkTable({
                 </Td>
                 <Td className="max-lg:hidden">
                   <span className="text-xs text-[var(--color-text-secondary)]">
-                    {link.match_type}
+                    {strategyLabel(link)}
                   </span>
                 </Td>
                 <Td className="max-lg:hidden">

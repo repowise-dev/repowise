@@ -46,7 +46,7 @@ def _consumer(repo, cid, ctype="http", file="src/client.py") -> Contract:
 
 
 def _link(
-    cid, p_repo, p_file, c_repo, c_file, ctype="http", match="exact", conf=0.72
+    cid, p_repo, p_file, c_repo, c_file, ctype="http", match="exact", conf=0.72, strategy=None
 ) -> ContractLink:
     return ContractLink(
         contract_id=cid,
@@ -61,6 +61,7 @@ def _link(
         consumer_file=c_file,
         consumer_symbol="call",
         consumer_service=None,
+        strategy=strategy,
     )
 
 
@@ -173,8 +174,10 @@ def test_parallel_links_aggregate_into_one_weighted_edge():
         _consumer("web", "http::GET::/b", file="web/c.py"),
     ]
     links = [
-        _link("http::GET::/a", "api", "api/h.py", "web", "web/c.py", match="exact", conf=0.9),
-        _link("http::GET::/b", "api", "api/h.py", "web", "web/c.py", match="candidate", conf=0.5),
+        _link("http::GET::/b", "api", "api/h.py", "web", "web/c.py", match="candidate", conf=0.5,
+              strategy="prefix_stripped"),
+        _link("http::GET::/a", "api", "api/h.py", "web", "web/c.py", match="exact", conf=0.9,
+              strategy="exact_id"),
     ]
     graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
     edges = _edges_by_key(graph)
@@ -182,6 +185,7 @@ def test_parallel_links_aggregate_into_one_weighted_edge():
     assert edge.weight == 2
     assert edge.confidence == 0.9  # max of contributors
     assert edge.match_type == "exact"  # most authoritative wins
+    assert edge.strategy == "exact_id"  # the strategy behind the edge's confidence
     assert set(edge.contract_refs) == {"http::GET::/a", "http::GET::/b"}
 
 
@@ -329,6 +333,7 @@ def test_system_graph_json_shape_is_locked():
         "weight",
         "structural",
         "contract_refs",
+        "strategy",
     }
     assert set(data["diagnostics"]) == {
         "total_providers",
@@ -339,14 +344,19 @@ def test_system_graph_json_shape_is_locked():
         "unmatched_consumers",
         "unmatched_by_reason",
         "orphan_providers",
+        "in_service_consumers",
         "providers_by_layer",
         "consumers_by_layer",
         "http_consumers_unresolved",
         "http_consumer_coverage",
+        "http_consumers_linked",
+        "http_link_coverage",
         "symbol_identity",
         "schema_coverage",
         "openapi",
         "code_api",
+        "unrecognised_call_files",
+        "unrecognised_call_file_count",
     }
 
 
@@ -370,3 +380,22 @@ def test_save_and_load(tmp_path: Path):
 
 def test_load_missing_returns_none(tmp_path: Path):
     assert load_system_graph(tmp_path) is None
+
+
+def test_adjacency_is_the_one_view_every_walk_reads():
+    from repowise.core.workspace.system_graph import SystemEdge
+
+    def edge(src, tgt, kind, structural=True):
+        return SystemEdge(
+            id=f"{src}->{tgt}:{kind}", source=src, target=tgt, kind=kind,
+            match_type="exact", confidence=1.0, weight=1, structural=structural,
+        )
+
+    http, event, co = edge("a", "b", "http"), edge("a", "b", "event"), edge("b", "c", "co_change", False)
+    graph = SystemGraph(edges=[http, event, co])
+    assert graph.adjacency() == {"a": {"b": [http, event]}}
+    assert graph.adjacency(impact=True) == {"b": {"a": [http, event]}}
+    assert graph.adjacency(behavioral=True, impact=True) == {
+        "b": {"a": [http, event], "c": [co]},
+        "c": {"b": [co]},
+    }

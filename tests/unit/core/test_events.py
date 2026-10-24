@@ -343,9 +343,11 @@ def test_owner_key_is_kept_and_digests_are_not_plain_hashes(tmp_path):
 
     key = snapshot_mod.owner_key(tmp_path)
     assert key is not None and snapshot_mod.owner_key(tmp_path) == key
-    # Some repos commit .repowise/: the key gets its own ignore rule.
-    ignored = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert ".repowise/events.key" in ignored
+    # Some repos commit .repowise/: the key gets its own ignore rule, kept
+    # inside .repowise/ so nothing outside it changes.
+    ignored = (tmp_path / ".repowise" / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "/events.key" in ignored
+    assert not (tmp_path / ".gitignore").exists()
     digest = snapshot_mod._keyed(key, "ann@example.com")
     assert digest != hashlib.sha256(b"ann@example.com").hexdigest()[: len(digest)]
 
@@ -357,6 +359,7 @@ def test_owner_key_leaves_a_gitignore_that_already_covers_it(tmp_path):
     (tmp_path / ".gitignore").write_text(".repowise/\n", encoding="utf-8")
     assert snapshot_mod.owner_key(tmp_path) is not None
     assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == ".repowise/\n"
+    assert not (tmp_path / ".repowise" / ".gitignore").exists()
 
 
 def test_owner_key_is_still_gitignored_when_only_info_exclude_covers_it(tmp_path):
@@ -366,8 +369,32 @@ def test_owner_key_is_still_gitignored_when_only_info_exclude_covers_it(tmp_path
     (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".git" / "info" / "exclude").write_text(".repowise/\n", encoding="utf-8")
     assert snapshot_mod.owner_key(tmp_path) is not None
-    ignored = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert ".repowise/events.key" in ignored
+    ignored = (tmp_path / ".repowise" / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "/events.key" in ignored
+
+
+def test_owner_key_leaves_the_working_tree_clean_outside_repowise(tmp_path):
+    """A committed .repowise/ still keeps the key out, and the root is untouched."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    git("init", "-q")
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text("x: 1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "init")
+
+    assert snapshot_mod.owner_key(tmp_path) is not None
+    assert git("status", "--porcelain", "--untracked-files=all") == "?? .repowise/.gitignore\n"
 
 
 def test_main_owners_are_digested_under_the_repo_key(tmp_path):

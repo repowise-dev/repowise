@@ -1,0 +1,4130 @@
+{
+  "apex/AccountService.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/AccountService.cls",
+      "language": "apex",
+      "size_bytes": 1303,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService",
+        "name": "AccountService",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService",
+        "kind": "class",
+        "signature": "class AccountService",
+        "start_line": 4,
+        "end_line": 49,
+        "docstring": "Account operations exposed to Lightning.",
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::status",
+        "name": "status",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.status",
+        "kind": "variable",
+        "signature": "status",
+        "start_line": 5,
+        "end_line": 5,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::AccountService#0",
+        "name": "AccountService",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.AccountService",
+        "kind": "method",
+        "signature": "AccountService()",
+        "start_line": 8,
+        "end_line": 10,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::AccountService#1",
+        "name": "AccountService",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.AccountService",
+        "kind": "method",
+        "signature": "AccountService(Integer size)",
+        "start_line": 12,
+        "end_line": 14,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "name": "findByName",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.findByName",
+        "kind": "method",
+        "signature": "findByName(String name) -> List<Account>",
+        "start_line": 17,
+        "end_line": 24,
+        "docstring": "Accounts matching a name.",
+        "decorators": [
+          "@AuraEnabled(cacheable=true)\n    public static"
+        ],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public",
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "name": "execute",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.execute",
+        "kind": "method",
+        "signature": "execute(QueueableContext context) -> void",
+        "start_line": 26,
+        "end_line": 32,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::notify",
+        "name": "notify",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.notify",
+        "kind": "method",
+        "signature": "notify(Account acc) -> void",
+        "start_line": 34,
+        "end_line": 36,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::helper",
+        "name": "helper",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.helper",
+        "kind": "method",
+        "signature": "helper() -> void",
+        "start_line": 38,
+        "end_line": 38,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::Result",
+        "name": "Result",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.Result",
+        "kind": "class",
+        "signature": "class Result",
+        "start_line": 40,
+        "end_line": 42,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::Result::ok",
+        "name": "ok",
+        "qualified_name": "lang_samples.apex.AccountService.Result.ok",
+        "kind": "variable",
+        "signature": "ok",
+        "start_line": 41,
+        "end_line": 41,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Result",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::Notifier",
+        "name": "Notifier",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.Notifier",
+        "kind": "interface",
+        "signature": "interface Notifier",
+        "start_line": 44,
+        "end_line": 46,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::Notifier::send",
+        "name": "send",
+        "qualified_name": "lang_samples.apex.AccountService.Notifier.send",
+        "kind": "method",
+        "signature": "send(String message) -> void",
+        "start_line": 45,
+        "end_line": 45,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Notifier",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/AccountService.cls::AccountService::Mode",
+        "name": "Mode",
+        "qualified_name": "lang_samples.apex.AccountService.AccountService.Mode",
+        "kind": "enum",
+        "signature": "enum Mode",
+        "start_line": 48,
+        "end_line": 48,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "AccountService",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "AccountService"
+    ],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "AccountSelector",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "line": 19,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "byName",
+        "receiver_name": "selector",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "line": 20,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "name"
+        ]
+      },
+      {
+        "target_name": "log",
+        "receiver_name": "AccountSelector",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "line": 21,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "name"
+        ]
+      },
+      {
+        "target_name": "debug",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "line": 22,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "size",
+        "receiver_name": "rows",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "line": 22,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "Account",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "line": 27,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "notify",
+        "receiver_name": "this",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "line": 29,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "acc"
+        ]
+      },
+      {
+        "target_name": "Builder",
+        "receiver_name": "Result",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "line": 30,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "build",
+        "receiver_name": "Result.Builder",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "line": 30,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "lookup",
+        "receiver_name": "Result.Codes",
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "line": 31,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          "String"
+        ],
+        "argument_names": null
+      },
+      {
+        "target_name": "helper",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::notify",
+        "line": 35,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [
+      {
+        "child_name": "AccountService",
+        "parent_name": "BaseService",
+        "kind": "extends",
+        "line": 4
+      },
+      {
+        "child_name": "AccountService",
+        "parent_name": "Queueable",
+        "kind": "implements",
+        "line": 4
+      },
+      {
+        "child_name": "AccountService",
+        "parent_name": "AllowsCallouts",
+        "kind": "implements",
+        "line": 4
+      },
+      {
+        "child_name": "Notifier",
+        "parent_name": "Callable",
+        "kind": "extends",
+        "line": 44
+      }
+    ],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "6949da34bdf9a93e9ad34a77548866187f44e3bea69f007715cdbcfbad9f5df0",
+    "type_refs": [
+      {
+        "type_name": "BaseService",
+        "line": 4,
+        "origin": "extends"
+      },
+      {
+        "type_name": "Account",
+        "line": 18,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "AccountSelector",
+        "line": 19,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 20,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 27,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Builder",
+        "line": 30,
+        "origin": "composite_literal"
+      },
+      {
+        "type_name": "Account",
+        "line": 34,
+        "origin": "param_type"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::execute",
+        "object_name": "Account",
+        "line": 28,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": [
+          "Name"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/AccountService.cls::AccountService::findByName",
+        "object_name": "Account",
+        "line": 23,
+        "path": [
+          "Name"
+        ]
+      }
+    ]
+  },
+  "apex/AccountTrigger.trigger": {
+    "file_info": {
+      "path": "lang_samples/apex/AccountTrigger.trigger",
+      "language": "apex",
+      "size_bytes": 152,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/AccountTrigger.trigger::AccountTrigger",
+        "name": "AccountTrigger",
+        "qualified_name": "lang_samples.apex.AccountTrigger.AccountTrigger",
+        "kind": "function",
+        "signature": "trigger AccountTrigger on Account (before insert, after update)",
+        "start_line": 1,
+        "end_line": 4,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "AccountTrigger"
+    ],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "run",
+        "receiver_name": "AccountTriggerHandler",
+        "caller_symbol_id": "lang_samples/apex/AccountTrigger.trigger::AccountTrigger",
+        "line": 2,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "AccountService",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/AccountTrigger.trigger::AccountTrigger",
+        "line": 3,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "execute",
+        "receiver_name": "AccountService",
+        "caller_symbol_id": "lang_samples/apex/AccountTrigger.trigger::AccountTrigger",
+        "line": 3,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "0c93f053393375048548902958583dcef31915350a0a0d910be501293a7a114a",
+    "type_refs": [
+      {
+        "type_name": "AccountService",
+        "line": 3,
+        "origin": "composite_literal"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/AccountTrigger.trigger::AccountTrigger",
+        "object_name": "Account",
+        "line": 1,
+        "path": []
+      }
+    ]
+  },
+  "apex/assertions.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/assertions.cls",
+      "language": "apex",
+      "size_bytes": 890,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/assertions.cls::Assertions",
+        "name": "Assertions",
+        "qualified_name": "lang_samples.apex.assertions.Assertions",
+        "kind": "class",
+        "signature": "class Assertions",
+        "start_line": 2,
+        "end_line": 40,
+        "docstring": null,
+        "decorators": [
+          "@IsTest\nprivate"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/assertions.cls::Assertions::testManyAsserts",
+        "name": "testManyAsserts",
+        "qualified_name": "lang_samples.apex.assertions.Assertions.testManyAsserts",
+        "kind": "method",
+        "signature": "testManyAsserts() -> void",
+        "start_line": 4,
+        "end_line": 12,
+        "docstring": null,
+        "decorators": [
+          "@IsTest\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Assertions",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/assertions.cls::Assertions::testFewAsserts",
+        "name": "testFewAsserts",
+        "qualified_name": "lang_samples.apex.assertions.Assertions.testFewAsserts",
+        "kind": "method",
+        "signature": "testFewAsserts() -> void",
+        "start_line": 14,
+        "end_line": 20,
+        "docstring": null,
+        "decorators": [
+          "@isTest\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Assertions",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/assertions.cls::Assertions::legacyCase",
+        "name": "legacyCase",
+        "qualified_name": "lang_samples.apex.assertions.Assertions.legacyCase",
+        "kind": "method",
+        "signature": "legacyCase() -> void",
+        "start_line": 22,
+        "end_line": 25,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Assertions",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static",
+          "testmethod"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/assertions.cls::Assertions::checksNothing",
+        "name": "checksNothing",
+        "qualified_name": "lang_samples.apex.assertions.Assertions.checksNothing",
+        "kind": "method",
+        "signature": "checksNothing() -> void",
+        "start_line": 27,
+        "end_line": 30,
+        "docstring": null,
+        "decorators": [
+          "@IsTest\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Assertions",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/assertions.cls::Assertions::makeData",
+        "name": "makeData",
+        "qualified_name": "lang_samples.apex.assertions.Assertions.makeData",
+        "kind": "method",
+        "signature": "makeData() -> void",
+        "start_line": 32,
+        "end_line": 35,
+        "docstring": null,
+        "decorators": [
+          "@TestSetup\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Assertions",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/assertions.cls::Assertions::compute",
+        "name": "compute",
+        "qualified_name": "lang_samples.apex.assertions.Assertions.compute",
+        "kind": "method",
+        "signature": "compute() -> Integer",
+        "start_line": 37,
+        "end_line": 39,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Assertions",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private",
+          "static"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "compute",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testManyAsserts",
+        "line": 6,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "assertEquals",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testManyAsserts",
+        "line": 7,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          "Integer",
+          null
+        ],
+        "argument_names": [
+          null,
+          "x"
+        ]
+      },
+      {
+        "target_name": "assertNotEquals",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testManyAsserts",
+        "line": 8,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          "Integer",
+          null
+        ],
+        "argument_names": [
+          null,
+          "x"
+        ]
+      },
+      {
+        "target_name": "areEqual",
+        "receiver_name": "Assert",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testManyAsserts",
+        "line": 9,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          "Integer",
+          null
+        ],
+        "argument_names": [
+          null,
+          "x"
+        ]
+      },
+      {
+        "target_name": "isTrue",
+        "receiver_name": "Assert",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testManyAsserts",
+        "line": 10,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "assert",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testManyAsserts",
+        "line": 11,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          null,
+          "String"
+        ],
+        "argument_names": null
+      },
+      {
+        "target_name": "compute",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testFewAsserts",
+        "line": 16,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "areEqual",
+        "receiver_name": "Assert",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testFewAsserts",
+        "line": 17,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          "Integer",
+          null
+        ],
+        "argument_names": [
+          null,
+          "x"
+        ]
+      },
+      {
+        "target_name": "areEqual",
+        "receiver_name": "Assert",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::testFewAsserts",
+        "line": 19,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          "Integer",
+          null
+        ],
+        "argument_names": [
+          null,
+          "y"
+        ]
+      },
+      {
+        "target_name": "compute",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::legacyCase",
+        "line": 23,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "assertEquals",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::legacyCase",
+        "line": 24,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          "Integer",
+          null
+        ],
+        "argument_names": [
+          null,
+          "x"
+        ]
+      },
+      {
+        "target_name": "compute",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::checksNothing",
+        "line": 29,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "Account",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/assertions.cls::Assertions::makeData",
+        "line": 34,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "30792ace5c3c34b05238ff4ca9b49e66033d3b2bace9fe25c66ceed02b6cb08d",
+    "type_refs": [
+      {
+        "type_name": "Account",
+        "line": 34,
+        "origin": "composite_literal"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/assertions.cls::Assertions::makeData",
+        "object_name": "Account",
+        "line": 34,
+        "path": []
+      }
+    ]
+  },
+  "apex/classes.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/classes.cls",
+      "language": "apex",
+      "size_bytes": 1484,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/classes.cls::Classes",
+        "name": "Classes",
+        "qualified_name": "lang_samples.apex.classes.Classes",
+        "kind": "class",
+        "signature": "class Classes",
+        "start_line": 3,
+        "end_line": 67,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Classes::Cohesive",
+        "name": "Cohesive",
+        "qualified_name": "lang_samples.apex.classes.Classes.Cohesive",
+        "kind": "class",
+        "signature": "class Cohesive",
+        "start_line": 4,
+        "end_line": 21,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Classes",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Cohesive::add",
+        "name": "add",
+        "qualified_name": "lang_samples.apex.classes.Cohesive.add",
+        "kind": "method",
+        "signature": "add(Integer n) -> void",
+        "start_line": 8,
+        "end_line": 11,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Cohesive",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Cohesive::average",
+        "name": "average",
+        "qualified_name": "lang_samples.apex.classes.Cohesive.average",
+        "kind": "method",
+        "signature": "average() -> Integer",
+        "start_line": 13,
+        "end_line": 15,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Cohesive",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Cohesive::reset",
+        "name": "reset",
+        "qualified_name": "lang_samples.apex.classes.Cohesive.reset",
+        "kind": "method",
+        "signature": "reset() -> void",
+        "start_line": 17,
+        "end_line": 20,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Cohesive",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Classes::Splintered",
+        "name": "Splintered",
+        "qualified_name": "lang_samples.apex.classes.Classes.Splintered",
+        "kind": "class",
+        "signature": "class Splintered",
+        "start_line": 23,
+        "end_line": 46,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Classes",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Splintered::setA",
+        "name": "setA",
+        "qualified_name": "lang_samples.apex.classes.Splintered.setA",
+        "kind": "method",
+        "signature": "setA(Integer v) -> void",
+        "start_line": 29,
+        "end_line": 32,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Splintered",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Splintered::getA",
+        "name": "getA",
+        "qualified_name": "lang_samples.apex.classes.Splintered.getA",
+        "kind": "method",
+        "signature": "getA() -> Integer",
+        "start_line": 34,
+        "end_line": 36,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Splintered",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Splintered::setB",
+        "name": "setB",
+        "qualified_name": "lang_samples.apex.classes.Splintered.setB",
+        "kind": "method",
+        "signature": "setB(Integer v) -> void",
+        "start_line": 38,
+        "end_line": 41,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Splintered",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Splintered::getB",
+        "name": "getB",
+        "qualified_name": "lang_samples.apex.classes.Splintered.getB",
+        "kind": "method",
+        "signature": "getB() -> Integer",
+        "start_line": 43,
+        "end_line": 45,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Splintered",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Classes::WithProperties",
+        "name": "WithProperties",
+        "qualified_name": "lang_samples.apex.classes.Classes.WithProperties",
+        "kind": "class",
+        "signature": "class WithProperties",
+        "start_line": 48,
+        "end_line": 60,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Classes",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::WithProperties::label",
+        "name": "label",
+        "qualified_name": "lang_samples.apex.classes.WithProperties.label",
+        "kind": "variable",
+        "signature": "label",
+        "start_line": 49,
+        "end_line": 49,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "WithProperties",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::WithProperties::size",
+        "name": "size",
+        "qualified_name": "lang_samples.apex.classes.WithProperties.size",
+        "kind": "variable",
+        "signature": "size",
+        "start_line": 50,
+        "end_line": 54,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "WithProperties",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::WithProperties::add",
+        "name": "add",
+        "qualified_name": "lang_samples.apex.classes.WithProperties.add",
+        "kind": "method",
+        "signature": "add(String item) -> void",
+        "start_line": 57,
+        "end_line": 59,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "WithProperties",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Classes::Shape",
+        "name": "Shape",
+        "qualified_name": "lang_samples.apex.classes.Classes.Shape",
+        "kind": "interface",
+        "signature": "interface Shape",
+        "start_line": 62,
+        "end_line": 64,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Classes",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Shape::area",
+        "name": "area",
+        "qualified_name": "lang_samples.apex.classes.Shape.area",
+        "kind": "method",
+        "signature": "area() -> Decimal",
+        "start_line": 63,
+        "end_line": 63,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Shape",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/classes.cls::Classes::Mode",
+        "name": "Mode",
+        "qualified_name": "lang_samples.apex.classes.Classes.Mode",
+        "kind": "enum",
+        "signature": "enum Mode",
+        "start_line": 66,
+        "end_line": 66,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Classes",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "Classes"
+    ],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "size",
+        "receiver_name": "items",
+        "caller_symbol_id": "lang_samples/apex/classes.cls::WithProperties::size",
+        "line": 52,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "add",
+        "receiver_name": "items",
+        "caller_symbol_id": "lang_samples/apex/classes.cls::WithProperties::add",
+        "line": 58,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "item"
+        ]
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "a71e5ece2bf58ebc7cf1bb5273d5b28f488b9a7c14614188f281d2fd9c42ec6a",
+    "type_refs": [],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": []
+  },
+  "apex/health_markers.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/health_markers.cls",
+      "language": "apex",
+      "size_bytes": 2708,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers",
+        "name": "HealthMarkers",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers",
+        "kind": "class",
+        "signature": "class HealthMarkers",
+        "start_line": 4,
+        "end_line": 78,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::searchText",
+        "name": "searchText",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.searchText",
+        "kind": "variable",
+        "signature": "searchText",
+        "start_line": 7,
+        "end_line": 7,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::byName",
+        "name": "byName",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.byName",
+        "kind": "method",
+        "signature": "byName(String name) -> List<Account>",
+        "start_line": 12,
+        "end_line": 14,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::byBuiltClause",
+        "name": "byBuiltClause",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.byBuiltClause",
+        "kind": "method",
+        "signature": "byBuiltClause(String city) -> List<Account>",
+        "start_line": 16,
+        "end_line": 21,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::bySearchProperty",
+        "name": "bySearchProperty",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.bySearchProperty",
+        "kind": "method",
+        "signature": "bySearchProperty() -> List<List<SObject>>",
+        "start_line": 23,
+        "end_line": 25,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::byNames",
+        "name": "byNames",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.byNames",
+        "kind": "method",
+        "signature": "byNames(List<String> names) -> List<Account>",
+        "start_line": 27,
+        "end_line": 29,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::defaultRecordType",
+        "name": "defaultRecordType",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.defaultRecordType",
+        "kind": "method",
+        "signature": "defaultRecordType() -> Id",
+        "start_line": 31,
+        "end_line": 33,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::escaped",
+        "name": "escaped",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.escaped",
+        "kind": "method",
+        "signature": "escaped(String name) -> List<Account>",
+        "start_line": 37,
+        "end_line": 39,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::escapedFirst",
+        "name": "escapedFirst",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.escapedFirst",
+        "kind": "method",
+        "signature": "escapedFirst(String name) -> List<Account>",
+        "start_line": 41,
+        "end_line": 44,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::bound",
+        "name": "bound",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.bound",
+        "kind": "method",
+        "signature": "bound(String name) -> List<Account>",
+        "start_line": 46,
+        "end_line": 48,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::typedId",
+        "name": "typedId",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.typedId",
+        "kind": "method",
+        "signature": "typedId(Id recordId) -> List<Account>",
+        "start_line": 50,
+        "end_line": 52,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::fieldList",
+        "name": "fieldList",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.fieldList",
+        "kind": "method",
+        "signature": "fieldList(List<String> fields, String objectName) -> List<SObject>",
+        "start_line": 54,
+        "end_line": 57,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::privateField",
+        "name": "privateField",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.privateField",
+        "kind": "method",
+        "signature": "privateField() -> List<Account>",
+        "start_line": 59,
+        "end_line": 61,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "name": "inline",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.inline",
+        "kind": "method",
+        "signature": "inline() -> List<Account>",
+        "start_line": 63,
+        "end_line": 65,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::notIds",
+        "name": "notIds",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.notIds",
+        "kind": "method",
+        "signature": "notIds() -> void",
+        "start_line": 67,
+        "end_line": 71,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::HealthMarkers::Inner",
+        "name": "Inner",
+        "qualified_name": "lang_samples.apex.health_markers.HealthMarkers.Inner",
+        "kind": "class",
+        "signature": "class Inner",
+        "start_line": 73,
+        "end_line": 77,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkers",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/health_markers.cls::Inner::touch",
+        "name": "touch",
+        "qualified_name": "lang_samples.apex.health_markers.Inner.touch",
+        "kind": "method",
+        "signature": "touch(List<Account> rows) -> void",
+        "start_line": 74,
+        "end_line": 76,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Inner",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "HealthMarkers"
+    ],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byName",
+        "line": 13,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "trim",
+        "receiver_name": "city",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byBuiltClause",
+        "line": 18,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byBuiltClause",
+        "line": 20,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "soql"
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Search",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::bySearchProperty",
+        "line": 24,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byNames",
+        "line": 28,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "join",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::byNames",
+        "line": 28,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          null,
+          "String"
+        ],
+        "argument_names": [
+          "names",
+          null
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escaped",
+        "line": 38,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "escapeSingleQuotes",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escaped",
+        "line": 38,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "name"
+        ]
+      },
+      {
+        "target_name": "escapeSingleQuotes",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escapedFirst",
+        "line": 42,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "name"
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::escapedFirst",
+        "line": 43,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::bound",
+        "line": 47,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::typedId",
+        "line": 51,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::fieldList",
+        "line": 56,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "join",
+        "receiver_name": "String",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::fieldList",
+        "line": 56,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          null,
+          "String"
+        ],
+        "argument_names": [
+          "fields",
+          null
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::privateField",
+        "line": 60,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "437b2b8db7896dce8a88bc2921875fa183f555b2bf8992c4793c1f4da834601b",
+    "type_refs": [
+      {
+        "type_name": "Account",
+        "line": 12,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 16,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 27,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 37,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 41,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 46,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 50,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 59,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 63,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 74,
+        "origin": "param_type"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::Inner::touch",
+        "object_name": "Account",
+        "line": 75,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/health_markers.cls::HealthMarkers::inline",
+        "object_name": "Account",
+        "line": 64,
+        "path": [
+          "OwnerId"
+        ]
+      }
+    ]
+  },
+  "apex/HealthMarkersTest.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/HealthMarkersTest.cls",
+      "language": "apex",
+      "size_bytes": 545,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest",
+        "name": "HealthMarkersTest",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest",
+        "kind": "class",
+        "signature": "class HealthMarkersTest",
+        "start_line": 2,
+        "end_line": 19,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\nprivate"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "name": "readsOrgData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.readsOrgData",
+        "kind": "method",
+        "signature": "readsOrgData() -> void",
+        "start_line": 4,
+        "end_line": 8,
+        "docstring": null,
+        "decorators": [
+          "@isTest(seeAllData = true)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "name": "ownData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.ownData",
+        "kind": "method",
+        "signature": "ownData() -> void",
+        "start_line": 10,
+        "end_line": 13,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=false)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::suppressed",
+        "name": "suppressed",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.suppressed",
+        "kind": "method",
+        "signature": "suppressed() -> void",
+        "start_line": 15,
+        "end_line": 18,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\n    @SuppressWarnings('PMD.ApexUnitTestShouldNotUseSeeAllDataTrue')\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "assertNotEquals",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "line": 7,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          null,
+          "fixtureId"
+        ]
+      },
+      {
+        "target_name": "Account",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "line": 12,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "ee0b625d872285a30bc7a789d76e01feadef22aaacfda9214f6b1a36f94e9c5f",
+    "type_refs": [
+      {
+        "type_name": "Account",
+        "line": 12,
+        "origin": "composite_literal"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "object_name": "Account",
+        "line": 12,
+        "path": []
+      }
+    ]
+  },
+  "apex/nested.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/nested.cls",
+      "language": "apex",
+      "size_bytes": 1586,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/nested.cls::Nested",
+        "name": "Nested",
+        "qualified_name": "lang_samples.apex.nested.Nested",
+        "kind": "class",
+        "signature": "class Nested",
+        "start_line": 2,
+        "end_line": 67,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/nested.cls::Nested::deeplyNested",
+        "name": "deeplyNested",
+        "qualified_name": "lang_samples.apex.nested.Nested.deeplyNested",
+        "kind": "method",
+        "signature": "deeplyNested(List<Integer> values) -> Integer",
+        "start_line": 3,
+        "end_line": 21,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Nested",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/nested.cls::Nested::manyBranches",
+        "name": "manyBranches",
+        "qualified_name": "lang_samples.apex.nested.Nested.manyBranches",
+        "kind": "method",
+        "signature": "manyBranches(Integer a, Integer b, String s) -> String",
+        "start_line": 23,
+        "end_line": 34,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Nested",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/nested.cls::Nested::dispatch",
+        "name": "dispatch",
+        "qualified_name": "lang_samples.apex.nested.Nested.dispatch",
+        "kind": "method",
+        "signature": "dispatch(Integer code) -> String",
+        "start_line": 36,
+        "end_line": 48,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Nested",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/nested.cls::Nested::shallow",
+        "name": "shallow",
+        "qualified_name": "lang_samples.apex.nested.Nested.shallow",
+        "kind": "method",
+        "signature": "shallow(Integer x) -> Integer",
+        "start_line": 50,
+        "end_line": 52,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Nested",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/nested.cls::Nested::total",
+        "name": "total",
+        "qualified_name": "lang_samples.apex.nested.Nested.total",
+        "kind": "variable",
+        "signature": "total",
+        "start_line": 54,
+        "end_line": 62,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Nested",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/nested.cls::Nested::label",
+        "name": "label",
+        "qualified_name": "lang_samples.apex.nested.Nested.label",
+        "kind": "variable",
+        "signature": "label",
+        "start_line": 64,
+        "end_line": 64,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "Nested",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "Nested"
+    ],
+    "export_aliases": {},
+    "calls": [],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "ee158c49e5af8ec281ac45b8e9c5732c42388f32d610435fcf57fc0c1dd32113",
+    "type_refs": [],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": []
+  },
+  "apex/perf_io_in_loop.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/perf_io_in_loop.cls",
+      "language": "apex",
+      "size_bytes": 4109,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop",
+        "name": "PerfIoInLoop",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop",
+        "kind": "class",
+        "signature": "class PerfIoInLoop",
+        "start_line": 3,
+        "end_line": 144,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+        "name": "soqlPerRecord",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.soqlPerRecord",
+        "kind": "method",
+        "signature": "soqlPerRecord(List<Contact> contacts) -> void",
+        "start_line": 6,
+        "end_line": 10,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::dmlPerRecord",
+        "name": "dmlPerRecord",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.dmlPerRecord",
+        "kind": "method",
+        "signature": "dmlPerRecord(List<Account> accounts) -> void",
+        "start_line": 12,
+        "end_line": 16,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
+        "name": "databaseAndCallout",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.databaseAndCallout",
+        "kind": "method",
+        "signature": "databaseAndCallout(List<Id> ids, HttpRequest req) -> void",
+        "start_line": 18,
+        "end_line": 24,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
+        "name": "asyncPerRecord",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.asyncPerRecord",
+        "kind": "method",
+        "signature": "asyncPerRecord(List<Id> ids) -> void",
+        "start_line": 26,
+        "end_line": 31,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::notifyLater",
+        "name": "notifyLater",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.notifyLater",
+        "kind": "method",
+        "signature": "notifyLater(Id i) -> void",
+        "start_line": 33,
+        "end_line": 35,
+        "docstring": null,
+        "decorators": [
+          "@future\n    private static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private",
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
+        "name": "nested",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.nested",
+        "kind": "method",
+        "signature": "nested(List<Account> accounts) -> void",
+        "start_line": 37,
+        "end_line": 43,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "name": "bulk",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.bulk",
+        "kind": "method",
+        "signature": "bulk(List<Account> accounts) -> void",
+        "start_line": 47,
+        "end_line": 54,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::queryInHeader",
+        "name": "queryInHeader",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.queryInHeader",
+        "kind": "method",
+        "signature": "queryInHeader() -> void",
+        "start_line": 56,
+        "end_line": 60,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlForChunks",
+        "name": "soqlForChunks",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.soqlForChunks",
+        "kind": "method",
+        "signature": "soqlForChunks() -> void",
+        "start_line": 62,
+        "end_line": 66,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::literalBound",
+        "name": "literalBound",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.literalBound",
+        "kind": "method",
+        "signature": "literalBound(Account a) -> void",
+        "start_line": 68,
+        "end_line": 75,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::chunked",
+        "name": "chunked",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.chunked",
+        "kind": "method",
+        "signature": "chunked(List<Account> rows, Integer size) -> void",
+        "start_line": 77,
+        "end_line": 81,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::flushAtSize",
+        "name": "flushAtSize",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.flushAtSize",
+        "kind": "method",
+        "signature": "flushAtSize(List<Account> rows) -> void",
+        "start_line": 83,
+        "end_line": 92,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cached",
+        "name": "cached",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.cached",
+        "kind": "method",
+        "signature": "cached(List<Account> rows) -> void",
+        "start_line": 94,
+        "end_line": 101,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::firstMatch",
+        "name": "firstMatch",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.firstMatch",
+        "kind": "method",
+        "signature": "firstMatch(List<Account> rows) -> void",
+        "start_line": 103,
+        "end_line": 110,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::perObjectType",
+        "name": "perObjectType",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.perObjectType",
+        "kind": "method",
+        "signature": "perObjectType(Map<String, Set<Id>> idsByType) -> void",
+        "start_line": 112,
+        "end_line": 117,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::perGroup",
+        "name": "perGroup",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.perGroup",
+        "kind": "method",
+        "signature": "perGroup(Map<String, List<SObject>> byType) -> void",
+        "start_line": 119,
+        "end_line": 123,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::customMetadata",
+        "name": "customMetadata",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.customMetadata",
+        "kind": "method",
+        "signature": "customMetadata(List<String> names) -> void",
+        "start_line": 125,
+        "end_line": 129,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::mergeAll",
+        "name": "mergeAll",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.mergeAll",
+        "kind": "method",
+        "signature": "mergeAll(Account master, List<Account> dupes) -> void",
+        "start_line": 131,
+        "end_line": 135,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cursor",
+        "name": "cursor",
+        "qualified_name": "lang_samples.apex.perf_io_in_loop.PerfIoInLoop.cursor",
+        "kind": "method",
+        "signature": "cursor(Id startId) -> void",
+        "start_line": 138,
+        "end_line": 143,
+        "docstring": null,
+        "decorators": [],
+        "visibility": "public",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "PerfIoInLoop",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [
+      "PerfIoInLoop"
+    ],
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "delete",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
+        "line": 21,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "i"
+        ]
+      },
+      {
+        "target_name": "send",
+        "receiver_name": "http",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
+        "line": 22,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "req"
+        ]
+      },
+      {
+        "target_name": "enqueueJob",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
+        "line": 28,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "Worker",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
+        "line": 28,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "i"
+        ]
+      },
+      {
+        "target_name": "notifyLater",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::asyncPerRecord",
+        "line": 29,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "i"
+        ]
+      },
+      {
+        "target_name": "Task",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
+        "line": 40,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "add",
+        "receiver_name": "changed",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "line": 50,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "a"
+        ]
+      },
+      {
+        "target_name": "Task",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::literalBound",
+        "line": 70,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "Task",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::literalBound",
+        "line": 73,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "size",
+        "receiver_name": "rows",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::chunked",
+        "line": 78,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "update",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::chunked",
+        "line": 79,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": [
+          null,
+          "Boolean"
+        ],
+        "argument_names": [
+          "rows",
+          null
+        ]
+      },
+      {
+        "target_name": "add",
+        "receiver_name": "buffer",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::flushAtSize",
+        "line": 86,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "a"
+        ]
+      },
+      {
+        "target_name": "size",
+        "receiver_name": "buffer",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::flushAtSize",
+        "line": 87,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "clear",
+        "receiver_name": "buffer",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::flushAtSize",
+        "line": 89,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "keySet",
+        "receiver_name": "idsByType",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::perObjectType",
+        "line": 113,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "get",
+        "receiver_name": "idsByType",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::perObjectType",
+        "line": 114,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "objectName"
+        ]
+      },
+      {
+        "target_name": "query",
+        "receiver_name": "Database",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::perObjectType",
+        "line": 115,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "keySet",
+        "receiver_name": "byType",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::perGroup",
+        "line": 120,
+        "argument_count": 0,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "get",
+        "receiver_name": "byType",
+        "caller_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::perGroup",
+        "line": 121,
+        "argument_count": 1,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          "t"
+        ]
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "3fe0b09443ef216137aaa2b830a7c86d1add6f89dfa78e73d9636f4a03ce3441",
+    "type_refs": [
+      {
+        "type_name": "Contact",
+        "line": 6,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Contact",
+        "line": 7,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 8,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 12,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 13,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Worker",
+        "line": 28,
+        "origin": "composite_literal"
+      },
+      {
+        "type_name": "Account",
+        "line": 37,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 38,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Contact",
+        "line": 39,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Task",
+        "line": 40,
+        "origin": "composite_literal"
+      },
+      {
+        "type_name": "Account",
+        "line": 47,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 48,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 49,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Contact",
+        "line": 53,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 57,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 63,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 68,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Task",
+        "line": 70,
+        "origin": "composite_literal"
+      },
+      {
+        "type_name": "Task",
+        "line": 73,
+        "origin": "composite_literal"
+      },
+      {
+        "type_name": "Account",
+        "line": 77,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 83,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 84,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 85,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 94,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 95,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 96,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Account",
+        "line": 98,
+        "origin": "composite_literal"
+      },
+      {
+        "type_name": "Account",
+        "line": 103,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 104,
+        "origin": "method_param"
+      },
+      {
+        "type_name": "Setting__mdt",
+        "line": 127,
+        "origin": "field_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 131,
+        "origin": "param_type"
+      },
+      {
+        "type_name": "Account",
+        "line": 132,
+        "origin": "method_param"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cursor",
+        "object_name": "Account",
+        "line": 141,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cursor",
+        "object_name": "Account",
+        "line": 141,
+        "path": [
+          "ParentId"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cursor",
+        "object_name": "Account",
+        "line": 141,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::mergeAll",
+        "object_name": "Account",
+        "line": 133,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::customMetadata",
+        "object_name": "Setting__mdt",
+        "line": 127,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::customMetadata",
+        "object_name": "Setting__mdt",
+        "line": 127,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::customMetadata",
+        "object_name": "Setting__mdt",
+        "line": 127,
+        "path": [
+          "DeveloperName"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::firstMatch",
+        "object_name": "Account",
+        "line": 106,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cached",
+        "object_name": "Account",
+        "line": 98,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::cached",
+        "object_name": "Account",
+        "line": 98,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::flushAtSize",
+        "object_name": "Account",
+        "line": 88,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::chunked",
+        "object_name": "Account",
+        "line": 79,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::literalBound",
+        "object_name": "Task",
+        "line": 73,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::literalBound",
+        "object_name": "Task",
+        "line": 70,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlForChunks",
+        "object_name": "Account",
+        "line": 64,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlForChunks",
+        "object_name": "Account",
+        "line": 63,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlForChunks",
+        "object_name": "Account",
+        "line": 63,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::queryInHeader",
+        "object_name": "Account",
+        "line": 57,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::queryInHeader",
+        "object_name": "Account",
+        "line": 57,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Contact",
+        "line": 53,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Contact",
+        "line": 53,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Contact",
+        "line": 53,
+        "path": [
+          "AccountId"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::bulk",
+        "object_name": "Account",
+        "line": 52,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::nested",
+        "object_name": "Task",
+        "line": 40,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::databaseAndCallout",
+        "object_name": "Id",
+        "line": 21,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::dmlPerRecord",
+        "object_name": "Account",
+        "line": 14,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+        "object_name": "Account",
+        "line": 8,
+        "path": []
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+        "object_name": "Account",
+        "line": 8,
+        "path": [
+          "Id"
+        ]
+      },
+      {
+        "source_symbol_id": "lang_samples/apex/perf_io_in_loop.cls::PerfIoInLoop::soqlPerRecord",
+        "object_name": "Account",
+        "line": 8,
+        "path": [
+          "Id"
+        ]
+      }
+    ]
+  }
+}

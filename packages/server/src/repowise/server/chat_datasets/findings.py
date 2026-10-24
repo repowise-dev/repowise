@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.dead_code.serving import is_safe, serve_findings
 from repowise.core.analysis.health.rows import field
 from repowise.server.chat_datasets import SUMS, DatasetField, LoadContext, register_dataset
 from repowise.server.chat_datasets.files import by_path, place, unique_suffixes
@@ -111,16 +112,19 @@ def _tier(confidence: float) -> str:
 )
 async def load_dead_code(ctx: LoadContext) -> list[dict[str, Any]]:
     from repowise.core.persistence.crud.analysis.dead_code import get_dead_code_findings
+    from repowise.server.mcp_server._helpers import _cross_repo_cut
 
     found = await get_dead_code_findings(ctx.session, ctx.repository.id)
-    return dead_code_rows(found, await ctx.rows("files"))
+    served = serve_findings(found, **_cross_repo_cut(ctx.alias))
+    return dead_code_rows(served, await ctx.rows("files"))
 
 
 def dead_code_rows(found: Iterable[Any], files: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The ``dead_code`` dataset's rows over open dead-code findings.
 
     *found* holds ``file_path``, ``kind``, ``confidence``, ``symbol_name``,
-    ``lines`` and ``safe_to_delete``; *files* is the ``files`` dataset's rows.
+    ``lines`` and ``safe_to_delete`` (``serve_findings`` rows, so the
+    cross-repo cut applies); *files* is the ``files`` dataset's rows.
     """
     found = list(found)
     index = by_path(files)
@@ -137,7 +141,7 @@ def dead_code_rows(found: Iterable[Any], files: Iterable[Mapping[str, Any]]) -> 
                 "confidence": confidence,
                 "symbol": field(f, "symbol_name"),
                 "lines": field(f, "lines"),
-                "safe_to_delete": bool(field(f, "safe_to_delete")),
+                "safe_to_delete": is_safe(f),
                 "path": path,
                 "file": index[path]["file"] if path in index else labels[path],
                 "package": placed[path][0],

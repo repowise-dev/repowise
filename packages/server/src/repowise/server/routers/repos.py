@@ -76,6 +76,38 @@ async def _get_repo_or_404(session: AsyncSession, repo_id: str) -> Repository:
     return repo
 
 
+def _sent_metadata(body: RepoCreate) -> tuple[str | None, str | None]:
+    """``(url, default_branch)`` the client sent; ``None`` for an omitted one.
+
+    An existing row keeps what the body leaves out, as PATCH does; a new row
+    reads an omitted one from git, else takes the schema default
+    (:func:`crud.upsert_repository`).
+    """
+    sent = body.model_fields_set
+    return (
+        body.url if "url" in sent else None,
+        body.default_branch if "default_branch" in sent else None,
+    )
+
+
+async def _new_row_metadata(
+    session: AsyncSession, body: RepoCreate
+) -> tuple[str | None, str | None]:
+    """``(url, default_branch)`` for a canonical row ``POST`` may create.
+
+    What the body omits comes from the registry row an earlier ``index=false``
+    call stored; ``None`` (read from git) when there is none.
+    """
+    url, branch = _sent_metadata(body)
+    registered = await crud.get_repository_by_path(session, body.local_path)
+    if registered is None:
+        return url, branch
+    return (
+        registered.url if url is None else url,
+        registered.default_branch if branch is None else branch,
+    )
+
+
 @router.post("", response_model=RepoResponse, status_code=201)
 async def create_repo(
     body: RepoCreate,
@@ -93,12 +125,13 @@ async def create_repo(
     """
     if not body.index:
         # Metadata-only registration: per-repo storage is created on first index.
+        url, branch = _sent_metadata(body)
         repo = await crud.upsert_repository(
             session,
             name=body.name,
             local_path=body.local_path,
-            url=body.url,
-            default_branch=body.default_branch,
+            url=url,
+            default_branch=branch,
             settings=body.settings,
         )
         return RepoResponse.from_orm(repo)
@@ -107,13 +140,16 @@ async def create_repo(
 
     app_state = request.app.state
 
+    sent_url, sent_branch = _sent_metadata(body)
+    url, branch = await _new_row_metadata(session, body)
+
     # Canonical row in the repo-local DB; the factory routes all later access.
     repo_factory, repo_id = await ensure_repo_registration(
         app_state,
         local_path=body.local_path,
         name=body.name,
-        url=body.url,
-        default_branch=body.default_branch,
+        url=url,
+        default_branch=branch,
         settings=body.settings,
     )
 
@@ -123,8 +159,10 @@ async def create_repo(
         repo = await crud.get_repository(repo_session, repo_id)
         if repo is not None:
             repo.name = body.name
-            repo.url = body.url
-            repo.default_branch = body.default_branch
+            if sent_url is not None:
+                repo.url = sent_url
+            if sent_branch is not None:
+                repo.default_branch = sent_branch
             if body.settings is not None:
                 import json as _json
 
@@ -133,6 +171,7 @@ async def create_repo(
                 )
             await repo_session.flush()
             response = RepoResponse.from_orm(repo)
+            stored_url, stored_branch = repo.url, repo.default_branch
         else:  # pragma: no cover — the row was created two lines above
             raise HTTPException(status_code=500, detail="Repository registration failed")
 
@@ -143,8 +182,8 @@ async def create_repo(
             repo_id=repo_id,
             name=body.name,
             local_path=body.local_path,
-            url=body.url,
-            default_branch=body.default_branch,
+            url=stored_url,
+            default_branch=stored_branch,
             settings=body.settings,
         )
         await session.commit()

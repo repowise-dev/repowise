@@ -12,11 +12,27 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from repowise.core.workspace.contracts import normalize_contract_id
+from repowise.core.workspace.contracts import ContractLink, normalize_contract_id
+from repowise.core.workspace.origins import (
+    ORIGIN_CONFIDENCE,
+    ContractOrigin,
+    LinkStrategy,
+    link_confidence,
+    match_type_for,
+)
+from repowise.core.workspace.service_names import (
+    ENV,
+    HOST,
+    GatewayRoute,
+    ServiceName,
+    ServiceNameMap,
+)
 
 from .common import find_matching_keys, internal, prefer_target_repo
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from repowise.core.workspace.contracts import Contract
 
     from .common import MatchState
@@ -25,7 +41,8 @@ if TYPE_CHECKING:
 # candidate pass strips these leading segments (plus unresolved base ``{param}``
 # segments) from both provider and consumer paths so a consumer that hits
 # ``/api/v1/users`` can still link to a provider mounted at ``/users`` (or vice
-# versa). Such links are emitted as lower-confidence ``candidate`` matches.
+# versa). Such links are emitted as lower-confidence ``candidate`` matches
+# (:attr:`LinkStrategy.PREFIX_STRIPPED`).
 #
 # Kept deliberately small: only segments that are almost never real resource
 # names. Words like ``internal``/``public``/``gateway`` are excluded because
@@ -33,8 +50,32 @@ if TYPE_CHECKING:
 _MOUNT_PREFIX_SEGMENTS = frozenset({"api", "rest"})
 _VERSION_SEGMENT_RE = re.compile(r"^v\d+$")
 
-# Confidence multiplier applied to candidate (non-exact) links.
-CANDIDATE_CONFIDENCE_FACTOR = 0.6
+# Segments of the operational endpoints nearly every service serves (health,
+# readiness, liveness, metrics, version, Spring's actuator). A path made only of
+# these, after the mount prefixes above, names no service: two services both
+# answer ``/health``, so a call to it links only where a host or base placed it,
+# or with neither inside the caller's own repo (:func:`accepts`).
+_GENERIC_SEGMENTS = frozenset(
+    {
+        "health",
+        "healthz",
+        "healthcheck",
+        "health-check",
+        "ready",
+        "readyz",
+        "readiness",
+        "live",
+        "livez",
+        "liveness",
+        "alive",
+        "ping",
+        "metrics",
+        "status",
+        "version",
+        "info",
+        "actuator",
+    }
+)
 
 # Request paths ending in these suffixes are static assets, never API contracts.
 # They are excluded from the candidate pass so a ``fetch('/static/app.js')``
@@ -82,73 +123,144 @@ _INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".svc.cluster.local")
 # ---------------------------------------------------------------------------
 
 
+#: ``meta["target_via"]`` for a target that came from config or a repo alias
+#: rather than from a :mod:`..service_names` source.
+VIA_SERVICE_BASES = "service_bases"
+VIA_REPO_ALIAS = "repo_alias"
+
+
 def _resolve_consumer_target(
     consumer: Contract,
     repo_aliases: set[str],
     service_bases: dict[str, str],
-) -> tuple[str | None, bool]:
-    """Resolve a consumer's target repo and whether it is a third-party call.
+    names: ServiceNameMap,
+) -> tuple[str | None, bool, ServiceName | None]:
+    """Resolve a consumer's target repo, whether it is a third-party call, and why.
 
-    Returns ``(target_repo, is_external)``:
+    Returns ``(target_repo, is_external, via)``, *via* naming the entry that
+    settled the target (its ``source``: ``service_bases``, ``repo_alias`` or a
+    service-name source such as ``compose``):
 
     - ``service_bases`` (host or ``${BASE}`` token) wins first;
     - a host equal to a workspace repo alias, or an internal-DNS host whose
       leading label is a repo alias (``backend.svc.cluster.local``), is internal;
-    - localhost and bare unknown hostnames (e.g. a docker-compose service we
-      can't map) return ``(None, False)`` so path matching still applies;
+    - a host or internal-DNS label the service-name map places, and a base
+      token it knows as an address key (``CATALOGUE_URL``), resolve to that repo;
+    - localhost and bare unknown hostnames (a compose service nothing maps)
+      return ``(None, False, None)`` so path matching still applies;
     - any other *public* dotted host is third-party (``is_external=True``).
     """
     meta = consumer.meta
     host = meta.get("host")
     if host:
         if host in service_bases:
-            return service_bases[host], False
-        if host in repo_aliases:
-            return host, False
+            return service_bases[host], False, ServiceName(host, HOST, service_bases[host], VIA_SERVICE_BASES, "")
         if host in _LOCALHOST_HOSTS:
-            return None, False
-        if host.endswith(_INTERNAL_HOST_SUFFIXES):
-            label = host.split(".")[0]
-            return (label, False) if label in repo_aliases else (None, False)
-        if "." not in host:
-            return None, False  # bare unknown hostname, not necessarily third-party
-        return None, True  # public dotted host, unmapped → third-party
+            return None, False, None
+        internal_dns = host not in repo_aliases and host.endswith(_INTERNAL_HOST_SUFFIXES)
+        label = host.split(".")[0] if internal_dns else host
+        mapped = names.lookup(label, HOST)
+        if label in repo_aliases:
+            # A map entry agreeing with the alias is the evidence; the alias alone is a name match.
+            if mapped is not None and mapped.repo == label:
+                return label, False, mapped
+            return label, False, ServiceName(label, HOST, label, VIA_REPO_ALIAS, "")
+        if mapped is not None:
+            return mapped.repo, False, mapped
+        if label != host or "." not in host:
+            return None, False, None  # unmapped internal or bare hostname, not third-party
+        return None, True, None  # public dotted host, unmapped → third-party
     token = meta.get("base_token")
-    if token and token.lower() in service_bases:
-        return service_bases[token.lower()], False
-    return None, False
+    if token:
+        if token.lower() in service_bases:
+            repo = service_bases[token.lower()]
+            return repo, False, ServiceName(token.lower(), ENV, repo, VIA_SERVICE_BASES, "")
+        mapped = names.lookup(token, ENV)
+        if mapped is not None:
+            return mapped.repo, False, mapped
+    return None, False, None
 
 
 def annotate_consumer_targets(
     contracts: list[Contract],
     service_bases: dict[str, str] | None = None,
+    names: ServiceNameMap | None = None,
 ) -> None:
     """Stamp each HTTP consumer's ``meta`` with its resolved target / external bit.
 
     Mutates the contracts in place so both :func:`..match_contracts` and the
     diagnostics builder read one resolution. ``service_bases`` maps a base token
-    or host (case-insensitive) to a repo alias.
+    or host (case-insensitive) to a repo alias and always wins; *names* is the
+    workspace's :class:`..service_names.ServiceNameMap`, read after the repo
+    aliases. A target that is a workspace repo also gets ``target_via`` (the
+    source that placed it) and, from a service-name source, ``target_evidence``
+    (the file), which is what lets :func:`service_pass` draw a service-level edge.
 
-    The two keys this owns are cleared before being recomputed, so the result is
-    a function of *contracts* and *service_bases* alone and not of whatever a
-    previous run stamped. That matters now that incremental extraction carries
-    contracts forward: a consumer resolved to ``gamma`` keeps that ``meta`` when
-    it is reused, and if ``gamma`` has since left the workspace the resolution
-    no longer fires — so without the clear, the stale target survives and the
-    contract claims to call a repo that is not in the workspace any more.
+    The keys this owns are cleared before being recomputed, so the result is
+    a function of *contracts*, *service_bases* and *names* alone and not of
+    whatever a previous run stamped. That matters now that incremental
+    extraction carries contracts forward: a consumer resolved to ``gamma`` keeps
+    that ``meta`` when it is reused, and if ``gamma`` has since left the
+    workspace the resolution no longer fires — so without the clear, the stale
+    target survives and the contract claims to call a repo that is not in the
+    workspace any more.
     """
-    repo_aliases = {c.repo for c in contracts}
+    names = names or ServiceNameMap()
+    repo_aliases = {c.repo for c in contracts} | names.repos
     sb = {k.lower(): v for k, v in (service_bases or {}).items()}
     for c in contracts:
         if c.role != "consumer" or c.contract_type != "http":
             continue
-        c.meta.pop("target_repo", None)
-        c.meta.pop("external", None)
-        target, external = _resolve_consumer_target(c, repo_aliases, sb)
+        for key in _TARGET_KEYS:
+            c.meta.pop(key, None)
+        target, external, via = _resolve_consumer_target(c, repo_aliases, sb, names)
+        if not external and names.routes:
+            target, via = _apply_gateway_route(c, target, via, names)
         if external:
             c.meta["external"] = True
         elif target:
             c.meta["target_repo"] = target
+            if via is not None and target in repo_aliases:
+                c.meta["target_via"] = via.source
+                if via.file:
+                    c.meta["target_evidence"] = via.file
+
+
+_TARGET_KEYS = ("target_repo", "external", "target_via", "target_evidence", "route_path")
+
+
+def _through_gateway(
+    consumer: Contract, target: str | None, names: ServiceNameMap
+) -> tuple[GatewayRoute, str] | None:
+    """The gateway route *consumer* travels, and the path it forwards, when one applies.
+
+    A call reaches a gateway when its host or base resolved to the gateway's
+    repo, or when it names no host or base at all and sits in the gateway's
+    repo (pages the gateway serves itself). Ceiling: a relative call from a
+    separate frontend repo is not routed; it would need the frontend's own
+    proxy or base config to say which gateway it talks to.
+    """
+    meta = consumer.meta
+    if target is not None:
+        gateway = target
+    elif not meta.get("host") and not meta.get("base_token"):
+        gateway = consumer.repo
+    else:
+        return None
+    split = _split_http_id(normalize_contract_id(consumer.contract_id))
+    return names.route_for(gateway, split[1]) if split is not None else None
+
+
+def _apply_gateway_route(
+    consumer: Contract, target: str | None, via: ServiceName | None, names: ServiceNameMap
+) -> tuple[str | None, ServiceName | None]:
+    """Retarget *consumer* to the service its gateway route forwards to, stamping the
+    forwarded path; unchanged when no route applies."""
+    routed = _through_gateway(consumer, target, names)
+    if routed is None:
+        return target, via
+    route, consumer.meta["route_path"] = routed
+    return route.repo, ServiceName(route.name, HOST, route.repo, route.source, route.file)
 
 
 # ---------------------------------------------------------------------------
@@ -191,32 +303,115 @@ def _is_static_asset_path(path: str) -> bool:
     return last.endswith(_STATIC_ASSET_SUFFIXES)
 
 
+def _is_generic_path(path: str) -> bool:
+    """True when *path* is the root or only operational segments (``/health``, ``/api/v1/metrics``).
+
+    Leading mount and version prefixes and leading unresolved ``{param}``
+    segments are stripped first, so ``/{param}/status`` is generic: the
+    unresolved segment cannot place the call, and the rest names no service.
+    """
+    segments = [s for s in _candidate_http_path(path).split("/") if s]
+    if not segments:
+        return not path.strip("/")  # the root; a bare ``/{param}`` or ``/api/v1`` is not generic
+    return all(s in _GENERIC_SEGMENTS for s in segments)
+
+
+def accepts(provider: Contract, consumer: Contract) -> bool:
+    """Whether *provider* may serve *consumer* when the path alone joins them.
+
+    A generic path (:func:`_is_generic_path`) links only to the consumer's
+    resolved target repo, or, with no target, to a provider in the consumer's
+    own repo (a script probing the server it ships beside). Any other path
+    is accepted.
+    """
+    split = _split_http_id(normalize_contract_id(consumer.contract_id))
+    if split is None or not _is_generic_path(consumer.meta.get("route_path", split[1]).lower()):
+        return True
+    return provider.repo == (consumer.meta.get("target_repo") or consumer.repo)
+
+
 def _methods_compatible(consumer_method: str, provider_method: str) -> bool:
     """HTTP methods match if equal or either side is the ``*`` wildcard."""
     return consumer_method == provider_method or consumer_method == "*" or provider_method == "*"
 
 
 def is_deferred(consumer: Contract) -> bool:
-    """A base-stripped consumer skips the exact pass; :func:`base_resolved_pass` owns it."""
-    return bool(consumer.meta.get("base_stripped"))
+    """A base-stripped or gateway-routed consumer skips the exact pass; its own pass owns it."""
+    return bool(consumer.meta.get("base_stripped") or "route_path" in consumer.meta)
+
+
+def gateway_pass(state: MatchState) -> None:
+    """Link each gateway-routed consumer on the path its route forwards, in the route's target.
+
+    A routed consumer no provider there serves is left to :func:`service_pass`,
+    which draws the service-level edge the route itself establishes.
+    """
+    for consumer in state.unmatched("http"):
+        upstream = consumer.meta.get("route_path")
+        split = _split_http_id(normalize_contract_id(consumer.contract_id))
+        if upstream is None or split is None:
+            continue
+        target = consumer.meta.get("target_repo")
+        keys = find_matching_keys(f"http::{split[0]}::{upstream}", state.provider_index)
+        providers = [p for k in keys for p in state.provider_index[k] if p.repo == target]
+        for provider in providers:
+            if not internal(provider, consumer):
+                state.add(consumer, provider, LinkStrategy.GATEWAY_ROUTE)
+
+
+def gateway_route_links(routes: Iterable[GatewayRoute]) -> list[ContractLink]:
+    """One service-level edge per route, from the gateway to the service it forwards to.
+
+    The route is declared config, so the edge carries a route registration's
+    confidence; its consumer file is the config file when that sits in the
+    gateway's own repo, else the repo root (a config server's file).
+    """
+    confidence = link_confidence(
+        LinkStrategy.GATEWAY_ROUTE, ORIGIN_CONFIDENCE[ContractOrigin.ROUTE_REGISTRATION]
+    )
+    links: list[ContractLink] = []
+    for r in routes:
+        if not r.repo:
+            continue  # a blocker: the target is outside the workspace or disputed
+        own = r.file.startswith(f"{r.gateway}/")
+        forwarded = "?" if r.upstream is None else r.upstream or "/"
+        links.append(
+            ContractLink(
+                contract_id=f"http::*::{r.prefix}/**",
+                contract_type="http",
+                match_type=match_type_for(LinkStrategy.GATEWAY_ROUTE),
+                confidence=confidence,
+                provider_repo=r.repo,
+                provider_file="",
+                provider_symbol=f"{r.name} ({r.source})",
+                provider_service=None,
+                consumer_repo=r.gateway,
+                consumer_file=r.file[len(r.gateway) + 1 :] if own else "",
+                consumer_symbol=f"{r.prefix}/** -> {forwarded}",
+                consumer_service=None,
+                strategy=LinkStrategy.GATEWAY_ROUTE,
+            )
+        )
+    return links
 
 
 def base_resolved_pass(state: MatchState) -> None:
     """Match consumers whose unresolved base was stripped, on their host-relative path.
 
-    The link is ``exact`` when the target service is unambiguous (one matching
-    service, or a configured ``service_bases`` target that narrows to a
-    provider) and ``candidate`` otherwise.
+    The strategy names how the target service was settled: a host or
+    ``service_bases`` target that narrows to a provider (``service_mapped``),
+    the only service serving the path (``unique_path``), or neither, linking
+    every service that serves it (``ambiguous_path``, a candidate).
     """
     for consumer in state.unmatched("http"):
-        if not is_deferred(consumer):
+        if not consumer.meta.get("base_stripped") or "route_path" in consumer.meta:
             continue
         matching_keys = find_matching_keys(consumer.contract_id, state.provider_index)
         providers = [
             p
             for k in matching_keys
             for p in state.provider_index[k]
-            if not internal(p, consumer)
+            if not internal(p, consumer) and accepts(p, consumer)
         ]
         if not providers:
             continue
@@ -227,13 +422,14 @@ def base_resolved_pass(state: MatchState) -> None:
         narrowed = [p for p in providers if p.repo == target] if target else []
         if narrowed:
             providers = narrowed
-        resolved = bool(narrowed) or len({(p.repo, p.service) for p in providers}) == 1
-        match_type = "exact" if resolved else "candidate"
+        if narrowed:
+            strategy = LinkStrategy.SERVICE_MAPPED
+        elif len({(p.repo, p.service) for p in providers}) == 1:
+            strategy = LinkStrategy.UNIQUE_PATH
+        else:
+            strategy = LinkStrategy.AMBIGUOUS_PATH
         for provider in providers:
-            confidence = min(provider.confidence, consumer.confidence)
-            if not resolved:
-                confidence = round(confidence * CANDIDATE_CONFIDENCE_FACTOR, 3)
-            state.add(consumer, provider, match_type, confidence)
+            state.add(consumer, provider, strategy)
 
 
 def candidate_pass(state: MatchState) -> None:
@@ -253,6 +449,7 @@ def candidate_pass(state: MatchState) -> None:
         if split is None:
             continue
         method, path = split
+        path = consumer.meta.get("route_path", path)
         if _is_static_asset_path(path):
             continue
         core = _candidate_http_path(path)
@@ -260,22 +457,63 @@ def candidate_pass(state: MatchState) -> None:
             continue
 
         for provider in prefer_target_repo(candidate_index.get(core, []), consumer):
-            if internal(provider, consumer):
+            if internal(provider, consumer) or not accepts(provider, consumer):
                 continue
             psplit = _split_http_id(normalize_contract_id(provider.contract_id))
             if psplit is None or not _methods_compatible(method, psplit[0]):
                 continue
-            confidence = round(
-                min(provider.confidence, consumer.confidence) * CANDIDATE_CONFIDENCE_FACTOR,
-                3,
+            state.add(consumer, provider, LinkStrategy.PREFIX_STRIPPED)
+
+
+def service_pass(state: MatchState) -> None:
+    """Draw a service-level edge for each consumer whose target is known but whose route is not.
+
+    The host (or base token) places the call in a workspace repo, yet no
+    provider there, or anywhere, serves its path: the dependency is real, the
+    route is unread. Each such consumer gets one :attr:`LinkStrategy.HOST_ONLY`
+    link to the target repo with no provider file, kept apart from route links
+    in :attr:`.common.MatchState.service_links`.
+    """
+    seen: set[tuple[str, ...]] = set()
+    for consumer in state.unmatched("http"):
+        meta = consumer.meta
+        target = meta.get("target_repo")
+        via = meta.get("target_via")
+        # A host that only equals a repo name is not evidence enough for an edge.
+        if not target or not via or via == VIA_REPO_ALIAS or target == consumer.repo:
+            continue
+        key = (consumer.repo, consumer.file_path, normalize_contract_id(consumer.contract_id), target)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = meta.get("host") or meta.get("base_token") or target
+        state.service_links.append(
+            ContractLink(
+                contract_id=consumer.contract_id,
+                contract_type=consumer.contract_type,
+                match_type=match_type_for(LinkStrategy.HOST_ONLY),
+                confidence=link_confidence(LinkStrategy.HOST_ONLY, consumer.confidence),
+                provider_repo=target,
+                provider_file="",
+                provider_symbol=f"{name} ({meta['target_via']})",
+                provider_service=None,
+                consumer_repo=consumer.repo,
+                consumer_file=consumer.file_path,
+                consumer_symbol=consumer.symbol_name,
+                consumer_service=consumer.service,
+                consumer_symbol_id=consumer.symbol_id,
+                strategy=LinkStrategy.HOST_ONLY,
             )
-            state.add(consumer, provider, "candidate", confidence)
+        )
 
 
 __all__ = [
-    "CANDIDATE_CONFIDENCE_FACTOR",
+    "accepts",
     "annotate_consumer_targets",
     "base_resolved_pass",
     "candidate_pass",
+    "gateway_pass",
+    "gateway_route_links",
     "is_deferred",
+    "service_pass",
 ]

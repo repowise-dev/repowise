@@ -442,6 +442,7 @@
         "unknown": "Not known: {reason}",
         "unknownBare": "Not known",
         "components_touched": "{count, plural, one {# component} other {# components}}: {names}{more, plural, =0 {} other { and # more}}",
+        "components_outside": "Outside every component ({files, plural, one {# changed file} other {# changed files}})",
         "suggested_reviewers": "{names}{more, plural, =0 {} other { and # more}}",
         "owners": "{count, plural, =0 {No declared owner} other {{names}{more, plural, =0 {} other { and # more}}}}{unowned, plural, =0 {} one {; # changed file without one} other {; # changed files without one}}",
         "reaching_tests": "{files, plural, =0 {No changed source file} one {{reached} of # changed file reached by a test} other {{reached} of # changed files reached by a test}}{absent, plural, =0 {} other {; # with none}}{unknown, plural, =0 {} other {; # not known}}",
@@ -455,6 +456,7 @@
         "provenance": "provenance: {label}, known for {known} of {commits, plural, one {# commit} other {# commits}}",
         "provenance_named": "provenance: {label}, known for {known} of {commits, plural, one {# commit} other {# commits}} ({names})",
         "risk_score": "Larger than {percentile}% of recent commits",
+        "risk_score_before": "Larger than {percentile}% of the {sample, plural, one {# commit} other {# commits}} before this change (as of {as_of})",
         "outcomes": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}",
         "outcomes_rate": "{reverts, plural, one {# revert} other {# reverts}}, {references, plural, one {# cause reference} other {# cause references}}; {fixed} of {files, plural, one {# file} other {# files}} fixed within {days} days"
       },
@@ -925,7 +927,7 @@
         "symbolsSub": "functions, classes and methods",
         "docFreshness": "Doc freshness",
         "docFreshnessNoPages": "no documentation generated yet",
-        "docFreshnessSub": "weighted across {pages} pages",
+        "docFreshnessSub": "{fresh} of {pages} pages fresh",
         "hotspots": "Hotspots",
         "hotspotsSub": "files by churn and prior fixes",
         "contractLinks": "Contract links",
@@ -1559,6 +1561,10 @@
     "ledeUnit": "out of 10",
     "ledeSeeSystemMap": "See the system map",
     "ledeSentence": "A change here can reach {pct}% of the system through {links} structural links between {services} services. The score weighs that reach against the size of the mutually dependent core and any cycles; it is computed from the system graph on every request, so it does not depend on the check below having run.",
+    "notDetermined": "not determined",
+    "ledeNotDetermined": "Not determined: {reason}. A score over a graph with nothing linked would read as perfectly decoupled, so none is given.",
+    "cyclesTitleUndetermined": "Dependency cycles",
+    "cyclesNotDeterminedTitle": "Cycles not determined",
     "ledeNoGraph": "No system graph has been built yet, so there is nothing to measure. Run a workspace sync to build one.",
     "dsmTitle": "Dependency-structure matrix",
     "dsmDescription": "Each filled cell means the row service depends on the column service, tinted by transport. Red cells break a declared rule; amber cells sit on a cycle. The matrix counts co-change relationships too, so its total runs above the structural-link figure above.",
@@ -1650,7 +1656,7 @@
       "unmatched": "Unmatched consumers",
       "orphans": "Providers with no caller",
       "orphansSub": "in this workspace; not the same as unused",
-      "httpResolved": "HTTP calls resolved",
+      "httpRead": "HTTP calls read",
       "httpUnresolved": "{count} located but not resolvable",
       "httpSub": "of the client calls extraction located"
     },
@@ -1714,6 +1720,20 @@
       },
       "col": {
         "match": "Match"
+      },
+      "strategy": {
+        "exact_id": "Matched by exact name",
+        "pattern_matched": "Matched by subscription pattern",
+        "binding_routed": "Routed through a queue binding",
+        "shared_table": "Shares a table",
+        "service_mapped": "Matched by service name",
+        "host_only": "Host only",
+        "gateway_route": "Routed through a gateway",
+        "unique_path": "Matched by path only",
+        "ambiguous_path": "Path served by several services",
+        "prefix_stripped": "Matched after stripping a prefix",
+        "manual": "Declared by hand",
+        "manifest": "Declared in a manifest"
       },
       "reasonTitle": {
         "no_provider": "No provider found",
@@ -1825,6 +1845,8 @@
       "label": "Architecture score",
       "labelHint": "A 1 to 10 roll-up of propagation cost, the size of the cyclic core, dependency cycles and rule violations, over structural edges only. Higher means less coupled.",
       "unit": "out of 10",
+      "notDetermined": "Not determined: {reason}.",
+      "partialEvidence": "Partial evidence: {reason}.",
       "counts": "{services, plural, one {# service} other {# services}} in {repos, plural, one {# repository} other {# repositories}}, joined by {relationships, plural, one {# relationship} other {# relationships}}: {structural} structural (a contract or import in code) and {behavioral} co-change (files that change in the same commits, not a call).",
       "cycleMore": "{count, plural, one {# more cycle is} other {# more cycles are}} listed under Needs attention.",
       "cycleOne": "It is listed under Needs attention with a prompt to break it.",
@@ -1881,8 +1903,15 @@
       "contractLinksHint": "Consumer calls matched to the provider that serves them, across services.",
       "unmatched": "Unmatched consumers",
       "unmatchedSub": "calls with no provider in the workspace",
-      "unmatchedHint": "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service."
+      "unmatchedHint": "Consumer contracts that matched no provider: missing, or a third-party host. Calls a repository makes to its own service are served and not counted."
     }
+  },
+  "linkCoverage": {
+    "label": "Linked to another service",
+    "sub": "{linked} of {seen} HTTP calls; {read} read",
+    "hint": "HTTP calls that matched a route another service serves, out of every call seen, counting one per file that calls out through code no dialect reads. Of the calls read, {readNotLinked} matched no other service in the workspace and {inService} are calls a repository makes to its own service, which need no link.",
+    "unmatchedHint": "Consumers that matched no provider in the workspace: missing, or a third-party host.",
+    "inServiceHint": "{count, plural, one {# call a repository makes to its own service is served and not counted here.} other {# calls a repository makes to its own service are served and not counted here.}}"
   },
   "loading": {
     "workspace": "Loading workspace",

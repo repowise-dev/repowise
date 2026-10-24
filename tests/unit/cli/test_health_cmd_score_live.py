@@ -30,7 +30,7 @@ def _git(repo: Path, *args: str) -> None:
 def _invoke(repo: Path, *args: str):
     with patch.object(health_module, "resolve_command_target") as resolve:
         resolve.return_value = SimpleNamespace(
-            is_workspace=False, repo_path=repo, notice=lambda *a, **k: None
+            is_workspace=False, repo_path=repo, narrow=lambda *a, **k: repo
         )
         return CliRunner().invoke(cli, ["health", *args])
 

@@ -135,7 +135,7 @@ the page that answers it.
 | You ask | Repowise gives you |
 |---|---|
 | *How does checkout work in this repo?* | A cited answer built from the call graph and the generated docs, in one call. [Search and answers](docs/layers/WIKI.md) |
-| *What calls this function, and what does it call?* | A call graph across 27 parsed languages, every edge stamped with how it was resolved and how far to trust it, plus traced execution flows from each entry point. [The graph](docs/layers/GRAPH.md) |
+| *What calls this function, and what does it call?* | A call graph across 28 parsed languages, every edge stamped with how it was resolved and how far to trust it, plus traced execution flows from each entry point. [The graph](docs/layers/GRAPH.md) |
 | *Can I get docs for this codebase?* | A wiki for every module and file, rendered from the code's structure with no key, or written by a model when you choose. It updates incrementally after each commit. [Docs](docs/layers/WIKI.md) |
 | *Which of our docs are wrong?* | Markdown checked against the tree: every reference to a file or symbol the code no longer has, with the line to edit. [Doc drift](docs/layers/DOC_DRIFT.md) |
 | *Why is it built this way?* | Decisions mined from ADRs, `# WHY:` comments, commit and PR history and your agent sessions, each tied to the code it governs and flagged when it goes stale. [Decisions](docs/layers/DECISIONS.md) |
@@ -255,7 +255,7 @@ Five layers, one index:
 
 | Layer | What it contributes |
 |---|---|
-| **1. Graph** | File and symbol dependencies across 27 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles and execution flows |
+| **1. Graph** | File and symbol dependencies across 28 AST-parsed languages, confidence-stamped call resolution, communities, centrality, cycles and execution flows |
 | **2. Git history** | Hotspots, ownership, co-change, bus factor and bug-fix history: behavioural signals static analysis cannot see |
 | **3. Docs** | A wiki for every module and file, hybrid search, and your own markdown checked against the tree for claims the code no longer supports |
 | **4. Decisions** | Architectural rationale from ADRs, inline markers, commits, PRs and agent sessions, each claim traced to evidence |
@@ -514,7 +514,7 @@ repository and the cross-repo graph current.
 
 ## Supported languages
 
-**27 languages parsed to an AST, 41 on a five-rung ladder, framework-aware where an
+**28 languages parsed to an AST, 42 on a five-rung ladder, framework-aware where an
 ecosystem handler exists.** Every language ships in the open-source distribution.
 
 <p>
@@ -533,6 +533,7 @@ ecosystem handler exists.** Every language ships in the open-source distribution
   <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" />
   <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
   <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
+  <img src="https://img.shields.io/badge/Apex-00A1E0?style=flat-square&logo=salesforce&logoColor=white" alt="Apex (Salesforce)" />
 </p>
 <p>
   <strong>Good &nbsp;</strong>
@@ -557,7 +558,7 @@ ecosystem handler exists.** Every language ships in the open-source distribution
 
 | Rung | Languages | What you get |
 |---|---|---|
-| **Full** (14) | Python · TypeScript · JavaScript · Svelte · Vue · Astro · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
+| **Full** (15) | Python · TypeScript · JavaScript · Svelte · Vue · Astro · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby · Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
 | **Good** (11) | C · Swift · PHP · Dart · Object Pascal · COBOL · GDScript · VB.NET · Elixir · F# · Objective-C | All of the above except the full health suite, within the language-specific ceilings in the full matrix |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, and no symbol-level claims |

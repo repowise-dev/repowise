@@ -10,7 +10,7 @@ an optional upgrade for wiki prose, so the graph is reproducible.
 <p>
   <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
   <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
-  <img src="https://img.shields.io/badge/27-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="27 full-AST languages" />
+  <img src="https://img.shields.io/badge/28-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="28 full-AST languages" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
 </p>
 
@@ -269,9 +269,10 @@ and a 1-10 architecture score; see
 - The graph keeps one node per overload set, so on Java and C# a call can land
   on the wrong overload. On C#, plan against the compiler figure (0.73 to 0.92),
   not the hand-graded 30 of 30.
-- Precision is published for ten of the 27 full-AST languages. Go, TypeScript,
+- Precision is published for eleven of the 28 full-AST languages. Go, TypeScript,
   Java, C#, C, C++, Rust and Python have a compiler or analyser answer key;
-  Kotlin and Swift have the hand-graded sample only, at 30 rows each.
+  Kotlin and Swift have the hand-graded sample only, at 30 rows each, and Apex
+  90 hand-graded rows with recall against a census of literal references.
 - Read a precision figure together with its recall. Two tools post higher
   precision in some compiler cells, each by drawing a much smaller graph.
 

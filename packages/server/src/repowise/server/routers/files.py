@@ -14,11 +14,11 @@ import bisect
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
+from repowise.core.analysis.dead_code.serving import is_safe, serve_findings
 from repowise.core.analysis.finding_registry import excluded_types, split_gated
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
 from repowise.core.analysis.health.signals import file_signals
@@ -36,7 +36,7 @@ from repowise.core.persistence.models import (
     Page,
     WikiSymbol,
 )
-from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.mcp_server._graph_utils import parse_community_meta
 from repowise.server.routers.code_health import (
     _file_signals_to_dict,
@@ -236,6 +236,7 @@ async def files_index(
 async def file_detail(
     repo_id: str,
     file_path: str,
+    request: Request,
     fields: str = Query(
         "full",
         description="How much of each block to return. 'full' (the default) is "
@@ -498,11 +499,9 @@ async def file_detail(
             "confidence": f.confidence,
             "reason": f.reason,
             "lines": f.lines,
-            "safe_to_delete": effective_safe_to_delete(
-                f.confidence, f.file_path, f.safe_to_delete, f.kind
-            ),
+            "safe_to_delete": is_safe(f),
         }
-        for f in dead_rows
+        for f in serve_findings(dead_rows, **cross_repo_cut_inputs(request, repo_id))
     ]
 
     return {

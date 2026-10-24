@@ -77,7 +77,7 @@ def test_the_trend_says_the_controls_do_not_reach_it() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend", "--counts", "code_shape"])
         render.assert_called_once()
@@ -95,7 +95,7 @@ def test_the_trend_stays_quiet_when_no_control_was_passed() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend"])
     assert "do not apply to it" not in result.output
@@ -168,7 +168,7 @@ def _mostly_unanalysed_output(*args: str) -> str:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", *args])
     assert result.exit_code == 0, result.output
@@ -179,10 +179,10 @@ def test_a_mostly_unanalysed_repo_gets_no_band_in_any_scope() -> None:
     """A narrowed recompute keeps the unanalysed files in the share."""
     for args in ((), ("--scope", "production")):
         out = _mostly_unanalysed_output(*args)
-        assert "Code health: 10.0/10 ·" in out, args
+        # Never a bare score: coverage sits on the headline itself.
+        assert "Code health: 10.0/10 across 4 of 435 code files ·" in out, args
         # No band anywhere on the line, the worst file's included.
         assert "Excellent" not in out, args
-        assert "analysed 4 of 435 code files" in out, args
 
 
 def test_the_headline_names_production_code_while_tests_are_in_it() -> None:

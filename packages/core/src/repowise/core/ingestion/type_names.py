@@ -98,12 +98,12 @@ def written_type_key(name: str, raw: str, language: str) -> str:
     """*name*, the bare type *raw* spells, as receiver lookups key it.
 
     A C# head keeps its arity (``IFoo`1``), since a same-file ``IFoo`` may be
-    another type; a Java member type keeps its outer type (``Token.Tag``),
-    which picks among same-named member types.
+    another type; a Java or Apex member type keeps its outer type
+    (``Token.Tag``), which picks among same-named member types.
     """
     if language == "csharp" and (arity := type_argument_count(raw)):
         return f"{name}`{arity}"
-    if language == "java":
+    if language in ("java", "apex"):
         return java_type_path(raw) or name
     return name
 
@@ -155,6 +155,11 @@ def type_qualifier(raw: str) -> str:
     text = strip_type_arguments(raw.strip())
     head = text[: len(text) - len(bare_type_name(text))]
     return head.rstrip("".join(_QUALIFIER_SEPARATORS))
+
+
+def dotted_type_segments(raw: str) -> list[str]:
+    """``ns.Outer.Inner<T>`` -> ``["ns", "Outer", "Inner"]``: a dotted type path, segment by segment."""
+    return [segment.strip() for segment in strip_type_arguments(raw.strip()).split(".")]
 
 
 # C++ template heads whose ``operator->`` forwards to their argument, so

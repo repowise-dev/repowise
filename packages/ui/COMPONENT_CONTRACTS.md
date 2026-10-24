@@ -794,7 +794,7 @@ role (`provider` / `consumer`).
 
 ### `workspace/repo-card` â€” `RepoCard`
 
-Tile linking to `/repos/{id}/overview` with file count, doc-coverage,
+Tile linking to `/repos/{id}/overview` with file count, doc confidence,
 hotspot count, and a primary indicator.
 
 | Prop | Type | Required |

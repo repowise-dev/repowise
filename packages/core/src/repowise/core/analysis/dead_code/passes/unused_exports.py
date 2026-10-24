@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ....entry_candidacy import is_reachability_root
+from ..apex_reachability import is_apex_entry_member
 from ..constants import (
     _CONTAINER_USE_LANGUAGES,
     _DEAD_CODE_EXEMPT_LANGUAGES,
@@ -272,6 +273,9 @@ class UnusedExportPass:
 
         meta = self.ctx._framework_meta_annotations(sym.get("file_path", ""))
         if _is_framework_registered(decorators, meta):
+            return True
+        # A ``global`` nested Apex class is reached by subscribers and ``Type.forName``.
+        if is_apex_entry_member(sym):
             return True
         if _declared_deliberately_unused(decorators):
             return True

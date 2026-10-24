@@ -14,6 +14,7 @@ def/use pass is silent for it (no dialect = no signal), the safe default.
 
 from __future__ import annotations
 
+from . import apex as _apex
 from . import cpp as _cpp
 from . import csharp as _csharp
 from . import go as _go
@@ -45,6 +46,7 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     ("javascript", _ts_js.DIALECT),
     ("jsx", _ts_js.DIALECT),
     ("java", _java.DIALECT),
+    ("apex", _apex.DIALECT),
     ("rust", _rust.DIALECT),
     ("cpp", _cpp.DIALECT),
     ("csharp", _csharp.DIALECT),

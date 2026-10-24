@@ -604,6 +604,62 @@ _JAVA = LanguageNodeMap(
     continue_kinds=frozenset({"continue_statement"}),
 )
 
+
+def _apex_auto_property(node: Node) -> object:
+    """``{ get; set; }``: an accessor list with no accessor body declares state,
+    not code, so it is walked like a container and never scored."""
+    return node.type == "accessor_list" and not any(
+        c.child_by_field_name("body") is not None for c in node.named_children
+    )
+
+
+# Apex is Java-shaped. A trigger is a unit, and so is a property whose get/set
+# holds code (one unit per property); inline SOQL/SOSL and DML join ``call_kinds``.
+_APEX = LanguageNodeMap(
+    ctor_kinds=frozenset({"constructor_declaration"}),
+    fixed_signature_markers=frozenset({"override"}),
+    function_kinds=frozenset(
+        {"method_declaration", "constructor_declaration", "trigger_declaration", "accessor_list"}
+    ),
+    misread_scope=_apex_auto_property,
+    lambda_kinds=frozenset(),
+    branch_kinds=frozenset({"if_statement", "ternary_expression"}),
+    loop_kinds=frozenset(
+        {"for_statement", "enhanced_for_statement", "while_statement", "do_statement"}
+    ),
+    try_kinds=frozenset({"try_statement"}),
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_expression"}),
+    case_kinds=frozenset({"switch_rule"}),
+    boolean_operator_kinds=frozenset(),
+    boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    class_kinds=frozenset({"class_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    member_access_kinds=frozenset({"field_access", "method_invocation"}),
+    # A property is a ``field_declaration`` carrying an ``accessor_list``.
+    field_decl_kinds=frozenset({"field_declaration"}),
+    # A catch parameter is a ``formal_parameter`` too.
+    binding_kinds=frozenset({"variable_declarator", "formal_parameter", "enhanced_for_statement"}),
+    identifier_kinds=frozenset({"identifier"}),
+    nested_type_kinds=frozenset({"enum_declaration", "interface_declaration"}),
+    # ``Assert.*`` forms assertion runs; ``System.assert*`` counts but joins none.
+    assert_call_kinds=frozenset({"method_invocation"}),
+    call_kinds=frozenset(
+        {"method_invocation", "object_creation_expression", "query_expression", "dml_expression"}
+    ),
+    # Dataflow (Extract Method): Java's statement shapes.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"local_variable_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
+    # ``System.runAs(u) { }`` always runs its block once, like Python's ``with``.
+    with_kinds=frozenset({"run_as_statement"}),
+)
+
 _RUST = LanguageNodeMap(
     trait_impl_kinds=frozenset({"impl_item"}),
     scalar_type_names=frozenset(
@@ -1389,6 +1445,21 @@ _PHP = LanguageNodeMap(
 )
 
 
+# COBOL procedures are header leaves with sibling bodies, so ``cobol.py`` walks
+# them; this map only marks the language as walked.
+_COBOL = LanguageNodeMap(
+    function_kinds=frozenset(),
+    lambda_kinds=frozenset(),
+    branch_kinds=frozenset(),
+    loop_kinds=frozenset(),
+    try_kinds=frozenset(),
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset(),
+    case_kinds=frozenset(),
+    boolean_operator_kinds=frozenset(),
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -1406,6 +1477,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "jsx": _JS,
     "go": _GO,
     "java": _JAVA,
+    "apex": _APEX,
     "rust": _RUST,
     "kotlin": _KOTLIN,
     "cpp": _CPP,
@@ -1421,6 +1493,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "objectivec": _OBJC,
     "php": _PHP,
     "swift": _SWIFT,
+    "cobol": _COBOL,
 }
 
 

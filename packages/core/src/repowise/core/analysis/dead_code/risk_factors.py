@@ -33,6 +33,8 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
+from repowise.core.ingestion.languages.specs.aura import aura_bundle
+
 # Findings at or above this confidence, with no risk factors, are presented as
 # deletion-ready ("safe to delete"). Anything below — or anything carrying a
 # risk factor — is a review candidate. Kept here as the single source of truth
@@ -152,6 +154,7 @@ _FACTOR_BLURB: dict[str, str] = {
     "database": "database/schema",
     "script": "script/task",
     "asset": "runtime-loaded web asset",
+    "aura": "Salesforce Aura bundle",
 }
 
 _SPLIT_RE = re.compile(r"[._\-]+")
@@ -191,6 +194,10 @@ def path_risk_factors(file_path: str) -> tuple[str, ...]:
         tag = _DIRECTORY_RISK_TOKENS.get(segment.lower())
         if tag:
             factors.add(tag)
+
+    # The Lightning runtime loads a whole Aura bundle, so an uncalled function may be load-bearing.
+    if aura_bundle(norm) is not None:
+        factors.add("aura")
 
     return tuple(sorted(factors))
 

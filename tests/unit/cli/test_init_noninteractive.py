@@ -299,8 +299,9 @@ class TestNonInteractiveKeyPersistence:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-from-the-environment")
         save_config(tmp_path, "openai", "gpt-5.4-nano", "openai")
 
-        ignored = (tmp_path / ".gitignore").read_text(encoding="utf-8")
-        assert ".repowise/.env" in {line.strip() for line in ignored.splitlines()}
+        ignored = (tmp_path / ".repowise" / ".gitignore").read_text(encoding="utf-8")
+        assert "/.env" in {line.strip() for line in ignored.splitlines()}
+        assert not (tmp_path / ".gitignore").exists()
 
     def test_no_save_key_leaves_nothing_behind(self, tmp_path, monkeypatch):
         """The opt-out is for keys injected per-process that must not hit disk."""
@@ -350,13 +351,10 @@ class TestNonInteractiveKeyPersistence:
     def test_unwritable_gitignore_warns_but_does_not_lose_the_index(
         self, tmp_path, monkeypatch, capsys
     ):
-        """This runs after the index is paid for, so it must never abort the run.
-
-        It is also the first thing on the scripted path to write outside
-        `.repowise/`, so it is the first that can fail on a read-only checkout.
-        """
+        """This runs after the index is paid for, so it must never abort the run."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-key")
-        (tmp_path / ".gitignore").mkdir()  # a directory where a file must go
+        # A directory where the ignore file must go.
+        (tmp_path / ".repowise" / ".gitignore").mkdir(parents=True)
 
         save_config(tmp_path, "openai", "gpt-5.4-nano", "openai")
 

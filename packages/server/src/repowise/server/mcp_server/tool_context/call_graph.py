@@ -25,6 +25,8 @@ from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._wrapper_callers import forwarding_wrapper_callers
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
+from .interface_callers import VIA_INTERFACE, interface_call_edges
+
 # Symbol-level call floor. The file-level rollup uses the shared
 # ``_graph_files`` floor instead; the totals query and the symbol rows must
 # share this one.
@@ -43,6 +45,11 @@ _CALL_EDGE_TYPES = ["calls"]
 #: Maximum caller/callee rows returned for one symbol; a named seam so contract
 #: tests can force an omission.
 _SYMBOL_NEIGHBOR_LIMIT = 50
+
+#: Interface-dispatch caller rows served per symbol, beside up to 50 direct
+#: ones; the rest are counted and banked. Kept small because each is a possible
+#: dispatch target, not a proven call, and Java rows are long.
+_INTERFACE_ROW_CAP = 10
 
 #: Rows carried per relation kind, far below the call cap: the kind and the
 #: honest total answer "what else reaches this, and how".
@@ -104,6 +111,9 @@ class _CallGraphRun:
     collector: OmissionCollector | None
     repo_root: Any
     node_map: dict[str, Any] = field(default_factory=dict)
+    #: Callers of the base methods this symbol implements, served after the
+    #: direct callers under the same cap.
+    interface_rows: list[dict[str, Any]] = field(default_factory=list)
 
     def wants(self, direction: str) -> bool:
         return self.want_callers if direction == "in" else self.want_callees
@@ -181,11 +191,19 @@ async def _resolve_call_graph(
         ),
     )
 
+    # ``dispatches_to`` lands only on ``has_method`` members, which are all
+    # ``kind == "method"``; anything else skips the read.
+    if want_callers and node.kind == "method":
+        run.interface_rows = await _interface_rows(run)
+
     relations: list[dict[str, Any]] = []
     for edge_type, edges in edges_by_type.items():
         inbound, outbound = _split_edges(run, edge_type, edges)
         for direction, rows in (("in", inbound), ("out", outbound)):
             await _place_rows(run, edge_type, direction, rows, relations)
+    # No direct call edge at all, so the calls block above never ran.
+    if run.interface_rows and "callers" not in result_data:
+        await _serve_call_rows(run, "in", [])
 
     # An omitted key reads as "not asked for" rather than "none".
     if want_callers:
@@ -352,33 +370,71 @@ async def _place_rows(
         relations.append(relation)
 
 
+async def _interface_rows(run: _CallGraphRun) -> list[dict[str, Any]]:
+    """Caller rows reaching this symbol through a base method it implements."""
+    pairs = await interface_call_edges(run.session, run.repository.id, [run.node.node_id])
+    if not pairs:
+        return []
+    nodes = await get_graph_nodes_by_ids(
+        run.session, run.repository.id, sorted({e.source_node_id for e, _ in pairs})
+    )
+    rows: list[dict[str, Any]] = []
+    for edge, base_id in sorted(pairs, key=lambda p: (-(p[0].confidence or 0), p[0].source_node_id)):
+        row = _neighbor_entry(edge, edge.source_node_id, nodes, with_edge_type=True)
+        row["via"] = VIA_INTERFACE
+        row["via_base"] = base_id
+        if call_line := first_call_line(edge.call_lines_json):
+            row["call_line"] = call_line
+        rows.append(row)
+    return _unique_by_symbol(filter_dicts_by_key(rows, "file", run.exclude_spec))
+
+
 async def _serve_call_rows(run: _CallGraphRun, direction: str, rows: list[dict[str, Any]]) -> None:
-    """Cap ``callers``/``callees``; callers also get wrapper hops and call text."""
+    """Cap ``callers``/``callees``; callers also get interface, wrapper hops and call text.
+
+    Interface rows rank after every direct caller and have a cap of their own,
+    so they cannot crowd out a direct caller or push the block over budget.
+    """
     key = "callers" if direction == "in" else "callees"
     result_data = run.result_data
-    total = len(rows)
     # Nearly every symbol fits under the cap; a hub gets explicit truncation counts.
     limit = _SYMBOL_NEIGHBOR_LIMIT
+    emitted = rows[:limit]
+    if direction == "in" and run.interface_rows:
+        direct = {str(r.get("symbol_id")) for r in rows}
+        extra = [r for r in run.interface_rows if r["symbol_id"] not in direct]
+        if extra:
+            result_data["callers_via_interface"] = len(extra)
+            emitted = (rows + extra[:_INTERFACE_ROW_CAP])[:limit]
+            rows = rows + extra
+    total = len(rows)
     visible = cap_collection(
         result_data,
         key,
         rows,
         limit,
         run.collector,
+        emitted=emitted,
         label=f"{run.target} :: {key} beyond cap={limit}",
     )
     if direction != "in":
         return
     if total > len(visible):
+        order = (
+            f"{len(visible)} of {total} callers: direct callers by confidence, then up "
+            f"to {_INTERFACE_ROW_CAP} reaching it through an interface (via: interface)"
+            if "callers_via_interface" in result_data
+            else f"top {len(visible)} of {total} callers by confidence"
+        )
         result_data["_callers_note"] = (
-            f"Showing top {len(visible)} of {total} callers by confidence. "
+            f"Showing {order}. "
             "Recover the omitted rows with get_symbol on the response's "
             "repowise omission reference; grep remains useful when graph "
             "coverage itself may be incomplete."
         )
     else:
-        # Appended after the direct rows and only under the cap, so the
-        # callers_* counts keep meaning direct callers.
+        # Appended only under the cap, so the callers_* counts never include
+        # wrapper hops.
         hop = await forwarding_wrapper_callers(
             run.session,
             run.repository.id,
@@ -391,8 +447,10 @@ async def _serve_call_rows(run: _CallGraphRun, direction: str, rows: list[dict[s
             result_data[key] = visible + hop
     await attach_call_text(run.repo_root, result_data[key], run.node.node_id)
     # Unserved rows are never checked against the live file.
-    for row in rows[len(visible) :]:
-        row.pop("call_line", None)
+    served = {id(row) for row in visible}
+    for row in rows:
+        if id(row) not in served:
+            row.pop("call_line", None)
 
 
 def _relation_block(
@@ -445,7 +503,12 @@ def _attach_relations(
     relations.sort(key=lambda r: (r["direction"], -r["total"], r["edge_type"]))
     run.result_data["relations"] = relations
     inbound_kinds = [r for r in relations if r["direction"] == "in"]
-    if run.want_callers and not row_counts_in.get("calls") and inbound_kinds:
+    if (
+        run.want_callers
+        and not row_counts_in.get("calls")
+        and not run.interface_rows
+        and inbound_kinds
+    ):
         reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
         run.result_data["_call_graph_note"] = (
             f"Nothing calls '{run.node.name}'; it is reached by {reached}. See `relations`."
@@ -464,23 +527,37 @@ async def _resolve_file_level_callers(
 ) -> None:
     """File-target callers: importing files + inbound symbol-call rollup.
 
-    Two granularities merged per caller file: ``imports: true`` when the
+    Three granularities merged per caller file: ``imports: true`` when the
     file imports this one, ``inbound_calls`` counting cross-file call edges
-    into any symbol defined here.
+    into any symbol defined here, and ``interface_calls`` counting calls into
+    a base method that a symbol here implements. A file reached only that
+    way is marked ``via: "interface"``.
     """
     importer_files = await _file_importers(session, repo_id, node)
-    calls_by_file = await _file_inbound_calls(session, repo_id, node)
+    calls_by_file, interface_by_file = await _file_inbound_calls(session, repo_id, node)
 
     entries: list[dict[str, Any]] = []
-    for f in sorted(importer_files | set(calls_by_file)):
+    for f in sorted(importer_files | set(calls_by_file) | set(interface_by_file)):
         entry: dict[str, Any] = {"file": f}
         if f in importer_files:
             entry["imports"] = True
         if calls_by_file.get(f):
             entry["inbound_calls"] = calls_by_file[f]
+        if interface_by_file.get(f):
+            entry["interface_calls"] = interface_by_file[f]
+            if f not in importer_files and not calls_by_file.get(f):
+                entry["via"] = VIA_INTERFACE
         entries.append(entry)
     entries = filter_dicts_by_key(entries, "file", exclude_spec)
-    entries.sort(key=lambda x: -(x.get("inbound_calls") or 0))
+    # Every direct entry, importers included, before any interface-only one:
+    # interface dispatch is a possible target, not a proven one.
+    entries.sort(
+        key=lambda x: (
+            x.get("via") == VIA_INTERFACE,
+            -(x.get("inbound_calls") or 0),
+            -(x.get("interface_calls") or 0),
+        )
+    )
 
     cap_collection(
         result_data,
@@ -490,10 +567,22 @@ async def _resolve_file_level_callers(
         collector,
         label=f"{node.node_id} :: file callers beyond cap=20",
     )
-    result_data["_call_graph_note"] = (
+    note = (
         "File-level rollup: importing files plus inbound cross-file call "
         "counts. For symbol-precise callers pass 'file.py::Symbol'."
     )
+    # Files reached only that way, as ``callers_via_interface`` counts symbols.
+    via_interface = sum(1 for e in entries if e.get("via") == VIA_INTERFACE)
+    if via_interface:
+        result_data["callers_via_interface"] = via_interface
+        # The gap a reader sees next to get_risk: dependents are file-level
+        # edges, these are calls, and neither is a subset of the other.
+        note += (
+            f" {via_interface} files reach it only through a base method it "
+            "implements (via: interface). get_risk's dependents_count counts "
+            "file-level edges (import, type use, injection), not calls."
+        )
+    result_data["_call_graph_note"] = note
     if repository is not None and not result_data.get("callers"):
         result_data["callers_basis"] = await call_resolution_basis(
             session, repo_id, node.language, cache_key=index_state_key(repository)
@@ -522,8 +611,8 @@ async def _file_importers(session: AsyncSession, repo_id: str, node: GraphNode) 
 
 async def _file_inbound_calls(
     session: AsyncSession, repo_id: str, node: GraphNode
-) -> dict[str, int]:
-    """Cross-file calls into any symbol defined in this file, counted per calling file."""
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Cross-file calls per calling file: direct, and through a base method implemented here."""
     target_file = node.file_path or node.node_id
     sym_res = await session.execute(
         select(GraphNode.node_id).where(
@@ -535,7 +624,7 @@ async def _file_inbound_calls(
     sym_ids = [row[0] for row in sym_res.all()]
     calls_by_file: dict[str, int] = {}
     if not sym_ids:
-        return calls_by_file
+        return calls_by_file, {}
     edge_res = await session.execute(
         select(GraphEdge.source_node_id, GraphEdge.confidence).where(
             GraphEdge.repository_id == repo_id,
@@ -550,4 +639,9 @@ async def _file_inbound_calls(
         if not keep_projected_edge(src_file, target_file, "calls", confidence):
             continue
         calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
-    return calls_by_file
+    interface_by_file: dict[str, int] = {}
+    for edge, _base in await interface_call_edges(session, repo_id, sym_ids):
+        src_file = node_to_file(edge.source_node_id)
+        if keep_projected_edge(src_file, target_file, "calls", edge.confidence):
+            interface_by_file[src_file] = interface_by_file.get(src_file, 0) + 1
+    return calls_by_file, interface_by_file

@@ -611,6 +611,7 @@ class _PerfWalk:
         self.do_bound = _overrides(dialect, "concurrency_bound")
         self.do_loop_facts = self.do_chunked or self.do_magnitude or self.do_batch or self.do_bound
         self.do_in_place = _overrides(dialect, "runs_in_place")
+        self.do_runs_once = _overrides(dialect, "runs_once_in_loop")
         # Node kinds a loop, scope or call handler can apply to: one set test per node.
         self.loop_probe = self.loop_kinds | (self.call_kinds if self.do_block_loop else frozenset())
         self.scope_probe = self.scope_kinds | self.async_fn_kinds
@@ -978,12 +979,18 @@ class _PerfWalk:
                         subject=call.root_name if marker == _MEMBERSHIP else "",
                     )
                 )
-            elif call.method and not (call.awaited and call.line in self.awaits_allowed):
+            elif self._is_loop_target(call):
                 self._record_loop_call(call, cur, nxt)
         if self.do_lock_io and cur.lock_depth >= 1 and call.method:
             lock_targets = self._acc(nxt.start, nxt.func)[1]
             if call.method not in lock_targets:
                 lock_targets[call.method] = call.line
+
+    def _is_loop_target(self, call: _Call) -> bool:
+        """A loop-nested helper call that runs on each pass."""
+        if not call.method or (call.awaited and call.line in self.awaits_allowed):
+            return False
+        return not (self.do_runs_once and self.dialect.runs_once_in_loop(call.node))
 
     def _record_loop_call(self, call: _Call, cur: _Frame, nxt: _Frame) -> None:
         """A loop-nested helper call, kept at the first line it is seen."""

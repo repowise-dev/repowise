@@ -224,7 +224,11 @@ async def _file_paths(session: AsyncSession, repo_id: str) -> set[str]:
 
 
 async def any_tests_reaching(
-    session: AsyncSession, repo_id: str, targets: Collection[str]
+    session: AsyncSession,
+    repo_id: str,
+    targets: Collection[str],
+    *,
+    rank: bool = True,
 ) -> dict[str, ReachRow]:
     """The targets some test reaches, or only tests replacing them reach; others are unreached.
 
@@ -235,14 +239,24 @@ async def any_tests_reaching(
     whole import closure, so absence is a claim. Cached per index state.
     """
     seeds = tuple(sorted(set(targets)))
-    key = await _cache.key(session, repo_id, "any_reach", seeds)
+    cache_tag = "any_reach" if rank else "any_reach_rankfree"
+    key = await _cache.key(session, repo_id, cache_tag, seeds)
     if key in _cache:
         return _cache.get(key)
     test_files = set(await cached_test_files(session, repo_id))
     masks = await cached_test_masks(session, repo_id)
-    rows = await drive(states_walk(list(seeds), test_files, masks=masks), session, repo_id)
+    rows = await drive(
+        states_walk(list(seeds), test_files, masks=masks, rank=rank), session, repo_id
+    )
     found = {path: row for path, row in rows.items() if row.state in ("reached", "mocked_only")}
     return _cache.remember(key, found)
+
+
+async def any_reached(
+    session: AsyncSession, repo_id: str, targets: Collection[str]
+) -> dict[str, ReachRow]:
+    """Rank-free reached-ness for tab-level views that only need which files are reached."""
+    return await any_tests_reaching(session, repo_id, targets, rank=False)
 
 
 async def reach_states_from_db(

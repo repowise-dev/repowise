@@ -6,6 +6,7 @@ Modules:
 * :mod:`._index`: indexing (and optional docs) for a freshly added repo
 * :mod:`.diagnostics`, :mod:`.check`, :mod:`.metrics`, :mod:`.impacted`:
   the read-only reports over the system graph
+* :mod:`.update`: ``workspace update``, the same command as ``update --workspace``
 * :mod:`._shared`: workspace loading and artifact provenance
 
 Importing the report modules registers their subcommands on the group. The
@@ -15,7 +16,7 @@ names other commands and the test-suite import from
 
 from __future__ import annotations
 
-from . import check, diagnostics, impacted, metrics  # noqa: F401  (registers subcommands)
+from . import check, diagnostics, impacted, metrics, update  # noqa: F401  (registers subcommands)
 from ._index import (
     _generate_docs_for_added_repo,
     _inherit_distill_verdict,

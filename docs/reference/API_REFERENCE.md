@@ -438,6 +438,14 @@ client routing cannot collide with real ids; passing one to
 `GET /api/search` returns an empty list rather than falling back to the primary
 repo (`routers/search.py`).
 
+`POST /api/repos` on a path that is already registered updates that row, and a
+`url` or `default_branch` the body leaves out keeps its stored value, as with
+`PATCH`. A new row takes an omitted value from the path's registry row, else
+from git: the remote url (credentials removed) and default branch. The schema
+defaults (`""`, `"main"`) fill only what git cannot name. Each index replaces
+both with what git reports (`routers/repos.py`, `crud/repository.py`), so a
+value set by `PATCH` or `POST` holds until the next index whose git names one.
+
 ### 5.4 Pagination
 
 `limit`/`offset` is the convention (41 operations take `limit`, 18 take

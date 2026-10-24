@@ -36,11 +36,8 @@ Fix first (3 of 41 eligible items, 12 due; 230 in the inventory, tests, tooling 
 Code health: 7.42/10 [Good] · Production code: 6.93/10 [Fair] · Hotspot: 6.10/10 [Fair] · Worst: 2.3/10 [At risk] (src/config/loader.py)
 ```
 
-Every score on the headline carries its band; Production code leaves test files out and
-shows while tests are in the reading. In `repowise next`, a row's severity is the worst of
-the findings it rests on, held at high. A coverage figure measured at an earlier commit
-than the index says so on its row, and the refresh row appears once that report is 14 days
-older than the latest commit.
+Every headline score carries its band, and Production code leaves test files out. A
+coverage figure measured at an earlier commit than the index says so on its row.
 
 ## The three signals
 
@@ -123,16 +120,16 @@ repowise next --json                   # the whole stored view
   decisions waiting for review, grouped as Now, Worth planning and Improve what Repowise
   can see.
 - Rows rank by value times confidence over effort; the top due Fix first item leads its
-  group. Dismissing or snoozing takes effect at once.
+  group. A row's severity is the worst of its findings, capped at high. Dismissing or
+  snoozing takes effect at once.
 - A fresh regression is in Now only when this week's commits added a proven performance
   cause (one in the performance queue) or lost measured coverage; the long, complex or nested code a week leaves is one
   row to plan.
-- A fragile file asks for tests only when no measured coverage and no test in the graph
-  reaches it, else to simplify its lead function. That lead is named only when its
-  function is worth breaking up by the same rule Fix first uses; otherwise the row asks to
-  review why fixes keep landing and shows no finding. A folder where fixes concentrate names
-  its most fixed file's first step, or is left out. Under five commits, history-ranked
-  rows are left out.
+- A fragile file asks for tests when no coverage or test reaches it, else to simplify its
+  lead function if Fix first would break it up, else to review why fixes keep landing.
+  A folder where fixes concentrate names its most fixed file's first step, or is left
+  out. A coverage report 14 days older than the latest commit gets a refresh row. Under
+  five commits, history-ranked rows are left out.
 
 ## Findings
 
@@ -144,7 +141,7 @@ survives re-indexing, and a re-detected `resolved` finding reopens.
 
 ### Detector families
 
-The 54 detectors fall into families whose caps keep any one from dominating a file.
+The 59 detectors fall into families whose caps keep any one from dominating a file.
 Every id with its threshold and weight:
 [the full roster](../architecture/code-health.md#the-full-roster).
 
@@ -158,11 +155,13 @@ Every id with its threshold and weight:
 | Test coverage | 4 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a report), untested complex functions (advisory) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins |
+| Apex | 4 | none | SOQL injection, a class with queries and no sharing keyword, hardcoded record Ids, `SeeAllData=true` tests; all advisory |
+| COBOL | 1 | none | `ALTER`, `GO TO ... DEPENDING ON`, and `GO TO` out of a paragraph's `PERFORM THRU` range; advisory |
 | Performance | 21 | none | See [PERFORMANCE.md](PERFORMANCE.md) |
 
 - Caps are code-health caps; SQL deducts only in maintainability (2.0) and performance
   findings, cartesian joins included, only in performance risk (2.0).
-- Twenty-four detectors move code health. Five are advisory: listed with zero impact,
+- Twenty-four detectors move code health. Nine are advisory: listed with zero impact,
   out of impact-ranked lists unless you ask for the advisory dimension. Three governance
   findings from the [decisions layer](DECISIONS.md) never deduct.
 - `dry_violation` and `duplicated_assertion_block` stay off every default surface (overview, priorities, MCP, REST lists) until
@@ -180,10 +179,9 @@ Every id with its threshold and weight:
 - Every `init`, `update` and `health --recompute` stores a snapshot (the last 50 per
   repository); `repowise health --trend` prints the last 10 with declining, predicted
   decline and history-drag alerts ([rules](../architecture/code-health.md#8-trends-trendspy)).
-- `analyzer_version` names the scoring a number came from, in `health --format json`,
-  `health check --format json`, each `--trend` row and `get_health`'s
-  `_meta.health_analysis`. A score that moves while it changes may reflect new scoring,
-  not new code; it is `null` (or absent on MCP) for analysis stored before it was recorded.
+- `analyzer_version` (JSON output, `--trend` rows, `get_health`) names the scoring a
+  number came from, so a score that moves with it may reflect new scoring, not new code;
+  it is `null` for analysis stored before it was recorded.
 - Coverage reports feed the coverage detectors (`repowise coverage add coverage.lcov`);
   with none, only `untested_hotspot` and the reach-tier `untested_complexity` (hidden by
   default) run, and no file is treated as uncovered

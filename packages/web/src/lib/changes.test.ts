@@ -10,6 +10,7 @@ const LINES: [string, Record<string, unknown>][] = [
   ["unknown", { reason: "not gathered for this change" }],
   ["unknown", { reason: "" }],
   ["components_touched", { count: 2, names: "core, web", more: 0 }],
+  ["components_outside", { files: 3 }],
   ["suggested_reviewers", { count: 8, names: "a, b, c, d, e, f", more: 2 }],
   ["owners", { count: 1, names: "@core", more: 0, unowned: 3 }],
   ["owners", { count: 0, names: "", more: 0, unowned: 1 }],
@@ -25,6 +26,7 @@ const LINES: [string, Record<string, unknown>][] = [
   ["provenance", { label: "human attested", known: 3, commits: 4 }],
   ["provenance_named", { label: "agent", known: 1, commits: 1, names: "claude-code, claude-opus-4-5" }],
   ["risk_score", { percentile: 97.5 }],
+  ["risk_score_before", { percentile: 72.5, sample: 200, as_of: "6bb3c0c293" }],
   ["outcomes", { reverts: 0, references: 1 }],
   ["outcomes_rate", { reverts: 1, references: 0, fixed: 2, files: 5, days: 90 }],
 ];

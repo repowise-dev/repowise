@@ -24,6 +24,7 @@ from repowise.core.analysis.health.grading import (
     distribution,
     format_score,
     headline_band,
+    headline_scope,
 )
 
 
@@ -187,3 +188,10 @@ def test_analysed_note_only_when_files_were_left_out() -> None:
     assert analysed_note(4, 431) == "analysed 4 of 435 code files"
     assert analysed_note(435, 0) is None
     assert analysed_share(0, 0) is None
+
+
+def test_headline_scope_only_when_a_minority_was_analysed() -> None:
+    assert headline_scope(9, 106) == "across 9 of 115 code files"
+    assert headline_scope(60, 40) is None
+    assert headline_scope(115, 0) is None
+    assert headline_scope(0, 0) is None

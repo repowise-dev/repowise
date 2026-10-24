@@ -20,6 +20,9 @@ Sniffing rules (cheap, deterministic), after stripping a UTF-8 BOM:
 - Go cover profiles start with ``mode:`` on the first non-blank line.
 - JaCoCo XML declares the ``-//JACOCO//DTD`` doctype or has a ``<report``
   root (and no ``<coverage`` element).
+- Salesforce Apex JSON is a ``{`` result naming ``orgWideCoverage``,
+  ``testRunCoverage`` or ``ApexClassOrTrigger``, or a ``[`` list of entries
+  with ``totalLines`` and ``lines`` (``test-result-codecoverage.json``).
 
 If detection is ambiguous, callers can pass ``coverage add --format`` to
 override.
@@ -32,6 +35,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ....test_paths import is_test_related_path
+from .apex import parse_apex
 from .clover import parse_clover
 from .cobertura import parse_cobertura
 from .goprofile import parse_go_coverprofile
@@ -69,6 +73,7 @@ PARSERS: dict[str, Callable[[str], CoverageReport]] = {
     "repowise-json": parse_repowise_json,
     "go-coverprofile": parse_go_coverprofile,
     "jacoco": parse_jacoco,
+    "apex": parse_apex,
 }
 
 #: Accepted spellings that are not canonical format names.
@@ -91,6 +96,16 @@ def _is_repowise_json(sample: str) -> bool:
     return sample.startswith("{") and (
         "repowise-coverage" in sample or "line_coverage_pct" in sample
     )
+
+
+def _is_apex(sample: str) -> bool:
+    # The CLI's result opens with a summary naming the coverage percentages; the
+    # bare entry list opens with the first class's ``totalLines`` and ``lines``.
+    if sample.startswith("{"):
+        return any(
+            k in sample for k in ('"orgWideCoverage"', '"testRunCoverage"', '"ApexClassOrTrigger"')
+        )
+    return sample.startswith("[") and '"totalLines"' in sample and '"lines"' in sample
 
 
 def _is_lcov(sample: str) -> bool:
@@ -124,6 +139,7 @@ def _is_jacoco_report(sample: str) -> bool:
 #: ``(format, sniffer)`` in priority order; the first match wins.
 _SNIFFERS: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ("repowise-json", _is_repowise_json),
+    ("apex", _is_apex),
     ("lcov", _is_lcov),
     ("go-coverprofile", _is_go_coverprofile),
     ("jacoco", _is_jacoco_doctype),

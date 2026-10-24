@@ -497,7 +497,10 @@ async def analyze_workspace_test_impact(
     }
 
     if not kept:
-        summary["reason"] = "no_matching_links"
+        # An empty link map cannot say whether the files have consumers; only
+        # a map that links something can say these files have none.
+        linked = any(not _internal_call(link) for link in links)
+        summary["reason"] = "no_matching_links" if linked else "no_contract_links"
         return WorkspaceTestImpactResult(summary=summary)
 
     by_consumer: dict[str, list[ContractLink]] = defaultdict(list)

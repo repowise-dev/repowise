@@ -46,10 +46,14 @@ def _is_valid_credential_value(val: str) -> bool:
 # is a key's or marker's name, a constant holding its own name, and a template
 # placeholder or shell substitution is filled in when it runs; none of them is a
 # credential. Letters only: a digit or capital makes it look like a key.
-_TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)")
+# ``{!Contact.Name}`` is a Salesforce merge field (Visualforce, formulas, flows,
+# email templates) and ``{#v.value}`` an Aura unbound expression.
+_TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)|\{[!#].*?\}")
 _SCHEME_TEMPLATE_VALUE = re.compile(
     r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\))"
 )
+# A character range with a quantifier is a regular expression (``(_D[0-9]+D_)``).
+_REGEX_VALUE = re.compile(r"\[\^?[^\]]*\w-\w[^\]]*\][+*?{]")
 _OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
 _CONSTANT_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
@@ -110,6 +114,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
     return not (
         _TEMPLATE_VALUE.search(value)
         or _SCHEME_TEMPLATE_VALUE.search(value)
+        or _REGEX_VALUE.search(value)
         or _is_plain_word(value)
         or value.startswith("--")
     )
@@ -141,6 +146,11 @@ def _redaction(val: str) -> str:
 # (``=``, ``:``, ``=>``, ``??``, ``||``) or plain whitespace (a Dockerfile
 # ``ENV NAME value``), then the value, quoted or not.
 _PUBLIC_VALUE = re.compile(r"""\A['"\]]*(?:\s*[:=>?|]+\s*|\s+)(['"`]?)(?=[^\s;,)])""")
+# Blank template lines (``VITE_API_TOKEN=``, ``NEXT_PUBLIC_KEY=""``, or with
+# trailing comment) in .env or config files carry no secret.
+_PUBLIC_EMPTY_ASSIGNMENT = re.compile(
+    r"""\A['"\]]*\s*(?:=(?!=)|:=|:|=>)\s*(?:""|'')?\s*(?:[,;])?\s*(?:#.*)?\Z"""
+)
 
 _SECRET_PATTERNS = [(p, kind) for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
 _PUBLIC_ENV_PATTERN = next(p for p, kind, _ in _PATTERNS if kind == "public_env_secret")
@@ -196,9 +206,15 @@ def _public_env_value(line: str, name_end: int) -> tuple[int, int] | None:
         return None
     start = name_end + value.end()
     if value.group(1):
-        return start, _string_end(line, start)
+        end = _string_end(line, start)
+        return (start, end) if end > start else None
     stop = next((i for i in range(start, len(line)) if line[i].isspace()), len(line))
-    return start, stop
+    return (start, stop) if stop > start else None
+
+
+def _is_empty_public_env_assignment(line: str, name_end: int) -> bool:
+    """Whether the public env name ending at *name_end* is followed by an empty assignment."""
+    return _PUBLIC_EMPTY_ASSIGNMENT.search(line[name_end:]) is not None
 
 
 def _secret_spans(line: str) -> list[tuple[int, int]]:

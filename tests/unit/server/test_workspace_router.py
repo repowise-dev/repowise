@@ -246,7 +246,9 @@ def _create_workspace_repo_db(
                 language TEXT,
                 symbol_count INTEGER DEFAULT 0
             );
-            CREATE TABLE wiki_pages (id TEXT PRIMARY KEY, confidence REAL);
+            CREATE TABLE wiki_pages (
+                id TEXT PRIMARY KEY, confidence REAL, freshness_status TEXT
+            );
             CREATE TABLE wiki_symbols (id TEXT PRIMARY KEY);
             CREATE TABLE git_metadata (
                 id TEXT PRIMARY KEY,
@@ -267,9 +269,9 @@ def _create_workspace_repo_db(
                 ('src/a.py::Foo.bar', 'symbol', 'python', 0),
                 ('src/b.py::baz', 'symbol', 'python', 0);
             INSERT INTO wiki_symbols (id) VALUES ('sym-foo'), ('sym-bar'), ('sym-baz');
-            INSERT INTO wiki_pages (id, confidence) VALUES
-                ('page-a', 0.8),
-                ('page-b', 0.6);
+            INSERT INTO wiki_pages (id, confidence, freshness_status) VALUES
+                ('page-a', 0.8, 'fresh'),
+                ('page-b', 0.6, 'stale');
             INSERT INTO git_metadata (id, churn_percentile, is_hotspot) VALUES
                 ('src/a.py', 0.95, 1),
                 ('src/b.py', 0.10, 0);
@@ -322,6 +324,18 @@ class TestGetWorkspace:
         assert data["repos"][0]["is_primary"] is True
         assert data["default_repo"] == "backend"
         assert data["workspace_root"] == "/projects/myworkspace"
+
+    @pytest.mark.asyncio
+    async def test_repo_entry_counts_fresh_pages(self, tmp_path: Path) -> None:
+        """Freshness comes from page status; doc_coverage_pct is mean confidence."""
+        _create_workspace_repo_db(tmp_path, "backend")
+        app = _make_workspace_app(ws_config=_make_ws_config(), workspace_root=str(tmp_path))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace")
+        backend = next(r for r in resp.json()["repos"] if r["alias"] == "backend")
+        assert (backend["page_count"], backend["fresh_page_count"]) == (2, 1)
+        assert backend["doc_coverage_pct"] == 70.0
 
     @pytest.mark.asyncio
     async def test_cross_repo_summary(self, tmp_path: Path) -> None:
@@ -862,13 +876,13 @@ class TestGetWorkspaceGraph:
         assert resp.status_code == 200
         backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
         assert backend["health_score"] == 72.5
-        assert backend["health_score_source"] == "canonical"
 
     @pytest.mark.asyncio
-    async def test_marks_derived_health_score_when_repo_metrics_are_missing(
+    async def test_no_health_score_when_repo_metrics_are_missing(
         self,
         tmp_path: Path,
     ) -> None:
+        """Doc confidence and hotspots are not code health, so no score stands in."""
         ws_config = _make_ws_config()
         _create_workspace_repo_db(tmp_path, "backend")
         app = _make_workspace_app(
@@ -881,8 +895,8 @@ class TestGetWorkspaceGraph:
 
         assert resp.status_code == 200
         backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
-        assert backend["health_score"] == 62.0
-        assert backend["health_score_source"] == "derived"
+        assert backend["health_score"] is None
+        assert "health_score_source" not in backend
 
     @pytest.mark.asyncio
     async def test_weights_a_zero_nloc_file_as_one_line(self, tmp_path: Path) -> None:
@@ -946,7 +960,9 @@ class TestQueryRepoStats:
                     language TEXT,
                     symbol_count INTEGER DEFAULT 0
                 );
-                CREATE TABLE wiki_pages (id TEXT PRIMARY KEY, confidence REAL);
+                CREATE TABLE wiki_pages (
+                    id TEXT PRIMARY KEY, confidence REAL, freshness_status TEXT
+                );
                 CREATE TABLE wiki_symbols (id TEXT PRIMARY KEY);
                 CREATE TABLE git_metadata (
                     id TEXT PRIMARY KEY,
@@ -1221,6 +1237,31 @@ class TestGetBlastRadius:
         assert "frontend" in {n["id"] for n in data["impacted"]}
         assert data["structural_count"] >= 1
         assert "frontend" in data["impacted_repos"]
+        assert data["undetermined_targets"] == []
+        assert data["evidence"]["state"] == "measured"
+
+    @pytest.mark.asyncio
+    async def test_architecture_states_its_evidence(self, tmp_path: Path) -> None:
+        enricher = _make_system_graph_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/architecture")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["score"] is not None
+        assert data["evidence"]["state"] == "measured"
+
+    @pytest.mark.asyncio
+    async def test_architecture_without_a_graph_claims_no_score(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=None)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/architecture")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["score"] is None
+        assert data["architecture_type"] == "undetermined"
 
     @pytest.mark.asyncio
     async def test_unresolved_target_reported(self, tmp_path: Path) -> None:
@@ -1507,7 +1548,7 @@ class TestRepoQueryBudget:
     sweep over the same databases.
     """
 
-    QUERIES_PER_REPO = 7
+    QUERIES_PER_REPO = 6
     CONNECTIONS_PER_REPO = 2
 
     def _config_for(self, aliases: list[str]):

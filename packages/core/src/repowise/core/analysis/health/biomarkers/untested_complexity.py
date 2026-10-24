@@ -18,7 +18,15 @@ from ..crap import CRAP_THRESHOLD, coverage_tier, function_coverage, function_cr
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
+# Apex tests reach code through platform dispatch the graph does not see, so "no
+# test found" is no evidence there. Lift when Apex test reach models dispatch.
+_UNSEEN_TEST_REACH = frozenset({"apex"})
+
 _HIGH = 50.0
+
+
+def _unseen_reach(basis: str, tier: str, language: str) -> bool:
+    return basis != "measured" and tier == "none" and language in _UNSEEN_TEST_REACH
 _CRITICAL = 100.0
 
 _TIER_TEXT = {
@@ -67,6 +75,8 @@ class UntestedComplexityDetector:
             )
             result = function_crap(ccn, measured, tier)
             if result.crap < CRAP_THRESHOLD:
+                continue
+            if _unseen_reach(result.basis, tier, ctx.language):
                 continue
             is_measured = result.basis == "measured"
             refactor = ccn >= CRAP_THRESHOLD

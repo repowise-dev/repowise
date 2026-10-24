@@ -99,6 +99,30 @@ _FIXTURES = [
         "handled Java catch",
     ),
     (
+        "apex",
+        b"class A { void m(){ try { go(); } catch (Exception e) { // ignore\n } } }\n",
+        {"swallowed_catch": 1},
+        "comment-only Apex catch",
+    ),
+    (
+        "apex",
+        b"class A { void m(){ try { go(); System.assert(false, 'x'); } catch (Exception e) {} } }\n",
+        {},
+        "Apex try ending in System.assert(false) -> expected exception idiom",
+    ),
+    (
+        "apex",
+        b"class A { void m(){ try { go(); Assert.fail(); } catch (Exception e) {} } }\n",
+        {},
+        "Apex try ending in Assert.fail() -> clean",
+    ),
+    (
+        "apex",
+        b"class A { void m(){ try { go(); System.assert(ok); } catch (Exception e) {} } }\n",
+        {"swallowed_catch": 1},
+        "Apex System.assert on a value is no expected-throw idiom",
+    ),
+    (
         "kotlin",
         b"fun f(){ try { go() } catch (e: Exception) {} }\n",
         {"swallowed_catch": 1},

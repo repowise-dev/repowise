@@ -32,10 +32,56 @@ export interface WorkspaceContractSummary {
   by_type: Record<string, number>;
 }
 
+/**
+ * How a cross-repo link was matched. Closed vocabulary owned by
+ * `core/workspace/origins.py::LinkStrategy`; the two are edited together.
+ * Render via `linkStrategyCopy` (`@repowise-dev/ui/workspace/link-provenance`).
+ */
+export type LinkStrategy =
+  | "exact_id"
+  | "pattern_matched"
+  | "binding_routed"
+  | "shared_table"
+  | "service_mapped"
+  | "host_only"
+  | "gateway_route"
+  | "unique_path"
+  | "ambiguous_path"
+  | "prefix_stripped"
+  | "manual"
+  | "manifest";
+
+/** A strategy as received: a newer index can stamp a value this build predates. */
+export type LinkStrategyWire = LinkStrategy | (string & {});
+
+/**
+ * What established a contract. Closed vocabulary owned by
+ * `core/workspace/origins.py::ContractOrigin`; the two are edited together.
+ * Render via `contractOriginCopy` (`@repowise-dev/ui/workspace/link-provenance`).
+ */
+export type ContractOrigin =
+  | "idl"
+  | "package_export"
+  | "route_registration"
+  | "typed_client"
+  | "ddl"
+  | "explicit_table"
+  | "client_call"
+  | "instance_base"
+  | "dataflow"
+  | "sql_string"
+  | "name_heuristic"
+  | "name_convention";
+
+/** An origin as received. See `LinkStrategyWire`. */
+export type ContractOriginWire = ContractOrigin | (string & {});
+
 export interface WorkspaceContractLinkEntry {
   contract_id: string;
   contract_type: string;
   match_type: string;
+  /** The matching rule that made the link (`exact_id`, `binding_routed`, ...); `match_type` derives from it. */
+  strategy?: LinkStrategyWire | null;
   confidence: number;
   provider_repo: string;
   provider_file: string;
@@ -144,6 +190,8 @@ export interface SystemEdge {
   structural: boolean;
   /** Back-pointers to the underlying evidence, for drill-down (bounded). */
   contract_refs: string[];
+  /** Strategy of the link that gave the edge its confidence; null on a co-change edge. */
+  strategy?: LinkStrategyWire | null;
 }
 
 export interface SystemGraph {
@@ -193,6 +241,8 @@ export interface OrphanProvider {
   file_path: string;
   contract_id: string;
   contract_type: string;
+  /** Other files of the same repo and service declaring the same id. */
+  other_files?: string[];
 }
 
 export interface ExtractionDiagnostics {
@@ -204,17 +254,52 @@ export interface ExtractionDiagnostics {
   unmatched_consumers: UnmatchedConsumer[];
   unmatched_by_reason: Record<string, number>;
   orphan_providers: OrphanProvider[];
+  /** Consumers served by their own repo + service, kept out of `unmatched_consumers`. */
+  in_service_consumers?: UnmatchedConsumer[];
   /** Workspace-wide rollup of the per-repo `index` / `regex` split. */
   providers_by_layer: Record<string, number>;
   consumers_by_layer: Record<string, number>;
   /** HTTP client calls located but not resolvable to an endpoint. */
   http_consumers_unresolved: number;
   /**
-   * Share of located HTTP client calls that became a contract, or `null` when
-   * none were located — 0/0 is not 100%. Covers only calls a dialect
-   * recognised, so it is not total recall.
+   * Share of client calls that became an HTTP contract, counting one miss per
+   * file that calls out through code no dialect reads. `null` when nothing was
+   * seen (0/0 is not 100%) or the artifact predates that count.
    */
   http_consumer_coverage: number | null;
+  /** HTTP consumers that linked to another service, and their share of the same denominator. */
+  http_consumers_linked?: number | null;
+  http_link_coverage?: number | null;
+  /** Per repo, files with a network-call token and no consumer contract; `null` before the count existed. */
+  unrecognised_call_files?: Record<string, number> | null;
+  unrecognised_call_file_count?: number | null;
+}
+
+/** One reason a graph's evidence is short of measured. */
+export interface GraphEvidenceReason {
+  code: string;
+  /** The state this reason alone implies. */
+  state: "partial" | "insufficient";
+  message: string;
+  subjects: string[];
+}
+
+/**
+ * How much evidence the system graph rests on. When `determined` is false a
+ * score, cycle verdict or impact set over it is "not determined", never a
+ * clean result. Mirror of `core/workspace/graph_evidence.py`.
+ */
+export interface GraphEvidence {
+  state: "measured" | "partial" | "insufficient";
+  determined: boolean;
+  /** The reasons as one sentence; empty when measured. */
+  summary: string;
+  reasons: GraphEvidenceReason[];
+  services: number;
+  runtime_edges: number;
+  build_edges: number;
+  providers: number;
+  consumers: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +344,9 @@ export interface CrossRepoBlastRadius {
   total_impacted: number;
   /** Target strings that matched no node or repo. */
   unresolved_targets: string[];
+  /** Targets no structural edge touches: their empty reach is "not seen". */
+  undetermined_targets?: string[];
+  evidence?: GraphEvidence | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +510,10 @@ export interface DependencyCycle {
   edge_ids: string[];
   /** Number of services in the cycle. */
   length: number;
+  /** Edge kinds on each leg: `leg_kinds[i]` joins `nodes[i]` to the next node. */
+  leg_kinds?: string[][];
+  /** Legs only an asynchronous (event) edge joins. */
+  async_legs?: number;
 }
 
 export interface ConformanceReport {
@@ -442,6 +534,9 @@ export interface ConformanceReport {
   total_cycles: number;
   /** Distinct repos participating in a violation. */
   violating_repos: string[];
+  /** False when the graph had too little evidence for "no cycles" to mean anything. */
+  cycles_determined?: boolean | null;
+  evidence?: GraphEvidence | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +582,7 @@ export interface DsmMatrix {
 export type NodeRole = "core" | "shared" | "control" | "peripheral";
 
 /** Whether the dependency structure is core-periphery or hierarchical. */
-export type ArchitectureType = "core-periphery" | "hierarchical";
+export type ArchitectureType = "core-periphery" | "hierarchical" | "undetermined";
 
 /** Per-service architectural role and visibility profile. */
 export interface NodeArchitectureRole {
@@ -501,32 +596,36 @@ export interface NodeArchitectureRole {
   role: NodeRole;
 }
 
-/** The whole-workspace architecture-complexity metrics. */
+/**
+ * The whole-workspace architecture-complexity metrics. Every measured figure
+ * is `null` when `evidence` is insufficient: nothing seen is not a 10/10.
+ */
 export interface ArchitectureMetrics {
   node_count: number;
   /** Count of structural (dependency) edges the metrics were computed over. */
   structural_edge_count: number;
   /** Fraction (0-1) of other services the average service can reach. */
-  propagation_cost: number;
+  propagation_cost: number | null;
   /** `propagation_cost` as a percentage, 1 decimal — for display. */
-  propagation_cost_pct: number;
+  propagation_cost_pct: number | null;
   /** Size of the largest cyclic group (largest SCC ≥ 2). */
-  core_size: number;
+  core_size: number | null;
   /** `core_size / node_count`. */
-  core_ratio: number;
+  core_ratio: number | null;
   /** Service ids in the largest cyclic group. */
   core_members: string[];
   /** Elementary dependency cycles (matches the conformance report's count). */
-  cycle_count: number;
+  cycle_count: number | null;
   /** Declared-rule violations folded into the score (0 when no rules). */
   conformance_violations: number;
   architecture_type: ArchitectureType;
   /** Deterministic 1-10 architecture score (higher = lower coupling). */
-  score: number;
+  score: number | null;
   /** Count of services per role. */
   role_breakdown: Record<NodeRole, number>;
   roles: NodeArchitectureRole[];
   generated_at: string;
+  evidence?: GraphEvidence | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +712,7 @@ export interface WorkspaceTestImpactResponse {
   /**
    * Counters plus, when the answer is empty, the `reason` that produced it
    * ("no_contract_data" | "no_changed_files" | "no_matching_links" |
-   * "no_contract_store" | "lookup_failed"), and for "lookup_failed" a
+   * "no_contract_links" | "no_contract_store" | "lookup_failed"), and for "lookup_failed" a
    * `detail` naming what failed.
    */
   summary: Record<string, unknown>;

@@ -666,6 +666,27 @@ def load_overlay(workspace_root: Path) -> CrossRepoOverlay | None:
 # ---------------------------------------------------------------------------
 
 
+def _current_overlay(workspace_root: Path, repo_paths: dict[str, Path]) -> CrossRepoOverlay | None:
+    """The stored overlay, when it covers *repo_paths* and is newer than each repo's index."""
+    from .config import WORKSPACE_DATA_DIR
+
+    stored = load_overlay(workspace_root)
+    if stored is None or set(stored.repo_summaries) != set(repo_paths):
+        return None
+    try:
+        written = (workspace_root / WORKSPACE_DATA_DIR / CROSS_REPO_EDGES_FILENAME).stat().st_mtime
+        # Every index run rewrites state.json, so a later one means new commits.
+        if any(
+            (path / ".repowise" / "state.json").stat().st_mtime > written
+            for path in repo_paths.values()
+            if (path / ".repowise" / "state.json").is_file()
+        ):
+            return None
+    except OSError:
+        return None
+    return stored
+
+
 async def run_cross_repo_analysis(
     ws_config: WorkspaceConfig,
     workspace_root: Path,
@@ -692,6 +713,15 @@ async def run_cross_repo_analysis(
     if len(repo_paths) < 2:
         _log.debug("Skipping cross-repo analysis — fewer than 2 indexed repos")
         return CrossRepoOverlay()
+
+    # Co-changes and package deps come from git history and manifests, which
+    # move only with a repo. With none changed (a settings edit) the stored
+    # overlay is still the answer, as long as it covers exactly these repos and
+    # no repo was re-indexed after it was written.
+    if not changed_repos:
+        stored = _current_overlay(workspace_root, repo_paths)
+        if stored is not None:
+            return stored
 
     _log.info(
         "Running cross-repo analysis across %d repos (changed: %s)",

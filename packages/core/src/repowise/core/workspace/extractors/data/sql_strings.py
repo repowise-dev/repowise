@@ -19,6 +19,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import ScanContext, line_at
 from ..langs import CSHARP, GO, JAVA, JS_TS, KOTLIN, PHP, PYTHON, RUBY
 from .dialect import build_table_consumer
@@ -122,6 +124,12 @@ class SqlStringsDialect:
 
     name = "sql-strings"
     extensions = PYTHON | JS_TS | JAVA | KOTLIN | GO | CSHARP | RUBY | PHP
+    # A SQL literal holds one of the verbs `_SQL_VERB_RE` reads, in some case.
+    requires = tuple(
+        spelling
+        for verb in ("select", "insert", "update", "delete", "merge")
+        for spelling in (verb.upper(), verb, verb.capitalize())
+    )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []
@@ -135,7 +143,12 @@ class SqlStringsDialect:
                     continue
                 seen.add(key)
                 contract = build_table_consumer(
-                    ctx, table_raw=table_raw, verb=verb, client=self.name, line=line
+                    ctx,
+                    table_raw=table_raw,
+                    verb=verb,
+                    client=self.name,
+                    line=line,
+                    origin=ContractOrigin.SQL_STRING,
                 )
                 if contract is not None:
                     out.append(contract)

@@ -36,7 +36,7 @@ code through graph edges.
 | Dead code | Unreachable files, unused exports, unused packages, by confidence tier | [DEAD_CODE.md](DEAD_CODE.md) |
 | Inferred test links | Which tests reach a file, without a coverage report | [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md) |
 | Cross-repo contracts | HTTP, gRPC, topic and OpenAPI contracts matched between repositories, with breaking-change detection | [WORKSPACES.md](../scale/WORKSPACES.md) |
-| Language coverage | What each of the 41 supported languages gets | [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) |
+| Language coverage | What each of the 42 supported languages gets | [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md) |
 
 ## 2. Git history: where change and breakage concentrate
 

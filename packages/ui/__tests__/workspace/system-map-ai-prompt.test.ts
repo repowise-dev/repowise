@@ -188,9 +188,10 @@ describe("system map AI prompts", () => {
       provider_file: "app/r.py",
       consumer_repo: "frontend",
       consumer_file: "src/client.ts",
+      strategy: i === 0 ? "unique_path" : null,
     }));
     const text = buildEdgeAiPrompt({
-      edge: { id: "frontend->backend:http", kind: "http", match_type: "exact", confidence: 0.85, weight: 180, structural: true },
+      edge: { id: "frontend->backend:http", kind: "http", match_type: "exact", strategy: "service_mapped", confidence: 0.85, weight: 180, structural: true },
       source: { id: "frontend", name: "frontend" },
       target: { id: "backend", name: "backend" },
       sentence: "frontend calls backend over HTTP.",
@@ -200,8 +201,11 @@ describe("system map AI prompts", () => {
       flavor: "generic",
     });
     expect(text).toContain("frontend calls backend over HTTP.");
-    expect(text).toContain("Confidence: 85%");
-    expect(text).toContain("provider `backend:app/r.py`, consumer `frontend:src/client.ts`");
+    expect(text).toContain("Match: exact, matched by service name (`service_mapped`). Confidence: 85%");
+    expect(text).toContain(
+      "- `http::GET::/r0`: provider `backend:app/r.py`, consumer `frontend:src/client.ts`, matched by path only (`unique_path`)",
+    );
+    expect(text).toContain("- `http::GET::/r1`: provider `backend:app/r.py`, consumer `frontend:src/client.ts`\n");
     expect(text).toContain("...and 3 more links not listed here.");
     expect(text).not.toContain("get_blast_radius");
   });

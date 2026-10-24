@@ -39,7 +39,7 @@ from ...ingestion.git_indexer import (
 )
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from ..config import RepoEntry, WorkspaceConfig
-from .phases import run_cross_repo_hooks
+from .phases import analysis_config_changed, run_cross_repo_hooks
 from .repo import RepoUpdateResult, _has_persisted_repo_index, update_single_repo_index
 from .state import (
     check_repo_staleness,
@@ -47,6 +47,7 @@ from .state import (
     read_repo_state,
     reconcile_repo_head_commit,
     stamp_workspace_entry,
+    stored_index_counts,
     sync_workspace_state_from_disk,
 )
 
@@ -89,6 +90,7 @@ async def update_workspace(
     commit_depth: int = _DEFAULT_COMMIT_LIMIT,
     exclude_patterns: list[str] | None = None,
     include_working_tree: bool = False,
+    restamp_up_to_date: bool = True,
     on_repo_start: Callable[[str], None] | None = None,
     on_repo_done: Callable[[RepoUpdateResult], None] | None = None,
 ) -> list[RepoUpdateResult]:
@@ -113,6 +115,10 @@ async def update_workspace(
             it. Off for every commit-anchored caller (hooks, webhooks, a
             manual sync); ``repowise watch --workspace`` sets it, because a
             repo it is watching normally has no new commits at all.
+        restamp_up_to_date: Advance each up-to-date member's DB freshness
+            stamp. The CLI turns it off: it has already restamped the members
+            whose fingerprint moved, and a restamp here would rewrite every
+            member's DB, and so its editor files, on every change.
         on_repo_start: Called with alias when a repo update begins.
         on_repo_done: Called with result when a repo update finishes.
 
@@ -125,8 +131,13 @@ async def update_workspace(
     # A child repo may have been updated on its own; read its state.json first.
     sync_workspace_state_from_disk(workspace_root, ws_config)
 
-    stale_repos = await _select_stale_repos(workspace_root, entries, include_working_tree, results)
-    if dry_run or not stale_repos:
+    stale_repos = await _select_stale_repos(
+        workspace_root, entries, include_working_tree, results, restamp_up_to_date
+    )
+    # An edited contracts: or conformance: block is work too, with no repo stale.
+    if dry_run or not (
+        stale_repos or (run_hooks and analysis_config_changed(ws_config, workspace_root))
+    ):
         return results
 
     # Workspace single-flight: concurrent hook-triggered passes defer to the
@@ -134,6 +145,8 @@ async def update_workspace(
     # running pass rolls forward instead of a second full pass starting.
     workspace_owner = _try_acquire_workspace_lock(workspace_root)
     if workspace_owner is not None:
+        if not stale_repos:
+            return results
         return _defer_to_running_workspace_update(workspace_owner, stale_repos)
 
     # The workspace lock is held until every member has been attempted.
@@ -182,6 +195,7 @@ async def _select_stale_repos(
     entries: list[RepoEntry],
     include_working_tree: bool,
     results: list[RepoUpdateResult],
+    restamp_up_to_date: bool = True,
 ) -> list[_StaleRepo]:
     """Return the stale entries; append a skipped result for every other one."""
     stale_repos: list[_StaleRepo] = []
@@ -201,7 +215,8 @@ async def _select_stale_repos(
         if not is_stale:
             # Nothing to regenerate, but the DB freshness stamp can still be
             # behind; reconcile it so the server stops reporting "index behind checkout".
-            await reconcile_repo_head_commit(abs_path, current_head)
+            if restamp_up_to_date:
+                await reconcile_repo_head_commit(abs_path, current_head)
             results.append(
                 RepoUpdateResult(
                     alias=entry.alias,
@@ -332,6 +347,11 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
 
             # Update workspace config entry
             if result.updated:
+                # Report what the store holds, as `workspace list` does; the
+                # run's own parse figures are 0/0 when nothing needed re-parsing.
+                counts = await stored_index_counts(path)
+                if counts is not None:
+                    result.file_count, result.symbol_count = counts
                 entry = update_pass.ws_config.get_repo(alias)
                 if entry is not None:
                     stamp_workspace_entry(entry, path, new_head)
@@ -464,11 +484,14 @@ async def _finish_workspace_pass(
     changed_aliases: list[str],
     run_hooks: bool,
 ) -> None:
-    """Save the updated workspace config, then run the cross-repo hooks."""
+    """Save the updated workspace config, then run the cross-repo hooks.
+
+    The hooks run when a repo changed or the cross-repo settings did.
+    """
     if changed_aliases:
         ws_config.save(workspace_root)
 
     # ``run_hooks`` lets the CLI defer these so they run once over the union
     # of index-only and docs repos, rather than on this partial set.
-    if changed_aliases and run_hooks:
+    if run_hooks and (changed_aliases or analysis_config_changed(ws_config, workspace_root)):
         await run_cross_repo_hooks(ws_config, workspace_root, changed_aliases)

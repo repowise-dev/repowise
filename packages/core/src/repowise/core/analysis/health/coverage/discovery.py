@@ -36,7 +36,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
-from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file
+from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
 from .detector import parse as parse_coverage
 from .model import (
     ContextCoverageReport,
@@ -71,6 +71,10 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
     # Root module only: ``build`` is pruned under ``**``, so a nested
     # module's report is passed explicitly.
     "build/reports/jacoco/**/*.xml",
+    # Salesforce: the VS Code extension's results dir, and any
+    # ``sf apex run test --code-coverage --output-dir``.
+    ".sfdx/tools/testresults/apex/test-result-codecoverage.json",
+    "**/test-result-codecoverage.json",
 )
 
 # Directories we never descend into when expanding ``**`` patterns — heavy,
@@ -473,6 +477,12 @@ class ResolvedCoverage:
     withheld: bool = False
     # With ``mapping_partial``, the :func:`suggest_prefixes` answer (``None``: abstained).
     suggested_prefixes: tuple[str, str] | None = None
+    # When the reports actually read were written, as the oldest of their mtimes.
+    # A report found on disk is a measurement from the last time the suite ran,
+    # which can be long before the commit now at HEAD; the writers stamp the
+    # ingest against this rather than live HEAD so drift reads forward from the
+    # right commit (#3901). ``None`` when nothing was read from disk.
+    measured_at: datetime | None = None
 
     @property
     def matched(self) -> int:
@@ -493,6 +503,7 @@ class ResolvedCoverage:
             unmatched_sample=tuple((self.unmatched + self.ambiguous)[:UNMATCHED_SAMPLE_CAP]),
             mapping_partial=self.mapping_partial,
             scope=self.scope,
+            measured_at=self.measured_at,
         )
 
     @property
@@ -525,6 +536,11 @@ class CoverageProvenance:
     mapping_partial: bool = False
     # ``None`` when the writer did not resolve the reports itself.
     scope: CoverageScope | None = None
+    # When the reports were written (the oldest of their mtimes), so the writer
+    # can stamp the ingest at the commit the measurement describes instead of
+    # the one that happens to be HEAD now (#3901). Transient: the stored columns
+    # keep their shapes, and ``ingested_at`` stays the ingest time.
+    measured_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -704,17 +720,45 @@ def normalize_report_path(
     return p
 
 
+#: Apex source extensions. Apex names are case-insensitive, so these files are
+#: indexed and looked up by their case-folded basename.
+_APEX_EXTS = (".cls", ".trigger")
+
+
+def _index_name(base: str) -> str:
+    folded = base.casefold()
+    return folded if folded.endswith(_APEX_EXTS) else base
+
+
 def _build_suffix_index(repo_keys: set[str]) -> dict[str, list[str]]:
     """Map each basename -> repo keys ending in that basename.
 
     Basename is the cheap first filter; trailing-segment overlap then
     disambiguates among same-named files (``mod.rs`` is everywhere in Rust).
+    Apex files are keyed case-folded (:func:`_index_name`).
     """
     index: dict[str, list[str]] = defaultdict(list)
     for key in repo_keys:
         base = key.rsplit("/", 1)[-1]
-        index[base].append(key)
+        index[_index_name(base)].append(key)
     return index
+
+
+def _apex_names(norm_path: str) -> tuple[str, ...]:
+    """The Apex file basenames a Salesforce coverage entry can mean, case-folded.
+
+    ``Foo.cls`` / ``Foo.trigger`` from the Apex JSON parser, or a bare ``Foo``
+    (optionally under the CLI's ``no-map/``) meaning either. Empty otherwise.
+    """
+    segs = norm_path.split("/")
+    if len(segs) == 2 and segs[0] == "no-map":
+        segs = segs[1:]
+    name = segs[0].casefold() if len(segs) == 1 else ""
+    if name.endswith(_APEX_EXTS):
+        return (name,)
+    if not name or "." in name:
+        return ()
+    return tuple(name + ext for ext in _APEX_EXTS)
 
 
 def _match_key(
@@ -742,8 +786,13 @@ def _match_key(
     if norm_path in repo_keys:
         return norm_path, False
 
+    # An Apex name is unique in an org, so two files of that name are copies: refuse.
+    hits = [k for name in _apex_names(norm_path) for k in suffix_index.get(name, ())]
+    if hits:
+        return (hits[0], False) if len(hits) == 1 else (None, True)
+
     base = norm_path.rsplit("/", 1)[-1]
-    candidates = suffix_index.get(base)
+    candidates = suffix_index.get(_index_name(base))
     if not candidates:
         return None, False
 
@@ -1101,7 +1150,7 @@ def suggest_prefixes(
     for norm in sample:
         segs = norm.split("/")
         rewrites: set[tuple[str, str]] = set()
-        for key in suffix_index.get(segs[-1], ()):
+        for key in suffix_index.get(_index_name(segs[-1]), ()):
             key_segs = key.split("/")
             tail = _common_run(reversed(segs), reversed(key_segs))
             rewrites.add(("/".join(segs[:-tail]), "/".join(key_segs[:-tail])))
@@ -1233,7 +1282,7 @@ def resolve_test_reports(
             out.matched_suffix += 1
 
         test_key: str | None = None
-        head = _extract_test_file(rec.test_id)
+        head = rec.test_file or _extract_test_file(rec.test_id)
         if head:
             tkey, _, _ = _resolve_path(head, repo_keys, suffix_index, **resolve_kw)
             if tkey is not None:
@@ -1281,13 +1330,14 @@ def build_coverage_map(
     """
     prefixes = report_prefixes or {}
     parsed: list[CoverageReport] = []
+    parsed_paths: list[Path] = []
     errors: list[tuple[Path, str]] = []
     for path in report_paths:
         if is_coverage_data_file(path):
             errors.append((path, COVERAGE_DATA_FILE_NOTE))
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_report_text(path)
         except OSError as exc:
             errors.append((path, f"could not read: {exc}"))
             continue
@@ -1301,6 +1351,7 @@ def build_coverage_map(
         report.origin_dir = report_origin_dir(path, repo_root)
         report.path_prefix = prefixes.get(path)
         parsed.append(report)
+        parsed_paths.append(path)
     resolved = resolve_reports(
         parsed,
         repo_keys,
@@ -1316,7 +1367,29 @@ def build_coverage_map(
     )
     if resolved.mapping_partial and not allow_partial:
         resolved.coverage_map, resolved.files, resolved.withheld = {}, [], True
+    # Only the reports that were actually read: one unreadable or empty
+    # artifact must not drag the whole measurement back to its own date. A
+    # withheld mapping contributed no rows at all, so it reports no time.
+    resolved.measured_at = None if resolved.withheld else oldest_report_time(parsed_paths)
     return resolved, errors
+
+
+def oldest_report_time(paths: Iterable[Path]) -> datetime | None:
+    """The oldest mtime among *paths*, as an aware UTC datetime.
+
+    A coverage report is written when the suite runs, not when repowise reads
+    it, so the oldest of several merged reports is the one whose lines have had
+    the most chance to move since. ``None`` when *paths* is empty or none of
+    them can be stat'ed: the caller then stamps with live HEAD, which is what a
+    report written just now is anyway.
+    """
+    times: list[float] = []
+    for path in paths:
+        try:
+            times.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return datetime.fromtimestamp(min(times), UTC) if times else None
 
 
 def report_origin_dir(path: Path, repo_root: Path) -> str | None:

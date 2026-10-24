@@ -77,11 +77,11 @@ finding's evidence saying why.
 | Medium | `0.4` to `0.7` | Likely unused, but something indirect may reach it. Review first. |
 | Low | `< 0.4` | Plausibly used at runtime (dynamic loading, reflection, published API). Investigate first. |
 
-The CLI, the dashboard and `get_dead_code` use the same tier floors. The
-default `min_confidence` is `0.4` everywhere, which hides the low tier unless
-you ask for it. In a workspace, only `get_dead_code` applies the
-[cross-repo cut](#workspaces), after that floor, so it can place a finding in a
-lower tier than the CLI and dashboard do, including below `0.4`.
+The dead-code lists and summaries of the CLI, the dashboard and
+`get_dead_code` use the same tier floors and the same
+[cross-repo cut](#workspaces), so a finding lands in the same tier on each.
+The default `min_confidence` is `0.4` everywhere, which hides the low tier
+unless you ask for it.
 
 ### `safe_to_delete`
 
@@ -171,24 +171,29 @@ deleting anything.
 ## Workspaces
 
 In a workspace, a file dead inside its own repo may be the surface another repo
-depends on. `get_dead_code` checks each finding against the cross-repo data
-before returning it:
+depends on. The CLI, the dashboard and `get_dead_code` check each finding
+against the cross-repo data before the confidence floor and the tiers:
 
-- If the file changes together with files in other repos (git co-change),
-  confidence is halved and the finding gains a `cross_repo_note` naming those
-  repos.
-- Otherwise, if the finding is an unused export and another repo depends on
-  this one as a package, confidence is cut to 30% of its value with a note to
-  verify consumers. The note names a dependent only when its package link
-  covers the file's package (or records no manifest) or its contract link (an
-  HTTP route, a generated client) points at the file. The cut applies either way, because package links
-  can miss a consumer.
+- If another repo's contract link (an HTTP route, a generated client) points
+  at the file, confidence is cut to 30% of its value and the `cross_repo_note`
+  names the consumer.
+- Otherwise, if the file changes together with files in other repos (git
+  co-change), or the finding is an unused export and another repo depends on
+  this one as a package, the finding keeps its confidence and gains a note.
+  The note names a package dependent only when its link covers the file's
+  package (or records no manifest). These links say a consumer may exist, not
+  that one does.
 
-The adjustment runs before tiering, so a lowered finding sits in the tier its
-new confidence names and is never safe to delete. `repo="all"` merges every workspace
-repo and tags each finding with its alias. The CLI has no cross-repo pass:
-`--repo <alias>` analyzes one repo in isolation (the primary repo by default).
-See [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
+A finding with a note is never safe to delete, and a lowered one sits in the
+tier its new confidence names, so one cut below `0.4` is hidden by the default
+floor. The dashboard adds the note to the finding's evidence. `repo="all"` merges every
+workspace repo and tags each finding with its alias. The CLI analyzes one repo
+per run (the primary repo unless `--repo <alias>`), and `--no-workspace` skips
+the cut. The file page, Overview's attention list, Do next (web, `repowise next`,
+`get_overview`), related work, the code graph, the chat dataset, `repowise export
+--full` and the assessment report read the same cut. Fix first and plan annotations
+are built per repo before the workspace pass, so they read stored values. See
+[WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
 ## Accuracy and limits
 

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from ..base import line_at
 from ..calls import Call, call_sites, decorated_member, file_strings
 from ..langs import JS_TS
-from ..strings import Arg, on_comment_line, select_argument
+from ..strings import Arg, select_argument
 from .dialect import build_provider_contract
 from .mounts import compose_prefix, declare_mount, declared_mount, declared_names
 from .paths import normalize_http_path
@@ -221,6 +221,7 @@ def _route_versions(
 class NestDialect:
     name = "nestjs"
     extensions = JS_TS
+    requires = ("@Controller", _FACTORY, *_GLOBAL_PREFIX.requires, *_VERSIONING.requires)
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -250,7 +251,7 @@ class NestDialect:
         decorated: dict[int, list[str] | None] = {}  # member offset -> its `@Version`
         for shape, args, m, _ in call_sites(ctx, (_CONTROLLER, _ROUTE, _VERSION), strings, empty=True):
             member = decorated_member(content, m.start())
-            if member is None or on_comment_line(content, m.start()):
+            if member is None:
                 continue
             if shape is _ROUTE:
                 routes.append(

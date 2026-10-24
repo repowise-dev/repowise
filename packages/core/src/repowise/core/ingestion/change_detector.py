@@ -23,7 +23,7 @@ from typing import Literal
 import structlog
 
 from .models import FileInfo, ParsedFile, Symbol
-from .traverser import is_candidate_source_path
+from .traverser import is_candidate_source_path, is_repowise_output
 
 log = structlog.get_logger(__name__)
 
@@ -176,7 +176,7 @@ class ChangeDetector:
             # covers staged and unstaged changes in one pass.
             for item in head_commit.diff(None):
                 path = (item.b_path or item.a_path or "").replace("\\", "/")
-                if not is_candidate_source_path(path, self.repo_path, output_dirs):
+                if not _counts_as_change(path, self.repo_path, output_dirs, item):
                     continue
                 results.append(self._file_diff_from_item(item))
             untracked = list(repo.untracked_files)
@@ -186,7 +186,7 @@ class ChangeDetector:
 
         for rel_path in untracked:
             path = rel_path.replace("\\", "/")
-            if not is_candidate_source_path(path, self.repo_path, output_dirs):
+            if not _counts_as_change(path, self.repo_path, output_dirs):
                 continue
             abs_path = self.repo_path / path
             if not abs_path.is_file():
@@ -538,7 +538,7 @@ class ChangeDetector:
         from .parser import parse_file
         from .traverser import _detect_language
 
-        lang = _detect_language(Path(path))
+        lang = _detect_language(Path(path), source)
         file_info = FileInfo(
             path=path,
             abs_path=str(self.repo_path / path),
@@ -605,19 +605,46 @@ def has_working_tree_changes(repo_path: Path) -> bool:
     except Exception:
         return False
     try:
-        changed = (
-            item.b_path or item.a_path or "" for item in repo.head.commit.diff(None)
-        )
         output_dirs: dict[Path, bool] = {}
         return any(
-            is_candidate_source_path(p.replace("\\", "/"), repo_path, output_dirs)
-            for p in (*changed, *repo.untracked_files)
+            _counts_as_change(
+                (item.b_path or item.a_path or "").replace("\\", "/"), repo_path, output_dirs, item
+            )
+            for item in repo.head.commit.diff(None)
+        ) or any(
+            _counts_as_change(p.replace("\\", "/"), repo_path, output_dirs)
+            for p in repo.untracked_files
         )
     except Exception as exc:
         log.warning("working tree check failed", path=str(repo_path), error=str(exc))
         return False
     finally:
         repo.close()
+
+
+def _counts_as_change(
+    path: str, repo_path: Path, output_dirs: dict[Path, bool], item: object | None = None
+) -> bool:
+    """Whether a working-tree path is a change the index has to see.
+
+    A path the index would read, unless repowise wrote the change itself: its
+    own ``.claude/CLAUDE.md`` block left untracked or refreshed in a tracked
+    file is not the user's work, and counting it marked every repo with an
+    editor file dirty on every run. *item* is the ``HEAD`` diff entry of a
+    tracked path, whose committed text tells a refreshed block from an edit.
+    """
+    if not is_candidate_source_path(path, repo_path, output_dirs):
+        return False
+    a_blob = getattr(item, "a_blob", None)
+    committed = (
+        (lambda: a_blob.data_stream.read().decode("utf-8", "replace")) if a_blob else None
+    )
+    try:
+        return not is_repowise_output(repo_path / path, path, committed)
+    except Exception:
+        # An unreadable committed blob (LFS pointer, missing object) must not
+        # hide the repo's other changes; counting this one is the safe side.
+        return True
 
 
 def merge_file_diffs(*sources: list[FileDiff]) -> list[FileDiff]:

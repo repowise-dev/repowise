@@ -71,9 +71,17 @@ class BrainMethodDetector:
 
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            severity = self.severity_for(judged_ccn(fn), fn.nloc)
+            judged = judged_ccn(fn)
+            severity = self.severity_for(judged, fn.nloc)
             if severity is None:
                 continue
+            details = {"ccn": fn.ccn, "nloc": fn.nloc, "max_nesting": fn.max_nesting}
+            # Severity was judged on the dispatch-flat number, so the reason
+            # leads with it — the raw one stays in ``details["ccn"]``.
+            reason = f"Brain Method: {fn.name} is {fn.nloc} lines, CCN {judged}"
+            if judged != fn.ccn:
+                details["judged_ccn"] = judged
+                reason += f" ({fn.ccn} counting every arm of its dispatch)"
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -82,17 +90,12 @@ class BrainMethodDetector:
                     line_start=fn.start_line,
                     line_end=fn.end_line,
                     details={
-                        "ccn": fn.ccn,
-                        "nloc": fn.nloc,
-                        "max_nesting": fn.max_nesting,
+                        **details,
                         "dependents_count": ctx.dependents_count,
                         "centrality_floor": floor,
                         **shape_details(fn),
                     },
-                    reason=(
-                        f"Brain Method: {fn.name} is {fn.nloc} lines, CCN {fn.ccn}, "
-                        f"in a file imported by {ctx.dependents_count} others"
-                    ),
+                    reason=f"{reason}, in a file imported by {ctx.dependents_count} others",
                 )
             )
         return out

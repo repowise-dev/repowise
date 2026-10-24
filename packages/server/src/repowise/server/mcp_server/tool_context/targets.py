@@ -349,8 +349,28 @@ def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
             docs["summary"] = _preview_summary(card.target, preview)
 
 
+async def _directory_docs(card: CardState, docs: dict[str, Any]) -> None:
+    """A directory with no module page: its files with git history, capped as symbols are."""
+    paths = sorted(r.file_path for r in await card.dir_rows())
+    docs["summary"] = (
+        f"{card.dir_path}: a directory with no module page; {len(paths)} file(s) "
+        "under it have git history."
+    )
+    cap_collection(
+        docs,
+        "files",
+        [{"path": p} for p in paths],
+        _SYMBOL_CAP,
+        card.query.collector,
+        label=f"{card.target} :: docs.files beyond cap={_SYMBOL_CAP}",
+    )
+
+
 async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
     page = card.page
+    if page is None:
+        await _directory_docs(card, docs)
+        return
     exclude_spec = card.query.exclude_spec
     docs["title"] = page.title
     docs["summary"] = page.summary or ""

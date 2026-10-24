@@ -386,19 +386,7 @@ def _resolve_repo_path(
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(status, command="health")
-    if not target.is_workspace:
-        assert target.repo_path is not None
-        return target.repo_path
-    if target.repo_filter is not None:
-        picked = target.resolve_repo_alias(target.repo_filter)
-        if picked is None:
-            raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-        return picked
-    primary = target.primary_path()
-    if primary is None:
-        raise click.ClickException("Workspace has no primary repo configured.")
-    return primary
+    return target.narrow(status, command="health")
 
 
 def _render_stored_view(repo_path: Path, status: Any, opts: _Options) -> bool:
@@ -621,9 +609,14 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
         analysed_note,
         band_for,
         headline_band,
+        headline_scope,
     )
 
     share = kpis.get("analysed_share")
+    analysed = kpis.get("file_count") or 0
+    unanalysed_count = kpis.get("unanalysed_file_count") or 0
+    # A minority-analysed score never prints bare: its coverage rides beside it.
+    scope = headline_scope(analysed, unanalysed_count)
 
     def banded(label: str, score: Any, band: str | None) -> str:
         # Every score printed carries its band, so a Fair figure never sits
@@ -636,7 +629,7 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
 
     avg = kpis.get("average_health")
     avg_band = headline_band(avg, share)
-    parts = [banded("Code health", avg, avg_band)]
+    parts = [banded("Code health", avg, avg_band) + (f" {scope}" if scope else "")]
     # Production code beside the all-files figure, while tests are in it.
     production = kpis.get("production_average")
     has_tests = (kpis.get("production_file_count") or 0) < (kpis.get("file_count") or 0)
@@ -661,8 +654,8 @@ def _render_headline(kpis: dict[str, Any], code_shape: bool, unanalysed: int) ->
             "their language yet.[/dim]"
         )
     # The share behind the headline, from the same counts as its band.
-    note = analysed_note(kpis.get("file_count") or 0, kpis.get("unanalysed_file_count") or 0)
-    if note:
+    note = analysed_note(analysed, unanalysed_count)
+    if note and not scope:
         console.print(f"[dim]Code health {note}.[/dim]")
 
 
@@ -680,7 +673,7 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
         score_color = BAND_TERMINAL_COLOR[band_for(m.score)]
         table.add_row(
             m.file_path,
-            f"[{score_color}]{m.score:.1f}[/{score_color}]"
+            f"[{score_color}]{m.score:.2f}[/{score_color}]"
             + ("*" if m.file_path in short_history else ""),
             str(m.max_ccn),
             str(m.max_nesting),

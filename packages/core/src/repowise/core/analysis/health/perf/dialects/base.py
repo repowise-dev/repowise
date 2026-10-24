@@ -236,6 +236,11 @@ class BasePerfDialect:
             has_db_import=has_db_import,
         )
 
+    def runs_once_in_loop(self, call: Node) -> bool:
+        """*call* sits in a loop it ends (a ``return`` or ``break`` follows), so it
+        is no per-iteration call to a helper."""
+        return False
+
     def defers_body(self, fn: Node) -> bool:
         """*fn*'s body runs when its result is iterated, not when it is called
         (a generator, or an iterator closure that takes a ``yield`` callback)."""

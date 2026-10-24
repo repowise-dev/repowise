@@ -3017,6 +3017,17 @@ def test_kpis_name_production_code_beside_the_all_files_average() -> None:
     assert "production_average" not in _compute_kpis([prod], deductions={})
 
 
+def test_kpis_scope_a_score_most_code_files_did_not_feed() -> None:
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.server.mcp_server.tool_health.summary import _compute_kpis
+
+    rows = [HealthFileMetric(file_path=f"s{i}.sh", score=10.0, nloc=10) for i in range(9)]
+    minority = _compute_kpis(rows, unanalysed=106, deductions={})
+    assert minority["average_health_scope"] == "across 9 of 115 code files"
+    assert minority["band"] is None
+    assert "average_health_scope" not in _compute_kpis(rows, unanalysed=1, deductions={})
+
+
 @pytest.mark.asyncio
 async def test_workspace_rows_count_the_files_the_overview_counts(setup_mcp, health_data, session):
     """repo="all" and the single-repo overview state one file count."""

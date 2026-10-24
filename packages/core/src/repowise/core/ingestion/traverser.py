@@ -32,9 +32,14 @@ import pathspec
 import structlog
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
-from ..code_origin import is_generated_header
+from ..code_origin import CONTENT_TEST_SUFFIXES, declares_test, is_generated_header
 from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
-from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..entry_candidacy import (
+    APPLICATION_MAIN_LANGUAGES,
+    boots_application,
+    conventional_entry_stems,
+    not_an_execution_start,
+)
 from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
 from ..phpunit_roots import (
     PHPUNIT_CONFIG_NAMES,
@@ -51,10 +56,14 @@ from ..pytest_roots import (
     pytest_roots,
 )
 from ..test_paths import is_test_related_path
+from .cobol.source import is_cobol_dclgen
 from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .languages.specs.aura import is_aura_markup_path
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from .languages.specs.salesforce_flow import is_legacy_flow_path
 from .models import (
     EXTENSION_TO_LANGUAGE,
+    NAME_SUFFIX_TO_LANGUAGE,
     SPECIAL_FILENAMES,
     FileInfo,
     LanguageTag,
@@ -563,11 +572,14 @@ class FileTraverser:
 
         lang_counts: dict[str, int] = {}
         entry_points: list[str] = []
+        application_mains: list[str] = []
 
         for f in files:
             lang_counts[f.language] = lang_counts.get(f.language, 0) + 1
             if f.is_entry_point:
                 entry_points.append(f.path)
+                if f.is_application_main:
+                    application_mains.append(f.path)
 
         # Display-only estimate (~40 bytes/line), so no file is opened to count.
         total_loc = sum(f.size_bytes // 40 for f in files)
@@ -584,6 +596,7 @@ class FileTraverser:
             total_files=len(files),
             total_loc=total_loc,
             entry_points=sorted(entry_points),
+            application_mains=sorted(application_mains),
         )
 
     # ------------------------------------------------------------------
@@ -800,7 +813,7 @@ class FileTraverser:
             return "skipped_dir_ignore"
         if self._blocked_patterns.match_file(rel_str):
             return "skipped_blocked_pattern"
-        if _is_repowise_output(abs_path, rel_str):
+        if is_repowise_output(abs_path, rel_str):
             return "skipped_repowise_output"
         return None
 
@@ -823,10 +836,7 @@ class FileTraverser:
         """The file's language, or None (counted) when it is binary or unparseable."""
         # Name/extension lookup does no I/O; only an unrecognised extension
         # pays for binary and shebang sniffing.
-        language = _language_from_name_or_ext(abs_path)
-        # A .h may be Objective-C by content.
-        if language == "cpp":
-            return _objc_header_language(abs_path) or language
+        language = _content_language(abs_path, _language_from_name_or_ext(abs_path))
         if language is not None:
             return language
         if _is_binary(abs_path):
@@ -897,8 +907,14 @@ class FileTraverser:
             dotnet_projects=tables.dotnet_test_projects,
             phpunit_roots=tables.phpunit_roots,
             package_root=self._is_package_root_dir,
+        ) or (
+            # An Apex ``@IsTest`` class is test code whatever its name.
+            rel_str.lower().endswith(CONTENT_TEST_SUFFIXES)
+            and declares_test(rel_str, _read_head(abs_path))
         )
-        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
+        # A test-scoped ``@SpringBootApplication`` boots a test context, not the system.
+        app_main = not is_test and _boots_application(abs_path, language)
+        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry or app_main
         return FileInfo(
             path=rel_str,
             abs_path=str(abs_path),
@@ -913,6 +929,7 @@ class FileTraverser:
             is_entry_point=entry and not is_test,
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
+            is_application_main=app_main,
         )
 
     def _is_package_root_dir(self, rel_dir: str) -> bool:
@@ -1038,7 +1055,26 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     filename = abs_path.name
     if filename in SPECIAL_FILENAMES:
         return SPECIAL_FILENAMES[filename]
-    return EXTENSION_TO_LANGUAGE.get(abs_path.suffix.lower())
+    language = _language_from_name_suffix(filename) or EXTENSION_TO_LANGUAGE.get(
+        abs_path.suffix.lower()
+    )
+    # Aura markup suffixes are generic (`.app`, `.tokens`), so they route by
+    # their bundle directory rather than by a repository-wide extension claim.
+    if language is None and is_aura_markup_path(abs_path.as_posix()):
+        return "aura"
+    # ``.flow`` is also Flow's ``.js.flow``: a legacy Salesforce flow routes by its directory.
+    if language is None and is_legacy_flow_path(abs_path.as_posix()):
+        return "salesforce_flow"
+    return language
+
+
+def _language_from_name_suffix(filename: str) -> LanguageTag | None:
+    """The language a multi-dot name ending (``.flow-meta.xml``) claims, if any."""
+    lowered = filename.lower()
+    for suffix, tag in NAME_SUFFIX_TO_LANGUAGE.items():
+        if lowered.endswith(suffix):
+            return tag
+    return None
 
 
 # A declaration or an import that opens its own line, matched after comments
@@ -1057,7 +1093,18 @@ _C_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?(?:\*/|\Z)", re.DOTALL)
 _OBJC_HEADER_SNIFF_BYTES = 16384
 
 
-def _objc_header_language(abs_path: Path) -> LanguageTag | None:
+def _head(abs_path: Path, source: bytes | None, size: int) -> bytes | None:
+    """The first *size* bytes of *source* when given, else of the file; ``None`` if unreadable."""
+    if source is not None:
+        return source[:size]
+    try:
+        with open(abs_path, "rb") as f:
+            return f.read(size)
+    except OSError:
+        return None
+
+
+def _objc_header_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
     """``objectivec`` for a ``.h`` that reads as Objective-C, else ``None``.
 
     One extension maps to one language for the whole repository, and ``.h``
@@ -1071,24 +1118,107 @@ def _objc_header_language(abs_path: Path) -> LanguageTag | None:
     """
     if abs_path.suffix.lower() != ".h":
         return None
-    try:
-        with open(abs_path, "rb") as f:
-            head = f.read(_OBJC_HEADER_SNIFF_BYTES)
-    except OSError:
+    head = _head(abs_path, source, _OBJC_HEADER_SNIFF_BYTES)
+    if head is None:
         return None
     # Blank the comments in place so line starts are preserved.
     head = _C_COMMENT_RE.sub(lambda m: b" " * len(m.group(0)), head)
     return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
 
 
-def _detect_language(abs_path: Path) -> LanguageTag:
+# Unlike .inl/.ipp/.tpp, .inc is shared with PL/I, Pascal and PHP. Keep the
+# extension's C++ default only when the head contains a C/C++ construct.
+_CPP_INC_SNIFF_BYTES = 16384
+_CPP_INC_SIGNAL_RE = re.compile(
+    rb"^[ \t]*#[ \t]*(?:include|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|error|line)\b"
+    rb"|\bnamespace\s+[A-Za-z_]|\btemplate\s*<"
+    rb"|\b[A-Za-z_]\w*::[A-Za-z_]"
+    rb"|\b(?:class|struct|union|enum)\s+[A-Za-z_]"
+    rb"|\b(?:void|bool|char|short|int|long|float|double|auto)(?:\s+|\s*[*&]+\s*)[A-Za-z_]",
+    re.MULTILINE,
+)
+_C_COMMENT_OR_STRING_RE = re.compile(
+    rb"//[^\n]*|/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+    re.DOTALL,
+)
+
+
+def _inc_declarations(head: bytes) -> bytes:
+    """Blank nested brace blocks and Pascal comments, retaining declarations.
+
+    A brace alone cannot distinguish C++ code from a Pascal comment. C++
+    declarations outside a body still supply evidence; text inside Pascal
+    comments must not supply it, even when comments nest.
+    """
+    blanked = bytearray(head)
+    closers: list[bytes] = []
+    start = 0
+    for m in re.finditer(rb"\{|\}|\(\*|\*\)", head):
+        token = m.group()
+        if token in (b"{", b"(*"):
+            if not closers:
+                start = m.start()
+            closers.append(b"}" if token == b"{" else b"*)")
+        elif closers and token == closers[-1]:
+            closers.pop()
+            if not closers:
+                blanked[start : m.end()] = re.sub(rb"[^\n]", b" ", head[start : m.end()])
+    if closers:
+        blanked[start:] = re.sub(rb"[^\n]", b" ", head[start:])
+    return bytes(blanked)
+
+
+def _cpp_inc_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
+    """``cpp`` for an .inc with C++ evidence outside comments and strings, else None.
+
+    Includes in an unsupported language must stay unindexed, rather than
+    becoming C++ files whose missing importers look like dead code.
+    """
+    head = _head(abs_path, source, _CPP_INC_SNIFF_BYTES)
+    if head is None:
+        return None
+    head = _C_COMMENT_OR_STRING_RE.sub(lambda m: re.sub(rb"[^\n]", b" ", m.group(0)), head)
+    if b"<?" in head:
+        return None  # PHP's opening tags override any C++-like declarations.
+    return "cpp" if _CPP_INC_SIGNAL_RE.search(_inc_declarations(head)) else None
+
+
+# DCLGEN writes the table declaration, then the ``01`` record, at the top of a
+# member; a 750-column table (the DB2 maximum) declares in about 62 KB.
+_DCLGEN_SNIFF_BYTES = 131072
+
+
+def _dclgen_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
+    """``cobol`` for a ``.dcl`` DCLGEN member written for COBOL, else ``None``.
+
+    ``.dcl`` is also PL/I DCLGEN output and OpenVMS DCL, so the extension
+    alone claims nothing.
+    """
+    if abs_path.suffix.lower() != ".dcl":
+        return None
+    head = _head(abs_path, source, _DCLGEN_SNIFF_BYTES)
+    return "cobol" if head is not None and is_cobol_dclgen(head) else None
+
+
+def _content_language(
+    abs_path: Path, language: LanguageTag | None, source: bytes | None = None
+) -> LanguageTag | None:
+    """*language* from the name, or what content says for a shared extension.
+
+    *source* is the file's bytes when the caller already holds them (a blob),
+    so the working tree is not read in their place.
+    """
+    if language == "cpp":
+        if abs_path.suffix.lower() == ".inc":
+            return _cpp_inc_language(abs_path, source)
+        return _objc_header_language(abs_path, source) or language
+    return language or _dclgen_language(abs_path, source)
+
+
+def _detect_language(abs_path: Path, source: bytes | None = None) -> LanguageTag:
     """Detect the language of a file from name, extension, content, or shebang."""
-    lang = _language_from_name_or_ext(abs_path)
-    if lang is not None:
-        if lang == "cpp":
-            return _objc_header_language(abs_path) or lang
-        return lang
-    return _detect_by_shebang(abs_path)
+    lang = _content_language(abs_path, _language_from_name_or_ext(abs_path), source)
+    return lang if lang is not None else _detect_by_shebang(abs_path)
 
 
 def _detect_by_shebang(abs_path: Path) -> LanguageTag:
@@ -1193,6 +1323,15 @@ def _is_generated(abs_path: Path) -> bool:
     return is_generated_header(header)
 
 
+def _read_head(abs_path: Path) -> bytes:
+    """The first 4 KB of a file, which is what a content rule reads; empty if unreadable."""
+    try:
+        with open(abs_path, "rb") as f:
+            return f.read(4096)
+    except OSError:
+        return b""
+
+
 def _is_config_file(language: LanguageTag) -> bool:
     return language in ("yaml", "toml", "json", "dockerfile", "makefile")
 
@@ -1244,6 +1383,19 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
         or _stem_is_entry_point(abs_path)
     )
     return named_entry and not not_an_execution_start(rel_str, language)
+
+
+# Ceiling: a bootstrap call past the first 16 KB is missed. An application
+# main is a short file; reading every JVM file whole would double the walk's I/O.
+_APPLICATION_MAIN_SNIFF_BYTES = 16384
+
+
+def _boots_application(abs_path: Path, language: str) -> bool:
+    """Whether the file starts a framework application (:func:`boots_application`)."""
+    if language not in APPLICATION_MAIN_LANGUAGES:
+        return False
+    head = _head(abs_path, None, _APPLICATION_MAIN_SNIFF_BYTES)
+    return head is not None and boots_application(language, head.decode("utf-8", errors="ignore"))
 
 
 class ConsoleScriptTables(NamedTuple):
@@ -1745,11 +1897,16 @@ def in_blocked_dir(
     )
 
 
-def _is_repowise_output(abs_path: Path, rel_str: str) -> bool:
+def is_repowise_output(
+    abs_path: Path, rel_str: str, committed: Callable[[], str] | None = None
+) -> bool:
     """Whether repowise wrote the whole file: an owned path, or a shared one holding only its part.
 
     A shared file (``CLAUDE.md``, ``.mcp.json``) with anything the user wrote
     stays indexed, repowise's block included, since the user's part is theirs.
+    *committed* returns the file's text at ``HEAD``, so a working-tree check
+    can tell repowise's refresh of a tracked file from the user's edit; it is
+    only called for a managed file.
     """
     if _OWNED_SPEC.match_file(rel_str):
         return True
@@ -1759,7 +1916,7 @@ def _is_repowise_output(abs_path: Path, rel_str: str) -> bool:
         text = abs_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    return only_repowise_differs(rel_str, "", text)
+    return only_repowise_differs(rel_str, committed() if committed else "", text)
 
 
 def is_candidate_source_path(
@@ -1799,7 +1956,7 @@ def is_candidate_source_path(
         return False
 
     name = parts[-1]
-    if name in SPECIAL_FILENAMES:
+    if name in SPECIAL_FILENAMES or _language_from_name_suffix(name) or is_legacy_flow_path(posix):
         return True
 
     suffix = Path(name).suffix.lower()
@@ -1807,7 +1964,7 @@ def is_candidate_source_path(
         return False
     if _BLOCKED_FILENAME_SPEC.match_file(name):
         return False
-    return suffix in EXTENSION_TO_LANGUAGE
+    return suffix in EXTENSION_TO_LANGUAGE or is_aura_markup_path(posix)
 
 
 def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:

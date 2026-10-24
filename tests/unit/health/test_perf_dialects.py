@@ -1793,3 +1793,145 @@ def test_python_acquire_spin_vs_per_item():
     assert _hits("python", spin) == []
     each = "def acquire(self, items):\n    for i in items:\n        self.locks[i].acquire()\n"
     assert _hits("python", each) == [("lock_in_loop", "")]
+
+
+# ---------------------------------------------------------------------------
+# Apex
+# ---------------------------------------------------------------------------
+
+
+def test_apex_fixture_hits():
+    fc = _walk("apex/perf_io_in_loop.cls", "apex")
+    hits = sorted((h.function, h.kind, h.detail) for h in fc.perf_hits)
+    # Every shape under "stay quiet" in the fixture is absent: the bulk idioms,
+    # the query in a loop header, run-once shapes and the ``while`` ceiling.
+    assert hits == sorted(
+        [
+            ("soqlPerRecord", "io_in_loop", "db"),
+            ("dmlPerRecord", "io_in_loop", "db"),
+            ("databaseAndCallout", "io_in_loop", "db"),
+            ("databaseAndCallout", "io_in_loop", "network"),
+            ("asyncPerRecord", "io_in_loop", "db"),
+            ("asyncPerRecord", "io_in_loop", "db"),
+            ("nested", "io_in_loop", "db"),
+            ("nested", "nested_loop_with_io", "db"),
+        ]
+    )
+    sinks = {h.sink_call for h in fc.perf_hits}
+    assert {"SOQL", "update", "Database.delete", "http.send", "System.enqueueJob", "notifyLater"} <= sinks
+
+
+def _apex_loop(body: str, params: str = "List<Id> ids") -> str:
+    return f"public class A {{\n  public void m({params}) {{\n    for (Id i : ids) {{\n{body}\n    }}\n  }}\n}}\n"
+
+
+_APEX_CASES = [
+    (_apex_loop("      Messaging.sendEmail(msgs);"), [("io_in_loop", "network")], "sendEmail"),
+    (_apex_loop("      EventBus.publish(evt);"), [("io_in_loop", "db")], "platform event"),
+    (_apex_loop("      List<List<SObject>> r = [FIND 'x' IN ALL FIELDS RETURNING Account];"),
+     [("io_in_loop", "db")], "inline SOSL"),
+    (_apex_loop("      database.countQuery(q);"), [("io_in_loop", "db")], "case-insensitive receiver"),
+    (_apex_loop("      new Http().send(req);"), [("io_in_loop", "network")], "new Http().send"),
+    (_apex_loop("      mailer.send(req);", "List<Id> ids, Mailer mailer"), [], "send on a non-Http receiver"),
+    (_apex_loop("      helper(i);"), [], "a plain same-class call is no sink"),
+    (_apex_loop("      Database.merge(master, i);"), [], "merge takes at most three records"),
+    (_apex_loop("      Database.query('SELECT Id FROM Thing__mdt');"), [], "custom metadata query"),
+    (_apex_loop("      insert rec;\n      return;"), [], "return after the sink"),
+    (
+        "public class A {\n  public void m(List<Id> ids) {\n    for (Id a : ids) {\n"
+        "      for (Id b : ids) { insert rec; break; }\n    }\n  }\n}\n",
+        [("io_in_loop", "db"), ("nested_loop_with_io", "db")],
+        "an inner break still runs once per outer pass",
+    ),
+    (
+        "public class A {\n  public void m(List<Id> ids) {\n    for (Id i : ids) {\n"
+        "      if (buf.size() > 0) { insert buf; }\n    }\n  }\n}\n",
+        [("io_in_loop", "db")],
+        "an emptiness test is no flush threshold",
+    ),
+    (
+        "public class A {\n  Map<Id, Account> cache;\n  Account get(Id i) {\n"
+        "    if (cache != null) { return cache; }\n    cache = new Map<Id, Account>([SELECT Id FROM Account]);\n"
+        "    return null;\n  }\n  void m(List<Id> ids) {\n    for (Id i : ids) { Account a = [SELECT Id FROM Account]; }\n  }\n}\n",
+        [("io_in_loop", "db")],
+        "a memoized getter's query is no sink; a plain one in a loop is",
+    ),
+    (
+        "public class A {\n  static Map<String, List<Id>> byType = new Map<String, List<Id>>();\n"
+        "  void m(List<String> types) {\n    for (String t : types) {\n"
+        "      if (byType.get(t) == null) { byType.put(t, Database.query('SELECT Id FROM Account')); }\n"
+        "    }\n  }\n}\n",
+        [],
+        "a map-keyed cache filled under its own null test",
+    ),
+    (
+        "public class A {\n  void m(List<List<Account>> chunks) {\n"
+        "    for (Integer i = 0; i < chunks.size(); i++) { update chunks[i]; }\n  }\n}\n",
+        [],
+        "a counted walk over a list of lists handles a chunk per pass",
+    ),
+    (
+        "public class A {\n  void m(List<Account> rows) {\n    try { insert rows; } catch (Exception e) {\n"
+        "      for (Account a : rows) { Database.insert(a, false); }\n    }\n  }\n}\n",
+        [],
+        "a per-record retry after a failed bulk call",
+    ),
+    (_apex_loop("      Database.executeBatch(new Job(i));"), [], "batch submission is left out"),
+    (
+        _apex_loop("      update rec;\n      if (rec.Name == 'z') { break; }"),
+        [("io_in_loop", "db")],
+        "a guard exit on another condition keeps the hit",
+    ),
+    (
+        _apex_loop(
+            "      ok = true;\n      try { Database.convertLead(c); } catch (Exception e) { ok = false; }\n"
+            "      if (ok) { break; }"
+        ),
+        [],
+        "retry until one attempt succeeds",
+    ),
+    (
+        _apex_loop("      buf.add(i);\n      if (buf.size() > 100 || done) { update buf; }"),
+        [("io_in_loop", "db")],
+        "a size test mixed with another condition is no flush",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _APEX_CASES, ids=[c[2] for c in _APEX_CASES])
+def test_apex_cases(src, expected, note):
+    # The cases' bare classes declare no sharing; that marker has its own tests.
+    hits = [h for h in _hits("apex", src) if h[0] != "apex_missing_sharing"]
+    assert hits == sorted(expected), note
+
+
+def test_apex_parameter_switched_sink_is_no_bare_sink():
+    # ``if (doInsert) insert rows;`` outside a loop: the caller's argument
+    # decides, so the function is no cross-function sink target.
+    src = (
+        "public class F {\n  public static List<Account> make(Integer n, Boolean doInsert) {\n"
+        "    List<Account> rows = new List<Account>();\n    if (doInsert) { insert rows; }\n"
+        "    return rows;\n  }\n  public static void save(List<Account> rows) { insert rows; }\n}\n"
+    )
+    fc = walk_file("F.cls", "apex", src.encode())
+    sinks = {f.function: f.bare_sink_kind for f in fc.perf_fn_facts}
+    assert sinks.get("make") is None
+    assert sinks["save"] == "db"
+
+
+def test_apex_field_filled_when_unset_is_no_bare_sink():
+    src = (
+        "public class U {\n  static void config(Settings__c s) {\n    if (s.Mode__c == null) {\n"
+        "      s.Mode__c = 'x';\n      List<RecordType> r = [SELECT Id FROM RecordType];\n    }\n  }\n}\n"
+    )
+    assert walk_file("U.cls", "apex", src.encode()).perf_fn_facts == []
+
+
+def test_apex_helper_call_followed_by_return_is_no_loop_target():
+    src = (
+        "public class F {\n  void m(List<Id> ids) {\n    for (Id i : ids) {\n"
+        "      if (i == null) { notifyAll(); return; }\n      track(i);\n    }\n  }\n}\n"
+    )
+    fc = walk_file("F.cls", "apex", src.encode())
+    targets = {name for f in fc.perf_fn_facts for name, _line in f.loop_call_targets}
+    assert targets == {"track"}

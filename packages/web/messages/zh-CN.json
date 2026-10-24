@@ -442,6 +442,7 @@
         "unknown": "未知：{reason}",
         "unknownBare": "未知",
         "components_touched": "{count} 个组件：{names}{more, plural, =0 {} other {等另外 # 个}}",
+        "components_outside": "不属于任何组件（{files} 个变更文件）",
         "suggested_reviewers": "{names}{more, plural, =0 {} other {等另外 # 人}}",
         "owners": "{count, plural, =0 {无声明的负责人} other {{names}{more, plural, =0 {} other {等另外 # 个}}}}{unowned, plural, =0 {} other {；# 个变更文件无负责人}}",
         "reaching_tests": "{files, plural, =0 {没有变更的源文件} other {# 个变更文件中有 {reached} 个被测试覆盖}}{absent, plural, =0 {} other {；# 个没有测试}}{unknown, plural, =0 {} other {；# 个未知}}",
@@ -455,6 +456,7 @@
         "provenance": "来源：{label}，{commits} 个提交中已知 {known} 个",
         "provenance_named": "来源：{label}，{commits} 个提交中已知 {known} 个（{names}）",
         "risk_score": "大于 {percentile}% 的近期提交",
+        "risk_score_before": "大于此变更之前的 {sample} 个提交中的 {percentile}%（截至 {as_of}）",
         "outcomes": "{reverts} 次回滚，{references} 次被引为原因",
         "outcomes_rate": "{reverts} 次回滚，{references} 次被引为原因；{files} 个文件中有 {fixed} 个在 {days} 天内被修复"
       },
@@ -925,7 +927,7 @@
         "symbolsSub": "函数、类与方法",
         "docFreshness": "文档新鲜度",
         "docFreshnessNoPages": "尚未生成文档",
-        "docFreshnessSub": "按 {pages} 页加权",
+        "docFreshnessSub": "{fresh} / {pages} 页为最新",
         "hotspots": "热点",
         "hotspotsSub": "按改动频率与历史修复排序的文件",
         "contractLinks": "契约链接",
@@ -1559,6 +1561,10 @@
     "ledeUnit": "满分 10",
     "ledeSeeSystemMap": "查看系统地图",
     "ledeSentence": "这里的改动可经 {services} 个服务之间的 {links} 条结构链接触达全系统的 {pct}%。评分会把这一触达范围与相互依赖的核心规模以及循环依赖一起权衡；它每次请求都从系统图重新计算，因此不依赖下方检查是否运行过。",
+    "notDetermined": "无法确定",
+    "ledeNotDetermined": "无法确定：{reason}。在没有任何链接的图上评分会显得完全解耦，因此不给出分数。",
+    "cyclesTitleUndetermined": "循环依赖",
+    "cyclesNotDeterminedTitle": "无法确定循环依赖",
     "ledeNoGraph": "尚未构建系统图，因此没有可度量的内容。运行一次工作区同步即可构建。",
     "dsmTitle": "依赖结构矩阵",
     "dsmDescription": "每个填充格表示行服务依赖列服务，颜色按传输方式着色。红色格违反了声明的规则；琥珀色格处于循环依赖上。矩阵同时统计共同变更关系，因此其总数高于上方的结构链接数量。",
@@ -1650,7 +1656,7 @@
       "unmatched": "未匹配的消费方",
       "orphans": "没有调用方的提供方",
       "orphansSub": "仅限本工作区；与「未使用」不同",
-      "httpResolved": "已解析的 HTTP 调用",
+      "httpRead": "已读取的 HTTP 调用",
       "httpUnresolved": "定位到 {count} 个但无法解析",
       "httpSub": "占提取定位到的客户端调用"
     },
@@ -1714,6 +1720,20 @@
       },
       "col": {
         "match": "匹配方式"
+      },
+      "strategy": {
+        "exact_id": "按名称精确匹配",
+        "pattern_matched": "按订阅模式匹配",
+        "binding_routed": "经队列绑定路由",
+        "shared_table": "共享数据表",
+        "service_mapped": "按服务名匹配",
+        "host_only": "仅主机",
+        "gateway_route": "经网关路由",
+        "unique_path": "仅按路径匹配",
+        "ambiguous_path": "路径由多个服务提供",
+        "prefix_stripped": "去除前缀后匹配",
+        "manual": "手动声明",
+        "manifest": "在清单中声明"
       },
       "reasonTitle": {
         "no_provider": "未找到提供方",
@@ -1825,6 +1845,8 @@
       "label": "架构评分",
       "labelHint": "对影响范围、循环核心规模、依赖循环与规则违反的 1 到 10 综合评分，仅统计结构边。分数越高表示耦合越低。",
       "unit": "满分 10",
+      "notDetermined": "无法确定：{reason}。",
+      "partialEvidence": "证据不完整：{reason}。",
       "counts": "{services} 个服务分布在 {repos} 个仓库中，由 {relationships} 条关系相连：{structural} 条结构关系（代码中的契约或导入）与 {behavioral} 条共同变更关系（在同一批提交中一起改动的文件，而非调用）。",
       "cycleMore": "另有 {count} 个循环列在「需要注意」下。",
       "cycleOne": "它列在「需要注意」下，并附有一段打破它的提示词。",
@@ -1881,8 +1903,15 @@
       "contractLinksHint": "跨服务匹配到对应提供方的消费方调用。",
       "unmatched": "未匹配的消费方",
       "unmatchedSub": "工作区内没有提供方的调用",
-      "unmatchedHint": "没有匹配到提供方的消费方契约：缺失、属于第三方主机，或位于同一服务内。"
+      "unmatchedHint": "没有匹配到提供方的消费方契约：缺失，或属于第三方主机。仓库对自身服务的调用已有提供方，不计入。"
     }
+  },
+  "linkCoverage": {
+    "label": "关联到其他服务",
+    "sub": "{seen} 个 HTTP 调用中 {linked} 个已关联；已读取 {read} 个",
+    "hint": "匹配到其他服务所提供路由的 HTTP 调用，占所见全部调用的比例；通过任何方言都无法读取的代码对外调用的文件，每个计为一次。在已读取的调用中，{readNotLinked} 个没有匹配到工作区内的其他服务，{inService} 个是仓库对自身服务的调用，无需关联。",
+    "unmatchedHint": "在工作区内没有匹配到提供方的消费方：缺失，或属于第三方主机。",
+    "inServiceHint": "{count, plural, other {仓库对自身服务的 # 个调用已有提供方，不计入此处。}}"
   },
   "loading": {
     "workspace": "正在加载工作区",

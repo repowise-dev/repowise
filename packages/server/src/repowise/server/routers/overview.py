@@ -11,14 +11,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.forges import read_remote_url, strip_credentials
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitMetadata
-from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services import overview_payload as sections
 from repowise.server.services.overview_counts import explore_counts
@@ -37,9 +37,9 @@ HEALTH_HISTORY_POINTS = 12
 def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
     """Best-effort git remote for a repo, with any credentials removed.
 
-    ``repositories.url`` is client-supplied and empty for most CLI-registered
-    repos, so fall back to reading ``origin`` out of ``.git/config``. Parsed
-    rather than shelled out to: this runs on a page load, and ``git remote
+    ``repositories.url`` is empty when the last sync found no remote, so fall
+    back to reading one added since out of ``.git/config``. Parsed rather than
+    shelled out to: this runs on a page load, and ``git remote
     get-url`` would cost a process spawn per request for a string sitting in a
     file we can read.
 
@@ -74,6 +74,7 @@ async def _top_hotspots(session: AsyncSession, repo_id: str) -> list[dict[str, A
 @router.get("/{repo_id}/overview-summary")
 async def overview_summary(
     repo_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Everything the Overview page needs above the fold, in one call."""
@@ -126,7 +127,9 @@ async def overview_summary(
         "health": await sections.health_block(session, repo_id, health_metrics, snapshot, repo),
         "languages": mix["languages"],
         "docs_config_languages": mix["docs_config_languages"],
-        **await sections.attention_block(session, repo_id),
+        **await sections.attention_block(
+            session, repo_id, cross_repo_cut_inputs(request, repo_id)
+        ),
         "top_hotspots": await _top_hotspots(session, repo_id),
         "recent_decisions": await sections.recent_decisions(session, repo_id),
         "savings": await sections.savings_block(repo.local_path),

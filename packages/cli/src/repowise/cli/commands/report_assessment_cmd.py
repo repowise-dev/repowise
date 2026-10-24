@@ -13,6 +13,7 @@ from typing import Any
 import click
 
 from repowise.cli.helpers import (
+    cross_repo_cut_inputs,
     err_console,
     repo_index_session,
     resolve_command_target,
@@ -31,12 +32,21 @@ def _targets(target: Any) -> list[tuple[str | None, Path]]:
 
 
 async def _build(
-    repos: list[tuple[str | None, Path]], sections: list, scope: dict, **options: Any
+    repos: list[tuple[str | None, Path]],
+    sections: list,
+    scope: dict,
+    *,
+    ws_root: Path | None = None,
+    **options: Any,
 ) -> dict:
-    """The document over *repos*; *options* go to each :class:`ReportContext`."""
+    """The document over *repos*; *options* go to each :class:`ReportContext`.
+
+    Members of the workspace at *ws_root* read dead code with its cross-repo cut.
+    Over a whole workspace, its workspace-scope sections run once after the repos.
+    """
     from repowise.core.persistence.models import Repository
-    from repowise.core.report.build import assemble, collect_repo
-    from repowise.core.report.model import ReportContext
+    from repowise.core.report.build import assemble, collect_repo, collect_workspace
+    from repowise.core.report.model import ReportContext, WorkspaceReportContext
 
     parts = []
     for alias, root in repos:
@@ -57,17 +67,22 @@ async def _build(
                 root,
                 alias=alias,
                 head_commit=repo.head_commit if repo else None,
+                cross_repo=cross_repo_cut_inputs(root, ws_root),
                 **options,
             )
             parts.append(await collect_repo(ctx, sections))
-    return assemble(scope, parts)
+    workspace = []
+    if ws_root is not None and scope["kind"] == "workspace":
+        ws_ctx = WorkspaceReportContext(ws_root, repos=[entry for entry, _ in parts])
+        workspace = await collect_workspace(ws_ctx, sections)
+    return assemble(scope, parts, workspace=workspace)
 
 
-def _pick_sections(wanted: str | None) -> list:
-    """The registered sections, narrowed to *wanted* (comma-separated ids)."""
+def _pick_sections(wanted: str | None, report: str = "assessment") -> list:
+    """The registered *report* sections, narrowed to *wanted* (comma-separated ids)."""
     from repowise.core.report.build import available_sections
 
-    sections = available_sections()
+    sections = available_sections(report)
     if not wanted:
         return sections
     names = [n.strip() for n in wanted.split(",") if n.strip()]
@@ -159,5 +174,5 @@ def assessment_command(
     )
     target.notice(err_console, command="report assessment")
     repos, scope = _scope(target)
-    document = run_async(_build(repos, sections, scope))
+    document = run_async(_build(repos, sections, scope, ws_root=target.ws_root))
     _emit(render(document), fmt, out_path, document)

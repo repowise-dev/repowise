@@ -124,10 +124,17 @@ def detect_php_framework(manifest: ComposerManifest) -> FrameworkFacts | None:
     return next((facts for facts in PHP_FRAMEWORKS if facts.matches(manifest)), None)
 
 
+#: The Salesforce org, which places what flexipages, quick actions, tabs,
+#: email services and Experience sites name.
+SALESFORCE = FrameworkFacts(name="Salesforce", anchor="framework:salesforce")
+
 #: The runtime that starts the components an ``AndroidManifest.xml`` registers.
 ANDROID = FrameworkFacts(name="Android", anchor="framework:android")
 
 ANGULAR = FrameworkFacts(name="Angular", anchor="framework:angular")
+
+#: The Lightning runtime that places the LWC bundles a ``.js-meta.xml`` exposes.
+LWC = FrameworkFacts(name="Lightning Web Components", anchor="framework:lwc")
 
 #: Workspace config naming what an Angular build loads: Angular CLI's
 #: ``angular.json`` and an Nx project's ``project.json``.

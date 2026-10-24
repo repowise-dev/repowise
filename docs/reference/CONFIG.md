@@ -22,9 +22,11 @@ Everything Repowise knows about your repository, created at the repo root by
 └── .env                 # API keys (gitignored automatically)
 ```
 
-Repowise adds `.repowise/` to `.gitignore`: it is a local cache, not a source
-of truth. Only [`decisions.yaml`](#repowisedecisionsyaml) is meant to be
-committed.
+`.repowise/` is a local cache, not a source of truth: add it to your
+`.gitignore` if you like, as Repowise does not edit that file during `init`. Only
+[`decisions.yaml`](#repowisedecisionsyaml) is meant to be committed. The secrets
+`.env` and `events.key` are ignored by `.repowise/.gitignore`, so they stay out
+of git even where `.repowise/` is committed.
 
 ## `config.yaml`
 
@@ -1045,6 +1047,7 @@ Anonymous usage telemetry is **on by default** (opt-out).
 |----------|-------------|
 | `DO_NOT_TRACK` | Any truthy value disables it (cross-tool convention) |
 | `REPOWISE_TELEMETRY_DISABLED` | Disables it, Repowise-specific |
+| `REPOWISE_OFFLINE` | Disables it, plus the PyPI release check and the `init` probe of signed-in agent CLIs (`DO_NOT_TRACK` and `REPOWISE_TELEMETRY_DISABLED` turn those off too) |
 | `REPOWISE_TELEMETRY_DEBUG` | Prints the payload to stderr instead of sending |
 
 ### Misc

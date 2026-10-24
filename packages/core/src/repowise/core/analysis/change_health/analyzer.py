@@ -127,6 +127,9 @@ class RevisionAnalysis:
     symbols: dict[str, list[Symbol]] = field(default_factory=dict)
     #: Per-file scores and deductions, by path.
     metrics: dict[str, HealthFileMetricData] = field(default_factory=dict)
+    #: Where clones came from: "index" (partners outside *sources* counted),
+    #: "analyzed_files" (only among *sources*), None when duplication was off.
+    clone_source: str | None = None
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -161,7 +164,8 @@ class RevisionHealthAnalyzer:
         a file across a centrality gate without any change to its code.
 
         *index* adds what the index knows (history, coverage, test pairing,
-        blame findings); without it a score is the code-shape reading.
+        blame findings, clone partners); without it a score is the code-shape
+        reading.
 
         *caches* serves parses and walks seen before; the result is the same
         with or without it.
@@ -186,6 +190,7 @@ class RevisionHealthAnalyzer:
         result.dependents = analyzer.file_dependents()
         result.symbols = {pf.file_info.path: pf.symbols for pf in parsed}
         result.metrics = {m.file_path: m for m in report.metrics}
+        result.clone_source = analyzer.clone_source
         return result
 
     # -- internals ----------------------------------------------------------
@@ -263,6 +268,7 @@ def _index_kwargs(index: IndexInputs) -> dict[str, Any]:
         "coverage_map": index.coverage,
         "tested_files": index.tested_files,
         "stored_blame_findings": index.blame_findings,
+        "clone_index_dir": index.clone_index_dir,
     }
 
 

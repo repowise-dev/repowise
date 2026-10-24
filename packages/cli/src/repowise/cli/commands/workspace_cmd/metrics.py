@@ -7,7 +7,7 @@ import click
 from repowise.cli.helpers import console, resolve_repo_path
 from repowise.cli.output import emit_json, format_option, json_option, resolve_format
 
-from ._shared import _report_artifact_provenance, _require_workspace
+from ._shared import _print_evidence, _report_artifact_provenance, _require_workspace
 from .group import workspace_group
 
 
@@ -65,13 +65,28 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
         return
 
     _report_artifact_provenance(
-        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
+        ws_root,
+        ws_config,
+        graph.generated_at,
+        sorted({n.repo for n in graph.nodes}),
+        graph.repo_provenance,
     )
+    evidence = metrics.evidence.to_dict() if metrics.evidence is not None else None
+    _print_evidence(evidence)
 
+    if metrics.score is None:
+        # Nothing was seen to relate: no score, coupling or role is claimed.
+        console.print(
+            f"\n  Architecture score  [bold]not determined[/bold]   [dim]({metrics.node_count} "
+            f"service(s), {metrics.structural_edge_count} structural edge(s))[/dim]"
+        )
+        return
+
+    qualifier = "" if evidence is None or evidence["state"] == "measured" else ", partial evidence"
     score_color = "green" if metrics.score >= 8 else "yellow" if metrics.score >= 4 else "red"
     console.print(
         f"\n  Architecture score  [bold {score_color}]{metrics.score:.1f}[/bold {score_color}]"
-        f" / 10   [dim]({metrics.architecture_type})[/dim]"
+        f" / 10   [dim]({metrics.architecture_type}{qualifier})[/dim]"
     )
     console.print(
         f"  Propagation cost    [bold]{metrics.propagation_cost_pct:.1f}%[/bold]"

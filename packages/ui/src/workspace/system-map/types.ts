@@ -9,10 +9,8 @@ import type { SystemEdge, SystemNode } from "@repowise-dev/types";
 
 /** Repo-level health, joined client-side onto service nodes by repo alias. */
 export interface RepoHealth {
-  /** 0-100 health score. */
+  /** 0-100 code health score. */
   score: number;
-  /** Whether the score is canonical (computed) or derived (estimated). */
-  source: "canonical" | "derived";
 }
 
 /** React Flow node payload — the `SystemNode` plus its joined health, if any. */

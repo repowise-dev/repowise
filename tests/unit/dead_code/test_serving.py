@@ -15,20 +15,21 @@ from repowise.core.analysis.dead_code.serving import (
     SUMMARY_SCOPE,
     TIER_FLOORS,
     FindingFilters,
-    adjust_cross_repo,
     apply_filters,
     build_summary,
     build_tiers,
     compute_impact,
-    cross_repo_withdraws,
+    cross_repo_cut,
     dead_code_finding_id,
     excluded_kinds,
+    is_safe,
     last_meaningful_change,
     merge_summary_counts,
     rollup_by_directory,
     rollup_by_owner,
     safe_only_note,
     serialize_finding,
+    serve_findings,
     summary_counts,
 )
 
@@ -243,32 +244,62 @@ class _Lookup:
         return [{"consumer_repo": "web"}] if file_path == "src/a/two.py" else []
 
 
-def test_adjust_cross_repo_lowers_consumed_findings() -> None:
-    findings = [serialize_finding(r) for r in _ROWS]
-    adjust_cross_repo(findings, _Lookup(), "api")
-    by_path = {f["file_path"]: f for f in findings}
-    assert by_path["src/a/one.py"]["confidence"] == 0.45
-    assert "1 cross-repo consumer(s) in web" in by_path["src/a/one.py"]["cross_repo_note"]
-    assert by_path["src/b/five.py"]["confidence"] == 0.27
-    assert "mobile" in by_path["src/b/five.py"]["cross_repo_note"]
+def _served(rows: list, lookup=None, alias: str | None = "api") -> list[dict]:
+    return [serialize_finding(f) for f in serve_findings(rows, lookup or _Lookup(), alias)]
+
+
+def test_only_a_contract_link_lowers_confidence() -> None:
+    by_path = {f["file_path"]: f for f in _served(_ROWS)}
+    # Contract provider: cut to 30%, the consumer named.
+    assert by_path["src/a/two.py"]["confidence"] == 0.28
+    assert "consumed by: web." in by_path["src/a/two.py"]["cross_repo_note"]
+    # Co-change partners and package dependents keep the confidence.
+    assert by_path["src/a/one.py"]["confidence"] == 0.9
+    assert "changes together with 1 file(s) in web" in by_path["src/a/one.py"]["cross_repo_note"]
+    assert by_path["src/b/five.py"]["confidence"] == 0.9
+    assert "mobile may consume this export." in by_path["src/b/five.py"]["cross_repo_note"]
     # A finding another repo may consume is never safe to delete.
-    assert not by_path["src/a/one.py"]["safe_to_delete"]
-    assert not by_path["src/b/five.py"]["safe_to_delete"]
+    assert not any(f["safe_to_delete"] for f in by_path.values())
 
 
 def test_package_dependents_are_named_only_where_their_link_reaches() -> None:
-    findings = [serialize_finding(r) for r in _ROWS]
-    adjust_cross_repo(findings, _Lookup(), "api")
-    by_path = {f["file_path"]: f for f in findings}
-    # Inside the consumed package, and a contract provider: named.
-    assert "consumed by: mobile." in by_path["src/b/five.py"]["cross_repo_note"]
-    assert "consumed by: web." in by_path["src/a/two.py"]["cross_repo_note"]
-    # Outside every link: nobody is named, yet the cut stays and safety is withdrawn.
-    lone = [serialize_finding(_row("src/c/six.py", 0.9))]
-    adjust_cross_repo(lone, _Lookup(), "api")
+    # Outside every link: nobody is named, yet safety is withdrawn.
+    lone = _served([_row("src/c/six.py", 0.9)])
     assert "mobile" not in lone[0]["cross_repo_note"]
-    assert lone[0]["confidence"] == 0.27
+    assert lone[0]["confidence"] == 0.9
     assert not lone[0]["safe_to_delete"]
+
+
+class _ContractOnlyLookup(_Lookup):
+    """A provider repo nothing depends on as a package, e.g. an HTTP backend."""
+
+    def get_repos_depending_on(self, repo_alias: str) -> list[str]:
+        return []
+
+    def get_package_consumers(self, repo_alias: str) -> list[dict]:
+        return []
+
+
+def test_a_contract_link_cuts_every_kind_without_package_dependents() -> None:
+    rows = [
+        _row("src/a/two.py", 0.9, kind="unreachable_file"),
+        _row("src/a/two.py", 0.95),
+        _row("src/c/six.py", 0.9, kind="unreachable_file"),
+    ]
+    file_row, export_row, untouched = _served(rows, _ContractOnlyLookup())
+    assert file_row["confidence"] == 0.27
+    assert file_row["cross_repo_note"].startswith("This file may be consumed by: web.")
+    assert export_row["cross_repo_note"].startswith("This export may be consumed by: web.")
+    assert not file_row["safe_to_delete"] and not export_row["safe_to_delete"]
+    assert untouched["confidence"] == 0.9 and "cross_repo_note" not in untouched
+
+
+def test_a_same_repo_contract_link_is_not_a_cross_repo_consumer() -> None:
+    class _SelfLinked(_ContractOnlyLookup):
+        def get_contract_links_as_provider(self, repo_alias: str, file_path: str) -> list[dict]:
+            return [{"consumer_repo": repo_alias}]
+
+    assert cross_repo_cut(_SelfLinked(), "api", "src/a/two.py", "unreachable_file") is None
 
 
 class _UnscopedLookup(_Lookup):
@@ -278,27 +309,30 @@ class _UnscopedLookup(_Lookup):
 
 def test_a_package_link_with_no_manifest_names_its_dependent() -> None:
     # Unknown package scope is not evidence the file sits outside it.
-    lone = [serialize_finding(_row("src/c/six.py", 0.9))]
-    adjust_cross_repo(lone, _UnscopedLookup(), "api")
-    assert "consumed by: mobile." in lone[0]["cross_repo_note"]
+    lone = _served([_row("src/c/six.py", 0.9)], _UnscopedLookup())
+    assert "mobile may consume this export." in lone[0]["cross_repo_note"]
 
 
-def test_adjusted_findings_are_tiered_by_their_lowered_confidence() -> None:
-    findings = [serialize_finding(r) for r in _ROWS]
-    adjust_cross_repo(findings, _Lookup(), "api")
-    tiers = build_tiers(findings, 25, None)
+def test_cut_findings_are_tiered_by_their_lowered_confidence() -> None:
+    tiers = build_tiers(_served(_ROWS), 25, None)
     for name, block in tiers.items():
         for f in block["findings"]:
             assert f["confidence"] >= TIER_FLOORS[name]
-    assert "src/a/one.py" not in {f["file_path"] for f in tiers["high"]["findings"]}
+    assert "src/a/two.py" in {f["file_path"] for f in tiers["low"]["findings"]}
 
 
-def test_adjust_cross_repo_without_data_or_alias_is_a_no_op() -> None:
-    findings = [serialize_finding(r) for r in _ROWS]
-    before = json.dumps(findings, default=str)
-    adjust_cross_repo(findings, None, "api")
-    adjust_cross_repo(findings, _Lookup(), None)
-    assert json.dumps(findings, default=str) == before
+def test_the_floor_and_safe_only_read_the_cut_confidence() -> None:
+    # 0.95 * 0.3 = 0.28: below the default floor once cut, so not listed.
+    kept = serve_findings(_ROWS, _Lookup(), "api", _filters(min_confidence=RISK_CAP_CONFIDENCE))
+    assert all(f.confidence >= RISK_CAP_CONFIDENCE for f in kept)
+    assert "src/a/two.py" not in {f.file_path for f in kept}
+    assert serve_findings(_ROWS, _Lookup(), "api", _filters(safe_only=True)) == []
+
+
+def test_serve_findings_without_data_or_alias_changes_nothing() -> None:
+    plain = [serialize_finding(r) for r in _ROWS]
+    assert _served(_ROWS, lookup=None, alias=None) == plain
+    assert [serialize_finding(f) for f in serve_findings(_ROWS, None, "api")] == plain
 
 
 def test_recommendation_never_points_at_an_empty_tier() -> None:
@@ -321,17 +355,16 @@ def test_merged_per_repo_counts_equal_counting_everything_at_once() -> None:
 
 
 def test_summary_safe_counts_drop_what_the_cross_repo_cut_withdraws() -> None:
-    lookup = _Lookup()
-
-    def withdrawn(f) -> bool:
-        return cross_repo_withdraws(lookup, "api", f["file_path"], f["kind"])
-
     plain = summary_counts(_ROWS)
-    cut = summary_counts(_ROWS, withdrawn)
-    adjusted = [serialize_finding(r) for r in _ROWS]
-    adjust_cross_repo(adjusted, lookup, "api")
-    assert cut["safe_to_delete_count"] == sum(f["safe_to_delete"] for f in adjusted)
+    served = serve_findings(_ROWS, _Lookup(), "api")
+    cut = summary_counts(served)
+    assert cut["safe_to_delete_count"] == sum(f["safe_to_delete"] for f in _served(_ROWS))
     assert cut["safe_to_delete_count"] <= plain["safe_to_delete_count"]
     assert cut["total_findings"] == plain["total_findings"]
-    assert not cross_repo_withdraws(None, "api", "src/a/one.py", "unused_export")
-    assert not cross_repo_withdraws(lookup, None, "src/a/one.py", "unused_export")
+
+
+def test_the_cut_never_makes_a_finding_safe() -> None:
+    rows = [*_ROWS, _row("src/a/one.py", 0.9, safe_to_delete=False)]
+    for served in serve_findings(rows, _Lookup(), "api"):
+        assert served.confidence <= served.row["confidence"]
+        assert not is_safe(served) or is_safe(served.row)

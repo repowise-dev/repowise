@@ -13,8 +13,10 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import ScanContext, line_at
-from .dialect import EXPLICIT_CONFIDENCE, dedup_emit
+from .dialect import dedup_emit
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -30,6 +32,7 @@ _SCHEMA_RE = re.compile(r"""^[ \t]*@@schema\(\s*"([^"]+)"\s*\)""", re.MULTILINE)
 class PrismaDialect:
     name = "prisma"
     extensions = frozenset({".prisma"})
+    requires = ("model",)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
@@ -42,5 +45,5 @@ class PrismaDialect:
             table = mapped.group(1) if mapped else m.group(1)
             if schema:
                 table = f"{schema.group(1)}.{table}"
-            found.append((table, EXPLICIT_CONFIDENCE, line_at(content, m.start(1))))
+            found.append((table, ContractOrigin.EXPLICIT_TABLE, line_at(content, m.start(1))))
         return dedup_emit(ctx, self.name, found)

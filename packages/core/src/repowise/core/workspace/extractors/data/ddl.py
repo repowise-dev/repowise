@@ -4,7 +4,7 @@ A ``CREATE TABLE`` / ``CREATE VIEW`` in a repo's schema files or migrations is
 the strongest ownership signal there is. Parsed with sqlglot in permissive
 mode (same engine as the ingestion SQL handler): a statement that fails to
 parse contributes nothing, never a guess. ``ALTER TABLE`` in migrations also
-asserts ownership (the repo evolves that table) at slightly lower confidence.
+asserts ownership (the repo evolves that table), marked ``schema: alter``.
 """
 
 from __future__ import annotations
@@ -12,8 +12,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import ScanContext
-from .dialect import ALTER_CONFIDENCE, build_table_provider
+from .dialect import build_table_provider
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -37,6 +39,7 @@ class DdlDialect:
 
     name = "ddl"
     extensions = frozenset({".sql"})
+    requires = ("CREATE", "create", "Create", "ALTER", "alter", "Alter")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         try:
@@ -57,7 +60,6 @@ class DdlDialect:
             if stmt is None:
                 continue
             raw: str | None = None
-            confidence = 0.85
             schema = "create"
             if isinstance(stmt, exp.Create) and (stmt.kind or "").upper() in _CREATE_KINDS:
                 target = stmt.this
@@ -66,13 +68,12 @@ class DdlDialect:
                 raw = _qualified_name(target)
             elif isinstance(stmt, exp.Alter) and (stmt.args.get("kind") or "").upper() == "TABLE":
                 raw = _qualified_name(stmt.this)
-                confidence = ALTER_CONFIDENCE
                 schema = "alter"
             if raw is None or raw in seen:
                 continue
             seen.add(raw)
             contract = build_table_provider(
-                ctx, table_raw=raw, framework="sql-ddl", confidence=confidence, schema=schema
+                ctx, table_raw=raw, framework="sql-ddl", origin=ContractOrigin.DDL, schema=schema
             )
             if contract is not None:
                 out.append(contract)

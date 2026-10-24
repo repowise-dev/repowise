@@ -21,7 +21,9 @@ export type BiomarkerCategory =
   | "error_handling"
   | "performance"
   | "organizational"
-  | "sql";
+  | "sql"
+  | "apex"
+  | "cobol";
 
 export interface BiomarkerInfo {
   label: string;
@@ -40,6 +42,8 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   performance: "Performance",
   organizational: "Organizational",
   sql: "SQL",
+  apex: "Apex",
+  cobol: "COBOL",
 };
 
 export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
@@ -59,6 +63,10 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   // SQL smells deduct on the maintainability pillar only, bounded by the `sql`
   // cap in `_MAINTAINABILITY_CATEGORY_CAPS` (scoring.py).
   sql: 2.0,
+  // Apex markers are advisory: listed, never deducted.
+  apex: 0,
+  // The COBOL marker is advisory too.
+  cobol: 0,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -404,6 +412,36 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A comma-join (FROM a, b) with no join predicate anywhere in the statement produces the full cross product: O(n·m) rows. An explicit CROSS JOIN states intent and is not flagged; a comma-join with a WHERE clause is old-style join syntax and is not flagged either.",
   },
+  apex_soql_injection: {
+    label: BIOMARKER_LABELS.apex_soql_injection,
+    category: "apex",
+    description:
+      "A dynamic Apex query (Database.query, Search.query) that splices a String from outside the method, a parameter or public property, into a quoted SOQL literal without String.escapeSingleQuotes or a bind variable. Advisory: it never deducts.",
+  },
+  apex_missing_sharing: {
+    label: BIOMARKER_LABELS.apex_missing_sharing,
+    category: "apex",
+    description:
+      "A top-level Apex class that runs SOQL or DML and declares none of with, without or inherited sharing, so whether record sharing applies depends on its caller. Subclasses and inner classes are not flagged. Advisory: it never deducts.",
+  },
+  apex_hardcoded_id: {
+    label: BIOMARKER_LABELS.apex_hardcoded_id,
+    category: "apex",
+    description:
+      "A string literal that is a Salesforce record Id (an 18-character Id with a valid checksum, or a 15-character Id with a standard key prefix) outside test code. Ids differ between orgs and sandboxes. Advisory: it never deducts.",
+  },
+  apex_see_all_data: {
+    label: BIOMARKER_LABELS.apex_see_all_data,
+    category: "apex",
+    description:
+      "A test class or method annotated @IsTest(SeeAllData=true): it reads the org's live data, so it can pass in one org and fail in another. Advisory: it never deducts.",
+  },
+  cobol_unstructured_flow: {
+    label: BIOMARKER_LABELS.cobol_unstructured_flow,
+    category: "cobol",
+    description:
+      "A COBOL paragraph or section with an ALTER, a GO TO ... DEPENDING ON, or a GO TO to anything other than an exit paragraph of the PERFORM THRU range it sits in, so where control goes next has to be traced by hand. GO TO X-EXIT inside its own range is not flagged. Advisory: it never deducts.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
@@ -444,6 +482,11 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "hidden_coupling",
   "brain_method",
   "untested_complexity",
+  "apex_soql_injection",
+  "apex_missing_sharing",
+  "apex_hardcoded_id",
+  "apex_see_all_data",
+  "cobol_unstructured_flow",
 ]);
 
 /**

@@ -141,7 +141,9 @@ class TestCoverage:
     raw source path from the report until :func:`resolve_test_reports`
     rewrites it to a canonical repo key. ``test_file`` is the canonical key
     of the test's *own* source file, filled in best-effort by the resolver
-    (``None`` when the test id is not path-shaped or does not resolve).
+    (``None`` when the test id is not path-shaped or does not resolve). A
+    parser that knows the test's file by name (Apex: ``FooTest.cls``) sets
+    it raw, for the resolver to map like ``file_path``.
     """
 
     # Tell pytest this ``Test``-prefixed class is not a test to collect.

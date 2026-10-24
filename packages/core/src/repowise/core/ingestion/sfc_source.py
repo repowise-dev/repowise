@@ -892,4 +892,12 @@ def prepare_source(language: str, source: bytes, *, path: str | None = None) -> 
         from .parser_helpers import prepare_objectivec_source
 
         return prepare_objectivec_source(source)
+    if language == "apex" and source:
+        from .parser_helpers import prepare_apex_source
+
+        return prepare_apex_source(source)
+    if language == "cobol" and source:
+        from .cobol import prepare_cobol_source
+
+        return prepare_cobol_source(source)
     return source

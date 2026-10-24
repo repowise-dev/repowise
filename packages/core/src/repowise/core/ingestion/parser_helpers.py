@@ -43,7 +43,11 @@ from .lang_helpers.objc import (
     _objc_symbol_name,
 )
 from .lang_helpers.pascal import _dedupe_pascal_interface_symbols, _qualified_pascal_parent
-from .lang_helpers.source_prep import prepare_objectivec_source, prepare_pascal_source
+from .lang_helpers.source_prep import (
+    prepare_apex_source,
+    prepare_objectivec_source,
+    prepare_pascal_source,
+)
 from .lang_helpers.ts_js import _ts_nested_object_method_owner
 from .lang_helpers.type_heads import (
     TYPE_HEAD_EXTRACTORS,
@@ -93,6 +97,7 @@ __all__ = [
     "import_load_kind",
     "in_anonymous_class",
     "is_anonymous_member",
+    "prepare_apex_source",
     "prepare_objectivec_source",
     "prepare_pascal_source",
     "scope_segment",
@@ -383,13 +388,21 @@ _JAVA_INTEGER_LITERALS = frozenset(
 _JAVA_FLOATING_LITERALS = frozenset({"decimal_floating_point_literal", "hex_floating_point_literal"})
 
 
+# Apex literal nodes and the type each one has; ``null`` matches no exact type.
+_APEX_LITERAL_TYPES = {
+    "string_literal": "String",
+    "boolean": "Boolean",
+    "decimal_floating_point_literal": "Decimal",
+}
+
+
 def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
-    """A call's argument expressions, for a language whose overloads read them (Java).
+    """A call's argument expressions, for a language whose overloads read them (Java, Apex).
 
     Read from the argument list already in hand, the way ``_count_arguments``
     counts it.
     """
-    if language != "java" or not arg_nodes:
+    if language not in ("java", "apex") or not arg_nodes:
         return []
     skip_types = frozenset({"(", ")", ","})
     return [
@@ -397,12 +410,15 @@ def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
     ]
 
 
-def _argument_literal_types(arguments: list[Node], src: str) -> tuple[str | None, ...] | None:
+def _argument_literal_types(
+    arguments: list[Node], src: str, language: str = "java"
+) -> tuple[str | None, ...] | None:
     """The type of each literal argument, None where an argument is no literal.
 
     None overall when no argument is a literal.
     """
-    types = tuple(_java_literal_type(argument, src) for argument in arguments)
+    literal_type = _apex_literal_type if language == "apex" else _java_literal_type
+    types = tuple(literal_type(argument, src) for argument in arguments)
     return types if any(types) else None
 
 
@@ -438,6 +454,12 @@ def _java_literal_type(node: Node, src: str) -> str | None:
     if node.type in _JAVA_FLOATING_LITERALS:
         return "float" if node_text(node, src).endswith(("f", "F")) else "double"
     return _JAVA_LITERAL_TYPES.get(node.type)
+
+
+def _apex_literal_type(node: Node, src: str) -> str | None:
+    if node.type == "int":
+        return "Long" if node_text(node, src).endswith(("l", "L")) else "Integer"
+    return _APEX_LITERAL_TYPES.get(node.type)
 
 
 def _find_enclosing_symbol(

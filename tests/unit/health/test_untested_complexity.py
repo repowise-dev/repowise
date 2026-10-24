@@ -156,6 +156,15 @@ def test_an_untested_cc_of_five_fires_estimated_and_medium() -> None:
     assert "%" not in r.reason
 
 
+def test_apex_makes_no_claim_that_no_test_reaches_it() -> None:
+    # Apex tests reach code through platform dispatch the graph does not see.
+    apex = {"file_path": "classes/Batch.cls", "language": "apex"}
+    assert BIOMARKER.detect(_ctx([_fn("execute", 1, 20, 5)], **apex)) == []
+    # A test the graph does see still prices it.
+    reached = _ctx([_fn("execute", 1, 20, 20)], function_test_hops={1: 2}, **apex)
+    assert _one(reached).details["coverage_tier"] == "reached"
+
+
 def test_below_the_bar_is_silent() -> None:
     assert BIOMARKER.detect(_ctx([_fn("f", 1, 20, 4)])) == []
 

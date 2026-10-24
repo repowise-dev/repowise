@@ -11,6 +11,9 @@ import re
 
 from ..strings import match_paren
 
+# `{id?}`, `{id:int?}`, `{*rest?}`: a route parameter marked optional.
+_OPTIONAL_PARAM_RE = re.compile(r"\{(\*{0,2}[A-Za-z_]\w*(?::[^{}?]*)?)\?\}")
+
 
 def normalize_http_path(path: str) -> str:
     """Normalize an HTTP path for matching.
@@ -21,8 +24,12 @@ def normalize_http_path(path: str) -> str:
       3. Lowercase
       4. Strip trailing slash (but keep root ``/``)
       5. Unify param styles: ``:param``, ``{param}``, ``[param]`` → ``{param}``
+
+    An optional route parameter (ASP.NET and Laravel ``{id?}``,
+    ``{id:int?}``) loses its ``?`` first, so the query-string cut does not
+    end the path inside the brace.
     """
-    s = path.strip().split("?")[0].lower()
+    s = _OPTIONAL_PARAM_RE.sub(r"{\1}", path.strip()).split("?")[0].lower()
     if s != "/":
         s = s.rstrip("/")
     # ASP.NET routes commonly omit the leading slash; add one so all
@@ -40,6 +47,9 @@ def normalize_http_path(path: str) -> str:
     s = re.sub(r"\[[^\]]+\]", "{param}", s)
     # Unify JS template literal ${expr} → {param}
     s = re.sub(r"\$\{[^}]+\}", "{param}", s)
+    # A whole-segment ``*`` (Spring ``/owners/*/pets``, Express ``/files/*``)
+    # matches one segment, as a parameter does.
+    s = re.sub(r"(?<=/)\*(?=/|$)", "{param}", s)
     return s or "/"
 
 

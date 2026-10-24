@@ -11,6 +11,7 @@ import contextlib
 import multiprocessing
 import os
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,21 +39,34 @@ def _report_missing_grammars(stats: Any, progress: ProgressCallback | None) -> N
     if not lang_counts:
         return
     try:
-        from repowise.core.ingestion.parser import missing_grammar_languages
+        from repowise.core.ingestion.languages.registry import REGISTRY
+        from repowise.core.ingestion.parser import (
+            missing_grammar_languages,
+            unavailable_runtime_grammars,
+        )
 
         missing = missing_grammar_languages(lang_counts)
+        unavailable = unavailable_runtime_grammars(lang_counts)
     except Exception:
         logger.debug("grammar_preflight_failed", exc_info=True)
         return
-    if not missing:
-        return
-    detail = ", ".join(f"{lang} ({lang_counts[lang]:,} files)" for lang in missing)
-    emit_warning(
-        progress,
-        f"No parser installed for: {detail}. "
-        "These files are indexed but contribute no symbols; "
-        "reinstall repowise to pick up the missing grammars.",
-    )
+    if missing:
+        detail = ", ".join(f"{lang} ({lang_counts[lang]:,} files)" for lang in missing)
+        emit_warning(
+            progress,
+            f"No parser installed for: {detail}. "
+            "These files are indexed but contribute no symbols; "
+            "reinstall repowise to pick up the missing grammars.",
+        )
+    for lang, reason in unavailable:
+        spec = REGISTRY.get(lang)
+        emit_warning(
+            progress,
+            f"{spec.display_name if spec else lang} grammar unavailable: "
+            f"{lang_counts[lang]:,} files indexed without symbols ({reason}). "
+            "It downloads on first use; on a machine with no network, set "
+            "REPOWISE_GRAMMAR_DIR to a pre-staged grammar cache.",
+        )
 
 
 def _report_query_compilation_failures(stats: Any, progress: ProgressCallback | None) -> None:
@@ -502,7 +516,10 @@ async def _traverse_stage(
         repo_path, traverser, allow_formatter_check=walk.derive_environment_facts
     )
     _phase_done(progress, "traverse")
-    return traverser, _filter_file_infos(file_infos, walk), repo_structure
+    file_infos = _filter_file_infos(file_infos, walk)
+    # The threaded walk skips ``traverse()``, which is what counts languages.
+    traverser.stats.lang_counts = dict(Counter(f.language for f in file_infos))
+    return traverser, file_infos, repo_structure
 
 
 async def _parse_in_pool(

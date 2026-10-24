@@ -9,7 +9,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [],
     "imports": [],
@@ -23,7 +24,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "lean/Main.lean": {
     "file_info": {
@@ -35,7 +37,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [],
     "imports": [
@@ -86,7 +89,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "lean/Plain/Local.lean": {
     "file_info": {
@@ -98,7 +102,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [],
     "imports": [],
@@ -112,7 +117,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   },
   "lean/Public/Visible.lean": {
     "file_info": {
@@ -124,7 +130,8 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false
     },
     "symbols": [],
     "imports": [],
@@ -138,6 +145,7 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": []
   }
 }

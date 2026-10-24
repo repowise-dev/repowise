@@ -963,6 +963,7 @@ class TestClassScope:
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
     assert set(RECEIVER_TYPE_LANGUAGES) == {
+        "apex",
         "cpp",
         "csharp",
         "dart",

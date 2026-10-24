@@ -9,7 +9,8 @@ service-granular graph:
   no detected sub-boundary collapses to one repo-root node.
 * **Edges are typed and honest.** Every edge carries its ``kind`` (http / grpc /
   event / package / co_change / db), ``match_type`` (exact / candidate / manual /
-  inferred), a ``confidence``, a ``weight`` (how many underlying contracts /
+  inferred), the ``strategy`` that made its strongest link (see :mod:`.origins`;
+  None on a co-change edge), a ``confidence``, a ``weight`` (how many underlying contracts /
   co-changes / deps it aggregates), and ``contract_refs`` back-pointers so any
   consumer can drill from an edge to its evidence. Structural edges (contracts,
   package deps) are flagged distinctly from behavioral co-change edges.
@@ -21,7 +22,8 @@ The graph is built once during ``repowise update --workspace`` (where contracts,
 the cross-repo overlay, and service boundaries are all in hand) and persisted to
 ``.repowise-workspace/system_graph.json``. The map (Phase 2), blast radius, the
 DSM, and the MCP/CLI surfaces are all *views* over this one artifact — none of
-them re-derives the graph.
+them re-derives the graph. Each reads it through :meth:`SystemGraph.adjacency`,
+the one place that decides which edges a dependency walk follows.
 
 Pure and I/O-free except for the thin ``save_system_graph`` / ``load_system_graph``
 helpers and the ``run_system_graph_build`` orchestrator at the bottom.
@@ -51,6 +53,7 @@ from repowise.core.workspace.extractors.service_boundary import (
     assign_service,
     detect_service_boundaries,
 )
+from repowise.core.workspace.origins import LinkStrategy, legacy_strategy
 
 _log = logging.getLogger("repowise.workspace.system_graph")
 
@@ -95,6 +98,12 @@ MAX_EDGE_REFS = 50
 #: assert correlated change. Kept distinct so reachability and the map never
 #: conflate "call each other" with "change together".
 _STRUCTURAL_KINDS: frozenset[str] = frozenset({"http", "grpc", "socket", "event", "package", "db"})
+
+#: Structural kinds whose dependency is asynchronous: the subscriber depends on
+#: the message shape, not on the publisher answering. Still a dependency (a
+#: cycle through one couples schemas and deploy order), so every view walks it;
+#: this set is what lets a view say which legs of a path are async.
+ASYNC_EDGE_KINDS: frozenset[str] = frozenset({"event"})
 
 
 def edge_kind_for_contract_type(contract_type: str) -> str:
@@ -168,6 +177,9 @@ class SystemEdge:
     weight: int  # number of underlying contracts / co-changes / deps
     structural: bool  # True for contract/package, False for co-change
     contract_refs: list[str] = field(default_factory=list)
+    #: The :class:`.origins.LinkStrategy` of the link that gave the edge its
+    #: confidence. None on a co-change edge, which no link made.
+    strategy: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -180,20 +192,28 @@ class SystemEdge:
             "weight": self.weight,
             "structural": self.structural,
             "contract_refs": self.contract_refs,
+            "strategy": self.strategy,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SystemEdge:
+        match_type = data.get("match_type", "exact")
+        strategy = data.get("strategy")
+        if strategy is None and data.get("kind") == "package":
+            strategy = LinkStrategy.MANIFEST  # a graph written before strategies existed
+        elif strategy is None and data.get("kind") != "co_change":
+            strategy = legacy_strategy(match_type)
         return cls(
             id=data["id"],
             source=data["source"],
             target=data["target"],
             kind=data["kind"],
-            match_type=data.get("match_type", "exact"),
+            match_type=match_type,
             confidence=data.get("confidence", 0.0),
             weight=data.get("weight", 1),
             structural=data.get("structural", True),
             contract_refs=data.get("contract_refs", []),
+            strategy=strategy,
         )
 
 
@@ -228,6 +248,37 @@ class SystemGraph:
             edges=[SystemEdge.from_dict(e) for e in data.get("edges", [])],
             diagnostics=ExtractionDiagnostics.from_dict(data.get("diagnostics", {})),
         )
+
+    def adjacency(
+        self, *, behavioral: bool = False, impact: bool = False
+    ) -> dict[str, dict[str, list[SystemEdge]]]:
+        """The graph as ``node -> {neighbour: [edges]}``: the one view every walk reads.
+
+        Default: dependency direction (``source`` depends on ``target``) over
+        structural edges, which is what cycles, the architecture metrics and
+        reachability walk. *impact* flips it to "a change to the key reaches
+        the neighbour" (``target -> source``), the blast-radius direction.
+        *behavioral* adds co-change edges, both ways, since they are symmetric.
+
+        Parallel edges between one pair (an http and an event edge, say) stay
+        separate in the list, in graph order, so a caller can tell a sync leg
+        from an async one by each edge's ``kind`` (:data:`ASYNC_EDGE_KINDS`).
+        """
+        adj: dict[str, dict[str, list[SystemEdge]]] = {}
+
+        def link(a: str, b: str, edge: SystemEdge) -> None:
+            adj.setdefault(a, {}).setdefault(b, []).append(edge)
+
+        for edge in self.edges:
+            if edge.structural:
+                if impact:
+                    link(edge.target, edge.source, edge)
+                else:
+                    link(edge.source, edge.target, edge)
+            elif behavioral:
+                link(edge.source, edge.target, edge)
+                link(edge.target, edge.source, edge)
+        return adj
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +346,7 @@ class _GraphBuilder:
         match_type: str,
         confidence: float,
         ref: str,
+        strategy: str | None,
     ) -> None:
         if source == target:
             return  # intra-node calls aren't system-level edges
@@ -316,9 +368,12 @@ class _GraphBuilder:
                 weight=1,
                 structural=structural,
                 contract_refs=[ref] if ref else [],
+                strategy=strategy,
             )
             return
         existing.weight += 1
+        if round(confidence, 3) > existing.confidence:
+            existing.strategy = strategy
         existing.confidence = round(max(existing.confidence, confidence), 3)
         if _MATCH_TYPE_RANK.get(match_type, 0) > _MATCH_TYPE_RANK.get(existing.match_type, 0):
             existing.match_type = match_type
@@ -366,12 +421,15 @@ def build_system_graph(
     version: int = 2,
     generated_at: str = "",
     repo_provenance: dict[str, dict[str, str]] | None = None,
+    service_links: list[ContractLink] | None = None,
 ) -> SystemGraph:
     """Assemble the service-granular system graph (pure, no I/O).
 
     Nodes are derived from each contract's service boundary; edges from matched
-    contract links (consumer→provider), package dependencies (dependent→
-    dependency), and cross-repo co-changes (undirected, behavioral).
+    contract links (consumer→provider), service-level links (a consumer to the
+    repo its host names, no route known; :attr:`.origins.LinkStrategy.HOST_ONLY`),
+    package dependencies (dependent→dependency), and cross-repo co-changes
+    (undirected, behavioral).
     """
     if diagnostics is None:
         diagnostics = build_diagnostics(contracts, links)
@@ -382,10 +440,11 @@ def build_system_graph(
     for c in contracts:
         builder.count_contract(c)
 
-    # 2. Contract edges — the consumer calls the provider.
-    for lk in links:
+    # 2. Contract edges — the consumer calls the provider (or, for a service
+    # link, the provider's repo: no provider file, so its repo-root node).
+    for lk in [*links, *(service_links or ())]:
         source = builder.resolve_node(lk.consumer_repo, lk.consumer_file)
-        target = builder.resolve_node(lk.provider_repo, lk.provider_file)
+        target = builder.resolve_node(lk.provider_repo, lk.provider_file or None)
         builder.add_edge(
             source=source,
             target=target,
@@ -393,6 +452,7 @@ def build_system_graph(
             match_type=lk.match_type,
             confidence=lk.confidence,
             ref=lk.contract_id,
+            strategy=lk.strategy,
         )
 
     # 3. Package-dependency edges — the dependent repo imports the dependency.
@@ -409,6 +469,7 @@ def build_system_graph(
             match_type="exact",
             confidence=1.0,
             ref=reference,
+            strategy=LinkStrategy.MANIFEST,
         )
 
     # 4. Co-change edges — behavioral, undirected, lower trust.
@@ -422,6 +483,7 @@ def build_system_graph(
             match_type="inferred",
             confidence=cc.strength,
             ref=f"{cc.source_file}~{cc.target_file}",
+            strategy=None,
         )
 
     nodes, edges = builder.finalize(diagnostics)
@@ -510,6 +572,7 @@ async def run_system_graph_build(
         diagnostics,
         generated_at=datetime.now(UTC).isoformat(),
         repo_provenance=store.repo_provenance,
+        service_links=store.service_links,
     )
 
     out_path = save_system_graph(graph, workspace_root)

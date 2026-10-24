@@ -807,7 +807,7 @@ def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
                 checked += 1
                 if symbol.id == base and "`" not in symbol.id:
                     continue
-                assert symbol.language in ("java", "csharp", "cpp", "kotlin"), symbol.id
+                assert symbol.language in ("java", "apex", "csharp", "cpp", "kotlin"), symbol.id
                 assert bases.count(base) > 1 or "`" in symbol.id, symbol.id
     assert checked > 500
 

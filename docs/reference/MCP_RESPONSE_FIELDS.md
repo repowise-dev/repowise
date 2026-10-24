@@ -184,6 +184,7 @@ Per target, under `targets`:
 | title, summary, symbols | Docs summary and symbols with signatures and lines |
 | `symbols_truncated`, `symbols_total` | Compact card: `{shown, total, hint}` and the full count |
 | `hotspot` | Churn flag |
+| `hotspot_files` | Directory card: hotspot files under it, absent at zero |
 | `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records; `get_why` serves them |
 | decisions | Titles; with `include=["decisions"]` the lanes `decisions`, `candidates` (max 3), `history` (max 2) |
@@ -205,7 +206,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 | `include` | Adds |
 |-----------|------|
 | `full_doc` | `content_md`, plus `digest_md` (questions answered, concept index, public API, git signals); dropped first over budget |
-| `ownership` | Primary owner, bus factor, contributor count |
+| `ownership` | Primary owner, bus factor, contributor count; on a directory, `owners_by_files` (top 3, `owners_total` beyond) and `basis` |
 | `last_change`, `community` | Newest change; community |
 | `callers`, `callees` | Call-graph neighbours |
 | `references` | Symbol edit set; see [references](#references) |
@@ -700,7 +701,7 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 | `limit_note` | A `limit` over 25 was clamped |
 
 - No language is gated; dead code on Java, C#, C, C++, Kotlin and Swift is preview, labelled in `_meta.preview`.
-- Workspace mode lowers confidence on findings another repo imports.
+- In workspace mode a finding another repo may use is never `safe_to_delete`, and a contract link to its file also lowers its confidence.
 - The 0.7 and 0.4 floors are shared by the CLI, web UI and this tool. See [DEAD_CODE.md](../layers/DEAD_CODE.md).
 
 ---

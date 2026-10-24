@@ -57,6 +57,7 @@ from .ast_utils import (
     _parameter_list,
 )
 from .class_analysis import _collect_classes
+from .cobol import walk_cobol
 from .cyclomatic import _walk_function_body
 from .deprecation import is_deprecated
 from .dispatch import dispatch_points, dispatch_share
@@ -165,6 +166,9 @@ def walk_file(
         log.debug("complexity_walker_parse_failed", path=abs_path, error=str(exc))
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
+    if language == "cobol":
+        return walk_cobol(tree.root_node, source)
+
     functions: list[FunctionComplexity] = []
     fc_by_node_id: dict[int, FunctionComplexity] = {}
     # Dialect first: it is a dict hit that rules out most languages before the
@@ -252,6 +256,10 @@ def walk_file(
     perf_hits, io_boundary_names, perf_fn_facts = _collect_perf_hits(
         tree.root_node, language, lmap, scan.io_names
     )
+    if language == "apex":
+        from ..apex_markers import apex_marker_hits
+
+        perf_hits = [*perf_hits, *apex_marker_hits(tree.root_node)]
     return FileComplexity(
         functions=functions,
         classes=classes,

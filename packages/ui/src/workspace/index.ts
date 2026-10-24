@@ -14,6 +14,7 @@ export * from "./contract-prompt-button";
 export * from "./contract-tests-section";
 export * from "./contract-type-badge";
 export * from "./cross-repo-summary";
+export * from "./link-provenance";
 export * from "./package-deps-table";
 export * from "./repo-card";
 export * from "./repo-card-compact";

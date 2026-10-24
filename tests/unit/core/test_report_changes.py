@@ -657,3 +657,18 @@ def test_a_newline_in_a_title_survives_the_csv():
     ]}]}
     (row,) = list(csv.DictReader(io.StringIO(render_csv(doc))))
     assert row["title"] == "fix:\nsecond line" and row["reason"] == "line one\n=line two"
+
+
+def test_a_change_outside_every_component_is_told_apart_from_an_unknown_one():
+    from repowise.core.report.sections.changes import _component_summary
+
+    entries = [
+        {"components": [], "components_known": True},
+        {"components": [], "components_known": False},
+        {"components": [{"name": "payments", "team": None}], "components_known": True},
+    ]
+    summary = _component_summary(entries)
+    assert summary["reason"] == (
+        "1 component(s) changed; 1 change(s) outside every component, 1 with components not known"
+    )
+    assert summary["data"]["outside_every_component"] == 1

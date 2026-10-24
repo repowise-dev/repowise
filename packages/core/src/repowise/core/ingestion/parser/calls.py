@@ -171,10 +171,36 @@ def _dart_argument_count(selector: Node | None) -> int | None:
 
 
 
+def _dart_receiver_path(head: Node, target: Node, src: str) -> str | None:
+    """The Dart receiver as a plain dotted path: ``r``, or ``r.item`` for ``r.item.m()``.
+
+    A Dart member access is no node of its own: the head is followed by flat
+    ``selector`` siblings, and the ones between it and the method's selector
+    are the field links. Each must be a plain ``.name``; anything else (a
+    call, an index, a ``?.`` hop) drops the site, as it does for TypeScript
+    and Python, so it never reaches the bare-call tiers.
+    """
+    method_selector = target.parent.parent if target.parent is not None else None
+    parts = [_node_text(head, src).strip()]
+    link = head.next_named_sibling
+    while link is not None and link != method_selector:
+        accessor = link.named_children[0] if link.named_child_count == 1 else None
+        if accessor is None or accessor.type != "unconditional_assignable_selector":
+            return None
+        names = [c for c in accessor.named_children if c.type == "identifier"]
+        if len(names) != 1:
+            return None
+        parts.append(_node_text(names[0], src).strip())
+        link = link.next_named_sibling
+    return ".".join(parts) if link is not None else None
+
+
 # The receiver captures that are themselves a member access, by language (the
 # queries widen only these two), and what a plain dotted path of names looks
 # like once whitespace is gone.
-_PATH_RECEIVERS = frozenset({("typescript", "member_expression"), ("python", "attribute")})
+_PATH_RECEIVERS = frozenset(
+    {("typescript", "member_expression"), ("python", "attribute"), ("apex", "field_access")}
+)
 _DOTTED_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+")
 
 
@@ -369,7 +395,7 @@ def _call_from_match(
         line=line,
         argument_count=_count_arguments(arg_nodes[0]) if arg_nodes else None,
         receiver_call=receiver_call,
-        argument_types=_argument_literal_types(arguments, src),
+        argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
         scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else None,
         edge_type=(
@@ -379,6 +405,7 @@ def _call_from_match(
         # Ceiling: schedulers matched by name, the task followed within its
         # own function only (see ``python_tasks``).
         spawned=language == "python" and is_fire_and_forget(site_node, src),
+        program_call=language == "cobol" and site_node.type == "call_statement",
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
 
@@ -412,7 +439,11 @@ def _call_names(
         return None
     receiver_name = None
     if receiver_nodes:
-        receiver_name = _receiver_text(language, receiver_nodes[0], src)
+        receiver_name = (
+            _dart_receiver_path(receiver_nodes[0], target_node, src)
+            if language == "dart"
+            else _receiver_text(language, receiver_nodes[0], src)
+        )
         if receiver_name is None:
             return None
     if receiver_name and language == "php":

@@ -18,6 +18,7 @@ from ..extractors import (
 )
 from ..extractors.bindings.ts_js import declarator_binds_callable, declarator_value_is_module_ref
 from ..extractors.visibility import (
+    refine_apex_visibility,
     refine_cpp_visibility,
     refine_csharp_visibility,
     refine_java_visibility,
@@ -381,6 +382,10 @@ def _refine_visibility(
     # interface or annotation body, which the modifier-text fn cannot see.
     if language == "java":
         return refine_java_visibility(def_node), False
+    # Apex: the keyword is read from the AST, where annotation text cannot
+    # pass for one, and an interface member is public.
+    if language == "apex":
+        return refine_apex_visibility(def_node), False
     # TS/JS: a top-level declaration is only public when exported —
     # inline, via ``export { x }`` lists, or ``export default x``.
     if language in _TS_JS_LANGUAGES:

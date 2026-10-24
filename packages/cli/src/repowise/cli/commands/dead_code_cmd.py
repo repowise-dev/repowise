@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    cross_repo_cut_inputs,
     get_head_commit,
     load_config,
     load_state,
@@ -22,7 +24,13 @@ from repowise.cli.helpers import (
 from repowise.cli.output import notice_console
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeReport
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
-from repowise.core.analysis.dead_code.serving import safe_only_note
+from repowise.core.analysis.dead_code.serving import (
+    CrossRepoLookup,
+    ServedFinding,
+    is_safe,
+    safe_only_note,
+    serve_findings,
+)
 from repowise.core.analysis.finding_registry import preview_lines
 
 #: The floor ``init`` and ``update`` store findings at: they run the analyzer
@@ -149,6 +157,35 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
     return analyzer.analyze(config)
 
 
+def _with_cut(served: ServedFinding) -> DeadCodeFindingData:
+    if served.cross_repo_note is None:
+        return served.row
+    return replace(
+        served.row,
+        confidence=served.confidence,
+        safe_to_delete=is_safe(served),
+        evidence=[*served.row.evidence, served.cross_repo_note],
+    )
+
+
+def _cut_cross_repo(
+    report: DeadCodeReport, lookup: CrossRepoLookup | None, alias: str | None, floor: float
+) -> tuple[DeadCodeReport, int]:
+    """The cross-repo cut every surface applies, then the floor again, since it only lowers.
+
+    Returns the report and how many findings the cut touched.
+    """
+    if lookup is None:
+        return report, 0
+    served = serve_findings(report.findings, lookup, alias)
+    cut = [_with_cut(s) for s in served]
+    shown = [f for f in cut if f.confidence >= floor]
+    touched = sum(1 for s in served if s.cross_repo_note)
+    return DeadCodeReport.from_findings(
+        shown, hidden_below_threshold=report.hidden_below_threshold + len(cut) - len(shown)
+    ), touched
+
+
 @click.command("dead-code")
 @click.argument("path", required=False, type=click.Path(exists=True))
 @click.option(
@@ -238,8 +275,9 @@ def dead_code_command(
     with no index, it parses the working tree and analyzes it live.
 
     In workspace mode, analyzes the primary repo by default; pass
-    --repo <alias> to target a different repo. Cross-repo dead-code
-    detection is not yet supported — run once per repo for now.
+    --repo <alias> to target a different repo. A finding whose file another
+    workspace repo may use is never cleanup-ready, with the same confidence as
+    on every other surface. Run once per repo.
     """
     # The live path parses the whole tree, and its structlog lines go to
     # stdout: they would corrupt JSON/Markdown and bury the table.
@@ -252,24 +290,7 @@ def dead_code_command(
         repo_alias=repo_alias,
     )
     notices = notice_console(fmt)
-    target.notice(notices, command="dead-code")
-
-    if target.is_workspace:
-        if target.repo_filter is not None:
-            picked = target.resolve_repo_alias(target.repo_filter)
-            if picked is None:
-                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-            repo_path = picked
-        else:
-            primary = target.primary_path()
-            if primary is None:
-                raise click.ClickException("Workspace has no primary repo configured.")
-            repo_path = primary
-            notices.print("[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]")
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
-
+    repo_path = target.narrow(notices, command="dead-code")
     notices.print(f"[bold]repowise dead-code[/bold]: {repo_path}")
 
     config: dict = {
@@ -294,6 +315,13 @@ def dead_code_command(
         report = _analyze_live(repo_path, config, notices)
     else:
         _notice_stored(repo_path, notices)
+    cut = cross_repo_cut_inputs(repo_path, None if no_workspace else target.ws_root)
+    report, touched = _cut_cross_repo(report, cut["lookup"], cut["alias"], min_confidence)
+    if touched:
+        notices.print(
+            f"[dim]{touched} finding(s) not cleanup-ready: another workspace repo may use "
+            "their file.[/dim]"
+        )
     findings = sorted(report.findings, key=_finding_order)
 
     if safe_only:

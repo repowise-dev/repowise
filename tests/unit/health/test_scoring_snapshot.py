@@ -120,6 +120,11 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",
     "contradictory_decision": "organizational",
+    "apex_soql_injection": "apex",
+    "apex_missing_sharing": "apex",
+    "apex_hardcoded_id": "apex",
+    "apex_see_all_data": "apex",
+    "cobol_unstructured_flow": "cobol",
 }
 
 

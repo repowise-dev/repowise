@@ -14,6 +14,7 @@ from repowise.core.attribution import attribution_enabled
 from repowise.core.changes.collect import (
     build_stored_evidence,
     cached_evidence,
+    components_stale,
     evidence_summary,
     keep_outcomes,
     list_needing_attention,
@@ -21,6 +22,7 @@ from repowise.core.changes.collect import (
     outcomes_key,
     outcomes_stale,
     save_evidence,
+    with_current_components,
     with_item,
 )
 from repowise.core.changes.evidence import ChangeEvidence, item_line
@@ -197,12 +199,15 @@ async def get_change(
     if evidence:
         kept = None if refresh else cached_evidence(row)
         repo = await crud.get_repository(session, repo_id)
-        # A kept checklist is current but for ``outcomes``, which follows HEAD.
+        # A kept checklist is current but for ``outcomes``, which follows HEAD,
+        # and components, which follow the catalog.
         task = None
         factory = resolve_request_session_factory(request)
         if kept is None:
             task = _build(factory, repo_id, row.change_id, repo.local_path)
-        elif await outcomes_stale(repo.local_path, kept):
+        elif await outcomes_stale(repo.local_path, kept) or await components_stale(
+            repo.local_path, kept
+        ):
             task = _build(factory, repo_id, row.change_id, repo.local_path, kept)
         if task is not None:
             try:
@@ -255,14 +260,20 @@ async def _build_and_keep(factory: Any, repo_id: str, change_id: str, root: str)
 async def _outcomes_and_keep(
     factory: Any, repo_id: str, change_id: str, root: str, kept: ChangeEvidence
 ) -> ChangeEvidence:
-    """Read the outcomes item, then merge only it into what is stored by then."""
+    """Read the outcomes item, then merge only it into what is stored by then;
+    then resolve components again if the catalog changed."""
     key = await outcomes_key(root)
     async with get_session(factory) as session:
         row = await crud.get_change(session, repo_id, change_id)
         item = await outcomes_item(session, repo_id, root, row, key)
     async with get_session(factory) as session:
         merged = await keep_outcomes(session, repo_id, change_id, item)
-    return merged or with_item(kept, item)
+    async with get_session(factory) as session:
+        row = await crud.get_change(session, repo_id, change_id)
+        current = merged or with_item(kept, item)
+        if row is None:  # deleted meanwhile
+            return current
+        return await with_current_components(session, repo_id, root, row, current)
 
 
 def _when(value: str | None, field: str) -> datetime | None:

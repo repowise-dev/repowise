@@ -23,6 +23,7 @@ import structlog
 from ...code_origin import code_origin
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
+from .apex_reachability import ApexLiveness, settle_apex_findings
 from .c_name_uses import (
     DEFINITION_HEADER_LINES,
     DeclarationSites,
@@ -170,6 +171,7 @@ class DeadCodeAnalyzer:
         self._dotnet_index = dotnet_index
         self._csharp_named_files: frozenset[str] | None = None
         self._swift_named_files: frozenset[str] | None = None
+        self._apex_liveness: ApexLiveness | None = None
         # C# classes a plugin host or container finds by type, built on first use.
         self._csharp_discovered: frozenset[tuple[str, str]] | None = None
         self._parsed_files = parsed_files or {}
@@ -282,7 +284,20 @@ class DeadCodeAnalyzer:
             package_files=self._package_files,
             csharp_named_files=self._csharp_named_files,
             swift_named_files=self._swift_named_files,
+            apex_live_files=self._apex().live,
         )
+
+    def _apex(self) -> ApexLiveness:
+        """Apex liveness, built on first use (see :mod:`apex_reachability`)."""
+        if self._apex_liveness is None:
+            self._apex_liveness = ApexLiveness(
+                self.graph,
+                self._source_map,
+                self._parsed_files,
+                self._repo_root,
+                frozenset(t.casefold().encode() for t in self._unindexed_identifier_tokens()),
+            )
+        return self._apex_liveness
 
     def analyze(
         self,
@@ -342,9 +357,10 @@ class DeadCodeAnalyzer:
 
     def _settle(self, findings: list[DeadCodeFindingData]) -> list[DeadCodeFindingData]:
         """Drop, demote and clamp the pass findings on evidence the graph does not carry."""
-        # First: a C# type another file in its scope names is used, and a
-        # C/C++ name written outside its declaration is a use. Both settle the
-        # finding before any clamp re-scores it.
+        # First: an Apex name written in any case, a C# type another file in
+        # its scope names, and a C/C++ name written outside its declaration are
+        # uses. Each settles the finding before any clamp re-scores it.
+        findings = settle_apex_findings(findings, self._apex(), self._source_map)
         findings = self._drop_csharp_named_exports(findings)
         findings = drop_preprocessed_named_elsewhere(
             findings,

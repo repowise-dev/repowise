@@ -386,7 +386,7 @@ export function buildExplore(
       key: "code-health",
       label: "Code health",
       href: `${r.base}/code-health`,
-      description: `Per-file scores, ${formatNumber(health.finding_counts?.inventory ?? health.open_findings)} open findings, coverage and refactoring targets`,
+      description: `Per-file scores, ${formatNumber(health.open_findings)} open findings, coverage and refactoring targets`,
     },
     {
       key: "knowledge-graph",
@@ -456,11 +456,15 @@ export type InventoryRow = OverviewAttentionAreaRow & { unit?: string };
  * matches in shipped source for security, open opportunities for
  * refactoring, decisions to review, and sole-owned files for ownership. Rows
  * whose basis the payload does not carry keep the server's count.
+ *
+ * Open findings is `open_findings`, the total get_overview and `repowise
+ * health` print. The queue's `finding_counts.inventory` leaves zero-impact
+ * findings out, so it is not the number those surfaces call open findings.
  */
 export function inventoryRows(summary: OverviewSummaryResponse): InventoryRow[] {
   const areas = summary.attention_summary?.areas ?? [];
   const explore = summary.explore;
-  const findings = summary.health.finding_counts?.inventory;
+  const findings = summary.health.open_findings;
   return areas.map((area): InventoryRow => {
     switch (area.key) {
       case "health":

@@ -18,7 +18,7 @@
           }
         ]
       },
-      "hotspot": false,
+      "hotspot_files": 1,
       "freshness": {
         "confidence_score": 0.95,
         "freshness_status": "fresh",

@@ -34,6 +34,7 @@ from .extractors.imports import (
     ImportExtractor,
 )
 from .extractors.visibility import (
+    apex_visibility,
     csharp_visibility,
     dart_visibility,
     elixir_visibility,
@@ -401,6 +402,29 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             }
         ),
     ),
+    # Apex reads Java's node names; there are no imports to extract.
+    "apex": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "enum_declaration": "enum",
+            # A trigger is one body the platform runs on DML events.
+            "trigger_declaration": "function",
+            "method_declaration": "method",
+            "constructor_declaration": "function",
+            # Only a field with an accessor list is captured (a property).
+            "field_declaration": "variable",
+        },
+        import_node_types=[],
+        export_node_types=[],
+        visibility_fn=apex_visibility,
+        # ``global``, ``webservice``, ``testmethod``, ...; annotations stay decorators.
+        modifier_node_types=frozenset({"modifiers"}),
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "enum_declaration"}
+        ),
+    ),
     "swift": LanguageConfig(
         import_extractor=SWIFT_IMPORTS,
         symbol_node_types={
@@ -650,7 +674,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "paragraph_header": "function",
             "data_description": "variable",
         },
-        # COPY/include resolution is intentionally outside this good-tier cut.
+        # COPY is masked before parsing; parse_file reads it from the source.
         import_node_types=[],
         export_node_types=[],
         visibility_fn=public_by_default,

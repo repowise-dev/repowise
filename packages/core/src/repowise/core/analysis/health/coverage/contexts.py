@@ -5,13 +5,15 @@ test into one hit-wins aggregate per file - they know a file is covered,
 never by *which* test. These readers keep the test dimension instead,
 emitting one :class:`TestCoverage` per ``(test, file)`` pair.
 
-Two sources carry per-test data today:
+Three sources carry per-test data today:
 
 - **coverage.py ``.coverage`` sqlite** with per-test contexts (static or
   dynamic). The ``context`` table names each test; the
   ``line_bits`` / ``arc`` rows are keyed by ``(file_id, context_id)``.
 - **lcov ``TN:`` records** - the test-name line, blank in most merged lcov
   but populated by per-test lcov output.
+- **Salesforce Apex JSON** (``sf apex run test --code-coverage``): its
+  ``ApexCodeCoverage`` records, one per test method and class (:mod:`.apex`).
 
 Both degrade loudly: a report produced *without* contexts (a plain lcov, or
 a ``.coverage`` without contexts) yields ``records=[]`` and
@@ -25,9 +27,12 @@ index, and any downstream feature live above this layer.
 
 from __future__ import annotations
 
+import codecs
 import sqlite3
 from pathlib import Path
 
+from .apex import parse_apex_contexts
+from .detector import detect_format
 from .lcov import _normalize_path
 from .model import ContextCoverageReport, TestCoverage
 
@@ -54,6 +59,17 @@ def is_coverage_data_file(path: str | Path) -> bool:
             return fh.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
     except OSError:
         return False
+
+
+def read_report_text(path: str | Path) -> str:
+    """A text report's contents: UTF-8, or UTF-16 when it opens with a UTF-16 BOM.
+
+    Windows PowerShell 5.1 ``>`` redirection writes UTF-16. Raises like ``read_text``.
+    """
+    data = Path(path).read_bytes()
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16")
+    return data.decode("utf-8")
 
 
 def parse_lcov_contexts(text: str) -> ContextCoverageReport:
@@ -213,16 +229,20 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def parse_contexts_file(path: str | Path) -> ContextCoverageReport:
-    """Parse a per-test report, sniffing coverage.py sqlite vs lcov text.
+    """Parse a per-test report: coverage.py sqlite, Salesforce Apex JSON, or lcov text.
 
-    coverage.py ``.coverage`` files are sqlite (binary magic header);
-    everything else is read as lcov text. Unreadable files degrade to an
-    empty aggregate-only report rather than raising.
+    coverage.py ``.coverage`` files are sqlite (binary magic header); text the
+    format sniffer calls Apex JSON is read for its per-test records; everything
+    else is read as lcov text. Unreadable files degrade to an empty
+    aggregate-only report rather than raising.
     """
     p = Path(path)
     if is_coverage_data_file(p):
         return parse_coverage_sqlite(p)
     try:
-        return parse_lcov_contexts(p.read_text(encoding="utf-8"))
+        text = read_report_text(p)
     except (OSError, UnicodeDecodeError):
         return ContextCoverageReport(source_format="unknown", has_contexts=False)
+    if detect_format(text) == "apex":
+        return parse_apex_contexts(text)
+    return parse_lcov_contexts(text)

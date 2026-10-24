@@ -38,14 +38,7 @@ from repowise.core.workspace.update import get_head_commit
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     """Resolve the repo path for coverage subcommands (workspace-aware)."""
     target = resolve_command_target(path=path)
-    target.notice(notice_console(fmt), command="coverage")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+    return target.narrow(notice_console(fmt), command="coverage", repo_option=False)
 
 
 async def _repo_file_keys(session, repo_id: str) -> set[str]:
@@ -153,6 +146,8 @@ def coverage_add(
         build_coverage_map,
         discover_artifacts,
         expand_report_args,
+        measurement_commit,
+        oldest_report_time,
         parse_contexts_file,
         prefix_hint,
         report_origin_dir,
@@ -224,9 +219,11 @@ def coverage_add(
             # working tree. They diverge when you commit, run your tests, then
             # ``coverage add`` without an intervening ``repowise update`` — the
             # report would be labelled with the older indexed commit (issue
-            # #1747). Live HEAD is the right answer for a provenance field:
-            # it is the tree the coverage was measured against. Resolve it
-            # from disk — the same source the health pass uses.
+            # #1747). HEAD is the right answer for a report written since the
+            # last commit; one left over from earlier measures the tree as of
+            # its own date, so the stamp moves back to the commit that was HEAD
+            # then (issue #3901). Resolve both from disk — the same source the
+            # health pass uses.
             head_sha = (
                 get_head_commit(Path(repo_path))
                 or getattr(repo_row, "head_commit", None)
@@ -259,6 +256,10 @@ def coverage_add(
             map_records: list = []
             map_format: str | None = None
             map_readable = False
+            # Reports that gave the map rows, for the stamp below: a leftover
+            # artifact with no contexts (or none that mapped) is not a
+            # measurement this ingest describes.
+            map_paths: list[Path] = []
             map_skipped: list[str] = []
             for report_path in report_paths:
                 creport = parse_contexts_file(report_path)
@@ -284,6 +285,8 @@ def coverage_add(
                 )
                 if rtc.mapping_partial:
                     map_skipped.extend(rtc.unmatched + rtc.ambiguous)
+                if rtc.records:
+                    map_paths.append(report_path)
                 map_records.extend(rtc.records)
                 map_format = map_format or creport.source_format
 
@@ -308,13 +311,22 @@ def coverage_add(
                 return False
 
             agg_matched = 0
+            # Both writes stamp the commit that was HEAD when their own reports
+            # were written (#3901), and each asks only about the files that
+            # actually gave it rows: an unreadable or context-free artifact left
+            # beside a fresh report must not pull a valid ingest back to the
+            # stale one's date. *resolved* carries the aggregate's parsed set,
+            # ``map_paths`` the per-test one; an empty set answers ``None`` and
+            # keeps HEAD, which is what a report written just now is.
+            agg_sha = measurement_commit(repo_path, resolved.measured_at, head_sha)
+            map_sha = measurement_commit(repo_path, oldest_report_time(map_paths), head_sha)
             if resolved.files:
                 await save_coverage_files(
                     session,
                     repo_row.id,
                     resolved.files,
                     source_format=resolved.source_format or "lcov",
-                    ingested_commit_sha=head_sha,
+                    ingested_commit_sha=agg_sha,
                     provenance=resolved.provenance,
                 )
                 agg_matched = resolved.matched
@@ -334,7 +346,7 @@ def coverage_add(
                     repo_row.id,
                     map_records,
                     source_format=map_format or "coverage.py",
-                    ingested_commit_sha=head_sha,
+                    ingested_commit_sha=map_sha,
                 )
                 extra = f" ({saved.merged} repeated record(s) merged)" if saved.merged else ""
                 console.print(
@@ -496,6 +508,15 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                     f"  Tests:   {map_summary['test_count']}\n"
                     f"  Files:   {map_summary['source_file_count']}\n"
                     f"  Records: {map_summary['pair_count']}"
+                )
+            elif summary.get("source_format") == "apex":
+                # test-result-codecoverage.json is per class only; the run's
+                # own result file carries the per-test records.
+                console.print(
+                    "[dim]No test-to-code map yet - add the run's "
+                    "[cyan]test-result-<run id>.json[/cyan] from "
+                    "[cyan]sf apex run test --code-coverage --output-dir <dir>[/cyan] with "
+                    "[cyan]repowise coverage add[/cyan].[/dim]"
                 )
             else:
                 console.print(

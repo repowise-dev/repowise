@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from functools import cache
@@ -87,53 +88,75 @@ _PASSTHROUGH_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_data_languag
 # ---------------------------------------------------------------------------
 
 
-def _build_language_registry() -> dict[str, Language]:
-    """Lazily load installed tree-sitter language packages.
+# Downloads its grammars on first use rather than shipping them in a wheel.
+_RUNTIME_DOWNLOAD_PACKAGE = "tree_sitter_language_pack"
+# A pre-staged language-pack cache, for machines with no network.
+GRAMMAR_DIR_ENV = "REPOWISE_GRAMMAR_DIR"
 
-    Driven by ``LanguageSpec.grammar_package`` / ``grammar_loader`` /
-    ``shares_grammar_with`` from the centralised registry.
-    """
-    registry: dict[str, Language] = {}
 
-    for spec in _LANG_REGISTRY.all_specs():
-        # Languages that share another's grammar (e.g. C → cpp)
-        if spec.shares_grammar_with:
-            shared = registry.get(spec.shares_grammar_with)
-            if shared:
-                registry[spec.tag] = shared
-            continue
-
-        if not spec.grammar_package:
-            continue
-
-        try:
-            mod = __import__(spec.grammar_package)
-            loader_fn = getattr(mod, spec.grammar_loader)
-            loaded = loader_fn(*spec.grammar_loader_args)
-            # Standalone grammar wheels return a PyCapsule; shared grammar
-            # packs may return the fully constructed Language directly.
-            lang_obj = loaded if isinstance(loaded, Language) else Language(loaded)
-            registry[spec.tag] = lang_obj
-        except Exception as exc:
-            log.debug(
-                "tree-sitter language unavailable",
-                language=spec.tag,
-                reason=str(exc),
-            )
-
-    # TypeScript's tsx variant — special case: same package, different loader
-    if "typescript" in registry and "tsx" not in registry:
+def _load_language(tag: str) -> Language | None:
+    """Load *tag*'s grammar alone, so a repo never loads one it has no files for."""
+    if tag == "tsx":
+        # TypeScript's tsx variant: same package, different loader.
         try:
             import tree_sitter_typescript as _ts_mod
 
-            registry["tsx"] = Language(_ts_mod.language_tsx())
+            return Language(_ts_mod.language_tsx())
         except Exception as exc:
-            log.debug("tree-sitter language unavailable", language="tsx", reason=str(exc))
+            _GRAMMAR_FAILURES[tag] = str(exc)
+            log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
+            return None
 
-    return registry
+    spec = _LANG_REGISTRY.get(tag)
+    if spec is None:
+        return None
+    # Languages that share another's grammar (e.g. C -> cpp).
+    if spec.shares_grammar_with:
+        return _get_language(spec.shares_grammar_with)
+    if not spec.grammar_package:
+        return None
+
+    try:
+        mod = __import__(spec.grammar_package)
+        if spec.grammar_package == _RUNTIME_DOWNLOAD_PACKAGE:
+            _configure_grammar_dir(mod)
+        loaded = getattr(mod, spec.grammar_loader)(*spec.grammar_loader_args)
+        # Standalone grammar wheels return a PyCapsule; shared grammar
+        # packs may return the fully constructed Language directly.
+        return loaded if isinstance(loaded, Language) else Language(loaded)
+    except Exception as exc:
+        _GRAMMAR_FAILURES[tag] = str(exc)
+        log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
+        return None
 
 
+def _configure_grammar_dir(pack: object) -> None:
+    """Point the language pack at ``$REPOWISE_GRAMMAR_DIR`` when it is set."""
+    grammar_dir = os.environ.get(GRAMMAR_DIR_ENV, "").strip()
+    if grammar_dir:
+        pack.configure(pack.PackConfig(cache_dir=grammar_dir))  # type: ignore[attr-defined]
+
+
+def downloads_grammar_at_runtime(tag: str) -> bool:
+    """Whether *tag*'s grammar comes from the language pack's runtime download."""
+    spec = _LANG_REGISTRY.get(tag)
+    return spec is not None and spec.grammar_package == _RUNTIME_DOWNLOAD_PACKAGE
+
+
+def runtime_grammar_cache(tag: str) -> tuple[bool, str]:
+    """``(cached, cache_dir)`` for a runtime-downloaded grammar, with no network call."""
+    import tree_sitter_language_pack as pack
+
+    _configure_grammar_dir(pack)
+    spec = _LANG_REGISTRY.get(tag)
+    name = spec.grammar_loader_args[0] if spec and spec.grammar_loader_args else tag
+    return name in pack.downloaded_languages(), str(pack.cache_dir())
+
+
+# Loaded grammars, filled one language at a time by ``_get_language``.
 _LANGUAGE_REGISTRY: dict[str, Language] = {}
+# Failed tags and why; a failure is not retried per file.
+_GRAMMAR_FAILURES: dict[str, str] = {}
 
 # Languages already reported as having a config but no installed grammar:
 # one line per language per process, not one per file.
@@ -213,11 +236,32 @@ def failed_query_languages(language_tags: Iterable[str]) -> list[tuple[str, str]
     return sorted(failed, key=lambda x: x[0])
 
 
+def unavailable_runtime_grammars(language_tags: Iterable[str]) -> list[tuple[str, str]]:
+    """``(tag, reason)`` for each runtime-downloaded grammar in *language_tags* that fails to load.
+
+    Loaded in the parent, which also fills the cache before the parse workers start.
+    """
+    failed: list[tuple[str, str]] = []
+    for tag in sorted(set(language_tags)):
+        if (
+            tag in LANGUAGE_CONFIGS
+            and downloads_grammar_at_runtime(tag)
+            and _get_language(tag) is None
+        ):
+            failed.append((tag, _GRAMMAR_FAILURES.get(tag, "not loadable")))
+    return failed
+
+
 def _get_language(tag: str) -> Language | None:
     # Filled in place, never rebound: the package re-exports this dict.
-    if not _LANGUAGE_REGISTRY:
-        _LANGUAGE_REGISTRY.update(_build_language_registry())
-    return _LANGUAGE_REGISTRY.get(tag)
+    if tag in _LANGUAGE_REGISTRY:
+        return _LANGUAGE_REGISTRY[tag]
+    if tag in _GRAMMAR_FAILURES:
+        return None
+    language = _load_language(tag)
+    if language is not None:
+        _LANGUAGE_REGISTRY[tag] = language
+    return language
 
 
 def grammar_tag_for(language: str, path: str) -> str:

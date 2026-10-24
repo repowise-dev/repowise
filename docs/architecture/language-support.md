@@ -33,7 +33,7 @@ new language needs one only when it hits the same kind of wall.
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
 - [Extensions and import resolution](#extensions-and-import-resolution)
-- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
+- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees) · [Salesforce](#salesforce)
 - [Known gaps per language](#known-gaps-per-language)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries) · [test-quality markers per language](#test-quality-markers-per-language)
@@ -723,12 +723,13 @@ dependency surface their syntax supports.
 | Full | **C#** | `.cs` | `using`, `global using` and aliases via `.csproj` / `.sln`, MSBuild project graph, `partial` class linking |
 | Full | **Scala** | `.scala` | The shared JVM index, with SBT and Mill build parsing as fallback |
 | Full | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, Rails / Zeitwerk autoloading |
+| Full | **Apex** | `.cls` `.trigger` `.apex` | No imports: names resolve within the file's sfdx project, a declared package dependency or a namespace prefix |
 | Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
 | Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
 | Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
-| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Literal `CALL` and `PERFORM` targets; dynamic calls and `COPY` stay silent |
+| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
 | Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
@@ -966,6 +967,111 @@ both settles a name two files declare and refuses a class that merely shadows a
 framework widget. A class reached through an `export` barrel is missed, which
 costs an edge rather than inventing one.
 
+### Salesforce
+
+#### Apex
+
+The language pack's `apex` grammar keeps Java's node names, so queries, heritage
+and type heads follow Java; inline SOQL/SOSL and DML never produce call sites.
+Keywords and builtin types compare case-insensitively, declared names keep their
+written case, and CumulusCI `%%%NAMESPACE%%%` tokens are blanked before parsing.
+
+Apex has no imports, so a type name resolves to the top-level class its own
+sfdx project declares, compared without case, then to an un-namespaced package
+it declares a dependency on; another project is reached only through its
+namespace prefix (`usf3.Foo`). Static, inner-class, typed, chained, inherited
+and `super` calls follow Java's tiers, and a bare name never reaches another
+class's method. Ceiling: a call site does not record `new`, so a constructor
+written in lower case is missed.
+
+Dead code starts from triggers, tests, entry annotations such as `@AuraEnabled`
+and `@InvocableMethod`, `global` members and platform interfaces such as
+`Schedulable`. A class is live when a live class or any Salesforce metadata,
+Lightning or project file writes its name in any case, strings included, since
+`Type.forName` reaches classes by name. Ceiling: a mention in a comment counts as
+a use, and a class shaped like a Visualforce controller stays live.
+
+A static resource (`staticresources/`, or an NPSP-style `StaticResourceSources/`
+mirror) is vendored when it sits in a library's release folder (`arbor-v0.92/`)
+or opens with another project's versioned license banner. Ceiling: a library
+copied with neither, such as a minified Google client with no banner, stays
+production.
+
+#### Lightning Web Components, Aura and Visualforce
+
+LWC, Aura, Visualforce and flows reach Apex classes by the same rules from the
+project they sit in, and also reach a class that exactly one other, un-namespaced
+project declares: they name action classes of packages installed separately in the
+same org. A name two projects declare binds nothing. Ceiling: two copies outside
+every package directory of one project (an mdapi export) tie and bind nothing, as
+they do for Apex.
+
+Inside an `lwc/<name>/` bundle, `c/<name>` imports resolve to that bundle's
+main module and `@salesforce/apex/Cls.method` imports to the Apex method.
+Templates link to child components by tag and to their own class's members by
+`{binding}`, `@wire` binds its Apex method, and an exposed bundle is an entry
+point. A bundle two sfdx projects declare goes to the nearer one; a tie gets no edge.
+
+Markup directly inside `aura/<bundle>/` is Aura, and each `key: function` of the
+bundle's Controller, Helper and Renderer JavaScript is a function symbol. Markup
+and JavaScript link to the Apex controller and its methods, to controller and helper
+functions (inherited through `extends`), and to the Aura or LWC bundles that tags,
+events and `$A.createComponent` literals name. Aura names match by exact case, and a
+name with two candidate bundles binds to neither.
+
+Visualforce pages and components link the Apex classes their `controller=` and
+`extensions=` name, and each `{!expr}` binds the identifier before its first `.`
+to a public member (property, `getX`, or `setX` for inputs) of the controller,
+then each extension, up the `extends` chain. Custom component tags, included
+pages and Apex `Page.X` references link pages and components; a
+`PageReference('/apex/X')` literal is a `dynamic_uses` edge. Names fold case,
+and a page or component two equally near files declare binds nothing.
+
+#### Flows and Lightning metadata
+
+Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
+one symbol named by its API name, linked to the Apex invocable actions,
+subflows, screen components and Apex-defined types it names, and a
+record-triggered flow references its object's metadata symbol. Apex
+`Flow.Interview` references and LWC `<lightning-flow>` tags with a literal name
+link back to it. Flexipages, quick actions, tabs, email services and Experience
+sites mark what they name as live; names in another package's namespace are not
+followed.
+
+#### Objects and fields
+
+Object and field metadata files (`.object-meta.xml`, `.field-meta.xml`,
+`.object`) become object and field symbols. SOQL and SOSL queries, DML
+statements, triggers, literal `Database.query` strings, `.soql` files and lookup
+fields reference them, matched case-insensitively, with one edge to one copy when
+an object is defined in several places (the default package directory first). A
+name with no definition in the repository gets no edge; `getDescribe()` schema
+tokens and `TYPEOF` branches are not read.
+
+#### Coverage, health and REST
+
+Salesforce CLI coverage names a class or trigger, never a file, so it maps to
+the one `.cls` or `.trigger` file of that name, ignoring case. A name two files
+share, or no file has, stays unmapped.
+
+Health scores Apex methods, constructors, triggers and property accessors that
+hold code, and reports SOQL, DML, callouts, `Messaging.sendEmail`,
+`System.enqueueJob` and same-class `@future` calls inside loops. It stays quiet on
+the bulk idioms (a query in the loop header, SOQL for-loops over lists, chunked or
+literal-bound loops) and on calls that run once, such as a lazily filled cache.
+Four advisory markers (SOQL injection, missing sharing, hardcoded record Ids,
+`SeeAllData=true`) never move a score. Ceiling: `while` loops,
+`Database.executeBatch` and `System.schedule` are not reported, and untested
+complexity needs measured coverage or a test the graph sees. Extract Method
+writes helpers as Apex methods, static when the host method is, and reads inline
+SOQL only for its `:bind` expressions.
+
+A `@RestResource` class's `@Http*` methods are HTTP providers at
+`/services/apexrest` plus its `urlMapping`, and are entry points in the graph.
+An `HttpRequest` callout is a consumer when its endpoint and verb are literal
+within one method; `callout:Name` keeps the Named Credential as the base. The
+credential's own endpoint is not read.
+
 ### Known gaps per language
 
 - **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
@@ -975,8 +1081,8 @@ costs an edge rather than inventing one.
   both, since props are set by the parent as markup attributes.
 - **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
   vs `implements` split follows the `I`-prefix naming convention.
-- **COBOL is COBOL-85 shaped.** `COPY` does not create an edge; dynamic program
-  names and dialect extensions stay silent.
+- **COBOL dynamic `CALL` targets stay silent**, and free-format source is read
+  without column handling.
 - **Razor has no import edges**, because every directive is blanked by the
   projection.
 - **GDScript string dispatch is unresolved**, and a script without `class_name`
@@ -985,6 +1091,8 @@ costs an edge rather than inventing one.
 - **C has no performance risk support.** Extract Method reuses the C++
   def/use dialect; C carries none of the C++-only nodes, so the same plan
   fires for both.
+- **Salesforce references are followed when literal.** Runtime-built names and
+  objects with no metadata file in the repository get no edge.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL
   (`x shouldBe y`) is not counted as an assertion.
 
@@ -1188,16 +1296,34 @@ differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
 subscription) registers its extra passes, or its own `keys`, in
 `matching.MATCHERS`.
 
+Every dialect declares `requires`: tokens one of which a file must hold, chosen
+so that every match needs one (a contract format such as `.proto` declares
+`EVERY_FILE`). `dialect.run_dialect` checks the gate, looking each token up
+once per file, and drops a contract whose line is only a comment. `call_sites`,
+`code_matches`, `outside_comments` and `consumer_contracts` skip a match that
+starts in a comment, so a commented-out decorator sets no state either.
+`test_dialect_registry.py` fails on an ungated entry, and
+`test_extraction_dialect_budget.py` on a dialect that costs as much as an
+ungated scan. A Python docstring example is still read, because the mask keeps
+strings, and Ruby, VB and SQL files are not masked: their comment syntax would
+mislead the masker.
+
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
-| **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
+| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
+| **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
+| **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
+
+RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
+a queue named through its declaration's result (`q.Name`).
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
-workspace guide.
+workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,
+registries and contributor recipes.
 
 ---
 

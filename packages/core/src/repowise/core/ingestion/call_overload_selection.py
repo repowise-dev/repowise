@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import replace
+from functools import cache
 
-from .call_receiver_typing import _FUNCTION_KINDS
+from .call_receiver_typing import _FUNCTION_KINDS, _TYPE_KINDS
+from .language_data import get_builtin_types
 from .languages.receiver_types import external_type_name
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
@@ -168,6 +170,81 @@ def _closest_fit(
             ranked[max(fits, default=0)].append(member)
     best = ranked[min(ranked)] if ranked else []
     return best[0] if len(best) == 1 else None
+
+
+# What an Apex argument of each builtin type converts to without a cast.
+_APEX_CONVERSIONS = {
+    "integer": frozenset({"long", "decimal", "double"}),
+    "long": frozenset({"decimal", "double"}),
+    "decimal": frozenset({"double"}),
+    "id": frozenset({"string"}),
+    "string": frozenset({"id"}),
+    "date": frozenset({"datetime"}),
+}
+
+
+# Builtin types no repository class can extend or implement.
+_APEX_VALUE_TYPES = frozenset(
+    {"blob", "boolean", "date", "datetime", "decimal", "double", "id", "integer", "list",
+     "long", "map", "set", "string", "time"}
+)
+
+
+def _exact_apex_fit(
+    members: list[tuple[str, list[str]]],
+    argument_types: tuple[str | None, ...],
+    repo_types: frozenset[str],
+) -> str | None:
+    """The one Apex member whose parameters are exactly the typed arguments' types.
+
+    Apex widens and converts by rules the Java tables do not hold, so only an
+    exact match, compared without case, is evidence. Where the members differ
+    on an untyped argument's parameter, it decides only when no other member
+    could take the typed arguments too: that argument may be one the exact
+    member cannot take.
+    """
+    typed = [(index, argument.lower()) for index, argument in enumerate(argument_types) if argument]
+
+    def takes(parameters: list[str], accepts) -> bool:
+        return all(
+            index < len(parameters) and accepts(parameters[index].lower(), argument)
+            for index, argument in typed
+        )
+
+    exact = [member for member, parameters in members if takes(parameters, str.__eq__)]
+    if len(exact) != 1:
+        return None
+    if _untyped_agree(members, argument_types, False):
+        # The untyped arguments cannot tell the members apart.
+        return exact[0]
+    others = [parameters for member, parameters in members if member != exact[0]]
+
+    def may_take(parameter: str, argument: str) -> bool:
+        return _apex_may_take(parameter, argument, repo_types)
+
+    return None if any(takes(parameters, may_take) for parameters in others) else exact[0]
+
+
+def _apex_may_take(parameter: str, argument: str, repo_types: frozenset[str]) -> bool:
+    """Could an Apex parameter of type *parameter* take an argument of type *argument*?
+
+    By an implicit conversion, as ``Object``, or as a supertype. A
+    repository class may extend or implement any class or interface that is
+    not a value type; an sObject (``Account``, ``ApexTrigger``) reaches only
+    ``SObject``.
+    """
+    if parameter in (argument, "object") or parameter in _APEX_CONVERSIONS.get(argument, ()):
+        return True
+    if argument in _apex_builtin_types():
+        return False
+    if argument not in repo_types:
+        return parameter == "sobject"
+    return parameter not in _APEX_VALUE_TYPES
+
+
+@cache
+def _apex_builtin_types() -> frozenset[str]:
+    return frozenset(name.lower() for name in get_builtin_types("apex"))
 
 
 def _untyped_agree(
@@ -461,8 +538,21 @@ class OverloadSelectionMixin:
         if len(found) < 2 or not argument_types:
             return found
         typed = [(m, erased_parameter_types(self._symbols_by_id[m])) for m in found]
-        closest = _closest_fit(typed, argument_types, expanded)
+        if self._symbols_by_id[found[0]].language == "apex":
+            closest = _exact_apex_fit(typed, argument_types, self._folded_type_names())
+        else:
+            closest = _closest_fit(typed, argument_types, expanded)
         return found if closest is None else [closest]
+
+    def _folded_type_names(self) -> frozenset[str]:
+        """The repository's Apex type names, lowercased, built once."""
+        if self._folded_types is None:
+            self._folded_types = frozenset(
+                symbol.name.lower()
+                for symbol in self._symbols_by_id.values()
+                if symbol.language == "apex" and symbol.kind in _TYPE_KINDS
+            )
+        return self._folded_types
 
     def _typed_arguments(self, file_path: str, call: CallSite) -> CallSite:
         """*call* with each named argument's declared type beside its literals' types.

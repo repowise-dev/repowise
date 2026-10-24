@@ -153,13 +153,15 @@ The file is sniffed unless `--format` or `coverage.format` names a parser:
 | Clover XML | `<coverage` plus `<project` |
 | JaCoCo XML | The JaCoCo doctype, or a `<report` root |
 | Go coverprofile | Leading `mode:` line |
+| Salesforce Apex JSON | `{` naming `orgWideCoverage`, `testRunCoverage` or `ApexClassOrTrigger`, or a `[` list with `totalLines` and `lines` |
 | coverage.py `.coverage` | SQLite file |
 | Normalized JSON (`repowise-coverage-v1`) | Leading `{` plus `repowise-coverage` or `line_coverage_pct` |
 
 With no path, `coverage add` looks for `coverage/lcov.info`, `lcov.info`,
 `coverage.lcov`, `coverage.xml`, `**/cobertura.xml`, `**/clover.xml`,
 `target/llvm-cov/**/*.lcov`, `coverage.out`, `cover.out`,
-`**/target/site/jacoco*/jacoco.xml`, `build/reports/jacoco/**/*.xml`, a repo-root
+`**/target/site/jacoco*/jacoco.xml`, `build/reports/jacoco/**/*.xml`,
+`**/test-result-codecoverage.json` (Salesforce CLI and VS Code), a repo-root
 `.coverage` and a few more (`coverage.artifacts` overrides them). Multiple reports merge
 by unioning covered and coverable lines.
 

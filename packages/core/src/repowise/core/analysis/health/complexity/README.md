@@ -18,6 +18,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > | `perf_walk.py` | Performance-risk pass (`_collect_perf_hits`) |
 > | `class_analysis.py` | Class-level LCOM4 / god-class metrics (`_compute_lcom4`) |
 > | `languages.py` | Per-language tree-sitter `LanguageNodeMap` registry (extension point) |
+> | `cobol.py` | COBOL paragraphs and sections, whose bodies are the siblings after their header |
 >
 > The package `__init__` re-exports the dataclasses plus `walk_file` /
 > `walk_file_complexity`, so importers use

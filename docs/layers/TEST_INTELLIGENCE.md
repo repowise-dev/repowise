@@ -66,13 +66,15 @@ Each inferred answer about a file is one of six states
 ## Supported formats
 
 **LCOV**, **Cobertura**, **Clover** and **JaCoCo** XML, **Go coverprofile**
-(`go test -coverprofile`), **coverage.py `.coverage`** and **normalized JSON**
-(`repowise-coverage-v1`). Two carry a per-test map: LCOV when each record has a
-non-blank `TN:` test name, and `.coverage` when recorded with per-test contexts.
+(`go test -coverprofile`), **Salesforce Apex JSON** (`sf apex run test
+--code-coverage --result-format json`), **coverage.py `.coverage`** and **normalized JSON**
+(`repowise-coverage-v1`). Three carry a per-test map: LCOV when each record has
+a non-blank `TN:` test name, `.coverage` when recorded with per-test contexts,
+and the Apex run result (`test-result-<run id>.json`).
 
 - The format is sniffed and found in the usual locations
   ([rules](../architecture/test-intelligence.md#report-formats-and-discovery)); force
-  one with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco`. Go
+  one with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco|apex`. Go
   percentages are line-based, not `go tool cover`'s statement percentage.
 - Paths map by suffix, a tie is reported, never guessed
   ([rules](../architecture/test-intelligence.md#report-path-matching)); `--strict` fails

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from repowise.core.platform.telemetry import network_disabled
+
 from .changelog import ChangelogEntry, parse_changelog
 
 PYPI_URL = "https://pypi.org/pypi/repowise/json"
@@ -93,6 +95,8 @@ def fetch_latest_version(timeout: float = 2.0) -> tuple[str | None, str | None]:
     Returns ``(latest, error)``. ``latest`` is ``None`` on any failure (network,
     JSON, or a version we cannot compare), with ``error`` describing why.
     """
+    if network_disabled():
+        return None, "network checks are off"
     try:
         import httpx
 
@@ -180,6 +184,8 @@ def fetch_release_highlights(version: str, timeout: float = 2.0) -> list[str] | 
     ``None`` on any network or parse failure, so the caller keeps its plain
     wording. Nothing is sent but the GET.
     """
+    if network_disabled():
+        return None
     import httpx
 
     try:
@@ -217,6 +223,8 @@ def latest_highlights_cached(
             return titles
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass  # no cache yet, or a malformed one: fetch
+    if network_disabled():
+        return []  # not cached, so the titles show once the switch is off
     titles = fetch_release_highlights(version, timeout=timeout)
     with contextlib.suppress(OSError):  # a read-only home only costs a refetch
         _HIGHLIGHTS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)

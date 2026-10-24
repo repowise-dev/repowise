@@ -21,6 +21,7 @@ from ..cohesion import (
     UNIT_FANOUT_LANGUAGES,
     withdraw_declaration_hint,
 )
+from ..languages.apex_namespace import spell_apex_names
 from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext, resolve_import
@@ -400,6 +401,8 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         """
         self._invalidate_metric_caches()
         self._qualify_python_symbols()
+        # Apex names are case-insensitive; every resolver keys on the declared spelling.
+        spell_apex_names(self._parsed_files.values())
 
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [
@@ -606,6 +609,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress)
 
+        # --- Salesforce objects and fields named by Apex and lookup fields ---
+        self._resolve_salesforce_schema()
+
         # --- Phase 4: Base method → the implementations that answer for it ---
         # Post-pass: needs heritage resolved and reads only the graph.
         self._resolve_override_dispatch(progress=progress)
@@ -726,6 +732,13 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             if _phase_done is not None:
                 _phase_done("graph.type_refs")
         del type_use_counts  # used only for logging inside resolve_type_refs
+
+    def _resolve_salesforce_schema(self) -> None:
+        """SOQL/DML/trigger objects and lookup fields, bound to schema symbols."""
+        from ..salesforce_schema import add_schema_edges
+
+        added = add_schema_edges(self._graph, self._parsed_files, self._repo_path)
+        log.info("Salesforce schema edges resolved", total=added)
 
     def graph(self) -> nx.DiGraph:
         """Return the graph (building it first if necessary)."""

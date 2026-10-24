@@ -679,6 +679,35 @@ def test_java_extract_method_fires():
     assert best.slice_nloc >= 6
 
 
+def test_java_span_never_shares_a_line_with_a_compact_block_brace():
+    # A block opened on its header's line and closed on its last statement's
+    # line: a span over its statements would lift the header and the brace.
+    src = """
+    class Demo {
+        int f(int[] xs, int limit) {
+            int total = 0;
+            int extra = 0;
+            for (int x : xs) {
+                total += x;
+            }
+            if (limit > 0) { extra = limit * 2;
+                if (extra > 9) {
+                    extra = 9;
+                }
+                total += extra;
+                total += 1; }
+            return total;
+        }
+    }
+    """
+    lmap = get_language_map("java")
+    lines = textwrap.dedent(src).splitlines()
+    header = next(i for i, ln in enumerate(lines, 1) if "if (limit > 0) {" in ln)
+    brace = next(i for i, ln in enumerate(lines, 1) if "total += 1; }" in ln)
+    for e in find_extractions(_first("java", src), lmap):
+        assert e.start_line != header and e.end_line != brace
+
+
 def test_java_extractions_are_deterministic():
     lmap = get_language_map("java")
     fn = _first("java", _JAVA_PROCESS)

@@ -28,6 +28,7 @@ import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon"
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { unmatchedOutsideService } from "@repowise-dev/ui/workspace/contract-facts";
 import type { NodeArchitectureRole, SystemGraph, ConformanceReport } from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
@@ -37,6 +38,7 @@ import {
   useWorkspaceConformance,
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
+import { httpLinkedStat } from "@/lib/http-link-coverage";
 import { useRepoContracts } from "./use-repo-contracts";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
@@ -56,6 +58,7 @@ function contractsHref(repo: string): string {
 
 export default function SystemMapPage() {
   const t = useTranslations("systemMap");
+  const tLinks = useTranslations("linkCoverage");
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -151,12 +154,14 @@ export default function SystemMapPage() {
 
   // Repo health by alias; the repo graph's node `name` is the alias.
   const { healthByRepo, repoIdByAlias } = useMemo(() => {
-    const health = new Map<string, RepoHealth>();
-    const ids = new Map<string, string>();
-    for (const n of repoGraph?.nodes ?? []) {
-      health.set(n.name, { score: n.health_score, source: n.health_score_source });
-      ids.set(n.name, n.repo_id);
-    }
+    const nodes = repoGraph?.nodes ?? [];
+    // An unscored repo has no entry, so its nodes read "No health score".
+    const health = new Map<string, RepoHealth>(
+      nodes.flatMap((n) =>
+        n.health_score == null ? [] : [[n.name, { score: n.health_score }] as const],
+      ),
+    );
+    const ids = new Map<string, string>(nodes.map((n) => [n.name, n.repo_id]));
     return { healthByRepo: health, repoIdByAlias: ids };
   }, [repoGraph]);
 
@@ -201,7 +206,7 @@ export default function SystemMapPage() {
       {graph && (
         <Lede graph={graph} architecture={architecture} conformance={conformance} t={t} />
       )}
-      {graph && <StatRibbon stats={ribbon(t, graph, architecture)} LinkComponent={Link} />}
+      {graph && <StatRibbon stats={ribbon(t, tLinks, graph, architecture)} LinkComponent={Link} />}
 
       <OverviewSection title={t("section.title")} description={t("section.description")}>
         {isLoading ? (
@@ -328,7 +333,8 @@ function lensOptionsFor(
     {
       value: "core",
       label: t("lens.core.label"),
-      count: architecture ? String(architecture.core_size) : undefined,
+      // Null when the graph's evidence is insufficient; the lens then says why.
+      count: architecture?.core_size != null ? String(architecture.core_size) : undefined,
       hint: t("lens.core.hint"),
       disabledReason: failed.architecture
         ? t("lens.core.disabledFailed")
@@ -364,10 +370,20 @@ function Lede({
     <PageLede
       label={t("lede.label")}
       labelHint={t("lede.labelHint")}
-      value={architecture ? architecture.score.toFixed(1) : "–"}
+      value={architecture?.score != null ? architecture.score.toFixed(1) : "–"}
       unit={t("lede.unit")}
       layout="beside"
     >
+      {architecture?.evidence && architecture.evidence.state !== "measured" ? (
+        <p>
+          {t(
+            architecture.evidence.state === "insufficient"
+              ? "lede.notDetermined"
+              : "lede.partialEvidence",
+            { reason: architecture.evidence.summary },
+          )}
+        </p>
+      ) : null}
       <p>
         {t("lede.counts", {
           services: graph.nodes.length,
@@ -390,7 +406,9 @@ function Lede({
       ) : conformance?.generated_at ? (
         <p>{t("lede.noCycles")}</p>
       ) : null}
-      {architecture && (
+      {architecture &&
+        architecture.propagation_cost_pct != null &&
+        architecture.core_size != null && (
         <p>
           {t("lede.reachAndScore", {
             pct: architecture.propagation_cost_pct.toFixed(1),
@@ -407,6 +425,7 @@ function Lede({
 
 function ribbon(
   t: Translator,
+  tLinks: Translator,
   graph: SystemGraph,
   architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
 ): RibbonStat[] {
@@ -429,7 +448,10 @@ function ribbon(
     },
     {
       label: t("ribbon.propagationCost"),
-      value: architecture ? `${architecture.propagation_cost_pct.toFixed(1)}%` : "–",
+      value:
+        architecture?.propagation_cost_pct != null
+          ? `${architecture.propagation_cost_pct.toFixed(1)}%`
+          : "–",
       sub: t("ribbon.propagationCostSub"),
       hint: t("ribbon.propagationCostHint"),
     },
@@ -444,9 +466,10 @@ function ribbon(
         : undefined,
       hint: t("ribbon.contractLinksHint"),
     },
-    {
+    // An artifact older than the linked count keeps the unmatched stat.
+    (diag && httpLinkedStat(tLinks, diag)) ?? {
       label: t("ribbon.unmatched"),
-      value: diag ? formatNumber(diag.unmatched_consumers.length) : "–",
+      value: diag ? formatNumber(unmatchedOutsideService(diag).length) : "–",
       sub: t("ribbon.unmatchedSub"),
       hint: t("ribbon.unmatchedHint"),
     },

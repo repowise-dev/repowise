@@ -226,6 +226,9 @@ from repowise.cli._helpers.target import (
     WorkspaceNotFound as WorkspaceNotFound,
 )
 from repowise.cli._helpers.target import (
+    cross_repo_cut_inputs as cross_repo_cut_inputs,
+)
+from repowise.cli._helpers.target import (
     resolve_command_target as resolve_command_target,
 )
 from repowise.core.repo_config import CONFIG_FILENAME as CONFIG_FILENAME

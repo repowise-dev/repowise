@@ -51,6 +51,7 @@ from ..models import FileInfo, Import, ParsedFile, Symbol, compute_content_hash
 from ..parser_helpers import _collect_error_nodes, _run_query
 from ..python_local_refs import local_refs_from_tree, parse_python_module
 from ..python_registrars import registering_functions
+from ..salesforce_soql import apex_schema_refs
 from ..sfc_source import component_call_sites, prepare_source
 from ..special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
 from .calls import (
@@ -73,7 +74,6 @@ from .grammars import (
     _MISSING_GRAMMAR_REPORTED,
     _PASSTHROUGH_LANGUAGES,
     QUERIES_DIR,
-    _build_language_registry,
     _compile_query,
     _get_language,
     _load_compiled_query,
@@ -83,6 +83,7 @@ from .grammars import (
     grammar_tag_for,
     log,
     missing_grammar_languages,
+    unavailable_runtime_grammars,
 )
 from .imports import _extract_imports
 from .references import (
@@ -166,12 +167,14 @@ class ASTParser:
             or _is_fsharp_signature(file_info)
         ):
             return self.parse_file(file_info, source).imports
+        original_source = source
         source = prepare_source(lang, source, path=file_info.path)
         root, _, grammar_tag, language = _parse_tree(lang, language, grammar_tag, source)
         query = _load_compiled_query(lang, grammar_tag)
         matches = _run_query(query, root) if query is not None else []
         src = source.decode("utf-8", errors="replace")
-        return _extract_imports(matches, config, file_info, src)
+        imports = _extract_imports(matches, config, file_info, src)
+        return imports + _masked_imports(lang, original_source)
 
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
@@ -220,9 +223,11 @@ class ASTParser:
         )
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
+        imports.extend(_masked_imports(lang, original_source))
         calls = _extract_calls(matches, config, file_info, src, symbols)
         # An SFC's markup tags (``<Foo />``) are component calls the TS buffer lost.
         calls.extend(component_call_sites(lang, original_source, symbols))
+        calls.extend(_masked_call_sites(lang, original_source, symbols))
         references = (
             _extract_references(matches, file_info, src, symbols, imports)
             if lang in _REFERENCE_LANGUAGES
@@ -250,6 +255,10 @@ class ASTParser:
             local_refs=local_refs,
             registrars=registrars,
             references=references,
+            # SOQL/SOSL, DML and trigger targets, bound to SObject metadata later.
+            schema_refs=(
+                apex_schema_refs(root, symbols, file_info.path) if lang == "apex" else []
+            ),
         )
 
 
@@ -288,13 +297,34 @@ def _parse_without_grammar(
     )
 
 
+def _masked_imports(lang: str, original_source: bytes) -> list[Import]:
+    """Imports ``prepare_source`` masked from the grammar, read from the original bytes."""
+    if lang == "cobol":
+        from ..cobol.facts import cobol_imports
+
+        return cobol_imports(original_source)
+    return []
+
+
+def _masked_call_sites(lang: str, original_source: bytes, symbols: list[Symbol]) -> list:
+    """Call sites ``prepare_source`` masked from the grammar (COBOL ``EXEC CICS``)."""
+    if lang == "cobol":
+        from ..cobol.facts import cobol_call_sites
+
+        return cobol_call_sites(original_source, symbols)
+    return []
+
+
 def _warn_symbol_bloat(file_info: FileInfo, symbols: list[Symbol]) -> None:
-    if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
+    # COBOL's only children are level-88 condition names: values of one data
+    # item, not declarations. Methods still count, so a generated class warns.
+    counted = sum(1 for s in symbols if not (s.language == "cobol" and s.parent_name))
+    if counted > _SYMBOL_COUNT_WARN_THRESHOLD:
         log.warning(
             "parser.symbol_bloat",
             path=file_info.path,
             language=file_info.language,
-            symbol_count=len(symbols),
+            symbol_count=counted,
             threshold=_SYMBOL_COUNT_WARN_THRESHOLD,
         )
 

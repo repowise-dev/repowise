@@ -50,7 +50,7 @@ from .coverage_actions import paired_test_index
 from .crossfn_perf import CrossFunctionPerfStage
 from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
-from .duplication.detector import clone_ranges, union_line_count
+from .duplication.detector import clone_ranges, clones_against_index, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
 from .file_evaluator import FileEvaluator, _read_source_lines, _RunConfig
 from .file_evaluator import _mark_deepest_block as _mark_deepest_block
@@ -560,6 +560,7 @@ class HealthAnalyzer:
         tested_files: set[str] | frozenset[str] | None = None,
         walk_cache: HealthWalkCache | None = None,
         package_roots: set[str] | None = None,
+        clone_index_dir: Any | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -610,6 +611,13 @@ class HealthAnalyzer:
         # without a blame index (a re-score from stored git metadata) so the
         # pass does not delete what it cannot recompute.
         self.stored_blame_findings = stored_blame_findings or {}
+        # An index's ``.repowise`` for a pass over a few files: their clones
+        # are spliced against the index's pair state (read-only) so partners
+        # this pass never reads still count. ``clone_source`` says where the
+        # last pass's clones came from: "index", "analyzed_files" (only among
+        # the files it read), or None when duplication did not run.
+        self.clone_index_dir = clone_index_dir
+        self.clone_source: str | None = None
         # Dependents counts to gate centrality on instead of this graph's. A
         # revision comparison passes the other side's, so a file crossing a
         # centrality gate inside a partial graph is not read as a code change.
@@ -807,9 +815,16 @@ class HealthAnalyzer:
         """
         from repowise.core.pipeline.phase_timing import timed
 
+        self.clone_source = None
         # An empty splice set: no file whose clone list a biomarker reads changed.
         if "dry_violation" in run.disabled or changed == set():
             return DuplicationReport()
+        if self.clone_index_dir is not None:
+            report = self._clones_against_index()
+            if report is not None:
+                self.clone_source = "index"
+                return report
+        self.clone_source = "analyzed_files"
         try:
             with timed(timings, "analysis.health.duplication"):
                 report = detect_clones(
@@ -824,6 +839,22 @@ class HealthAnalyzer:
         except Exception as exc:
             log.debug("health_duplication_failed", error=str(exc))
             return DuplicationReport()
+
+    def _clones_against_index(self) -> DuplicationReport | None:
+        # A missing, stale or truncated clone state is ``None`` without raising,
+        # so anything raised here is a defect: say so at warning rather than let
+        # the files-only fallback pass for the expected no-index case.
+        try:
+            report = clones_against_index(
+                self.parsed_files,
+                self.git_meta_map,
+                Path(self.clone_index_dir),
+                source_reader=self.read_source,
+            )
+        except Exception as exc:
+            log.warning("health_index_clones_failed", error=repr(exc))
+            return None
+        return report
 
     def _target_files(self, changed_set: set[str] | None) -> list[Any]:
         """The parsed files this pass scores: only the changed ones on an incremental run."""

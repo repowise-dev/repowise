@@ -167,6 +167,15 @@ def _is_workspace_mode() -> bool:
     return _state._registry is not None
 
 
+def _cross_repo_cut(alias: str | None) -> dict:
+    """``lookup`` and ``alias`` for the dead-code cross-repo cut
+    (``serve_findings``) on the repo *alias* names; both ``None`` outside
+    workspace mode, and an empty artifact simply cuts nothing."""
+    if not _is_workspace_mode():
+        return {"lookup": None, "alias": None}
+    return {"lookup": _state._cross_repo_enricher, "alias": alias}
+
+
 async def _resolve_repo_context(repo: str | None = None) -> Any:
     """Resolve the per-repo resource context for the given ``repo`` parameter.
 
@@ -439,62 +448,6 @@ def _build_origin_story(
         "key_commits": commits,
         "linked_decisions": linked_decisions,
         "summary": " ".join(parts),
-    }
-
-
-#: Newest stored commits a directory origin lists, across its files; the same
-#: five the origin cap in tool_why/caps.py serves, so none is built to be dropped.
-_DIRECTORY_KEY_COMMITS = 5
-
-
-def _date_or_unknown(pick: Any, stamps: list) -> str:
-    """``pick`` (min or max) of the known *stamps* as a date, else ``"unknown"``."""
-    known = [t for t in stamps if t]
-    return pick(known).strftime("%Y-%m-%d") if known else "unknown"
-
-
-def _newest_distinct_commits(file_metas: list) -> list[dict]:
-    """Every file's stored significant commits, one row per SHA, newest first."""
-    by_sha: dict[str, dict] = {}
-    for m in file_metas:
-        for c in json.loads(m.significant_commits_json or "[]"):
-            if c.get("sha"):
-                by_sha.setdefault(c["sha"], c)
-    return sorted(by_sha.values(), key=lambda c: c.get("date", ""), reverse=True)
-
-
-def _build_directory_origin(
-    dir_path: str,
-    file_metas: list,
-    governing_decisions: list[dict],
-) -> dict:
-    """The origin of a directory from its files' stored git metadata.
-
-    Git metadata is stored per file, so a directory has no commit total, owner
-    or age of its own: summing per-file counts would count a shared commit once
-    per file. Only what holds across files is served: the date span and the
-    stored significant commits, one row per SHA.
-    """
-    if not file_metas:
-        return _build_origin_story(dir_path, None, governing_decisions)
-    first_date = _date_or_unknown(min, [m.first_commit_at for m in file_metas])
-    last_date = _date_or_unknown(max, [m.last_commit_at for m in file_metas])
-    key_commits = _newest_distinct_commits(file_metas)[:_DIRECTORY_KEY_COMMITS]
-    return {
-        "available": True,
-        "scope": "directory",
-        "files_with_history": len(file_metas),
-        "first_commit": first_date,
-        "last_commit": last_date,
-        "key_commits": key_commits,
-        # Over the served commits only, so a large directory stays bounded.
-        "linked_decisions": _link_decisions_to_commits(governing_decisions, key_commits),
-        "summary": (
-            f"{dir_path} is a directory: {len(file_metas)} file(s) under it have "
-            f"git history, first commit {first_date}, last commit {last_date}. "
-            "History is stored per file, so there is no commit count or owner for "
-            "the directory itself; pass a file under it for that file's origin."
-        ),
     }
 
 

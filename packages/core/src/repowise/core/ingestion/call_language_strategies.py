@@ -28,7 +28,7 @@ from .resolvers.jvm_gradle import (
     source_set_dir,
 )
 from .symbol_identity import outer_scope
-from .type_names import bare_type_name
+from .type_names import bare_type_name, dotted_type_segments
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +142,14 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
+    # Apex resolves type names in its project namespace; no bare-name fallback (Java's rule).
+    "apex": _LanguageCallStrategies(
+        free=("_resolve_apex_namespace_type",),
+        member=("_resolve_apex_receiver_type",),
+        member_fallback=_TYPED_RECEIVER,
+        member_bare_fallback=False,
+        inherited_typed_receiver=True,
+    ),
 }
 
 
@@ -171,6 +179,10 @@ class LanguageStrategiesMixin:
         # JVM same-package resolution (lazy JvmWorkspaceIndex)
         self._jvm_index: Any = None
         self._jvm_index_built = False
+
+        # Apex project namespaces (lazy ApexNamespaces)
+        self._apex_namespaces: Any = None
+        self._apex_retyping = False
 
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
@@ -612,26 +624,220 @@ class LanguageStrategiesMixin:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
         return None
 
+    def _get_apex_namespaces(self) -> Any:
+        """Lazily build the ApexNamespaces index."""
+        if self._apex_namespaces is None:
+            from .languages.apex_namespace import build_apex_namespaces
+
+            self._apex_namespaces = build_apex_namespaces(self._parsed_files)
+        return self._apex_namespaces
+
+    def _apex_type(self, file_path: str, caller_id: str, written: str) -> str | None:
+        """The type id an Apex type path (``Foo``, ``Outer.Inner``, ``ns.Foo``) names here.
+
+        The head is a member type of the caller's class or of a class around
+        it (an inner class wins inside its outer), else the one top-level type
+        of that name the caller's project reaches. A head naming no type is a
+        namespace prefix (see ``prefixed_type``). Each later segment is a
+        member type of the one before it.
+        """
+        index = self._get_apex_namespaces()
+        head, *rest = dotted_type_segments(written)
+        type_id = self._apex_head_type(file_path, caller_id, head)
+        if type_id is None and rest:
+            prefix, (head, *rest) = head, rest
+            type_id = index.prefixed_type(file_path, prefix, head)
+        for segment in rest:
+            if type_id is None:
+                return None
+            type_id = index.member_type(type_id, segment)
+        return type_id
+
+    def _apex_head_type(self, file_path: str, caller_id: str, name: str) -> str | None:
+        """The type a bare Apex type name means in *caller_id*.
+
+        A member type of the caller's class, or of one of its ancestors (a
+        handler subclass writes its base's ``DmlWrapper`` bare), then the same
+        for each class around it, then a top-level type.
+        """
+        index = self._get_apex_namespaces()
+        caller = self._symbols_by_id.get(caller_id)
+        scope = (
+            caller_id
+            if caller is not None and caller.kind in _TYPE_KINDS
+            else self._caller_class_id(caller_id)
+        )
+        while "::" in scope:
+            for owner in (scope, *self._ancestors_of(scope)):
+                member = index.member_type(owner, name)
+                if member is not None:
+                    return member
+            scope = outer_scope(scope)
+        return index.top_level_type(file_path, name)
+
+    def _apex_type_call(
+        self, file_path: str, caller_id: str, type_id: str, line: int, origin: str
+    ) -> ResolvedCall | None:
+        """``new T(..)``: *type_id*'s constructors when it declares any, else the type."""
+        symbol = self._symbols_by_id[type_id]
+        path = self._symbol_paths_by_id[type_id]
+        target = self._file_methods.get(path, {}).get((symbol.name, symbol.name), type_id)
+        if target == caller_id:
+            return None
+        if path == file_path:
+            return ResolvedCall(caller_id, target, 0.93, line, "receiver_same_file")
+        return ResolvedCall(caller_id, target, 0.90, line, origin)
+
+    def _resolve_apex_namespace_type(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``new Foo(..)``: the type its name means in the caller's project.
+
+        A bare Apex name reaches no other class's method, so only a type is
+        looked up. The class and its constructors share the name, which is
+        why the uniqueness-gated global tier refuses this call.
+        """
+        type_id = self._apex_head_type(file_path, caller_id, call.target_name)
+        # Only the type's own spelling: ``execute()`` inherited from a platform
+        # class is not ``new Execute()``.
+        if type_id is None or self._symbols_by_id[type_id].name != call.target_name:
+            return None
+        hit = self._apex_type_call(file_path, caller_id, type_id, call.line, "same_package")
+        if hit is not None and hit.origin == "receiver_same_file":
+            return replace(hit, confidence=0.95, origin="same_file")
+        return hit
+
+    def _resolve_apex_receiver_type(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Foo.m()``, ``Outer.Inner.m()``, ``new Outer.Inner()``: the receiver names a type.
+
+        A receiver the caller declares as a local, parameter or field is a
+        variable, whatever class shares its folded name: it is left to the
+        typed fallback. ``this`` and ``super`` are left to their own tiers.
+        """
+        receiver = call.receiver_name or ""
+        if receiver in ("this", "super") or self._apex_variable(file_path, caller_id, receiver):
+            return None
+        type_id = self._apex_type(file_path, caller_id, receiver)
+        if type_id is None:
+            # ``Affiliations.get()`` on a local declared ``affiliations``.
+            variable = self._apex_variable_spelling(file_path, caller_id, receiver)
+            # One hop: the typed lookup asks this strategy again with the declared type.
+            if variable is None or self._apex_retyping:
+                return None
+            self._apex_retyping = True
+            try:
+                return self._resolve_typed_receiver(
+                    file_path, replace(call, receiver_name=variable), caller_id
+                )
+            finally:
+                self._apex_retyping = False
+        return self._apex_member_call(file_path, call, caller_id, type_id)
+
+    def _apex_member_call(
+        self, file_path: str, call: CallSite, caller_id: str, type_id: str
+    ) -> ResolvedCall | None:
+        """The member *call* names on the type *type_id*: a member type, a method, an inherited one.
+
+        The name as written first: ``X.errors()`` is the method even where
+        ``X`` also nests a class ``Errors``, which ``new X.Errors()`` means.
+        """
+        sym_id = self._declares(type_id, call.target_name)
+        if sym_id is None:
+            member = self._get_apex_namespaces().member_type(type_id, call.target_name)
+        else:
+            member = sym_id if self._symbols_by_id[sym_id].kind in _TYPE_KINDS else None
+        if member is not None:
+            return self._apex_type_call(
+                file_path, caller_id, member, call.line, "receiver_same_package"
+            )
+        # A property of the name is data, never the callee: an ancestor's method may be.
+        if sym_id is None or self._symbols_by_id[sym_id].kind not in _FUNCTION_KINDS:
+            sym_id = self._ancestor_method(
+                type_id, call.target_name, caller_id, class_chain_first=True
+            )
+        if sym_id is None or sym_id == caller_id:
+            return None
+        if self._symbols_by_id[sym_id].kind not in _FUNCTION_KINDS:
+            return None
+        if self._symbol_paths_by_id.get(sym_id) == file_path:
+            return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
+        return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
+
+    def _apex_variable_spelling(self, file_path: str, caller_id: str, receiver: str) -> str | None:
+        """The local, parameter or field *receiver* names in another case, as declared."""
+        if "." in receiver:
+            return None
+        declared = (
+            *self._declared_types_in(file_path, caller_id, "apex"),
+            *self._field_types_in(file_path, "apex").get(self._caller_class_id(caller_id), {}),
+        )
+        folded = receiver.lower()
+        return next((name for name in declared if name.lower() == folded and name != receiver), None)
+
+    def _apex_variable(self, file_path: str, caller_id: str, receiver: str) -> bool:
+        """Is the head of *receiver* a local, parameter or field the caller declares?"""
+        head = receiver.partition(".")[0]
+        type_name, _, _ = self._receiver_type_and_scope(file_path, caller_id, "apex", head)
+        return type_name is not None
+
     def _resolve_dart_named_constructor(
         self,
         file_path: str,
         call: CallSite,
         caller_id: str,
     ) -> ResolvedCall | None:
-        """``Foo.named(..)``: the class, when its body declares that constructor.
+        """``Foo.named(..)`` or ``p.Foo.named(..)``: the class, when its body declares it.
 
         A Dart named or factory constructor is no symbol, so the call binds to
         its class, as ``Foo(..)`` does. A static member of the name is a symbol
-        and is left to the member tiers. Ceiling: a prefixed ``p.Foo.named(..)``
-        is not captured with ``Foo`` as its receiver, so it binds nothing.
+        and is left to the member tiers. Through an import prefix the class is
+        the one the prefixed library declares, and the edge is a
+        ``module_alias`` one, as ``p.Foo(..)`` draws.
         """
-        class_name = call.receiver_name or ""
+        prefix, _, class_name = (call.receiver_name or "").rpartition(".")
+        if prefix:
+            return self._resolve_dart_prefixed_constructor(
+                file_path, call, caller_id, prefix, class_name
+            )
         if class_name not in self._known_type_names:
             return None
         hit = self._class_seen_from(file_path, caller_id, class_name, call.line)
         if hit is None or self._declares(hit.callee_id, call.target_name) is not None:
             return None
         return hit if call.target_name in self._dart_constructors_of(hit.callee_id) else None
+
+    def _resolve_dart_prefixed_constructor(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        prefix: str,
+        class_name: str,
+    ) -> ResolvedCall | None:
+        """``p.Foo.named(..)``: *prefix* must be an import prefix of the caller's file.
+
+        Only ``prefix.Class`` is read: a longer path is a field chain, not a
+        library qualifier. The class is looked up in the prefixed library and
+        what it re-exports, and must declare the constructor.
+        """
+        module_file = self._module_aliases.get(file_path, {}).get(prefix)
+        if module_file is None or "." in prefix or class_name not in self._known_type_names:
+            return None
+        declaring = self._barrel_origins.get(module_file, {}).get(class_name) or module_file
+        class_id = self._only_type_in(declaring, class_name)
+        if class_id is None or self._declares(class_id, call.target_name) is not None:
+            return None
+        if call.target_name not in self._dart_constructors_of(class_id):
+            return None
+        return ResolvedCall(caller_id, class_id, 0.88, call.line, "module_alias")
 
     def _dart_constructors_of(self, class_id: str) -> frozenset[str]:
         """The named constructors the Dart class *class_id* declares, scanned once."""

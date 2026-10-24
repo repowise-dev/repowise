@@ -221,7 +221,8 @@ def _change_lines(e: dict[str, Any]) -> dict[str, str]:
         for c in e["components"]
     )
     return {
-        "components": comps or "none known",
+        "components": comps
+        or ("outside every component" if e.get("components_known") else "none known"),
         "accountable": e["accountable"]["text"],
         "review": e["review"]["text"],
         "tests": e["tests"]["text"],
@@ -407,9 +408,10 @@ def _outcome_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _component_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
     per: dict[str, dict[str, Any]] = {}
-    untouched = 0
+    untouched = outside = 0
     for e in entries:
         untouched += not e["components"]
+        outside += not e["components"] and bool(e.get("components_known"))
         for c in e["components"]:
             slot = per.setdefault(c["name"], {"changes": 0, "teams": set()})
             slot["changes"] += 1
@@ -417,7 +419,10 @@ def _component_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
     rows = sorted(per.items(), key=lambda kv: (-kv[1]["changes"], kv[0]))
     return check(
         "components",
-        reason=f"{len(per)} component(s) changed; {untouched} change(s) with no known component",
+        reason=(
+            f"{len(per)} component(s) changed; {outside} change(s) outside every component, "
+            f"{untouched - outside} with components not known"
+        ),
         details=capped(
             [
                 f"{name}: {v['changes']} change(s); "
@@ -430,6 +435,7 @@ def _component_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
         data={
             "components": {n: {"changes": v["changes"], "teams": sorted(v["teams"])} for n, v in rows},
             "without_component": untouched,
+            "outside_every_component": outside,
         },
     )
 
@@ -563,7 +569,8 @@ def _snapshot_reason(ctx: ReportContext) -> str:
     return (
         "Each checklist is kept from its first build, stamped with when it was built and "
         f"the indexed commit it read ({head} for this report); outcomes are read again "
-        "whenever HEAD moves, and --refresh rebuilds every checklist."
+        "whenever HEAD moves, components and owners whenever the component catalog "
+        "changes, and --refresh rebuilds every checklist."
     )
 
 

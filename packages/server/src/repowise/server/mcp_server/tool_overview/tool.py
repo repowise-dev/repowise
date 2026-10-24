@@ -137,7 +137,14 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         result = await _repo_overview(
-            session, ctx.session_factory, repository, exclude_spec, want, collector, ctx.path
+            session,
+            ctx.session_factory,
+            repository,
+            exclude_spec,
+            want,
+            collector,
+            ctx.path,
+            alias=ctx.alias,
         )
         if "components" in want:
             result["components"] = await component_list(
@@ -173,13 +180,16 @@ async def _repo_overview(
     want: set[str],
     collector: OmissionCollector,
     repo_root: Any = None,
+    alias: str | None = None,
 ) -> dict[str, Any]:
     """Every single-repo block, in payload order; empty optional blocks are left out.
 
     Code health and the next actions are the slow reads and need nothing else
     here, so each runs on its own read session while the rest is read.
     """
-    slow = _slow_reads(session, session_factory, repository, full_actions="actions" in want)
+    slow = _slow_reads(
+        session, session_factory, repository, full_actions="actions" in want, alias=alias
+    )
     try:
         overview_page = await _load_overview_page(session, repository)
         package_roots = await _package_roots(session, repository, exclude_spec)
@@ -250,11 +260,16 @@ async def _repo_overview(
 
 
 def _slow_reads(
-    session: Any, session_factory: Any, repository: Any, *, full_actions: bool = False
+    session: Any,
+    session_factory: Any,
+    repository: Any,
+    *,
+    full_actions: bool = False,
+    alias: str | None = None,
 ) -> Awaitable[Any]:
     """``(code health, next actions)``: started now on their own sessions, or,
     on a store whose sessions share one connection, read later on *session*."""
-    actions = functools.partial(_build_next_actions, full=full_actions)
+    actions = functools.partial(_build_next_actions, full=full_actions, alias=alias)
     if not _own_connections(session_factory):
         return _in_turn(session, repository, actions)
 

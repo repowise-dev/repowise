@@ -325,6 +325,7 @@ async def build_community_slice(
     community_id: int,
     member_limit: int = SLICE_MEMBER_CAP,
     population: Population = PRODUCTION_ONLY,
+    cut: dict | None = None,
 ) -> CommunitySliceResponse:
     """Return a single community's sub-graph for the constellation blossom.
 
@@ -334,7 +335,8 @@ async def build_community_slice(
     ``is_boundary=true`` so cross-cluster edges can render without dragging the
     whole neighbor cluster in. Sized to ~50-300 nodes.
 
-    Members and boundary stubs are both filtered to the *population*.
+    Members and boundary stubs are both filtered to the *population*. *cut*
+    is the dead-code cross-repo cut's inputs (``deps.cross_repo_cut_inputs``).
     """
     all_members = await crud.get_community_members(
         session, repo_id, community_id, node_type="file", limit=MEMBER_READ_CAP
@@ -419,7 +421,7 @@ async def build_community_slice(
     ]
 
     # Member signals only (boundary stubs stay minimal / all-false signals).
-    signals = await collect_node_signals(session, repo_id, list(member_ids))
+    signals = await collect_node_signals(session, repo_id, list(member_ids), **(cut or {}))
     nodes = [
         node_to_response(m, signals.get(m.node_id, EMPTY_SIGNALS), CommunitySliceNodeResponse)
         for m in members

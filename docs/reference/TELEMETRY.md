@@ -157,6 +157,7 @@ Any one of these disables all telemetry:
 repowise telemetry disable        # persisted to ~/.repowise/platform.json
 export REPOWISE_TELEMETRY_DISABLED=1
 export DO_NOT_TRACK=1             # the cross-tool standard (https://consoledonottrack.com)
+export REPOWISE_OFFLINE=1         # also skips the PyPI release check and agent-CLI login probes
 ```
 
 Check the current state anytime:

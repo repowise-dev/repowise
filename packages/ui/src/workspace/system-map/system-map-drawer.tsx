@@ -27,6 +27,7 @@ import { FilePath } from "../../shared/file-path";
 import { AiPromptButton } from "../../health/ai-prompt-button";
 import { AiPromptModal } from "../../health/ai-prompt-modal";
 import type { AiPromptFlavor } from "../../health/ai-prompt-builder";
+import { linkStrategyCopy } from "../link-provenance";
 import { roleStyle } from "./architecture";
 import { edgeKindStyle, matchTypeLabel } from "./edge-kinds";
 import { nodeKindStyle } from "./node-kinds";
@@ -594,6 +595,7 @@ function EdgeBody({
   const sourceName = source?.name ?? edge.source;
   const targetName = target?.name ?? edge.target;
   const sentence = edgeSentence(edge, sourceName, targetName);
+  const strategy = linkStrategyCopy(edge.strategy);
 
   const links = useMemo<WorkspaceContractLinkEntry[] | null>(
     () => (repoContracts && edge.structural ? edgeLinks(edge, repoContracts.links, resolve) : null),
@@ -653,7 +655,14 @@ function EdgeBody({
             value: (
               <span title={MATCH_MEANING[edge.match_type]}>
                 {matchTypeLabel(edge.match_type)}
-                <span className="block text-xs text-[var(--color-text-tertiary)]">{MATCH_MEANING[edge.match_type]}</span>
+                {/* How the strongest link was matched, when the edge says; the
+                    exact / candidate meaning otherwise. */}
+                {strategy ? (
+                  <span className="block text-xs text-[var(--color-text-secondary)]">{strategy.label}</span>
+                ) : null}
+                <span className="block text-xs text-[var(--color-text-tertiary)]">
+                  {strategy?.meaning ?? MATCH_MEANING[edge.match_type]}
+                </span>
               </span>
             ),
           },
@@ -730,6 +739,14 @@ function EdgeBody({
                       calls from{" "}
                       <FilePath path={`${l.consumer_repo}/${l.consumer_file}`} mode="full" className="text-[10px]" />
                     </span>
+                    {l.strategy ? (
+                      <span
+                        className="text-[10px] text-[var(--color-text-tertiary)]"
+                        title={linkStrategyCopy(l.strategy)?.meaning}
+                      >
+                        {linkStrategyCopy(l.strategy)?.label}
+                      </span>
+                    ) : null}
                   </li>
                 ))}
               </ul>

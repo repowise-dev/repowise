@@ -132,6 +132,7 @@ class LanguageGate:
 
 _AUDIT_DATE = "2026-10-02"
 _REAUDIT_DATE = "2026-10-15"
+_APEX_AUDIT_DATE = "2026-10-23"
 _PREVIEW = "preview"
 _NO_PLAN = "No judged plan was acceptable as written."
 _NOT_A_COST = "Most judged opportunities were not real costs."
@@ -172,6 +173,7 @@ _GATE_ROWS: tuple[_GateRow, ...] = (
     ("dead_code", "c", 0.66, "35 judged findings from 2 C repos (lowest 0%)", "P/Invoke exports are unseen.", _PREVIEW, _REAUDIT_DATE),
     ("dead_code", "cpp", 0.68, "25 judged findings from 1 C++ repo", "Build-listed translation units and macro uses are unseen.", _PREVIEW, _REAUDIT_DATE),
     ("dead_code", "kotlin", 0.18, "34 judged findings from 2 Kotlin repos (lowest 0%)", "DI-bound classes are not roots.", _PREVIEW, _REAUDIT_DATE),
+    ("dead_code", "apex", 0.86, "51 judged findings from 6 Apex repos (lowest 0%)", "Deprecated stubs and example code read as dead.", _PREVIEW, _APEX_AUDIT_DATE),
     ("dead_code", "swift", 0.44, "71 judged findings from 2 Swift repos (lowest 10%)", "Cross-module function and extension-member uses are unseen.", _PREVIEW, _REAUDIT_DATE),
 )
 

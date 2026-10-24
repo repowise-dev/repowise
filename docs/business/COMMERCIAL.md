@@ -43,7 +43,7 @@ scale, in a regulated or security-sensitive environment**:
 All of the following ship in `pip install repowise` today, free for internal use.
 
 - **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
-  (tree-sitter AST across 27 languages, two-tier dependency graph, call
+  (tree-sitter AST across 28 languages, two-tier dependency graph, call
   resolution, heritage extraction, Leiden communities, PageRank / betweenness /
   SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
   commits, contributor profiles, module health), Documentation (a wiki page per
@@ -112,12 +112,13 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **27 languages to a full AST** and places **41 on a five-rung
+Repowise parses **28 languages to a full AST** and places **42 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
-The 27 are the top three rungs. At **Full tier sit 14** (Python, TypeScript,
-JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
+The 28 are the top three rungs. At **Full tier sit 15** (Python, TypeScript,
+JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, **C#**, Scala, Ruby and
+Salesforce Apex) with
 AST parsing, import resolution, named bindings, call resolution, heritage
 extraction, multi-project workspace resolvers, framework-aware edges, per-language
 dynamic-hint extractors, and code-health markers. A further **11 at Good tier** (C,

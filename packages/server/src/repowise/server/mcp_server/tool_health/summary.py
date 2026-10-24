@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
-from repowise.core.analysis.health.grading import TARGET_SCORE, analysed_share, headline_band
+from repowise.core.analysis.health.grading import (
+    TARGET_SCORE,
+    analysed_share,
+    headline_band,
+    headline_scope,
+)
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.coverage import PerfCoverage
 from repowise.core.analysis.health.ranking import worst_kpis
@@ -208,6 +213,12 @@ def _compute_kpis(
         "band": headline_band(round(avg, 2), share),
         # Only said when some files were left out, as ``unanalysed_file_count`` is.
         **({"analysed_share": share} if unanalysed else {}),
+        # Beside a score most code files did not feed.
+        **(
+            {"average_health_scope": scope}
+            if (scope := headline_scope(len(metrics), unanalysed))
+            else {}
+        ),
         # The heads of ``worst_files`` and ``test_worst_files``, as REST names them.
         **worst_kpis(metrics, deductions),
         # ``None`` until the pillar is measured.

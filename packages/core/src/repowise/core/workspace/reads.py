@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from repowise.core.workspace.cross_repo import MAX_EDGES, MAX_EDGES_PER_REPO_PAIR
+from repowise.core.workspace.origins import legacy_strategy
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -51,6 +52,7 @@ def contract_row(c: dict) -> dict[str, Any]:
         "service": c.get("service"),
         "line": c.get("line"),
         "symbol_id": c.get("symbol_id"),
+        "origin": c.get("origin"),
         "meta": c.get("meta") or {},
     }
 
@@ -61,6 +63,7 @@ def link_row(lk: dict) -> dict[str, Any]:
         "contract_id": lk.get("contract_id", ""),
         "contract_type": lk.get("contract_type", ""),
         "match_type": lk.get("match_type", "exact"),
+        "strategy": lk.get("strategy") or legacy_strategy(lk.get("match_type", "exact")),
         "confidence": lk.get("confidence", 0.0),
         "provider_repo": lk.get("provider_repo", ""),
         "provider_file": lk.get("provider_file", ""),
@@ -186,9 +189,15 @@ def unmatched_reason(
 
     The reasons live in ``system_graph.json``, not ``contracts.json``, keyed by
     the same ``(repo, file_path, contract_id)`` triple. None when no graph is
-    built or the consumer did match.
+    built or the consumer did match. A consumer served inside its own service
+    is listed apart and reads ``internal_only``.
     """
-    for u in (diagnostics or {}).get("unmatched_consumers", []):
+    diagnostics = diagnostics or {}
+    rows = [
+        *diagnostics.get("unmatched_consumers", []),
+        *diagnostics.get("in_service_consumers", []),
+    ]
+    for u in rows:
         if (
             u.get("repo") == repo
             and u.get("file_path") == file_path
@@ -438,6 +447,8 @@ def conformance_view(report: dict, *, repo: str | None = None) -> dict[str, Any]
         # The unscoped total: how many cycles the workspace has does not change
         # because the view was narrowed.
         "total_cycles": total_cycles,
+        "cycles_determined": report.get("cycles_determined"),
+        "evidence": report.get("evidence"),
         "violating_repos": sorted(
             {_node_repo(v.get("source", "")) for v in violations}
             | {_node_repo(v.get("target", "")) for v in violations}
