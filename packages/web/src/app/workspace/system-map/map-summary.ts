@@ -1,10 +1,11 @@
 /**
  * The words and figures around the map: the one-sentence lede above it and
  * the figures ribbon below it. Both count relationships per edge family from
- * the same tally the family chips and the caption read, so the page and the
- * canvas never disagree.
+ * the same tally the family chips read, for the same families the filter draws.
  */
 
+import { useCallback } from "react";
+import { useFormatter } from "next-intl";
 import { familyTally, type EdgeFamily, type FamilyTally } from "@repowise-dev/ui/workspace/system-map";
 import type { RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
@@ -15,8 +16,13 @@ import { httpLinkedStat } from "@/lib/http-link-coverage";
 /** The minimal translator shape the copy helpers need; next-intl's `t` fits. */
 export type Translator = (key: string, values?: Record<string, string | number>) => string;
 
-/** Joins phrases the locale's way ("a, b and c"); next-intl's `format.list` fits. */
+/** Joins phrases the locale's way ("a, b and c"). */
 export type ListJoin = (parts: string[]) => string;
+
+export function useListJoin(): ListJoin {
+  const format = useFormatter();
+  return useCallback<ListJoin>((parts) => format.list(parts, { type: "conjunction" }), [format]);
+}
 
 function repoCount(graph: SystemGraph): number {
   return new Set(graph.nodes.map((n) => n.repo)).size;
@@ -35,14 +41,15 @@ function familyPhrase(t: Translator, join: ListJoin, rows: readonly FamilyTally[
 /**
  * "10 services in 3 repositories. 8 runtime and data relationships are drawn;
  * 10 build and history relationships are hidden." One sentence pair, stated
- * for the families the filter draws right now.
+ * for the families the filter draws right now. Null before there is a service to state.
  */
 export function mapLede(
   t: Translator,
   join: ListJoin,
-  graph: SystemGraph,
+  graph: SystemGraph | null,
   drawn: ReadonlySet<EdgeFamily>,
-): string {
+): string | null {
+  if (!graph || graph.nodes.length === 0) return null;
   const estate = t("lede.estate", { services: graph.nodes.length, repos: repoCount(graph) });
   const tally = familyTally(graph.edges, drawn);
   if (tally.length === 0) return estate;

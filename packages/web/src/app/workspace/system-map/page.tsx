@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useFormatter, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { Waypoints } from "lucide-react";
 import {
   SystemMap,
@@ -41,7 +41,7 @@ import {
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
 import { markSystemMap, useSystemMapPerfMarks } from "@/lib/system-map-perf";
-import { mapLede, mapRibbon, type ListJoin, type Translator } from "./map-summary";
+import { mapLede, mapRibbon, useListJoin, type Translator } from "./map-summary";
 import { useRepoContracts } from "./use-repo-contracts";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
@@ -61,8 +61,7 @@ function contractsHref(repo: string): string {
 export default function SystemMapPage() {
   const t = useTranslations("systemMap");
   const tLinks = useTranslations("linkCoverage");
-  const format = useFormatter();
-  const join = useCallback<ListJoin>((parts) => format.list(parts, { type: "conjunction" }), [format]);
+  const join = useListJoin();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -222,7 +221,7 @@ export default function SystemMapPage() {
       title={t("title")}
       icon={<Waypoints />}
       // One sentence above the map, stated for the families it draws; the figures follow the map.
-      description={graph && graph.nodes.length > 0 ? mapLede(t, join, graph, drawnFamilies(mapView)) : t("description")}
+      description={mapLede(t, join, graph, drawnFamilies(mapView)) ?? t("description")}
       maxWidth="wide"
     >
       {/* The map is the page's subject: its heading shares the lens row, straight under the lede. */}
@@ -272,9 +271,7 @@ export default function SystemMapPage() {
         )}
       </section>
 
-      {graph && (
-        <StatRibbon stats={mapRibbon(t, tLinks, join, graph, architecture, diagnostics)} LinkComponent={Link} />
-      )}
+      {graph && <StatRibbon stats={mapRibbon(t, tLinks, join, graph, architecture, diagnostics)} LinkComponent={Link} />}
 
       {graph && (
         <SystemMapLensResults
