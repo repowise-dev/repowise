@@ -15,8 +15,7 @@ header. Counting follows ``cyclomatic.py``: a branch, loop or ``WHEN`` arm is
 KEY`` / ``ON SIZE ERROR`` / ``ON EXCEPTION`` / ``ON OVERFLOW`` handler are +1
 CCN and a flat +1 cognitive; ``AND`` / ``OR`` are +1 each; ``EVALUATE`` and
 ``SEARCH`` open a level and ``WHEN`` / ``WHEN OTHER`` open another, like a
-switch and its cases. ``GO TO`` and ``ALTER`` are breaks in flow: a flat +1
-cognitive. A handler's statements stay at its statement's depth (the ceiling
+switch and its cases. ``GO TO`` and ``ALTER`` are breaks in flow: a flat +1 cognitive; single-target ``GO TO`` does not increase CCN, while multi-target ``GO TO ... DEPENDING ON`` adds N points to CCN (one per target). A handler's statements stay at its statement's depth (the ceiling
 of not scoping them to their ``END-READ``). NLOC counts the non-blank lines of
 the code view (comments and sequence areas blank) from the first statement to
 the last, so a masked ``EXEC`` block counts every line it spans.
@@ -337,8 +336,14 @@ def _measure(name: str, header: Node, body: list[Node], lines: list[str]) -> Fun
         elif kind in _HANDLERS or kind == "else_if_header":
             charge(1)
             cognitive += 1
+
         elif kind in _JUMPS:
             cognitive += 1
+            if kind == "goto_statement":
+                targets = [c for c in node.children if c.type == "label"]
+                if len(targets) > 1:    # if it is a multi-target goto statement
+                    charge(len(targets))
+
         operators = _boolean_operators(node)
         charge(operators)
         cognitive += operators
