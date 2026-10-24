@@ -84,18 +84,19 @@ def build_provider_contract(
 ) -> Contract | None:
     """Build a provider contract, or ``None`` if the path is unusable.
 
-    A match whose path normalizes to bare ``/`` only counts when the raw text
-    actually carried a path — a template-variable-only or empty route is
-    dropped, matching the legacy extractor's skip rule.
+    An empty path is dropped: with no prefix to stitch onto, nothing was
+    declared. A root route spelled ``/`` is kept; a service whose whole API is
+    ``POST /`` serves it there, and a base path applied later (a Spring
+    context-path) turns it into ``/accounts``.
 
     *handler* is the expression the registration names, for frameworks that
     declare a route away from its handler (an ASP.NET minimal API). It is what
     lets :func:`.contracts.bind_symbol_ids` reach the handler rather than the
     registration site; without it the line lookup binds to ``Program.cs``.
     """
-    norm_path = normalize_http_path(path_raw)
-    if (not norm_path or norm_path == "/") and not path_raw.strip("/"):
+    if not path_raw.strip():
         return None
+    norm_path = normalize_http_path(path_raw)
 
     return build_contract(
         ctx,

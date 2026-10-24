@@ -49,7 +49,8 @@ class SpringDialect:
                 c = build_provider_contract(
                     ctx,
                     method=route.verb,
-                    path_raw=compose_prefix(prefix, route.path),
+                    # An empty mapping on an unmapped class is the root route.
+                    path_raw=compose_prefix(prefix, route.path) or "/",
                     framework="spring",
                     line=line_at(content, route.offset),
                 )

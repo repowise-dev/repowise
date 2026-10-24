@@ -133,9 +133,14 @@ records `target_via` (the source) and `target_evidence` (the file).
 | `compose` | `docker-compose*.yml`, `compose*.yml` | Service name, `container_name`, `hostname`; `environment` keys whose value is an address | `build` context (or its Dockerfile's directory), else an image basename equal to a repo alias |
 | `k8s_service` | `*.yaml` under `k8s/`, `deploy/`, `manifests/`, ... | `kind: Service` `metadata.name` | A selector or label value equal to a repo alias, else the manifest's repo when it declares no other Service |
 | `spring_application_name` | `application` / `bootstrap` `.yml` or `.properties` | `spring.application.name` | The module the file sits in |
+| `spring_base_path` | `.yml`, `.yaml`, `.properties` under `resources/`, `config/`, `configs/` or `shared/` | `server.servlet.context-path`, `server.context-path`, `spring.webflux.base-path`: a base path, not a name | A module's own `src/main/resources/application` or `bootstrap` file (not a profile file): that module. A config server's `<app>.yml`: the service named `<app>` |
 | `spring_gateway` | `application` / `bootstrap` in a module's resources, or a config-server file named `*gateway*`, `*zuul*`, `*proxy*`, `*edge*` (`.yml` or `.properties`) holding `routes` | Spring Cloud Gateway `routes[]` (`lb://name`, `http://host`) and Zuul `zuul.routes` | A gateway route (below) |
 | `dockerfile_env` | `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` holding `ENV` | `ENV` keys whose value is an address (`CATALOGUE_HOST=catalogue`) | The host the value names |
 | `nginx` | `*.conf`, `*.conf.template`, `*.conf.tmpl` holding `proxy_pass` | Prefix `location` blocks with `proxy_pass` to a host, an `upstream` of one host, or an envsubst `${X_HOST}` in a template | A gateway route (below) |
+
+A base path prefixes every Spring route of its module before matching, so `@PostMapping("/users")`
+under `context-path: /uaa` is `POST /uaa/users`. A module given two different base paths gets
+none.
 
 Each repo is walked once per update for these file names; test, example and build-output
 directories are skipped, and files at the workspace root are read too. A name two files

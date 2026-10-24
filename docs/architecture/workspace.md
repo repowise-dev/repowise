@@ -118,6 +118,9 @@ links are appended after it.
    settle into one `name -> repo` entry; a name claimed for two repos is left
    unmapped. The sources and their rules are in
    [WORKSPACE_CONTRACTS.md](../reference/WORKSPACE_CONTRACTS.md#service-names).
+   A server base path (a Spring context-path) settles per repo module instead, and
+   `matching/base_paths.py::apply_base_paths` prefixes that module's routes before
+   matching, keeping the declared path in `meta` so a re-run recomputes it.
 2. **Target resolution** (`matching/http.py::annotate_consumer_targets`): each HTTP
    consumer's host or base token is resolved, in order, through a
    `contracts.service_bases` entry, a repo alias (also the leading label of an

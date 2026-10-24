@@ -590,6 +590,7 @@ async def run_contract_extraction(
     from .extractors.base import make_exclude_predicate
     from .extractors.masstransit import MessageTypeIndex
     from .matching import annotate_consumer_targets, run_matching
+    from .matching.base_paths import apply_base_paths
     from .service_names import ServiceNameMap, build_service_name_map, service_names_fingerprint
 
     contract_config = ws_config.contracts
@@ -671,6 +672,7 @@ async def run_contract_extraction(
         names = ServiceNameMap.from_dict(prior.service_names)
     else:
         names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
+    apply_base_paths(all_contracts, names.base_paths)
     annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
     matched = run_matching(all_contracts, names.routes)
     links = matched.links

@@ -35,7 +35,16 @@ from typing import Any
 
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
-from . import aspire, compose, dockerfile, k8s_service, nginx, spring, spring_gateway
+from . import (
+    aspire,
+    compose,
+    dockerfile,
+    k8s_service,
+    nginx,
+    spring,
+    spring_base_path,
+    spring_gateway,
+)
 from .base import ENV, HOST, Claim, Route, ServiceNameSource, SourceFile
 
 _log = logging.getLogger("repowise.workspace.service_names")
@@ -47,6 +56,7 @@ SOURCES: tuple[ServiceNameSource, ...] = (
     k8s_service.SOURCE,
     nginx.SOURCE,
     spring.SOURCE,
+    spring_base_path.SOURCE,
     spring_gateway.SOURCE,
 )
 
@@ -71,6 +81,21 @@ _PRUNE = PRUNED_DIRS | {
     "build",
 }
 _MAX_BYTES = 512_000
+
+
+@dataclass(frozen=True)
+class BasePath:
+    """Every route the *module* of *repo* serves sits under *path*.
+
+    *module* is the module directory relative to the repo root (posix, ``""``
+    for the whole repo); *source* and *file* say where it was read.
+    """
+
+    repo: str
+    module: str
+    path: str
+    source: str
+    file: str
 
 
 @dataclass(frozen=True)
@@ -110,6 +135,8 @@ class ServiceNameMap:
     entries: dict[tuple[str, str], ServiceName] = field(default_factory=dict)
     #: Every workspace repo alias the map was built over.
     repos: frozenset[str] = frozenset()
+    #: Server base paths (a Spring context-path), one per repo module.
+    base_paths: tuple[BasePath, ...] = ()
     #: Names claimed for more than one repo, and those repos: left unmapped.
     ambiguous: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
     #: Gateway routes, one per gateway and prefix.
@@ -140,6 +167,7 @@ class ServiceNameMap:
     def to_dict(self, fingerprint: str = "") -> dict[str, Any]:
         return {
             "fingerprint": fingerprint,
+            "base_paths": [asdict(b) for b in self.base_paths],
             "repos": sorted(self.repos),
             "entries": [asdict(e) for _, e in sorted(self.entries.items())],
             "routes": [asdict(r) for r in self.routes],
@@ -149,6 +177,7 @@ class ServiceNameMap:
     def from_dict(cls, data: dict[str, Any]) -> ServiceNameMap:
         entries = [ServiceName(**e) for e in data.get("entries", [])]
         return cls(
+            base_paths=tuple(BasePath(**b) for b in data.get("base_paths", [])),
             entries={(e.kind, e.name): e for e in entries},
             repos=frozenset(data.get("repos", [])),
             routes=tuple(GatewayRoute(**r) for r in data.get("routes", [])),
@@ -317,6 +346,8 @@ def build_service_name_map(
     }:
         found.extend(_workspace_root_files(workspace_root))
 
+    base_found = [f for f in found if f.claim.base_path is not None]
+    found = [f for f in found if f.claim.base_path is None]
     resolver = _Resolver(repo_paths)
     out = ServiceNameMap(repos=frozenset(repo_paths))
     claimed: dict[tuple[str, str], dict[str, tuple[str, str]]] = defaultdict(dict)
@@ -370,13 +401,77 @@ def build_service_name_map(
 
     if out.ambiguous:
         _log.debug("Service names left unmapped (claimed for several repos): %s", out.ambiguous)
+    out.base_paths = _settle_base_paths(base_found, out, resolver, repo_paths)
     return out
+
+
+def _module_of(hit: ServiceName) -> str | None:
+    """The module whose own Spring config named *hit*, as a repo-relative directory.
+
+    None when the name came from anywhere else (a compose or k8s file in a
+    deploy repo): that does not say which module of the repo serves it.
+    """
+    if hit.source != spring.SOURCE.name:
+        return None
+    head = f"{hit.repo}/"
+    if not hit.file.startswith(head):
+        return None
+    parts = hit.file[len(head) :].split("/")[:-1]
+    if [p.lower() for p in parts[-1:]] == ["config"]:
+        parts = parts[:-1]
+    if [p.lower() for p in parts[-3:]] != ["src", "main", "resources"]:
+        return None
+    return "/".join(parts[:-3])
+
+
+def _place_base_path(
+    c: Claim, names: ServiceNameMap, resolver: _Resolver, repo_paths: dict[str, Path]
+) -> tuple[str, str] | None:
+    """``(repo, module)`` a base-path claim applies to, or None when unplaced."""
+    if c.at is not None:
+        repo = resolver.repo_at(c.at)
+        if repo is None:
+            return None
+        module = Path(os.path.relpath(c.at, repo_paths[repo])).as_posix()
+        return repo, "" if module == "." else module
+    hit = names.lookup(c.name, HOST)
+    module = _module_of(hit) if hit is not None else None
+    if hit is not None and module is not None:
+        return hit.repo, module
+    repo = resolver.named((c.name,))
+    return (repo, "") if repo is not None else None
+
+
+def _settle_base_paths(
+    found: list[_Found], names: ServiceNameMap, resolver: _Resolver, repo_paths: dict[str, Path]
+) -> tuple[BasePath, ...]:
+    """One base path per repo module; a module given two paths gets none.
+
+    A module's own file places itself (``at``); a config server's file names a
+    service, placed in the module whose own ``spring.application.name`` declared
+    it or, failing that, in the repo whose alias it is (the whole repo). A name
+    only a deploy file places says no module, so it places nothing.
+    """
+    paths: dict[tuple[str, str], dict[str, tuple[str, str]]] = defaultdict(dict)
+    for f in found:
+        placed = _place_base_path(f.claim, names, resolver, repo_paths)
+        if placed is not None:
+            paths[placed].setdefault(f.claim.base_path or "", (f.source.name, f.evidence))
+    settled: list[BasePath] = []
+    for (repo, module), by_path in sorted(paths.items()):
+        if len(by_path) == 1:
+            [(path, (source, evidence))] = by_path.items()
+            settled.append(BasePath(repo, module, path, source, evidence))
+        else:
+            _log.debug("Base path of %s/%s read several ways: %s", repo, module, sorted(by_path))
+    return tuple(settled)
 
 
 __all__ = [
     "ENV",
     "HOST",
     "SOURCES",
+    "BasePath",
     "GatewayRoute",
     "ServiceName",
     "ServiceNameMap",

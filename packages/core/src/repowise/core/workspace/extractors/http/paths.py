@@ -47,6 +47,9 @@ def normalize_http_path(path: str) -> str:
     s = re.sub(r"\[[^\]]+\]", "{param}", s)
     # Unify JS template literal ${expr} → {param}
     s = re.sub(r"\$\{[^}]+\}", "{param}", s)
+    # A whole-segment ``*`` (Spring ``/owners/*/pets``, Express ``/files/*``)
+    # matches one segment, as a parameter does.
+    s = re.sub(r"(?<=/)\*(?=/|$)", "{param}", s)
     return s or "/"
 
 
