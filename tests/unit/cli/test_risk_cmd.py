@@ -358,3 +358,23 @@ def test_fix_counts_print_their_window() -> None:
     out = cap.get()
     assert "4 bug fix(es) in 6 months, last 2 day(s) ago" in out
     assert "Fixes (6 months)" in out
+
+
+def test_risk_two_dot_range_scores_the_branch_once_main_moved(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q", "-b", "main"], repo)
+    _commit(repo, {"app.py": "def run():\n    return 1\n"}, "init")
+    _git(["switch", "-qc", "feat"], repo)
+    _commit(repo, {"feature.py": "def feature():\n    return 2\n"}, "add feature")
+    _git(["switch", "-q", "main"], repo)
+    _commit(repo, {"app.py": "def run():\n    return 1\n\ndef stop():\n    return 0\n"}, "m1")
+    _commit(repo, {"billing.py": "def charge():\n    return 3\n"}, "m2")
+
+    result = CliRunner().invoke(
+        risk_command,
+        ["main..feat", "--path", str(repo), "--baseline", "0", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["features"]["nf"] == 1

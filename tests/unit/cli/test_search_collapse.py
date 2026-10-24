@@ -19,6 +19,8 @@ The same three things have to hold as for the other adapters:
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -236,6 +238,22 @@ def _spy_run(payload, calls: list):
 def repo(tmp_path):
     (tmp_path / ".repowise").mkdir()
     return tmp_path
+
+
+def _init_git_repo(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / ".repowise" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", ".repowise"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=Dev", "-c", "user.email=dev@example.com",
+            "commit", "-m", "chore: seed",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _invoke(monkeypatch, command, args, repo, payload, calls=None, expect_exit=0):
@@ -679,6 +697,7 @@ def test_full_in_the_fan_out_exits_one_when_no_repo_answered(monkeypatch, tmp_pa
 
 def test_risk_without_a_target_still_scores_a_revspec(monkeypatch, repo):
     """The collapse must not move the command's default subject."""
+    _init_git_repo(repo)
     called: list = []
     monkeypatch.setattr(
         "repowise.cli.commands.risk_cmd.change.score_live_change",
@@ -801,6 +820,7 @@ def test_risk_table_keeps_the_fix_counts_on_top_symbols(monkeypatch, repo):
 def test_risk_full_on_a_revspec_is_json_not_a_table(monkeypatch, repo):
     """``--full`` means "the complete payload, as JSON" on every command that
     has it; silently ignoring it hands a script asking for JSON a rich table."""
+    _init_git_repo(repo)
     from repowise.core.analysis.change_risk import ChangeRiskResult
 
     monkeypatch.setattr(

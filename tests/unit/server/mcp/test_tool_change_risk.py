@@ -968,3 +968,21 @@ async def test_index_dependents_come_from_the_stored_graph(setup_mcp, factory):
     assert counts["src/auth/service.py"] == 2
     assert counts["src/db/models.py"] == 1
     assert await _index_dependents(SimpleNamespace(session_factory=None)) is None
+
+
+@pytest.mark.asyncio
+async def test_two_dot_range_reads_the_branch_change_once_main_moved(branch_repo):
+    from repowise.core import git_refs
+
+    before, note = git_refs.branch_change_range(str(branch_repo), "main..feat")
+    assert (before, note) == ("main..feat", None)
+
+    _git(branch_repo, "switch", "-q", "main")
+    (branch_repo / "other.py").write_text("x = 1\n", encoding="utf-8")
+    _git(branch_repo, "add", "-A")
+    _git(branch_repo, "commit", "-qm", "main moves on")
+    _git(branch_repo, "switch", "-q", "feat")
+
+    after, note = git_refs.branch_change_range(str(branch_repo), "main..feat")
+    assert after == "main...feat"
+    assert note and "main" in note
