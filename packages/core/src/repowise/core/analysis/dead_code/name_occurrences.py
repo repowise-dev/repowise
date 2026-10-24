@@ -1,4 +1,4 @@
-"""Did we actually look â€” the knowledge term behind a dead-code confidence.
+"""Did we actually look — the knowledge term behind a dead-code confidence.
 
 Every other input to a dead-code confidence scores *how strong the evidence
 for deadness is*. None of them asks the second question a confidence has to
@@ -6,7 +6,7 @@ answer before a user can act on it without checking: **would a use have been
 visible to us at all?**
 
 ``_detect_unused_exports`` promotes a finding to the top of the scale when the
-defining file has importers â€” the argument being that our import graph
+defining file has importers — the argument being that our import graph
 demonstrably works for this file, so the symbol's absence from every importer's
 imported names means something. That argument assumes *using a symbol requires
 importing it*. It holds in Python and TypeScript. It is false for:
@@ -72,14 +72,14 @@ from .jvm_name_scope import JvmNameScope
 from .models import DeadCodeFindingData, DeadCodeKind
 from .risk_factors import RISK_CAP_CONFIDENCE
 
-#: Identifier shape, matched over raw bytes so nothing has to be decoded â€” the
+#: Identifier shape, matched over raw bytes so nothing has to be decoded — the
 #: scan covers every indexed file, and decoding them all would dominate it.
 #: ASCII-only is deliberate: a non-ASCII identifier that fails to match can
 #: only under-suppress, which is the safe direction.
 IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 
 #: Shortest name this check can answer for. :data:`IDENTIFIER_RE` needs three
-#: characters, so a two-character name matches nowhere â€” including on its own
+#: characters, so a two-character name matches nowhere — including on its own
 #: declaration. Reading that as "the name appears nowhere" would turn the
 #: strongest verdict into the least reliable one, so a name this short is
 #: treated as a question we cannot ask rather than as an answer.
@@ -129,7 +129,7 @@ def occurrence_files(
     One pass over the whole indexed source. The candidate names are known
     before the scan starts, so the returned map only ever holds the few names
     some finding actually asks about rather than every identifier in the
-    repository â€” which is what keeps this affordable on a large tree.
+    repository — which is what keeps this affordable on a large tree.
     """
     found: dict[bytes, set[str]] = {}
     if not names:
@@ -149,7 +149,7 @@ def _uses_in_own_file(
 ) -> dict[int, _Verdict]:
     """Where each of *findings* is named in its own file outside its own span.
 
-    Reached only for a name no other file mentions â€” the same-translation-unit
+    Reached only for a name no other file mentions — the same-translation-unit
     shape, where a C++ helper struct used inside the very function below it is
     the use the import graph cannot see. A recursive call sits *inside* the
     declaration and correctly does not count; a doc comment above it sits
@@ -159,7 +159,7 @@ def _uses_in_own_file(
 
     * The split is on ``\\n`` alone. ``bytes.splitlines`` also breaks on a bare
       ``\\r`` and on the form-feed family, which the parser's row counter does
-      not â€” so a lone ``\\r`` inside a string literal (a progress-bar ``print``
+      not — so a lone ``\\r`` inside a string literal (a progress-bar ``print``
       is the common one) would shift every line after it and make a symbol's
       own recursive call land outside its recorded span.
     * A sibling declaration's *header line* is excluded as well as the judged
@@ -288,12 +288,12 @@ def searchable_token(name: str) -> bytes:
 
     The one rule is that the result must be something :data:`IDENTIFIER_RE`
     would actually match, because a token the scan cannot produce is absent
-    from every file including the one that declares it â€” and reading that as
+    from every file including the one that declares it — and reading that as
     "the name appears nowhere" would turn the strongest verdict into the least
     reliable one. Two shapes fail it, for different reasons:
 
     * a non-ASCII name, since ``encode(errors="ignore")`` drops characters
-      rather than failing and would search for ``caf`` on behalf of ``cafÃ©``,
+      rather than failing and would search for ``caf`` on behalf of ``café``,
       letting an unrelated ``caf`` elsewhere read as a use;
     * a name carrying a character the identifier shape does not admit, such as
       the ``$`` in a JVM or JavaScript synthetic name, which the scan would
@@ -313,7 +313,7 @@ def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
     A ``.d.ts`` beside ``runtime.js`` restates that module's exports as types.
     It declares the same names a second time and calls none of them, so
     counting it as a use makes every symbol in a generated binding module look
-    alive â€” measured as the single largest source of lost true positives on
+    alive — measured as the single largest source of lost true positives on
     this corpus.
 
     Deliberately narrow: only the same directory and the same stem. A ``.d.ts``
@@ -435,15 +435,15 @@ def clamp_unverified_absence(
         name = finding.symbol_name
         # ``reason`` carries this, not only ``evidence``. The unchanged reason
         # asserts "has no importers" as the ground for the finding, which is
-        # the very inference this check has just declined to make â€” and it is
+        # the very inference this check has just declined to make — and it is
         # the field every surface renders, where the evidence list reaches
         # only the JSON ones.
         if verdict.answer is _Answer.USED:
             finding.reason = f"'{name}' is not imported, but is named elsewhere in the repo"
             detail = f"is written at {verdict.used_at}"
         else:
-            # Both remaining answers mean the same thing to a reader â€” we did
-            # not establish an absence â€” so they share a reason and differ only
+            # Both remaining answers mean the same thing to a reader — we did
+            # not establish an absence — so they share a reason and differ only
             # in the evidence line, which is where the distinction is useful.
             finding.reason = f"'{name}' is not imported, and its use could not be verified"
             detail = (
