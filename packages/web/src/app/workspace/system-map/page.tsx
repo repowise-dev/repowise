@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useFormatter, useTranslations } from "next-intl";
 import { Waypoints } from "lucide-react";
 import {
   SystemMap,
@@ -16,6 +16,7 @@ import {
   buildBlastRadiusOverlay,
   buildBreakingChangeOverlay,
   buildConformanceOverlay,
+  drawnFamilies,
   parseMapView,
   selectionRepo,
   writeMapView,
@@ -27,18 +28,9 @@ import {
   type SystemMapSelection,
 } from "@repowise-dev/ui/workspace/system-map";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
-import { PageLede } from "@repowise-dev/ui/shared/page-lede";
-import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
-import { OverviewSection } from "@repowise-dev/ui/overview/section";
+import { StatRibbon } from "@repowise-dev/ui/stats/stat-ribbon";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
-import { unmatchedOutsideService } from "@repowise-dev/ui/workspace/contract-facts";
-import type {
-  ConformanceReport,
-  ExtractionDiagnostics,
-  NodeArchitectureRole,
-  SystemGraph,
-} from "@/lib/api/types";
+import type { ConformanceReport, NodeArchitectureRole, SystemGraph } from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
   useWorkspaceDiagnostics,
@@ -48,16 +40,13 @@ import {
   useWorkspaceConformance,
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
-import { httpLinkedStat } from "@/lib/http-link-coverage";
 import { markSystemMap, useSystemMapPerfMarks } from "@/lib/system-map-perf";
+import { mapLede, mapRibbon, type ListJoin, type Translator } from "./map-summary";
 import { useRepoContracts } from "./use-repo-contracts";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
 /** URL params a selection is written to, one per selection type. */
 const SELECTION_PARAMS = ["node", "edge", "group", "band"] as const;
-
-/** The minimal translator shape the copy helpers below need; next-intl's `t` fits. */
-type Translator = (key: string, values?: Record<string, string | number>) => string;
 
 function contractHref(ref: ContractRef): string {
   const params = new URLSearchParams({ contract: ref.contract_id, repo: ref.repo });
@@ -72,6 +61,8 @@ function contractsHref(repo: string): string {
 export default function SystemMapPage() {
   const t = useTranslations("systemMap");
   const tLinks = useTranslations("linkCoverage");
+  const format = useFormatter();
+  const join = useCallback<ListJoin>((parts) => format.list(parts, { type: "conjunction" }), [format]);
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -230,16 +221,13 @@ export default function SystemMapPage() {
     <PageShell
       title={t("title")}
       icon={<Waypoints />}
-      description={t("description")}
+      // One sentence above the map, stated for the families it draws; the figures follow the map.
+      description={graph && graph.nodes.length > 0 ? mapLede(t, join, graph, drawnFamilies(mapView)) : t("description")}
       maxWidth="wide"
     >
-      {graph && (
-        <Lede graph={graph} architecture={architecture} conformance={conformance} t={t} />
-      )}
-      {graph && <StatRibbon stats={ribbon(t, tLinks, graph, architecture, diagnostics)} LinkComponent={Link} />}
-
-      <OverviewSection title={t("section.title")} description={t("section.description")}>
-        {/* Said once, beside the map it qualifies; the score above reads "–" when not determined. */}
+      {/* The map is the page's subject: its heading shares the lens row, straight under the lede. */}
+      <section className="flex flex-col gap-3" aria-label={t("section.title")}>
+        {/* Said once, beside the map it qualifies; the score below reads "–" when not determined. */}
         <SystemMapEvidenceNotice
           evidence={architecture?.evidence}
           partialLabel={t("evidence.partial")}
@@ -264,6 +252,7 @@ export default function SystemMapPage() {
             onSelectionChange={onSelectionChange}
             view={mapView}
             onViewChange={onViewChange}
+            title={t("section.title")}
             estateLabel={t("estate")}
             onPhase={markSystemMap}
             drawer={drawer}
@@ -281,7 +270,11 @@ export default function SystemMapPage() {
             }
           />
         )}
-      </OverviewSection>
+      </section>
+
+      {graph && (
+        <StatRibbon stats={mapRibbon(t, tLinks, join, graph, architecture, diagnostics)} LinkComponent={Link} />
+      )}
 
       {graph && (
         <SystemMapLensResults
@@ -383,125 +376,6 @@ function lensOptionsFor(
           : architecture.core_size === 0 && architecture.roles.length === 0
             ? t("lens.core.disabledNone")
             : undefined,
-    },
-  ];
-}
-
-function Lede({
-  graph,
-  architecture,
-  conformance,
-  t,
-}: {
-  graph: SystemGraph;
-  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"];
-  conformance: ConformanceReport | null;
-  t: Translator;
-}) {
-  const name = (id: string) => graph.nodes.find((n) => n.id === id)?.name ?? id;
-  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
-  const structural = graph.edges.filter((e) => e.structural).length;
-  const behavioral = graph.edges.length - structural;
-  const cycles = conformance?.cycles ?? [];
-  const totalCycles = conformance ? (conformance.total_cycles ?? conformance.cycle_count) : 0;
-  const first = cycles[0];
-
-  return (
-    <PageLede
-      label={t("lede.label")}
-      labelHint={t("lede.labelHint")}
-      value={architecture?.score != null ? architecture.score.toFixed(1) : "–"}
-      unit={t("lede.unit")}
-      layout="beside"
-    >
-      <p>
-        {t("lede.counts", {
-          services: graph.nodes.length,
-          repos,
-          relationships: graph.edges.length,
-          structural,
-          behavioral,
-        })}
-      </p>
-      {first ? (
-        <p>
-          <span className="font-medium text-[var(--color-text-primary)]">
-            {t("lede.cycleDepend", { names: first.nodes.map(name).join(", ") })}
-          </span>
-          {t("lede.cycleTail")}{" "}
-          {totalCycles > 1
-            ? t("lede.cycleMore", { count: totalCycles - 1 })
-            : t("lede.cycleOne")}
-        </p>
-      ) : conformance?.generated_at ? (
-        <p>{t("lede.noCycles")}</p>
-      ) : null}
-      {architecture &&
-        architecture.propagation_cost_pct != null &&
-        architecture.core_size != null && (
-        <p>
-          {t("lede.reachAndScore", {
-            pct: architecture.propagation_cost_pct.toFixed(1),
-            core:
-              architecture.core_size > 0
-                ? t("lede.coreForms", { count: architecture.core_size })
-                : t("lede.noCore"),
-          })}
-        </p>
-      )}
-    </PageLede>
-  );
-}
-
-function ribbon(
-  t: Translator,
-  tLinks: Translator,
-  graph: SystemGraph,
-  architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
-  diag: ExtractionDiagnostics | null | undefined,
-): RibbonStat[] {
-  const repos = new Set(graph.nodes.map((n) => n.repo)).size;
-  const structural = graph.edges.filter((e) => e.structural).length;
-  return [
-    {
-      label: t("ribbon.services"),
-      value: formatNumber(graph.nodes.length),
-      sub: t("ribbon.servicesSub", { count: repos }),
-    },
-    {
-      label: t("ribbon.relationships"),
-      value: formatNumber(graph.edges.length),
-      sub: t("ribbon.relationshipsSub", {
-        structural,
-        behavioral: graph.edges.length - structural,
-      }),
-    },
-    {
-      label: t("ribbon.propagationCost"),
-      value:
-        architecture?.propagation_cost_pct != null
-          ? `${architecture.propagation_cost_pct.toFixed(1)}%`
-          : "–",
-      sub: t("ribbon.propagationCostSub"),
-      hint: t("ribbon.propagationCostHint"),
-    },
-    {
-      label: t("ribbon.contractLinks"),
-      value: diag ? formatNumber(diag.total_links) : "–",
-      sub: diag
-        ? t("ribbon.contractLinksSub", {
-            providers: formatNumber(diag.total_providers),
-            consumers: formatNumber(diag.total_consumers),
-          })
-        : undefined,
-      hint: t("ribbon.contractLinksHint"),
-    },
-    // An artifact older than the linked count keeps the unmatched stat.
-    (diag && httpLinkedStat(tLinks, diag)) ?? {
-      label: t("ribbon.unmatched"),
-      value: diag ? formatNumber(unmatchedOutsideService(diag).length) : "–",
-      sub: t("ribbon.unmatchedSub"),
-      hint: t("ribbon.unmatchedHint"),
     },
   ];
 }

@@ -1987,26 +1987,25 @@
     "title": "系统地图",
     "description": "服务及它们之间的带类型关系，每次工作区更新都会从代码与 git 历史重建。",
     "section": {
-      "title": "服务与关系",
-      "description": "每个方块是一个服务；每条连线是两者之间的契约、导入或共同变更。选择一个视角，一次向这张图提一个问题。"
+      "title": "服务与关系"
     },
     "evidence": {
       "partial": "证据不完整",
       "insufficient": "无法确定"
     },
     "lede": {
-      "label": "架构评分",
-      "labelHint": "对影响范围、循环核心规模、依赖循环与规则违反的 1 到 10 综合评分，仅统计结构边。分数越高表示耦合越低。",
-      "unit": "满分 10",
-      "counts": "{services} 个服务分布在 {repos} 个仓库中，由 {relationships} 条关系相连：{structural} 条结构关系（代码中的契约或导入）与 {behavioral} 条共同变更关系（在同一批提交中一起改动的文件，而非调用）。",
-      "cycleMore": "另有 {count} 个循环列在「需要注意」下。",
-      "cycleOne": "它列在「需要注意」下，并附有一段打破它的提示词。",
-      "noCycles": "没有依赖循环：每个服务都可以在不形成回环的情况下变更。",
-      "reachAndScore": "平均而言，一个服务通过依赖可触达其他服务的 {pct}%，并且{core}。这两个数字决定了评分。",
-      "coreForms": "{count} 个服务构成循环核心",
-      "noCore": "不存在循环核心",
-      "cycleDepend": "{names} 互相依赖",
-      "cycleTail": "，形成一个依赖循环：其中任何一个都无法单独变更契约、构建或部署。"
+      "estate": "{services} 个服务，分布在 {repos} 个仓库中。",
+      "pair": "{estate}{rest}",
+      "familyCount": "{count} 条{family}",
+      "family": {
+        "runtime": "运行时",
+        "data": "数据",
+        "build": "构建",
+        "history": "历史"
+      },
+      "drawn": "已绘制 {families}关系。",
+      "drawnAndHidden": "已绘制 {drawn}关系；已隐藏 {hidden}关系。",
+      "allHidden": "边筛选隐藏了全部 {families}关系。"
     },
     "lens": {
       "none": {
@@ -2045,10 +2044,10 @@
       "services": "服务",
       "servicesSub": "分布在 {count} 个仓库中",
       "relationships": "关系",
-      "relationshipsSub": "{structural} 条结构关系，{behavioral} 条共同变更",
-      "propagationCost": "影响范围",
-      "propagationCostSub": "平均每个服务可触达的其他服务比例",
-      "propagationCostHint": "平均每个服务通过结构依赖可触达的其他服务的比例。0% 表示完全解耦，100% 表示一切都互相触达。",
+      "score": "架构评分",
+      "scoreUnit": "满分 10",
+      "scoreSub": "满分 10；平均每个服务可触达其他服务的 {pct}%",
+      "scoreHint": "对影响范围、循环核心规模、依赖循环与规则违反的 1 到 10 综合评分，仅统计结构边。分数越高表示耦合越低。影响范围指平均每个服务通过结构依赖可触达的其他服务比例。",
       "contractLinks": "契约链接",
       "contractLinksSub": "来自 {providers} 个提供方、{consumers} 个消费方",
       "contractLinksHint": "跨服务匹配到对应提供方的消费方调用。",

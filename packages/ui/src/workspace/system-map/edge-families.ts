@@ -65,6 +65,30 @@ export function linkWeight(edge: { weight: number }): number {
   return edge.weight > 1 ? edge.weight : 1;
 }
 
+export interface FamilyTally {
+  family: EdgeFamily;
+  /** System edges of the family, the unit the chips and the caption count. */
+  edges: number;
+  /** Whether the family filter draws it. */
+  drawn: boolean;
+}
+
+/**
+ * Edges per present family in chip order, each marked drawn or hidden by
+ * `drawn`: what a host's lede and figures say about the map, from the same
+ * counts the chips and caption read.
+ */
+export function familyTally(
+  edges: Iterable<{ kind: string; family?: string | null | undefined; weight: number }>,
+  drawn: ReadonlySet<EdgeFamily>,
+): FamilyTally[] {
+  const counts = familyCounts(edges);
+  return EDGE_FAMILY_ORDER.flatMap((family) => {
+    const count = counts[family];
+    return count ? [{ family, edges: count.edges, drawn: drawn.has(family) }] : [];
+  });
+}
+
 /** How a family is named on its chip, in the caption and in the legend. */
 export const EDGE_FAMILY_COPY: Record<EdgeFamily, { label: string; meaning: string }> = {
   runtime: { label: "Runtime", meaning: "calls and events" },

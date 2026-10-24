@@ -6,6 +6,7 @@ import {
   EDGE_FAMILY_ORDER,
   edgeFamily,
   familyCounts,
+  familyTally,
   linkWeight,
 } from "../../src/workspace/system-map/edge-families";
 import { EDGE_KIND_ORDER, SYSTEM_EDGE_KINDS } from "../../src/workspace/system-map/edge-kinds";
@@ -31,6 +32,16 @@ describe("edge families", () => {
     const counts = familyCounts([edge("a", "b", "http", 3), edge("a", "c", "package"), edge("b", "c", "event", 0)]);
     expect(counts).toEqual({ runtime: { edges: 2, links: 4 }, build: { edges: 1, links: 1 } });
     expect(linkWeight({ weight: 0 })).toBe(1);
+  });
+
+  it("tallies present families in chip order, drawn or hidden by the filter", () => {
+    const edges = [edge("a", "b", "co_change"), edge("a", "c", "package", 4), edge("b", "c", "http"), edge("c", "d", "event")];
+    expect(familyTally(edges, DEFAULT_EDGE_FAMILIES)).toEqual([
+      { family: "runtime", edges: 2, drawn: true },
+      { family: "build", edges: 1, drawn: false },
+      { family: "history", edges: 1, drawn: false },
+    ]);
+    expect(familyTally([], DEFAULT_EDGE_FAMILIES)).toEqual([]);
   });
 });
 

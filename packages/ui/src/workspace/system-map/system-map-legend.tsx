@@ -100,7 +100,7 @@ export function SystemMapLegend({ matchTypes, gatewayRouted = 0, bands = false }
 
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-      {bands && <Item swatch={<BandSwatch />} label="Band: every link between two cards, width and number are the count" />}
+      {bands && <Item swatch={<BandSwatch />} label="Band: every link between two cards; its width and number give the count" />}
       {lines.map((m) => (
         <Item
           key={m}
@@ -128,7 +128,7 @@ export function SystemMapLegend({ matchTypes, gatewayRouted = 0, bands = false }
       <span className="text-xs text-[var(--color-text-tertiary)]">
         {bands
           ? "Hover a band for its kinds. Open a group to see its services. Click anything for details."
-          : "Hover a line for its kind and weight. Click a service or line for details."}
+          : "Hover a line for its kind and link count. Click a service or line for details."}
       </span>
     </div>
   );

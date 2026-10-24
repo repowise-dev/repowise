@@ -181,9 +181,11 @@ export {
   edgeFamily,
   edgeFamilyOf,
   familyCounts,
+  familyTally,
   linkWeight,
   type EdgeFamily,
   type FamilyCount,
+  type FamilyTally,
 } from "./edge-families";
 export type {
   DrawBudget,
