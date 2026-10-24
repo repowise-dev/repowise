@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CATEGORY_CAP,
+  BIOMARKER_GLOSSARY,
   PERFORMANCE_HOME_BIOMARKERS,
   biomarkerLabel,
   isKnownBiomarker,
@@ -43,5 +44,13 @@ describe("performance glossary", () => {
   it("describes every performance biomarker", () => {
     const missing = [...PERFORMANCE_HOME_BIOMARKERS].filter((name) => !isKnownBiomarker(name));
     expect(missing).toEqual([]);
+  });
+});
+
+describe("stale_governance description", () => {
+  it("claims only that governed files changed, not that the decision was confirmed", () => {
+    const text = BIOMARKER_GLOSSARY.stale_governance?.description ?? "";
+    expect(text).not.toMatch(/confirmed/i);
+    expect(text).toMatch(/changed since the decision was recorded/);
   });
 });

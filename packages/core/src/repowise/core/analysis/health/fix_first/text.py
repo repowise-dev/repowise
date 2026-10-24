@@ -352,7 +352,7 @@ def history_fact(marker: str, details: dict, function: str | None = None) -> str
     if marker == "code_age_volatility":
         return "old code that still changes often"
     if marker == "stale_governance":
-        return "a decision that covers it is out of date"
+        return "files covered by a decision have changed since it was recorded"
     if marker == "contradictory_decision":
         return "decisions that cover it disagree"
     return None
