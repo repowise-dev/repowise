@@ -4670,10 +4670,13 @@ export interface WorkspaceExtractionDiagnostics {
   unmatched_consumers?: WorkspaceUnmatchedConsumer[];
   unmatched_by_reason?: Record<string, number>;
   orphan_providers?: WorkspaceOrphanProvider[];
+  in_service_consumers?: WorkspaceUnmatchedConsumer[];
   providers_by_layer?: Record<string, number>;
   consumers_by_layer?: Record<string, number>;
   http_consumers_unresolved?: number;
   http_consumer_coverage?: number | null;
+  http_consumers_linked?: number | null;
+  http_link_coverage?: number | null;
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;
   symbol_identity?: Record<string, WorkspaceSymbolIdentity>;
@@ -4772,6 +4775,7 @@ export interface WorkspaceOrphanProvider {
   file_path: string;
   contract_id: string;
   contract_type: string;
+  other_files?: string[];
 }
 
 export interface WorkspaceRepoActions {

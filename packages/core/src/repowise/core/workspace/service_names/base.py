@@ -27,6 +27,25 @@ ENV = "env"
 
 
 @dataclass(frozen=True)
+class Route:
+    """A gateway's path rule: a request under ``prefix`` is forwarded with that prefix
+    replaced by ``upstream`` (``""`` strips it, ``prefix`` keeps it).
+
+    Both are lowercase literal paths without a trailing slash. ``upstream`` is
+    None when the route's forwarded path cannot be read (a filter or predicate
+    the source does not model): no call is rewritten through it, and it still
+    keeps a shorter prefix from claiming the paths under it. ``gateway`` names
+    the gateway service when the file configures an app that lives elsewhere (a
+    config server's ``gateway.yml``), as candidate names tried in order through
+    the host map and the repo aliases; empty means the repo holding the file.
+    """
+
+    prefix: str
+    upstream: str | None = ""
+    gateway: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Claim:
     """One file's statement that *name* is served by some repo.
 
@@ -37,6 +56,11 @@ class Claim:
     resolved through the finished host map), and ``own_repo`` (the repo holding
     the file, kept only when it is the only name the source places in that
     repo this way, so a deploy repo listing every service claims none).
+
+    A claim with a ``route`` says instead that a gateway forwards that path
+    prefix to *name*; *name* resolves like a ``ref``, through the finished host
+    map and then the repo aliases, or with ``kind`` :data:`ENV` through the
+    finished env keys (an nginx template's ``${CATALOGUE_HOST}``).
     """
 
     name: str
@@ -45,6 +69,7 @@ class Claim:
     aliases: tuple[str, ...] = ()
     ref: str | None = None
     own_repo: bool = False
+    route: Route | None = None
 
 
 @dataclass(frozen=True)
@@ -62,8 +87,8 @@ class ServiceNameSource:
     ``filenames`` are case-insensitive globs on the file's own name; ``under``,
     when set, requires an ancestor directory (inside the repo) with one of
     those names; ``marker`` must occur in the text before ``read`` parses it.
-    A gateway source would add a path rewrite to its claims for the matcher to
-    apply; nothing here assumes a claim is a plain host.
+    A gateway source states :class:`Route` claims, which the matcher applies as
+    path rewrites.
     """
 
     name: str
@@ -105,6 +130,34 @@ _ADDRESS_KEY_RE = re.compile(
 )
 
 
+_PATTERN_SEGMENT_RE = re.compile(r"[*{}?<>()\[\]$^]")
+_WHOLE_SEGMENT_RE = re.compile(r"^(?:\*{1,2}|\{[^{}]*\})$")
+
+#: :func:`literal_prefix` kinds: a whole wildcard or variable segment follows the
+#: prefix (a prefix route), the pattern is all literal, or a segment mixes text
+#: and a wildcard (``orders*``, ``v{n}``), so only the part before it is known.
+PREFIX = "prefix"
+EXACT = "exact"
+PARTIAL = "partial"
+
+
+def literal_prefix(pattern: str) -> tuple[str, str]:
+    """The literal leading path of a route pattern, and what follows it.
+
+    ``/api/vet/**`` is ``("/api/vet", PREFIX)``, ``/orders/{id}`` is
+    ``("/orders", PREFIX)``, ``/health`` is ``("/health", EXACT)`` and
+    ``/api/orders*`` is ``("/api", PARTIAL)``. Lowercase, no trailing slash;
+    ``""`` when the pattern starts with a wildcard.
+    """
+    literal: list[str] = []
+    for seg in (s for s in pattern.strip().split("/") if s):
+        if _PATTERN_SEGMENT_RE.search(seg):
+            kind = PREFIX if _WHOLE_SEGMENT_RE.match(seg) else PARTIAL
+            return ("/" + "/".join(literal) if literal else ""), kind
+        literal.append(seg.lower())
+    return ("/" + "/".join(literal) if literal else ""), EXACT
+
+
 def host_of(key: str, value: str) -> str | None:
     """The host config entry *key* = *value* names, or None when it is not an address.
 
@@ -120,4 +173,17 @@ def host_of(key: str, value: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
-__all__ = ["ENV", "HOST", "Claim", "ServiceNameSource", "SourceFile", "host_of", "join_config_path"]
+__all__ = [
+    "ENV",
+    "EXACT",
+    "HOST",
+    "PARTIAL",
+    "PREFIX",
+    "Claim",
+    "Route",
+    "ServiceNameSource",
+    "SourceFile",
+    "host_of",
+    "join_config_path",
+    "literal_prefix",
+]

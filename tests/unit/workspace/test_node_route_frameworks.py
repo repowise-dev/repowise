@@ -361,6 +361,13 @@ class TestHapi:
         )
         assert set(_providers(root)) == {"http::GET::/api/orders", "http::POST::/api/orders"}
 
+    def test_optional_param(self, tmp_path: Path) -> None:
+        root = _write(tmp_path, {"server.js": (
+            "const server = require('@hapi/hapi').server();\n"
+            "server.route({ method: 'GET', path: '/users/{id?}', handler: h });\n"
+        )})
+        assert set(_providers(root)) == {"http::GET::/users/{param}"}
+
     def test_prefix_in_the_register_options(self, tmp_path: Path) -> None:
         root = _write(
             tmp_path,

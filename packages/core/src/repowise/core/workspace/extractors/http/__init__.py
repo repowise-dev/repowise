@@ -17,11 +17,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
-from ..dialect import ContractDialect, run_dialect, runs_on, union_extensions
+from ..dialect import ContractDialect, run_dialect, union_extensions
 from ..langs import PYTHON
 from .apex_callouts import ApexCalloutsDialect
 from .apex_rest import ApexRestDialect
 from .aspnet import AspNetDialect
+from .azure_functions import AzureFunctionsDialect
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
 from .express import ExpressDialect
@@ -31,7 +32,7 @@ from .flask import FlaskDialect
 from .go import GoDialect
 from .go_clients import GoClientsDialect
 from .hapi import HapiDialect
-from .java_clients import JavaClientsDialect
+from .java_clients import JavaClientsDialect, MicroProfileClientsDialect, SpringClientsDialect
 from .jaxrs import JaxRsDialect
 from .js_clients import JsClientsDialect
 from .koa import KoaDialect
@@ -76,6 +77,7 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     NextAppDialect(),
     RemixDialect(),
     ApexRestDialect(),
+    AzureFunctionsDialect(),
     FastifyDialect(),
     HapiDialect(),
     KoaDialect(),
@@ -93,6 +95,8 @@ CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
     KotlinClientsDialect(),
     PhpClientsDialect(),
     ApexCalloutsDialect(),
+    SpringClientsDialect(),
+    MicroProfileClientsDialect(),
 )
 
 
@@ -230,7 +234,9 @@ class HttpExtractor:
         for rel_path, suffix, content in files:
             ctx = ScanContext(repo_alias, rel_path, suffix, content)
             for dialect in collectors:
-                if runs_on(dialect, ctx):
+                # A collector may gate its repo-wide pass apart from extraction.
+                gate = getattr(dialect, "mount_requires", dialect.requires)
+                if ctx.suffix in dialect.extensions and ctx.has_any(gate):
                     found = dialect.collect_mounts(ctx)
                     if found:
                         per_file.append(found)

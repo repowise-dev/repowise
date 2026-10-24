@@ -42,6 +42,7 @@ follows from the strategy.
 | 0.6 | `ambiguous_path` | candidate | The base is unread and several services serve the path; linked to each |
 | 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes |
 | 0.5 | `host_only` | candidate | The host names a workspace service, but no route there serves the path; a service-level edge |
+| 1.0 | `gateway_route` | exact | A gateway's config forwards the path to the service: the gateway's own edge, and a call through it linked on the forwarded path |
 | 1.0 | `manual` | manual | Declared in the workspace config |
 
 A new dialect picks an existing origin, not a number. A system-graph edge carries the
@@ -106,7 +107,9 @@ its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix.
 axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when
 another file imports the instance. An Angular `HttpClient` call is read on any receiver typed
 or injected as `HttpClient`, with `environment.apiUrl` folded from `src/environments/` and class
-fields built on it; a base an interceptor prepends is not read. A client call
+fields built on it; a base an interceptor prepends is not read. A Node `request` call reads a URL
+or an options object held in a local (`var options = { uri, method }`), and a base from a
+`module.exports = { ... }` module it requires (`endpoints.cartsUrl`). A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path (`unique_path`) and a lower-confidence **candidate** when the target
@@ -128,11 +131,27 @@ records `target_via` (the source) and `target_evidence` (the file).
 | `compose` | `docker-compose*.yml`, `compose*.yml` | Service name, `container_name`, `hostname`; `environment` keys whose value is an address | `build` context (or its Dockerfile's directory), else an image basename equal to a repo alias |
 | `k8s_service` | `*.yaml` under `k8s/`, `deploy/`, `manifests/`, ... | `kind: Service` `metadata.name` | A selector or label value equal to a repo alias, else the manifest's repo when it declares no other Service |
 | `spring_application_name` | `application` / `bootstrap` `.yml` or `.properties` | `spring.application.name` | The module the file sits in |
+| `spring_gateway` | `application` / `bootstrap` in a module's resources, or a config-server file named `*gateway*`, `*zuul*`, `*proxy*`, `*edge*` (`.yml` or `.properties`) holding `routes` | Spring Cloud Gateway `routes[]` (`lb://name`, `http://host`) and Zuul `zuul.routes` | A gateway route (below) |
+| `dockerfile_env` | `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` holding `ENV` | `ENV` keys whose value is an address (`CATALOGUE_HOST=catalogue`) | The host the value names |
+| `nginx` | `*.conf`, `*.conf.template`, `*.conf.tmpl` holding `proxy_pass` | Prefix `location` blocks with `proxy_pass` to a host, an `upstream` of one host, or an envsubst `${X_HOST}` in a template | A gateway route (below) |
 
 Each repo is walked once per update for these file names; test, example and build-output
 directories are skipped, and files at the workspace root are read too. A name two files
 place in different repos is left unmapped rather than guessed. To override or fill a gap, add
 the host or base token to `service_bases`, which always wins.
+
+A gateway source states routes rather than names: a path prefix the gateway forwards to a
+service, and the path it forwards (Spring `StripPrefix`, `PrefixPath` and a
+`RewritePath=/x/?(?<s>.*), /y/${s}`; Zuul `stripPrefix`). An nginx `proxy_pass` with a path replaces the location prefix with that path; one
+without passes the request path unchanged. The nginx gateway is the repo holding the file. The gateway is the repo holding
+an `application` file in its module's own resources, or for a config server's `gateway.yml`
+the app its name spells. Each route is a `gateway_route` edge from the gateway to the
+service. A route whose forwarded path or target is not read (a Host or Method predicate,
+`SetPath`, a service outside the workspace, a prefix sent two ways) rewrites no call but keeps
+a shorter prefix from claiming the paths under it. A call that reaches the gateway (its
+host names the gateway, or a relative call from the gateway's own pages) is rewritten by the
+longest matching prefix and linked to the route's service on the forwarded path; when no
+route there serves it, it becomes a `host_only` edge to that service.
 
 ## Contracts over REST
 

@@ -138,15 +138,16 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 
 | Language | Providers (routes served) | Consumers (calls made) |
 |----------|---------------------------|------------------------|
-| JS / TS | Express, Hono, Fastify, Koa, hapi, Elysia; NestJS controllers; Next.js App Router and `pages/api`; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; HTTP-named wrappers |
-| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms) |
+| JS / TS | Express, Hono, Fastify, Koa, hapi, Elysia; NestJS controllers; Next.js App Router and `pages/api`; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; AngularJS `$http`; request, superagent, needle; HTTP-named wrappers |
+| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms); Locust user `client` calls |
 | PHP | Laravel | Guzzle, Laravel `Http` |
-| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign, `java.net.http`, `RestTemplate`, Ktor (Kotlin) |
+| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign (`@RequestLine`, and `@FeignClient` with Spring MVC annotations, its `name` read as the host), Spring `@HttpExchange` interfaces, Spring `WebClient` and `RestClient`, `RestTemplate` (also through a getter or a `RequestEntity`), `java.net.http`, Apache HttpClient (`new HttpPost(url)`, with a base URL passed to a helper's constructor in another file), MicroProfile `@RegisterRestClient` interfaces, Ktor (Kotlin) |
 | Go | gin, echo, chi, net/http | net/http |
-| C# | ASP.NET (attribute and minimal API) | HttpClient, UnityWebRequest, Best.HTTP |
+| C# | ASP.NET (attribute and minimal API) | HttpClient (`GetAsync`, `GetFromJsonAsync`, `PostAsJsonAsync`, `GetStringAsync`, `new HttpRequestMessage(HttpMethod.X, url)`; a URL held in a local or a `const` / `readonly` field), UnityWebRequest, Best.HTTP |
 | Ruby | | HTTParty, RestClient, Faraday, Net::HTTP |
 | Rust | Axum, Actix, Rocket | reqwest |
 | Apex | `@RestResource` classes (`/services/apexrest` + `urlMapping`) | `HttpRequest` callouts (literal endpoint and verb) |
+| C# (Azure Functions) | `[HttpTrigger]` routes under the default `/api` prefix; the function name when no `Route` is set | |
 | Any | OpenAPI 3.x documents | |
 
 **Database tables:**
@@ -167,12 +168,16 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Type | Providers | Consumers |
 |------|-----------|-----------|
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
+| Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
+| Topics: C# integration events | `new T(...)` of an `IntegrationEvent` subclass the repo declares, reaching `PublishAsync` / `Publish` or a repo method taking an `IntegrationEvent`; the id is the short type name, which the event bus routes by | `AddSubscription<T, TH>()`, `Subscribe<T, TH>()` on a declared event, and `IIntegrationEventHandler<T>` classes for events no registration subscribes |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
 A topic, queue or route name is resolved when it is a literal or a constant the
-same file assigns once; a name built at runtime is skipped, not guessed. HTTP
+same file assigns once; a name built at runtime is skipped, not guessed. RabbitMQ
+is also read from Go (streadway/amqp, amqp091-go), and a queue named through its
+declaration's result (`q.Name` after Go `QueueDeclare`, amqplib `assertQueue`, pika
+`queue_declare`) resolves when that file declares it with a settled name. HTTP
 routes match on their full path, with router mount prefixes stitched on first.
 An ambiguous target becomes a lower-confidence **candidate** link, and a unique
 one an **exact** link. The exact naming and matching rules for each transport
@@ -328,14 +333,14 @@ repowise workspace diagnostics --repo api     # limit to one repo
 The report covers:
 
 - **Provider / consumer counts** per repo, broken down by contract type.
-- **Unmatched consumers**, grouped by reason:
-  - `no_provider`, no provider anywhere declares a matching route/service/topic.
-  - `internal_only`, the only matching provider is in the same repo + service, so the call is intra-service and intentionally not surfaced as a cross-repo link.
+- **Unmatched consumers**, grouped by reason. Each call is named (HTTP, gRPC and topics first); table reads collapse to one line per repo.
+  - `no_provider`, a dangling call: no provider anywhere declares a matching route/service/topic/table.
   - `unlinked`, a cross-service provider with a matching id exists, but no link formed (a candidate worth inspecting).
   - `external_host`, the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
-- **Orphan providers**, endpoints declared but never consumed by any repo.
+- **In-service consumers** (`in_service_consumers`, reason `internal_only`): the only matching provider is in the same repo + service. They are served, so they are counted apart and never listed as unmatched.
+- **Orphan providers**, endpoints declared but never consumed by any repo. One row per repo, service and id; a table declared in a model and a migration lists the second file under `other_files`.
 - **Weak links**, matched links below the confidence threshold.
-- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located, plus one per file that makes a network call (a client library, channel or raw request) no dialect read, so an unsupported client lowers the figure instead of dropping out of it. Each such file counts once, so it is a floor on what was missed, not total recall. It is the figure that turns a large orphan-provider count from alarming into explained.
+- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located, plus one per file that makes a network call (a client library, channel or raw request) no dialect read, so an unsupported client lowers the figure instead of dropping out of it. Each such file counts once, so it is a floor on what was missed, not total recall. It is the figure that turns a large orphan-provider count from alarming into explained. A call read is not a call linked, so the headline leads with the HTTP calls that linked to another service (`http_consumers_linked`, `http_link_coverage`, same denominator) and then says where the read but unlinked calls went.
 
 The same data is available over REST at `GET /api/workspace/diagnostics` and is embedded in the system graph artifact's `diagnostics` block.
 

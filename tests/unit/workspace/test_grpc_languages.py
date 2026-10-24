@@ -126,3 +126,74 @@ class TestPythonAndGoKeepTheirOwnRules:
             "pb.RegisterAuthServiceServer(s, &impl{})\nc := pb.NewAuthServiceClient(conn)\n",
         )
         assert [(r[1], r[3]) for r in rows] == [("provider", 0.85), ("consumer", 0.75)]
+
+
+class TestJavaQualifiedBase:
+    def test_a_package_qualified_impl_base_is_a_provider(self) -> None:
+        # Online Boutique's adservice: a nested class naming the base by package.
+        rows = _extract(
+            ".java",
+            "public final class AdService {\n"
+            "  private static class AdServiceImpl\n"
+            "      extends hipstershop.AdServiceGrpc.AdServiceImplBase {}\n"
+            "}\n",
+        )
+        assert [(r[0], r[1], r[2]) for r in rows] == [
+            ("grpc::AdService/*", "provider", "java:extends AdServiceGrpc.ImplBase")
+        ]
+
+    def test_the_bare_base_still_matches(self) -> None:
+        rows = _extract(".java", "class Impl extends AuthServiceGrpc.AuthServiceImplBase {}\n")
+        assert [r[0] for r in rows] == ["grpc::AuthService/*"]
+
+
+class TestNodeAddService:
+    _SERVER = (
+        "const grpc = require('@grpc/grpc-js');\n"
+        "const server = new grpc.Server();\n"
+        "this.server.addService(\n"
+        "  hipsterShopPackage.PaymentService.service,\n"
+        "  { charge: handler }\n"
+        ");\n"
+        "server.addService(shopProto.CurrencyService.service, {convert});\n"
+    )
+
+    def test_each_registered_service_is_a_provider(self) -> None:
+        rows = _extract(".js", self._SERVER)
+        assert rows == [
+            (
+                "grpc::PaymentService/*",
+                "provider",
+                "js:addService(PaymentService.service)",
+                0.85,
+                (("service", "PaymentService"), ("source", "js_add_service")),
+            ),
+            (
+                "grpc::CurrencyService/*",
+                "provider",
+                "js:addService(CurrencyService.service)",
+                0.85,
+                (("service", "CurrencyService"), ("source", "js_add_service")),
+            ),
+        ]
+
+    def test_the_legacy_grpc_package_and_typescript_imports_count(self) -> None:
+        legacy = "const grpc = require('grpc');\nserver.addService(proto.Greeter.service, impl);\n"
+        ts = "import * as grpc from '@grpc/grpc-js';\nserver.addService(GreeterService.service, impl);\n"
+        assert [r[0] for r in _extract(".js", legacy)] == ["grpc::Greeter/*"]
+        assert [r[0] for r in _extract(".ts", ts)] == ["grpc::GreeterService/*"]
+
+    def test_without_a_grpc_import_add_service_is_not_read(self) -> None:
+        # `addService(x.service)` is a grpc-js shape, but nothing else says so.
+        assert not _extract(".js", "registry.addService(plugins.Billing.service, opts);\n")
+
+    def test_a_lowercase_receiver_is_not_a_service_name(self) -> None:
+        # `this.service` is a field, not a proto service; the chain's PascalCase
+        # segment is the name even when an earlier segment is called `service`.
+        rows = _extract(
+            ".js",
+            "const grpc = require('@grpc/grpc-js');\n"
+            "s.addService(this.service, impl);\n"
+            "s.addService(pkg.service.Billing.service, impl);\n",
+        )
+        assert [r[0] for r in rows] == ["grpc::Billing/*"]

@@ -13,12 +13,26 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.contracts import ContractLink, normalize_contract_id
-from repowise.core.workspace.origins import LinkStrategy, link_confidence, match_type_for
-from repowise.core.workspace.service_names import ENV, HOST, ServiceName, ServiceNameMap
+from repowise.core.workspace.origins import (
+    ORIGIN_CONFIDENCE,
+    ContractOrigin,
+    LinkStrategy,
+    link_confidence,
+    match_type_for,
+)
+from repowise.core.workspace.service_names import (
+    ENV,
+    HOST,
+    GatewayRoute,
+    ServiceName,
+    ServiceNameMap,
+)
 
 from .common import find_matching_keys, internal, prefer_target_repo
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from repowise.core.workspace.contracts import Contract
 
     from .common import MatchState
@@ -173,6 +187,8 @@ def annotate_consumer_targets(
         for key in _TARGET_KEYS:
             c.meta.pop(key, None)
         target, external, via = _resolve_consumer_target(c, repo_aliases, sb, names)
+        if not external and names.routes:
+            target, via = _apply_gateway_route(c, target, via, names)
         if external:
             c.meta["external"] = True
         elif target:
@@ -183,7 +199,41 @@ def annotate_consumer_targets(
                     c.meta["target_evidence"] = via.file
 
 
-_TARGET_KEYS = ("target_repo", "external", "target_via", "target_evidence")
+_TARGET_KEYS = ("target_repo", "external", "target_via", "target_evidence", "route_path")
+
+
+def _through_gateway(
+    consumer: Contract, target: str | None, names: ServiceNameMap
+) -> tuple[GatewayRoute, str] | None:
+    """The gateway route *consumer* travels, and the path it forwards, when one applies.
+
+    A call reaches a gateway when its host or base resolved to the gateway's
+    repo, or when it names no host or base at all and sits in the gateway's
+    repo (pages the gateway serves itself). Ceiling: a relative call from a
+    separate frontend repo is not routed; it would need the frontend's own
+    proxy or base config to say which gateway it talks to.
+    """
+    meta = consumer.meta
+    if target is not None:
+        gateway = target
+    elif not meta.get("host") and not meta.get("base_token"):
+        gateway = consumer.repo
+    else:
+        return None
+    split = _split_http_id(normalize_contract_id(consumer.contract_id))
+    return names.route_for(gateway, split[1]) if split is not None else None
+
+
+def _apply_gateway_route(
+    consumer: Contract, target: str | None, via: ServiceName | None, names: ServiceNameMap
+) -> tuple[str | None, ServiceName | None]:
+    """Retarget *consumer* to the service its gateway route forwards to, stamping the
+    forwarded path; unchanged when no route applies."""
+    routed = _through_gateway(consumer, target, names)
+    if routed is None:
+        return target, via
+    route, consumer.meta["route_path"] = routed
+    return route.repo, ServiceName(route.name, HOST, route.repo, route.source, route.file)
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +282,63 @@ def _methods_compatible(consumer_method: str, provider_method: str) -> bool:
 
 
 def is_deferred(consumer: Contract) -> bool:
-    """A base-stripped consumer skips the exact pass; :func:`base_resolved_pass` owns it."""
-    return bool(consumer.meta.get("base_stripped"))
+    """A base-stripped or gateway-routed consumer skips the exact pass; its own pass owns it."""
+    return bool(consumer.meta.get("base_stripped") or "route_path" in consumer.meta)
+
+
+def gateway_pass(state: MatchState) -> None:
+    """Link each gateway-routed consumer on the path its route forwards, in the route's target.
+
+    A routed consumer no provider there serves is left to :func:`service_pass`,
+    which draws the service-level edge the route itself establishes.
+    """
+    for consumer in state.unmatched("http"):
+        upstream = consumer.meta.get("route_path")
+        split = _split_http_id(normalize_contract_id(consumer.contract_id))
+        if upstream is None or split is None:
+            continue
+        target = consumer.meta.get("target_repo")
+        keys = find_matching_keys(f"http::{split[0]}::{upstream}", state.provider_index)
+        providers = [p for k in keys for p in state.provider_index[k] if p.repo == target]
+        for provider in providers:
+            if not internal(provider, consumer):
+                state.add(consumer, provider, LinkStrategy.GATEWAY_ROUTE)
+
+
+def gateway_route_links(routes: Iterable[GatewayRoute]) -> list[ContractLink]:
+    """One service-level edge per route, from the gateway to the service it forwards to.
+
+    The route is declared config, so the edge carries a route registration's
+    confidence; its consumer file is the config file when that sits in the
+    gateway's own repo, else the repo root (a config server's file).
+    """
+    confidence = link_confidence(
+        LinkStrategy.GATEWAY_ROUTE, ORIGIN_CONFIDENCE[ContractOrigin.ROUTE_REGISTRATION]
+    )
+    links: list[ContractLink] = []
+    for r in routes:
+        if not r.repo:
+            continue  # a blocker: the target is outside the workspace or disputed
+        own = r.file.startswith(f"{r.gateway}/")
+        forwarded = "?" if r.upstream is None else r.upstream or "/"
+        links.append(
+            ContractLink(
+                contract_id=f"http::*::{r.prefix}/**",
+                contract_type="http",
+                match_type=match_type_for(LinkStrategy.GATEWAY_ROUTE),
+                confidence=confidence,
+                provider_repo=r.repo,
+                provider_file="",
+                provider_symbol=f"{r.name} ({r.source})",
+                provider_service=None,
+                consumer_repo=r.gateway,
+                consumer_file=r.file[len(r.gateway) + 1 :] if own else "",
+                consumer_symbol=f"{r.prefix}/** -> {forwarded}",
+                consumer_service=None,
+                strategy=LinkStrategy.GATEWAY_ROUTE,
+            )
+        )
+    return links
 
 
 def base_resolved_pass(state: MatchState) -> None:
@@ -245,7 +350,7 @@ def base_resolved_pass(state: MatchState) -> None:
     every service that serves it (``ambiguous_path``, a candidate).
     """
     for consumer in state.unmatched("http"):
-        if not is_deferred(consumer):
+        if not consumer.meta.get("base_stripped") or "route_path" in consumer.meta:
             continue
         matching_keys = find_matching_keys(consumer.contract_id, state.provider_index)
         providers = [
@@ -290,6 +395,7 @@ def candidate_pass(state: MatchState) -> None:
         if split is None:
             continue
         method, path = split
+        path = consumer.meta.get("route_path", path)
         if _is_static_asset_path(path):
             continue
         core = _candidate_http_path(path)
@@ -351,6 +457,8 @@ __all__ = [
     "annotate_consumer_targets",
     "base_resolved_pass",
     "candidate_pass",
+    "gateway_pass",
+    "gateway_route_links",
     "is_deferred",
     "service_pass",
 ]
