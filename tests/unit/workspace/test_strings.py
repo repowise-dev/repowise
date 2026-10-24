@@ -190,3 +190,41 @@ class TestPythonConstants:
 )
 def test_syntax_for_suffix(suffix: str, expected: object) -> None:
     assert syntax_for_suffix(suffix) is expected
+
+
+class TestJsLocalValue:
+    @staticmethod
+    def _at(content: str, name: str = "options") -> str | None:
+        from repowise.core.workspace.extractors.strings import js_local_value
+
+        return js_local_value(content, name, content.rindex("request("))
+
+    def test_the_nearest_declaration_in_an_open_block(self) -> None:
+        text = "function f() {\n  var options = {\n    uri: '/a',\n  };\n  request(options, cb);\n}\n"
+        assert self._at(text) == "{\n    uri: '/a',\n  }"
+
+    @pytest.mark.parametrize(
+        "between",
+        [
+            "options.method = 'DELETE';\n",
+            "Object.assign(options, extra);\n",
+            "options = other;\n",
+            "items.forEach(function (err, options) {\n",
+            "items.forEach((e, options) => {\n",
+            "items.forEach(options => {\n",
+            "options['uri'] = base + '/b';\n",
+            "class S {\n  save(options) {\n",
+            "}\nfunction g() {\n",
+        ],
+    )
+    def test_a_rebinding_or_closed_block_refuses(self, between: str) -> None:
+        assert self._at("function f() {\n  var options = { uri: '/a' };\n" + between + "request(options);\n") is None
+
+    def test_a_statement_continued_on_the_next_line_refuses(self) -> None:
+        assert self._at("var url = '/a'\n  + '/b';\nrequest(url);\n", "url") is None
+        assert self._at("var url = '/a' +\n  '/b';\nrequest(url);\n", "url") is None
+        assert self._at("var url = '/a'\nrequest(url);\n", "url") == "'/a'"
+
+    def test_a_control_header_naming_the_local_does_not_shadow_it(self) -> None:
+        text = "function f() {\n  var options = { uri: '/a' };\n  if (options) {\n    request(options);\n"
+        assert self._at(text) == "{ uri: '/a' }"

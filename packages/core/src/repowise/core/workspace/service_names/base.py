@@ -49,6 +49,9 @@ class Route:
 class Claim:
     """One file's statement that *name* is served by some repo.
 
+    A claim with a ``base_path`` says instead that the module at ``at`` (or,
+    without ``at``, the service *name*) serves every route under that path.
+
     Where it points, tried in order: ``at`` (the directory the service is
     built from; the repo holding it serves *name*), ``aliases`` (repo aliases
     the file names for it, such as an image basename or a selector label; the
@@ -65,6 +68,7 @@ class Claim:
 
     name: str
     kind: str = HOST
+    base_path: str | None = None
     at: Path | None = None
     aliases: tuple[str, ...] = ()
     ref: str | None = None
@@ -158,6 +162,33 @@ def literal_prefix(pattern: str) -> tuple[str, str]:
     return ("/" + "/".join(literal) if literal else ""), EXACT
 
 
+def _variable(seg: str) -> str:
+    """A whole-segment variable by name: ``{**rest}``, ``{*rest}`` and ``{rest:int}`` are ``{rest}``."""
+    return "{" + seg[1:-1].lstrip("*").split(":")[0].split("=")[0].rstrip("?").lower() + "}"
+
+
+def template_upstream(pattern: str, forwarded: str) -> str | None:
+    """What a gateway forwarding path template *pattern* as *forwarded* puts in place of
+    *pattern*'s literal prefix, or None when that is not a prefix rewrite.
+
+    ``/api/c/{everything}`` forwarded as ``/{everything}`` is ``""`` (stripped);
+    ``/posts/{id}`` as ``/api/posts/{id}`` is ``/api/posts``. Both must end in the
+    same whole-segment variables, in order. A literal after a variable
+    (``/api/{version}/c/{all}``), a segment mixing text and a variable, or a fully
+    literal pattern (it serves one path, not a prefix) is None.
+    """
+    heads: list[str] = []
+    tails: list[list[str]] = []
+    for template in (pattern, forwarded):
+        head, kind = literal_prefix(template)
+        tail = [s for s in template.strip().split("/") if s][head.count("/") :]
+        if kind != PREFIX or not all(_WHOLE_SEGMENT_RE.match(s) for s in tail):
+            return None
+        heads.append(head)
+        tails.append([_variable(s) for s in tail])
+    return heads[1] if tails[0] == tails[1] else None
+
+
 def host_of(key: str, value: str) -> str | None:
     """The host config entry *key* = *value* names, or None when it is not an address.
 
@@ -186,4 +217,5 @@ __all__ = [
     "host_of",
     "join_config_path",
     "literal_prefix",
+    "template_upstream",
 ]

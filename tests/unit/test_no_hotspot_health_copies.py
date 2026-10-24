@@ -65,6 +65,9 @@ _PLUMBING: dict[str, str] = {
     "repowise/server/routers/_repo_summary.py": "serves the latest snapshot column on /repos/summary",
     "repowise/server/chat_view_builders.py": "charts the trend snapshots get_health already returned",
     "repowise/server/chat_datasets/history.py": "lists the snapshot scalars get_health trends read",
+    "repowise/core/report/sections/estate_health.py": (
+        "renders the snapshot column the workspace store copied per repo"
+    ),
 }
 
 

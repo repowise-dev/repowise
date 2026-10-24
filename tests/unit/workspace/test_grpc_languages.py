@@ -197,3 +197,99 @@ class TestNodeAddService:
             "s.addService(pkg.service.Billing.service, impl);\n",
         )
         assert [r[0] for r in rows] == ["grpc::Billing/*"]
+
+
+class TestCSharpGeneratedClients:
+    """gRPC-dotnet nests the client in its service's class: `Basket.BasketClient`."""
+
+    def test_a_dotted_new_names_the_service(self) -> None:
+        # eShop's client app: the stub's namespace, the service class, its client.
+        rows = _extract(
+            ".cs",
+            "using Grpc.Net.Client;\n"
+            "_client = new BasketGrpcClient.Basket.BasketClient(_channel);\n"
+            "var g = new global::Acme.Greeter.GreeterClient(channel);\n",
+        )
+        assert [(r[0], r[2]) for r in rows] == [
+            ("grpc::Basket/*", "cs:new BasketClient"),
+            ("grpc::Greeter/*", "cs:new GreeterClient"),
+        ]
+
+    def test_an_add_grpc_client_registration_is_a_consumer(self) -> None:
+        rows = _extract(
+            ".cs",
+            "builder.Services.AddGrpcClient<Basket.BasketClient>(o => o.Address = new(\"http://basket-api\"));\n"
+            "services.AddGrpcClient< Shop.Rpc.Greeter.GreeterClient >();\n",
+        )
+        assert rows == [
+            (
+                "grpc::Basket/*",
+                "consumer",
+                "cs:AddGrpcClient<Basket.BasketClient>",
+                0.75,
+                (("service", "Basket"), ("source", "csharp_add_grpc_client")),
+            ),
+            (
+                "grpc::Greeter/*",
+                "consumer",
+                "cs:AddGrpcClient<Greeter.GreeterClient>",
+                0.75,
+                (("service", "Greeter"), ("source", "csharp_add_grpc_client")),
+            ),
+        ]
+
+    def test_the_class_the_client_is_injected_into_is_a_consumer(self) -> None:
+        # eShop's web app aliases the client; the usual shape is a constructor parameter.
+        aliased = (
+            "using GrpcBasketClient = eShop.Basket.API.Grpc.Basket.BasketClient;\n"
+            "public class BasketService(GrpcBasketClient basketClient) {}\n"
+        )
+        injected = (
+            "using Grpc.Core;\n"
+            "public Worker(ILogger<Worker> log, Greeter.GreeterClient client) {}\n"
+        )
+        assert [(r[0], r[2]) for r in _extract(".cs", aliased)] == [
+            ("grpc::Basket/*", "cs:Basket.BasketClient")
+        ]
+        assert [r[0] for r in _extract(".cs", injected)] == ["grpc::Greeter/*"]
+        # An attribute before the parameter, or a nullable one.
+        attributed = (
+            "using Grpc.Core;\n"
+            "public Page([FromServices] Greeter.GreeterClient a, Basket.BasketClient? b) {}\n"
+        )
+        assert [r[0] for r in _extract(".cs", attributed)] == ["grpc::Greeter/*", "grpc::Basket/*"]
+
+    def test_typeof_nameof_and_generics_are_not_injection(self) -> None:
+        rows = _extract(
+            ".cs",
+            "using Grpc.Core;\n"
+            "var t = typeof(Greeter.GreeterClient);\nvar n = nameof(Greeter.GreeterClient);\n"
+            "var l = new List<Greeter.GreeterClient>();\n",
+        )
+        assert rows == []
+
+    def test_an_sdk_named_after_its_namespace_is_not_a_grpc_client(self) -> None:
+        # `Stripe.StripeClient` has the generated shape; nothing in the file says gRPC.
+        assert not _extract(
+            ".cs",
+            "using Client = Stripe.StripeClient;\n"
+            "public Billing(Stripe.StripeClient client) {}\n"
+            "var c = new Stripe.StripeClient(key);\n",
+        )
+
+    def test_a_type_that_only_starts_like_the_client_is_not_one(self) -> None:
+        rows = _extract(
+            ".cs",
+            "using Grpc.Core;\n"
+            "public Svc(Basket.BasketClientFactory f, Basket.BasketClientOptions o) {}\n",
+        )
+        assert rows == []
+
+    def test_a_primary_constructor_impl_is_a_provider(self) -> None:
+        rows = _extract(
+            ".cs",
+            "public class BasketService(\n"
+            "    IBasketRepository repository,\n"
+            "    ILogger<BasketService> logger) : Basket.BasketBase\n{\n}\n",
+        )
+        assert [(r[0], r[1]) for r in rows] == [("grpc::Basket/*", "provider")]

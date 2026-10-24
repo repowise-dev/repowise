@@ -86,7 +86,7 @@ extensions, and hands the file list to every extractor. Each file becomes one
 1. **Extension**, then **gate**: the file must hold one of the dialect's `requires`
    tokens. `ScanContext.has_any` memoizes each token per file, so a token named by
    several dialects or table rows is searched for once. A contract file format
-   (`.proto`, `.sql`, `.prisma`) declares `EVERY_FILE`.
+   (`.sql`, `.prisma`) declares `EVERY_FILE`; `.proto` gates on `service`.
 2. **Extract**: the dialect returns contracts built with `build_contract`, which
    takes an `origin` and sets the confidence from it.
 3. **Comment rule**: `run_dialect` drops a contract whose line is only a comment.
@@ -118,6 +118,9 @@ links are appended after it.
    settle into one `name -> repo` entry; a name claimed for two repos is left
    unmapped. The sources and their rules are in
    [WORKSPACE_CONTRACTS.md](../reference/WORKSPACE_CONTRACTS.md#service-names).
+   A server base path (a Spring context-path) settles per repo module instead, and
+   `matching/base_paths.py::apply_base_paths` prefixes that module's routes before
+   matching, keeping the declared path in `meta` so a re-run recomputes it.
 2. **Target resolution** (`matching/http.py::annotate_consumer_targets`): each HTTP
    consumer's host or base token is resolved, in order, through a
    `contracts.service_bases` entry, a repo alias (also the leading label of an
@@ -130,6 +133,11 @@ links are appended after it.
    pattern subscription, `service_mapped` when the provider sits in the consumer's
    resolved target. A target the map placed does not fall back to another repo that
    serves the same path (`common.prefer_target_repo`).
+   A package-less gRPC stub id (`grpc::CurrencyService/*`) meets the package-qualified
+   proto id (`grpc::shop.CurrencyService/Convert`) on the service's last segment. A proto
+   declared in 2+ repos is served only by the repo that registers the service in code
+   (`common.shared_idl`); the other copies are vendored IDL, never linked or listed as
+   orphans. A .NET project's `<Protobuf GrpcServices="Client">` proto provides nothing.
 4. **Type passes**, in `MATCHERS` order: HTTP `gateway_pass` (`gateway_route`),
    `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`) and `service_pass`; topic
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
@@ -169,6 +177,7 @@ both ways).
 | `breaking_change` | `contract_links`, previous and new stores | Provider breaks with the consumer files they reach |
 | `test_impact.analyze_workspace_test_impact` | `contract_links`, each consumer repo's test reachability from the link's `consumer_symbol_id` | Tests to run, unresolved rows with reasons |
 | `diagnostics.build_diagnostics` | Contracts, `contract_links`, extraction stats | Counts, unmatched reasons, weak links, coverage |
+| `report estate` (`report/sections/estate_*.py`) | `system_graph.json`, `contracts.json`, `graph_evidence`, the architecture metrics, `workspace.db` health, each member index | Estate summary, system map and architecture, contracts and dangling calls, health and churn per repo, riskiest seams (`seams.rank_seams`), where to start |
 
 Service links reach the graph views (cycles, metrics, conformance, blast radius).
 Breaking changes, test impact and diagnostics read `contract_links` only, since a
@@ -415,6 +424,8 @@ add its case to `test_graph_evidence.py`.
   than the gateway's is not routed, since nothing says which gateway serves it.
   nginx regex locations are not read, and `${VAR}` resolves as an env key only in a
   `*.template` / `*.tmpl` file (envsubst); in a plain config it is an nginx variable.
+- YARP routes built in code (`LoadFromMemory`, Aspire `AddYarp`) are not read, and
+  `MapForwarder` only in `Program.cs` / `Startup.cs`.
 - A `host_only` edge is service-level: it has no provider route, so breaking-change
   diffs and test impact do not follow it.
 - The network probe is lexical. It reads only extensions some extractor walks,

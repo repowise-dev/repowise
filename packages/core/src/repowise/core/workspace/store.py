@@ -518,3 +518,32 @@ def lookup_symbols(
             discard(path)
         return None
     return out, components
+
+
+def read_repo_health(path: Path) -> dict[str, dict[str, Any]] | None:
+    """``alias -> {indexed, indexed_commit, health, error}`` from the store's ``repos`` rows.
+
+    ``health`` is the stored headline of the repo's newest health snapshot, or
+    None when it has none. None when the store is absent, unreadable or of
+    another schema version; read only, so a reader never rebuilds it.
+    """
+    try:
+        uri = f"{Path(path).resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+                return None
+            rows = conn.execute(
+                "SELECT alias, indexed, indexed_commit, health_json, error FROM repos"
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    return {
+        alias: {
+            "indexed": bool(indexed),
+            "indexed_commit": commit,
+            "health": json.loads(health) if health else None,
+            "error": error,
+        }
+        for alias, indexed, commit, health, error in rows
+    }

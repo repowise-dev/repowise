@@ -138,15 +138,16 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 
 | Language | Providers (routes served) | Consumers (calls made) |
 |----------|---------------------------|------------------------|
-| JS / TS | Express, Hono, Fastify, Koa, Elysia; NestJS controllers; Next.js App Router; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; HTTP-named wrappers |
-| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms) |
+| JS / TS | Express, Hono, Fastify, Koa, hapi, Elysia; NestJS controllers; Next.js App Router and `pages/api`; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; AngularJS `$http`; request, superagent, needle; HTTP-named wrappers |
+| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms); Locust user `client` calls |
 | PHP | Laravel | Guzzle, Laravel `Http` |
-| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign (`@RequestLine`, and `@FeignClient` with Spring MVC annotations, its `name` read as the host), Spring `@HttpExchange` interfaces, `java.net.http`, `RestTemplate`, Ktor (Kotlin) |
-| Go | gin, echo, chi, net/http | net/http |
-| C# | ASP.NET (attribute and minimal API) | HttpClient (`GetAsync`, `GetFromJsonAsync`, `PostAsJsonAsync`, `GetStringAsync`, `new HttpRequestMessage(HttpMethod.X, url)`; a URL held in a local or a `const` / `readonly` field), UnityWebRequest, Best.HTTP |
+| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign (`@RequestLine`, and `@FeignClient` with Spring MVC annotations, its `name` read as the host), Spring `@HttpExchange` interfaces, Spring `WebClient` and `RestClient`, `RestTemplate` (also through a getter or a `RequestEntity`), `java.net.http`, Apache HttpClient (`new HttpPost(url)`, with a base URL passed to a helper's constructor in another file), MicroProfile `@RegisterRestClient` interfaces, Ktor (Kotlin) |
+| Go | gin, echo, chi, fiber, gorilla/mux, net/http (Go 1.22 method patterns) | net/http |
+| C# | ASP.NET (attribute and minimal API) | HttpClient (`GetAsync`, `GetFromJsonAsync`, `PostAsJsonAsync`, `GetStringAsync`, `new HttpRequestMessage(HttpMethod.X, url)`; a URL held in a local or a `const` / `readonly` field; `new Uri(base, path)` and `CombineUri` joins; typed, named and Refit client `BaseAddress`; HttpClient wrapper methods), Refit attributes, YARP `MapForwarder`, UnityWebRequest, Best.HTTP |
 | Ruby | | HTTParty, RestClient, Faraday, Net::HTTP |
 | Rust | Axum, Actix, Rocket | reqwest |
 | Apex | `@RestResource` classes (`/services/apexrest` + `urlMapping`) | `HttpRequest` callouts (literal endpoint and verb) |
+| C# (Azure Functions) | `[HttpTrigger]` routes under the default `/api` prefix; the function name when no `Route` is set | |
 | Any | OpenAPI 3.x documents | |
 
 **Database tables:**
@@ -170,6 +171,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 | Topics: C# integration events | `new T(...)` of an `IntegrationEvent` subclass the repo declares, reaching `PublishAsync` / `Publish` or a repo method taking an `IntegrationEvent`; the id is the short type name, which the event bus routes by | `AddSubscription<T, TH>()`, `Subscribe<T, TH>()` on a declared event, and `IIntegrationEventHandler<T>` classes for events no registration subscribes |
+| Topics: JMS | Spring `JmsTemplate` / `JmsMessagingTemplate` `convertAndSend` / `send` / `sendAndReceive` / `convertSendAndReceive` on a receiver named for JMS (`jmsTemplate`, `orderJmsTemplate`, `getJmsTemplate()`) with a destination argument; ActiveMQ and IBM MQ `queue://` names read as the bare queue | `@JmsListener(destination = ...)`, `receive` / `receiveAndConvert`, `DefaultMessageListenerContainer.setDestinationName` |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
 A topic, queue or route name is resolved when it is a literal or a constant the
