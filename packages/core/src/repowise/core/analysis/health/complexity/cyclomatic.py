@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .ast_utils import is_named_block_lambda
 from .body_facts import BodyTally, step
 from .languages import LanguageNodeMap
 from .models import ConditionComplexity
@@ -358,6 +359,45 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
     return False
 
 
+def _stops_at_unit(
+    node: Node, lmap: LanguageNodeMap, tally: BodyTally | None, scope: int
+) -> bool:
+    """Whether the CCN walk stops at *node*, a unit measured on its own.
+
+    A nested function, or a named block-bodied lambda, whose subtree the
+    facts *tally* still reads the way the walk would have.
+    """
+    node_type = node.type
+    if node_type in lmap.function_kinds:
+        return True
+    if node_type not in lmap.lambda_kinds or not is_named_block_lambda(node, lmap):
+        return False
+    if tally is not None:
+        _tally_only(node, tally, lmap, scope)
+    return True
+
+
+def _tally_only(node: Node, tally: BodyTally, lmap: LanguageNodeMap, scope: int) -> None:
+    """Count *node*'s subtree into *tally* the way the CCN walk's visits would.
+
+    A named block-bodied lambda is a unit of its own for the complexity
+    metrics, but the facts of the function holding it still read it as the
+    lambda it is (a scope of its own that shares the receiver), so they come
+    out the same as when the walk descended it.
+    """
+    watched = tally.kinds.watched
+    function_kinds = lmap.function_kinds
+    stack: list[tuple[Node, int]] = [(node, scope)]
+    while stack:
+        cur, cur_scope = stack.pop()
+        node_type = cur.type
+        if node_type in function_kinds:
+            continue
+        if node_type in watched:
+            cur_scope = step(tally, cur, cur_scope)
+        stack.extend((child, cur_scope) for child in reversed(cur.children))
+
+
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
@@ -367,9 +407,10 @@ def _walk_function_body(
     """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps,
     complex_conditions).
 
-    Starts CCN at 1 (the entry path). Nested function bodies are
-    skipped — they will (or already did) produce their own
-    ``FunctionComplexity``.
+    Starts CCN at 1 (the entry path). Nested function bodies, and the
+    bodies of block-bodied arrow functions bound to a name
+    (:func:`.ast_utils.is_named_block_lambda`), are skipped — they will
+    (or already did) produce their own ``FunctionComplexity``.
 
     ``bumps`` counts how many *direct* children of the function body
     contain nested control flow that reaches a depth of ≥ 2. A function
@@ -408,9 +449,10 @@ def _walk_function_body(
 
         # Don't descend into nested function bodies — they're walked
         # separately at the top level. Lambdas / arrow functions DO
-        # contribute to the enclosing function's complexity.
+        # contribute to the enclosing function's complexity, unless one is
+        # bound to a name with a block body: that is a unit of its own too.
         node_type = node.type
-        if node_type in lmap.function_kinds:
+        if _stops_at_unit(node, lmap, tally, scope):
             return
         if tally is not None and node_type in tally.kinds.watched:
             scope = step(tally, node, scope)
