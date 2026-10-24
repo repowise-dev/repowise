@@ -79,8 +79,10 @@ def save_state(repo_path: Path, state: dict[str, Any], *, full_index: bool = Fal
     previous = read_state_commit(Path(repo_path))
     try:
         from repowise.cli import __version__ as _pkg_version
+        from repowise.core.index_scope import clean_legacy_degraded_state
         from repowise.core.upgrade import stamp as _stamp_store_version
 
+        clean_legacy_degraded_state(state)
         _stamp_store_version(state, package_version=_pkg_version, full_index=full_index)
     except Exception:  # never let stamping block a persist
         pass

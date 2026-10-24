@@ -115,3 +115,71 @@ def test_degraded_docs_update_leaves_a_marker_the_next_update_re_covers(
 
     state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
     assert "pending_repair" not in state
+
+
+def test_update_prunes_legacy_degraded_notices_from_state(tmp_path: Path, monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from repowise.cli.main import cli
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "T")
+    (repo / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "c0")
+    c0 = _git(repo, "rev-parse", "HEAD")
+    (repo / ".repowise").mkdir()
+
+    # Seed state with legacy init notices plus a real warning directly in state.json
+    state_file = repo / ".repowise" / "state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "last_sync_commit": c0,
+                "last_docs_commit": c0,
+                "docs_mode": "none",
+                "degraded": [
+                    "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
+                    "re-run 'repowise init --resume' to continue where it stopped.",
+                    "  Not indexed: big.cs (9,745 KB, over the 2,048 KB limit)",
+                    "  ...and more source files skipped on size",
+                    "Git indexing skipped: boom",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (repo / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "c1")
+
+    result = CliRunner().invoke(cli, ["update", str(repo), "--index-only", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state.get("degraded") == ["Git indexing skipped: boom"]
+
+    # When update runs on a state with only legacy notices, "degraded" is dropped entirely.
+    (repo / "a.py").write_text("def a():\n    return 3\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "c2")
+
+    disk_state = json.loads(state_file.read_text(encoding="utf-8"))
+    disk_state["degraded"] = [
+        "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
+        "re-run 'repowise init --resume' to continue where it stopped."
+    ]
+    state_file.write_text(json.dumps(disk_state), encoding="utf-8")
+
+    from repowise.cli.commands.update_cmd.command import release_update_lock
+
+    release_update_lock(repo)
+    result = CliRunner().invoke(cli, ["update", str(repo), "--index-only", "--no-workspace"])
+    assert result.exit_code == 0, result.output
+
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "degraded" not in state
+
