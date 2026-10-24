@@ -182,10 +182,13 @@ _GO_EMBEDDED_FIELD = re.compile(
 
 # ``x := f(..)``, ``x, err := pkg.New(..)``: the head of a call whose return
 # type names the local. Only the head is matched here; ``scan_call_assignments``
-# checks that the call is the whole right-hand side, not ``f().g()``.
+# checks that the call is the whole right-hand side, not ``f().g()``. A generic
+# call's ``[T]`` type arguments sit between the name and ``(``, nested at most
+# two deep as in ``_GO_FIELD_END``.
 _GO_CALL_DECL = re.compile(
     rf"(?<![\w.])(?P<name>{_GO_NAME})\s*(?:,\s*{_GO_NAME}\s*)*:="
-    r"[ \t]*(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)\s*\("
+    r"[ \t]*(?:(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.)?(?P<target>[A-Za-z_]\w*)"
+    r"(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])?\s*\("
 )
 
 # Kotlin annotates after the name, and `val x: Foo`, `var x: Foo`, parameters
