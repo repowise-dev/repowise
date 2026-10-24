@@ -27,6 +27,7 @@ from .decision_identity import (
     _merge_status,
     derive_decision_id,
 )
+from .decision_lane_fold import fold_archaeology_into_pr, merge_folded_files
 from .decision_review_meta import _write_candidate_meta
 
 
@@ -119,15 +120,24 @@ async def bulk_upsert_decisions(
     Every touched record is (re-)embedded into the store, so decisions are
     matchable next run *and* discoverable via ``search_codebase``.
 
+    A ``git_archaeology`` decision mined from the same merge commit as a ``pr``
+    decision takes the PR title first, so the pair folds into the PR record
+    (:func:`fold_archaeology_into_pr`) without needing an embedder.
+
     Returns the ids of every record touched (created or updated) this call, so
     a caller can run the Phase-3 supersession/conflict detection over just the
     records that changed.
     """
-    groups = _group_by_normalized_title(decisions)
+    if not decisions:
+        return []
+    existing = await _existing_records(session, repository_id)
+    existing_by_norm = _records_by_title(existing)
+    groups = _group_by_normalized_title(
+        fold_archaeology_into_pr(decisions, existing, _normalize_title)
+    )
     if not groups:
         return []
 
-    existing_by_norm = await _existing_records_by_title(session, repository_id)
     # A store hit (which returns a decision id) resolves back to the live
     # record through this map, and it is grown as records are created so
     # paraphrases *within* one batch also collapse.
@@ -190,6 +200,7 @@ async def bulk_upsert_decisions(
             id_to_rec[rec.id] = rec
         if not created:
             _maybe_promote_headline(rec, headline)
+        merge_folded_files(rec, members)
 
         await _accrete_evidence(session, rec.id, members)
 
@@ -226,18 +237,20 @@ def _group_by_normalized_title(decisions: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
-async def _existing_records_by_title(
-    session: AsyncSession, repository_id: str
-) -> dict[str, DecisionRecord]:
-    """This repository's records by normalized title, so cross-run merges land on one row.
+async def _existing_records(session: AsyncSession, repository_id: str) -> list[DecisionRecord]:
+    rows = await session.execute(
+        select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
+    )
+    return list(rows.scalars().all())
+
+
+def _records_by_title(records: list[DecisionRecord]) -> dict[str, DecisionRecord]:
+    """Records by normalized title, so cross-run merges land on one row.
 
     On a title collision the most authoritative existing row is canonical.
     """
-    existing_rows = await session.execute(
-        select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
-    )
     existing_by_norm: dict[str, DecisionRecord] = {}
-    for rec in existing_rows.scalars().all():
+    for rec in records:
         norm = _normalize_title(rec.title)
         prior = existing_by_norm.get(norm)
         if prior is None or rank_for_source(rec.source) > rank_for_source(prior.source):
