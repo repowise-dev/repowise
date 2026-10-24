@@ -175,19 +175,79 @@ class ReportContext:
         return self._cache["rollups"]
 
 
+@dataclass
+class WorkspaceReportContext:
+    """A workspace's stored cross-repo artifacts, loaded once and shared by its sections.
+
+    Reads only what ``repowise update --workspace`` wrote under
+    ``.repowise-workspace/``; nothing is extracted or matched again here.
+    """
+
+    ws_root: Path
+    #: The document's ``repos`` entries, one per configured repository
+    #: (``head_commit`` when indexed, ``indexed: False`` otherwise).
+    repos: list[dict[str, Any]] = field(default_factory=list)
+    _cache: dict[str, Any] = field(default_factory=dict)
+
+    def _load(self, key: str, loader: Callable[[], Any]) -> Any:
+        if key not in self._cache:
+            self._cache[key] = loader()
+        return self._cache[key]
+
+    def config(self) -> Any:
+        """The workspace config (:class:`~repowise.core.workspace.config.WorkspaceConfig`)."""
+        from repowise.core.workspace.config import WorkspaceConfig
+
+        return self._load("config", lambda: WorkspaceConfig.load(self.ws_root))
+
+    def system_graph(self) -> Any:
+        """The stored system graph, or ``None`` when none was built."""
+        from repowise.core.workspace.system_graph import load_system_graph
+
+        return self._load("graph", lambda: load_system_graph(self.ws_root))
+
+    def contract_store(self) -> Any:
+        """The stored contract store, or ``None`` when none was extracted."""
+        from repowise.core.workspace.contracts import load_contract_store
+
+        return self._load("contracts", lambda: load_contract_store(self.ws_root))
+
+    def evidence(self) -> Any:
+        """The graph's evidence state (:class:`GraphEvidence`), ``None`` without a graph."""
+        from repowise.core.workspace.graph_evidence import graph_evidence
+
+        graph = self.system_graph()
+        return self._load("evidence", lambda: graph_evidence(graph) if graph else None)
+
+
+#: Where a section runs: once per repository, or once per workspace.
+SCOPES = ("repo", "workspace")
+
+
 @dataclass(frozen=True)
 class Section:
     """A report section: *collect* returns its checks, or ``None`` when the
-    section does not apply to this repository (it is then left out)."""
+    section does not apply (it is then left out).
+
+    A ``repo`` section gets a :class:`ReportContext` per repository. A
+    ``workspace`` section gets one :class:`WorkspaceReportContext` and runs
+    once, only when the report covers a whole workspace.
+    """
 
     title: str
     #: One line saying what the section measures; the documentation ``short``.
     summary: str
-    collect: Callable[[ReportContext], Awaitable[list[dict[str, Any]] | None]]
+    collect: Callable[[Any], Awaitable[list[dict[str, Any]] | None]]
     #: Sections are listed by this, then by name.
     order: int = 100
-    #: The report kind the section belongs to (``assessment``, ``changes``).
+    #: The report kind the section belongs to (``assessment``, ``changes``, ``estate``).
     report: str = "assessment"
+    #: One of :data:`SCOPES`.
+    scope: str = "repo"
+
+    def __post_init__(self) -> None:
+        if self.scope not in SCOPES:
+            raise ValueError(f"unknown section scope {self.scope!r}; expected one of {SCOPES}")
 
 
 report_sections: SeamRegistry[Section] = SeamRegistry("report-section")

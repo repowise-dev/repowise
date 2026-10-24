@@ -133,8 +133,9 @@ async def test_refresh_builds_every_table_from_the_repo_indexes(tmp_path):
         ("web", "pr-7", "web change")
     ]
     # Derived components (top-level directories here) per repo.
-    assert ("api", "src") in rows(path, "SELECT alias, name FROM components")
-    assert lookup_symbols(path, [], components_of="api") == ({}, {"src"})
+    # A repo with only src/ is one component named after the repo.
+    assert ("api", "api") in rows(path, "SELECT alias, name FROM components")
+    assert lookup_symbols(path, [], components_of="api") == ({}, {"api"})
 
     assert symbols(path, ["serve", "App.run", "run", "missing"]) == {
         "serve": [

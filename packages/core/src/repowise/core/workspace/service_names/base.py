@@ -49,6 +49,9 @@ class Route:
 class Claim:
     """One file's statement that *name* is served by some repo.
 
+    A claim with a ``base_path`` says instead that the module at ``at`` (or,
+    without ``at``, the service *name*) serves every route under that path.
+
     Where it points, tried in order: ``at`` (the directory the service is
     built from; the repo holding it serves *name*), ``aliases`` (repo aliases
     the file names for it, such as an image basename or a selector label; the
@@ -65,6 +68,7 @@ class Claim:
 
     name: str
     kind: str = HOST
+    base_path: str | None = None
     at: Path | None = None
     aliases: tuple[str, ...] = ()
     ref: str | None = None

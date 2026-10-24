@@ -48,7 +48,8 @@ def _map_item(found: Any, comps: list, directory_issues: list[str]) -> dict[str,
         ],
         method=(
             "components declared in .repowise/components.yaml or catalog-info.yaml, "
-            "else derived from workspace services, module pages or top-level directories"
+            "else derived from workspace services, module pages or top-level directories, "
+            "or the whole repo when those do not divide it"
         ),
         basis="declared" if catalog.sources else "inferred",
         data={

@@ -104,7 +104,9 @@ its URI version (`enableVersioning`, `@Version`), then the `@Controller` prefix.
 axios, ky, got or ofetch instance is read with the instance's `baseURL` / `prefixUrl`, also when
 another file imports the instance. An Angular `HttpClient` call is read on any receiver typed
 or injected as `HttpClient`, with `environment.apiUrl` folded from `src/environments/` and class
-fields built on it; a base an interceptor prepends is not read. A client call
+fields built on it; a base an interceptor prepends is not read. A Node `request` call reads a URL
+or an options object held in a local (`var options = { uri, method }`), and a base from a
+`module.exports = { ... }` module it requires (`endpoints.cartsUrl`). A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path (`unique_path`) and a lower-confidence **candidate** when the target
@@ -126,12 +128,17 @@ records `target_via` (the source) and `target_evidence` (the file).
 | `compose` | `docker-compose*.yml`, `compose*.yml` | Service name, `container_name`, `hostname`; `environment` keys whose value is an address | `build` context (or its Dockerfile's directory), else an image basename equal to a repo alias |
 | `k8s_service` | `*.yaml` under `k8s/`, `deploy/`, `manifests/`, ... | `kind: Service` `metadata.name` | A selector or label value equal to a repo alias, else the manifest's repo when it declares no other Service |
 | `spring_application_name` | `application` / `bootstrap` `.yml` or `.properties` | `spring.application.name` | The module the file sits in |
+| `spring_base_path` | `.yml`, `.yaml`, `.properties` under `resources/`, `config/`, `configs/` or `shared/` | `server.servlet.context-path`, `server.context-path`, `spring.webflux.base-path`: a base path, not a name | A module's own `src/main/resources/application` or `bootstrap` file (not a profile file): that module. A config server's `<app>.yml`: the service named `<app>` |
 | `spring_gateway` | `application` / `bootstrap` in a module's resources, or a config-server file named `*gateway*`, `*zuul*`, `*proxy*`, `*edge*` (`.yml` or `.properties`) holding `routes` | Spring Cloud Gateway `routes[]` (`lb://name`, `http://host`) and Zuul `zuul.routes` | A gateway route (below) |
 | `dockerfile_env` | `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` holding `ENV` | `ENV` keys whose value is an address (`CATALOGUE_HOST=catalogue`) | The host the value names |
 | `nginx` | `*.conf`, `*.conf.template`, `*.conf.tmpl` holding `proxy_pass` | Prefix `location` blocks with `proxy_pass` to a host, an `upstream` of one host, or an envsubst `${X_HOST}` in a template | A gateway route (below) |
 | `ocelot` | `ocelot*.json`, `configuration.json` holding `UpstreamPathTemplate` | Ocelot `Routes` (or `ReRoutes`): `ServiceName`, or the one host in `DownstreamHostAndPorts` | A gateway route (below) |
 | `yarp` | `appsettings*.json`, `yarp*.json` holding `ReverseProxy` | YARP `Routes` and the one host their cluster's `Destinations` name | A gateway route (below) |
 | `yarp_forwarder` | `Program.cs`, `Startup.cs` holding `MapForwarder` | The destination host of `MapForwarder(pattern, destination[, template])` | A gateway route (below) |
+
+A base path prefixes every Spring route of its module before matching, so `@PostMapping("/users")`
+under `context-path: /uaa` is `POST /uaa/users`. A module given two different base paths gets
+none.
 
 Each repo is walked once per update for these file names; test, example and build-output
 directories are skipped, and files at the workspace root are read too. A name two files
