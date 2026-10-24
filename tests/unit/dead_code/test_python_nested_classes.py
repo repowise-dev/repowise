@@ -157,3 +157,53 @@ def use():
     assert "Outer.Inner" in refs
     # Same inner name under another class: not reached, not recorded.
     assert "Other.Inner" not in refs
+
+
+def test_pep_695_type_alias_quoted_local_ref():
+    src = """
+class Worker:
+    pass
+
+type WorkerPool = list["Worker"]
+"""
+    refs = extract_python_local_refs(src, frozenset(["Worker"]))
+    assert "Worker" in refs
+
+
+def test_typing_type_alias_quoted_rhs_ref():
+    src = """
+from typing import TypeAlias
+
+class Worker:
+    pass
+
+WorkerRegistry: TypeAlias = dict[str, "Worker"]
+"""
+    refs = extract_python_local_refs(src, frozenset(["Worker"]))
+    assert "Worker" in refs
+
+
+def test_generic_base_class_quoted_argument():
+    src = """
+from typing import Generic
+
+class Worker:
+    pass
+
+class WorkerManager(Generic["Worker"]):
+    pass
+"""
+    refs = extract_python_local_refs(src, frozenset(["Worker"]))
+    assert "Worker" in refs
+
+
+def test_self_referential_type_alias_excluded():
+    src = 'type NodeList = list["NodeList"]'
+    assert extract_python_local_refs(src, frozenset(["NodeList"])) == frozenset()
+
+    src_ann = """
+from typing import TypeAlias
+NodeList: TypeAlias = list["NodeList"]
+"""
+    assert extract_python_local_refs(src_ann, frozenset(["NodeList"])) == frozenset()
+
