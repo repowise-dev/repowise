@@ -119,10 +119,16 @@ class CrossRepoEnricher:
         # cross the contract link without scanning every contract.
         self._contract_symbol_index: dict[str, list[dict]] = defaultdict(list)
         self._link_provider_symbol_index: dict[str, list[dict]] = defaultdict(list)
+        # (repo, file, contract_id, role) -> origin, so a link row can name how
+        # each of its ends was read.
+        self._contract_origin_index: dict[tuple[Any, Any, Any, Any], str] = {}
 
         # Service-granular system graph from the workspace update. Read-only;
         # views over it live in core/types.
         self._system_graph: dict | None = None
+        # Read once per loaded graph: its evidence brief and parsed diagnostics.
+        self._evidence_brief: Any = _ABSENT
+        self._parsed_diagnostics: Any = _ABSENT
 
         # Provider changes from the latest update that break consumers, with the
         # impacted consumer files. Read-only.
@@ -355,6 +361,15 @@ class CrossRepoEnricher:
             symbol_id = contract.get("symbol_id")
             if symbol_id:
                 self._contract_symbol_index[symbol_id].append(contract)
+            origin = contract.get("origin")
+            if origin:
+                key = (
+                    contract.get("repo"),
+                    contract.get("file_path"),
+                    contract.get("contract_id"),
+                    contract.get("role"),
+                )
+                self._contract_origin_index[key] = origin
 
         _log.debug(
             "Contract enricher loaded: %d contracts, %d links",
@@ -370,6 +385,7 @@ class CrossRepoEnricher:
 
     def _ingest_system_graph(self, graph: dict) -> None:
         self._system_graph = graph
+        self._evidence_brief = self._parsed_diagnostics = _ABSENT
         _log.debug(
             "System graph loaded: %d nodes, %d edges",
             len(graph.get("nodes", [])),
@@ -543,6 +559,7 @@ class CrossRepoEnricher:
         )
         payload = metrics.to_dict()
         payload["repo_provenance"] = self._system_graph.get("repo_provenance", {})
+        payload["http_calls"] = self.http_call_split()
         return payload
 
     def get_diagnostics(self) -> dict | None:
@@ -550,6 +567,82 @@ class CrossRepoEnricher:
         if self._system_graph is None:
             return None
         return self._system_graph.get("diagnostics")
+
+    def graph_evidence_brief(self) -> dict | None:
+        """The system graph's evidence ``state`` and, short of measured, its ``reason``.
+
+        Core's :func:`graph_evidence`, the one every view reads; ``None``
+        without a graph.
+        """
+        if self._evidence_brief is _ABSENT:
+            self._evidence_brief = None
+            if self._system_graph is not None:
+                from repowise.core.workspace.graph_evidence import graph_evidence
+                from repowise.core.workspace.system_graph import SystemGraph
+
+                try:
+                    evidence = graph_evidence(SystemGraph.from_dict(self._system_graph))
+                    self._evidence_brief = {
+                        "state": evidence.state,
+                        **({"reason": evidence.summary} if evidence.summary else {}),
+                    }
+                except Exception:
+                    # An additive field: a bad graph never hides the block it rides on.
+                    _log.debug("Graph evidence unavailable", exc_info=True)
+        return self._evidence_brief
+
+    def http_call_split(self, repo: str | None = None) -> dict | None:
+        """HTTP calls read, and of those not linked how many are served in-service.
+
+        ``not_linked`` excludes in-service calls, which ``in_service`` counts, as
+        the CLI diagnostics headline does. ``linked`` is workspace wide, so only
+        an unscoped call carries it. ``None`` without diagnostics, or for a
+        *repo* with no HTTP call.
+        """
+        if self._parsed_diagnostics is _ABSENT:
+            self._parsed_diagnostics = None
+            if raw := self.get_diagnostics():
+                from repowise.core.workspace.diagnostics import ExtractionDiagnostics
+
+                try:
+                    self._parsed_diagnostics = ExtractionDiagnostics.from_dict(raw)
+                except Exception:
+                    _log.debug("Extraction diagnostics unreadable", exc_info=True)
+        diag = self._parsed_diagnostics
+        if diag is None:
+            return None
+        by_reason, in_service = diag.http_unlinked(repo)
+        read = sum(
+            r.consumers_by_type.get("http", 0)
+            for r in diag.repo_breakdown
+            if repo in (None, r.repo)
+        )
+        split: dict[str, Any] = {"read": read}
+        if repo is None and diag.http_consumers_linked is not None:
+            split["linked"] = diag.http_consumers_linked
+        split["not_linked"] = sum(by_reason.values())
+        split["in_service"] = in_service
+        # A repo that read no HTTP call has nothing to split.
+        return split if repo is None or any(split.values()) else None
+
+    def link_provenance(self, link: dict, side: str) -> dict[str, str]:
+        """``strategy`` of *link* and ``origin`` of its *side* end, each only when stored.
+
+        Values pass through from :mod:`repowise.core.workspace.origins`; a store
+        written before either existed yields neither key.
+        """
+        contract_id = (
+            link.get("consumer_contract_id") or link.get("contract_id")
+            if side == "consumer"
+            else link.get("contract_id")
+        )
+        origin = self._contract_origin_index.get(
+            (link.get(f"{side}_repo"), link.get(f"{side}_file"), contract_id, side)
+        )
+        return {
+            **({"strategy": strategy} if (strategy := link.get("strategy")) else {}),
+            **({"origin": origin} if origin else {}),
+        }
 
     def get_cross_repo_partners(self, repo_alias: str, file_path: str) -> list[dict]:
         """Return cross-repo co-change partners for a file.

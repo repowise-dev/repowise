@@ -389,6 +389,23 @@ class ExtractionDiagnostics:
         seen = self.http_consumers_read + self.http_consumers_unresolved + missed
         return seen or None
 
+    def http_unlinked(self, repo: str | None = None) -> tuple[dict[str, int], int]:
+        """Read HTTP calls that linked to no other service: per reason, and in-service.
+
+        A call served inside its own repo and service is counted apart, never as
+        unmatched. *repo* narrows both counts to one member.
+        """
+        by_reason: dict[str, int] = defaultdict(int)
+        for u in self.unmatched_consumers:
+            if u.contract_type == "http" and repo in (None, u.repo):
+                by_reason[u.reason] += 1
+        in_service = sum(
+            1
+            for u in self.in_service_consumers
+            if u.contract_type == "http" and repo in (None, u.repo)
+        )
+        return dict(by_reason), in_service
+
     @property
     def http_link_coverage(self) -> float | None:
         """Share of the calls seen that linked to another service's provider.

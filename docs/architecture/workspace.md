@@ -205,6 +205,7 @@ does with it:
 | Conformance, `workspace check` | `cycles_determined: false`; "dependency cycles not determined", exit 0 | "no dependency cycles among the edges detected (partial evidence)" |
 | Blast radius | `evidence` attached | `evidence` attached |
 | MCP `get_architecture`, `get_blast_radius`, `get_conformance`, REST | Carry the same `evidence` block | Same |
+| MCP `get_risk`, `get_change_risk` cross-repo parts | `graph_evidence` with state and reason | Same |
 
 In every state, blast radius lists in `undetermined_targets` each target the walked
 adjacency has no edge at, so an empty impact set there reads as not seen.

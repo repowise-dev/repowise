@@ -90,6 +90,8 @@ def architecture_payload(metrics: dict[str, Any]) -> dict[str, Any]:
         "conformance_violations": metrics.get("conformance_violations", 0),
         "role_breakdown": breakdown,
         "evidence": evidence or None,
+        # Calls read but linked to no other service, in-service ones apart.
+        **({"http_calls": calls} if (calls := metrics.get("http_calls")) else {}),
         "summary": _summary(metrics, evidence),
     }
 

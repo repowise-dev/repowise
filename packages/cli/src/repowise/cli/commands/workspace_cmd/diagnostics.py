@@ -236,8 +236,7 @@ def _print_call_coverage(diag: ExtractionDiagnostics) -> None:
 
 def _unlinked_http_split(diag: ExtractionDiagnostics) -> str:
     """Where the read but unlinked HTTP calls went, workspace wide."""
-    counts = Counter(u.reason for u in diag.unmatched_consumers if u.contract_type == "http")
-    in_service = sum(1 for u in diag.in_service_consumers if u.contract_type == "http")
+    counts, in_service = diag.http_unlinked()
     parts = [
         f"{n} {_HTTP_REASON_SHORT.get(reason, reason)}"
         for reason, n in sorted(counts.items(), key=lambda kv: _reason_rank(kv[0]))

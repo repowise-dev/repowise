@@ -278,6 +278,7 @@ async def _resolve_symbol_targets(
                 "contract_type": link.get("contract_type"),
                 "match_type": link.get("match_type"),
                 "confidence": link.get("confidence"),
+                **enricher.link_provenance(link, "consumer"),
                 # An import sits at file scope, so code contracts carry none.
                 **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
             }

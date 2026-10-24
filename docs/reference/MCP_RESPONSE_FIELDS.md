@@ -371,7 +371,7 @@ Per file:
 | `changes` | `recent_changes`, `recent_changes_total`, as in [get_context](#changes) |
 | `tests` | Typed `test_recommendations` |
 | `blast` | `pr_blast_radius`: transitive files, co-change warnings, test gaps, structural score; reviewers stay in the directive |
-| `graph` | `dependents` (direct vs transitive), `consumers` (typed contract consumers), `cross_repo_links`, `impact_surface`, `direct_risks`, `relationship_analysis` (empty vs unavailable or partial) |
+| `graph` | `dependents` (direct vs transitive), `consumers` (typed contract consumers), `cross_repo_links` (contract rows carry `strategy` and `origin`, see [cross-repo link rows](#cross-repo-link-rows)), `impact_surface`, `direct_risks`, `relationship_analysis` (empty vs unavailable or partial) |
 | `churn` | `change_magnitude`, `risk_type`, `change_pattern` |
 | `scales` | Unit, range and calibration per scalar; identical every call |
 
@@ -406,7 +406,7 @@ Notes:
 - **Measured `test_recommendations`** match a changed file, not its lines (`evidence[].match: "file"`); a test file gone or changed since measurement carries `stale: true` and `stale_reason`.
 - **`reach`:** bands an uncalibrated 0 to 10 heuristic that never sees the diff; not a probability. The raw `pr_blast_radius.structural_impact_score` needs `include=["blast", "scales"]`.
 
-In workspace mode the directive adds `will_break_consumers` (structural reach only), `missing_cross_repo_cochanges`, `breaking_changes` (provider incompatibilities since the last index with impacted consumers; a link does not prove field use), `conformance_violations` and `dependency_cycles`; dropped when no workspace is loaded.
+In workspace mode the directive adds `will_break_consumers` (structural reach only), `missing_cross_repo_cochanges`, `breaking_changes` (provider incompatibilities since the last index with impacted consumers; a link does not prove field use), `conformance_violations` and `dependency_cycles`; dropped when no workspace is loaded. `cross_repo_relationship_analysis` carries `graph_evidence` and this repo's `http_calls`.
 
 ---
 
@@ -510,8 +510,9 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 
 ### cross_repo
 
-- `consumers[]`: `provider_file`, consumer `repo`, `file`, `contract_id`, `contract_type`, `match_type`, and `tests` (`state` `measured`, `inferred`, `none` or `unresolved`; up to 5 `tests_to_run`).
+- `consumers[]`: `provider_file`, consumer `repo`, `file`, `contract_id`, `contract_type`, `match_type`, `strategy`, `origin`, and `tests` (`state` `measured`, `inferred`, `none` or `unresolved`; up to 5 `tests_to_run`).
 - `breaking_changes[]`: `contract_id`, `kind`, `severity`, `detail`, `impacted_repos`. `breaking_changes_available` says whether detection ran, so empty is not an all-clear.
+- `graph_evidence` and `http_calls` for the changed repo, as in [workspace tools](#workspace-tools).
 - Absent outside workspace mode or when no published file changed.
 
 ---
@@ -722,11 +723,17 @@ Any of `alias`, `path`, `absolute_path` passes unchanged as `repo`. Single-repo 
 
 ### `get_blast_radius`
 
-Impacted services with `score` (0 to 1 relative path weight, uncalibrated), `distance` (hops), `structural` (real dependency vs co-change only) and edge kinds; `impact_score_semantics`, `impacted_repos`, `structural_count`, `behavioral_count`, `total_impacted`, unresolved targets. `symbol_targets[].consumers[]` names consuming symbols per contract link, each with a `get_change_risk`-shaped `tests` block.
+Impacted services with `score` (0 to 1 relative path weight, uncalibrated), `distance` (hops), `structural` (real dependency vs co-change only) and edge kinds; `impact_score_semantics`, `impacted_repos`, `structural_count`, `behavioral_count`, `total_impacted`, unresolved targets. `symbol_targets[].consumers[]` names consuming symbols per contract link, with `strategy` and `origin`, each with a `get_change_risk`-shaped `tests` block. `evidence` is the graph's evidence state.
 
 ### `get_architecture`
 
-`score` (1 to 10; higher is lower coupling, smaller core), `architecture_type` (`core-periphery`, `hierarchical`), `propagation_cost_pct` (share of other services the average service reaches), `core_size`, `core_ratio`, `core_members`, `cycle_count`, `conformance_violations`, `role_breakdown` (Core, Shared, Control, Peripheral), `summary`.
+`score` (1 to 10; higher is lower coupling, smaller core), `architecture_type` (`core-periphery`, `hierarchical`), `propagation_cost_pct` (share of other services the average service reaches), `core_size`, `core_ratio`, `core_members`, `cycle_count`, `conformance_violations`, `role_breakdown` (Core, Shared, Control, Peripheral), `evidence`, `http_calls`, `summary`.
+
+### Cross-repo link rows
+
+A contract link row carries `strategy`, the rule that matched it (`exact_id`, `unique_path`, `gateway_route`, `host_only` and the rest of `LinkStrategy`), and `origin`, how the contract at the row's far end was read (`route_registration`, `client_call`, `sql_string` and the rest of `ContractOrigin`). Both are omitted on an artifact written before they were stored. `match_type` derives from `strategy`, so a `unique_path` or `gateway_route` link still reads `exact` there. Values are in [WORKSPACE_CONTRACTS.md](WORKSPACE_CONTRACTS.md).
+
+`graph_evidence` is `{state, reason}`: `measured`, `partial` or `insufficient`, with the reason short of measured. `http_calls` counts HTTP calls `read`, `not_linked` and `in_service`, workspace wide on `get_architecture` (which adds `linked`) and for the changed repo on `get_risk` and `get_change_risk`; calls served inside their own service are counted apart, never as not linked. The counts are separate figures, not a partition of `read`.
 
 ### `get_conformance`
 
