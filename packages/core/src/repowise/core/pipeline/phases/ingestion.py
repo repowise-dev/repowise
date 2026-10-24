@@ -19,6 +19,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cancellation import PipelineCancelled, check_cancelled
 from repowise.core.pipeline.progress import ProgressCallback, emit_item, emit_warning
 
 from ._common import _phase_done
@@ -260,6 +261,9 @@ def _emit_traversal_summary(
 # runtime; it is already the default on Windows/macOS, so ``_parse_one`` and
 # its picklable args are known to work under it.
 _MP_SPAWN = multiprocessing.get_context("spawn")
+
+#: How often a pooled parse checks for a first Ctrl-C.
+_CANCEL_POLL_SECONDS = 0.25
 
 # Upper bound on the parse pool, independent of how many cores the host has.
 #
@@ -543,6 +547,16 @@ async def _parse_in_pool(
 
             for fut, (_idx, (fi, _src), _h) in zip(tasks, to_parse, strict=True):
                 fut.add_done_callback(_parse_tick(fi.path))
+        # Wake up now and then so a first Ctrl-C stops the parse. Queued files
+        # are dropped; leaving the pool waits only for those already running.
+        pending = set(tasks)
+        while pending:
+            _done, pending = await asyncio.wait(pending, timeout=_CANCEL_POLL_SECONDS)
+            try:
+                check_cancelled()
+            except PipelineCancelled:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
         return await asyncio.gather(*tasks, return_exceptions=True)
 
 
@@ -553,6 +567,7 @@ async def _parse_in_process(to_parse: list[tuple], progress: ProgressCallback | 
     parse_results: list[Any] = []
     fallback_parser = ASTParser()
     for i, (_idx, (fi, source), _h) in enumerate(to_parse):
+        check_cancelled()
         try:
             parse_results.append(fallback_parser.parse_file(fi, source))
         except Exception as exc:

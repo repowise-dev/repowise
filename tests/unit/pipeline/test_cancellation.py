@@ -94,3 +94,36 @@ def test_detect_clones_bails_when_cancelled():
     files = [SimpleNamespace(file_info=SimpleNamespace(path="a.py", abs_path="a.py", language="python"), symbols=[])]
     with pytest.raises(PipelineCancelled):
         detect_clones(files)
+
+
+def test_in_process_parse_stops_before_the_next_file_when_cancelled():
+    import asyncio
+
+    from repowise.core.pipeline.phases.ingestion import _parse_in_process
+
+    token = CancellationToken()
+    token.cancel()
+    set_active_token(token)
+
+    fi = SimpleNamespace(path="a.py", abs_path="a.py")
+    with pytest.raises(PipelineCancelled):
+        asyncio.run(_parse_in_process([(0, (fi, b"x = 1\n"), "")], None))
+
+
+def test_graph_build_stops_at_the_next_file_when_cancelled(tmp_path):
+    from pathlib import Path
+
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    (tmp_path / "a.py").write_text("import b\n\n\ndef f():\n    return b.g()\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def g():\n    return 1\n", encoding="utf-8")
+    builder = GraphBuilder(tmp_path)
+    parser = ASTParser()
+    for fi in FileTraverser(tmp_path).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+
+    token = CancellationToken()
+    token.cancel()
+    set_active_token(token)
+    with pytest.raises(PipelineCancelled):
+        builder.build()
