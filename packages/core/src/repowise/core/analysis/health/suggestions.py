@@ -51,9 +51,9 @@ _TEMPLATES: dict[str, str] = {
         "if/elif ladder with polymorphism or a lookup table."
     ),
     "repeated_nesting": (
-        "Several nested blocks side by side usually mean the function "
-        "does several jobs. Split it into stages so each stage stays at "
-        "a single level of abstraction."
+        "Split the function into stages. Several nested blocks side by side "
+        "usually mean it does several jobs; give each stage its own helper "
+        "at a single level of abstraction."
     ),
     "large_method": (
         "Shorten the function. Extract paragraphs (each comment block "
@@ -353,6 +353,18 @@ def suggestion_for(biomarker_type: str) -> str:
         "Review this finding and decide whether the underlying smell is "
         "worth refactoring or suppressing via `.repowise/health-rules.json`.",
     )
+
+
+def hint_for(biomarker_type: str) -> str | None:
+    """The first sentence of the marker's template, for a one-line fix hint.
+
+    ``None`` when the marker has no template: the generic fallback is no hint.
+    """
+    template = _TEMPLATES.get(canonical_biomarker(biomarker_type))
+    if template is None:
+        return None
+    head, dot, _ = template.partition(". ")
+    return head + "." if dot else template
 
 
 def annotate_finding(finding: dict[str, Any]) -> dict[str, Any]:

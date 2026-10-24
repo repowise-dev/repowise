@@ -563,6 +563,9 @@ health-fail-at: medium
 | `health-fail-at` | `REPOWISE_HEALTH_FAIL_AT` | `--fail-at` | Lowest failing severity: `medium`, `high` (default), `critical`. |
 
 Findings that do not fail warn. On GitLab, set `REPOWISE_HEALTH: "true"`.
+With `--format github`, each failing finding's annotation ends in a one-line
+fix hint, and a failing run names the `repowise health check` command that
+reproduces it locally, in the job log and the summary.
 
 ### Before an agent commits or pushes
 
