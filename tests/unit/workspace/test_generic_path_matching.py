@@ -38,6 +38,8 @@ def _links(contracts: list[Contract], service_bases: dict[str, str] | None = Non
         ("/api/v1/metrics", "/metrics", {}),  # candidate pass
         ("/", "/", {"base_stripped": True}),
         ("/actuator/health", "/actuator/health", {"host": "localhost"}),
+        ("/{param}/status", "/{param}/status", {}),
+        ("/{param}/health", "/health", {}),
     ],
 )
 def test_generic_path_does_not_link_to_another_repo(consumer_path, provider_path, meta) -> None:

@@ -304,7 +304,12 @@ def _is_static_asset_path(path: str) -> bool:
 
 
 def _is_generic_path(path: str) -> bool:
-    """True when *path* is the root or only operational segments (``/health``, ``/api/v1/metrics``)."""
+    """True when *path* is the root or only operational segments (``/health``, ``/api/v1/metrics``).
+
+    Leading mount and version prefixes and leading unresolved ``{param}``
+    segments are stripped first, so ``/{param}/status`` is generic: the
+    unresolved segment cannot place the call, and the rest names no service.
+    """
     segments = [s for s in _candidate_http_path(path).split("/") if s]
     if not segments:
         return not path.strip("/")  # the root; a bare ``/{param}`` or ``/api/v1`` is not generic
