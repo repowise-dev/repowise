@@ -141,6 +141,67 @@ class TestComposer:
         ]
 
 
+class TestPythonNames:
+    def test_pyproject_dependency_on_a_sibling_package(self, tmp_path: Path) -> None:
+        lib, app = tmp_path / "lib", tmp_path / "app"
+        lib.mkdir()
+        app.mkdir()
+        (lib / "pyproject.toml").write_text('[project]\nname = "acme-lib"\n', encoding="utf-8")
+        (app / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["acme-lib>=1.0"]\n', encoding="utf-8"
+        )
+
+        deps = detect_package_dependencies({"lib": lib, "app": app})
+        assert [(d.source_repo, d.target_repo, d.kind, d.target_package) for d in deps] == [
+            ("app", "lib", "pip_package", "acme-lib")
+        ]
+        assert deps[0].source_manifest == "pyproject.toml"
+        assert deps[0].target_manifest == "pyproject.toml"
+        assert deps[0].requested_version == ">=1.0"
+
+    def test_requirements_dependency_on_a_sibling_package(self, tmp_path: Path) -> None:
+        lib, app = tmp_path / "lib", tmp_path / "app"
+        lib.mkdir()
+        app.mkdir()
+        (lib / "pyproject.toml").write_text('[project]\nname = "acme-lib"\n', encoding="utf-8")
+        (app / "requirements.txt").write_text(
+            "# production dependencies\nacme-lib>=1.0\nrequests>=2.0\n", encoding="utf-8"
+        )
+
+        deps = detect_package_dependencies({"lib": lib, "app": app})
+        assert [(d.source_repo, d.target_repo, d.kind, d.target_package) for d in deps] == [
+            ("app", "lib", "pip_package", "acme-lib")
+        ]
+        assert deps[0].source_manifest == "requirements.txt"
+        assert deps[0].requested_version == ">=1.0"
+
+    def test_a_name_two_repos_publish_links_neither(self, tmp_path: Path) -> None:
+        a, b, app = tmp_path / "a", tmp_path / "b", tmp_path / "app"
+        for d in (a, b, app):
+            d.mkdir()
+        (a / "pyproject.toml").write_text('[project]\nname = "acme-lib"\n', encoding="utf-8")
+        (b / "pyproject.toml").write_text('[project]\nname = "acme_lib"\n', encoding="utf-8")
+        (app / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["acme-lib>=1.0"]\n', encoding="utf-8"
+        )
+
+        assert detect_package_dependencies({"a": a, "b": b, "app": app}) == []
+
+    def test_pep503_normalisation_matches_different_spellings(self, tmp_path: Path) -> None:
+        lib, app = tmp_path / "lib", tmp_path / "app"
+        lib.mkdir()
+        app.mkdir()
+        (lib / "pyproject.toml").write_text('[project]\nname = "acme_lib"\n', encoding="utf-8")
+        (app / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["Acme-Lib>=1.0"]\n', encoding="utf-8"
+        )
+
+        deps = detect_package_dependencies({"lib": lib, "app": app})
+        assert [(d.source_repo, d.target_repo, d.kind, d.target_package) for d in deps] == [
+            ("app", "lib", "pip_package", "Acme-Lib")
+        ]
+
+
 class TestServiceMarkers:
     def test_markers_come_from_the_table(self) -> None:
         assert {m for eco in ECOSYSTEMS for m in eco.markers} == SERVICE_MARKERS
@@ -150,6 +211,4 @@ class TestServiceMarkers:
         pkg = tmp_path / "services" / "billing"
         _json(pkg / "composer.json", {"name": "acme/billing"})
         (pkg / "Invoice.php").write_text("<?php\n", encoding="utf-8")
-        assert [b.service_path for b in detect_service_boundaries(tmp_path)] == [
-            "services/billing"
-        ]
+        assert [b.service_path for b in detect_service_boundaries(tmp_path)] == ["services/billing"]

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,7 +56,7 @@ class CrossRepoPackageDep:
     target_repo: str
     source_manifest: str
     # npm_local_path, npm_workspace, npm_package, composer_path, composer_package,
-    # pip_path, cargo_path, go_replace, dotnet_project_ref, dotnet_nuget_internal,
+    # pip_path, pip_package, cargo_path, go_replace, dotnet_project_ref, dotnet_nuget_internal,
     # maven_coordinate
     kind: str
     target_package: str = ""
@@ -101,6 +102,7 @@ class _ManifestIndex:
     #: alias -> [(repo-relative manifest path, decoded package.json)]
     npm_by_repo: dict[str, list[tuple[str, dict]]] = field(default_factory=dict)
     composer_by_repo: dict[str, list[ComposerManifest]] = field(default_factory=dict)
+    pyprojects: dict[str, dict] = field(default_factory=dict)
     #: (ecosystem, published name) -> (alias, manifest), None once two repos claim it
     published: dict[tuple[str, str], tuple[str, str] | None] = field(default_factory=dict)
 
@@ -220,6 +222,15 @@ def _index_manifests(repo_paths: dict[str, Path]) -> _ManifestIndex:
         for manifest in index.composer_by_repo[alias]:
             if manifest.name:
                 index.claim("composer", manifest.name, alias, _composer_path(manifest))
+        pyproject_path = path / "pyproject.toml"
+        if pyproject_path.is_file():
+            py_data = _load_toml(pyproject_path)
+            index.pyprojects[alias] = py_data
+            py_name = py_data.get("project", {}).get("name") or py_data.get("tool", {}).get(
+                "poetry", {}
+            ).get("name")
+            if isinstance(py_name, str) and py_name.strip():
+                index.claim("python", _pep503_normalise(py_name.strip()), alias, "pyproject.toml")
     return index
 
 
@@ -282,16 +293,48 @@ def _path_dep(
     return None
 
 
+_PYTHON_REQ_RE = re.compile(
+    r"^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+    r"(?:\s*\[[^\]]*\])?"
+    r"(?:\s*([=><~^!].*?))?"
+    r"(?:\s*;.*)?$"
+)
+
+
+def _pep503_normalise(name: str) -> str:
+    """Normalise package name per PEP 503."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _parse_python_req(spec: str) -> tuple[str, str | None] | None:
+    """Parse requirement string into (name, version_specifier)."""
+    try:
+        from packaging.requirements import Requirement
+
+        req = Requirement(spec)
+        spec_str = str(req.specifier) if req.specifier else None
+        return req.name, spec_str
+    except Exception:
+        pass
+    clean = spec.split(";")[0].split("#")[0].strip()
+    m = _PYTHON_REQ_RE.match(clean)
+    if m:
+        ver = m.group(2).strip() if m.group(2) else None
+        return m.group(1), ver
+    return None
+
+
 def _name_dep(
     index: _ManifestIndex,
     alias: str,
     ecosystem: str,
     name: str,
-    version: str,
+    version: str | None,
     manifest: str,
     kind: str,
 ) -> CrossRepoPackageDep | None:
-    owner = index.owner(ecosystem, name)
+    lookup = _pep503_normalise(name) if ecosystem == "python" else name
+    owner = index.owner(ecosystem, lookup)
     if owner is None or owner[0] == alias:
         return None
     return CrossRepoPackageDep(
@@ -352,21 +395,131 @@ def _load_toml(path: Path) -> dict:
 
 
 def _scan_pyproject(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
-    """Poetry and PEP 621 path dependencies."""
+    """Poetry and PEP 621 path and package dependencies, plus requirements.txt."""
+    data = index.pyprojects.get(alias)
     toml_path = repo_path / "pyproject.toml"
-    if not toml_path.is_file():
-        return
-    data = _load_toml(toml_path)
-    poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
-    specs = list(poetry_deps.values()) if isinstance(poetry_deps, dict) else []
-    # PEP 621 dependencies with path (uncommon but possible via tool configs)
-    for group_key in ("dependencies", "optional-dependencies"):
-        group = data.get("project", {}).get(group_key, {})
-        if isinstance(group, dict):
-            specs.extend(group.values())
-    for spec in specs:
-        if isinstance(spec, dict) and "path" in spec:
-            yield _path_dep(index, alias, repo_path, spec["path"], "pyproject.toml", "pip_path")
+    if data is None and toml_path.is_file():
+        data = _load_toml(toml_path)
+    if data:
+        poetry = data.get("tool", {}).get("poetry", {})
+        poetry_deps = poetry.get("dependencies", {})
+        specs = list(poetry_deps.values()) if isinstance(poetry_deps, dict) else []
+        # PEP 621 dependencies with path (uncommon but possible via tool configs)
+        for group_key in ("dependencies", "optional-dependencies"):
+            group = data.get("project", {}).get(group_key, {})
+            if isinstance(group, dict):
+                specs.extend(group.values())
+        for spec in specs:
+            if isinstance(spec, dict) and "path" in spec:
+                yield _path_dep(index, alias, repo_path, spec["path"], "pyproject.toml", "pip_path")
+
+        # Poetry named dependencies
+        if isinstance(poetry_deps, dict):
+            for name, spec in poetry_deps.items():
+                if not isinstance(name, str) or name.lower() == "python":
+                    continue
+                if isinstance(spec, str):
+                    yield _name_dep(
+                        index, alias, "python", name, spec, "pyproject.toml", "pip_package"
+                    )
+                elif (
+                    isinstance(spec, dict)
+                    and "version" in spec
+                    and isinstance(spec["version"], str)
+                ):
+                    yield _name_dep(
+                        index,
+                        alias,
+                        "python",
+                        name,
+                        spec["version"],
+                        "pyproject.toml",
+                        "pip_package",
+                    )
+
+        for group in poetry.get("group", {}).values():
+            if isinstance(group, dict):
+                group_deps = group.get("dependencies", {})
+                if isinstance(group_deps, dict):
+                    for name, spec in group_deps.items():
+                        if not isinstance(name, str) or name.lower() == "python":
+                            continue
+                        if isinstance(spec, str):
+                            yield _name_dep(
+                                index, alias, "python", name, spec, "pyproject.toml", "pip_package"
+                            )
+                        elif (
+                            isinstance(spec, dict)
+                            and "version" in spec
+                            and isinstance(spec["version"], str)
+                        ):
+                            yield _name_dep(
+                                index,
+                                alias,
+                                "python",
+                                name,
+                                spec["version"],
+                                "pyproject.toml",
+                                "pip_package",
+                            )
+
+        # PEP 621 named dependencies
+        project = data.get("project", {})
+        proj_deps = project.get("dependencies", [])
+        if isinstance(proj_deps, list):
+            for req_str in proj_deps:
+                if isinstance(req_str, str):
+                    parsed = _parse_python_req(req_str)
+                    if parsed is not None:
+                        yield _name_dep(
+                            index,
+                            alias,
+                            "python",
+                            parsed[0],
+                            parsed[1],
+                            "pyproject.toml",
+                            "pip_package",
+                        )
+
+        opt_deps = project.get("optional-dependencies", {})
+        if isinstance(opt_deps, dict):
+            for group_list in opt_deps.values():
+                if isinstance(group_list, list):
+                    for req_str in group_list:
+                        if isinstance(req_str, str):
+                            parsed = _parse_python_req(req_str)
+                            if parsed is not None:
+                                yield _name_dep(
+                                    index,
+                                    alias,
+                                    "python",
+                                    parsed[0],
+                                    parsed[1],
+                                    "pyproject.toml",
+                                    "pip_package",
+                                )
+
+    req_path = repo_path / "requirements.txt"
+    if req_path.is_file():
+        try:
+            content = req_path.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                clean = line.split("#")[0].strip()
+                if not clean or clean.startswith("-"):
+                    continue
+                parsed = _parse_python_req(clean)
+                if parsed is not None:
+                    yield _name_dep(
+                        index,
+                        alias,
+                        "python",
+                        parsed[0],
+                        parsed[1],
+                        "requirements.txt",
+                        "pip_package",
+                    )
+        except OSError:
+            pass
 
 
 def _scan_cargo(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
