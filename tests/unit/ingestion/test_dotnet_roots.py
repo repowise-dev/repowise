@@ -236,3 +236,94 @@ def test_class_carrying_service_contract_itself_is_a_root(tmp_path: Path) -> Non
         "public class Echo { [OperationContract] public string Say(string s) => s; }\n"
     )
     assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+GLOBAL_ASAX = (
+    '<%@ Application Codebehind="Global.asax.cs" Inherits="Sample.MvcApplication" '
+    'Language="C#" %>\n'
+)
+GLOBAL_ASAX_CS = (
+    "using System.Web;\nusing System.Web.Mvc;\nusing System.Web.Routing;\n\n"
+    "namespace Sample\n{\n"
+    "    public class MvcApplication : HttpApplication\n    {\n"
+    "        protected void Application_Start() { }\n    }\n}\n"
+)
+HOME_CONTROLLER = (
+    "using System.Web.Mvc;\n\nnamespace Sample.Controllers\n{\n"
+    "    public class HomeController : Controller\n    {\n"
+    "        public ActionResult Index() { return View(); }\n    }\n}\n"
+)
+
+
+def test_class_a_global_asax_inherits_is_a_root(tmp_path: Path) -> None:
+    roots = _roots(tmp_path, {"Global.asax": GLOBAL_ASAX, "Global.asax.cs": GLOBAL_ASAX_CS})
+    assert "Global.asax.cs" in roots
+
+
+def test_markup_names_the_class_by_namespace(tmp_path: Path) -> None:
+    # Same bare name in another namespace: only the one the markup names roots.
+    other = "namespace Other\n{\n    public class MvcApplication { }\n}\n"
+    roots = _roots(
+        tmp_path,
+        {"Global.asax": GLOBAL_ASAX, "Global.asax.cs": GLOBAL_ASAX_CS, "Other.cs": other},
+    )
+    assert "Global.asax.cs" in roots
+    assert "Other.cs" not in roots
+
+
+@pytest.mark.parametrize(
+    ("markup_name", "markup"),
+    [
+        ("Ping.ashx", '<%@ WebHandler Language="C#" Class="Sample.Ping" %>\n'),
+        ("Default.aspx", '<%@ Page Language="C#" Inherits="Sample.Ping" %>\n<html></html>\n'),
+    ],
+    ids=["webhandler-class", "page-inherits"],
+)
+def test_handler_and_page_markup_name_their_class(
+    tmp_path: Path, markup_name: str, markup: str
+) -> None:
+    code = "namespace Sample\n{\n    public class Ping { }\n}\n"
+    assert "Ping.cs" in _roots(tmp_path, {markup_name: markup, "Ping.cs": code})
+
+
+def test_classic_mvc_and_web_api_controllers_are_roots(tmp_path: Path) -> None:
+    api = (
+        "using System.Web.Http;\n\nnamespace Sample.Controllers\n{\n"
+        "    public class ValuesController : ApiController { }\n}\n"
+    )
+    roots = _roots(tmp_path, {"HomeController.cs": HOME_CONTROLLER, "ValuesController.cs": api})
+    assert {"HomeController.cs", "ValuesController.cs"} <= roots
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        # No System.Web import: an ordinary class that happens to end in Controller.
+        (
+            "LooseController.cs",
+            "namespace Sample\n{\n    public class LooseController { }\n}\n",
+        ),
+        # A System.Web.Mvc file whose class is not a controller.
+        (
+            "Helper.cs",
+            "using System.Web.Mvc;\n\nnamespace Sample\n{\n    public class Helper { }\n}\n",
+        ),
+        # A controller next to an unused class keeps the file judged.
+        (
+            "Mixed.cs",
+            "using System.Web.Mvc;\n\nnamespace Sample\n{\n"
+            "    public class MixedController : Controller { }\n"
+            "    public class DeadSibling { }\n}\n",
+        ),
+    ],
+    ids=["no-system-web-import", "not-a-controller", "dead-sibling"],
+)
+def test_what_is_not_a_classic_root(tmp_path: Path, name: str, text: str) -> None:
+    assert name not in _roots(tmp_path, {name: text})
+
+
+def test_a_directive_that_names_no_class_roots_nothing(tmp_path: Path) -> None:
+    # A directive with no Inherits or Class names nothing.
+    markup = '<%@ Application Language="C#" %>\n'
+    roots = _roots(tmp_path, {"Global.asax": markup, "Global.asax.cs": GLOBAL_ASAX_CS})
+    assert "Global.asax.cs" not in roots
