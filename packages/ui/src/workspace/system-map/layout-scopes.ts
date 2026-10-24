@@ -111,18 +111,19 @@ function liftEdge(e: LevelsEdge, { parentOf, drawnAt }: Placement): [string, str
 }
 
 /**
- * Placement edges a scope keeps per card. ELK's layered layout grows with
- * edges far faster than with cards: a 30-card estate over a 3,000-edge
- * graph lifts to about 750 card pairs, which took ELK about 50 s; capped at
- * two per card it is 60 edges and well under 100 ms.
+ * A scope's placement-edge budget per card, on average: the scope keeps at
+ * most this times its card count, and a hub card may hold more than its
+ * share. ELK's layered layout grows with edges far faster than with cards:
+ * a 30-card estate over a 3,000-edge graph lifts to about 750 card pairs,
+ * which took ELK about 50 s; capped at 60 edges it is well under 100 ms.
  */
 export const PLACEMENT_EDGES_PER_CARD = 2;
 
 /**
  * One edge per unordered card pair, pointing the way most links go (ties to
  * the lower id first). Every card first keeps its strongest pair, so no
- * linked card is left edgeless in layer 0; the rest of a budget of `perCard`
- * times the card count goes to the strongest remaining pairs, ties by id.
+ * linked card is left edgeless in layer 0 (a hub may take several of these);
+ * the rest of a budget of `perCard` times the card count goes to the strongest remaining pairs, ties by id.
  * Layers follow the kept edges only, so a weak drawn connector may run
  * against them. Deterministic and independent of input order.
  */
