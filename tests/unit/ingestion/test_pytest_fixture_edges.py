@@ -638,6 +638,15 @@ class TestUnrecordedRequests:
             "def test_x(f, request):\n    request.getfixturevalue(f)\n",
             "import pytest\n\n\n@pytest.mark.parametrize('f, g', [('db', 1)])\n"
             "def test_x(f, g, request):\n    request.getfixturevalue(f)\n",
+            # Forms that hide in a string: an indirect passed by **kwargs, a mark
+            # read by name, a call quoted in code, and code run from a string.
+            "def pytest_generate_tests(metafunc):\n    kw = {'indirect': True}\n"
+            "    metafunc.parametrize('db', [1], **kw)\n\n\ndef test_x(db):\n    pass\n",
+            "import pytest\n\n\n@getattr(pytest.mark, 'usefixtures')('db')\n"
+            "def test_x():\n    pass\n",
+            "def test_x(request):\n    src = 'request.getfixturevalue(NAME)'\n    assert src\n",
+            "def test_x(request):\n    exec('x = 1')\n",
+            "def test_x(request):\n    run = eval\n    assert run\n",
         ],
     )
     def test_a_hidden_request_marks_its_own_edge(self, tmp_path: Path, body: str) -> None:
@@ -672,15 +681,44 @@ class TestUnrecordedRequests:
         assert ("tests/test_odd.py::TestEach::test_x", "tests/conftest.py::db") in bound
         assert ("tests/test_odd.py::TestEach::test_x", "tests/conftest.py::cache") in bound
 
-    def test_a_call_inside_a_string_or_comment_in_a_test_is_no_request(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "assert db  # request.getfixturevalue(other)",
+            '"""Reads request.getfixturevalue(NAME) names."""',
+            "pattern = re.compile('x')",
+            "model.eval()",
+        ],
+    )
+    def test_a_call_in_a_comment_docstring_or_attribute_is_no_request(
+        self, tmp_path: Path, line: str
     ) -> None:
-        body = (
-            "def test_x(db):\n"
-            "    src = 'request.getfixturevalue(NAME)'  # getfixturevalue(other)\n"
-            "    assert src\n"
-        )
+        body = f"import re\n\n\ndef test_x(db, model=None):\n    {line}\n"
         assert self._hints(self._repo(tmp_path, body))["tests/test_odd.py"] == "pytest_conftest"
+
+    def test_an_f_string_is_code_when_it_is_one_token(self, monkeypatch) -> None:
+        """Before Python 3.12 an f-string is one STRING token; its call still counts."""
+        import io
+        import tokenize
+
+        from repowise.core.ingestion.framework_edges import pytest_edges
+
+        text = 'x = f"{request.getfixturevalue(n)}"\n'
+        whole = tokenize.TokenInfo(tokenize.STRING, text[4:-1], (1, 4), (1, len(text) - 1), text)
+        real = tokenize.generate_tokens
+
+        def as_311(readline):
+            for t in real(io.StringIO(text).readline):
+                if t.start[1] < 4 or t.type in (tokenize.NEWLINE, tokenize.ENDMARKER):
+                    yield t
+                elif t.start == (1, 4):
+                    yield whole
+
+        monkeypatch.setattr(tokenize, "generate_tokens", as_311)
+        lexed = pytest_edges._lex(text)
+        assert lexed is not None
+        assert text.index("getfixturevalue") in lexed.calls
+        assert lexed.uses["getfixturevalue"] == 1
 
     def test_a_helper_asking_for_a_fixture_marks_every_edge(self, tmp_path: Path) -> None:
         graph = self._repo(

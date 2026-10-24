@@ -16,7 +16,8 @@ from a base class declared elsewhere, a class-level ``pytestmark``, marks inside
 ``pytest.param``, a parametrize call in a hook, any other code use of a
 request name such as an aliased mark, ``add_marker`` or ``fixturenames``, a
 config ``usefixtures`` or ``python_functions``, a helper asking for a fixture,
-a file whose text is not available) is stamped
+a request name in a string other than a docstring, code run from a string
+with ``exec``, ``eval`` or ``compile``, a file whose text is not available) is stamped
 :data:`UNRECORDED_HINT` on the conftest edges it could reach, and selection
 keeps every test under those conftests.
 """
@@ -455,12 +456,95 @@ def _module_usefixtures(text: str) -> tuple[list[str], bool]:
     return names, unknown
 
 
-def _request_name_uses(text: str) -> Counter[str] | None:
-    """How often code (not strings or comments) uses each of :data:`_REQUEST_NAMES`.
+@dataclass
+class _Lexed:
+    """What one tokenize pass over a file tells the request checks (:func:`_lex`)."""
 
-    ``None`` when the text does not tokenize, which hides whatever it holds.
-    A substring check first, so the lexer runs only on the few files that
-    mention one.
+    # Offsets where ``getfixturevalue`` is code: a name, or text inside an f-string.
+    calls: set[int] = field(default_factory=set)
+    # Uses of each of :data:`_REQUEST_NAMES` outside comments and docstrings.
+    uses: Counter[str] = field(default_factory=Counter)
+    # Whether the file names ``exec``, ``eval`` or ``compile`` other than as an attribute.
+    runs_code: bool = False
+
+    def read_name(self, t: tokenize.TokenInfo, at: int, after_dot: bool) -> None:
+        if t.string in _REQUEST_NAMES:
+            self.uses[t.string] += 1
+        if t.string == "getfixturevalue":
+            self.calls.add(at)
+        self.runs_code = self.runs_code or (t.string in _RUNS_CODE and not after_dot)
+
+    def read_string(self, t: tokenize.TokenInfo, at: int) -> None:
+        words = list(_REQUEST_WORD_RE.finditer(t.string))
+        self.uses.update(m.group(1) for m in words)
+        if _FSTRING_PREFIX_RE.match(t.string):
+            self.calls.update(at + m.start() for m in words if m.group(1) == "getfixturevalue")
+
+
+_RUNS_CODE = frozenset({"exec", "eval", "compile"})
+_REQUEST_WORD_RE = re.compile(r"\b(" + "|".join(sorted(_REQUEST_NAMES)) + r")\b")
+# A string token's prefix holds ``f``: one STRING token per f-string before
+# Python 3.12, whose expressions are code.
+_FSTRING_PREFIX_RE = re.compile(r"[a-zA-Z]*[fF][a-zA-Z]*['\"]")
+_SKIPPED = frozenset({tokenize.COMMENT, tokenize.NL})
+_STATEMENT_START = frozenset({tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT})
+
+
+def _lex(text: str) -> _Lexed | None:
+    """:class:`_Lexed` for *text*; ``None`` when it does not tokenize, which hides everything.
+
+    A request name inside a string counts as a use (``getattr(pytest.mark,
+    "usefixtures")`` asks for a fixture) unless the string is a docstring;
+    comments never count. A substring check first, so the lexer runs only on
+    the few files that mention one of the names.
+    """
+    out = _Lexed()
+    if not any(n in text for n in (*_REQUEST_NAMES, *_RUNS_CODE)):
+        return out
+    starts = [0]
+    for line in io.StringIO(text):  # the same lines the tokenizer reads
+        starts.append(starts[-1] + len(line))
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return None
+    significant = [t for t in tokens if t.type not in _SKIPPED]
+    for i, t in enumerate(significant):
+        at = starts[t.start[0] - 1] + t.start[1]
+        if t.type == tokenize.NAME:
+            out.read_name(t, at, after_dot=i > 0 and significant[i - 1].string == ".")
+        elif _is_text_token(t) and not _is_docstring(significant, i):
+            out.read_string(t, at)
+    return out
+
+
+def _is_text_token(t: tokenize.TokenInfo) -> bool:
+    """A string literal, or the text part of an f-string (Python 3.12+)."""
+    return t.type == tokenize.STRING or tokenize.tok_name.get(t.type) == "FSTRING_MIDDLE"
+
+
+def _is_docstring(significant: list[tokenize.TokenInfo], i: int) -> bool:
+    """Whether the string token at *i* is a statement of its own: a docstring, prose."""
+    t = significant[i]
+    before = significant[i - 1].type if i else tokenize.NEWLINE
+    after = significant[i + 1].type if i + 1 < len(significant) else tokenize.ENDMARKER
+    return (
+        t.type == tokenize.STRING
+        and not _FSTRING_PREFIX_RE.match(t.string)
+        and before in _STATEMENT_START
+        and after in (tokenize.NEWLINE, tokenize.ENDMARKER)
+    )
+
+
+def _request_name_uses(text: str) -> Counter[str] | None:
+    """How often a helper module's code names each of :data:`_REQUEST_NAMES`.
+
+    Names only, strings left out, unlike a test or conftest (:func:`_lex`):
+    any module that reads a pytest option or matches these forms (a config
+    reader, this analyzer) would otherwise mark every conftest edge in the
+    repository. Ceiling: a helper asking by a string name
+    (``getattr(pytest.mark, "usefixtures")``) is not seen. ``None`` when the
+    text does not tokenize, which hides whatever it holds.
     """
     if not any(name in text for name in _REQUEST_NAMES):
         return Counter()
@@ -488,11 +572,12 @@ def _runtime_requests(text: str, parsed: Any) -> tuple[list[tuple[Any, list[str]
     """``(enclosing function, names)`` per readable ``getfixturevalue``, and whether any is not."""
     out: list[tuple[Any, list[str]]] = []
     unknown = False
-    code = _code_offsets(text, "getfixturevalue")
+    lexed = _lex(text)
+    code = lexed.calls if lexed is not None else None
     trees: dict[str, ast.Module | None] = {}  # parsed once, on the first parameter request
     for match in _GETFIXTUREVALUE_RE.finditer(text):
         if code is not None and match.start() not in code:
-            continue  # inside a string or a comment: no request
+            continue  # inside a comment or a plain string: no call
         sym = _enclosing(parsed, text.count("\n", 0, match.start()) + 1)
         names = _call_names(match, text, parsed, sym, trees)
         if names is None:
@@ -527,26 +612,6 @@ def _call_names(
     if "tree" not in trees:
         trees["tree"] = _parse(text)
     return _parametrized_names(parsed, trees["tree"], sym, match.group(2))
-
-
-def _code_offsets(text: str, name: str) -> set[int] | None:
-    """Offsets in *text* where code (not a string or comment) names *name*.
-
-    ``None`` when the text does not tokenize: every textual match then counts,
-    so an unreadable file stays unrecorded.
-    """
-    starts = [0]
-    for line in io.StringIO(text):  # the same lines the tokenizer reads
-        starts.append(starts[-1] + len(line))
-    try:
-        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
-        return {
-            starts[t.start[0] - 1] + t.start[1]
-            for t in tokens
-            if t.type == tokenize.NAME and t.string == name
-        }
-    except (tokenize.TokenError, SyntaxError):
-        return None
 
 
 def _parse(text: str) -> ast.Module | None:
@@ -908,13 +973,15 @@ def _link_text(
     runtime_unknown, everywhere = _link_runtime_requests(linker, text, tests, fixture_ids, recorded)
     # Any other use (an alias, a mark stored in a variable, `add_marker`,
     # `request.fixturenames`, a lazy-fixture plugin) is a request no edge records.
-    uses = _request_name_uses(text)
+    # Code run from a string (``exec``, ``eval``, ``compile``) can ask in any way.
+    lexed = _lex(text)
     hidden = (
         _hidden_request(text) is not None
         or marks_unknown
         or runtime_unknown
-        or uses is None
-        or any(n > recorded[name] for name, n in uses.items())
+        or lexed is None
+        or lexed.runs_code
+        or any(n > recorded[name] for name, n in lexed.uses.items())
     )
     return hidden, everywhere
 

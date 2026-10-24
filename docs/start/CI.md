@@ -793,10 +793,13 @@ These run, but the summary counts them apart and JSON lists them:
 
 | Field | Holds |
 |-------|-------|
-| `selected.import_closure` | tests reached only through imports, over one file away, with no call path, coverage or paired name: an import error breaks them, though nothing they call runs the change. Importing `pkg.a.b` counts as importing `pkg/__init__.py` and `pkg/a/__init__.py`, since Python runs them first (basis `package-init`) |
+| `selected.import_closure` | tests reached only through imports, over one file away, with no call path, coverage or paired name: an import error breaks them, though nothing they call runs the change |
 | `selected.broadcast` | tests a conftest adds that nothing else reaches |
 | `selected.basis` | what drove each selection |
 | `selected.why` | the `--explain` answer per selected test |
+
+- Importing `pkg.a.b` counts as importing `pkg/__init__.py` and
+  `pkg/a/__init__.py`, since Python runs them first (basis `package-init`).
 
 ### Conftest changes
 
@@ -808,7 +811,8 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
   module-level code uses the change, or the conftest imports it only for side
   effects (`selected.broadcast`).
 - Everything runs when a fixture request is unreadable (computed name, mark in
-  a variable, config `usefixtures`), the conftest loads plugins or is
+  a variable, a request name in a string, `exec`/`eval`/`compile`, config
+  `usefixtures`), the conftest loads plugins or is
   unreadable, or the index predates this; the reasons name the cause.
 
 <details><summary>Edge cases and ceilings</summary>
