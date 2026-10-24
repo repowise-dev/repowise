@@ -620,7 +620,9 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "call:java.nio.file.Path:of:1"
+        ]
       },
       {
         "target_name": "of",

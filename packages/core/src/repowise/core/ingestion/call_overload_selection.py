@@ -17,6 +17,7 @@ from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .return_types import signature_parameter_range
 from .symbol_identity import erased_parameter_types, erased_type, pair_overloads, split_symbol_id
+from .type_names import bare_type_name
 
 
 def _overload_phase(admitted: tuple[int, int | None], argument_count: int) -> int | None:
@@ -566,10 +567,53 @@ class OverloadSelectionMixin:
         caller_id = call.caller_symbol_id or ""
         literals = call.argument_types or (None,) * len(names)
         types = tuple(
-            literal or (self._argument_type(file_path, caller_id, name) if name else None)
+            literal
+            or (self._argument_expr_type(file_path, caller_id, call.line, name) if name else None)
             for literal, name in zip(literals, names, strict=True)
         )
         return replace(call, argument_types=types if any(types) else None)
+
+    def _argument_expr_type(
+        self, file_path: str, caller_id: str, line: int, name: str
+    ) -> str | None:
+        """The declared type of an argument expression: bare name, this.field, or call."""
+        if name.startswith("call:"):
+            call_head, target, count_s = name.rsplit(":", 2)
+            receiver = call_head.removeprefix("call:")
+            probe = CallSite(
+                target_name=target,
+                receiver_name=receiver or None,
+                caller_symbol_id=caller_id,
+                line=line,
+                argument_count=int(count_s),
+            )
+            probe = self._typed_arguments(file_path, probe)
+            resolved = self._resolve_one(file_path, probe)
+            if resolved is None or "global" in resolved.origin:
+                return None
+            narrowed = self._narrow_overload(self._redirect_to_definition(resolved), probe)
+            callee_id = narrowed.callee_id if narrowed else resolved.callee_id
+            type_id = self._returned_type_id(
+                callee_id, awaited=False, argument_count=probe.argument_count
+            )
+            if type_id is None:
+                return None
+            return erased_type(bare_type_name(type_id))
+        if name.startswith("this."):
+            field_name = name[5:]
+            language = self._language_of(file_path) or ""
+            found = self._field_type(
+                file_path, caller_id, language, field_name, builtin_local=False
+            )
+            if found is None or found[0] is None:
+                return None
+            type_name = found[0]
+            if "::" in type_name:
+                if language == "java":
+                    return erased_type(bare_type_name(type_name))
+                return None
+            return erased_type(external_type_name(type_name) or type_name)
+        return self._argument_type(file_path, caller_id, name)
 
     def _argument_type(self, file_path: str, caller_id: str, name: str) -> str | None:
         """Argument *name*'s declared type, spelled as an overload id spells a parameter.
@@ -589,7 +633,11 @@ class OverloadSelectionMixin:
             )
             if scope == "field" and self._declares_name(file_path, caller_id, name):
                 return None
-        if type_name is None or "::" in type_name:
+        if type_name is None:
+            return None
+        if "::" in type_name:
+            if language == "java":
+                return erased_type(bare_type_name(type_name))
             return None
         return erased_type(external_type_name(type_name) or type_name)
 

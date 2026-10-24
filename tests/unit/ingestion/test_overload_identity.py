@@ -158,7 +158,9 @@ class TestIdGrammar:
         assert bare_name("IValidator`1") == "IValidator"
 
     def test_overload_sets_groups_only_suffixed_ids(self) -> None:
-        assert overload_sets(["a::f#1", "a::f#2", "a::g", "a::T`1"]) == {"a::f": ["a::f#1", "a::f#2"]}
+        assert overload_sets(["a::f#1", "a::f#2", "a::g", "a::T`1"]) == {
+            "a::f": ["a::f#1", "a::f#2"]
+        }
 
     @pytest.mark.parametrize(
         ("signature", "language", "expected"),
@@ -186,8 +188,14 @@ class TestIdGrammar:
 
     @pytest.mark.parametrize(
         ("raw", "count"),
-        [("IFoo<T>", 1), ("Dictionary<string, List<int>>", 2), ("IFoo<T>?", 1),
-         ("Outer<T>.Inner", 0), ("Plain", 0), ("Foo<T>[]", 1)],
+        [
+            ("IFoo<T>", 1),
+            ("Dictionary<string, List<int>>", 2),
+            ("IFoo<T>?", 1),
+            ("Outer<T>.Inner", 0),
+            ("Plain", 0),
+            ("Foo<T>[]", 1),
+        ],
     )
     def test_type_argument_count(self, raw: str, count: int) -> None:
         assert type_argument_count(raw) == count
@@ -234,7 +242,10 @@ class TestJavaOverloads:
             # A count no sibling shares keeps the bare count.
             "P.java::P::put#3",
         } <= set(graph)
-        assert split_symbol_id("P.java::P::put#2(char[],long)") == ("P.java::P::put", "2(char[],long)")
+        assert split_symbol_id("P.java::P::put#2(char[],long)") == (
+            "P.java::P::put",
+            "2(char[],long)",
+        )
         assert symbol_id_arity("P.java::P::put#2(char[],long)") == "2"
         assert id_segment_name("put#2(char[],long)") == "put"
         assert bare_name("P.java::P::put#2(Map,Object[])") == "put"
@@ -250,7 +261,7 @@ class TestJavaOverloads:
             ("...", "[]"),
             ("Args&&... args", "Args&&[]"),
             ("const std::vector<ns::T*>& v", "vector*&"),
-            ("@a.b.C(x = \"/p.q\") String s", "String"),
+            ('@a.b.C(x = "/p.q") String s', "String"),
             ("unsigned long n", "unsigned_long"),
         ],
     )
@@ -264,7 +275,9 @@ class TestJavaOverloads:
     def test_an_inserted_overload_renames_no_sibling(self) -> None:
         body = "  void put(String k) { }\n  void put(int k) { }\n"
         before = set(_ids(_parse("P.java", "java", "class P {\n" + body + "}\n")))
-        after = set(_ids(_parse("P.java", "java", "class P {\n  void put(long k) { }\n" + body + "}\n")))
+        after = set(
+            _ids(_parse("P.java", "java", "class P {\n  void put(long k) { }\n" + body + "}\n"))
+        )
         assert before < after
 
     def test_enum_constant_bodies_get_their_own_methods(self, tmp_path: Path) -> None:
@@ -277,7 +290,11 @@ class TestJavaOverloads:
             "}\n"
         )
         by_id = {s.id: s for s in _parse("Op.java", "java", text).symbols}
-        assert {"Op.java::Op::PLUS::apply", "Op.java::Op::MINUS::apply", "Op.java::Op::apply"} <= set(by_id)
+        assert {
+            "Op.java::Op::PLUS::apply",
+            "Op.java::Op::MINUS::apply",
+            "Op.java::Op::apply",
+        } <= set(by_id)
         assert by_id["Op.java::Op::MINUS::apply"].qualified_name == "Op.Op.MINUS.apply"
         # The enum stays the owner: its node holds every constant's method.
         assert by_id["Op.java::Op::MINUS::apply"].parent_name == "Op"
@@ -308,17 +325,15 @@ class TestJavaOverloads:
         assert {c for a, c in edges if a == base + "use"} == {base + "append#1(String)"}
 
     def test_a_record_keeps_its_canonical_constructor_beside_an_overload(self) -> None:
-        text = (
-            "public record Point(int x, int y) {\n"
-            "  public Point(int x) { this(x, 0); }\n"
-            "}\n"
-        )
+        text = "public record Point(int x, int y) {\n  public Point(int x) { this(x, 0); }\n}\n"
         ids = _ids(_parse("Point.java", "java", text))
         assert "Point.java::Point::Point#1" in ids
         assert "Point.java::Point::Point#2" in ids
 
     def test_calls_narrow_to_the_member_their_arguments_name(self, tmp_path: Path) -> None:
-        edges = _edges(tmp_path, {"app/Validate.java": ("java", VALIDATE), "app/Caller.java": ("java", CALLER)})
+        edges = _edges(
+            tmp_path, {"app/Validate.java": ("java", VALIDATE), "app/Caller.java": ("java", CALLER)}
+        )
         run = "app/Caller.java::Caller::run"
         targets = {callee for caller, callee in edges if caller == run}
         assert targets == {
@@ -345,7 +360,9 @@ class TestJavaOverloads:
             "  public void go() { Consumer<Object> c = Validate::notNull; c.accept(1); Validate.notNull(); }\n"
             "}\n"
         )
-        edges = _edges(tmp_path, {"app/Validate.java": ("java", VALIDATE), "app/R.java": ("java", text)})
+        edges = _edges(
+            tmp_path, {"app/Validate.java": ("java", VALIDATE), "app/R.java": ("java", text)}
+        )
         hits = {callee for caller, callee in edges if caller == "app/R.java::R::go"}
         # A zero-argument call matches no member; it keeps the representative.
         assert hits <= {"app/Validate.java::Validate::notNull#1"}
@@ -387,15 +404,25 @@ class TestCSharpGenericSiblings:
 
     def test_has_method_hangs_off_the_generic_type(self) -> None:
         graph = _graph({"src/IValidator.cs": ("csharp", IVALIDATOR)})
-        assert graph.has_edge("src/IValidator.cs::IValidator`1", "src/IValidator.cs::IValidator`1::Validate")
-        assert not graph.has_edge("src/IValidator.cs::IValidator", "src/IValidator.cs::IValidator`1::Validate")
+        assert graph.has_edge(
+            "src/IValidator.cs::IValidator`1", "src/IValidator.cs::IValidator`1::Validate"
+        )
+        assert not graph.has_edge(
+            "src/IValidator.cs::IValidator", "src/IValidator.cs::IValidator`1::Validate"
+        )
 
     def test_a_lone_generic_type_keeps_its_plain_id(self) -> None:
         text = "namespace App;\npublic class Repo<T> {\n  public void Save(T item) { }\n}\n"
-        assert _ids(_parse("Repo.cs", "csharp", text))[-2:] == ["Repo.cs::Repo", "Repo.cs::Repo::Save"]
+        assert _ids(_parse("Repo.cs", "csharp", text))[-2:] == [
+            "Repo.cs::Repo",
+            "Repo.cs::Repo::Save",
+        ]
 
     def test_a_receiver_reaches_the_sibling_its_type_arguments_name(self, tmp_path: Path) -> None:
-        edges = _edges(tmp_path, {"src/IValidator.cs": ("csharp", IVALIDATOR), "src/Runner.cs": ("csharp", USES)})
+        edges = _edges(
+            tmp_path,
+            {"src/IValidator.cs": ("csharp", IVALIDATOR), "src/Runner.cs": ("csharp", USES)},
+        )
         targets = {callee for caller, callee in edges if caller == "src/Runner.cs::Runner::Typed"}
         assert targets == {
             "src/IValidator.cs::IValidator`1::Validate",
@@ -414,7 +441,7 @@ class TestCSharpGenericSiblings:
             "namespace App;\npublic class C {\n"
             "  public int One() => H.Sum(1);\n"
             "  public int Two() => H.Sum(1, 2);\n"
-            "  public int Four() => H.Sum(\"a\", 1, 2, 3);\n"
+            '  public int Four() => H.Sum("a", 1, 2, 3);\n'
             "}\n"
         )
         edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
@@ -432,7 +459,12 @@ class TestCSharpGenericSiblings:
             "}\n"
         )
         ids = set(_ids(_parse("P.cs", "csharp", text)))
-        assert {"P.cs::P::P#1(string)", "P.cs::P::P#1(TimeSpan?)", "P.cs::P::P#1(int[])", "P.cs::P::P#0"} <= ids
+        assert {
+            "P.cs::P::P#1(string)",
+            "P.cs::P::P#1(TimeSpan?)",
+            "P.cs::P::P#1(int[])",
+            "P.cs::P::P#0",
+        } <= ids
 
 
 SHAPES_H = """namespace geo {
@@ -486,7 +518,9 @@ class TestCppOverloads:
         graph = _graph({"shapes.h": ("cpp", SHAPES_H)})
         assert graph.nodes["shapes.h::Shape::scale#1"]["is_declaration"] is False
 
-    def test_a_header_declared_set_resolves_to_its_out_of_line_definitions(self, tmp_path: Path) -> None:
+    def test_a_header_declared_set_resolves_to_its_out_of_line_definitions(
+        self, tmp_path: Path
+    ) -> None:
         header = (
             "class Pen {\n public:\n  void shift(int x);\n  void shift(int x, int y = 0, int z = 0);\n"
             "  void lift();\n};\n"
@@ -499,7 +533,8 @@ class TestCppOverloads:
         )
         caller = '#include "pen.h"\nvoid draw(Pen& p) {\n  p.shift(1);\n  p.shift(1, 2);\n  p.lift();\n}\n'
         edges = _edges(
-            tmp_path, {"pen.h": ("cpp", header), "pen.cpp": ("cpp", source), "draw.cpp": ("cpp", caller)}
+            tmp_path,
+            {"pen.h": ("cpp", header), "pen.cpp": ("cpp", source), "draw.cpp": ("cpp", caller)},
         )
         assert {
             ("draw.cpp::draw", "pen.cpp::Pen::shift#1"),
@@ -523,7 +558,9 @@ class TestCppOverloads:
         assert graph.has_edge("main.cpp::main", "util.cpp::pad#3")
 
     @pytest.mark.parametrize("header_first", [True, False])
-    def test_a_member_pairs_with_a_plain_id_definition(self, tmp_path: Path, header_first: bool) -> None:
+    def test_a_member_pairs_with_a_plain_id_definition(
+        self, tmp_path: Path, header_first: bool
+    ) -> None:
         decls = ["int f(int a);", "int f(long a);"]
         if not header_first:
             decls.reverse()
@@ -554,7 +591,11 @@ class TestCppOverloads:
         caller = '#include "shapes.h"\nvoid draw(geo::Shape& s) {\n  s.scale(2, 3);\n}\n'
         edges = _edges(
             tmp_path,
-            {"shapes.h": ("cpp", SHAPES_H), "shapes.cpp": ("cpp", SHAPES_CPP), "draw.cpp": ("cpp", caller)},
+            {
+                "shapes.h": ("cpp", SHAPES_H),
+                "shapes.cpp": ("cpp", SHAPES_CPP),
+                "draw.cpp": ("cpp", caller),
+            },
         )
         assert ("draw.cpp::draw", "shapes.cpp::Shape::scale") in edges
 
@@ -566,7 +607,7 @@ class TestCppOverloads:
             "void log(int level) {}\n"
             "template <typename... Args> void emit(int level, Args&&... args) {}\n"
             "void emit() {}\n"
-            "void run() {\n  pad(1);\n  pad(1, 2, 3);\n  log(1);\n  log(\"x\", 1, 2);\n"
+            'void run() {\n  pad(1);\n  pad(1, 2, 3);\n  log(1);\n  log("x", 1, 2);\n'
             "  emit();\n  emit(1, 2, 3);\n}\n"
         )
         edges = _edges(tmp_path, {"u.cpp": ("cpp", source)})
@@ -615,7 +656,9 @@ class TestOtherLanguagesAreUntouched:
             ("m.c", "c", "int f(int a) { return a; }\nint f(int a, int b) { return a; }\n"),
         ],
     )
-    def test_same_named_definitions_keep_one_plain_id(self, rel: str, language: str, text: str) -> None:
+    def test_same_named_definitions_keep_one_plain_id(
+        self, rel: str, language: str, text: str
+    ) -> None:
         ids = _ids(_parse(rel, language, text))
         assert all(base_symbol_id(i) == i for i in ids), ids
 
@@ -799,7 +842,14 @@ def test_fixture_ids_carry_a_discriminator_only_on_collision() -> None:
     """
     parser = ASTParser()
     checked = 0
-    for sample in ("lang_samples", "jvm_sample", "dotnet_solution", "cpp_sample", "ts_sample", "sample_repo"):
+    for sample in (
+        "lang_samples",
+        "jvm_sample",
+        "dotnet_solution",
+        "cpp_sample",
+        "ts_sample",
+        "sample_repo",
+    ):
         for info in FileTraverser(_FIXTURES / sample).traverse():
             parsed = parser.parse_file(info, Path(info.abs_path).read_bytes())
             bases = [base_symbol_id(s.id) for s in parsed.symbols]
@@ -841,7 +891,9 @@ class TestNarrowingShapes:
             "  public static <T> T make(T v, int n) { return v; }\n"
             "}\n"
         )
-        caller = 'package app;\npublic class K {\n  public void go() { U.<String>make("x", 2); }\n}\n'
+        caller = (
+            'package app;\npublic class K {\n  public void go() { U.<String>make("x", 2); }\n}\n'
+        )
         edges = _edges(tmp_path, {"app/U.java": ("java", util), "app/K.java": ("java", caller)})
         assert ("app/K.java::K::go", "app/U.java::U::make#2") in edges
 
@@ -866,7 +918,9 @@ class TestNarrowingShapes:
             "  public void f(int a, int b) { f(a); }\n"
             "}\n"
         )
-        edges = _edges(tmp_path, {"app/Base.java": ("java", base), "app/Derived.java": ("java", derived)})
+        edges = _edges(
+            tmp_path, {"app/Base.java": ("java", base), "app/Derived.java": ("java", derived)}
+        )
         assert edges == {("app/Derived.java::Derived::f", "app/Base.java::Base::f")}
 
 
@@ -886,7 +940,7 @@ class TestOverloadTies:
     ) -> None:
         text = (
             "package app;\npublic class Out {\n"
-            "  public String charset() { return \"\"; }\n"
+            '  public String charset() { return ""; }\n'
             "  public Out charset(String name) { return this; }\n"
             "  public Out charset(java.nio.charset.Charset cs) { return this; }\n"
             "  void use(String x) { charset(x); }\n"
@@ -933,7 +987,7 @@ class TestOverloadTies:
             "  public void fmt(String f, Object... args) { }\n"
             "  public void fmt(int n, Object... args) { }\n"
             "  public void fmt() { }\n"
-            "  void use() { fmt(\"a\", 1); }\n"
+            '  void use() { fmt("a", 1); }\n'
             "}\n"
         )
         edges = _edges(tmp_path, {"app/F.java": ("java", text)})
@@ -969,7 +1023,10 @@ class TestOverloadTies:
             repo_path=str(tmp_path),
             heritage_parents={"app/Sub.java::Sub": {"app/Base.java::Base"}},
         )
-        callees = {rc.callee_id for rc in resolver.resolve_file("app/Sub.java", parsed["app/Sub.java"].calls)}
+        callees = {
+            rc.callee_id
+            for rc in resolver.resolve_file("app/Sub.java", parsed["app/Sub.java"].calls)
+        }
         assert callees == ({expected} if expected else set())
 
     def test_java_a_farther_ancestor_overload_takes_what_a_nearer_one_cannot(
@@ -1033,7 +1090,8 @@ class TestOverloadTies:
         )
         caller = '#include "pen.h"\nvoid draw(Pen& p) {\n  p.shift(1);\n}\nvoid lift(Pen& p) {\n  p.shift();\n}\n'
         edges = _edges(
-            tmp_path, {"pen.h": ("cpp", header), "pen.cpp": ("cpp", source), "draw.cpp": ("cpp", caller)}
+            tmp_path,
+            {"pen.h": ("cpp", header), "pen.cpp": ("cpp", source), "draw.cpp": ("cpp", caller)},
         )
         # Both two-parameter members admit one argument through the defaults
         # their declarations write; the no-argument representative does not.
@@ -1054,23 +1112,25 @@ class TestOverloadTies:
         for symbol in parsed.symbols:
             if symbol.id == "app/P.java::P::put#2":
                 symbol.signature = "put"  # no closed parameter list: range unknown
-        resolver = CallResolver({"app/P.java": parsed}, {"app/P.java": set()}, repo_path=str(tmp_path))
-        edges = {(rc.caller_id, rc.callee_id) for rc in resolver.resolve_file("app/P.java", parsed.calls)}
+        resolver = CallResolver(
+            {"app/P.java": parsed}, {"app/P.java": set()}, repo_path=str(tmp_path)
+        )
+        edges = {
+            (rc.caller_id, rc.callee_id) for rc in resolver.resolve_file("app/P.java", parsed.calls)
+        }
         # Only put#1 is known to admit one argument, but put#2 may too: the
         # count does not choose, and the representative answers.
         assert edges == {("app/P.java::P::use", "app/P.java::P::put#0")}
 
-    @pytest.mark.parametrize(
-        ("second_returns", "typed"), [("Tag", True), ("Cs", False)]
-    )
+    @pytest.mark.parametrize(("second_returns", "typed"), [("Tag", True), ("Cs", False)])
     def test_csharp_a_chain_through_a_tie_needs_one_return_type(
         self, tmp_path: Path, second_returns: str, typed: bool
     ) -> None:
         # Two Label() methods; untyped, the bare-name tiers answer Cs's, the
         # one declared last.
         types = (
-            "namespace App;\npublic class Tag {\n  public string Label() => \"\";\n}\n"
-            "public class Cs {\n  public string Label() => \"\";\n}\n"
+            'namespace App;\npublic class Tag {\n  public string Label() => "";\n}\n'
+            'public class Cs {\n  public string Label() => "";\n}\n'
         )
         holder = (
             "namespace App;\npublic class Out {\n"
@@ -1121,11 +1181,20 @@ class TestJavaLiteralArguments:
     def test_literal_types_are_read_per_argument(self) -> None:
         text = (
             "class A {\n  void go(int x) {\n"
-            '    f(true, 2, 3L, 1.5, 1.5f, \'c\', "s", null, -1, x);\n  }\n}\n'
+            "    f(true, 2, 3L, 1.5, 1.5f, 'c', \"s\", null, -1, x);\n  }\n}\n"
         )
         (call,) = _parse("A.java", "java", text).calls
         assert call.argument_types == (
-            "boolean", "int", "long", "double", "float", "char", "String", "null", "int", None
+            "boolean",
+            "int",
+            "long",
+            "double",
+            "float",
+            "char",
+            "String",
+            "null",
+            "int",
+            None,
         )
 
     def test_a_unary_operator_promotes_its_literal(self) -> None:
@@ -1197,27 +1266,33 @@ class TestJavaNamedArguments:
         ("body", "member"),
         [
             # A parameter and a local.
-            ("  long use(long total) {\n    int n = 2;\n    return mul(total, n);\n  }\n",
-             "mul#2(long,int)"),
+            (
+                "  long use(long total) {\n    int n = 2;\n    return mul(total, n);\n  }\n",
+                "mul#2(long,int)",
+            ),
             # A field, read where the body declares no such name.
-            ("  private long base;\n  long use(int n) {\n    return mul(base, n);\n  }\n",
-             "mul#2(long,int)"),
+            (
+                "  private long base;\n  long use(int n) {\n    return mul(base, n);\n  }\n",
+                "mul#2(long,int)",
+            ),
             # A local of a primitive type stands over a field of the same name.
-            ("  private long n;\n  long use(int a) {\n    int n = 1;\n    return mul(a, n);\n  }\n",
-             "mul#2(int,int)"),
+            (
+                "  private long n;\n  long use(int a) {\n    int n = 1;\n    return mul(a, n);\n  }\n",
+                "mul#2(int,int)",
+            ),
         ],
         ids=["parameter-and-local", "field", "local-over-field"],
     )
-    def test_declared_types_choose_the_member(
-        self, tmp_path: Path, body: str, member: str
-    ) -> None:
+    def test_declared_types_choose_the_member(self, tmp_path: Path, body: str, member: str) -> None:
         text = self._MATH.replace("BODY", body)
         edges = _edges(tmp_path, {"app/M.java": ("java", text)})
         assert edges == {("app/M.java::M::use", f"app/M.java::M::{member}")}
 
     def test_a_local_the_scan_cannot_type_hides_the_field(self, tmp_path: Path) -> None:
         """``var n = ...`` shadows the field ``n``: its type is unknown, so the tie stands."""
-        body = "  private long n;\n  long use(int a) {\n    var n = a;\n    return mul(n, a);\n  }\n"
+        body = (
+            "  private long n;\n  long use(int a) {\n    var n = a;\n    return mul(n, a);\n  }\n"
+        )
         edges = _edges(tmp_path, {"app/M.java": ("java", self._MATH.replace("BODY", body))})
         assert edges == {("app/M.java::M::use", "app/M.java::M::mul#2(int,int)")}
 
@@ -1248,7 +1323,7 @@ class TestJavaNamedArguments:
     def test_argument_names_are_read_per_argument(self) -> None:
         text = 'class A {\n  void go(int x) {\n    f(x, 1, this.y, "s", z);\n  }\n}\n'
         (call,) = _parse("A.java", "java", text).calls
-        assert call.argument_names == ("x", None, None, None, "z")
+        assert call.argument_names == ("x", None, "this.y", None, "z")
         assert call.argument_types == (None, "int", None, "String", None)
 
     @pytest.mark.parametrize(
@@ -1291,8 +1366,7 @@ class TestJavaNamedArguments:
         ("members", "member"),
         [
             # Phase one takes Integer as an Object, with no unboxing.
-            ("  void f(int i) { }\n  void f(long l) { }\n  void f(Object o) { }\n",
-             "f#1(Object)"),
+            ("  void f(int i) { }\n  void f(long l) { }\n  void f(Object o) { }\n", "f#1(Object)"),
             # Unboxed to int before widened to long.
             ("  void f(long l) { }\n  void f(int i) { }\n", "f#1(int)"),
         ],
@@ -1373,3 +1447,68 @@ class TestJavaNamedArguments:
         )
         edges = _edges(tmp_path, {"app/Node.java": ("java", text)})
         assert edges == {("app/Node.java::Node::use", "app/Node.java::Node::add#2")}
+
+    def test_var_local_this_field_and_call_arguments_pick_overload(self, tmp_path: Path) -> None:
+        """Issue #3750: var x = make(), this.field, and put(make()) pick put(Item) over put(String)."""
+        files = {
+            "app/Item.java": ("java", "package app;\npublic class Item { }\n"),
+            "app/Sink.java": (
+                "java",
+                "package app;\npublic class Sink {\n"
+                "  public void put(String s) { }\n"
+                "  public void put(Item item) { }\n"
+                "}\n",
+            ),
+            "app/Use.java": (
+                "java",
+                "package app;\npublic class Use {\n"
+                "  Sink sink;\n"
+                "  Item field;\n"
+                "  Item missing;\n"
+                "  Item make() { return new Item(); }\n"
+                "  <T> T gen() { return null; }\n"
+                "  void useVar() {\n"
+                "    var item = make();\n"
+                "    sink.put(item);\n"
+                "  }\n"
+                "  void useFinalVar() {\n"
+                "    final var item = make();\n"
+                "    sink.put(item);\n"
+                "  }\n"
+                "  void useThisField() {\n"
+                "    sink.put(this.field);\n"
+                "  }\n"
+                "  void useCall() {\n"
+                "    sink.put(make());\n"
+                "  }\n"
+                "  void useGenericVar() {\n"
+                "    var x = gen();\n"
+                "    sink.put(x);\n"
+                "  }\n"
+                "  void useMissingThisField() {\n"
+                "    sink.put(this.notAField);\n"
+                "  }\n"
+                "  void useDollarAndUpperVar() {\n"
+                "    var $item = make();\n"
+                "    var ItemLocal = make();\n"
+                "    sink.put($item);\n"
+                "    sink.put(ItemLocal);\n"
+                "  }\n"
+                "  void useStringColonReceiver() {\n"
+                '    sink.put("http://x".trim());\n'
+                "  }\n"
+                "}\n",
+            ),
+        }
+        edges = _edges(tmp_path, files)
+        sink_item = "app/Sink.java::Sink::put#1(Item)"
+        sink_str = "app/Sink.java::Sink::put#1(String)"
+        assert ("app/Use.java::Use::useVar", sink_item) in edges
+        assert ("app/Use.java::Use::useFinalVar", sink_item) in edges
+        assert ("app/Use.java::Use::useThisField", sink_item) in edges
+        assert ("app/Use.java::Use::useCall", sink_item) in edges
+        # Generics and missing fields do not type the argument, so they stay on declaration order (put(String))
+        assert ("app/Use.java::Use::useGenericVar", sink_str) in edges
+        assert ("app/Use.java::Use::useMissingThisField", sink_str) in edges
+        assert ("app/Use.java::Use::useDollarAndUpperVar", sink_item) in edges
+        assert ("app/Use.java::Use::useStringColonReceiver", sink_str) in edges
