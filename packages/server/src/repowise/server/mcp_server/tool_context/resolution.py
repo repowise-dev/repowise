@@ -450,6 +450,7 @@ async def _not_found(q: TargetQuery) -> dict[str, Any]:
         .limit(5)
     )
     suggestions = [row[0] for row in res.all()]
+    is_directory = bool(suggestions)
     if not suggestions:
         tail = target.rsplit("/", 1)[-1]
         res = await q.session.execute(
@@ -462,7 +463,10 @@ async def _not_found(q: TargetQuery) -> dict[str, Any]:
         )
         suggestions = [row[0] for row in res.all() if row[0] != target]
     suggestions = filter_path_list(suggestions, q.exclude_spec)
-    miss: dict[str, Any] = {"target": target, "error": f"Target not found: '{target}'"}
+    error = f"Target not found: '{target}'"
+    if is_directory:
+        error += " is a directory with no module page; pass its files as targets"
+    miss: dict[str, Any] = {"target": target, "error": error}
     if suggestions:
         miss["suggestions"] = suggestions
     miss.update(await _did_you_mean(q.session, q.repo_id, target, exclude_spec=q.exclude_spec))

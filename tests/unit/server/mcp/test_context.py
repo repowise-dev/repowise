@@ -909,6 +909,53 @@ def test_two_targets_share_the_budget_instead_of_one_being_dropped():
         assert "callers" in out["dropped_blocks"][name]
 
 
+def test_a_large_modules_files_keep_a_ranked_prefix_instead_of_dropping_whole():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    def rows():
+        return [
+            {"path": f"pkg/m/f{j:03}.py", "description": "d" * 60, "confidence_score": 0.9}
+            for j in range(240)
+        ]
+
+    result = {
+        "targets": {
+            "pkg/m": {
+                "target": "pkg/m",
+                "type": "module",
+                "docs": {"title": "pkg/m", "summary": "s" * 80, "files": rows()},
+            }
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(result, char_budget=9000, record_counts=True)
+
+    docs = out["targets"]["pkg/m"]["docs"]
+    kept = len(docs["files"])
+    assert len(json.dumps(out, separators=(",", ":"), default=str)) <= 9000
+    assert "docs.files" not in out.get("dropped_blocks", {}).get("pkg/m", [])
+    # The head of the ranked list, never below the entitled quarter of 240.
+    assert 60 <= kept < 240
+    assert docs["files"] == rows()[:kept]
+    assert (docs["files_total"], docs["files_emitted"], docs["files_omitted"]) == (
+        240,
+        kept,
+        240 - kept,
+    )
+
+
+def test_a_small_modules_files_are_untouched():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    files = [{"path": f"pkg/m/f{j}.py", "description": "d", "confidence_score": 0.9} for j in range(5)]
+    docs = {"title": "pkg/m", "summary": "s", "files": files}
+    result = {"targets": {"pkg/m": {"target": "pkg/m", "type": "module", "docs": docs}}, "_meta": {}}
+    out = _truncate_to_budget(result, char_budget=9000, record_counts=True)
+
+    assert out["targets"]["pkg/m"]["docs"]["files"] == files
+    assert "files_total" not in out["targets"]["pkg/m"]["docs"]
+
+
 def test_a_small_target_keeps_everything_while_a_large_one_degrades():
     from repowise.server.mcp_server.tool_context import _truncate_to_budget
 
@@ -1087,3 +1134,71 @@ async def test_days_since_last_change_prefers_as_of_ts(session):
     last = datetime(2026, 3, 15)
     as_of = datetime(2026, 3, 25)
     assert await _days_since_last_change(session, "any-repo-id", last, as_of) == 10
+
+
+@pytest.mark.asyncio
+async def test_a_modules_files_come_most_central_first(setup_mcp, session):
+    """A budget cut keeps the head of the list, so the head must be the important files."""
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GraphNode
+    from repowise.server.mcp_server import get_context
+
+    await session.execute(
+        update(GraphNode).where(GraphNode.node_id == "src/auth/middleware.py").values(pagerank=0.95)
+    )
+    await session.flush()
+
+    result = await get_context(["src/auth"], include=["docs"], compact=False)
+
+    paths = [f["path"] for f in result["targets"]["src/auth"]["docs"]["files"]]
+    assert paths == ["src/auth/middleware.py", "src/auth/service.py"]
+
+
+@pytest.mark.asyncio
+async def test_a_directory_without_a_module_page_says_so(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    session.add(
+        GitMetadata(
+            id="gm-tools-run",
+            repository_id=populated_db,
+            file_path="src/tools/run.py",
+            commit_count_total=1,
+            commit_count_90d=1,
+            commit_count_30d=1,
+            first_commit_at=_NOW,
+            last_commit_at=_NOW,
+            primary_owner_name="Carol",
+            primary_owner_email="carol@example.com",
+            primary_owner_commit_pct=1.0,
+            top_authors_json=json.dumps([{"name": "Carol", "count": 1}]),
+            significant_commits_json=json.dumps([]),
+            co_change_partners_json=json.dumps([]),
+            is_hotspot=False,
+            is_stable=True,
+            churn_percentile=0.1,
+            age_days=1,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+    )
+    await session.flush()
+
+    result = await get_context(["src/tools"], include=["docs"])
+
+    card = result["targets"]["src/tools"]
+    assert card["error"] == (
+        "Target not found: 'src/tools' is a directory with no module page; "
+        "pass its files as targets"
+    )
+    assert card["suggestions"] == ["src/tools/run.py"]
+
+
+@pytest.mark.asyncio
+async def test_a_missing_file_keeps_the_plain_not_found(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/nowhere.py"], include=["docs"])
+
+    assert result["targets"]["src/nowhere.py"]["error"] == "Target not found: 'src/nowhere.py'"
