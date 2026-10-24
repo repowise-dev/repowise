@@ -42,7 +42,7 @@ link names how it was made, from a closed vocabulary with one confidence per val
 | `scanner.py` | Finds git repositories under a directory for `repowise init` |
 | `config.py` | `.repowise-workspace.yaml`: repos, `ContractConfig` (each field declares its stage), `ConformanceConfig`, `analysis_fingerprint` |
 | `update/` | The workspace update: stale-repo selection and per-repo updates (`workspace_pass.py`, `repo.py`), then the cross-repo phases (`phases.py`) |
-| `extractors/` | Contract dialects per type (`http/`, `grpc/`, `topic/`, `socket/`, `data/`), plus `openapi.py`, `masstransit.py`, `service_boundary.py`; layout in [language-support.md](language-support.md#workspace-contract-extraction) |
+| `extractors/` | Contract dialects per type (`http/`, `grpc/`, `graphql/`, `topic/`, `socket/`, `data/`), plus `openapi.py`, `masstransit.py`, `service_boundary.py`; layout in [language-support.md](language-support.md#workspace-contract-extraction) |
 | `extractors/base.py`, `extractors/dialect.py` | The one walk, `ScanContext` (per-file gate memo and comment mask), `run_dialect`, `DialectExtractor` |
 | `code_api.py` | A library's published surface as a `code` contract |
 | `origins.py` | `ContractOrigin` and `LinkStrategy`, each with one confidence per value |
@@ -282,7 +282,7 @@ Details the table compresses:
 | Registry | Where | An entry declares | Enforced by |
 |----------|-------|-------------------|-------------|
 | HTTP dialects | `extractors/http/__init__.py` `PROVIDER_DIALECTS`, `CONSUMER_DIALECTS` | `name`, `extensions`, `requires`, `extract` | `test_dialect_registry.py`, `test_extraction_dialect_budget.py` |
-| Topic, socket, gRPC, data dialects | `DIALECTS` in `extractors/topic/`, `socket/`, `grpc/`; `PROVIDER_DIALECTS` and `CONSUMER_DIALECTS` in `data/` | The same; a table dialect's rows each declare `requires` and an `origin`, and the dialect's gate is the union of its rows' (`rows_gate`) | The same two, plus `test_origins.py` |
+| Topic, socket, gRPC, GraphQL, data dialects | `DIALECTS` in `extractors/topic/`, `socket/`, `grpc/`, `graphql/`; `PROVIDER_DIALECTS` and `CONSUMER_DIALECTS` in `data/` | The same; a table dialect's rows each declare `requires` and an `origin`, and the dialect's gate is the union of its rows' (`rows_gate`) | The same two, plus `test_origins.py` |
 | Contract origins | `origins.py` `ContractOrigin`, `ORIGIN_CONFIDENCE` | One confidence per value | `test_origins.py` |
 | Link strategies | `origins.py` `LinkStrategy`, `STRATEGY_CONFIDENCE` | One factor per value; `match_type_for` derives exact, candidate or manual | `test_origins.py` |
 | Type matchers | `matching/__init__.py` `MATCHERS` | Optional `deferred`, `accepts`, `keys`, `passes` | Per-type matching tests |
@@ -296,7 +296,7 @@ Details the table compresses:
 What the registry tests assert:
 
 - `test_dialect_registry.py`: every registered dialect has a non-empty gate, and
-  `EVERY_FILE` only on contract formats (`.proto`, `.sql`, `.prisma`); every table
+  `EVERY_FILE` only on contract formats (`.proto`, `.sql`, `.prisma`, `.graphql`, `.graphqls`, `.gql`); every table
   row has a gate and an `origin` from `ContractOrigin`; names are unique per
   contract type; a token is searched for once per file however many dialects name
   it.

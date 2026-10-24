@@ -1275,6 +1275,7 @@ workspace/extractors/
     js_clients.py  node_clients.py  python_clients.py  php_clients.py  # consumers
     __init__.py      #   HttpExtractor (adds router mounts + index passes)
   grpc/              #   proto.py + languages.py (one table of stub shapes)
+  graphql/           #   schema.py (SDL) + documents.py (gql templates, .graphql operations) + resolvers.py
   calls.py           #   call_sites / call_chain / decorated_member: the table reader every type shares
   topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
                      #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
@@ -1287,7 +1288,7 @@ A dialect declares the file extensions it understands (via `langs.py`) and turns
 matches into `Contract`s through shared builders, so every dialect emits
 identically-shaped providers/consumers and normalization lives in one place.
 **Adding a framework or client** means dropping one module into `http/`,
-`grpc/`, `topic/`, `socket/` or `data/` and appending its dialect to the
+`grpc/`, `graphql/`, `topic/`, `socket/` or `data/` and appending its dialect to the
 relevant registry tuple, with no orchestrator edits. A dialect whose contracts
 span files (a Laravel job dispatched in one file runs on the queue its class
 declares in another) offers a `repo_pass()` instead: it sees every file, then
@@ -1312,6 +1313,7 @@ mislead the masker.
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
 | **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
+| **GraphQL** | SDL (`.graphql`, `.graphqls`, `.gql`), Spring for GraphQL (`@QueryMapping` and kin), graphql-java (`newTypeWiring`), NestJS (`@Query` of `@nestjs/graphql`) | `.graphql` / `.gql` operation files, `gql` / `graphql` templates (JS / TS), `gql("...")` (Python) |
 | **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |

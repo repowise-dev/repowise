@@ -1,9 +1,10 @@
-"""Contract extractors: HTTP routes, gRPC services, sockets, message topics,
+"""Contract extractors: HTTP routes, gRPC services, GraphQL root fields, sockets, message topics,
 MassTransit message types, database tables, service boundaries."""
 
 from __future__ import annotations
 
 from .data import DataExtractor, normalize_table_name
+from .graphql import GraphqlExtractor
 from .grpc import GrpcExtractor
 from .http import HttpExtractor, normalize_http_path
 from .masstransit import MassTransitExtractor, build_message_type_index
@@ -18,6 +19,7 @@ from .topic import TopicExtractor
 
 __all__ = [
     "DataExtractor",
+    "GraphqlExtractor",
     "GrpcExtractor",
     "HttpExtractor",
     "MassTransitExtractor",

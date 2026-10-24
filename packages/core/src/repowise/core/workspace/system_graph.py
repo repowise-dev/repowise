@@ -72,6 +72,8 @@ SYSTEM_GRAPH_FILENAME = "system_graph.json"
 _CONTRACT_TYPE_TO_EDGE_KIND: dict[str, str] = {
     "http": "http",
     "grpc": "grpc",
+    # GraphQL rides HTTP, so its edges are HTTP edges and the taxonomy stays fixed.
+    "graphql": "http",
     "socket": "socket",
     "topic": "event",
     "data": "db",

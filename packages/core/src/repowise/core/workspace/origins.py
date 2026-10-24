@@ -25,7 +25,7 @@ from enum import StrEnum
 class ContractOrigin(StrEnum):
     """What established a contract. Confidence per value: :data:`ORIGIN_CONFIDENCE`."""
 
-    #: An OpenAPI or proto document declares the operation.
+    #: An OpenAPI, proto or GraphQL SDL document declares the operation.
     IDL = "idl"
     #: A published package exports the symbol another repo imports.
     PACKAGE_EXPORT = "package_export"

@@ -22,6 +22,9 @@ CSHARP = _REGISTRY.extensions_for(["csharp"])
 VBNET = _REGISTRY.extensions_for(["vbnet"])
 RUST = _REGISTRY.extensions_for(["rust"])
 PROTO = _REGISTRY.extensions_for(["proto"])
+# ``.graphqls`` is Spring GraphQL's schema extension; the registry knows only
+# ``.graphql`` and ``.gql``, and ``.graphqls`` is read for contracts alone.
+GRAPHQL = _REGISTRY.extensions_for(["graphql"]) | frozenset({".graphqls"})
 APEX = _REGISTRY.extensions_for(["apex"])
 
 # A JS / TS module file's extension, which an import specifier leaves off.

@@ -114,7 +114,7 @@ class Contract:
 
     repo: str  # repo alias
     contract_id: str  # e.g. "http::GET::/api/users/{param}", "data::orders"
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
+    contract_type: str  # "http" | "grpc" | "graphql" | "socket" | "topic" | "data" | "code"
     role: str  # "provider" | "consumer"
     file_path: str  # relative to repo root
     symbol_name: str  # handler name, service.method, etc. — display only
@@ -178,7 +178,7 @@ class ContractLink:
     """A matched provider↔consumer pair across repos."""
 
     contract_id: str
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
+    contract_type: str  # "http" | "grpc" | "graphql" | "socket" | "topic" | "data" | "code"
     match_type: str  # "exact" | "candidate" | "manual", derived from ``strategy``
     confidence: float
     provider_repo: str
@@ -319,7 +319,7 @@ class ContractStore:
 # name is a member inside its owning class — and every consumer is a call inside
 # a body, so for those the symbol containing the line is already the answer and
 # looking below it would take the first method instead.
-_DECLARED_ABOVE = frozenset({"http", "grpc", "socket", "topic"})
+_DECLARED_ABOVE = frozenset({"http", "grpc", "graphql", "socket", "topic"})
 
 
 def bind_symbol_ids(contracts: list[Contract], index: RepoIndex | None) -> dict[str, int]:
@@ -384,6 +384,8 @@ def normalize_contract_id(contract_id: str) -> str:
 
     - ``http::GET::/Api/Users/`` → ``http::GET::/api/users``
     - ``grpc::PKG.Service/Method`` → ``grpc::pkg.service/Method``
+    - ``graphql::query.bookById`` keeps the field's case (``Query.bookById`` and
+      ``Query.bookbyid`` are two fields); the root type is lower-cased
     - ``socket::/Game/State/`` → ``socket::/game/state``
     - ``topic::Orders`` → ``topic::orders``
     - ``data::Orders`` → ``data::orders`` (via the lowercase fallback; table
@@ -412,6 +414,11 @@ def normalize_contract_id(contract_id: str) -> str:
             method = value[slash_idx:]  # includes the /
             return f"grpc::{prefix}{method}"
         return f"grpc::{value.lower()}"
+
+    # A field name is case-sensitive; the root type is one of three fixed names.
+    if ctype == "graphql" and len(parts) == 2:
+        root, dot, field = parts[1].partition(".")
+        return f"graphql::{root.lower()}{dot}{field}"
 
     if ctype == "socket" and len(parts) == 2:
         path = parts[1].lower().rstrip("/")
@@ -820,6 +827,7 @@ def _enabled_extractors(contract_config: Any) -> list[Any]:
     """The extractors the contract config turns on, in run order."""
     from .extractors import (
         DataExtractor,
+        GraphqlExtractor,
         GrpcExtractor,
         HttpExtractor,
         MassTransitExtractor,
@@ -834,6 +842,8 @@ def _enabled_extractors(contract_config: Any) -> list[Any]:
         extractors.append(OpenApiExtractor())
     if contract_config.detect_grpc:
         extractors.append(GrpcExtractor())
+    if contract_config.detect_graphql:
+        extractors.append(GraphqlExtractor())
     if contract_config.detect_socket:
         extractors.append(SocketExtractor())
     if contract_config.detect_topics:

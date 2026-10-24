@@ -11,7 +11,7 @@ import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { contractsListHref, type ContractListFilters } from "./contract-href";
 
 /** Every type the extractors can emit, in tab order. */
-const ALL_TYPES = ["http", "grpc", "socket", "topic", "data", "code"];
+const ALL_TYPES = ["http", "grpc", "graphql", "socket", "topic", "data", "code"];
 
 /** Keystrokes settle for this long before the list is re-fetched. */
 const SEARCH_DEBOUNCE_MS = 300;

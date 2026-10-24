@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.workspace.extractors import data, grpc, http, socket, topic
+from repowise.core.workspace.extractors import data, graphql, grpc, http, socket, topic
 from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.dialect import run_dialect
 
@@ -37,7 +37,7 @@ _BUDGET = 0.4
 _REFERENCE_RE = re.compile(r"(\w+)\s*\.\s*(\w+)\s*\(")
 
 #: Contract file formats are read whole by a parser: every such file is one.
-_FORMATS = frozenset({".proto", ".sql", ".prisma"})
+_FORMATS = frozenset({".proto", ".sql", ".prisma", ".graphql", ".graphqls", ".gql"})
 
 SOURCE_DIALECTS = tuple(
     d
@@ -47,6 +47,7 @@ SOURCE_DIALECTS = tuple(
         *topic.DIALECTS,
         *socket.DIALECTS,
         *grpc.DIALECTS,
+        *graphql.DIALECTS,
         *data.PROVIDER_DIALECTS,
         *data.CONSUMER_DIALECTS,
     )

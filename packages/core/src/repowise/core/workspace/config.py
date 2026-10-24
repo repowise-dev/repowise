@@ -90,7 +90,7 @@ class ManualContractLink:
 
     from_repo: str
     to_repo: str
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "graphql" | "socket" | "topic" | "data"
     contract_id: str  # normalized contract ID
     from_role: str = "consumer"  # the from_repo's role
 
@@ -142,6 +142,7 @@ class ContractConfig:
 
     detect_http: bool = field(default=True, metadata=_EXTRACTION)
     detect_grpc: bool = field(default=True, metadata=_EXTRACTION)
+    detect_graphql: bool = field(default=True, metadata=_EXTRACTION)
     detect_socket: bool = field(default=True, metadata=_EXTRACTION)
     detect_topics: bool = field(default=True, metadata=_EXTRACTION)
     detect_data: bool = field(default=True, metadata=_EXTRACTION)
@@ -171,6 +172,7 @@ class ContractConfig:
         d: dict[str, Any] = {
             "detect_http": self.detect_http,
             "detect_grpc": self.detect_grpc,
+            "detect_graphql": self.detect_graphql,
             "detect_socket": self.detect_socket,
             "detect_topics": self.detect_topics,
             "detect_data": self.detect_data,
@@ -192,6 +194,7 @@ class ContractConfig:
         return cls(
             detect_http=bool(data.get("detect_http", True)),
             detect_grpc=bool(data.get("detect_grpc", True)),
+            detect_graphql=bool(data.get("detect_graphql", True)),
             detect_socket=bool(data.get("detect_socket", True)),
             detect_topics=bool(data.get("detect_topics", True)),
             detect_data=bool(data.get("detect_data", True)),
