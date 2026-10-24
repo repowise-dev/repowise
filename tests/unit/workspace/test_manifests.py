@@ -208,6 +208,16 @@ class TestPythonNames:
         _text(api / "requirements.txt", "git+https://example.com/lib.git#egg=lib\n")
         assert _deps({"git": git, "api": api}) == []
 
+    def test_a_poetry_group_path_dependency_resolves_by_path(self, tmp_path: Path) -> None:
+        lib, api = tmp_path / "lib", tmp_path / "api"
+        _text(lib / "pyproject.toml", '[project]\nname = "lib"\n')
+        _text(
+            api / "pyproject.toml",
+            '[tool.poetry]\nname = "api"\n'
+            '[tool.poetry.group.dev.dependencies]\nlib = { path = "../lib", develop = true }\n',
+        )
+        assert _deps({"lib": lib, "api": api}) == [("api", "lib", "pyproject.toml", "pip_path", "")]
+
     def test_a_path_source_resolves_by_path_alone(self, tmp_path: Path) -> None:
         lib, api = tmp_path / "lib", tmp_path / "api"
         _text(lib / "pyproject.toml", '[project]\nname = "lib"\n')

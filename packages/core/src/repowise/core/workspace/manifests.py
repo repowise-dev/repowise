@@ -380,15 +380,19 @@ def _load_toml(path: Path) -> dict:
 
 
 def _python_path_sources(data: dict) -> Iterator[tuple[str, str]]:
-    """``(name, path)`` for each Poetry path dependency and uv path source."""
+    """``(name, path)`` for each Poetry path dependency (groups too) and uv path source."""
     tool = data.get("tool")
     tool = tool if isinstance(tool, dict) else {}
     poetry = tool.get("poetry")
+    poetry = poetry if isinstance(poetry, dict) else {}
     uv = tool.get("uv")
-    tables = (
-        poetry.get("dependencies") if isinstance(poetry, dict) else None,
+    groups = poetry.get("group")
+    groups = groups.values() if isinstance(groups, dict) else ()
+    tables = [
+        poetry.get("dependencies"),
         uv.get("sources") if isinstance(uv, dict) else None,
-    )
+        *(g.get("dependencies") for g in groups if isinstance(g, dict)),
+    ]
     for table in tables:
         if not isinstance(table, dict):
             continue
@@ -399,9 +403,30 @@ def _python_path_sources(data: dict) -> Iterator[tuple[str, str]]:
                     yield str(name), one["path"]
 
 
-def _is_requirements(filename: str) -> bool:
+def _is_python_manifest(filename: str) -> bool:
     lower = filename.lower()
-    return lower.startswith("requirements") and lower.endswith(".txt")
+    return filename == "pyproject.toml" or (
+        lower.startswith("requirements") and lower.endswith(".txt")
+    )
+
+
+def _python_requirements(base: Path, repo_path: Path) -> Iterator[tuple[str, str | None, str]]:
+    """``(PEP 503 name, version, manifest)`` for every requirement in *base*'s manifests."""
+    try:
+        filenames = sorted(f.name for f in base.iterdir() if f.is_file())
+    except OSError:
+        return
+    for filename in filter(_is_python_manifest, filenames):
+        try:
+            records = pypi.parse(base / filename, repo_path)
+        except Exception:  # a malformed manifest must not fail the workspace pass
+            _log.debug("Could not read %s", base / filename, exc_info=True)
+            continue
+        for record in records:
+            # A URL or VCS line (`git+https://...`, `https://...`) reads as
+            # the name `git` / `https`; it names no distribution.
+            if not (record.version or "").startswith(("+", ":")):
+                yield _dist_key(record.name), record.version, record.declared_in
 
 
 def _scan_python(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
@@ -409,41 +434,20 @@ def _scan_python(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
 
     Each project the repo ships is read: its ``pyproject.toml`` (PEP 621,
     optional dependencies, Poetry and its groups) and the ``requirements*.txt``
-    beside it. Names compare in their PEP 503 spelling. A main Poetry path
+    beside it. Names compare in their PEP 503 spelling. A Poetry path
     dependency or a uv path source resolves by that path alone, as an npm
     ``file:`` spec does.
     """
     for rel_dir in index.python_by_repo.get(alias, ()):
         base = repo_path / rel_dir
         pathed: set[str] = set()
-        toml_path = base / "pyproject.toml"
-        if toml_path.is_file():
-            rel = _in_dir(rel_dir, "pyproject.toml")
-            for name, ref in _python_path_sources(_load_toml(toml_path)):
-                pathed.add(_dist_key(name))
-                yield _path_dep(index, alias, base, ref, rel, "pip_path")
-        try:
-            filenames = sorted(f.name for f in base.iterdir() if f.is_file())
-        except OSError:
-            continue
-        for filename in filenames:
-            if filename != "pyproject.toml" and not _is_requirements(filename):
-                continue
-            try:
-                records = pypi.parse(base / filename, repo_path)
-            except Exception:  # a malformed manifest must not fail the workspace pass
-                _log.debug("Could not read %s", base / filename, exc_info=True)
-                continue
-            for record in records:
-                # A URL or VCS line (`git+https://...`, `https://...`) reads as
-                # the name `git` / `https`; it names no distribution.
-                if (record.version or "").startswith(("+", ":")):
-                    continue
-                key = _dist_key(record.name)
-                if key not in pathed:
-                    yield _name_dep(
-                        index, alias, "pypi", key, record.version, record.declared_in, "pip_package"
-                    )
+        rel = _in_dir(rel_dir, "pyproject.toml")
+        for name, ref in _python_path_sources(_load_toml(base / "pyproject.toml")):
+            pathed.add(_dist_key(name))
+            yield _path_dep(index, alias, base, ref, rel, "pip_path")
+        for key, version, manifest in _python_requirements(base, repo_path):
+            if key not in pathed:
+                yield _name_dep(index, alias, "pypi", key, version, manifest, "pip_package")
 
 
 def _scan_cargo(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
