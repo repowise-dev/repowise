@@ -39,9 +39,10 @@ function familyPhrase(t: Translator, join: ListJoin, rows: readonly FamilyTally[
 }
 
 /**
- * "10 services in 3 repositories. 8 runtime and data relationships are drawn;
- * 10 build and history relationships are hidden." One sentence pair, stated
- * for the families the filter draws right now. Null before there is a service to state.
+ * "10 services in 3 repositories. The edge filter shows 4 runtime and 4 data
+ * relationships and hides 4 build and 6 history." Whole-estate counts per
+ * family the filter selects; what a level or the draw budget leaves out is
+ * the map caption's to say, beside the canvas. Null before there is a service to state.
  */
 export function mapLede(
   t: Translator,

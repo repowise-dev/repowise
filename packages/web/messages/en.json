@@ -2003,9 +2003,9 @@
         "build": "build",
         "history": "history"
       },
-      "drawn": "{total, plural, one {{families} relationship is drawn.} other {{families} relationships are drawn.}}",
-      "drawnAndHidden": "{drawnTotal, plural, one {{drawn} relationship is drawn} other {{drawn} relationships are drawn}}; {hiddenTotal, plural, one {{hidden} relationship is hidden.} other {{hidden} relationships are hidden.}}",
-      "allHidden": "{total, plural, one {{families} relationship is hidden} other {{families} relationships are hidden}} by the edge filter."
+      "drawn": "The edge filter shows {families} {total, plural, one {relationship} other {relationships}}.",
+      "drawnAndHidden": "The edge filter shows {drawn} {drawnTotal, plural, one {relationship} other {relationships}} and hides {hidden}.",
+      "allHidden": "The edge filter hides all {families} {total, plural, one {relationship} other {relationships}}."
     },
     "lens": {
       "none": {

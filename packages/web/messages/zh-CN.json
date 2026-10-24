@@ -2003,8 +2003,8 @@
         "build": "构建",
         "history": "历史"
       },
-      "drawn": "已绘制 {families}关系。",
-      "drawnAndHidden": "已绘制 {drawn}关系；已隐藏 {hidden}关系。",
+      "drawn": "边筛选显示 {families}关系。",
+      "drawnAndHidden": "边筛选显示 {drawn}关系，隐藏 {hidden}关系。",
       "allHidden": "边筛选隐藏了全部 {families}关系。"
     },
     "lens": {
