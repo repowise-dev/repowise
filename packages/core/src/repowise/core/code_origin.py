@@ -121,8 +121,12 @@ _GENERATED_SENTENCE_RE = re.compile(
 _GENERATED_BANNER_LINE_RE = re.compile(r"^GENERATED CODE - DO NOT MODIFY BY HAND\s*$")
 # Visual Studio rewrites resource headers, but ingestion must keep their include edges.
 _VISUAL_CPP_BANNER_LINE_RE = re.compile(r"^MICROSOFT VISUAL C\+\+ GENERATED INCLUDE FILE\.?\s*$")
+# Go's standard generated comment convention (cmd/go: "^// Code generated .* DO NOT EDIT.$"),
+# placed after a license header. Whole line only, so prose mentioning codegen is not matched.
+_GO_GENERATED_BANNER_LINE_RE = re.compile(r"^CODE GENERATED .*DO NOT EDIT\.?\s*$")
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
+_IMPORT_PREFIXES = ("import ", "from ", "using ")
 
 
 def _comment_text(line: str, in_docstring: bool) -> str | None:
@@ -195,6 +199,7 @@ def _says_generated(text: str) -> bool:
     return bool(
         _GENERATED_SENTENCE_RE.search(text)
         or _GENERATED_BANNER_LINE_RE.search(text)
+        or _GO_GENERATED_BANNER_LINE_RE.search(text)
         or _VISUAL_CPP_BANNER_LINE_RE.search(text)
     )
 
@@ -202,7 +207,7 @@ def _says_generated(text: str) -> bool:
 def _above_import(lines: list[str], i: int) -> bool:
     """A comment right above an import is about that import ("this file is
     generated at build time" over the import of a build artifact)."""
-    return i + 1 < len(lines) and lines[i + 1].startswith(_PREAMBLE_PREFIXES)
+    return i + 1 < len(lines) and lines[i + 1].startswith(_IMPORT_PREFIXES)
 
 
 # .NET reference assemblies (``src/libraries/<Lib>/ref/<Lib>.cs``) declare the
