@@ -290,24 +290,7 @@ def dead_code_command(
         repo_alias=repo_alias,
     )
     notices = notice_console(fmt)
-    target.notice(notices, command="dead-code")
-
-    if target.is_workspace:
-        if target.repo_filter is not None:
-            picked = target.resolve_repo_alias(target.repo_filter)
-            if picked is None:
-                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-            repo_path = picked
-        else:
-            primary = target.primary_path()
-            if primary is None:
-                raise click.ClickException("Workspace has no primary repo configured.")
-            repo_path = primary
-            notices.print("[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]")
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
-
+    repo_path = target.narrow(notices, command="dead-code")
     notices.print(f"[bold]repowise dead-code[/bold]: {repo_path}")
 
     config: dict = {

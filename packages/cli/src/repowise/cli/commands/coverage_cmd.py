@@ -38,14 +38,7 @@ from repowise.core.workspace.update import get_head_commit
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     """Resolve the repo path for coverage subcommands (workspace-aware)."""
     target = resolve_command_target(path=path)
-    target.notice(notice_console(fmt), command="coverage")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        return primary
-    assert target.repo_path is not None
-    return target.repo_path
+    return target.narrow(notice_console(fmt), command="coverage", repo_option=False)
 
 
 async def _repo_file_keys(session, repo_id: str) -> set[str]:

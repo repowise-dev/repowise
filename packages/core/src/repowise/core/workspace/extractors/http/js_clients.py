@@ -1,7 +1,8 @@
 """JavaScript / TypeScript HTTP consumer dialect.
 
 Covers direct ``fetch`` calls, the client libraries of :mod:`.node_clients`
-(axios, ky, got, ofetch and their instances), plus wrapper calls whose first
+(axios, ky, got, ofetch, request, superagent, needle, AngularJS ``$http``
+and their instances), plus wrapper calls whose first
 argument is a concrete URL literal, e.g. ``fetchJSON(`${BASE}/path`, { method:
 "POST" })``. Wrapper detection is signal-gated (the callee name looks HTTP-ish,
 or the call carries a ``method:`` option) so ordinary `/`-prefixed string
@@ -21,6 +22,7 @@ from ..langs import JS_TS
 from ..strings import JS_SYNTAX, literal_span, string_constants
 from .angular import environment_mounts
 from .client_calls import ClientCallMatch, consumer_contracts, matches_in
+from .commonjs import exports_mounts
 from .node_clients import client_calls, client_mounts
 
 if TYPE_CHECKING:
@@ -128,7 +130,7 @@ class JsClientsDialect:
     requires = ("fetch", "'/", '"/', "`/", "${", "http", "axios", "import", "require", "export")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        return client_mounts(ctx) | environment_mounts(ctx)
+        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

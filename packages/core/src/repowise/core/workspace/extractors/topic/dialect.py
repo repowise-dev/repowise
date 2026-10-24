@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from ..base import ScanContext
     from ..calls import FileStrings
     from ..strings import Arg
+    from .declared import QueueDeclaration
 
 #: Wildcard characters of each subscription-pattern syntax, which a name must
 #: contain to be read as a pattern (``regex`` names are patterns outright).
@@ -55,7 +56,9 @@ class TopicCall:
     substrings (the library's import) one of which the file must contain.
     ``normalize`` maps a resolved name to the broker's own (a queue URL to its
     last segment). ``pattern`` is the subscription-pattern syntax of a
-    consumer whose name may carry wildcards.
+    consumer whose name may carry wildcards. ``declared`` reads a queue
+    named through its declaration's result (``q.Name``): the ``queue`` of a
+    binding, else the ``name``.
     """
 
     head: re.Pattern[str]
@@ -67,6 +70,7 @@ class TopicCall:
     origin: ContractOrigin = ContractOrigin.CLIENT_CALL
     routing_key: Arg | None = None
     queue: Arg | None = None
+    declared: QueueDeclaration | None = None
     default_exchange: bool = False
     requires: tuple[str, ...] = ()
     normalize: Callable[[str], str | None] | None = None
@@ -153,9 +157,13 @@ def call_contracts(
     queues: list[str] = []
     if call.queue is not None:
         queues, _ = strings.resolve(args, call.queue)
+        if not queues and call.declared is not None:
+            queues = call.declared.queues(ctx, args, call.queue, strings)
         if not queues:
             return []  # a binding with no readable queue binds nothing we can name
     names, _ = strings.resolve(args, call.name, call.normalize)
+    if not names and call.declared is not None and call.queue is None:
+        names = call.declared.queues(ctx, args, call.name, strings)
     out: list[Contract] = []
     for name in names:
         kind, key, unresolved = call.kind, routing_key, key_refused

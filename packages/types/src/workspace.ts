@@ -197,6 +197,8 @@ export interface OrphanProvider {
   file_path: string;
   contract_id: string;
   contract_type: string;
+  /** Other files of the same repo and service declaring the same id. */
+  other_files?: string[];
 }
 
 export interface ExtractionDiagnostics {
@@ -208,6 +210,8 @@ export interface ExtractionDiagnostics {
   unmatched_consumers: UnmatchedConsumer[];
   unmatched_by_reason: Record<string, number>;
   orphan_providers: OrphanProvider[];
+  /** Consumers served by their own repo + service, kept out of `unmatched_consumers`. */
+  in_service_consumers?: UnmatchedConsumer[];
   /** Workspace-wide rollup of the per-repo `index` / `regex` split. */
   providers_by_layer: Record<string, number>;
   consumers_by_layer: Record<string, number>;
@@ -219,6 +223,9 @@ export interface ExtractionDiagnostics {
    * seen (0/0 is not 100%) or the artifact predates that count.
    */
   http_consumer_coverage: number | null;
+  /** HTTP consumers that linked to another service, and their share of the same denominator. */
+  http_consumers_linked?: number | null;
+  http_link_coverage?: number | null;
   /** Per repo, files with a network-call token and no consumer contract; `null` before the count existed. */
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;

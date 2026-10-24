@@ -44,14 +44,17 @@ class StringSyntax:
     ``None`` means the body is already in ``${expr}`` form.
 
     ``format_heads`` name calls whose first argument is a template with
-    ``placeholder`` holes. ``unwrap_heads`` name calls whose single argument
+    ``placeholder`` holes; ``format_method`` is a method called on such a
+    template (Python's ``"/x/{}".format(id)``). ``unwrap_heads`` name calls whose single argument
     *is* the value. ``concat`` is the string-concatenation operator, empty when
     the language's dialects do not fold concatenation. ``assignment`` locates
     ``name = rhs`` statements for constant folding; ``assignment_strip`` drops a
     trailing decoration from the right-hand side (Ruby's ``.freeze``).
     ``members`` locates a constant object or enum (``const Q = {``,
     ``enum Q {``), ending at its opening brace; each ``key: value`` or
-    ``key = value`` entry folds as ``Q.key``.
+    ``key = value`` entry folds as ``Q.key``. ``self_prefixes`` read a
+    class's own member (PHP ``self::X``, Python ``self.X``), looked up as the
+    bare name the class body assigns.
     """
 
     quotes: str = "\"'"
@@ -63,11 +66,13 @@ class StringSyntax:
     refuse_prefixes: str = ""
     format_heads: tuple[str, ...] = ()
     placeholder: re.Pattern[str] | None = None
+    format_method: str = ""
     unwrap_heads: tuple[str, ...] = ()
     concat: str = ""
     assignment: re.Pattern[str] | None = None
     assignment_strip: re.Pattern[str] | None = None
     members: re.Pattern[str] | None = None
+    self_prefixes: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +210,10 @@ _TEMPLATE_INTERP_RE = re.compile(r"\$\{([^{}]+)\}")
 # Dropped from an interpolated expression (``settings.base.rstrip('/')``) so a
 # base-token reader sees the attribute, not ``rstrip``.
 _TRAILING_CALL_RE = re.compile(r"\.\s*\w+\s*\([^()]*\)\s*$")
+# A dotted name converted to text by a no-argument method: `id.toString()`, `name.strip()`.
+_CONVERSION_RE = re.compile(
+    NAME_RE.pattern + r"\.\s*(?:toString|trim|toLowerCase|toUpperCase|strip|lower|upper)\s*\(\s*\)"
+)
 
 
 @cache
@@ -245,12 +254,22 @@ def _interpolates(prefix: str, quote: str, syntax: StringSyntax) -> bool:
     )
 
 
-def _lookup(name: str, constants: dict[str, str]) -> str | None:
+# The value recorded for a `self.X` the file assigns but does not settle: it
+# resolves to nothing, so `self.X` is refused rather than read as a bare `X`.
+_UNSETTLED = ""
+
+
+def _lookup(name: str, constants: dict[str, str], syntax: StringSyntax) -> str | None:
     const = constants.get(name)
     if const is None and name.startswith("$"):
         const = constants.get(name[1:])  # a PHP variable, keyed without its sigil
-    if const is None and name.startswith(("self::", "static::")):
-        const = constants.get(name.partition("::")[2])  # a PHP class constant
+    if const is None:
+        for prefix in syntax.self_prefixes:
+            if name.startswith(prefix):
+                # A class's own member: its `self.X` binding first, else the bare `X`.
+                bare = name[len(prefix) :]
+                own = constants.get(syntax.self_prefixes[0] + bare)
+                return own if own is not None else constants.get(bare)
     return const
 
 
@@ -261,7 +280,7 @@ def _fold(expr: str, syntax: StringSyntax, constants: dict[str, str]) -> str:
     the corpus needs a second level, and a half-folded template would be wrong.
     """
     expr = expr.strip()
-    const = _lookup(expr, constants)
+    const = _lookup(expr, constants, syntax)
     if const is not None:
         lit = _parse_literal(const, syntax)
         text = _literal_text(lit, syntax, {}) if lit is not None else None
@@ -294,6 +313,8 @@ def _literal_text(
 
 def _format_template(text: str, syntax: StringSyntax, constants: dict[str, str]) -> str | None:
     """A ``format!("...")``-style call as template text, or ``None``."""
+    if not syntax.format_heads:
+        return None
     m = _head_re(syntax.format_heads).match(text)
     if m is None or syntax.placeholder is None:
         return None
@@ -304,10 +325,29 @@ def _format_template(text: str, syntax: StringSyntax, constants: dict[str, str])
     if parsed is None:
         return None
     body = _literal_text(parsed, syntax, constants)
-    if body is None:
-        return None
+    return _template_holes(body, syntax) if body is not None else None
+
+
+def _template_holes(body: str, syntax: StringSyntax) -> str:
+    assert syntax.placeholder is not None
     # `%%` is a literal percent sign, not a hole.
     return syntax.placeholder.sub(lambda h: "%" if h.group() == "%%" else "${x}", body)
+
+
+def _format_method(text: str, syntax: StringSyntax, constants: dict[str, str]) -> str | None:
+    """A ``"/x/{}".format(id)``-style call as template text, or ``None``."""
+    if not syntax.format_method or not text.endswith(")"):
+        return None
+    dot = text.rfind(syntax.format_method + "(")
+    if dot <= 0 or syntax.placeholder is None:
+        return None
+    if match_paren(text, dot + len(syntax.format_method)) != len(text) - 1:
+        return None  # the call does not run to the end of the expression
+    parsed = _parse_literal(text[:dot], syntax)
+    if parsed is None or (syntax.refuse is not None and syntax.refuse.search(parsed[2])):
+        return None  # `{{` is a literal brace no later step can tell from a hole
+    body = _literal_text(parsed, syntax, constants)
+    return _template_holes(body, syntax) if body is not None else None
 
 
 def _whole_call_arguments(text: str, paren: int) -> list[str] | None:
@@ -333,13 +373,13 @@ def _unwrap(text: str, syntax: StringSyntax) -> str | None:
 
 def _concat(text: str, syntax: StringSyntax, constants: dict[str, str]) -> str | None:
     """``a + "/x"`` as template text, or ``None`` when a piece is not readable."""
-    if syntax.concat not in text:
+    if not syntax.concat or syntax.concat not in text:
         return None
     pieces = split_top_level(text, syntax.concat)
     if len(pieces) < 2:
         return None
     out: list[str] = []
-    for piece in pieces:
+    for i, piece in enumerate(pieces):
         piece = piece.strip()
         parsed = _parse_literal(piece, syntax)
         if parsed is not None:
@@ -347,7 +387,9 @@ def _concat(text: str, syntax: StringSyntax, constants: dict[str, str]) -> str |
             if body is None:
                 return None
             out.append(body)
-        elif NAME_RE.fullmatch(piece):
+        elif NAME_RE.fullmatch(piece) or (i and _CONVERSION_RE.fullmatch(piece)):
+            # `id.toString()` past the first piece is the value of `id`; the
+            # first piece is the base, and a call there stays refused.
             out.append(_fold(piece, syntax, constants))
         else:
             return None  # a call or an operator: not settled in this file
@@ -367,22 +409,18 @@ def resolve_string(
     parsed = _parse_literal(text, syntax)
     if parsed is not None:
         return _literal_text(parsed, syntax, constants)
-    if syntax.format_heads:
-        folded = _format_template(text, syntax, constants)
+    for fold in (_format_template, _format_method, _concat):
+        folded = fold(text, syntax, constants)
         if folded is not None:
             return folded
     if syntax.unwrap_heads:
         inner = _unwrap(text, syntax)
         if inner is not None:
             return resolve_string(inner, syntax, constants)
-    if syntax.concat:
-        folded = _concat(text, syntax, constants)
-        if folded is not None:
-            return folded
     if NAME_RE.fullmatch(text):
         # A bare name. Its value resolved without constants when it was
         # recorded, so this step cannot reach another bare name.
-        const = _lookup(text, constants)
+        const = _lookup(text, constants, syntax)
         if const is not None:
             return resolve_string(const, syntax, constants)
     return None
@@ -416,6 +454,8 @@ def string_constants(
         return {}
     text = content if code is None else code
     seen: dict[str, str | None] = {}
+    # `self.X = ...` (group `own`): kept apart, so it never folds a bare `X`.
+    owned: dict[str, str | None] = {}
     for m in syntax.assignment.finditer(text):
         if code is None and on_comment_line(content, m.start()):
             continue  # an example in a doc comment is not a binding
@@ -423,9 +463,15 @@ def string_constants(
         rhs = content[m.start("rhs") : m.end("rhs")].strip()
         if syntax.assignment_strip is not None:
             rhs = syntax.assignment_strip.sub("", rhs).strip()
+        into = owned if m.groupdict().get("own") else seen
         # A second assignment retires the name whatever it assigns: the reader
         # cannot tell which one reaches the use site.
-        seen[name] = None if name in seen or resolve_string(rhs, syntax) is None else rhs
+        into[name] = None if name in into or resolve_string(rhs, syntax) is None else rhs
+    for name, rhs in owned.items():
+        # A `self.X` that does not settle, or that a class or module `X` also
+        # assigns, blocks the `self.X` lookup alone: the bare `X` keeps folding.
+        unsettled = rhs is None or name in seen
+        seen[syntax.self_prefixes[0] + name] = _UNSETTLED if unsettled else rhs
     if syntax.members is not None:
         for m in syntax.members.finditer(text):
             if code is None and on_comment_line(content, m.start()):
@@ -587,6 +633,80 @@ _COMPOUND_ASSIGN_RE = re.compile(r"(?<![\w.$-])\$?([A-Za-z_]\w*)[ \t]*[+.]=(?!=)
 _MULTI_ASSIGN_RE = re.compile(
     r"^[ \t]*(\$?[A-Za-z_]\w*(?:[ \t]*,[ \t]*\$?[A-Za-z_]\w*)+)[ \t]*:?=(?!=)", re.MULTILINE
 )
+
+
+def object_members(content: str, brace: int, syntax: StringSyntax) -> dict[str, str]:
+    """``key -> value source`` for each string entry of the object literal opening at *brace*.
+
+    The rules of a ``members`` constant: a nested object's keys are dotted, and
+    an entry that is not a string expression is left out.
+    """
+    seen: dict[str, str | None] = {}
+    _fold_members(content, brace, "", syntax, seen)
+    return {name[1:]: value for name, value in seen.items() if value is not None}
+
+
+# How far above a use a JS local's declaration is looked for.
+_JS_LOCAL_WINDOW = 2_000
+
+
+@cache
+def _js_declaration_re(name: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:var|let|const)\s+{re.escape(name)}\s*=(?![=>])")
+
+
+@cache
+def _js_rebinding_re(name: str) -> re.Pattern[str]:
+    """An assignment to *name* or a member of it, or a parameter of that name."""
+    n = re.escape(name)
+    return re.compile(
+        rf"(?<![\w$.]){n}\s*(?:\.\s*[\w$]+\s*|\[[^\]]*\]\s*)?[-+*/|&?]?=(?![=>])"  # `x =`, `x.uri =`, `x['uri'] =`
+        rf"|Object\.assign\s*\(\s*{n}(?![\w$])"
+        rf"|function(?![\w$])[^(]*\([^)]*(?<![\w$.]){n}(?![\w$])[^)]*\)"  # `function (err, x)`
+        rf"|(?<![\w$.]){n}\s*=>|\([^()]*(?<![\w$.]){n}(?![\w$])[^()]*\)\s*=>"  # `x =>`, `(a, x) =>`
+        # A method shorthand `save(x) {`; a control header (`if (x) {`) is not one.
+        rf"|(?<![\w$.])(?!(?:if|for|while|switch|catch|with)\b)[A-Za-z_$][\w$]*\s*"
+        rf"\([^()]*(?<![\w$.]){n}(?![\w$])[^()]*\)\s*\{{"
+    )
+
+
+# A line that continues the statement above it, or a statement left open by an operator.
+_CONTINUES_RE = re.compile(r"\s*[-+*/.?:|&]")
+
+
+def js_local_value(content: str, name: str, pos: int) -> str | None:
+    """The value JS local *name* holds at *pos*, as source text, else ``None``.
+
+    The right-hand side of the nearest ``var`` / ``let`` / ``const``
+    declaration above *pos*, when the block declaring it is still open at
+    *pos* and nothing assigns the name in between: ``var options = {...};
+    request(options)``, where the file's constants refuse a name each handler
+    declares again. A statement continued on the next line, an assignment to
+    the name or one of its members, and a parameter of the same name between
+    the two all refuse. Ceiling: only the last :data:`_JS_LOCAL_WINDOW`
+    characters are read.
+    """
+    decl: re.Match[str] | None = None
+    for m in _js_declaration_re(name).finditer(content, max(0, pos - _JS_LOCAL_WINDOW), pos):
+        if not on_comment_line(content, m.start()):
+            decl = m
+    if decl is None:
+        return None
+    _, ends = _scan(content, decl.end(), pos, sep="\n", first_sep_only=True)
+    if not ends:
+        return None  # the statement runs into the use
+    statement = content[decl.end() : ends[0]].rstrip()
+    if not statement.endswith(";") and (
+        _CONTINUES_RE.match(content, ends[0] + 1) or _CONTINUES_RE.match(statement[-1:] or ";")
+    ):
+        return None  # the expression goes on past the line
+    rhs = split_top_level(statement, ",")[0].strip().rstrip(";").strip()
+    between = "{" + content[ends[0] : pos]
+    if _scan(between, 0, len(between), closer="}")[0] >= 0:
+        return None  # the declaring block closed before the use
+    if _js_rebinding_re(name).search(content, ends[0], pos):
+        return None  # reassigned, mutated or shadowed before the use
+    return rhs or None
 
 
 # A typed local declaration (`var uri = `, `string url = `, `Uri? u = `). The
@@ -792,6 +912,8 @@ def resolve_argument(
 # ---------------------------------------------------------------------------
 
 _C_FORMAT_PLACEHOLDER_RE = re.compile(r"%%|%[-+ #0]*\d*(?:\.\d+)?[a-zA-Z]")
+# Node's `util.format` specifiers only, so `%20` in a URL stays text.
+_NODE_FORMAT_PLACEHOLDER_RE = re.compile(r"%%|%[sdifjoOc]")
 _BRACE_PLACEHOLDER_RE = re.compile(r"\{[^}]*\}")
 _BRACE_INTERP_RE = re.compile(r"(?<!\{)\{([^{}]+)\}(?!\})")
 _ESCAPED_BRACE_RE = re.compile(r"\{\{|\}\}")
@@ -802,6 +924,8 @@ _ESCAPED_BRACE_RE = re.compile(r"\{\{|\}\}")
 JS_SYNTAX = StringSyntax(
     quotes="\"'`",
     template_quotes="`",
+    format_heads=("util.format",),
+    placeholder=_NODE_FORMAT_PLACEHOLDER_RE,
     concat="+",
     assignment=re.compile(
         # The boundary is checked behind the literal, so the regex keeps its
@@ -817,20 +941,32 @@ JS_SYNTAX = StringSyntax(
     ),
 )
 
-# ``NAME = <expr>`` at any indentation, RHS to end of line. The whitespace
-# around ``=`` is required, which excludes the usual unspaced keyword argument
-# on its own line (``url=str(resp.url),``) that otherwise reads as a second
-# assignment and retires the very name being folded.
+# ``NAME = <expr>`` at any indentation, RHS to end of line. A name with a
+# lower-case letter needs whitespace around ``=``, which excludes the usual
+# unspaced keyword argument on its own line (``url=str(resp.url),``) that
+# otherwise reads as a second assignment and retires the very name being
+# folded. An upper-case name is a constant by convention and may be unspaced
+# (``EXCHANGE='robot-shop'``). A line after one ending in an open bracket or a
+# comma continues a call or literal, so it assigns nothing. ``self.X = <expr>``
+# folds ``self.X`` alone; one that does not settle, or whose ``X`` is also
+# assigned bare, refuses ``self.X`` and leaves the bare ``X`` as it was.
+# ``self.X`` and ``cls.X`` otherwise read the class attribute ``X``.
 PYTHON_SYNTAX = StringSyntax(
     prefixes="fFrRbBuU",
     template_prefixes="f",
     interpolation=_BRACE_INTERP_RE,
     refuse=_ESCAPED_BRACE_RE,
     refuse_prefixes="b",
+    format_method=".format",
+    placeholder=_BRACE_PLACEHOLDER_RE,
+    concat="+",
     assignment=re.compile(
-        r"^[ \t]*(?P<name>[A-Za-z_]\w*)(?:[ \t]*:[^=\n]+)?[ \t]+=[ \t]+(?P<rhs>.*)$",
+        r"^(?<![(\[{,]\n)[ \t]*(?P<own>(?:self|cls)\.)?"
+        r"(?P<name>[A-Z_][A-Z0-9_]*(?=[ \t]*=(?!=))|[A-Za-z_]\w*(?=(?:[ \t]*:[^=\n]+)?[ \t]+=[ \t]))"
+        r"(?:[ \t]*:[^=\n]+)?[ \t]*=[ \t]*(?P<rhs>.*)$",
         re.MULTILINE,
     ),
+    self_prefixes=("self.", "cls."),
 )
 
 RUST_SYNTAX = StringSyntax(
@@ -911,6 +1047,7 @@ PHP_SYNTAX = StringSyntax(
     assignment=re.compile(
         r"(?:\bconst[ \t]+|\$)(?P<name>[A-Za-z_]\w*)[ \t]*=(?!=)[ \t]*(?P<rhs>[^;\n]+);"
     ),
+    self_prefixes=("self::", "static::"),
 )
 
 _SYNTAX_BY_LANGUAGE: tuple[tuple[frozenset[str], StringSyntax], ...] = (
@@ -954,9 +1091,11 @@ __all__ = [
     "enclosing_local",
     "inline_names",
     "js_class_fields",
+    "js_local_value",
     "literal_span",
     "map_entry",
     "match_paren",
+    "object_members",
     "on_comment_line",
     "resolve_argument",
     "resolve_string",

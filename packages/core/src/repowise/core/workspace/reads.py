@@ -189,9 +189,15 @@ def unmatched_reason(
 
     The reasons live in ``system_graph.json``, not ``contracts.json``, keyed by
     the same ``(repo, file_path, contract_id)`` triple. None when no graph is
-    built or the consumer did match.
+    built or the consumer did match. A consumer served inside its own service
+    is listed apart and reads ``internal_only``.
     """
-    for u in (diagnostics or {}).get("unmatched_consumers", []):
+    diagnostics = diagnostics or {}
+    rows = [
+        *diagnostics.get("unmatched_consumers", []),
+        *diagnostics.get("in_service_consumers", []),
+    ]
+    for u in rows:
         if (
             u.get("repo") == repo
             and u.get("file_path") == file_path
