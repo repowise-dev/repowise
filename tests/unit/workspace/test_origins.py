@@ -39,6 +39,7 @@ def _declared_rows() -> list[object]:
     rows: list[object] = list(_HANDLERS)
     for dialect in (*topic.DIALECTS, *socket.DIALECTS):
         rows.extend(getattr(dialect, "calls", ()))
+        rows.extend(getattr(dialect, "receivers", ()))
     for lang in grpc.LANGUAGES:
         rows.extend(lang.rules)
     return rows

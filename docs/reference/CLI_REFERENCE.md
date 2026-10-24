@@ -60,6 +60,9 @@ Grouped by task; `PATH` and flags are in each command's section.
 ## Workspace auto-detect (cross-cutting)
 
 Most commands detect a workspace root and route to it, with a one-line `[workspace] …` notice.
+A command that reads one repo (`health`, `dead-code`, `events`, `next`, `doc-drift`, `coverage`,
+`decision`, `impacted-tests`, `costs` without `--all`) names it: `[workspace] health reads one repo:
+carts (primary) of 5 in sockshop; pass --repo <alias> for another`.
 
 | Flag | What it does | Default |
 |------|--------------|---------|
@@ -1418,6 +1421,8 @@ repowise events --since 7d --kind bus_factor_drop
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--path` | Repo path. | cwd |
+| `--repo` | One workspace repo (implies workspace mode). | primary repo |
+| `--no-workspace` | Force single-repo mode. | auto-detect |
 | `--since` | `7d`, `12h` or ISO date. | |
 | `--kind` | Only this kind. Repeatable. | all kinds |
 | `--limit` | 1 to 10000. | `200` |

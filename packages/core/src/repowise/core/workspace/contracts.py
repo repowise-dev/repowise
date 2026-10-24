@@ -72,7 +72,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # service-name map (:mod:`.service_names`), and ``service_links`` holds the
 # service-level edges for calls whose host is known but whose route is not;
 # each repo also counts the files whose network calls produced no contract
-# (see :mod:`.network_probe`).
+# (see :mod:`.network_probe`). Gateway routes (Spring Cloud Gateway, Zuul)
+# rewrite the calls they forward and add gateway-to-service service links.
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -256,8 +257,9 @@ class ContractStore:
     #: run and must be re-extracted rather than trusted.
     repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
     #: Service-level edges (:attr:`.origins.LinkStrategy.HOST_ONLY`): a consumer
-    #: whose host names a workspace repo while no route there serves its path.
-    #: Kept out of ``contract_links``, which only ever pairs two contracts.
+    #: whose host names a workspace repo while no route there serves its path;
+    #: and a gateway's edge to each service it routes to
+    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). Kept out of ``contract_links``, which only ever pairs two contracts.
     service_links: list[ContractLink] = field(default_factory=list)
     #: The service-name map matching used (:mod:`.service_names`): each name, its
     #: repo, and the source and file that placed it, plus the fingerprint that
@@ -669,7 +671,7 @@ async def run_contract_extraction(
     else:
         names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
     annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
-    matched = run_matching(all_contracts)
+    matched = run_matching(all_contracts, names.routes)
     links = matched.links
 
     # Merge manual links

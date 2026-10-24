@@ -68,6 +68,23 @@ def test_a_write_to_one_store_refreshes_only_that_member(tmp_path, refreshed):
     assert refreshed == ["web"]
 
 
+def test_an_empty_wal_left_by_a_read_only_reader_is_not_a_write(tmp_path, refreshed):
+    """A read-only probe of a WAL store leaves an empty ``-wal`` behind; the
+    member is unchanged. A WAL holding writes still refreshes it."""
+    ws_config = _ws(tmp_path, "api", "web")
+    _refresh(tmp_path, ws_config)
+    refreshed.clear()
+
+    for alias in ("api", "web"):
+        (tmp_path / alias / ".repowise" / "wiki.db-wal").write_bytes(b"")
+    _refresh(tmp_path, ws_config)
+    assert refreshed == []
+
+    (tmp_path / "web" / ".repowise" / "wiki.db-wal").write_bytes(b"frame")
+    _refresh(tmp_path, ws_config)
+    assert refreshed == ["web"]
+
+
 def test_a_deleted_editor_file_is_written_again(tmp_path, refreshed):
     ws_config = _ws(tmp_path, "api")
     claude_md = tmp_path / "api" / ".claude" / "CLAUDE.md"

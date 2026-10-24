@@ -253,6 +253,54 @@ def typed_receivers(content: str, type_re: re.Pattern[str]) -> list[str]:
     return names
 
 
+# `KafkaTemplate<String, Order> template;` (Java, C#): the type's generics (two
+# levels deep), then the name, then what ends a field, parameter or local.
+_GENERIC_ARGS_RE = re.compile(r"<(?:[^<>()]|<(?:[^<>()]|<[^<>()]*>)*>)*>")
+_DECLARED_NAME_RE = re.compile(r"\??[ \t]+(?P<name>[A-Za-z_]\w*)[ \t]*[;,)=]")
+# `producer = Producer(conf)`, `self._p = Producer(conf)`,
+# `var p = new ProducerBuilder<K, V>(cfg)`: a constructed client assigned to a name.
+_ASSIGNED_RE = re.compile(
+    r"(?<![\w$.])(?:(?:this|self)\s*\.\s*)?(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?"
+    r"(?<![=!<>])=\s*(?:await\s+)?(?:new\s+)?$"
+)
+_CONSTRUCTED_RE = re.compile(r"\s*(?:<(?:[^<>()]|<[^<>()]*>)*>)?\s*\(")
+
+
+def declared_receivers(content: str, type_re: re.Pattern[str]) -> list[str]:
+    """Names declared with, or assigned a new instance of, a type *type_re* matches.
+
+    The Java / C# declaration ``KafkaTemplate<K, V> template``, the assignment
+    ``p = Producer(conf)`` / ``var p = new ProducerBuilder<K, V>(cfg)``, and the
+    annotation ``producer: Producer`` (Python, Kotlin, TypeScript). *type_re*
+    bounds its own names (``\\bProducer\\b``) and spells any module qualifier
+    it accepts (``(?:confluent_kafka\\.)?``): a type reached through another
+    member (``other.Producer``) is not the client's. A member of an instance
+    (``self.p = ...``) is named without its qualifier.
+
+    Ceiling: a name holds for the whole file, so a second variable of the same
+    name in another method is read as the client too. The caller's gate (the
+    client's import) and its verbs keep that rare; scoping names to the
+    declaring method is the upgrade path.
+    """
+    names: dict[str, None] = {}
+    for m in type_re.finditer(content):
+        start, end = m.start(), m.end()
+        before = content[max(0, start - _DECLARATION_WINDOW) : start]
+        if before.endswith("."):
+            continue
+        generics = _GENERIC_ARGS_RE.match(content, end)
+        declared = _DECLARED_NAME_RE.match(content, generics.end() if generics else end)
+        if declared is not None:
+            found = declared
+        elif _CONSTRUCTED_RE.match(content, end):
+            found = _ASSIGNED_RE.search(before)
+        else:
+            found = _TYPED_RE.search(before)
+        if found is not None:
+            names[found.group("name")] = None
+    return list(names)
+
+
 # Whitespace and comments between decorators and the member they decorate.
 _GAP_RE = re.compile(r"(?:\s+|//[^\n]*|/\*.*?\*/)*", re.DOTALL)
 _DECORATOR_NAME_RE = re.compile(r"@[\w$.]+")
@@ -290,6 +338,7 @@ __all__ = [
     "call_chain",
     "call_sites",
     "code_matches",
+    "declared_receivers",
     "decorated_member",
     "file_strings",
     "outside_comments",

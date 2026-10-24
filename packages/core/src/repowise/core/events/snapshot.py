@@ -267,15 +267,25 @@ def provided_contracts(repo_root: Path, head_commit: str | None) -> dict[str, di
     store = load_contract_store(ws_root) if alias else None
     if store is None or store.repo_provenance.get(alias, {}).get("head") != head_commit:
         return None
+    return contract_consumer_counts(store).get(alias, {})
+
+
+def contract_consumer_counts(store: Any) -> dict[str, dict[str, dict[str, int]]]:
+    """``{repo: {file: {contract_id: consumer links}}}`` for every provided contract in *store*.
+
+    Links from other repos only: what another member changes can move them.
+    """
     consumers = Counter(
-        (lk.provider_file, lk.contract_id)
+        (lk.provider_repo, lk.provider_file, lk.contract_id)
         for lk in store.contract_links
-        if lk.provider_repo == alias and lk.consumer_repo != alias
+        if lk.consumer_repo != lk.provider_repo
     )
-    out: dict[str, dict[str, int]] = {}
-    for c in store.rows_for_repo(alias):
+    out: dict[str, dict[str, dict[str, int]]] = {}
+    for c in store.contracts:
         if c.role == "provider":
-            out.setdefault(c.file_path, {})[c.contract_id] = consumers[(c.file_path, c.contract_id)]
+            out.setdefault(c.repo, {}).setdefault(c.file_path, {})[c.contract_id] = consumers[
+                (c.repo, c.file_path, c.contract_id)
+            ]
     return out
 
 

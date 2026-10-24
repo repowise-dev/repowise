@@ -54,6 +54,9 @@ def test_every_table_row_declares_a_gate_and_an_origin(dialect) -> None:
     for row in rows:
         assert row.requires, f"{dialect.name}: a row with head {row.head.pattern!r} has no gate"
         assert isinstance(row.origin, ContractOrigin), f"{dialect.name}: {row.head.pattern!r}"
+    for row in getattr(dialect, "receivers", ()):  # rows read on a typed receiver
+        assert row.requires, f"{dialect.name}: receiver row {row.label!r} has no gate"
+        assert isinstance(row.origin, ContractOrigin), f"{dialect.name}: {row.label!r}"
     language = getattr(dialect, "_lang", None)  # a gRPC stub table
     for rule in getattr(language, "rules", ()):
         assert isinstance(rule.origin, ContractOrigin), f"{dialect.name}: {rule.pattern.pattern!r}"

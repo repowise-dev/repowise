@@ -56,6 +56,11 @@ class TestNormalizeHttpPath:
     def test_root_path(self) -> None:
         assert normalize_http_path("/") == "/"
 
+    def test_optional_param_keeps_its_brace_and_the_rest_of_the_path(self) -> None:
+        assert normalize_http_path("/brand/{brandId?}") == "/brand/{param}"
+        assert normalize_http_path("orders/{id:int?}/lines") == "/orders/{param}/lines"
+        assert normalize_http_path("/users/{id}?page={page}") == "/users/{param}"
+
 
 # ---------------------------------------------------------------------------
 # HttpExtractor

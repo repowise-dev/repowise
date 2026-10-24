@@ -302,6 +302,8 @@ class WorkspaceOrphanProvider(BaseModel):
     file_path: str
     contract_id: str
     contract_type: str
+    #: Other files of the same repo and service declaring the same id.
+    other_files: list[str] = []
 
 
 class WorkspaceSymbolIdentity(BaseModel):
@@ -357,6 +359,8 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     unmatched_consumers: list[WorkspaceUnmatchedConsumer] = []
     unmatched_by_reason: dict[str, int] = {}
     orphan_providers: list[WorkspaceOrphanProvider] = []
+    #: Consumers served by their own repo + service, kept out of the unmatched list.
+    in_service_consumers: list[WorkspaceUnmatchedConsumer] = []
     providers_by_layer: dict[str, int] = {}
     consumers_by_layer: dict[str, int] = {}
     http_consumers_unresolved: int = 0
@@ -364,6 +368,10 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     #: file that calls out through code no dialect reads. ``None`` when nothing
     #: was seen (0/0 is not 100%) or the artifact predates that count.
     http_consumer_coverage: float | None = None
+    #: HTTP consumers that linked to another service, and their share of the
+    #: same denominator. ``None`` on an artifact written before the count.
+    http_consumers_linked: int | None = None
+    http_link_coverage: float | None = None
     #: Per repo, files with a network-call token and no consumer contract.
     #: ``None`` on an artifact written before the count existed.
     unrecognised_call_files: dict[str, int] | None = None

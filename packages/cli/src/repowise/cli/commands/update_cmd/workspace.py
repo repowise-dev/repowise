@@ -344,6 +344,8 @@ def _workspace_index_only_update(
             repo_filter=repo_alias,
             dry_run=False,
             include_working_tree=include_working_tree,
+            # _reconcile_up_to_date restamped the members that moved.
+            restamp_up_to_date=False,
             on_repo_start=_on_start,
             on_repo_done=_print_repo_result,
         )
@@ -611,6 +613,8 @@ def _update_core_members(
             run_hooks=False,
             dry_run=False,
             include_working_tree=include_working_tree,
+            # _reconcile_up_to_date restamped the members that moved.
+            restamp_up_to_date=False,
             on_repo_start=_on_start,
             on_repo_done=_print_repo_result,
         )

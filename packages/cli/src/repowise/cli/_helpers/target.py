@@ -98,9 +98,8 @@ class CommandTarget:
 
         ``--repo <alias>`` resolves to ``mode="workspace"`` with ``repo_path``
         left ``None``, so a command that reads ``repo_path`` directly refuses
-        every ``--repo`` call it advertises. Three commands already hand-roll
-        this narrowing (``dead-code``, ``health``, ``costs``); this is where it
-        belongs, beside :meth:`primary_path` and :meth:`resolve_repo_alias`.
+        every ``--repo`` call it advertises. A command that also prints its
+        scope calls :meth:`narrow` instead.
 
         Raises ``click.ClickException`` when the alias is unknown or the
         workspace declares no primary.
@@ -117,6 +116,40 @@ class CommandTarget:
         if primary is None:
             raise click.ClickException("Workspace has no primary repo configured.")
         return primary
+
+    def narrow(self, console_obj: Console, *, command: str, repo_option: bool = True) -> Path:
+        """:meth:`single_repo_path`, after one line saying which repo the command reads.
+
+        For commands that read one repo even from a workspace root, where
+        :meth:`notice` would claim the whole workspace. *repo_option* says
+        whether the command takes ``--repo <alias>``, so the hint names a way
+        to pick another repo that the command offers.
+        """
+        from rich.markup import escape
+
+        repo = self.single_repo_path()
+        if self.is_workspace:
+            assert self.ws_root is not None and self.ws_config is not None
+            role, hint = "", ""
+            alias = self.repo_filter
+            if alias is None:
+                alias, role = self.ws_config.get_primary().alias, " (primary)"
+                hint = (
+                    "; pass --repo <alias> for another"
+                    if repo_option
+                    else "; run it inside another member repo for that one"
+                )
+            console_obj.print(
+                f"[dim]\\[workspace][/dim] {command} reads one repo: "
+                f"[cyan]{escape(alias)}[/cyan]{role} of {len(self.ws_config.repos)} "
+                f"in [cyan]{escape(self.ws_root.name)}[/cyan]{hint}"
+            )
+        elif self.auto_detected and self.ws_root is not None:
+            console_obj.print(
+                f"[dim]\\[single-repo][/dim] {command} reads [cyan]{escape(repo.name)}[/cyan], "
+                f"a repo inside workspace [cyan]{escape(self.ws_root.name)}[/cyan]"
+            )
+        return repo
 
     # ------------------------------------------------------------------
     # Notice rendering — every command should call this so users always
@@ -153,7 +186,7 @@ class CommandTarget:
         if self.auto_detected and self.ws_root is not None:
             # A workspace exists upstream but we chose single-repo anyway.
             console_obj.print(
-                f"[dim][single-repo][/dim] targeting "
+                f"[dim]\\[single-repo][/dim] targeting "
                 f"[cyan]{self.repo_path}[/cyan] "
                 f"(workspace also detected at [cyan]{self.ws_root}[/cyan]; "
                 f"pass --workspace to run across all repos)"

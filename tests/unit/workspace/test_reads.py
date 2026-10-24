@@ -87,6 +87,13 @@ def test_an_unmatched_consumer_names_its_reason():
     assert detail["unmatched_reason"] == "no_provider"
 
 
+def test_a_consumer_served_in_its_own_service_names_its_reason():
+    row = {k: CONSUMER[k] for k in ("repo", "file_path", "contract_id")}
+    diagnostics = {"in_service_consumers": [{**row, "reason": "internal_only"}]}
+    detail = contract_detail([CONSUMER], [], diagnostics, **row)
+    assert detail["unmatched_reason"] == "internal_only"
+
+
 def test_linked_filter_counts_the_consumer_under_its_own_id():
     linked = list_contracts([PROVIDER, CONSUMER], [LINK], linked=True)
     assert linked["total_contracts"] == 2

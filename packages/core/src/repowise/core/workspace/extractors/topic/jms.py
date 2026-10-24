@@ -9,9 +9,9 @@ and is kept as spelled, so it meets only the same spelling.
 
 A template is read on a receiver whose name says JMS (``jmsTemplate``,
 ``topicJmsTemplate``, ``getJmsTemplate()``), in a file that names the type.
-A template under any other name needs the file's declared receivers (a typed
-receiver row on the topic engine); until the engine has one, those calls are
-missed rather than guessed from the bare ``send`` verb.
+A template under any other name needs the file's declared receivers (a
+:class:`.dialect.ReceiverCall` row, as Kafka's); this dialect declares none
+yet, so those calls are missed rather than guessed from the bare ``send`` verb.
 
 ``@JmsListener`` names its destination only by the ``destination`` key;
 ``containerFactory``, ``subscription`` and ``selector`` are not destinations.

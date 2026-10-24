@@ -11,6 +11,7 @@ from __future__ import annotations
 from ..dialect import ContractDialect, DialectExtractor
 from .aws import SNS, SQS
 from .bullmq import BULLMQ
+from .csharp_events import CSHARP_EVENTS
 from .dialect import topic_identity
 from .jms import JMS
 from .kafka import KAFKA
@@ -33,6 +34,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     SNS,
     NESTJS,
     LARAVEL_QUEUES,
+    CSHARP_EVENTS,
     JMS,
 )
 
