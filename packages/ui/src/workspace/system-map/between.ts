@@ -68,22 +68,23 @@ export function shortestPaths(
   maxHops: 1 | 2 = 2,
   maxPaths = 3,
 ): ServicePath[] {
-  if (from === to || maxPaths <= 0) return [];
-  const out = adj.get(from);
+  const out = from === to || maxPaths <= 0 ? undefined : adj.get(from);
   if (!out) return [];
   const direct = out.get(to);
   if (direct) return [{ nodes: [from, to], hops: [{ source: from, target: to, summary: direct }] }];
   if (maxHops < 2) return [];
+  return throughOne(adj, out, from, to).slice(0, maxPaths);
+}
+
+/** Paths `from -> via -> to`, strongest first: a path is as strong as its weakest hop, ties by id. */
+function throughOne(adj: Adjacency, out: Map<string, LinkSummary>, from: string, to: string): ServicePath[] {
   const twoHop: { via: string; strength: number; first: LinkSummary; second: LinkSummary }[] = [];
   for (const [via, first] of out) {
-    if (via === to) continue;
-    const second = adj.get(via)?.get(to);
-    if (!second) continue;
-    // A path is as strong as its weakest hop.
-    twoHop.push({ via, strength: Math.min(first.links, second.links), first, second });
+    const second = via === to ? undefined : adj.get(via)?.get(to);
+    if (second) twoHop.push({ via, strength: Math.min(first.links, second.links), first, second });
   }
   twoHop.sort((x, y) => y.strength - x.strength || compareIds(x.via, y.via));
-  return twoHop.slice(0, maxPaths).map(({ via, first, second }) => ({
+  return twoHop.map(({ via, first, second }) => ({
     nodes: [from, via, to],
     hops: [
       { source: from, target: via, summary: first },
