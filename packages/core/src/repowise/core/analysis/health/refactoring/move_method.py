@@ -55,10 +55,23 @@ class or a C# ``static class`` is never a home for instance behaviour, and
 neither is a class in another language family (a Swift call the graph resolved
 onto a Kotlin class of the same name). The
 other ``partial`` fragments of the method's own class are its own class.
+
+Two more rules keep static utilities out of the data classes they read:
+
+- a **static** method (Java ``static``, a Kotlin ``object`` / ``companion
+  object`` function) has no instance of its own to be envious from, so the
+  getters it calls on a parameter are its inputs, not envy. It never moves
+  into a class whose members it uses are all accessors (``getX`` / ``isX`` /
+  ``setX``, a record component): an entity, a DTO or a value class.
+- a move never **reverses a dependency**. On the JVM, when the method calls
+  something that is not on the target and the target's file cannot see it (no
+  import, not in its package), the target would have to depend on the
+  method's home, so that target is not a home for the method.
 """
 
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import Any
 
@@ -119,6 +132,13 @@ _FACTORY_NAME = re.compile(
 )
 # Python marks a factory with a decorator.
 _FACTORY_DECORATORS = ("@staticmethod", "@classmethod")
+# ``getX`` / ``isX`` / ``setX``: the accessor shape of a bean, an entity or a
+# DTO. ``get`` alone (a map-style lookup) is behaviour, so a suffix is needed.
+_ACCESSOR_NAME = re.compile(r"^(?:get|is|set)[A-Z0-9_]")
+# Languages whose imports and packages decide whether one file can see another.
+_VISIBILITY_LANGUAGES = frozenset({"java", "kotlin"})
+# File-to-file edges that mean "this file reads that one".
+_VISIBLE_EDGE_TYPES = frozenset({"imports", "type_use"})
 
 
 def _node(graph: Any, node_id: str) -> dict | None:
@@ -296,6 +316,111 @@ def _binds_method(cls: Any, name: str) -> bool:
     return any(name in g.methods and (g.fields or g.calls) for g in groups)
 
 
+def _is_static(data: dict) -> bool:
+    """Whether the method has no instance: Java ``static``, a Kotlin
+    ``object`` / ``companion object`` function (the parser records both in
+    ``modifiers``)."""
+    return "static" in (data.get("modifiers") or ())
+
+
+def _split_params(text: str) -> list[str]:
+    """Split a parameter list on its top-level commas (``Map<K, V> m`` is one)."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "<([":
+            depth += 1
+        elif ch in ">)]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _constructor_param_names(graph: Any, class_id: str, cache: dict[str, set[str]]) -> set[str]:
+    """The parameter names of *class_id*'s constructors. A record's components
+    are its canonical constructor's parameters; each has a same-named accessor."""
+    cached = cache.get(class_id)
+    if cached is not None:
+        return cached
+    class_name = _class_name(graph, class_id)
+    names: set[str] = set()
+    for member in _class_members(graph, class_id, {}):
+        node = _node(graph, member) or {}
+        signature = node.get("signature") or ""
+        if node.get("name") != class_name or "(" not in signature:
+            continue
+        params = signature[signature.index("(") + 1 : signature.rindex(")")]
+        for param in _split_params(params):
+            # ``String appId`` / ``final List<String> ids`` / ``val appId: String``
+            declared = param.split(":", 1)[0].split("=", 1)[0].split()
+            if declared:
+                names.add(declared[-1].lstrip("*&"))
+    cache[class_id] = names
+    return names
+
+
+def _is_accessor(graph: Any, member_id: str, component_names: set[str]) -> bool:
+    """A ``getX`` / ``isX`` / ``setX`` member, or the no-argument accessor of a
+    record component (``appId()``)."""
+    node = _node(graph, member_id) or {}
+    name = node.get("name") or ""
+    if _ACCESSOR_NAME.match(name):
+        return True
+    signature = node.get("signature") or ""
+    return (
+        name in component_names and re.search(rf"\b{re.escape(name)}\(\s*\)", signature) is not None
+    )
+
+
+def _only_accessors(
+    graph: Any, class_id: str, members: set[str], cache: dict[str, set[str]]
+) -> bool:
+    """Whether every member in *members* is an accessor of *class_id*: the class
+    is a data holder as far as this method is concerned."""
+    component_names = _constructor_param_names(graph, class_id, cache)
+    return bool(members) and all(_is_accessor(graph, m, component_names) for m in members)
+
+
+def _file_of(graph: Any, node_id: str) -> str | None:
+    return (_node(graph, node_id) or {}).get("file_path")
+
+
+def _can_see(graph: Any, from_file: str, to_file: str) -> bool:
+    """Whether code in *from_file* can name what *to_file* declares: the same
+    file, the same package directory, or an import / type reference to it."""
+    if from_file == to_file:
+        return True
+    if posixpath.dirname(from_file) == posixpath.dirname(to_file):
+        return True
+    if from_file not in graph or to_file not in graph:
+        return False
+    data = graph.get_edge_data(from_file, to_file)
+    if not data:
+        return False
+    edges = data.values() if graph.is_multigraph() else (data,)
+    return any(e.get("edge_type") in _VISIBLE_EDGE_TYPES for e in edges)
+
+
+def _reverses_dependency(
+    graph: Any, language: str, target_file: str, other_callees: set[str]
+) -> bool:
+    """Whether moving the method into *target_file* would make that file depend
+    on something it cannot see today: a callee that is not on the target and
+    lives in a file the target does not import and shares no package with. The
+    move would invert the dependency (the entity depends on the utility)."""
+    if language not in _VISIBILITY_LANGUAGES or not target_file:
+        return False
+    for callee in other_callees:
+        callee_file = _file_of(graph, callee)
+        if callee_file is not None and not _can_see(graph, target_file, callee_file):
+            return True
+    return False
+
+
 def _owning_class_id(graph: Any, callee_id: str) -> str | None:
     """The class node a callee belongs to: the method's parent class, or the
     class itself for a constructor call. ``None`` for free functions and
@@ -420,10 +545,20 @@ class MoveMethodDetector(RefactoringDetector):
         # Nearest foreign class by Jaccard distance (tie-break on class id).
         # A constructor call lands the class id in its own member set.
         own_and_inherited = heritage_ancestors(graph, own_class_id) | own_ids
+        static = _is_static(data)
+        components: dict[str, set[str]] = {}
         foreign = [
             (c, m)
             for c, m in accessed_by_class.items()
             if _is_target(graph, c, m, own_and_inherited, ctx.file_path)
+            # A static method reading a data holder's accessors has inputs, not envy.
+            and not (static and _only_accessors(graph, c, m, components))
+            and not _reverses_dependency(
+                graph,
+                ctx.language,
+                _file_of(graph, c) or c.rpartition("::")[0],
+                accessed - m,
+            )
         ]
         if not foreign:
             return None

@@ -158,7 +158,23 @@ _MODIFIER_CASES = (
     ),
     ("typescript", "a.ts", b"class A extends B { override f() {} }", {"f": ("override",)}),
     # Java writes ``@Override`` as an annotation; it stays a decorator.
-    ("java", "A.java", b"class A { @Override public void f() {} }", {"f": ()}),
+    ("java", "A.java", b"class A { @Override public void f() {} }", {"f": ("public",)}),
+    # ``static`` is what tells a utility method from one with an instance.
+    (
+        "java",
+        "A.java",
+        b"class A { public static String g(N n) { return null; } void h() {} }",
+        {"g": ("public", "static"), "h": ()},
+    ),
+    # Kotlin has no ``static`` keyword: an ``object`` / ``companion object``
+    # function is the static member, an ordinary member function is not.
+    (
+        "kotlin",
+        "B.kt",
+        b"class B {\n  companion object {\n    fun make() {}\n  }\n  fun inst() {}\n}\n"
+        b"object O {\n  fun conv() {}\n}\n",
+        {"make": ("static",), "inst": (), "conv": ("static",)},
+    ),
     # Scala access qualifiers name a scope, not a modifier.
     (
         "scala",

@@ -52,7 +52,7 @@ from .symbol_rules import (
     _TS_JS_LANGUAGES,
     _attribute_decorators,
     _dart_mixin_parent,
-    _declared_modifiers,
+    _declared_or_implied_modifiers,
     _drop_swift_extensions_of_local_types,
     _is_declaration,
     _is_fsharp_binding,
@@ -387,7 +387,9 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
             _csharp_type_parameter_count(def_node) if language == "csharp" else None
         ),
         **_kotlin_receiver_fields(def_node, params_nodes, language, name),
-        modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
+        modifiers=_declared_or_implied_modifiers(
+            def_node, config.modifier_node_types, language, src
+        ),
     )
     return symbol, def_node
 
