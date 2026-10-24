@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from repowise.cli.agent_targets.types import FileAction
 
@@ -38,7 +38,7 @@ class Result:
     """What happened to one path."""
 
     group: Group
-    path: Path
+    path: Path | PurePosixPath
     action: FileAction
     label: str
     reason: str | None = None

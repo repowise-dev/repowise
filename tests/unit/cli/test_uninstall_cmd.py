@@ -595,6 +595,22 @@ def test_a_configured_database_is_listed_as_kept_with_a_reason(repo: Path, monke
     assert "alice" not in result.output
 
 
+def test_configured_database_locator_preserves_forward_slashes_on_windows(monkeypatch) -> None:
+    from pathlib import PureWindowsPath
+
+    from repowise.cli.uninstall.inventory import _store_item
+
+    monkeypatch.setenv("REPOWISE_DB_URL", "postgresql://alice:s3cret@db.example:5432/wiki")
+    # Even if Path on Windows produces WindowsPath with backslashes, network locators must use forward slashes
+    monkeypatch.setattr("repowise.cli.uninstall.inventory.Path", PureWindowsPath)
+
+    item = _store_item()
+    assert item is not None
+    assert str(item.path) == "db.example:5432/wiki"
+    assert "\\" not in str(item.path)
+    assert item.as_dict()["path"] == "db.example:5432/wiki"
+
+
 def test_a_real_run_keeps_the_database_and_exits_with_leftovers(
     repo: Path, tmp_path: Path, monkeypatch
 ) -> None:

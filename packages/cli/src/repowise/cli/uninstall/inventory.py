@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class Group(StrEnum):
@@ -63,7 +63,7 @@ class Item:
     """
 
     group: Group
-    path: Path
+    path: Path | PurePosixPath
     #: Short label for the row, e.g. "Claude Code (user)" or "index".
     label: str
     exists: bool
@@ -449,6 +449,7 @@ def _store_item() -> Item | None:
     if raw is None:
         return None
     dialect, locator = "database", "configured database"
+    item_path: Path | PurePosixPath = PurePosixPath(locator)
     try:
         from sqlalchemy.engine import make_url
 
@@ -456,18 +457,23 @@ def _store_item() -> Item | None:
         dialect = url.get_backend_name()
         if dialect == "sqlite":
             locator = url.database or ":memory:"
+            if url.database and url.database != ":memory:":
+                item_path = Path(url.database)
+            else:
+                item_path = PurePosixPath(locator)
         else:
             locator = url.host or "unknown-host"
             if url.port:
                 locator = f"{locator}:{url.port}"
             if url.database:
                 locator = f"{locator}/{url.database}"
+            item_path = PurePosixPath(locator)
     except Exception:
         # A label must never stop the inventory from being printed.
         pass
     return Item(
         group=Group.INDEX,
-        path=Path(locator),
+        path=item_path,
         label=f"index in the configured {dialect} database",
         exists=True,
         blocked=(
