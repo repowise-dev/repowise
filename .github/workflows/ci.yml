@@ -189,7 +189,6 @@ jobs:
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
-      security-events: write   # SARIF upload to code scanning
 
     steps:
       - uses: actions/checkout@v4
@@ -202,9 +201,6 @@ jobs:
           health-fail-on: introduced
           health-fail-at: high
           security-fail-on: high
-          # Fork pull requests get a read-only token, so code scanning upload is
-          # for same-repo branches only.
-          upload-sarif: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
 
   # ---------------------------------------------------------------------------
   # Patch coverage on the Python 3.12 leg's report. Its own job so the gates
