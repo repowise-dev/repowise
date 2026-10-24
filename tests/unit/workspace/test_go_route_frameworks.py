@@ -265,6 +265,7 @@ class TestGo122Patterns:
         ]
         assert _provided(src) == [
             ("http::*::/files/{param}", 3, "files"),
+            ("http::GET::/", 4, "home"),
             ("http::GET::/items/{param}", 1, "getItem"),
             ("http::POST::/items", 2, "createItem"),
         ]
