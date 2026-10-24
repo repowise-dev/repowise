@@ -260,11 +260,23 @@ def extract_http_providers(
         return []
     # Routes before prefixes: ``router_prefixes`` scans the whole file, so it
     # is worth paying for only once a route exists to stitch a prefix onto.
+    starts = {s.start_line for s in symbols}
+    handlers: list[tuple[IndexedSymbol, int, str]] = []
+    for symbol in symbols:
+        if symbol.kind not in _HANDLER_KINDS:
+            continue
+        handlers.append((symbol, symbol.start_line, symbol.name))
+        for ln in range(symbol.start_line + 1, min(symbol.end_line + 1, len(lines) + 1)):
+            line_str = lines[ln - 1]
+            if ln not in starts and _DEF_LINE_RE.match(line_str):
+                fn_m = re.search(r"(?:async\s+)?def\s+(\w+)", line_str)
+                fn_name = fn_m.group(1) if fn_m else symbol.name
+                handlers.append((symbol, ln, fn_name))
+
     routes = [
-        (symbol, decorator, route)
-        for symbol in symbols
-        if symbol.kind in _HANDLER_KINDS
-        for decorator in _decorators_above(lines, symbol.start_line)
+        (symbol, decorator, route, line, handler_name)
+        for symbol, line, handler_name in handlers
+        for decorator in _decorators_above(lines, line)
         for route in _routes_in_decorator(decorator)
     ]
     if not routes:
@@ -275,7 +287,7 @@ def extract_http_providers(
 
     out: list[Contract] = []
     seen: set[tuple[str, str]] = set()
-    for symbol, decorator, (var, method, raw_path) in routes:
+    for symbol, decorator, (var, method, raw_path), line, handler_name in routes:
         if var not in known:
             continue
         path = compose_prefix(prefixes.get(var, ""), raw_path)
@@ -286,11 +298,11 @@ def extract_http_providers(
         seen.add(key)
         framework = "flask" if _is_route_head(decorator) else "fastapi"
         contract = build_provider_contract(
-            ctx, method=method, path_raw=path, framework=framework, line=symbol.start_line
+            ctx, method=method, path_raw=path, framework=framework, line=line
         )
         if contract is not None:
             contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX
-            contract.meta["handler"] = symbol.name
+            contract.meta["handler"] = handler_name
             # Bound here rather than by line: this path found the route *by*
             # walking up from the handler's own span, so the symbol is known
             # exactly and no lookahead rule needs to re-derive it.
