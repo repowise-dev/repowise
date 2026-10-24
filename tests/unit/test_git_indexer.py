@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -1442,3 +1444,95 @@ class TestCoChangeCommitWidth:
         partner = next(p for p in result.partners["a.py"] if p["file_path"] == "b.py")
         assert partner["frequency"] == 2
         assert partner["focused_frequency"] == 1
+
+
+# ---------------------------------------------------------------------------
+# index_repo setup must not block the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestIndexRepoDoesNotBlockLoop:
+    """Git setup shares a loop with ingestion, so it has to run off-loop."""
+
+    @pytest.mark.asyncio
+    async def test_blocking_setup_does_not_stall_event_loop(self) -> None:
+        # Warm the lazy import index_repo does on the loop; a cold import in an
+        # isolated run would otherwise show up as lag unrelated to git setup.
+        import repowise.core.pipeline.phase_timing  # noqa: F401
+
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = ["", ""]
+
+        def slow_tracked_files(_repo: object) -> list[str]:
+            time.sleep(0.6)  # stands in for ls-files plus the commit walk
+            return []
+
+        lags: list[float] = []
+        stop = asyncio.Event()
+
+        async def probe() -> None:
+            while not stop.is_set():
+                t0 = time.monotonic()
+                await asyncio.sleep(0.01)
+                lags.append(time.monotonic() - t0 - 0.01)
+
+        with (
+            patch.object(indexer, "_get_repo", return_value=repo),
+            patch.object(indexer, "_skip_partial_clone_history", return_value=False),
+            patch.object(indexer, "_get_tracked_files", side_effect=slow_tracked_files),
+        ):
+            task = asyncio.create_task(probe())
+            await asyncio.sleep(0)  # let the probe start ticking
+            summary, metadata = await indexer.index_repo("test-repo-id")
+            stop.set()
+            await task
+
+        assert summary.files_indexed == 0
+        assert metadata == []
+        assert len(lags) > 5, "probe barely ran: the loop was blocked"
+        assert max(lags) < 0.2
+
+    @pytest.mark.asyncio
+    async def test_on_start_runs_on_event_loop_thread(self) -> None:
+        import threading
+
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = ["remote.origin.promisor true", "blob:none"]
+        seen: list[int] = []
+
+        with patch.object(indexer, "_get_repo", return_value=repo):
+            await indexer.index_repo(
+                "test-repo-id", on_start=lambda _n: seen.append(threading.get_ident())
+            )
+
+        assert seen == [threading.get_ident()]
+
+    @pytest.mark.asyncio
+    async def test_full_index_on_real_repo_end_to_end(self, tmp_path) -> None:
+        """The whole path (setup thread, per-file pass, summary) on a real repo."""
+        import subprocess
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+
+        git("init", "-q")
+        (tmp_path / "a.py").write_text("print('a')\n")
+        (tmp_path / "b.py").write_text("print('b')\n")
+        git("add", ".")
+        git("commit", "-q", "-m", "init")
+
+        started: list[int] = []
+        summary, metadata = await GitIndexer(str(tmp_path)).index_repo(
+            "real-repo-id", on_start=started.append
+        )
+
+        assert started and started[0] >= 2
+        assert summary.files_indexed >= 2
+        assert {m["file_path"] for m in metadata} >= {"a.py", "b.py"}
