@@ -15,12 +15,18 @@ from .graph import _edge_row, has_graph_edges, stamp_edges_parser_fingerprint
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
 
-async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
+async def persist_ingestion(
+    result: Any, session: Any, repo_id: str, *, timings: Any | None = None
+) -> int:
     """Persist ingestion-phase outputs: graph nodes/edges, external systems,
     symbols, and the per-file security scan.
 
     Every write here is an idempotent UPSERT keyed by ``(repo_id, …)``, so
     this is safe to call incrementally (per phase) and to re-run on resume.
+
+    ``timings`` is an optional :class:`PhaseTimings` table; when given, the
+    security scan is timed into it as ``persist.security_scan`` so a caller that
+    times the whole write can see how much of it was the scan.
 
     Returns the number of symbols written (for the summary log). Mutates
     ``sym.file_path`` on symbols that lack one — callers should treat the
@@ -32,6 +38,7 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
         bulk_upsert_external_systems,
         link_graph_nodes_to_external_systems,
     )
+    from repowise.core.pipeline.phase_timing import timed
 
     # ---- Graph nodes ---------------------------------------------------------
     # Prefer the full candidate-score map (all scored entry points), falling
@@ -88,7 +95,8 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     # ---- Security scan -------------------------------------------------------
     # Best-effort — never breaks the rest of the phase.
     try:
-        await _persist.persist_security_findings(result, session, repo_id)
+        with timed(timings, "persist.security_scan"):
+            await _persist.persist_security_findings(result, session, repo_id)
     except Exception as _sec_err:
         logger.warning("security_scan_skipped", error=str(_sec_err))
 
