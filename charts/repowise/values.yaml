@@ -1,0 +1,140 @@
+# Default values for repowise.
+# This is a YAML-formatted file. Declare variables to be passed into your templates.
+
+image:
+  repository: repowise/repowise
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Service ---
+service:
+  type: ClusterIP
+  port: 7337
+  # Web UI port (frontend). The container runs both servers; expose the UI
+  # through a second Service when you need it (see README).
+  webPort: 3000
+
+# --- Ingress ---
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: repowise.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# --- Persistence ---
+# Default: SQLite on a PVC mounted at /data, matching the rest of the project.
+# PostgreSQL is opt-in via postgresql.enabled.
+persistence:
+  enabled: true
+  storageClass: ""
+  size: 10Gi
+  accessMode: ReadWriteOnce
+  annotations: {}
+
+# --- PostgreSQL (opt-in) ---
+# When enabled, REPOWISE_DB_URL is set to the PostgreSQL DSN and the SQLite
+# PVC is not used. Bring your own server or deploy one via a subchart.
+postgresql:
+  enabled: false
+  host: ""
+  port: 5432
+  database: repowise
+  user: repowise
+  # Password is taken from the secret referenced by existingSecret, or
+  # generated when createSecret is true.
+  existingSecret: ""
+  secretKey: password
+  createSecret: true
+
+# --- Secrets ---
+# API keys are mounted from a Secret, never baked into values.
+# Create one yourself and set existingSecret, or let the chart generate it
+# from the values below (createSecret: true).
+secret:
+  createSecret: true
+  existingSecret: ""
+  # LLM provider keys (only set what you use)
+  anthropicApiKey: ""
+  openaiApiKey: ""
+  geminiApiKey: ""
+  # API key for repowise itself (required for non-loopback access)
+  repowiseApiKey: ""
+
+# --- Environment ---
+env:
+  # Embedder: mock (default, keyless), openai, ollama, ...
+  REPOWISE_EMBEDDER: mock
+  # Extra environment variables (e.g. OLLAMA_HOST)
+  extra: {}
+
+# --- Resources ---
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+# --- Probes ---
+# The API exposes an unauthenticated /health endpoint; probes hit it.
+livenessProbe:
+  path: /health
+  port: 7337
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  path: /health
+  port: 7337
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# --- ServiceAccount ---
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# --- Pod ---
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# --- Repos to index ---
+# Mount indexed repositories read-only, mirroring docker-compose.
+# Each entry: {name, hostPath} or {name, pvc, subPath}
+repos: []
+#  - name: my-repo
+#    hostPath: /srv/repos/my-repo
+#  - name: other-repo
+#    pvc: my-repo-pvc
+#    subPath: ""
