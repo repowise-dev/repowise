@@ -57,7 +57,7 @@ export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
   const { graph, between, families } = props;
   const [filter, setFilter] = useState("");
   const q = useDebounce(filter.trim(), 250);
-  const state = useRoutesBetween(props.loadLinksBetween, between.a, between.b, families, q);
+  const state = useRoutesBetween({ load: props.loadLinksBetween, a: between.a, b: between.b, families, q });
   const [prompting, setPrompting] = useState(false);
 
   const nodeOf = (id: string) => graph.nodes.find((n) => n.id === id);

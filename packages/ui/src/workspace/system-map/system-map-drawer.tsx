@@ -283,6 +283,19 @@ function VerbButton({ onClick, children, title }: { onClick: () => void; childre
   );
 }
 
+type ServiceVerb = ((serviceId: string) => void) | undefined;
+
+/** A service's map verbs, each offered when the host or the map supports it. */
+function NodeVerbs({ id, onFocus, onRoutesFrom, onShowBlastRadius }: { id: string; onFocus: ServiceVerb; onRoutesFrom: ServiceVerb; onShowBlastRadius: ServiceVerb }) {
+  return (
+    <>
+      {onFocus && <VerbButton onClick={() => onFocus(id)} title="Callers on the left, dependencies on the right">Focus</VerbButton>}
+      {onRoutesFrom && <VerbButton onClick={() => onRoutesFrom(id)}>Routes to…</VerbButton>}
+      {onShowBlastRadius && <VerbButton onClick={() => onShowBlastRadius(id)}>Show blast radius</VerbButton>}
+    </>
+  );
+}
+
 function distinct(groups: { edges: SystemEdge[] }[], pick: (e: SystemEdge) => string): number {
   return new Set(groups.flatMap((g) => g.edges.map(pick))).size;
 }
@@ -416,9 +429,7 @@ function NodeBody({
       )}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        {onFocus && <VerbButton onClick={() => onFocus(node.id)} title="Callers on the left, dependencies on the right">Focus</VerbButton>}
-        {onRoutesFrom && <VerbButton onClick={() => onRoutesFrom(node.id)}>Routes to…</VerbButton>}
-        {onShowBlastRadius && <VerbButton onClick={() => onShowBlastRadius(node.id)}>Show blast radius</VerbButton>}
+        <NodeVerbs id={node.id} onFocus={onFocus} onRoutesFrom={onRoutesFrom} onShowBlastRadius={onShowBlastRadius} />
         <AiPromptButton label="Map before a change" onClick={openServicePrompt} />
         {overview && (
           <Anchor href={overview} LinkComponent={LinkComponent} className="text-xs font-medium">
