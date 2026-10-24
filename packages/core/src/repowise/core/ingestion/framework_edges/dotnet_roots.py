@@ -8,9 +8,11 @@ Four kinds of file have no caller in source and are used all the same:
   ``[EfCoreConverter<T>]`` class is the generator's input);
 * a class a host loads by reflection: a PowerShell ``[Cmdlet]``, a Roslyn
   ``[Generator]``, a BenchmarkDotNet class with a ``[Benchmark]`` method, an
-  Azure Functions class with a ``[Function]`` or ``[FunctionName]`` method, or a
+  Azure Functions class with a ``[Function]`` or ``[FunctionName]`` method, a
   WCF service class implementing a ``[ServiceContract]`` interface (an IIS
-  ``.svc`` file or ``web.config`` names it, never a C# source);
+  ``.svc`` file or ``web.config`` names it, never a C# source), or a classic
+  ASP.NET class an ``Inherits=`` / ``Class=`` directive names in markup
+  (``Global.asax``, a ``.aspx`` page, a ``.ashx`` handler);
 * a file-based app, started by ``dotnet run <file>``: it opens with ``#:``
   directives (``#:sdk``, ``#:package``), as Polly's Cake script ``cake.cs`` does.
 
@@ -23,6 +25,8 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any
+
+from repowise.core.fs_walk import glob_via
 
 from ..decorator_names import decorator_base
 from ..type_names import bare_type_name
@@ -84,6 +88,16 @@ _TRIGGER_PARAMETER_RE = re.compile(r"[\[,]\s*(?:[\w.]+\.)?\w+Trigger(?:Attribute
 #: implementing a contract is rooted too, which can only hide a finding.
 _SERVICE_CONTRACT_ATTRIBUTE = "ServiceContract"
 _WCF_CLIENT_BASES = frozenset({"ClientBase", "DuplexClientBase"})
+
+#: ASP.NET markup whose ``<%@ ... %>`` directive names the class the runtime
+#: instantiates: ``Inherits=`` on an application, page, user control or master
+#: page, ``Class=`` on a handler or web service. The glob is case-sensitive and
+#: Visual Studio names master pages ``Site.Master``.
+_ASPNET_MARKUP_GLOBS = ("*.asax", "*.aspx", "*.ascx", "*.master", "*.Master", "*.ashx", "*.asmx")
+# Not ``ClassName=``: that names the class ASP.NET compiles from the markup.
+_DIRECTIVE_TYPE_RE = re.compile(
+    r"""<%@[^%]*?\b(?:Inherits|Class)\s*=\s*["']([\w.]+)""", re.IGNORECASE
+)
 
 # A ``partial class Name;`` has no body, so the parser reports no symbol for
 # it and the marker has to be read from the text.
@@ -182,11 +196,35 @@ def _wcf_services(parsed: Any, contracts: frozenset[str]) -> set[str]:
     return services.union(*(implemented[name] for name in services))
 
 
+def _markup_types(ctx: ResolverContext) -> frozenset[str]:
+    """Fully qualified names of the classes ASP.NET markup in the repository names."""
+    if ctx.repo_path is None:
+        return frozenset()
+    names: set[str] = set()
+    for markup in glob_via(
+        ctx.walk_snapshot,
+        ctx.repo_path.resolve(),
+        _ASPNET_MARKUP_GLOBS,
+        prune_nested_git=ctx.prune_nested_git,
+    ):
+        try:
+            text = markup.read_text(encoding="utf-8-sig", errors="ignore")
+        except OSError:
+            continue
+        names.update(_DIRECTIVE_TYPE_RE.findall(text))
+    return frozenset(names)
+
+
 def _is_consumed(
-    sym: Any, modules: dict[str, Any], symbols: list[Any], services: set[str]
+    sym: Any,
+    modules: dict[str, Any],
+    symbols: list[Any],
+    services: set[str],
+    hosted: frozenset[str],
 ) -> bool:
     namespace = _namespace_of(sym, modules)
-    if f"{namespace}.{sym.name}" in _COMPILER_CONSUMED_TYPES[_LANGUAGE]:
+    qualified = f"{namespace}.{sym.name}" if namespace else sym.name
+    if qualified in _COMPILER_CONSUMED_TYPES[_LANGUAGE] or qualified in hosted:
         return True
     markers = _GENERATOR_MARKER_ATTRIBUTES[_LANGUAGE]
     if any(bare_type_name(d) in markers for d in sym.decorators):
@@ -215,7 +253,7 @@ def _is_file_based_app(parsed: Any) -> bool:
     return _APP_DIRECTIVE_RE.match(head) is not None
 
 
-def _is_consumed_file(parsed: Any, contracts: frozenset[str]) -> bool:
+def _is_consumed_file(parsed: Any, contracts: frozenset[str], hosted: frozenset[str]) -> bool:
     if _is_file_based_app(parsed):
         return True
     modules = _namespaces(parsed.symbols)
@@ -227,21 +265,26 @@ def _is_consumed_file(parsed: Any, contracts: frozenset[str]) -> bool:
     if not types:
         return _is_generator_input(parsed)
     services = _wcf_services(parsed, contracts) if contracts else set()
-    return all(_is_consumed(s, modules, parsed.symbols, services) for s in types)
+    return all(_is_consumed(s, modules, parsed.symbols, services, hosted) for s in types)
 
 
-def consumed_files(parsed_files: dict[str, Any]) -> list[str]:
-    """C# files the compiler or a tool uses with no reference in source."""
+def consumed_files(parsed_files: dict[str, Any], hosted: frozenset[str]) -> list[str]:
+    """C# files the compiler or a tool uses with no reference in source.
+
+    *hosted* holds the fully qualified names ASP.NET markup instantiates.
+    """
     contracts = _service_contracts(parsed_files)
     return [
         path
         for path, parsed in parsed_files.items()
-        if parsed.file_info.language == _LANGUAGE and _is_consumed_file(parsed, contracts)
+        if parsed.file_info.language == _LANGUAGE and _is_consumed_file(parsed, contracts, hosted)
     ]
 
 
-def _mark_roots(graph: nx.DiGraph, parsed_files: dict[str, Any], path_set: set[str]) -> None:
-    for path in consumed_files(parsed_files):
+def _mark_roots(
+    graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext, path_set: set[str]
+) -> None:
+    for path in consumed_files(parsed_files, _markup_types(ctx)):
         node = graph.nodes.get(path)
         if path in path_set and node is not None:
             node["is_reachability_root"] = True
@@ -260,7 +303,7 @@ class _DotNetRootsHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        _mark_roots(graph, parsed_files, path_set)
+        _mark_roots(graph, parsed_files, ctx, path_set)
         return 0
 
 

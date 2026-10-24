@@ -236,3 +236,51 @@ def test_class_carrying_service_contract_itself_is_a_root(tmp_path: Path) -> Non
         "public class Echo { [OperationContract] public string Say(string s) => s; }\n"
     )
     assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+_GLOBAL_ASAX_CS = (
+    "using System.Web;\nnamespace Sample\n{\n"
+    "    public class MvcApplication : HttpApplication { }\n}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "markup", "code"),
+    [
+        (
+            "Global.asax",
+            '<%@ Application Codebehind="Global.asax.cs" Inherits="Sample.MvcApplication" %>\n',
+            _GLOBAL_ASAX_CS,
+        ),
+        (
+            "Default.aspx",
+            "<%@ Page Language=\"C#\" CodeFile=\"Default.aspx.cs\" Inherits='_Default' %>\n"
+            "<html><body><%= Title %></body></html>\n",
+            "public partial class _Default : System.Web.UI.Page { }\n",
+        ),
+        (
+            "Ping.ashx",
+            '<%@ WebHandler Language="C#" Class="Sample.Ping" %>\n',
+            "namespace Sample;\npublic class Ping : IHttpHandler { }\n",
+        ),
+    ],
+    ids=["global-asax", "aspx-page-in-global-namespace", "ashx-handler"],
+)
+def test_class_aspnet_markup_names_is_a_root(
+    tmp_path: Path, name: str, markup: str, code: str
+) -> None:
+    assert _roots(tmp_path, {name: markup, f"{name}.cs": code}) == {f"{name}.cs"}
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        '<%@ Application Inherits="Other.MvcApplication" %>\n',
+        '<%@ Page ClassName="Sample.MvcApplication" %>\n',
+        '<p>Inherits="Sample.MvcApplication"</p>\n',
+    ],
+    ids=["other-namespace", "class-name-attribute", "outside-a-directive"],
+)
+def test_class_aspnet_markup_does_not_name_is_not_a_root(tmp_path: Path, markup: str) -> None:
+    files = {"Global.asax": markup, "Global.asax.cs": _GLOBAL_ASAX_CS}
+    assert _roots(tmp_path, files) == set()

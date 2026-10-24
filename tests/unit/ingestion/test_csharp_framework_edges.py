@@ -97,6 +97,25 @@ public class UsersController : ControllerBase {
         edge = graph["Program.cs"]["Controllers/UsersController.cs"]
         assert edge["edge_type"] == "framework"
 
+    def test_global_asax_to_system_web_mvc_controllers(self, tmp_path: Path) -> None:
+        """Classic ASP.NET MVC has no ``Program.cs``; the application class is the entry."""
+        (tmp_path / "Global.asax.cs").write_text(
+            "using System.Web;\nnamespace Sample;\n"
+            "public class MvcApplication : HttpApplication { }\n"
+        )
+        (tmp_path / "Controllers").mkdir()
+        (tmp_path / "Controllers" / "HomeController.cs").write_text(
+            "using System.Web.Mvc;\nnamespace Sample.Controllers;\n"
+            "public class HomeController : Controller { public ActionResult Index() => View(); }\n"
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(parsed)
+
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed), tech_stack=[])
+        edge = graph.get_edge_data("Global.asax.cs", "Controllers/HomeController.cs")
+        assert edge is not None and edge["edge_type"] == "framework"
+
     def test_dbcontext_to_dbset_entity(self, tmp_path: Path) -> None:
         (tmp_path / "Domain").mkdir()
         (tmp_path / "Infra").mkdir()

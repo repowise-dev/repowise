@@ -29,15 +29,17 @@ _ASPNET_CONTROLLER_ATTR_RE = re.compile(r"\[\s*ApiController\b")
 _ASPNET_USE_MIDDLEWARE_RE = re.compile(r"\.\s*UseMiddleware\s*<\s*(\w+)")
 _DBCONTEXT_DECL_RE = re.compile(r"class\s+\w+\s*:\s*[\w.<>,\s]*\bDbContext\b")
 _DBSET_RE = re.compile(r"\bDbSet\s*<\s*([A-Z]\w*)\s*>")
+# ASP.NET Core, and classic ASP.NET MVC and Web API on System.Web.
+_ASPNET_NAMESPACES = ("Microsoft.AspNetCore", "System.Web.Mvc", "System.Web.Http")
 
 
 def _has_aspnet_imports(parsed_files: dict[str, Any]) -> bool:
-    """True if any parsed file imports Microsoft.AspNetCore.* — cheap signal."""
+    """True if any parsed file imports an ASP.NET namespace — cheap signal."""
     for parsed in parsed_files.values():
         if parsed.file_info.language != "csharp":
             continue
         for imp in parsed.imports:
-            if imp.module_path.startswith("Microsoft.AspNetCore"):
+            if imp.module_path.startswith(_ASPNET_NAMESPACES):
                 return True
     return False
 
@@ -51,10 +53,11 @@ def _add_aspnet_edges(
 
     Three independent signal sources are merged:
 
-    1. Application entry point (``Program.cs``/``Startup.cs``) → every
-       controller file. ``MapControllers()`` is the discovery anchor;
-       individual controllers are not statically referenced from
-       ``Program.cs`` but the framework wires them at runtime.
+    1. Application entry point (``Program.cs``/``Startup.cs``, or
+       ``Global.asax.cs`` on classic ASP.NET) → every controller file.
+       ``MapControllers()`` is the discovery anchor; individual controllers
+       are not statically referenced from ``Program.cs`` but the framework
+       wires them at runtime.
 
     2. Application entry point → handler files for any ``app.MapGet(...)``
        / ``MapPost(...)`` minimal API call. We can't resolve the handler
@@ -96,7 +99,7 @@ def _add_aspnet_edges(
         if _ASPNET_CONTROLLER_ATTR_RE.search(text) or path.endswith("Controller.cs"):
             controllers.append(path)
         name = Path(path).name
-        if name in ("Program.cs", "Startup.cs"):
+        if name in ("Program.cs", "Startup.cs", "Global.asax.cs"):
             entry_points.append(path)
         if _DBCONTEXT_DECL_RE.search(text):
             dbcontext_files.append((path, text))
