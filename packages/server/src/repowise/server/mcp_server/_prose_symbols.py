@@ -56,11 +56,11 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     is_excluded,
 )
-from repowise.server.mcp_server._hit_symbols import _stem
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
-from repowise.server.mcp_server._query_terms import STOPWORDS
+from repowise.server.mcp_server._query_terms import _MAX_TERMS, STOPWORDS
 from repowise.server.mcp_server._query_terms import content_terms as content_terms
 from repowise.server.mcp_server.tool_search_symbols import (
+    _stem,
     _symbol_kind_for_request_kind,
     _symbol_result,
     _tokens,
@@ -100,6 +100,11 @@ _NAME_COVER_MIN_SHARE = 2 / 3
 # A file name the question spells word for word, at least this long, is as
 # specific as a page hit. Two words (``test_matcher``) often name a role, not a topic.
 _FULL_COVER_MIN_WORDS = 3
+
+# Words of a question the symbol leg ranks by rarity before keeping
+# ``_MAX_TERMS`` of them. Ranking reads the in-memory name postings, so the
+# pool is cheap; the cap only bounds a pasted stack trace.
+_TERM_POOL = 32
 
 
 class _SymbolTextIndex(NamedTuple):
@@ -203,6 +208,22 @@ def _name_words(name: str | None) -> set[str]:
     return {_stem(t) for t in _tokens(name) if t not in STOPWORDS}
 
 
+def _rarest_terms(index: _SymbolTextIndex, terms: list[str], keep: int) -> list[str]:
+    """The *keep* terms fewest symbol names carry, rarest first.
+
+    Length is a poor stand-in for specificity: ``resolution`` outlasts
+    ``alias`` though far more names carry it. A compound counts as its rarest
+    word. A term no name carries can only match a path, so it goes last.
+    """
+
+    def name_count(term: str) -> int:
+        words = _name_words(term)
+        return min((len(index.postings.get(w, ())) for w in words), default=0)
+
+    counts = {t: name_count(t) for t in terms}
+    return sorted(terms, key=lambda t: (counts[t] == 0, counts[t], -len(t), t))[:keep]
+
+
 def _name_covered(row: WikiSymbol, terms: Iterable[str]) -> bool:
     """Whether the question's words make up most of *row*'s name."""
     words = _name_words(row.name)
@@ -274,13 +295,15 @@ async def search_symbols_by_terms(
     limit: int,
     *,
     kind: str | None = None,
+    max_terms: int | None = None,
 ) -> list[dict]:
     """Rank indexed symbols against the content words of a question.
 
     The prose-side counterpart to
     :func:`tool_search_symbols.search_symbols_single`, which needs the caller
     to have typed an identifier. Returns the same result shape, so a caller
-    can interleave the two without special-casing either.
+    can interleave the two without special-casing either. ``max_terms`` keeps
+    only that many of *terms*, the rarest among symbol names.
     """
     terms = [t for t in terms if t]
     if not terms:
@@ -289,6 +312,8 @@ async def search_symbols_by_terms(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         index = await _symbol_text_index(session, repository.id)
+        if max_terms is not None:
+            terms = _rarest_terms(index, terms, max_terms)
         matched: dict[str, set[str]] = {}
         saturated: set[str] = set()
         for term in terms:
@@ -378,11 +403,11 @@ async def symbol_backed_pages(
     Never raises: a missing or slow symbol index leaves the page retrievers to
     answer on their own, which is the behaviour that shipped before this.
     """
-    terms = content_terms(question)
+    terms = content_terms(question, max_terms=_TERM_POOL)
     if not terms or max_files <= 0:
         return []
     try:
-        symbols = await search_symbols_by_terms(ctx, terms, symbol_limit)
+        symbols = await search_symbols_by_terms(ctx, terms, symbol_limit, max_terms=_MAX_TERMS)
     except Exception:
         return []
     if not symbols:

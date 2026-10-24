@@ -208,6 +208,23 @@ class TestAndroidManifest:
         graph = _seed_graph(parsed)
         ctx = _ctx(tmp_path, parsed)
         add_framework_edges(graph, parsed, ctx)
-        manifest_rel = "app/src/main/AndroidManifest.xml"
         activity_rel = "app/src/main/java/com/x/MainActivity.java"
-        assert graph.has_edge(manifest_rel, activity_rel)
+        assert graph.has_edge("framework:android", activity_rel)
+        assert graph.nodes[activity_rel].get("is_entry_point") is True
+
+    def test_single_quoted_manifest_completes_relative_names(self, tmp_path: Path) -> None:
+        src_dir = tmp_path / "app" / "src" / "main" / "java" / "com" / "x"
+        src_dir.mkdir(parents=True)
+        (src_dir / "MainActivity.java").write_text("package com.x;\npublic class MainActivity {}\n")
+        (tmp_path / "app" / "src" / "main" / "AndroidManifest.xml").write_text(
+            "<manifest xmlns:android='http://schemas.android.com/apk/res/android'\n"
+            "    package = 'com.x'>\n"
+            "  <application>\n"
+            "    <activity android:name = '.MainActivity' />\n"
+            "  </application>\n"
+            "</manifest>\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = _seed_graph(parsed)
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed))
+        assert graph.has_edge("framework:android", "app/src/main/java/com/x/MainActivity.java")

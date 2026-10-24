@@ -45,7 +45,7 @@
 import { use, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useQueryState, parseAsStringLiteral } from "nuqs";
+import { useQueryState, useQueryStates, parseAsStringLiteral } from "nuqs";
 import { PageFrame } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { ErrorBoundary } from "@repowise-dev/ui/shared";
@@ -55,6 +55,7 @@ import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-t
 import { SymbolIndexHeader } from "@repowise-dev/ui/symbols";
 import { COUPLING_DISCLAIMER } from "@repowise-dev/ui/coupling";
 import { CouplingTab } from "@/components/coupling/coupling-tab";
+import { couplingUrlParsers } from "@/components/coupling/coupling-url";
 
 // The curated layered view now lives under the dedicated Knowledge Graph route.
 const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers"]);
@@ -137,6 +138,7 @@ export default function ArchitecturePage({
   const [, setShow] = useQueryState("show");
   const [, setFocus] = useQueryState("focus");
   const [, setNode] = useQueryState("node");
+  const [, setCouplingUrl] = useQueryStates(couplingUrlParsers);
 
   // The curated layers view now lives at /knowledge-graph. `?view=layers`
   // redirects there so shared links keep working.
@@ -185,8 +187,9 @@ export default function ArchitecturePage({
         void setShow(null);
         void setNode(null);
       }
+      if (id !== "coupling") void setCouplingUrl(null);
     },
-    [setView, setFocus, setSignal, setModule, setCommunity, setShow, setNode],
+    [setView, setFocus, setSignal, setModule, setCommunity, setShow, setNode, setCouplingUrl],
   );
 
   const handleScopeChange = useCallback(

@@ -17,7 +17,11 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.commands import JsPackages, js_test_packages
+from repowise.core.analysis.health.refactoring.commands import (
+    TestRuns,
+    js_root_runs,
+    runs_for_tests,
+)
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
@@ -80,7 +84,7 @@ async def hydrate_recommendations(
     read never rebuilds it and serves the plan-level answer. Finalize also
     passes the repository's *findings*, so a plan that leaves a function at
     the break-up bar is marked and ranked after the rest. Index-time callers
-    pass the *checkout*, so each JS/TS test's command runs from its package.
+    pass the *checkout*, so each test's command runs from its package.
     """
     if not rows:
         return []
@@ -170,8 +174,8 @@ async def validation_inputs(
     """Measured coverage and the tiered reachability walk for every plan's files.
 
     *in_degree* is the stored fan-in a caller already read; without it, read here.
-    With the *checkout*, each JS/TS test's package is read, for the plans to
-    store; without it, commands run from the repository root.
+    With the *checkout*, each test's package is read, for the plans to store;
+    without it, JS/TS tests run from the repository root and others get no command.
     """
     measured = await tests_covering_files(session, repository_id, set(target_files))
 
@@ -208,6 +212,7 @@ async def validation_inputs(
         path: _expand_scopes(path, reached, narrowed[path]) for path, reached in inferred.items()
     }
     hub_targets = [path for path in target_files if path in hubs]
+    runs = await _test_runs(checkout, test_files)
     evidence = await _validation_evidence(
         session,
         repository_id,
@@ -221,7 +226,7 @@ async def validation_inputs(
             siblings=_siblings(in_degree),
             symbols=await _symbol_spans(session, repository_id, target_files),
             function_tests=await tests_in_files(session, repository_id, target_files),
-            js_packages=await _js_packages(checkout, test_files),
+            test_runs=runs,
         ),
     )
     return ValidationInputs(
@@ -267,13 +272,14 @@ async def repository_checkout(session: AsyncSession, repository_id: str) -> str 
     return await session.scalar(select(Repository.local_path).where(Repository.id == repository_id))
 
 
-async def _js_packages(checkout: str | None, test_files: set[str]) -> JsPackages | None:
+async def _test_runs(checkout: str | None, test_files: set[str]) -> TestRuns:
+    """Where each test runs, from one scan of the checkout's package roots."""
     root = Path(checkout) if checkout else None
     if root is None or not root.is_dir():
-        return None
+        return js_root_runs(test_files)
     # The health pass already scanned this commit's package roots; this reuses it.
     manifests = await asyncio.to_thread(scan_package_manifests, root)
-    return await asyncio.to_thread(js_test_packages, root, manifests, test_files)
+    return await asyncio.to_thread(runs_for_tests, root, manifests, test_files)
 
 
 async def _symbol_spans(

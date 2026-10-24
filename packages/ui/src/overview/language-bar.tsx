@@ -4,9 +4,8 @@ import { ProportionBar } from "../shared/proportion-bar";
 /**
  * Language mix as a share bar plus a key.
  *
- * Languages are named in the key, so they take the share steps like every
- * other proportion rather than a hue each: a colour per language is only worth
- * its cost with a fixed legend the reader learns once, and there is none.
+ * Languages are named in the key, so they take the share steps (the series
+ * colours by rank) like every other proportion.
  */
 export function LanguageBar({
   distribution,

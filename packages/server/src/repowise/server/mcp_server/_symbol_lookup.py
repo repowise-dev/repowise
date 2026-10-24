@@ -17,9 +17,18 @@ matched as given, since ``.`` and ``/`` are meaningful inside them.
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+import difflib
+from typing import Any
 
-from repowise.core.ingestion.symbol_identity import base_symbol_id, id_segment_name
+from sqlalchemy import func, or_, select
+
+from repowise.core.exclusion import is_excluded
+from repowise.core.ingestion.symbol_identity import (
+    base_symbol_id,
+    id_segment_name,
+    split_symbol_id,
+    untyped_symbol_id,
+)
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.core.support_paths import is_support_path
@@ -204,7 +213,9 @@ async def resolve_symbol_rows(session, repo_id: str, symbol_id: str) -> list[Wik
     # 1. Exact symbol_id — try every separator variant. The same query also
     #    reads the members of an overload set the id names, which carry a
     #    discriminator (``Validate.java::Validate::notNull`` -> ``notNull#1``,
-    #    ``notNull#2``); they answer only when no row matches exactly.
+    #    ``notNull#2``); they answer only when no row matches exactly. A
+    #    count-only id (``put#1``) also reads the members typed under it
+    #    (``put#1(String)``).
     variants = symbol_id_variants(symbol_id)
     res = await session.execute(
         select(WikiSymbol).where(
@@ -212,26 +223,26 @@ async def resolve_symbol_rows(session, repo_id: str, symbol_id: str) -> list[Wik
             or_(
                 WikiSymbol.symbol_id.in_(variants),
                 *(
-                    WikiSymbol.symbol_id.like(f"{escape_like(sid)}#%", escape=LIKE_ESCAPE)
+                    WikiSymbol.symbol_id.like(f"{escape_like(sid)}{tail}%", escape=LIKE_ESCAPE)
                     for sid in variants
+                    for tail in ("#", "(")
                 ),
             ),
         )
     )
     found = list(res.scalars().all())
     rows = [row for row in found if row.symbol_id in variants] or [
-        row for row in found if base_symbol_id(row.symbol_id) in variants
+        row
+        for row in found
+        if base_symbol_id(row.symbol_id) in variants or untyped_symbol_id(row.symbol_id) in variants
     ]
     if rows:
         return order_candidates(rows, file_path)
 
-    if not name:
-        return []
-
     variants = name_variants(name)
 
     # 2. Match on (file_path, qualified_name) across name variants.
-    if file_path:
+    if file_path and name:
         res = await session.execute(
             select(WikiSymbol).where(
                 WikiSymbol.repository_id == repo_id,
@@ -276,4 +287,162 @@ async def resolve_symbol_rows(session, repo_id: str, symbol_id: str) -> list[Wik
         if rows:
             return order_candidates(rows, file_path)
 
+    # 5. A qualified name with no file ("Client.send", "Command::Find"): the
+    #    head is a class, not a path, so match the qualified_name tail
+    #    repo-wide. qualified_name is module-prefixed and dotted.
+    dotted = _pathless_qualified_name(symbol_id)
+    if dotted:
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.name == bare_name(dotted),
+                or_(
+                    WikiSymbol.qualified_name == dotted,
+                    WikiSymbol.qualified_name.like(
+                        f"%.{escape_like(dotted)}", escape=LIKE_ESCAPE
+                    ),
+                ),
+            )
+        )
+        return order_candidates(list(res.scalars().all()), None)
+
     return []
+
+
+def _pathless_qualified_name(symbol_id: str) -> str | None:
+    """The dotted ``Class.method`` a path-less target names, else None.
+
+    An overload discriminator is dropped, since qualified_name never carries
+    one, so ``Validate::notNull#1`` answers with the whole overload set.
+    """
+    base = split_symbol_id(symbol_id)[0]
+    head = base.partition("::")[0]
+    if "/" in head or "\\" in head:
+        return None
+    dotted = name_variants(base)[0] if base else ""
+    return dotted if "." in dotted else None
+
+
+
+#: How many "did you mean" ids a missed target carries.
+NEAREST_LIMIT = 5
+#: ``difflib.get_close_matches`` cutoff. A ratio is 2*M/(a+b) with M <= the
+#: shorter length, so a name outside [3a/7, 7a/3] of the query's length ``a``
+#: can never pass it; the pools below filter on that window in SQL.
+_NEAREST_CUTOFF = 0.6
+#: Backstop caps for a repo-wide miss. Names are read closest length first,
+#: so the cap drops the least likely names; past it a match is missed (a
+#: trigram index on ``name`` is the upgrade). Rows are capped the same way;
+#: a file-scoped miss reads every symbol of the one file.
+_NEAREST_NAME_POOL = 2000
+_NEAREST_ROW_POOL = 500
+#: Pages of ``_NEAREST_ROW_POOL`` rows read while excluded files fill them. A
+#: pathspec has no SQL form, so exclusion runs here; past this many pages a
+#: match behind excluded rows is missed.
+_NEAREST_MAX_PAGES = 10
+
+
+def _length_window(n: int) -> tuple[int, int]:
+    # [ceil(3n/7), floor(7n/3)] for the 0.6 cutoff, in integers so a boundary
+    # length (n=7 allows 3) is not lost to float rounding.
+    return (3 * n + 6) // 7, 7 * n // 3
+
+
+async def _close_values(session, column, query: str, *where) -> list[str]:
+    """Values of ``column`` close to ``query``, from a bounded SQL pool.
+
+    The pool is values sharing the query's first letter in either case
+    (``lower()`` on both sides, so SQLite and PostgreSQL agree) inside the
+    length window, closest length first.
+    """
+    lo, hi = _length_window(len(query))
+    res = await session.execute(
+        select(column)
+        .where(
+            *where,
+            func.lower(column).like(f"{escape_like(query[0].lower())}%", escape=LIKE_ESCAPE),
+            func.length(column).between(lo, hi),
+        )
+        .group_by(column)
+        .order_by(func.abs(func.length(column) - len(query)), column)
+        .limit(_NEAREST_NAME_POOL)
+    )
+    values = [v for v in res.scalars().all() if v]
+    return difflib.get_close_matches(query, values, n=NEAREST_LIMIT, cutoff=_NEAREST_CUTOFF)
+
+
+async def _allowed_rows(session, stmt, exclude_spec: Any, *, capped: bool) -> list:
+    """Rows of ``stmt`` outside excluded files; with ``capped``, up to the row pool.
+
+    The cap counts allowed rows, so excluded ones cannot fill it: pages are
+    read until it is met or the rows run out, at most ``_NEAREST_MAX_PAGES``.
+    """
+    if not capped:
+        res = await session.execute(stmt)
+        return [r for r in res.all() if not is_excluded(r.file_path, exclude_spec)]
+    rows: list = []
+    for page_no in range(_NEAREST_MAX_PAGES):
+        res = await session.execute(
+            stmt.limit(_NEAREST_ROW_POOL).offset(page_no * _NEAREST_ROW_POOL)
+        )
+        page = res.all()
+        rows += [r for r in page if not is_excluded(r.file_path, exclude_spec)]
+        if len(page) < _NEAREST_ROW_POOL or len(rows) >= _NEAREST_ROW_POOL:
+            break
+    return rows[:_NEAREST_ROW_POOL]
+
+
+async def nearest_symbol_ids(
+    session,
+    repo_id: str,
+    query: str,
+    file_path: str | None = None,
+    exclude_spec: Any = None,
+) -> list[str]:
+    """Up to five symbol ids whose names read closest to ``query``, best first.
+
+    ``query`` is the name a target missed (``sned``, ``Clinet.send``). With
+    ``file_path`` the pool is that file's symbols, else names repo-wide; a
+    qualified query (``Clinet.send``) also narrows by the closest parent
+    names, so a common method name cannot crowd out the class asked for.
+    Each candidate is compared on as many trailing qualified-name segments
+    as the query has; symbols in files ``exclude_spec`` matches are never
+    offered. Empty when nothing is close.
+    """
+    dotted = name_variants(query)[0] if query else ""
+    bare = bare_name(dotted)
+    if not bare:
+        return []
+    where = [WikiSymbol.repository_id == repo_id]
+    if file_path:
+        where.append(WikiSymbol.file_path == file_path)
+    else:
+        close = await _close_values(session, WikiSymbol.name, bare, *where)
+        if not close:
+            return []
+        where.append(WikiSymbol.name.in_(close))
+        qualifier = dotted.rsplit(".", 2)[-2] if "." in dotted else ""
+        if qualifier:
+            parents = await _close_values(session, WikiSymbol.parent_name, qualifier, *where)
+            if parents:
+                where.append(WikiSymbol.parent_name.in_(parents))
+    stmt = (
+        select(
+            WikiSymbol.symbol_id,
+            WikiSymbol.name,
+            WikiSymbol.qualified_name,
+            WikiSymbol.file_path,
+        )
+        .where(*where)
+        .order_by(WikiSymbol.symbol_id)
+    )
+    rows = await _allowed_rows(session, stmt, exclude_spec, capped=not file_path)
+    depth = dotted.count(".") + 1
+    by_key: dict[str, list[str]] = {}
+    for sid, name, qualified, _path in rows:
+        key = ".".join(_dotted(qualified or name).split(".")[-depth:])
+        by_key.setdefault(key, []).append(sid)
+    keys = difflib.get_close_matches(
+        dotted, list(by_key), n=NEAREST_LIMIT, cutoff=_NEAREST_CUTOFF
+    )
+    return [sid for key in keys for sid in by_key[key]][:NEAREST_LIMIT]

@@ -205,6 +205,20 @@ def test_acyclic_graph_has_no_cycles():
     assert detect_cycles(g) == ([], 0)
 
 
+def test_a_cycle_closed_by_an_event_counts_and_names_each_legs_kinds():
+    g = _graph(
+        [_node("a"), _node("b")],
+        [_edge("a", "b", kind="event"), _edge("b", "a"), _edge("b", "a", kind="db")],
+    )
+    [cycle], total = detect_cycles(g)
+    assert total == 1
+    legs = dict(zip(cycle.nodes, cycle.leg_kinds, strict=True))
+    assert legs == {"a": ["event"], "b": ["db", "http"]}
+    assert cycle.async_legs == 1
+    assert cycle.to_dict()["async_legs"] == 1
+    assert type(cycle).from_dict(cycle.to_dict()).leg_kinds == cycle.leg_kinds
+
+
 def test_cycles_ignore_behavioral_edges():
     # a->b structural, b->a only via co-change → not a real cycle
     g = _graph(

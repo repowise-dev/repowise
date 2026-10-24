@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from repowise.core.sessions.events import relative_files
+from repowise.core.fsutils import relative_files
 
 ROOT = r"C:\Users\x\repo"
 POSIX_ROOT = "/home/x/repo"

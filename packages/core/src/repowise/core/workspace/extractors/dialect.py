@@ -2,14 +2,23 @@
 
 A *dialect* is one framework's, library's or file format's view of a source
 file: it names the extensions it reads and turns a file into contracts. Each
-contract type is a package of dialects plus a registry tuple, and
-:class:`DialectExtractor` owns the only walk-and-dispatch loop, so adding a
-library is one module and one registry entry.
+contract type is a package of dialects plus a registry tuple, and every
+dialect runs through :func:`run_dialect`, so adding a library is one module
+and one registry entry.
+
+The engine, not the dialect, owns the two checks every dialect needs. A
+dialect declares ``requires``, the tokens one of which a file must contain
+before it is read at all; the file's :class:`..base.ScanContext` looks each
+token up once, however many dialects name it. And a contract whose line is
+nothing but a comment is dropped, so a usage example in a doc comment never
+becomes an endpoint, a queue or a table.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
+
+from repowise.core.workspace.origins import ContractOrigin, origin_confidence
 
 from .base import ScanContext, select_files
 
@@ -20,6 +29,7 @@ if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
 
     from .base import SourceFile
+    from .calls import CallShape
 
 
 class ContractDialect(Protocol):
@@ -27,10 +37,52 @@ class ContractDialect(Protocol):
 
     name: str
     extensions: frozenset[str]
+    #: Tokens one of which a file must contain to be read (a library's import,
+    #: a decorator's name): the cheap test that keeps a dialect off the files
+    #: it can find nothing in. Every token any match needs, so the gate never
+    #: drops a contract. :data:`EVERY_FILE` for a contract file format.
+    requires: tuple[str, ...]
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         """Return the contracts found in *ctx* (may be empty)."""
         ...
+
+
+#: The gate of a dialect that reads a contract format (``.proto``, ``.sql``,
+#: ``schema.prisma``), where the extension already says the file is one.
+EVERY_FILE: tuple[str, ...] = ("",)
+
+
+def rows_gate(rows: Iterable[CallShape]) -> tuple[str, ...]:
+    """A table dialect's gate: every token its rows require, or ``()`` if a row requires none.
+
+    An ungated row leaves the whole table ungated, which the registry test refuses.
+    """
+    tokens: dict[str, None] = {}
+    for row in rows:
+        if not row.requires:
+            return ()
+        tokens.update(dict.fromkeys(row.requires))
+    return tuple(tokens)
+
+
+def runs_on(dialect: ContractDialect, ctx: ScanContext) -> bool:
+    """Whether *dialect* reads *ctx*'s file: its extension, then its gate."""
+    return ctx.suffix in dialect.extensions and ctx.has_any(dialect.requires)
+
+
+def without_comments(contracts: list[Contract], ctx: ScanContext) -> list[Contract]:
+    """*contracts* less those whose line in *ctx*'s file is only a comment."""
+    if not contracts:
+        return contracts
+    return [c for c in contracts if not ctx.comment_only_line(c.line)]
+
+
+def run_dialect(dialect: ContractDialect, ctx: ScanContext) -> list[Contract]:
+    """The contracts *dialect* reads in *ctx*, gated and with commented-out matches dropped."""
+    if not runs_on(dialect, ctx):
+        return []
+    return without_comments(dialect.extract(ctx), ctx)
 
 
 class RepoPass(Protocol):
@@ -55,11 +107,16 @@ def build_contract(
     contract_id: str,
     role: str,
     symbol_name: str,
-    confidence: float,
+    origin: ContractOrigin,
     line: int | None,
     meta: dict,
 ) -> Contract:
-    """A :class:`Contract` read from *ctx*'s file. The service is assigned later."""
+    """A :class:`Contract` read from *ctx*'s file. The service is assigned later.
+
+    A dialect declares *origin*, what established the contract, from the closed
+    vocabulary in :mod:`..origins`; the confidence is the origin's, never a
+    number of the dialect's own.
+    """
     from repowise.core.workspace.contracts import Contract
 
     return Contract(
@@ -69,10 +126,11 @@ def build_contract(
         role=role,
         file_path=ctx.rel_path,
         symbol_name=symbol_name,
-        confidence=confidence,
+        confidence=origin_confidence(origin),
         service=None,
         line=line,
         meta=meta,
+        origin=origin,
     )
 
 
@@ -129,33 +187,41 @@ class DialectExtractor:
         passes: dict[int, RepoPass] = {
             id(d): d.repo_pass() for d in self.dialects if hasattr(d, "repo_pass")
         }
+        passed: dict[str, ScanContext] = {}  # files a repo pass read, for its comment check
         for rel_path, suffix, content in select_files(
             repo_path, self.source_extensions(), exclude, files
         ):
             ctx = ScanContext(repo_alias, rel_path, suffix, content)
             found: list[Contract] = []
             for dialect in self.dialects:
-                if suffix not in dialect.extensions:
-                    continue
                 repo_pass = passes.get(id(dialect))
-                if repo_pass is not None:
+                if repo_pass is None:
+                    found.extend(run_dialect(dialect, ctx))
+                elif runs_on(dialect, ctx):
                     repo_pass.scan(ctx)
-                else:
-                    found.extend(dialect.extract(ctx))
+                    passed[rel_path] = ctx
             contracts.extend(found if self.identity is None else dedupe(found, self.identity))
         for repo_pass in passes.values():
-            found = repo_pass.finish()
+            found = [
+                c for c in repo_pass.finish()
+                if c.file_path not in passed or not passed[c.file_path].comment_only_line(c.line)
+            ]
             # Every identity names the file, so a whole-repo dedupe is per file.
             contracts.extend(found if self.identity is None else dedupe(found, self.identity))
         return contracts
 
 
 __all__ = [
+    "EVERY_FILE",
     "ContractDialect",
     "DialectExtractor",
     "RepoPass",
     "build_contract",
     "dedupe",
     "file_identity",
+    "rows_gate",
+    "run_dialect",
+    "runs_on",
     "union_extensions",
+    "without_comments",
 ]

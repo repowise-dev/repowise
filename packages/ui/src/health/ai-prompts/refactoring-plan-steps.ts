@@ -63,12 +63,17 @@ function extractHelperSteps(plan: RefactoringPlan): string {
 }
 
 /** How an Extract Method edit is made. Core's recipe says the same words
- *  (`recipe.SCRIPT_RULE`, `LINE_RULE`, `ELSEWHERE_NOTE`; a parity test holds them). */
+ *  (`recipe.SCRIPT_RULE`, `LINE_RULE`, `ELSEWHERE_NOTE`, `RENAME_NOTE`; a parity
+ *  test holds them). */
 export const SCRIPT_RULE_TEXT =
   "Do not generate a script that rewrites the file. Make each edit directly in the file, one at a time, re-reading the span after each.";
 export const LINE_RULE_TEXT =
   "Do not find a span by its line numbers. They are where it was when planned and move with every edit; match its first and last lines.";
 const ELSEWHERE_NOTE = "Text repeats in the file: edit only inside this function.";
+export const RENAME_NOTE_TEXT =
+  "The helper's name is a placeholder: rename it for what it returns or does, in its header and its call.";
+/** The placeholder core writes (`helper_naming.placeholder_names`), in any casing. */
+const HELPER_PLACEHOLDER = /^_?extracted_?[hH]elper_?\d*$/;
 
 interface SpanAnchors {
   first: string;
@@ -137,7 +142,7 @@ function extractMethodSteps(plan: RefactoringPlan): string {
     ? `the span of \`${plan.target_symbol}\` that starts and ends with the lines shown (lines ${lines} when planned)`
     : `lines ${lines} of \`${plan.target_symbol}\``;
   return [
-    `Extract ${what} into \`${name}\`${em.suggested_name ? "" : " (name it for what the lines do)"}:`,
+    `Extract ${what} into \`${name}\`:`,
     "",
     ...rendered,
     `- **Parameters (in):** ${params}`,
@@ -150,6 +155,8 @@ function extractMethodSteps(plan: RefactoringPlan): string {
       : []),
     "",
     "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
+    // A plan stored before names were placeholders keeps its real name unflagged.
+    ...(!em.suggested_name || HELPER_PLACEHOLDER.test(em.suggested_name) ? [RENAME_NOTE_TEXT] : []),
     anchors ? `${SCRIPT_RULE_TEXT} ${LINE_RULE_TEXT}` : SCRIPT_RULE_TEXT,
   ].join("\n");
 }

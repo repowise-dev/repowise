@@ -33,6 +33,8 @@ Use a workspace when your project spans multiple git repositories that are relat
 
 With a single repo, `repowise init` needs no workspace.
 
+How the layer is built, and how to extend it: [architecture/workspace.md](../architecture/workspace.md).
+
 ---
 
 ## Quick Start
@@ -52,11 +54,19 @@ cd my-workspace
 repowise init .
 ```
 
-`repowise init .` scans for git repositories up to 3 levels deep, asks which to
-index and which is the primary repo (the default for MCP queries), walks you
-through provider setup, then indexes each repo, generates its docs (unless
-`--no-prose`), runs the cross-repo analysis, and registers the MCP server with
-your editors.
+`repowise init .` scans for git repositories up to 3 levels deep (linked git
+worktrees are skipped) and opens a plan screen listing them. By default every
+repo is selected and its documentation is built from code; `r` chooses the
+repos and the primary repo (the default for MCP queries), and `m` adds a model.
+It then indexes each repo, runs the cross-repo analysis, and registers the MCP
+server with your editors.
+
+To skip the screen, `--repos api,web` indexes only those repos (by alias,
+directory name, or relative path). In a new workspace the first one listed is
+primary; an existing workspace keeps its primary. `--yes`, `--all` or a piped
+stdin take every repo and print which ones. Picking fewer repos on a re-run
+keeps the others in `.repowise-workspace.yaml`: an interactive run asks before
+dropping them, and `--yes` never drops them.
 
 ```bash
 repowise status --workspace           # workspace status
@@ -95,7 +105,7 @@ in the [CLI reference](../reference/CLI_REFERENCE.md#workspace-commands).
 |---------|--------------|
 | `repowise init .` | Initialize the workspace: scan for repos, select, index (`--no-prose` for a free structure-only wiki, `-x` to exclude globs) |
 | `repowise workspace list` | Repos in the workspace with their index status |
-| `repowise workspace add <path>` | Add and index a repo (`--alias`, `--no-docs`, `--no-index`) |
+| `repowise workspace add <path>` | Add and index a repo, documentation built from code (`--alias`, `--docs` for model-written, `--no-docs`, `--no-index`) |
 | `repowise workspace remove <alias>` | Remove a repo from the workspace (files are not deleted) |
 | `repowise workspace scan` | Find repos not yet added |
 | `repowise workspace set-default <alias>` | Change the default repo for MCP queries |
@@ -128,14 +138,16 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 
 | Language | Providers (routes served) | Consumers (calls made) |
 |----------|---------------------------|------------------------|
-| JS / TS | Express, Hono, Fastify, Koa, Elysia; NestJS controllers; Next.js App Router; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; HTTP-named wrappers |
-| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms) |
+| JS / TS | Express, Hono, Fastify, Koa, hapi, Elysia; NestJS controllers; Next.js App Router and `pages/api`; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; AngularJS `$http`; request, superagent, needle; HTTP-named wrappers |
+| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms); Locust user `client` calls |
 | PHP | Laravel | Guzzle, Laravel `Http` |
-| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign, `java.net.http`, `RestTemplate`, Ktor (Kotlin) |
-| Go | gin, echo, chi, net/http | net/http |
-| C# | ASP.NET (attribute and minimal API) | HttpClient, UnityWebRequest, Best.HTTP |
+| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign (`@RequestLine`, and `@FeignClient` with Spring MVC annotations, its `name` read as the host), Spring `@HttpExchange` interfaces, Spring `WebClient` and `RestClient`, `RestTemplate` (also through a getter or a `RequestEntity`), `java.net.http`, Apache HttpClient (`new HttpPost(url)`, with a base URL passed to a helper's constructor in another file), MicroProfile `@RegisterRestClient` interfaces, Ktor (Kotlin) |
+| Go | gin, echo, chi, fiber, gorilla/mux, net/http (Go 1.22 method patterns) | net/http |
+| C# | ASP.NET (attribute and minimal API) | HttpClient (`GetAsync`, `GetFromJsonAsync`, `PostAsJsonAsync`, `GetStringAsync`, `new HttpRequestMessage(HttpMethod.X, url)`; a URL held in a local or a `const` / `readonly` field; `new Uri(base, path)` and `CombineUri` joins; typed, named and Refit client `BaseAddress`; HttpClient wrapper methods), Refit attributes, YARP `MapForwarder`, UnityWebRequest, Best.HTTP |
 | Ruby | | HTTParty, RestClient, Faraday, Net::HTTP |
 | Rust | Axum, Actix, Rocket | reqwest |
+| Apex | `@RestResource` classes (`/services/apexrest` + `urlMapping`) | `HttpRequest` callouts (literal endpoint and verb) |
+| C# (Azure Functions) | `[HttpTrigger]` routes under the default `/api` prefix; the function name when no `Route` is set | |
 | Any | OpenAPI 3.x documents | |
 
 **Database tables:**
@@ -156,12 +168,17 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Type | Providers | Consumers |
 |------|-----------|-----------|
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Topics | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
+| Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
+| Topics: C# integration events | `new T(...)` of an `IntegrationEvent` subclass the repo declares, reaching `PublishAsync` / `Publish` or a repo method taking an `IntegrationEvent`; the id is the short type name, which the event bus routes by | `AddSubscription<T, TH>()`, `Subscribe<T, TH>()` on a declared event, and `IIntegrationEventHandler<T>` classes for events no registration subscribes |
+| Topics: JMS | Spring `JmsTemplate` / `JmsMessagingTemplate` `convertAndSend` / `send` / `sendAndReceive` / `convertSendAndReceive` on a receiver named for JMS (`jmsTemplate`, `orderJmsTemplate`, `getJmsTemplate()`) with a destination argument; ActiveMQ and IBM MQ `queue://` names read as the bare queue | `@JmsListener(destination = ...)`, `receive` / `receiveAndConvert`, `DefaultMessageListenerContainer.setDestinationName` |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
 A topic, queue or route name is resolved when it is a literal or a constant the
-same file assigns once; a name built at runtime is skipped, not guessed. HTTP
+same file assigns once; a name built at runtime is skipped, not guessed. RabbitMQ
+is also read from Go (streadway/amqp, amqp091-go), and a queue named through its
+declaration's result (`q.Name` after Go `QueueDeclare`, amqplib `assertQueue`, pika
+`queue_declare`) resolves when that file declares it with a settled name. HTTP
 routes match on their full path, with router mount prefixes stitched on first.
 An ambiguous target becomes a lower-confidence **candidate** link, and a unique
 one an **exact** link. The exact naming and matching rules for each transport
@@ -187,8 +204,15 @@ contracts:
   detect_socket: true
   detect_topics: true
   detect_data: true
+  # Directory-name regex (full match, ignoring case) marking a .NET project whose
+  # types are MassTransit messages. The default is shown; widen it to match your
+  # own project naming, e.g. '(?:.+\.)?contracts?' to accept singular names too.
+  contract_project_pattern: '(?:.+\.)?contracts'
   # Map a consumer base token or absolute host to the repo it targets, so a
   # call whose base is unresolved at parse time links as an exact match.
+  # Most names are found without this, from compose, Kubernetes, Spring and
+  # Aspire config (see WORKSPACE_CONTRACTS.md, "Service names"); an entry
+  # here always wins.
   service_bases:
     API_BASE: backend          # ${API_BASE}/... -> the "backend" repo
     api.example.com: backend    # https://api.example.com/... -> "backend"
@@ -205,6 +229,23 @@ A route or topic that exists only in a test is a fixture, not a service contract
 Calls to a literal
 third-party host (Stripe, Formspree, ...) that is not a workspace service are
 excluded from matching and reported under the `external_host` diagnostics reason.
+
+**MassTransit.** A message is routed by its .NET type, so its contract id is
+`topic::<namespace>:<type>` (lowercased), not a string. A type counts as a message
+only when it is declared at the top level of a non-generic type in a project under a
+directory matching `contracts.contract_project_pattern` (configurable; the default
+matches `Contracts` and `<Prefix>.Contracts`), in any repo of the workspace. A
+`Send` or `Publish` argument that is not one of those types never produces a
+contract, which keeps non-bus `Send` calls out unless they pass an indexed message
+type. Producers are `Publish`, `Send`, `SchedulePublish`, `ScheduleSend`,
+`ScheduleRecurringSend` (generic and argument forms), `Respond`, `IRequestClient<T>`
+and saga `Init<T>`, plus extension methods that wrap them; receivers declared as
+`IMediator`, `ISender` or `IPublisher` are skipped. Consumers are `IConsumer<T>`
+(including `Fault<T>`), closed open-generic consumers and registration helpers, and
+saga events. A name that matches two messages is skipped, not guessed, and a bare
+name is matched by its short name only when the repo declares no other type with
+that name. Adding or removing a message type, or changing the pattern, re-extracts
+every repo.
 
 ### Package Dependency Scanning
 
@@ -272,6 +313,7 @@ The contracts, package dependencies, and co-changes above are each a flat list. 
 
 - a `kind`, `http`, `grpc`, `event`, `package`, `co_change`, or `db`;
 - a `match_type`, `exact`, `candidate`, `manual`, or `inferred`;
+- a `strategy`, the [matching rule](../reference/WORKSPACE_CONTRACTS.md#how-a-contract-and-a-link-were-made) of the link that gave the edge its confidence (`manifest` for a package dependency, none for co-change);
 - a `confidence` and a `weight` (how many underlying contracts / deps / co-changes it aggregates);
 - `contract_refs` back-pointers so any view can drill from an edge to its evidence.
 
@@ -292,14 +334,14 @@ repowise workspace diagnostics --repo api     # limit to one repo
 The report covers:
 
 - **Provider / consumer counts** per repo, broken down by contract type.
-- **Unmatched consumers**, grouped by reason:
-  - `no_provider`, no provider anywhere declares a matching route/service/topic.
-  - `internal_only`, the only matching provider is in the same repo + service, so the call is intra-service and intentionally not surfaced as a cross-repo link.
+- **Unmatched consumers**, grouped by reason. Each call is named (HTTP, gRPC and topics first); table reads collapse to one line per repo.
+  - `no_provider`, a dangling call: no provider anywhere declares a matching route/service/topic/table.
   - `unlinked`, a cross-service provider with a matching id exists, but no link formed (a candidate worth inspecting).
   - `external_host`, the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
-- **Orphan providers**, endpoints declared but never consumed by any repo.
+- **In-service consumers** (`in_service_consumers`, reason `internal_only`): the only matching provider is in the same repo + service. They are served, so they are counted apart and never listed as unmatched.
+- **Orphan providers**, endpoints declared but never consumed by any repo. One row per repo, service and id; a table declared in a model and a migration lists the second file under `other_files`.
 - **Weak links**, matched links below the confidence threshold.
-- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located. It is not total recall, because a call no dialect recognises is not in either number. It is the figure that turns a large orphan-provider count from alarming into explained.
+- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located, plus one per file that makes a network call (a client library, channel or raw request) no dialect read, so an unsupported client lowers the figure instead of dropping out of it. Each such file counts once, so it is a floor on what was missed, not total recall. It is the figure that turns a large orphan-provider count from alarming into explained. A call read is not a call linked, so the headline leads with the HTTP calls that linked to another service (`http_consumers_linked`, `http_link_coverage`, same denominator) and then says where the read but unlinked calls went.
 
 The same data is available over REST at `GET /api/workspace/diagnostics` and is embedded in the system graph artifact's `diagnostics` block.
 
@@ -315,7 +357,7 @@ repowise serve
 
 In workspace mode, the web UI adds:
 
-- **Workspace Dashboard** (`/workspace`), aggregate stats across all repos, repo cards with file/symbol/coverage counts, and cross-repo intelligence summary
+- **Workspace Dashboard** (`/workspace`), aggregate stats across all repos, repo rows with code health, file, hotspot and doc freshness counts, and cross-repo intelligence summary. Doc freshness is fresh pages over all pages.
 - **System Map** (`/workspace/system-map`), the [Live System Map](#live-system-map): a code-derived diagram of services and their typed relationships
 - **Contracts View** (`/workspace/contracts`), all detected API contracts with provider/consumer matching, filterable by type and repo
 - **Co-Changes View** (`/workspace/co-changes`), cross-repo file pairs ranked by co-change strength
@@ -326,7 +368,7 @@ The sidebar shows all workspace repos under **Repositories**. Click any repo to 
 
 The System Map renders the [system graph](#system-graph) as an always-current diagram. It is the visual counterpart to the REST endpoint, the same nodes and edges, laid out and explorable, never a hand-drawn picture.
 
-- **Service nodes**, coloured by category (service, frontend, worker, library, external), with a health ring rolled up from the owning repo and small flags for orphan or isolated services.
+- **Service nodes**, coloured by category (service, frontend, worker, library, external), with the owning repo's code health score ("No health score" when health has not scored that repo) and small flags for orphan or isolated services.
 - **Typed edges** distinguished by `kind` (colour + glyph) and by `match_type` (solid for exact/manual, dashed for candidate, dotted for inferred co-change). Behavioral co-change edges read differently from structural contract/dependency edges.
 - **Filters** to toggle each edge kind on or off, and a **service / repo** switch that collapses a monorepo's services into one node per repository.
 - **Drill-down**: click a service to inspect its providers/consumers and connected services; click an edge to see its match type, confidence, weight, and the underlying contract evidence, with a jump to the Contracts view.
@@ -467,7 +509,7 @@ A rule with `allow: false` (the default) is a **deny** rule: a structural depend
 
 ### Dependency cycles
 
-Independently of any rules, conformance detects **circular dependencies** among services over structural edges (`A -> B -> ... -> A`). A cycle means the services cannot be built, deployed, or reasoned about independently. Cycle detection runs even with zero rules declared, so every workspace gets it.
+Independently of any rules, conformance detects **circular dependencies** among services over structural edges (`A -> B -> ... -> A`). A cycle means the services cannot be built, deployed, or reasoned about independently. Cycle detection runs even with zero rules declared, so every workspace gets it. A cycle that closes only through an event edge still counts, since it couples message schemas and deploy order; each cycle lists the edge kinds on every leg (`leg_kinds`) and how many legs are asynchronous (`async_legs`).
 
 ### Using it
 
@@ -521,6 +563,7 @@ Conformance and the cycle finder answer *per-relationship* questions (is this ed
 Workspace init registers the MCP server with your editors (skip with `--no-editor-setup`). The MCP server is workspace-aware:
 
 - **Default repo context**, queries go to the primary repo unless you specify otherwise
+- **Target routing**, `get_context`, `get_symbol`, `get_risk` and `get_health` send a path that only another repo has to that repo, and accept `<alias>:<path>` targets ([details](../agent/MCP_TOOLS.md#workspace-mode))
 - **Cross-repo context**, single-repo tools add co-change and contract evidence from the other repos
 - **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (the cross-repo topology), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time; see [MCP_TOOLS.md](../agent/MCP_TOOLS.md#workspace-mode)
 - **Opt-in workspace tools**, off by default and enabled with `mcp.tools` in `.repowise/config.yaml`: `get_blast_radius` ([Cross-Repo Blast Radius](#cross-repo-blast-radius)), `get_conformance` ([Architecture Conformance](#architecture-conformance)) and `get_architecture` ([Architecture Metrics](#architecture-metrics))
@@ -540,6 +583,8 @@ my-workspace/
     system_graph.json              # Service-granular system graph + diagnostics
     breaking_changes.json          # Breaking provider changes vs the last index
     conformance.json               # Architecture rule violations + dependency cycles
+    workspace.db                   # Workspace store: symbol and path index, components,
+                                   # recent changes, per-repo health and freshness
   .claude/
     CLAUDE.md                      # Workspace-level CLAUDE.md for AI editors
   backend/
@@ -547,6 +592,8 @@ my-workspace/
   frontend/
     .repowise/
 ```
+
+`workspace.db` is derived from each repo's own index and refreshed after every workspace update and whenever a repo is re-indexed, so deleting it is always safe: it is rebuilt the next time it is needed.
 
 What lives in each repo's `.repowise/` is described in
 [CONFIG.md](../reference/CONFIG.md#the-repowise-directory).
@@ -584,6 +631,7 @@ No. Repowise searches upward for `.repowise-workspace.yaml` and uses the first o
 ```bash
 repowise update              # Update the primary repo
 repowise update --workspace  # Update all workspace repos
+repowise workspace update    # The same command
 ```
 
 Each stale repo picks docs vs index-only the same way a single-repo update does, from its own `docs_enabled` (set at init) plus any override on the command. Repos with docs enabled regenerate their wiki (pages, diagrams, decisions) through the full docs path, so a workspace wiki stays as fresh as one you update repo by repo; the rest just refresh the index. Force docs everywhere with `repowise update --workspace --docs` (each repo needs an LLM provider/key, or pass `--provider`), or keep it index-only with `--no-docs`.
@@ -596,7 +644,7 @@ repowise watch --workspace
 
 ### How do I re-run just the cross-repo analysis?
 
-Cross-repo analysis runs during `repowise init .` and `repowise update --workspace`. To force a re-run, run `repowise init .` again; it detects existing indexes and only re-runs what is needed.
+Cross-repo analysis runs during `repowise init .` and `repowise update --workspace`. An update re-runs it when any repo changed, or when the `contracts:` or `conformance:` block of `.repowise-workspace.yaml` changed with every repo up to date. Editing `service_bases` or `manual_links` re-links the stored contracts without re-reading any repo; the other `contracts:` settings re-extract every repo. `repowise init .` re-indexes every repo, so it is not the way to refresh this.
 
 ### Does the MCP server handle multiple repos?
 

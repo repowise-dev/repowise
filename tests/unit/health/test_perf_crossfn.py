@@ -556,6 +556,30 @@ def test_crossfn_hit_carries_the_owning_loops_magnitude(tmp_path):
     assert finding.details["loop_magnitude"] == "grows_with_data"
 
 
+def test_crossfn_keyed_call_is_not_key_unused_beside_a_key_free_call(tmp_path):
+    """``load(i)`` reaches ``requests.get`` and ``ping`` does not. Sharing the
+    loop line must not mark the keyed hit ``loop_key_unused`` in either order."""
+    source = (
+        "import requests\n"
+        "def load(i):\n"
+        "    return requests.get(i)\n"
+        "def ping():\n"
+        "    return 1\n"
+        "def run(ids):\n"
+        "    for i in ids:\n"
+        "        {body}\n"
+    )
+    for name, body in (
+        ("keyed-first", "load(i); ping()"),
+        ("key-free-first", "ping(); load(i)"),
+    ):
+        walked, graph = _build(tmp_path / name, {"client.py": source.format(body=body)})
+        hits = [h for hs in collect_crossfn_io_in_loop(walked, graph).values() for h in hs]
+        (hit,) = [h for h in hits if h.path[-1].endswith("::load")]
+        assert "loop_key_unused" not in hit.loop_facts()
+        assert hit.loop_facts()["loop_iterates"] == "parameter"
+
+
 def test_crossfn_hit_carries_the_owning_loops_chunking(tmp_path):
     """A caller that already walks its rows a batch at a time is not told to batch."""
     source = _SCHEDULER.replace(

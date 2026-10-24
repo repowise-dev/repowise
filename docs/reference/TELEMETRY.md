@@ -74,7 +74,7 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.status` | `ok` / `error` | Tool error rate |
 | `properties.duration_ms` | `820` | Tool latency in the wild |
 | `properties.confidence` | `high` / `medium` / `low` | Answer confidence distribution |
-| `properties.retrieval_quality` | `strong` / `weak` | Retrieval quality distribution |
+| `properties.retrieval_quality` | `high` / `partial` / `weak` | Retrieval quality distribution; sent only when the call asked for `include=["diagnostics"]` |
 | `properties.results_bucket` | `1-3`, `4-10` | Result count for searches (a range) |
 | `properties.index_behind` | `true` / `false` | How often served content is stale |
 | `properties.embedder_degraded` | `true` / `false` | How often search runs on mock vectors |
@@ -157,6 +157,7 @@ Any one of these disables all telemetry:
 repowise telemetry disable        # persisted to ~/.repowise/platform.json
 export REPOWISE_TELEMETRY_DISABLED=1
 export DO_NOT_TRACK=1             # the cross-tool standard (https://consoledonottrack.com)
+export REPOWISE_OFFLINE=1         # also skips the PyPI release check and agent-CLI login probes
 ```
 
 Check the current state anytime:

@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import LinkStrategy
+
 from .common import internal
 
 if TYPE_CHECKING:
@@ -53,4 +55,4 @@ def shared_table_pass(state: MatchState) -> None:
         owner = owners[0]
         for other in best:
             if other is not owner and not internal(owner, other):
-                state.add(other, owner, "exact", min(owner.confidence, other.confidence))
+                state.add(other, owner, LinkStrategy.SHARED_TABLE)

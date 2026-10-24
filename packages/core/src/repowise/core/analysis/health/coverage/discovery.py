@@ -23,9 +23,11 @@ Two jobs that make ingested coverage *actually line up* with the repo:
 
 from __future__ import annotations
 
-from collections import defaultdict
+import time
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 
+from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
 from .detector import parse as parse_coverage
 from .model import (
     ContextCoverageReport,
@@ -68,6 +71,10 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
     # Root module only: ``build`` is pruned under ``**``, so a nested
     # module's report is passed explicitly.
     "build/reports/jacoco/**/*.xml",
+    # Salesforce: the VS Code extension's results dir, and any
+    # ``sf apex run test --code-coverage --output-dir``.
+    ".sfdx/tools/testresults/apex/test-result-codecoverage.json",
+    "**/test-result-codecoverage.json",
 )
 
 # Directories we never descend into when expanding ``**`` patterns — heavy,
@@ -126,9 +133,10 @@ class CoverageConfig:
     strip_prefix: str | None = None
     # Prepend this prefix to report paths before matching.
     path_prefix: str | None = None
-    # Re-discover + re-parse reports on every ``repowise update`` (default:
-    # reuse the rows already in the DB; only re-ingest if a report is found).
-    reingest_on_update: bool = False
+    # Re-read reports on ``repowise update``: ``True`` every time, ``False``
+    # never (keep the stored rows), unset when one was written after the last
+    # ingest (:meth:`reingest`).
+    reingest_on_update: bool | None = None
     # Patch-coverage gate for ``repowise coverage check`` (percent, 0-100).
     fail_under: float | None = None
     # Small-change tolerance: a change with fewer changed executable lines
@@ -171,7 +179,11 @@ class CoverageConfig:
             format=block.get("format") or None,
             strip_prefix=block.get("strip_prefix") or None,
             path_prefix=block.get("path_prefix") or None,
-            reingest_on_update=bool(block.get("reingest_on_update", False)),
+            reingest_on_update=(
+                None
+                if block.get("reingest_on_update") is None
+                else bool(block["reingest_on_update"])
+            ),
             fail_under=_percent(block.get("fail_under")),
             min_coverable_lines=_line_count(block.get("min_coverable_lines")),
             gates=gates,
@@ -180,6 +192,32 @@ class CoverageConfig:
             max_drop=_percent(block.get("max_drop")),
             fail_under_branches=_percent(block.get("fail_under_branches")),
         )
+
+    def reingest(
+        self,
+        newest_report_mtime: float | None,
+        last_ingest_at: datetime | None,
+        now: float | None = None,
+    ) -> bool:
+        """Whether ``update`` re-reads the reports instead of keeping the stored rows.
+
+        *newest_report_mtime* is the newest report's modification time (epoch
+        seconds, ``None`` with no report); *last_ingest_at* is when coverage was
+        last stored (naive means UTC, ``None`` when never); *now* defaults to
+        the clock. Unset, a report written after the last ingest, or any report
+        before a first ingest, is re-read. A time later than *now* (clock skew,
+        an unpacked artifact) proves nothing, or every update would re-read it.
+        """
+        if self.reingest_on_update is not None:
+            return self.reingest_on_update
+        if newest_report_mtime is None:
+            return False
+        if last_ingest_at is None:
+            return True
+        if last_ingest_at.tzinfo is None:
+            last_ingest_at = last_ingest_at.replace(tzinfo=UTC)
+        now = time.time() if now is None else now
+        return last_ingest_at.timestamp() < newest_report_mtime <= now
 
     def reports(self, repo_root: Path) -> dict[Path, str | None]:
         """Each report this config names, mapped to its per-report prefix (or ``None``).
@@ -197,6 +235,21 @@ class CoverageConfig:
         if self.auto_discover:
             return dict.fromkeys(discover_artifacts(repo_root, globs=self.artifacts or None))
         return {}
+
+    def watched_reports(self, repo_root: Path) -> list[Path]:
+        """The reports whose age ``update`` checks: :meth:`reports` without a tree walk.
+
+        Explicit ``paths`` as written; else the glob-free discovery entries,
+        each a single stat. Ceiling: a report only a wildcard glob finds is not
+        watched, since the walk costs seconds on a large repository on every
+        update; name it in ``coverage.paths`` to have it watched.
+        """
+        if self.paths:
+            return list(self.reports(repo_root))
+        if not self.auto_discover:
+            return []
+        literal = [g for g in self.artifacts or DEFAULT_DISCOVERY_GLOBS if not _has_magic(g)]
+        return [repo_root / g for g in literal if (repo_root / g).is_file()]
 
 
 def configured_coverage(repo_root: Path | str) -> CoverageConfig:
@@ -419,6 +472,11 @@ class ResolvedCoverage:
     # applied: with ``mapping_partial``, what makes two measurements comparable.
     report_formats: list[str] = field(default_factory=list)
     ignore: tuple[str, ...] = ()
+    # A partial mapping :func:`build_coverage_map` was not allowed to keep:
+    # ``files`` and ``coverage_map`` are empty, the diagnostics stay.
+    withheld: bool = False
+    # With ``mapping_partial``, the :func:`suggest_prefixes` answer (``None``: abstained).
+    suggested_prefixes: tuple[str, str] | None = None
 
     @property
     def matched(self) -> int:
@@ -650,17 +708,45 @@ def normalize_report_path(
     return p
 
 
+#: Apex source extensions. Apex names are case-insensitive, so these files are
+#: indexed and looked up by their case-folded basename.
+_APEX_EXTS = (".cls", ".trigger")
+
+
+def _index_name(base: str) -> str:
+    folded = base.casefold()
+    return folded if folded.endswith(_APEX_EXTS) else base
+
+
 def _build_suffix_index(repo_keys: set[str]) -> dict[str, list[str]]:
     """Map each basename -> repo keys ending in that basename.
 
     Basename is the cheap first filter; trailing-segment overlap then
     disambiguates among same-named files (``mod.rs`` is everywhere in Rust).
+    Apex files are keyed case-folded (:func:`_index_name`).
     """
     index: dict[str, list[str]] = defaultdict(list)
     for key in repo_keys:
         base = key.rsplit("/", 1)[-1]
-        index[base].append(key)
+        index[_index_name(base)].append(key)
     return index
+
+
+def _apex_names(norm_path: str) -> tuple[str, ...]:
+    """The Apex file basenames a Salesforce coverage entry can mean, case-folded.
+
+    ``Foo.cls`` / ``Foo.trigger`` from the Apex JSON parser, or a bare ``Foo``
+    (optionally under the CLI's ``no-map/``) meaning either. Empty otherwise.
+    """
+    segs = norm_path.split("/")
+    if len(segs) == 2 and segs[0] == "no-map":
+        segs = segs[1:]
+    name = segs[0].casefold() if len(segs) == 1 else ""
+    if name.endswith(_APEX_EXTS):
+        return (name,)
+    if not name or "." in name:
+        return ()
+    return tuple(name + ext for ext in _APEX_EXTS)
 
 
 def _match_key(
@@ -688,8 +774,13 @@ def _match_key(
     if norm_path in repo_keys:
         return norm_path, False
 
+    # An Apex name is unique in an org, so two files of that name are copies: refuse.
+    hits = [k for name in _apex_names(norm_path) for k in suffix_index.get(name, ())]
+    if hits:
+        return (hits[0], False) if len(hits) == 1 else (None, True)
+
     base = norm_path.rsplit("/", 1)[-1]
-    candidates = suffix_index.get(base)
+    candidates = suffix_index.get(_index_name(base))
     if not candidates:
         return None, False
 
@@ -758,15 +849,19 @@ def _is_absolute(raw: str) -> bool:
 
 def _resolve_path(
     raw: str,
-    report: CoverageReport,
     repo_keys: set[str],
     suffix_index: dict[str, list[str]],
     *,
     strip_prefix: str | None,
     path_prefix: str | None,
+    origin_dir: str | None = None,
+    source_roots: Sequence[str] = (),
     go_modules: Sequence[tuple[str, str]] = (),
 ) -> tuple[str | None, bool, bool]:
-    """``(key, ambiguous, exact)`` for one report path.
+    """``(key, ambiguous, exact)`` for one report path, aggregate or per-test.
+
+    *origin_dir* is the report file's repo-relative directory and
+    *source_roots* the report's own roots, as the report records them.
 
     Tried in order: the path joined to each Cobertura ``<source>`` root, the
     report's own statement of where its paths live (roots that disagree are
@@ -787,11 +882,11 @@ def _resolve_path(
         if in_module is not None:
             raw, located = in_module, True
     norm = normalize_report_path(raw, strip_prefix=strip_prefix, path_prefix=path_prefix)
-    origin = report.origin_dir
+    origin = origin_dir
     relative = not _is_absolute(raw)
-    if relative and report.source_roots:
+    if relative and source_roots:
         found: dict[str, bool] = {}  # key -> matched a path exactly
-        for root in report.source_roots:
+        for root in source_roots:
             joined = normalize_report_path(
                 f"{root.rstrip('/')}/{raw}", strip_prefix=strip_prefix, path_prefix=path_prefix
             )
@@ -969,11 +1064,12 @@ def resolve_reports(
             report_file_count += 1
             key, ambiguous, exact = _resolve_path(
                 fc.file_path,
-                report,
                 repo_keys,
                 suffix_index,
                 strip_prefix=strip_prefix,
                 path_prefix=prefix,
+                origin_dir=report.origin_dir,
+                source_roots=report.source_roots,
                 go_modules=modules,
             )
             # An entry that resolves is ignored by its key; one that does not,
@@ -997,14 +1093,81 @@ def resolve_reports(
     # (issue #1746), and it deliberately avoids a hard ratio on the matched
     # side so monorepos ingesting one package's report stay unflagged.
     # Ignored entries were dropped on purpose, so they count on neither side.
-    measured_count = report_file_count - result.ignored
-    if measured_count:
-        result.mapping_partial = result.matched * 2 < measured_count
+    result.mapping_partial = mostly_unmapped(result.matched, report_file_count - result.ignored)
+    if result.mapping_partial:
+        result.suggested_prefixes = suggest_prefixes(
+            result.unmatched + result.ambiguous, repo_keys, mapped=by_key
+        )
 
     for key, fc in by_key.items():
         result.coverage_map[key] = coverage_map_entry(fc, result.source_format)
     result.files = list(by_key.values())
     return result
+
+
+def mostly_unmapped(matched: int, measured: int) -> bool:
+    """Whether fewer than half of *measured* report files mapped: the ingest is a fragment.
+
+    A fragment is stored or scored only when the caller allows it
+    (``coverage add --allow-partial``); every other reader drops it.
+    """
+    return bool(measured) and matched * 2 < measured
+
+
+#: Unmapped report paths :func:`suggest_prefixes` looks at; enough to vote, cheap to scan.
+_SUGGEST_SAMPLE = 200
+
+
+def suggest_prefixes(
+    unmapped: Sequence[str], repo_keys: set[str], mapped: Iterable[str] = ()
+) -> tuple[str, str] | None:
+    """The ``(strip_prefix, path_prefix)`` that maps most *unmapped* report paths onto *repo_keys*.
+
+    Each path votes for every rewrite that turns it into an indexed key: drop
+    the leading segments before its longest shared tail with a key, prepend
+    that key's own leading segments. Either side may be ``""`` (nothing to
+    set). A tie in votes goes to the rewrite whose ``path_prefix`` holds more
+    of the *mapped* keys, the files the same report did resolve (a monorepo
+    package's report whose shared file names tie between packages).
+    ``None`` (abstain) unless one rewrite explains more than half the paths
+    and no other ranks as high.
+    """
+    sample = list(dict.fromkeys(normalize_report_path(p) for p in unmapped[:_SUGGEST_SAMPLE]))
+    suffix_index = _build_suffix_index(repo_keys)
+    votes: Counter[tuple[str, str]] = Counter()
+    for norm in sample:
+        segs = norm.split("/")
+        rewrites: set[tuple[str, str]] = set()
+        for key in suffix_index.get(_index_name(segs[-1]), ()):
+            key_segs = key.split("/")
+            tail = _common_run(reversed(segs), reversed(key_segs))
+            rewrites.add(("/".join(segs[:-tail]), "/".join(key_segs[:-tail])))
+        rewrites.discard(("", ""))
+        votes.update(rewrites)
+    mapped = list(mapped)
+
+    def rank(rewrite: tuple[str, str]) -> tuple[int, int]:
+        prefix = rewrite[1] + "/"
+        return votes[rewrite], sum(k.startswith(prefix) for k in mapped) if rewrite[1] else 0
+
+    ranked = sorted(votes, key=rank, reverse=True)
+    if not ranked or votes[ranked[0]] * 2 <= len(sample):
+        return None
+    if len(ranked) > 1 and rank(ranked[0]) == rank(ranked[1]):
+        return None
+    return ranked[0]
+
+
+def prefix_hint(suggested: tuple[str, str] | None) -> str:
+    """What to change so a partial mapping maps, worded for every surface alike."""
+    if suggested is None:
+        return "fix coverage.strip_prefix or coverage.path_prefix in .repowise/config.yaml"
+    named = [
+        f"{name}: {value}"
+        for name, value in zip(("coverage.strip_prefix", "coverage.path_prefix"), suggested, strict=True)
+        if value
+    ]
+    return f"set {' and '.join(named)} in .repowise/config.yaml"
 
 
 @dataclass
@@ -1033,6 +1196,13 @@ class ResolvedTestCoverage:
     @property
     def matched(self) -> int:
         return self.matched_exact + self.matched_suffix
+
+    @property
+    def mapping_partial(self) -> bool:
+        """:func:`mostly_unmapped` over distinct source files, as for the aggregate."""
+        mapped = len({r.file_path for r in self.records})
+        missed = len(set(self.unmatched)) + len(set(self.ambiguous))
+        return mostly_unmapped(mapped, mapped + missed)
 
 
 # Extensions that make a test-id prefix look like a real source path (rather
@@ -1064,22 +1234,28 @@ def resolve_test_reports(
 ) -> ResolvedTestCoverage:
     """Resolve per-test records against the indexed tree.
 
-    Reuses the aggregate path resolver (:func:`normalize_report_path` +
-    :func:`_match_key`) for *both* the source path and the test's own file,
-    so no second resolver is introduced. Records whose source path does not
-    map to the tree are dropped and counted in ``unmatched`` / ``ambiguous``;
-    records whose source *ignore* matches (as in :func:`resolve_reports`) are
-    dropped and counted in ``ignored``.
+    Uses the aggregate resolver (:func:`_resolve_path`, with the report's own
+    directory, ``report.origin_dir``) for *both* the source path and the
+    test's own file, so a per-test record maps wherever the same path in an
+    aggregate report would. Records whose source path does not map to the
+    tree are dropped and counted in ``unmatched`` / ``ambiguous``; records
+    whose source *ignore* matches (as in :func:`resolve_reports`) are dropped
+    and counted in ``ignored``.
     """
     suffix_index = _build_suffix_index(repo_keys)
     ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
     out = ResolvedTestCoverage(source_format=report.source_format, has_contexts=report.has_contexts)
+    resolve_kw = {
+        "strip_prefix": strip_prefix,
+        "path_prefix": path_prefix,
+        "origin_dir": report.origin_dir,
+    }
     for rec in report.records:
-        norm = normalize_report_path(
+        key, ambiguous, exact = _resolve_path(rec.file_path, repo_keys, suffix_index, **resolve_kw)
+        named = key or normalize_report_path(
             rec.file_path, strip_prefix=strip_prefix, path_prefix=path_prefix
         )
-        key, ambiguous = _match_key(norm, repo_keys, suffix_index)
-        if ignore_spec.match_file(key or norm):
+        if ignore_spec.match_file(named):
             out.ignored += 1
             continue
         if key is None:
@@ -1088,16 +1264,15 @@ def resolve_test_reports(
             else:
                 out.unmatched.append(rec.file_path)
             continue
-        if norm == key:
+        if exact:
             out.matched_exact += 1
         else:
             out.matched_suffix += 1
 
         test_key: str | None = None
-        head = _extract_test_file(rec.test_id)
+        head = rec.test_file or _extract_test_file(rec.test_id)
         if head:
-            tnorm = normalize_report_path(head, strip_prefix=strip_prefix, path_prefix=path_prefix)
-            tkey, _ = _match_key(tnorm, repo_keys, suffix_index)
+            tkey, _, _ = _resolve_path(head, repo_keys, suffix_index, **resolve_kw)
             if tkey is not None:
                 test_key = tkey
                 out.test_files_resolved += 1
@@ -1124,6 +1299,7 @@ def build_coverage_map(
     path_prefix: str | None = None,
     report_prefixes: Mapping[Path, str | None] | None = None,
     ignore: Sequence[str] = (),
+    allow_partial: bool = False,
 ) -> tuple[ResolvedCoverage, list[tuple[Path, str]]]:
     """Read + parse + resolve coverage reports end-to-end.
 
@@ -1135,26 +1311,31 @@ def build_coverage_map(
     a ``coverage.paths`` mapping entry), overriding *path_prefix*. *ignore* is
     ``coverage.ignore``. A Go coverprofile's import paths are mapped back to
     the directories of the ``go.mod`` files on disk.
+
+    A partial mapping (:func:`mostly_unmapped`) keeps no coverage unless
+    *allow_partial*; it comes back ``withheld`` so nothing stores or scores a
+    fragment as the repository's coverage.
     """
     prefixes = report_prefixes or {}
     parsed: list[CoverageReport] = []
     errors: list[tuple[Path, str]] = []
     for path in report_paths:
+        if is_coverage_data_file(path):
+            errors.append((path, COVERAGE_DATA_FILE_NOTE))
+            continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_report_text(path)
         except OSError as exc:
             errors.append((path, f"could not read: {exc}"))
             continue
         except UnicodeDecodeError:
-            # A binary artifact, most often a coverage.py ``.coverage`` database:
-            # export it with ``coverage lcov`` or ``coverage xml`` first.
             errors.append((path, "not a text coverage report"))
             continue
         report = parse_coverage(text, format=coverage_format)
         if not report.files:
             errors.append((path, f"no coverage entries (detected={report.source_format})"))
             continue
-        report.origin_dir = _repo_relative_dir(path, repo_root)
+        report.origin_dir = report_origin_dir(path, repo_root)
         report.path_prefix = prefixes.get(path)
         parsed.append(report)
     resolved = resolve_reports(
@@ -1170,10 +1351,12 @@ def build_coverage_map(
             else ()
         ),
     )
+    if resolved.mapping_partial and not allow_partial:
+        resolved.coverage_map, resolved.files, resolved.withheld = {}, [], True
     return resolved, errors
 
 
-def _repo_relative_dir(path: Path, repo_root: Path) -> str | None:
+def report_origin_dir(path: Path, repo_root: Path) -> str | None:
     """*path*'s directory relative to *repo_root* (POSIX), ``None`` outside it or at its root."""
     try:
         rel = path.resolve().parent.relative_to(repo_root.resolve()).as_posix()

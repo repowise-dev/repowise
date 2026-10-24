@@ -128,52 +128,6 @@ def _entry_repo_target(entry: dict) -> str | None:
     return str(args[1])
 
 
-def describe_mcp_registration_change(repo_path: Path) -> str | None:
-    """Warn when registering would repoint an existing ``repowise`` MCP entry.
-
-    Both Claude configs hold a single ``repowise`` key, so an ``init`` from a
-    second repo *replaces* the entry rather than adding one alongside it. That
-    write is silent, and only surfaces later when the binary or repo it points
-    at is gone and the MCP server stops loading. This is a read-only probe run
-    before registration; it returns a one-line notice when the stored command
-    or repo target differs from what is about to be written, else None.
-    """
-    new_entry = generate_mcp_config(
-        _resolve_mcp_target(repo_path), command=resolve_repowise_command()
-    )["mcpServers"]["repowise"]
-    new_command = new_entry.get("command")
-    new_target = _entry_repo_target(new_entry)
-
-    for config_path in (_claude_code_settings_path(), _claude_desktop_config_path()):
-        stored = _stored_repowise_entry(config_path)
-        if stored is None:
-            continue
-        # Both fields are reported when both move, which is the usual shape of
-        # the mistake: a second repo indexed by a second install. Naming only
-        # one would hide half of what is about to change.
-        changes = [
-            (label, was, now)
-            for label, was, now in (
-                ("repo", _entry_repo_target(stored), new_target),
-                ("command", stored.get("command"), new_command),
-            )
-            if was != now
-        ]
-        if not changes:
-            continue
-        fields = " and ".join(label for label, _was, _now in changes)
-        lines = [f"Replacing the existing repowise MCP {fields} in {config_path}:"]
-        for label, was, now in changes:
-            # A hand-edited entry can be missing either field outright.
-            lines.append(f"    {label} was: {was if was is not None else '(not set)'}")
-            lines.append(f"    {label} now: {now}")
-        lines.append(
-            "  There is one 'repowise' entry per config; pass --no-editor-setup to leave it alone."
-        )
-        return "\n".join(lines)
-    return None
-
-
 def enable_tool_search_in_claude_code() -> Path | None:
     """Set ``env.ENABLE_TOOL_SEARCH=true`` in ~/.claude/settings.json.
 
@@ -404,11 +358,8 @@ def _failure_entry() -> dict:
 
 #: The repo-local coverage re-ingest entry (shell tools). ``--coverage-only``
 #: runs that one surface, so it never revives the shell notices the narrowed
-#: :data:`_AUGMENT_MATCHER` dropped.
-_COVERAGE_HOOK_COMMAND = (
-    "if command -v repowise-augment >/dev/null 2>&1; "
-    "then exec repowise-augment --coverage-only; fi"
-)
+#: :data:`_AUGMENT_MATCHER` dropped. Its command is defined in core, which
+#: tells it from a user's hook in a working-tree score.
 _COVERAGE_HOOK_EVENTS = ("PostToolUse", "PostToolUseFailure")
 
 
@@ -418,12 +369,15 @@ def claude_code_local_settings_path(repo_path: Path) -> Path:
 
 
 def _coverage_entry() -> dict:
+    # Imported here: the hook's self-heal loads this module and must stay light.
+    from repowise.core.owned_paths import COVERAGE_HOOK_COMMAND
+
     return {
         "matcher": SHELL_TOOL_MATCHER,
         "hooks": [
             {
                 "type": "command",
-                "command": _COVERAGE_HOOK_COMMAND,
+                "command": COVERAGE_HOOK_COMMAND,
                 "timeout": 10,
             }
         ],
@@ -432,6 +386,26 @@ def _coverage_entry() -> dict:
 
 def _is_coverage_hook(hook: object) -> bool:
     return "--coverage-only" in _hook_command(hook) and _is_repowise_hook(hook)
+
+
+def _health_gate_entry() -> dict:
+    from repowise.core.owned_paths import HEALTH_GATE_HOOK_COMMAND
+
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": HEALTH_GATE_HOOK_COMMAND,
+                # Above the gate's own 20 s budget, so the gate times out first and fails open.
+                "timeout": 30,
+            }
+        ],
+    }
+
+
+def _is_health_gate_hook(hook: object) -> bool:
+    return "--health-gate" in _hook_command(hook) and _is_repowise_hook(hook)
 
 
 def claude_code_augment_installed() -> bool:
@@ -455,9 +429,38 @@ def set_repo_coverage_hook(repo_path: Path, enabled: bool) -> Path | None:
     settings files. Returns the file when it changed, else ``None``. A file
     this leaves empty is removed.
     """
+    return _set_repo_local_hook(
+        repo_path, enabled, _COVERAGE_HOOK_EVENTS, _coverage_entry, _is_coverage_hook
+    )
+
+
+def set_repo_health_gate_hook(repo_path: Path, enabled: bool) -> Path | None:
+    """Add or remove the opt-in health-gate PreToolUse entry, as :func:`set_repo_coverage_hook`.
+
+    Repo-local for the same reason: only a repository that turned the gate on
+    pays a process start per shell call.
+    """
+    return _set_repo_local_hook(
+        repo_path, enabled, ("PreToolUse",), _health_gate_entry, _is_health_gate_hook
+    )
+
+
+def repo_health_gate_hook_installed(repo_path: Path) -> bool:
+    """Whether the repo's ``settings.local.json`` carries the health-gate entry."""
+    settings = _read_local_settings(claude_code_local_settings_path(repo_path), False)
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    entries = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if not isinstance(entries, list):
+        return False
+    return any(_is_health_gate_hook(h) for e in _own_entries(entries) for h in _hooks_of(e))
+
+
+def _set_repo_local_hook(
+    repo_path: Path, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> Path | None:
     path = claude_code_local_settings_path(repo_path)
     settings = _read_local_settings(path, enabled)
-    if settings is None or not _apply_coverage_entries(settings, enabled):
+    if settings is None or not _apply_local_entries(settings, enabled, events, entry, is_ours):
         return None
     return _write_or_remove(path, settings)
 
@@ -472,33 +475,38 @@ def _read_local_settings(path: Path, enabled: bool) -> dict | None:
         return None
 
 
-def _apply_coverage_entries(settings: dict, enabled: bool) -> bool:
+def _apply_local_entries(
+    settings: dict, enabled: bool, events: tuple[str, ...], entry, is_ours
+) -> bool:
     """Add or remove our entry under each event of *settings*, in place; whether it changed."""
     hooks = settings.setdefault("hooks", {}) if enabled else settings.get("hooks")
     if not isinstance(hooks, dict):
         return False
     changed = False
-    for event in _COVERAGE_HOOK_EVENTS:
-        changed = _apply_coverage_entry(hooks, event, enabled) or changed
+    for event in events:
+        changed = _apply_local_entry(hooks, event, enabled, entry, is_ours) or changed
     if not hooks:
         settings.pop("hooks", None)
     return changed
 
 
-def _apply_coverage_entry(hooks: dict, event: str, enabled: bool) -> bool:
+def _own_entries(entries: list) -> list:
+    """Ours only inside a shell-matcher entry: the same command elsewhere is someone else's."""
+    return [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
+
+
+def _apply_local_entry(hooks: dict, event: str, enabled: bool, entry, is_ours) -> bool:
     entries = hooks.setdefault(event, []) if enabled else hooks.get(event)
     if not isinstance(entries, list):
         return False
-    # Ours only inside a shell-matcher entry: the same command under any other
-    # matcher was written by someone else and is left alone.
-    own = [e for e in entries if isinstance(e, dict) and e.get("matcher") == SHELL_TOOL_MATCHER]
-    present = any(_is_coverage_hook(h) for e in own for h in _hooks_of(e))
+    own = _own_entries(entries)
+    present = any(is_ours(h) for e in own for h in _hooks_of(e))
     changed = enabled != present
     if changed and enabled:
-        entries.append(_coverage_entry())
+        entries.append(entry())
     elif changed:
         kept = list(own)
-        _strip_hooks(kept, _is_coverage_hook)
+        _strip_hooks(kept, is_ours)
         dropped = [e for e in own if not any(e is k for k in kept)]
         entries[:] = [e for e in entries if not any(e is d for d in dropped)]
     if not entries:

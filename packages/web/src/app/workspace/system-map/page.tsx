@@ -151,12 +151,14 @@ export default function SystemMapPage() {
 
   // Repo health by alias; the repo graph's node `name` is the alias.
   const { healthByRepo, repoIdByAlias } = useMemo(() => {
-    const health = new Map<string, RepoHealth>();
-    const ids = new Map<string, string>();
-    for (const n of repoGraph?.nodes ?? []) {
-      health.set(n.name, { score: n.health_score, source: n.health_score_source });
-      ids.set(n.name, n.repo_id);
-    }
+    const nodes = repoGraph?.nodes ?? [];
+    // An unscored repo has no entry, so its nodes read "No health score".
+    const health = new Map<string, RepoHealth>(
+      nodes.flatMap((n) =>
+        n.health_score == null ? [] : [[n.name, { score: n.health_score }] as const],
+      ),
+    );
+    const ids = new Map<string, string>(nodes.map((n) => [n.name, n.repo_id]));
     return { healthByRepo: health, repoIdByAlias: ids };
   }, [repoGraph]);
 
@@ -328,7 +330,8 @@ function lensOptionsFor(
     {
       value: "core",
       label: t("lens.core.label"),
-      count: architecture ? String(architecture.core_size) : undefined,
+      // Null when the graph's evidence is insufficient; the lens then says why.
+      count: architecture?.core_size != null ? String(architecture.core_size) : undefined,
       hint: t("lens.core.hint"),
       disabledReason: failed.architecture
         ? t("lens.core.disabledFailed")
@@ -364,10 +367,20 @@ function Lede({
     <PageLede
       label={t("lede.label")}
       labelHint={t("lede.labelHint")}
-      value={architecture ? architecture.score.toFixed(1) : "–"}
+      value={architecture?.score != null ? architecture.score.toFixed(1) : "–"}
       unit={t("lede.unit")}
       layout="beside"
     >
+      {architecture?.evidence && architecture.evidence.state !== "measured" ? (
+        <p>
+          {t(
+            architecture.evidence.state === "insufficient"
+              ? "lede.notDetermined"
+              : "lede.partialEvidence",
+            { reason: architecture.evidence.summary },
+          )}
+        </p>
+      ) : null}
       <p>
         {t("lede.counts", {
           services: graph.nodes.length,
@@ -390,7 +403,9 @@ function Lede({
       ) : conformance?.generated_at ? (
         <p>{t("lede.noCycles")}</p>
       ) : null}
-      {architecture && (
+      {architecture &&
+        architecture.propagation_cost_pct != null &&
+        architecture.core_size != null && (
         <p>
           {t("lede.reachAndScore", {
             pct: architecture.propagation_cost_pct.toFixed(1),
@@ -429,7 +444,10 @@ function ribbon(
     },
     {
       label: t("ribbon.propagationCost"),
-      value: architecture ? `${architecture.propagation_cost_pct.toFixed(1)}%` : "–",
+      value:
+        architecture?.propagation_cost_pct != null
+          ? `${architecture.propagation_cost_pct.toFixed(1)}%`
+          : "–",
       sub: t("ribbon.propagationCostSub"),
       hint: t("ribbon.propagationCostHint"),
     },

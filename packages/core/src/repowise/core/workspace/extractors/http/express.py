@@ -2,7 +2,10 @@
 
 Express, Hono, Fastify, Koa and Elysia all serve routes through this one call
 shape, and only the variable's binding says which is which. The contract is
-labelled from that binding rather than assumed to be Express.
+labelled from that binding rather than assumed to be Express. A Fastify file
+(or a module a Fastify file registers) and a ``koa-router`` file are left to
+their own dialects, because there a route's path depends on the plugin or
+router it runs in.
 
 Routers carry no in-file prefix; the mount lives in a separate
 ``app.use('/prefix', router)`` call, so the real path is recovered by stitching
@@ -23,10 +26,13 @@ from repowise.core.ingestion.framework_routes import (
     express_routes,
     js_router_bindings,
 )
+from repowise.core.ingestion.framework_routes_koa import koa_router_file
 
 from ..base import line_at
+from ..calls import code_matches, outside_comments
 from ..langs import JS_TS
 from .dialect import build_provider_contract
+from .fastify import fastify_module
 from .mounts import compose_prefix
 
 if TYPE_CHECKING:
@@ -41,15 +47,24 @@ _APP_USE_RE = re.compile(r"""\.use\s*\(\s*['"]([^'"]+)['"]\s*,\s*([\w.]+)""")
 class ExpressDialect:
     name = "express"
     extensions = JS_TS
+    # A route's receiver is a default name or a router a constructor binds,
+    # and a mount is a `.use(`; `app .get(` and `.use (` are allowed.
+    requires = (
+        "app.", "app ", "app\n", "app\t", "router.", "router ", "router\n", "router\t",
+        "Router", "express", "Hono", "astify", "Koa", "koa", "Elysia",
+        ".use(", ".use ", ".use\n", ".use\t",
+    )  # fmt: skip
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         """Find ``app.use('/prefix', router)`` mounts declared in the file."""
         out: dict[str, str] = {}
-        for m in _APP_USE_RE.finditer(ctx.content):
+        for m in code_matches(ctx, _APP_USE_RE):
             out[m.group(2).split(".")[-1]] = m.group(1)
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
+        if fastify_module(ctx) or koa_router_file(ctx.content):
+            return []
         bindings = js_router_bindings(ctx.content)
         # `app`/`router` are routers whose constructor is in another file, so
         # they take the file's framework when it binds exactly one, and Express
@@ -58,7 +73,7 @@ class ExpressDialect:
         default = served.pop() if len(served) == 1 else "express"
 
         out: list[Contract] = []
-        for route in express_routes(ctx.content):
+        for route in outside_comments(ctx, express_routes(ctx.content)):
             # The registry also yields `use`/`all`, which the graph consumer
             # scans for handlers but which name no HTTP method here.
             if route.verb not in HTTP_METHODS or not route.path:

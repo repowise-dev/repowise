@@ -7,8 +7,7 @@ Fires when a file is **all three** of:
 - under-tested (``line_coverage_pct`` < 40 when coverage is available,
   OR, when it isn't, neither a paired test file nor a test reaching it
   through the call graph)
-- centrally depended on (``dependents_count`` ≥ 4 OR temporal_hotspot
-  in the top decile)
+- centrally depended on (``dependents_count`` ≥ 4)
 
 Severity grades on how bad the coverage is and how many dependents the
 file has.
@@ -45,10 +44,11 @@ def _is_hotspot(ctx: FileContext) -> bool:
 
 def _has_something_to_test(ctx: FileContext) -> bool:
     """Code with at least one function. A config file (``vite.config.ts``, a
-    ``.d.ts``, a non-code language) or a file with no function (types,
-    constants, a settings module) has nothing a test could exercise, so the
+    ``.d.ts``, a non-code language), a file with no function (types,
+    constants, a settings module) or one declaring only types (a ``Protocol``
+    whose methods are signatures) has nothing a test could exercise, so the
     absence of one is not a gap."""
-    return is_code_path(ctx.file_path) and bool(ctx.all_functions)
+    return is_code_path(ctx.file_path) and bool(ctx.all_functions) and not ctx.type_only
 
 
 class UntestedHotspotDetector:

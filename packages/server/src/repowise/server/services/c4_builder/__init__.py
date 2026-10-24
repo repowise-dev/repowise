@@ -36,6 +36,7 @@ from repowise.core.persistence.crud import (
     get_kg_project_meta,
     get_kg_tour_steps,
 )
+from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 from repowise.core.support_paths import is_support_path
 from repowise.core.test_paths import is_test_related_path
@@ -432,6 +433,7 @@ async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, di
                 select(DeadCodeFinding.file_path).where(
                     DeadCodeFinding.repository_id == repo_id,
                     DeadCodeFinding.status == "open",
+                    ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
                     DeadCodeFinding.kind == "unreachable_file",
                 )
             )
@@ -549,6 +551,7 @@ async def _annotate_container_signals(
                 select(DeadCodeFinding.file_path).where(
                     DeadCodeFinding.repository_id == repo_id,
                     DeadCodeFinding.status == "open",
+                    ungated("dead_code", DeadCodeFinding.file_path, DeadCodeFinding.kind),
                     DeadCodeFinding.kind == "unreachable_file",
                 )
             )

@@ -24,6 +24,7 @@ import { getWorkspaceActions } from "@/lib/api/actions";
 import { RemoveWorkspaceRepoButton, SyncButton } from "./sync-buttons";
 import { getTranslations } from "next-intl/server";
 import { WorkspaceNextActionsPanel } from "./workspace-next-actions-panel";
+import { workspaceDocFreshness } from "./doc-freshness";
 
 const WORKSPACE_DOCS_HREF =
   "https://github.com/repowise-dev/repowise/blob/main/docs/start/QUICKSTART.md";
@@ -51,8 +52,9 @@ const COCHANGE_PREVIEW = 8;
  * rebuilt rather than restyled:
  *
  *   - "Avg Coverage" averaged per-repo percentages unweighted, so a 50-file
- *     repo at 100% and a 5,000-file repo at 10% reported 55%. It is weighted by
- *     page count now, and named for what the rest of the app calls it.
+ *     repo at 100% and a 5,000-file repo at 10% reported 55%. Doc freshness
+ *     is fresh pages over all pages across the workspace, the share the
+ *     single-repo overview reports.
  *   - The cross-repo force-directed graph drew seven nodes and thirteen edges
  *     on a real workspace — a list wearing a canvas — and cost a third request
  *     that swept every repo's sqlite a second time. The system map owns that
@@ -101,16 +103,12 @@ export default async function WorkspaceDashboardPage() {
       files: acc.files + r.file_count,
       symbols: acc.symbols + r.symbol_count,
       pages: acc.pages + r.page_count,
-      // Page-weighted, so a small repo cannot pull the workspace average.
-      confidenceWeighted: acc.confidenceWeighted + r.doc_coverage_pct * r.page_count,
       hotspots: acc.hotspots + r.hotspot_count,
     }),
-    { files: 0, symbols: 0, pages: 0, confidenceWeighted: 0, hotspots: 0 },
+    { files: 0, symbols: 0, pages: 0, hotspots: 0 },
   );
-  // Floored, not rounded: 99.7% rounds to a perfect 100% and tells the reader
-  // every page is current when some are not. Erring low never overclaims.
-  const docFreshness =
-    totals.pages > 0 ? Math.floor(totals.confidenceWeighted / totals.pages) : null;
+  const docs = workspaceDocFreshness(repos);
+  const docFreshness = docs.pct;
 
   const ribbon: RibbonStat[] = [
     {
@@ -129,7 +127,10 @@ export default async function WorkspaceDashboardPage() {
       sub:
         docFreshness === null
           ? t("ribbon.docFreshnessNoPages")
-          : t("ribbon.docFreshnessSub", { pages: formatNumber(totals.pages) }),
+          : t("ribbon.docFreshnessSub", {
+              fresh: formatNumber(docs.fresh),
+              pages: formatNumber(docs.pages),
+            }),
     },
     {
       label: t("ribbon.hotspots"),
@@ -295,11 +296,10 @@ function toRow(repo: WorkspaceRepoEntry): RepoRow {
     health: repo.health_score == null ? null : repo.health_score / 10,
     fileCount: repo.file_count,
     hotspotCount: repo.hotspot_count,
-    // The workspace payload has no per-repo fresh-page or dead-export counts.
-    // Zero here means the row omits those clauses; it never prints "0% fresh",
-    // which would report a missing measurement as a bad one.
-    docPageCount: 0,
-    docFreshPageCount: 0,
+    docPageCount: repo.page_count,
+    docFreshPageCount: repo.fresh_page_count,
+    // The workspace payload has no per-repo dead-export count; zero omits
+    // that clause from the row.
     deadExportCount: 0,
     updatedAt: repo.indexed_at,
     indexBehind: null,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -353,6 +354,8 @@ def test_decision_list_help_lists_filters() -> None:
     assert "--source" in result.output
     assert "--proposed" in result.output
     assert "--stale-only" in result.output
+    assert "--limit" in result.output
+    assert "--all" in result.output
 
 
 def test_decision_list_empty_repo_prints_none_found(indexed_repo: Path) -> None:
@@ -403,6 +406,57 @@ def test_decision_list_and_show_seeded_records(indexed_repo: Path) -> None:
     assert "Status: active" in shown.output
     assert "use X" in shown.output
 
+
+def _many_decisions(n: int, **extra) -> list[dict]:
+    return [{"id": f"{i:032x}", "title": f"Decision {i}", **extra} for i in range(n)]
+
+
+def _list_json(repo: Path, *args: str) -> dict:
+    result = CliRunner().invoke(cli, ["decision", "list", str(repo), *args, "--format", "json"])
+    assert result.exit_code == 0, result.output
+    return json.loads(result.output)
+
+
+def test_decision_list_says_how_many_rows_it_cut(indexed_repo: Path) -> None:
+    _seed_wiki_db(indexed_repo, _many_decisions(105))
+
+    table = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo)])
+    assert table.exit_code == 0, table.output
+    assert "Showing 100 of 105 decisions" in table.output
+
+    data = _list_json(indexed_repo)
+    assert (data["total"], data["truncated"], len(data["decisions"])) == (105, True, 100)
+
+    limited = _list_json(indexed_repo, "--limit", "3")
+    assert (limited["total"], limited["truncated"], len(limited["decisions"])) == (105, True, 3)
+
+    everything = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--all"])
+    assert everything.exit_code == 0, everything.output
+    assert "105 decisions." in everything.output
+    assert "Showing" not in everything.output
+
+
+def test_stale_only_counts_stale_rows_past_the_first_page(indexed_repo: Path) -> None:
+    # Fresh rows outrank on confidence, so the stale ones sort past row 100.
+    rows = _many_decisions(100, confidence=0.9) + [
+        {"id": f"{i:032x}", "title": f"Stale {i}", "confidence": 0.1, "staleness": 0.9}
+        for i in range(100, 104)
+    ]
+    _seed_wiki_db(indexed_repo, rows)
+
+    data = _list_json(indexed_repo, "--stale-only")
+    assert (data["total"], data["truncated"], len(data["decisions"])) == (4, False, 4)
+
+
+def test_decision_list_shows_a_long_title_whole(indexed_repo: Path) -> None:
+    title = "Backfill path mapping needs repo-tied evidence for deleted directories"
+    _seed_wiki_db(indexed_repo, [{"id": "c" * 32, "title": title}])
+
+    result = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo)])
+    assert result.exit_code == 0, result.output
+    # The column wraps, so every word survives in order, with other cells
+    # between wrapped lines; independent of width and box style.
+    assert re.search(r"\b" + r"\b.*?\b".join(map(re.escape, title.split())), result.output, re.S)
 
 def test_decision_confirm_promotes_proposed(indexed_repo: Path) -> None:
     _seed_wiki_db(

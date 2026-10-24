@@ -76,17 +76,14 @@ def test_nloc_floor_keeps_a_zero_nloc_file_from_vanishing() -> None:
     assert hotspot_health(rows, {"empty.py", "real.py"}) == 5.0
 
 
-def test_compute_kpis_floors_the_persisted_kpi_to_ten() -> None:
-    """The persisted contract is unchanged: a float, 10.0 when no hotspots.
+def test_compute_kpis_keeps_no_hotspots_as_none() -> None:
+    """The persisted KPI says "no hotspots" the way the dashboard does.
 
-    ``save_health_snapshot`` writes this into a non-nullable column and the
-    trend alerts diff against it, so ``None`` must not reach it. The honest
-    ``None`` is what ``hotspot_health`` returns to surfaces that can render it.
+    It used to be floored to 10.0 for the snapshot, so the trend reported
+    perfect hotspots on repos the overview said had none.
     """
     rows = [_Metric("a.py", 4.0, 100)]
-    kpis = compute_kpis(rows, set())
-    assert kpis["hotspot_health"] == 10.0
-    assert hotspot_health(rows, set()) is None
+    assert compute_kpis(rows, set())["hotspot_health"] is None
 
 
 def test_compute_kpis_hotspot_health_matches_the_shared_owner() -> None:

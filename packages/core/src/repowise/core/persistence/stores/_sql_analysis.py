@@ -169,10 +169,10 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         return await crud.delete_decision(self._session, decision_id)
 
     async def recompute_decision_staleness(
-        self, repository_id: str, git_meta_map: dict[str, dict]
+        self, repository_id: str, git_meta_map: dict[str, dict], repo_path: str | None = None
     ) -> int:
         return await crud.recompute_decision_staleness(
-            self._session, repository_id, git_meta_map
+            self._session, repository_id, git_meta_map, repo_path
         )
 
     async def get_stale_decisions(
@@ -256,7 +256,7 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         self,
         repository_id: str,
         *,
-        hotspot_health: float,
+        hotspot_health: float | None,
         average_health: float,
         worst_performer_path: str | None,
         worst_performer_score: float | None,

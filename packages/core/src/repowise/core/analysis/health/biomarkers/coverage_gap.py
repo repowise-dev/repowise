@@ -13,6 +13,7 @@ does nothing — the absence-of-coverage case is the
 
 from __future__ import annotations
 
+from ..coverage_actions import coverage_actions
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -31,7 +32,7 @@ class CoverageGapDetector:
             return []
         if ctx.total_coverable_lines <= 0:
             return []
-        if ctx.is_test_material:
+        if ctx.is_test_material or ctx.reexport_only:
             return []
 
         cov = ctx.line_coverage_pct
@@ -56,6 +57,7 @@ class CoverageGapDetector:
         else:
             severity = Severity.LOW
 
+        reason = f"{uncovered}/{total} lines uncovered ({cov:.0f}% line coverage)"
         return [
             BiomarkerResult(
                 biomarker_type=self.name,
@@ -68,8 +70,16 @@ class CoverageGapDetector:
                     "branch_coverage_pct": ctx.branch_coverage_pct,
                     "uncovered_lines": uncovered,
                     "total_coverable_lines": total,
+                    # Measured by construction: the report is what fired it.
+                    "actions": coverage_actions(
+                        self.name,
+                        ctx.file_path,
+                        function=None,
+                        target_test=ctx.file_test,
+                        evidence=reason,
+                    ),
                 },
-                reason=(f"{uncovered}/{total} lines uncovered ({cov:.0f}% line coverage)"),
+                reason=reason,
             )
         ]
 

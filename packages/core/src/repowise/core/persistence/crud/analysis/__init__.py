@@ -2,8 +2,8 @@
 
 Split out of the former monolithic ``crud.py`` and later from the single
 ``analysis.py`` module into per-entity submodules. ``crud/__init__.py``
-re-exports every public name via ``from .analysis import *``, so existing
-imports are unaffected.
+re-exports every name in ``__all__`` on first use, so existing imports are
+unaffected.
 """
 
 from __future__ import annotations
@@ -75,14 +75,16 @@ from .health import (
     backfill_is_test,
     backfill_module_attribution,
     clear_unanalysed_scores,
-    get_average_health,
+    gated_health_counts,
     get_deduction_by_path,
     get_file_language_map,
+    get_headline_health,
     get_health_findings,
     get_health_metrics,
     get_health_snapshot_file_counts,
     get_health_snapshot_headline,
     get_health_summary,
+    get_latest_snapshot_analyzer_version,
     get_perf_coverage,
     get_scored_file_paths,
     health_finding_priorities,
@@ -99,6 +101,7 @@ from .health import (
 )
 from .performance import (
     finalize_performance_opportunities,
+    gated_performance_counts,
     get_health_finding_by_public_id,
     get_performance_opportunity,
     get_performance_plan_rows,
@@ -107,8 +110,10 @@ from .performance import (
     list_opportunity_evidence,
     list_performance_opportunities,
     opportunity_details,
+    performance_area_counts,
     performance_facet_counts,
     performance_file_rollups,
+    performance_headline,
 )
 from .refactoring import (
     count_refactoring_suggestions,
@@ -156,7 +161,8 @@ __all__ = [
     "finalize_refactoring_opportunities",
     "finalize_refactoring_suggestions",
     "finding_data_from_row",
-    "get_average_health",
+    "gated_health_counts",
+    "gated_performance_counts",
     "get_coverage_summary",
     "get_dead_code_findings",
     "get_dead_code_summary",
@@ -165,12 +171,14 @@ __all__ = [
     "get_doc_drift_references",
     "get_file_language_map",
     "get_function_facts",
+    "get_headline_health",
     "get_health_finding_by_public_id",
     "get_health_findings",
     "get_health_metrics",
     "get_health_snapshot_file_counts",
     "get_health_snapshot_headline",
     "get_health_summary",
+    "get_latest_snapshot_analyzer_version",
     "get_perf_coverage",
     "get_performance_opportunity",
     "get_performance_plan_rows",
@@ -197,8 +205,10 @@ __all__ = [
     "load_ingest_at_commit",
     "load_newest_ingest",
     "opportunity_details",
+    "performance_area_counts",
     "performance_facet_counts",
     "performance_file_rollups",
+    "performance_headline",
     "plan_payoff",
     "prune_unscored_health_rows",
     "ranked_refactoring_suggestions",

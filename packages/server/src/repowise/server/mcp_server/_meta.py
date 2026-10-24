@@ -71,6 +71,34 @@ def full_meta(tool: str | None = None) -> bool:
 _STALE_AGE_FLOOR_DAYS = 90
 
 
+def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | None:
+    """The checkout to read live HEAD, state.json and files from for *repository*.
+
+    The stored ``local_path`` is where the repo was indexed; a moved or copied
+    repo keeps the old value, so reads through it see another tree. A
+    single-repo server's own path wins for the row its own store identifies
+    (``_state._served_repo_id``) when that path holds ``.repowise/`` and
+    ``.git`` (a file in a worktree). Any other row, such as another repo in a
+    shared store, keeps its stored path; *ctx_path* stands in only when the
+    row has none. The row is never rewritten.
+    """
+    from repowise.server.mcp_server import _state
+
+    served = _state._repo_path
+    if (
+        served
+        and _state._registry is None
+        and _state._served_repo_id is not None
+        and getattr(repository, "id", None) == _state._served_repo_id
+    ):
+        root = Path(served)
+        if (root / ".repowise").is_dir() and (root / ".git").exists():
+            return str(root)
+    # Ceiling: a workspace server keeps each repo's stored path; giving it
+    # the same override needs the registry to record each store's one row.
+    return getattr(repository, "local_path", None) or (str(ctx_path) if ctx_path else None)
+
+
 def read_live_head(local_path: str | None) -> str | None:
     """Read the repo's current git HEAD SHA via plain file I/O.
 
@@ -89,29 +117,6 @@ def read_live_head(local_path: str | None) -> str | None:
     freshness comparison stays symmetric with what ``update`` stored.
     """
     return read_head_commit(local_path)
-
-
-def read_state_sync_commit(local_path: str | None) -> str | None:
-    """Return ``last_sync_commit`` from ``<local_path>/.repowise/state.json``.
-
-    This is the commit the most recent sync advanced to — written by every
-    ``repowise update`` path, including the fast paths ("already up to date",
-    "no changed files") that don't rebuild the DB. It is the authoritative
-    freshness marker; the ``repositories`` row can lag it when an older build's
-    fast path skipped the DB stamp. Returns ``None`` for hosted/ephemeral
-    indexes with no state file.
-    """
-    if not local_path:
-        return None
-    try:
-        import json
-
-        state_path = Path(local_path) / ".repowise" / "state.json"
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    commit = data.get("last_sync_commit")
-    return commit if isinstance(commit, str) and commit else None
 
 
 def read_index_scope(local_path: str | None) -> dict[str, Any] | None:
@@ -137,8 +142,9 @@ def _canonical_scope_requested() -> bool:
 def _full_scope_hint() -> str:
     """The call that returns the whole scope, as this server is running.
 
-    In workspace mode ``get_overview()`` returns the repo listing and carries
-    no scope at all, so a digest pointing there would send an agent somewhere
+    The overview carries the whole scope only when asked for it. In workspace
+    mode ``get_overview(repo="all")`` returns the repo listing and carries no
+    scope at all, so a digest pointing there would send an agent somewhere
     the rest of the answer is not. The argument is named rather than filled in
     because the alias belongs to the caller's own request, not to the
     repository row this envelope was built from.
@@ -146,8 +152,8 @@ def _full_scope_hint() -> str:
     from repowise.server.mcp_server import _state
 
     if getattr(_state, "_registry", None) is not None:
-        return "get_overview(repo=...)"
-    return "get_overview()"
+        return 'get_overview(repo=..., include=["scope"])'
+    return 'get_overview(include=["scope"])'
 
 
 def index_scope_for_response(local_path: str | None) -> dict[str, Any] | None:
@@ -159,17 +165,17 @@ def index_scope_for_response(local_path: str | None) -> dict[str, Any] | None:
 
 
 def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
-    """Best available "commit the index reflects" for a repo.
+    """The commit the index reflects, from ``state.json`` and the DB ``head_commit``.
 
-    Prefers the on-disk ``state.json`` ``last_sync_commit`` over the DB
-    ``head_commit`` so the freshness signal stays honest even when an older
-    build left the ``repositories`` row un-stamped — a read-time self-heal that
-    needs no ``repowise update`` first. The row is repaired for good on the next
-    update; until then this keeps ``/api/repos`` and the MCP ``_meta`` staleness
-    check from falsely reporting "index behind checkout". Falls back to the DB
-    value when there is no state file (hosted indexes).
+    One resolver with impacted-test selection (see
+    :func:`repowise.core.workspace.update.resolve_indexed_commit`), so a
+    response never names an indexed commit in ``_meta`` while its selection
+    calls the same index unknown. ``None`` when the two stamps diverge. Hosted
+    indexes have no state file and keep the DB value.
     """
-    return read_state_sync_commit(local_path) or head_commit
+    from repowise.core.workspace.update import resolve_indexed_commit as _resolve
+
+    return _resolve(Path(local_path) if local_path else None, head_commit).sha
 
 
 # (local_path, indexed_sha, live_sha) -> files changed between the two commits,
@@ -444,7 +450,9 @@ def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[
     return out
 
 
-def freshness_from_repo(repository: Any | None, targets: list[str] | None = None) -> dict[str, Any]:
+def freshness_from_repo(
+    repository: Any | None, targets: list[str] | None = None, root: str | None = None
+) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
     Calibrated to fire ``stale_warning`` rarely so the agent keeps trusting
@@ -497,16 +505,18 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         return {}
     out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION} if full_meta() else {}
 
-    updated_at = getattr(repository, "updated_at", None)
+    # Deferred: this module's top-level imports stay free of the ORM.
+    from repowise.core.persistence.crud import index_synced_at
+
+    synced_at = index_synced_at(repository)
     age_days: int | None = None
-    if isinstance(updated_at, datetime):
-        ua = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=UTC)
-        age_days = max(0, (datetime.now(UTC) - ua).days)
+    if synced_at is not None:
+        age_days = max(0, (datetime.now(UTC) - synced_at).days)
         out["index_age_days"] = age_days
 
-    local_path = getattr(repository, "local_path", None)
-    # Prefer state.json's last_sync_commit over a possibly-stale DB head_commit
-    # so freshness self-heals on read (see resolve_indexed_commit).
+    # ``root``: the served checkout (see served_root), resolved here when omitted.
+    local_path = root or served_root(repository)
+    # state.json and the DB row reconciled by the shared resolver.
     indexed_full = resolve_indexed_commit(
         getattr(repository, "head_commit", None) or None, local_path
     )
@@ -634,8 +644,9 @@ def build_meta(
     if cached:
         out["cached"] = True
     if repository is not None:
-        out.update(freshness_from_repo(repository, targets=targets))
-        scope = index_scope_for_response(getattr(repository, "local_path", None))
+        root = served_root(repository)
+        out.update(freshness_from_repo(repository, targets=targets, root=root))
+        scope = index_scope_for_response(root)
         # A complete digest restates the default; only a gap is news.
         if scope is not None and (
             full or _canonical_scope_requested() or scope.get("status") != "complete"
@@ -659,7 +670,7 @@ def build_meta_with_full_scope(**kwargs: Any) -> dict[str, Any]:
     meta = {"contract_version": MCP_CONTRACT_VERSION, **build_meta(**kwargs)}
     repository = kwargs.get("repository")
     if repository is not None:
-        scope = read_index_scope(getattr(repository, "local_path", None))
+        scope = read_index_scope(served_root(repository))
         if scope is not None:
             # The fingerprint is what makes a held copy checkable against a
             # later digest, so the copy being held has to carry it too.
@@ -829,6 +840,28 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
+def keyless_note_meta() -> dict[str, Any]:
+    """Name what a key or a local model would add, once per process, the
+    first time ``get_answer`` degrades with ``no-llm-provider`` (#3105).
+
+    The agent reading a keyless answer is told synthesis is missing, but
+    nothing says how to get it. Same once-per-process shape as
+    :func:`_release_meta`: a fact the caller only needs once, not charged
+    against every later response's budget.
+    """
+    from repowise.server.mcp_server import _state
+
+    if _state._keyless_note_announced:
+        return {}
+    _state._keyless_note_announced = True
+    return {
+        "keyless_note": (
+            "no model is configured, so answers are not synthesized; set a provider "
+            "key (or a provider in .repowise/config.yaml) and restart the MCP server"
+        )
+    }
+
+
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     """Hint for source retrieval (kept for backward compat with tool_symbol.py)."""
     return None
@@ -908,7 +941,7 @@ def answer_hint(
     doubt its files on every question is what made a keyless agent call
     search_codebase after every get_answer: one question, two calls, measured on
     11 of 26 questions whose rank-1 file was right. So say which half is missing
-    and let `retrieval_quality` rate the other half.
+    and let `confidence` rate the other half.
     """
     if degraded:
         if retrieval_quality == "weak":
@@ -923,11 +956,11 @@ def answer_hint(
         if has_bodies:
             return (
                 "Synthesis is what is missing here, not retrieval. Answer from "
-                "symbol_bodies; retrieval_quality rates what was served."
+                "symbol_bodies."
             )
         return (
-            "Synthesis is what is missing here, not retrieval. retrieval_quality "
-            "rates the ranked hits; start from the first one."
+            "Synthesis is what is missing here, not retrieval. Start from the "
+            "first ranked hit."
         )
     if confidence == "low":
         return (

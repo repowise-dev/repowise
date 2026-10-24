@@ -30,9 +30,10 @@ if TYPE_CHECKING:
 _SVELTE_ROUTE_RE = re.compile(r"/\+(?:page|layout|server|error)[.\w]*\.(ts|tsx|js|mjs|svelte)$")
 _ASTRO_PAGE_RE = re.compile(r"(?:^|/)src/pages/")
 
-# SvelteKit's +page.svelte / +layout.svelte are convention routes in their own
-# right, so components count here alongside their .ts/.js siblings.
-_ROUTE_LANGUAGES = ("typescript", "javascript", "svelte")
+# SvelteKit's +page.svelte / +layout.svelte and Astro's src/pages/*.astro are
+# convention routes in their own right, so components count here alongside
+# their .ts/.js siblings.
+_ROUTE_LANGUAGES = ("typescript", "javascript", "svelte", "astro")
 
 
 def _is_convention_route(path: str) -> bool:

@@ -94,6 +94,23 @@ async def test_block_names_only_the_overlapping_branch_and_states_its_basis(tmp_
     assert "edit files this change also edits" in block["summary"]
 
 
+async def test_a_branch_reviewed_by_its_sha_is_the_change_not_a_rival(tmp_path):
+    """A worktree branch reviewed from the served checkout: the scan is from its head."""
+    repo = _repo(tmp_path, others={"reviewed": {"a.py": "a reviewed\n"}})
+    head = subprocess.run(
+        ["git", "rev-parse", "reviewed"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    block = await _branch_overlap_block(
+        _ctx(repo), {"a.py": {1}}, OmissionCollector("t", repo_root=tmp_path), head
+    )
+
+    assert block is not None
+    assert block["current"] == head
+    # The served checkout's branch edits a.py too, so it is the rival now.
+    assert [entry["branch"] for entry in block["branches"]] == ["work"]
+
+
 async def test_branch_list_is_capped_and_says_by_how_much(tmp_path):
     over = _BRANCH_OVERLAP_LIMIT + 2
     repo = _repo(

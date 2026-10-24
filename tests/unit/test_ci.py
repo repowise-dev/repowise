@@ -8,7 +8,7 @@ import pytest
 
 from repowise.core.ci import github
 from repowise.core.ci.base import BaseNotFoundError, default_revspec
-from repowise.core.ci.markdown import cell, details, more_line, plural
+from repowise.core.ci.markdown import cell, code, details, more_line, plural
 
 
 def test_annotation_escapes_properties_and_message() -> None:
@@ -41,6 +41,11 @@ def test_markdown_pieces() -> None:
     assert out[:3] == ["<details>", "<summary>S</summary>", ""]
     assert out[-3:] == ["- and 2 more", "", "</details>"]
     assert details("S", []) == []
+
+
+def test_code_span_reads_the_same_on_a_crlf_checkout() -> None:
+    # A plan anchor keeps the file's CRLF; the sentence quoting it must not.
+    assert code("if (\r\n  x") == code("if (\n  x") == "`if (\n  x`"
 
 
 def _git(cwd, *args: str) -> None:

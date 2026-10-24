@@ -6,7 +6,8 @@ judgement, and it is the only read-time computation this layer sanctions.
 
 Two shapes of claim ask it. An **episode** is born at a commit, so it asks
 ``<sha>..HEAD``. A **decision record** has no birth commit column — it has a
-``created_at`` — so it asks ``--since=<date>``. Same call, same failure
+``created_at`` — so it asks ``--since=<date>``, or ``<sha>..HEAD`` from the
+commit that landed it when that came later. Same call, same failure
 handling, one implementation; the alternative was a second copy that would
 drift from this one the first time either grew a flag.
 
@@ -134,6 +135,7 @@ def describe_decision_currency(
     *,
     created_at: datetime | None,
     nodes: Sequence[str],
+    evidence_commits: Sequence[str] = (),
 ) -> str | None:
     """One sentence on whether a decision's code has moved since it was made.
 
@@ -146,6 +148,10 @@ def describe_decision_currency(
     whose code genuinely has not moved. Saying so is the difference between
     "checked, and fresh" and "never checkable", which is exactly what a reader
     deciding whether to trust it needs.
+
+    A record written before its *evidence_commits* landed counts from after
+    the commit that landed them, the same anchor the stored staleness score
+    uses, so that commit is not reported as a change to it.
     """
     scope = [n for n in nodes if n]
     if not scope:
@@ -153,16 +159,33 @@ def describe_decision_currency(
     if created_at is None:
         return None
 
-    count = commits_since(root, since_date=created_at, nodes=scope)
+    since_commit, on = _anchor(root, created_at, evidence_commits)
+    count = commits_since(
+        root, since_commit=since_commit, since_date=created_at, nodes=scope
+    )
     if count is None:
         return None
 
-    on = created_at.strftime("%Y-%m-%d")
     files = "file" if len(scope) == 1 else f"{len(scope)} files"
     if count == 0:
         return f"nothing in the {files} it governs has changed since {on}"
     commits = "1 commit" if count == 1 else f"{count} commits"
     return f"the {files} it governs changed in {commits} since {on}"
+
+
+def _anchor(
+    root: Path | str, created_at: datetime, evidence_commits: Sequence[str]
+) -> tuple[str | None, str]:
+    """The commit to count from and how to date it: the landing of a record
+    written before it, else no commit and the record's own date."""
+    # Function-local: this module's import budget is the store and nothing heavier.
+    from repowise.core.analysis.decisions.landing import evidence_landings, record_landing
+
+    landings = evidence_landings(root, evidence_commits, timeout=GIT_TIMEOUT_S)
+    landing = record_landing(evidence_commits, landings, created_at)
+    if landing is None:
+        return None, created_at.strftime("%Y-%m-%d")
+    return landing.sha, f"{landing.at:%Y-%m-%d} (landed in {landing.sha[:9]})"
 
 
 def recorded_on(birth_at: float) -> str:

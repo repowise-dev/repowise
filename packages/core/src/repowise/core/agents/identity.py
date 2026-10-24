@@ -103,6 +103,10 @@ class AgentIdentity:
     #: ``derive_tier`` reads them.
     hook_adapter: str | None = None
     session_adapter: str | None = None
+    #: Entry in ``core.edit_capture.edits``: hook payload to edit event, for
+    #: opt-in edit-time attribution. Declared for the same reason as the two
+    #: above; it does not move the tier.
+    capture_adapter: str | None = None
     #: The agent's command on PATH, when it ships one.
     executable: str | None = None
     #: Arguments to ``executable`` that exit 0 only when signed in. Empty when
@@ -178,6 +182,7 @@ CLAUDE_CODE = AgentIdentity(
     announced_as=frozenset({"claude"}),
     hook_adapter="claude-code",
     session_adapter="claude_code",
+    capture_adapter="claude_code",
     executable="claude",
     #: Documented to exit 0 when signed in and 1 when not.
     login_check=("auth", "status"),
@@ -190,6 +195,7 @@ CODEX = AgentIdentity(
     display_name="Codex CLI",
     hook_adapter="codex",
     session_adapter="codex",
+    capture_adapter="codex",
     executable="codex",
     login_check=("login", "status"),
     install_hint="npm install -g @openai/codex",
@@ -201,6 +207,7 @@ CURSOR = AgentIdentity(
     slug="cursor",
     display_name="Cursor",
     hook_adapter="cursor",
+    capture_adapter="cursor",
     executable="cursor",
 )
 OPENCODE = AgentIdentity(
@@ -218,6 +225,7 @@ COPILOT = AgentIdentity(
     executable="copilot",
     install_hint="npm install -g @github/copilot",
     login_hint="copilot login",
+    indexing_provider="copilot_cli",
 )
 KIRO = AgentIdentity(
     slug="kiro", display_name="Kiro", executable="kiro-cli", login_hint="kiro-cli login"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import sys
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
@@ -26,6 +25,7 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder, is_semantic_embedder
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.server import __version__
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._transport import (
     CLIENT_CLOSED,
@@ -85,161 +85,39 @@ _EMBEDDER_REMEDIATION: dict[str, str] = {
 
 
 def _configured_embedder_name() -> str:
-    """Read the configured embedder name from env or ``.repowise/config.yaml``.
+    """The configured embedder: ``REPOWISE_EMBEDDER``, then the repo's pin.
 
     Returns a lowercased name, or ``""`` when nothing is explicitly configured
     (in which case MockEmbedder is the intended default, not a degradation).
+    No key detection: the server must query with the backend that wrote the
+    index, not one guessed from the environment.
     """
-    name = os.environ.get("REPOWISE_EMBEDDER", "").strip().lower()
-    if name:
-        return name
-    if _state._repo_path:
-        try:
-            from pathlib import Path
+    from repowise.core.providers.embedding.resolve import resolve_embedder_name
 
-            cfg_path = Path(_state._repo_path) / ".repowise" / "config.yaml"
-            if cfg_path.exists():
-                import yaml  # type: ignore[import-untyped]
-
-                cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                return (cfg.get("embedder") or "").strip().lower()
-        except Exception:
-            _log.debug("Failed to read embedder from config.yaml", exc_info=True)
-    return ""
-
-
-# Keyed embedders and the env vars each reads its credential from. The first
-# entry is the canonical name the CLI persists under; the rest are accepted
-# aliases. Embedders outside this map (ollama, mock, custom) need no API key.
-_EMBEDDER_KEY_ENV: dict[str, tuple[str, ...]] = {
-    "openai": ("OPENAI_API_KEY",),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-    "openrouter": ("OPENROUTER_API_KEY",),
-    "edenai": ("EDENAI_API_KEY",),
-}
+    name, source = resolve_embedder_name(repo_path=_state._repo_path or None, detect=False)
+    return "" if source == "default" else name
 
 
 def _persisted_embedder_key(name: str) -> str | None:
-    """Recover the configured embedder's API key from where the CLI persists it.
+    """The configured embedder's API key: env > repo ``.env`` > global config.
 
-    ``repowise mcp`` loads ``<repo>/.repowise/.env`` before starting, but that
-    covers only the repo it was pointed at: a workspace serves sibling repos
-    whose ``.env`` is never read, and embedded callers reach :func:`run_mcp`
-    without going through the CLI at all. ``repowise serve`` already falls back
-    to the ``embedder_api_key`` saved in ``~/.repowise/config.yaml``. Without
-    the same fallback here the server builds a ``MockEmbedder`` and queries a
-    real index with vectors that cannot match it — semantic search silently
-    degrades to full-text-only.
-
-    Order: the served repo's ``.repowise/.env`` first, then the global config.
-    Returns ``None`` when the embedder needs no key or none is persisted.
+    ``repowise mcp`` loads ``<repo>/.repowise/.env`` before starting, but a
+    workspace serves sibling repos whose ``.env`` is never read, and embedded
+    callers reach :func:`run_mcp` without the CLI at all. Without the
+    fallbacks the server builds a ``MockEmbedder`` and queries a real index
+    with vectors that cannot match it. ``None`` when the embedder needs no key
+    or none is persisted.
     """
-    from pathlib import Path
+    from repowise.core.providers.embedding.resolve import resolve_embedder_key
 
-    env_vars = _EMBEDDER_KEY_ENV.get(name)
-    if not env_vars:
-        return None
-    canonical = env_vars[0]
-
-    # The process environment is the highest-precedence source, matching the
-    # CLI's resolver (cli/providers/keys.py): an exported key is an explicit
-    # override. The server used to skip this tier entirely, so on a machine
-    # with an exported credential it and the CLI disagreed about the same
-    # repo in the same shell (issue #1711).
-    for var in env_vars:
-        value = os.environ.get(var)
-        if value:
-            return value
-
-    if _state._repo_path:
-        try:
-            # Reuse the reader get_answer already uses for the LLM credential,
-            # rather than a third copy of .env parsing.
-            from repowise.server.mcp_server.tool_answer.synthesis import (
-                _load_repo_provider_config,
-            )
-
-            _, _, overlay = _load_repo_provider_config(Path(_state._repo_path))
-            for var in env_vars:
-                if overlay.get(var):
-                    return overlay[var]
-        except Exception:
-            _log.debug("Failed to read repo .env for embedder key", exc_info=True)
-
-    try:
-        cfg_path = Path.home() / ".repowise" / "config.yaml"
-        if cfg_path.is_file():
-            import yaml  # type: ignore[import-untyped]
-
-            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-            # Only honour the saved key when it belongs to the embedder being
-            # resolved — handing an openai key to gemini fails confusingly.
-            if (cfg.get("embedder") or "").strip().lower() == name:
-                key = str(cfg.get("embedder_api_key") or "").strip()
-                if key:
-                    _log.info(
-                        "Embedder key for '%s' recovered from ~/.repowise/config.yaml "
-                        "(%s not set in the MCP server's environment).",
-                        name,
-                        canonical,
-                    )
-                    return key
-    except Exception:
-        _log.debug("Failed to read global config for embedder key", exc_info=True)
-
-    return None
+    return resolve_embedder_key(name, _state._repo_path or None).key
 
 
 def _embedder_kwargs(name: str) -> dict[str, Any]:
-    """Map repowise embedding env vars onto an embedder's constructor kwargs.
+    """Constructor kwargs for *name*, from the resolver the CLI shares."""
+    from repowise.core.providers.embedding.resolve import embedder_kwargs
 
-    Kept backend-agnostic: ``REPOWISE_EMBEDDING_MODEL`` applies to any embedder
-    that accepts a ``model`` arg. ``REPOWISE_EMBEDDING_DIMS`` is read directly by
-    the openai and ollama embedders in their own constructors; only gemini needs
-    it mapped here, because its constructor spells the width
-    ``output_dimensionality``. Anything not set here falls through to the
-    embedder's own defaults.
-
-    When the embedder needs an API key and the environment has none, the key is
-    recovered from the repo/global config so the server matches the index it
-    was pointed at instead of falling back to mock vectors.
-    """
-    kwargs: dict[str, Any] = {}
-    model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
-    if model:
-        kwargs["model"] = model
-    if name == "gemini":
-        dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-        dims = 768
-        if dims_raw:
-            try:
-                parsed = int(dims_raw)
-            except (ValueError, OverflowError):
-                parsed = 0
-            if parsed > 0:
-                dims = parsed
-            else:
-                _log.warning(
-                    "embedding_dims_invalid",
-                    extra={
-                        "var": "REPOWISE_EMBEDDING_DIMS",
-                        "value": dims_raw,
-                        "using": dims,
-                    },
-                )
-                print(
-                    f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer;"
-                    f" using {dims}.",
-                    file=sys.stderr,
-                )
-        kwargs["output_dimensionality"] = dims
-
-    env_vars = _EMBEDDER_KEY_ENV.get(name, ())
-    if env_vars and not any(os.environ.get(var) for var in env_vars):
-        key = _persisted_embedder_key(name)
-        if key:
-            kwargs["api_key"] = key
-    return kwargs
+    return embedder_kwargs(name, _state._repo_path or None)
 
 
 def _resolve_embedder():
@@ -348,6 +226,24 @@ async def _cancel_task(task: asyncio.Task) -> None:
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
+
+
+async def _served_repository_id(factory: Any) -> str | None:
+    """The one row a repo-local store holds, else ``None``.
+
+    Same rule as the CLI's moved-repo lookup: identity is inferred only from
+    the served checkout's own store, and only when it holds one repository.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Repository
+
+    try:
+        async with factory() as session:
+            rows = (await session.scalars(select(Repository.id).limit(2))).all()
+    except OperationalError:
+        return None
+    return rows[0] if len(rows) == 1 else None
 
 
 async def _abort_startup(*tasks: asyncio.Task) -> None:
@@ -587,26 +483,10 @@ async def _lifespan(server: FastMCP):
 
         # Load cross-repo enricher (Phase 3 + 4)
         try:
-            from repowise.core.workspace.breaking_change import BREAKING_CHANGES_FILENAME
-            from repowise.core.workspace.config import WORKSPACE_DATA_DIR
-            from repowise.core.workspace.conformance import CONFORMANCE_FILENAME
-            from repowise.core.workspace.contracts import CONTRACTS_FILENAME
-            from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
             from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 
-            cross_repo_path = ws_root / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
-            contracts_path = ws_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
-            system_graph_path = ws_root / WORKSPACE_DATA_DIR / SYSTEM_GRAPH_FILENAME
-            breaking_changes_path = ws_root / WORKSPACE_DATA_DIR / BREAKING_CHANGES_FILENAME
-            conformance_path = ws_root / WORKSPACE_DATA_DIR / CONFORMANCE_FILENAME
-            enricher = CrossRepoEnricher(
-                cross_repo_path,
-                contracts_path=contracts_path,
-                system_graph_path=system_graph_path,
-                breaking_changes_path=breaking_changes_path,
-                conformance_path=conformance_path,
-            )
-            if enricher.has_data or enricher.has_system_graph:
+            enricher = CrossRepoEnricher.for_workspace(ws_root)
+            if enricher.has_data or enricher.has_contract_data or enricher.has_system_graph:
                 _state._cross_repo_enricher = enricher
                 _log.info(
                     "Cross-repo enricher loaded: %d co-change edges, %d package deps, %d contract links",
@@ -684,6 +564,9 @@ async def _lifespan(server: FastMCP):
         engine, expire_on_commit=False, class_=AsyncSession
     )
 
+    if _state._repo_path and configured_db_url is None:
+        _state._served_repo_id = await _served_repository_id(_state._session_factory)
+
     _state._fts = FullTextSearch(engine)
     try:
         await _state._fts.ensure_index()
@@ -713,6 +596,7 @@ async def _lifespan(server: FastMCP):
     await _cancel_task(_bg_task)
     await _cancel_task(_warm_task)
     _state._lancedb_ready = None
+    _state._served_repo_id = None
 
     await engine.dispose()
     # _decision_store is an alias for _vector_store — close only once.
@@ -723,7 +607,61 @@ async def _lifespan(server: FastMCP):
 # Create the MCP server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(
+class _RepowiseMCP(FastMCP):
+    """FastMCP plus the HTTP bearer gate and per-call principal scope.
+
+    Both are inert without an authenticated HTTP principal, so stdio and an
+    unconfigured HTTP server behave exactly like plain FastMCP.
+    """
+
+    def streamable_http_app(self):  # type: ignore[override]
+        from repowise.server.mcp_server._http_auth import gate
+
+        return gate(super().streamable_http_app(), self.settings.streamable_http_path)
+
+    def sse_app(self, mount_path: str | None = None):  # type: ignore[override]
+        from repowise.server.mcp_server._http_auth import gate
+
+        return gate(super().sse_app(mount_path), self.settings.sse_path)
+
+    def _request_principal(self) -> Any:
+        try:
+            request = self._mcp_server.request_context.request
+        except LookupError:
+            return None
+        state = getattr(request, "scope", {}).get("state") or {}
+        return state.get("principal")
+
+    async def list_tools(self):  # type: ignore[override]
+        tools = await super().list_tools()
+        principal = self._request_principal()
+        if principal is None:
+            return tools
+        from repowise.server.auth import get_authorizer
+
+        authorizer = get_authorizer()
+        return [t for t in tools if authorizer.can_use_tool(principal, t.name)]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+        principal = self._request_principal()
+        if principal is not None:
+            from mcp.server.fastmcp.exceptions import ToolError
+
+            from repowise.server.mcp_server._http_auth import call_denial
+
+            denial = call_denial(principal, name, arguments)
+            if denial is not None:
+                raise ToolError(denial)
+        from repowise.server.auth import current_principal
+
+        reset = current_principal.set(principal)
+        try:
+            return await super().call_tool(name, arguments)
+        finally:
+            current_principal.reset(reset)
+
+
+mcp = _RepowiseMCP(
     "repowise",
     # Hosts that defer tool schemas show the model only tool names and this
     # string, so it says when to call; tests pin the key lines and a length cap.
@@ -748,11 +686,15 @@ mcp = FastMCP(
         "In workspace mode, get_architecture and get_blast_radius are also "
         "available. If the tools "
         "report that the repo has no index, tell the user to run "
-        "'repowise init --yes' in the repo root; it needs no API key. Suggest it, "
+        "'repowise init --yes --no-prose' in the repo root; it needs no API key "
+        "and makes no model calls. Suggest it, "
         "do not run it yourself."
     ),
     lifespan=_lifespan,
 )
+# FastMCP takes no version argument, and without one the handshake's
+# serverInfo.version reports the installed ``mcp`` SDK's version.
+mcp._mcp_server.version = __version__
 
 
 # ---------------------------------------------------------------------------

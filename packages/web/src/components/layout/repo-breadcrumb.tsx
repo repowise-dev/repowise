@@ -9,6 +9,7 @@ import type { BreadcrumbSegment } from "@repowise-dev/ui/shared/breadcrumb";
 import { DocsModeBadge, type DocsMode } from "@repowise-dev/ui/docs/docs-mode-badge";
 import { getRepoBreadcrumbSegmentLabel, SEGMENT_MESSAGE_KEYS } from "./repo-breadcrumb-label";
 import { showsRouteBreadcrumb } from "./repo-breadcrumb-route";
+import { commitsViewHref } from "@/lib/changes";
 
 export function RepoBreadcrumb({
   repoName,
@@ -47,7 +48,8 @@ export function RepoBreadcrumb({
       // A configured segment is translated; anything else (a dynamic id, a
       // path we do not know) keeps the decoded value it always had.
       label: messageKey ? tb(messageKey) : getRepoBreadcrumbSegmentLabel(seg),
-      href: currentPath,
+      // `/changes` has no page of its own: the change list is a Commits view.
+      href: currentPath === `/repos/${repoId}/changes` ? commitsViewHref(repoId, "changes") : currentPath,
     });
   }
 

@@ -17,14 +17,33 @@ from pathlib import Path
 
 import structlog
 
+from .cobol.bms import parse_bms_file
+from .cobol.csd import parse_csd_file
+from .cobol.jcl import parse_jcl_file
 from .models import FileInfo, Import, ParsedFile, Symbol
+from .salesforce_flow import parse_flow_file
+from .salesforce_schema import parse_object_metadata
+from .salesforce_soql import parse_soql_file
 
 log = structlog.get_logger(__name__)
 
 
 # Language tags routed to parse_special by the parser. Kept here, next to
 # the handler table, so the two can't drift apart.
-SPECIAL_HANDLER_LANGUAGES = frozenset({"openapi", "dockerfile", "makefile", "sql"})
+SPECIAL_HANDLER_LANGUAGES = frozenset(
+    {
+        "openapi",
+        "dockerfile",
+        "makefile",
+        "sql",
+        "salesforce_flow",
+        "salesforce_object",
+        "soql",
+        "jcl",
+        "bms",
+        "csd",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +58,12 @@ def parse_special(file_info: FileInfo, source: bytes, lang: str) -> ParsedFile:
         "dockerfile": _parse_dockerfile,
         "makefile": _parse_makefile,
         "sql": _parse_sql,
+        "salesforce_flow": parse_flow_file,
+        "salesforce_object": parse_object_metadata,
+        "soql": parse_soql_file,
+        "jcl": parse_jcl_file,
+        "bms": parse_bms_file,
+        "csd": parse_csd_file,
     }.get(lang, _parse_unknown)
     try:
         return handler(file_info, source)

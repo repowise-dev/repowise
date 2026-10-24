@@ -63,9 +63,14 @@ from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
+    from .dotnet_test_projects import DotnetTestProjects
+    from .phpunit_roots import PhpunitRoots
     from .pytest_roots import PytestRoots
+
+    # Whether a repo-relative directory holds a package manifest.
+    PackageRootProbe = Callable[[str], bool]
 
 # Directory segments that mark every file beneath them as test material,
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
@@ -113,6 +118,19 @@ _JVM_SOURCE_ROOTS: frozenset[str] = frozenset({"java", "kotlin", "groovy", "scal
 
 # GitHub's repository-metadata directory; see ``_classify``.
 _REPO_METADATA_DIR = ".github"
+
+# Inside a JavaScript-family ``src`` tree a ``tests/`` folder is as often a
+# product feature (a Tests page, the components behind it) as a suite, and
+# Jest, Vitest and Playwright collect there by file name, never by folder. So
+# below ``src`` it makes no test tree for these files: a ``.test.``/``.spec.``
+# name, ``__tests__/`` and the scaffolding directories still do. A ``tests/``
+# outside ``src`` keeps counting, because Mocha, AVA and ``node --test`` collect
+# a whole ``test(s)/`` folder by default. Ceiling: an AVA or Mocha run pointed at
+# a ``src/**/tests/`` folder of plainly named files reads as production; reading
+# the runner config's globs would settle that case.
+_JS_FAMILY_TAGS: tuple[str, ...] = ("javascript", "typescript", "vue", "svelte", "astro")
+_SOURCE_TREE = "src"
+_FEATURE_NAMED_TESTS_DIR = "tests"
 
 # The separators a directory segment splits into words on.
 _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
@@ -174,6 +192,25 @@ _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
     {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
 )
 
+# Helper directories named for tests, matched on the segment's words run
+# together like ``testdata`` above: ``test-helpers/``, ``test_utils/``,
+# ``testutil/`` (Go), ``test-support/``. They hold the mocks, render rigs and
+# fixtures only tests import, so they count wherever they sit, where the bare
+# ``helpers``/``support`` words above need a test tree around them.
+#
+# Unlike golden data, a helper directory can ship: preact's ``test-utils/`` is a
+# package of its own published as ``preact/test-utils``. So one that is a
+# package root (holds a registry package manifest) stays production. Path-only
+# callers can see that only when the manifest is the path itself
+# (``test-utils/package.json``); ingestion passes ``package_root`` so every file
+# beneath one reads as production too. Known miss: react-dom's
+# ``src/test-utils/`` is re-exported as the public ``react-dom/test-utils`` from
+# a manifest one level up, and reads as support. ``testing`` stays out: it names
+# shipped packages (Laravel's ``Illuminate/Testing``, Go helper libraries).
+_SUPPORT_DIR_WORDS_UNLESS_PACKAGE: frozenset[str] = frozenset(
+    {"testhelpers", "testhelper", "testutils", "testutil", "testsupport"}
+)
+
 
 # A source file whose name ends in "test" and a scaffolding word is the support
 # for some module's tests: ``bot.test-harness.ts``, ``card-test-helpers.ts``,
@@ -203,6 +240,8 @@ class _Conventions:
     dir_suffixes: tuple[str, ...]
     unambiguous_dir_suffixes: tuple[str, ...]
     lang_dir_tokens: dict[str, frozenset[str]]
+    manifest_names: frozenset[str]
+    js_family_exts: frozenset[str]
 
 
 @cache
@@ -245,6 +284,8 @@ def _conventions() -> _Conventions:
             if s.lstrip(".").lower() not in _AMBIGUOUS_TEST_DIR_TOKENS
         ),
         lang_dir_tokens=REGISTRY.test_dir_tokens_by_language(),
+        manifest_names=REGISTRY.package_manifest_filenames(),
+        js_family_exts=REGISTRY.extensions_for(_JS_FAMILY_TAGS),
     )
 
 
@@ -269,6 +310,33 @@ def _is_support_anywhere_dir(segment: str) -> bool:
         segment in _SUPPORT_DIR_TOKENS_ANYWHERE
         or "".join(_words(segment)) in _SUPPORT_DIR_TOKENS_ANYWHERE
     )
+
+
+def _in_support_anywhere_dir(
+    segments: list[str], original: list[str], filename: str, package_root: PackageRootProbe | None
+) -> bool:
+    """Whether a directory that needs no test tree around it holds this file."""
+    for i, seg in enumerate(segments):
+        if _is_support_anywhere_dir(seg):
+            return True
+        if "".join(_words(seg)) in _SUPPORT_DIR_WORDS_UNLESS_PACKAGE and not _is_package_root(
+            original[: i + 1], filename if i == len(segments) - 1 else "", package_root
+        ):
+            return True
+    return False
+
+
+def _is_package_root(
+    dir_parts: list[str], filename: str, package_root: PackageRootProbe | None
+) -> bool:
+    """Whether the directory *dir_parts* names is a package (see above).
+
+    *filename* is the file being classified when it sits directly in that
+    directory: a manifest there proves it without asking anyone.
+    """
+    if filename in _conventions().manifest_names:
+        return True
+    return package_root is not None and package_root("/".join(dir_parts))
 
 
 def _is_test_name(filename: str) -> bool:
@@ -328,6 +396,26 @@ def _is_test_dir(
     """Whether any directory segment marks this path as sitting in a test tree."""
     return _has_test_segment(segments, original, filename, language) or _has_test_layout(
         segments, original, _conventions().dir_suffixes
+    )
+
+
+def _tree_segments(
+    segments: list[str], original: list[str], filename: str
+) -> tuple[list[str], list[str]]:
+    """*segments* with the ``src/**/tests/`` folders a JS-family file ignores blanked.
+
+    Blanked rather than dropped, so the layout rules keep their positions.
+    """
+    if (
+        PurePosixPath(filename.lower()).suffix not in _conventions().js_family_exts
+        or _SOURCE_TREE not in segments
+    ):
+        return segments, original
+    src = segments.index(_SOURCE_TREE)
+    keep = [i < src or seg != _FEATURE_NAMED_TESTS_DIR for i, seg in enumerate(segments)]
+    return (
+        [seg if k else "" for seg, k in zip(segments, keep, strict=True)],
+        [seg if k else "" for seg, k in zip(original, keep, strict=True)],
     )
 
 
@@ -417,7 +505,14 @@ def _has_wildcard_pair(
     )
 
 
-def _classify(path: str, language: str | None, roots: PytestRoots | None = None) -> str:
+def _classify(
+    path: str,
+    language: str | None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
+) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
 
     One traversal, so the two public predicates cannot disagree with each other
@@ -439,7 +534,9 @@ def _classify(path: str, language: str | None, roots: PytestRoots | None = None)
     # A scaffolding directory that needs no test tree around it settles the
     # question before the tree rules run, ``.github/`` included. A test-shaped
     # filename still wins, so ``testdata/build_test.go`` stays a test.
-    if not named_test and any(_is_support_anywhere_dir(seg) for seg in segments):
+    if not named_test and _in_support_anywhere_dir(
+        segments, original_segments, filename, package_root
+    ):
         return "support"
 
     # ``.github/`` holds CI workflows, actions, issue templates and agent
@@ -449,9 +546,20 @@ def _classify(path: str, language: str | None, roots: PytestRoots | None = None)
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
 
-    # A test name outside a test directory still needs pytest to collect it.
-    needs_test_dir = not named_test or _pytest_skips(path, filename, roots)
-    if needs_test_dir and not _is_test_dir(segments, original_segments, filename, language):
+    # A test name outside a test directory still needs pytest to collect it,
+    # or PHPUnit config not to keep it out of collection.
+    needs_test_dir = (
+        not named_test
+        or _pytest_skips(path, filename, roots)
+        or _phpunit_skips(path, filename, phpunit_roots)
+    )
+    if (
+        needs_test_dir
+        and not _is_test_dir(
+            *_tree_segments(segments, original_segments, filename), filename, language
+        )
+        and not _dotnet_project_collects(path, filename, dotnet_projects)
+    ):
         return ""
 
     # Inside test material. A test-shaped filename wins; otherwise a
@@ -459,6 +567,26 @@ def _classify(path: str, language: str | None, roots: PytestRoots | None = None)
     if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
         return "support"
     return "test"
+
+
+def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool:
+    """Whether PHPUnit's config keeps a test-named PHP file out of collection."""
+    return (
+        roots is not None
+        and PurePosixPath(filename).suffix.lower() == ".php"
+        and roots.collects(path.replace("\\", "/")) is False
+    )
+
+
+def _dotnet_project_collects(
+    path: str, filename: str, dotnet_projects: DotnetTestProjects | None
+) -> bool:
+    """Whether a .cs file is governed by a .NET test project."""
+    return (
+        dotnet_projects is not None
+        and filename.lower().endswith(".cs")
+        and dotnet_projects.collects(path) is True
+    )
 
 
 def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
@@ -471,7 +599,12 @@ def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
 
 
 def is_test_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is a test.
 
@@ -480,13 +613,20 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name.
+    *roots* to let pytest's config overrule a test-shaped Python name, pass
+    *dotnet_projects* to recognize C# files governed by a test project, and
+    pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
     """
-    return _classify(path, language, roots) == "test"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "test"
 
 
 def is_test_support_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
@@ -494,11 +634,16 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots) == "support"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "support"
 
 
 def is_test_related_path(
-    path: str, language: str | None = None, roots: PytestRoots | None = None
+    path: str,
+    language: str | None = None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
 
@@ -506,22 +651,25 @@ def is_test_related_path(
     should use when they mean "not production code" - a refactoring detector
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
+    *package_root*, which answers whether a repo-relative directory holds a
+    package manifest, keeps a shipped ``test-utils/`` package production.
     """
-    return _classify(path, language, roots) != ""
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) != ""
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:
     """Whether a directory alone makes *path* test material, whatever its name.
 
     ``tests/x.py`` and ``src/__mocks__/api.ts`` are; ``core/test_selection.py``
-    is test-shaped only by name. ``.github/`` makes no test tree.
+    is test-shaped only by name. ``.github/`` makes no test tree, and neither
+    does ``src/**/tests/`` for a JavaScript-family file.
     """
     original, lowered = _parts(path)
     segments = lowered[:-1]
     if not segments or _REPO_METADATA_DIR in segments:
         return False
     return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
-        segments, original[:-1], "", language
+        *_tree_segments(segments, original[:-1], original[-1]), "", language
     )
 
 
@@ -597,6 +745,8 @@ _CLASS_TEST_SUFFIXES: dict[str, tuple[str, ...]] = {
     ".cs": ("Test", "Tests"),
     ".kt": ("Test", "Tests", "Spec"),
     ".scala": ("Spec", "Suite", "Test"),
+    # Apex names are case-insensitive and the corpora write all of these.
+    ".cls": ("Test", "Tests", "_Test", "_Tests", "_TEST"),
 }
 
 

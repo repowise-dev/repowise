@@ -2,6 +2,30 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.58.0
+
+### Changed
+- `/repowise:init` follows the CLI's plan screen: one set of mode names (Built
+  from code, Written by a model, Index only), a logged-in Claude Code, Codex or
+  OpenCode offered but never used unasked, `--repos` for a folder of repos,
+  `--progress json` for agents, and an existing `.repowise/` upgraded with
+  `repowise update --full` (#4255).
+- `/repowise:update` maps "full" to `repowise update --full`, and
+  `/repowise:reindex` names `--embedder <name>` (#4255).
+- `/repowise:search` says what to try next when a query returns nothing (#4255).
+- `/repowise:coverage` recommends a per-test coverage command that exists (#3676).
+- Lens reads the folder health map's area filter (#4135, #4157).
+
+## 0.57.0
+
+### Changed
+- `/repowise:risk` and the change-review skill lead with the change's size
+  percentile ("size and spread, not a bug predictor"), then the touched files'
+  bug-fix record (#3664).
+- The codebase-exploration skill reads `confidence` as whether the top hit
+  covers the question, with `retrieval_quality` behind
+  `include=["diagnostics"]` (#3716).
+
 ## 0.56.0
 
 ### Changed

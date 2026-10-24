@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,8 +58,12 @@ async def recompute_decision_staleness(
     session: AsyncSession,
     repository_id: str,
     git_meta_map: dict[str, dict],
+    repo_path: Path | str | None = None,
 ) -> int:
     """Recompute staleness_score for all active decisions. Returns update count.
+
+    With *repo_path*, each record is scored from when its own evidence commits
+    landed, when that is after its birth; without it, from its birth alone.
 
     Also fills ``last_code_change`` from the same per-file dates the score is
     counted from, and re-derives ``affected_modules_json`` from the files each
@@ -103,6 +108,7 @@ async def recompute_decision_staleness(
         {fp for paths in affected_by_id.values() for fp in paths},
     )
 
+    landings = _evidence_landings(repo_path, decisions, affected_by_id)
     now = _now_utc()
     updated = 0
     dated = 0
@@ -122,7 +128,7 @@ async def recompute_decision_staleness(
         if dec.source == "conventions":
             continue
 
-        if _rescore_staleness(dec, affected, git_meta_map, now):
+        if _rescore_staleness(dec, affected, git_meta_map, now, landings):
             updated += 1
 
     if updated or modules_updated or dated:
@@ -152,16 +158,46 @@ def _refresh_last_code_change(
     return True
 
 
+def _evidence_landings(
+    repo_path: Path | str | None,
+    decisions: list[DecisionRecord],
+    affected_by_id: dict[str, list[str]],
+) -> dict:
+    """Landings of every scoped record's evidence commits, in one git read."""
+    if repo_path is None:
+        return {}
+    from repowise.core.analysis.decisions.landing import evidence_landings
+
+    return evidence_landings(
+        repo_path,
+        (
+            sha
+            for dec in decisions
+            if dec.id in affected_by_id
+            for sha in json.loads(dec.evidence_commits_json or "[]")
+        ),
+    )
+
+
 def _rescore_staleness(
-    dec: DecisionRecord, affected: list[str], git_meta_map: dict[str, dict], now: datetime
+    dec: DecisionRecord,
+    affected: list[str],
+    git_meta_map: dict[str, dict],
+    now: datetime,
+    landings: dict,
 ) -> bool:
     """Recompute the git-diff staleness score; True when it moved by more than 0.01."""
     from repowise.core.analysis.decisions.extractor import DecisionExtractor
+    from repowise.core.analysis.decisions.landing import record_landing
 
+    landing = record_landing(
+        json.loads(dec.evidence_commits_json or "[]"), landings, dec.created_at
+    )
     new_score = DecisionExtractor.compute_staleness(
         dec.created_at,
         affected,
         git_meta_map,
+        landed_at=landing.at if landing else None,
     )
     if abs(new_score - dec.staleness_score) > 0.01:
         dec.staleness_score = round(new_score, 3)

@@ -4,10 +4,12 @@ Mirrors the LLM provider registry pattern: lazy imports, built-in embedders,
 and runtime registration for community embedders.
 
 Built-in embedders:
-    openai  → OpenAIEmbedder  (text-embedding-3-small default)
-    gemini  → GeminiEmbedder  (gemini-embedding-001 default)
-    edenai  → EdenAIEmbedder  (openai/text-embedding-3-small via Eden AI's EU gateway)
-    mock    → MockEmbedder    (testing only, zero dependencies)
+    openai      -> OpenAIEmbedder      (text-embedding-3-small default)
+    gemini      -> GeminiEmbedder      (gemini-embedding-001 default)
+    ollama      -> OllamaEmbedder      (embeddinggemma default, local, no key)
+    openrouter  -> OpenRouterEmbedder  (google/gemini-embedding-001 default)
+    edenai      -> EdenAIEmbedder      (openai/text-embedding-3-small via Eden AI's EU gateway)
+    mock        -> KeylessEmbedder     (keyless runs and tests; no semantic signal)
 
 Custom embedder registration:
     from repowise.core.providers.embedding import register_embedder

@@ -9,7 +9,7 @@
  * map, so agent prompts and the page name a marker the same way.
  */
 
-import { BIOMARKER_LABELS } from "./generated/biomarker-labels";
+import { BIOMARKER_LABELS, canonicalBiomarker } from "./generated/biomarker-labels";
 
 export type BiomarkerCategory =
   | "structural_complexity"
@@ -21,7 +21,9 @@ export type BiomarkerCategory =
   | "error_handling"
   | "performance"
   | "organizational"
-  | "sql";
+  | "sql"
+  | "apex"
+  | "cobol";
 
 export interface BiomarkerInfo {
   label: string;
@@ -40,6 +42,8 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   performance: "Performance",
   organizational: "Organizational",
   sql: "SQL",
+  apex: "Apex",
+  cobol: "COBOL",
 };
 
 export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
@@ -59,6 +63,10 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   // SQL smells deduct on the maintainability pillar only, bounded by the `sql`
   // cap in `_MAINTAINABILITY_CATEGORY_CAPS` (scoring.py).
   sql: 2.0,
+  // Apex markers are advisory: listed, never deducted.
+  apex: 0,
+  // The COBOL marker is advisory too.
+  cobol: 0,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -66,7 +74,7 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     label: BIOMARKER_LABELS.brain_method,
     category: "structural_complexity",
     description:
-      "A function that knows too much — high cyclomatic complexity, many parameters, and deep nesting all at once. Hard to test, easy to break.",
+      "A function that knows too much — high cyclomatic complexity, many parameters, and deep nesting all at once. Hard to test, easy to break. Advisory: its complexity and size findings already cost this file points, so it costs none of its own.",
   },
   nested_complexity: {
     label: BIOMARKER_LABELS.nested_complexity,
@@ -74,11 +82,11 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "Deeply nested control flow (≥4 levels). Cognitive load grows non-linearly with nesting; flatten with early returns or extracted helpers.",
   },
-  bumpy_road: {
-    label: BIOMARKER_LABELS.bumpy_road,
+  repeated_nesting: {
+    label: BIOMARKER_LABELS.repeated_nesting,
     category: "structural_complexity",
     description:
-      "A function with multiple shallow complexity bumps stitched together. No single block is bad, but the whole reads as a sequence of mini-functions.",
+      "A function with several separate nested blocks stitched together. No single block is bad, but the whole reads as a sequence of mini-functions.",
   },
   complex_method: {
     label: BIOMARKER_LABELS.complex_method,
@@ -115,6 +123,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     category: "test_coverage",
     description:
       "Specific uncovered lines in a file. Surfaced when a coverage report has been ingested.",
+  },
+  untested_complexity: {
+    label: BIOMARKER_LABELS.untested_complexity,
+    category: "test_coverage",
+    description:
+      "A function whose CRAP score (complexity weighted by how little of it tests run) is 30 or more. Coverage is measured from a report when one covers the function, otherwise estimated from call-graph reach and shown as a tier, never a percentage. Advisory: it never deducts.",
   },
   coverage_gradient: {
     label: BIOMARKER_LABELS.coverage_gradient,
@@ -338,6 +352,42 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A data-dependent loop nested inside another (O(n^2)) in a hot, central function. Advisory / informational — surfaced only where centrality ranking says it is worth a look; check the inner bound or use a set/map lookup if it is a search.",
   },
+  list_insert_zero_in_loop: {
+    label: BIOMARKER_LABELS.list_insert_zero_in_loop,
+    category: "performance",
+    description:
+      "A Python .insert(0, x) call (a literal 0) inside a loop. On a list, each front insert shifts every element already in it, so the loop is O(n^2). Not flagged when the receiver is reassigned in the loop body or is assigned a deque in the file. A name match: the receiver is not proven to be a list. Use collections.deque.appendleft, or append and reverse once after the loop.",
+  },
+  pd_concat_in_loop: {
+    label: BIOMARKER_LABELS.pd_concat_in_loop,
+    category: "performance",
+    description:
+      "A pd.concat (or pandas.concat) call inside a loop. When the loop grows one frame this way, each call copies everything accumulated so far, which is O(n^2). Whether the result is accumulated is not checked. Collect the pieces in a list and call pd.concat once after the loop.",
+  },
+  pandas_iterrows_in_loop: {
+    label: BIOMARKER_LABELS.pandas_iterrows_in_loop,
+    category: "performance",
+    description:
+      "A for loop driven by df.iterrows() in a file that imports pandas. iterrows builds a new Series for every row, far slower than a vectorized column operation. Vectorize the work, or use itertuples() when row access is unavoidable. A name match: a non-pandas iterrows method in such a file is flagged too.",
+  },
+  json_parse_in_loop: {
+    label: BIOMARKER_LABELS.json_parse_in_loop,
+    category: "performance",
+    description:
+      "A JSON.parse(JSON.stringify(x)) deep clone inside a loop, which serializes and re-parses the whole value every iteration. Use structuredClone, or clone once outside the loop. A bare JSON.parse or JSON.stringify per iteration is not flagged, since each pass usually handles a different payload.",
+  },
+  array_spread_in_reduce: {
+    label: BIOMARKER_LABELS.array_spread_in_reduce,
+    category: "performance",
+    description:
+      "A .reduce call whose inline callback spreads its first parameter, the accumulator, into a new array or object literal ([...acc, x] or {...acc, k: v}). Every step copies everything gathered so far, so the fold is O(n^2). Push into the accumulator (or set the key) and return it.",
+  },
+  goroutine_in_unbounded_loop: {
+    label: BIOMARKER_LABELS.goroutine_in_unbounded_loop,
+    category: "performance",
+    description:
+      "A Go `go` statement directly inside a two-variable for k, v := range loop: one goroutine per element, with nothing bounding how many run at once. Not flagged in a single-variable range, a bare for {} or a condition loop, or when a send to a local buffered channel directly before the spawn, received inside the goroutine, bounds it. Use a worker pool, a semaphore channel or an errgroup with a limit.",
+  },
   sql_high_complexity: {
     label: BIOMARKER_LABELS.sql_high_complexity,
     category: "sql",
@@ -362,16 +412,51 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A comma-join (FROM a, b) with no join predicate anywhere in the statement produces the full cross product: O(n·m) rows. An explicit CROSS JOIN states intent and is not flagged; a comma-join with a WHERE clause is old-style join syntax and is not flagged either.",
   },
+  apex_soql_injection: {
+    label: BIOMARKER_LABELS.apex_soql_injection,
+    category: "apex",
+    description:
+      "A dynamic Apex query (Database.query, Search.query) that splices a String from outside the method, a parameter or public property, into a quoted SOQL literal without String.escapeSingleQuotes or a bind variable. Advisory: it never deducts.",
+  },
+  apex_missing_sharing: {
+    label: BIOMARKER_LABELS.apex_missing_sharing,
+    category: "apex",
+    description:
+      "A top-level Apex class that runs SOQL or DML and declares none of with, without or inherited sharing, so whether record sharing applies depends on its caller. Subclasses and inner classes are not flagged. Advisory: it never deducts.",
+  },
+  apex_hardcoded_id: {
+    label: BIOMARKER_LABELS.apex_hardcoded_id,
+    category: "apex",
+    description:
+      "A string literal that is a Salesforce record Id (an 18-character Id with a valid checksum, or a 15-character Id with a standard key prefix) outside test code. Ids differ between orgs and sandboxes. Advisory: it never deducts.",
+  },
+  apex_see_all_data: {
+    label: BIOMARKER_LABELS.apex_see_all_data,
+    category: "apex",
+    description:
+      "A test class or method annotated @IsTest(SeeAllData=true): it reads the org's live data, so it can pass in one org and fail in another. Advisory: it never deducts.",
+  },
+  cobol_unstructured_flow: {
+    label: BIOMARKER_LABELS.cobol_unstructured_flow,
+    category: "cobol",
+    description:
+      "A COBOL paragraph or section with an ALTER, a GO TO ... DEPENDING ON, or a GO TO to anything other than an exit paragraph of the PERFORM THRU range it sits in, so where control goes next has to be traced by hand. GO TO X-EXIT inside its own range is not flagged. Advisory: it never deducts.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
   return (
-    BIOMARKER_GLOSSARY[name] ?? {
+    BIOMARKER_GLOSSARY[canonicalBiomarker(name)] ?? {
       label: name.replace(/_/g, " "),
       category: "size_and_complexity",
       description: "",
     }
   );
+}
+
+/** Whether the glossary describes *name*, a renamed marker's old id included. */
+export function isKnownBiomarker(name: string): boolean {
+  return Object.hasOwn(BIOMARKER_GLOSSARY, canonicalBiomarker(name));
 }
 
 export function biomarkerLabel(name: string): string {
@@ -395,6 +480,13 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "assertion_free_test",
   "mock_saturated_test",
   "hidden_coupling",
+  "brain_method",
+  "untested_complexity",
+  "apex_soql_injection",
+  "apex_missing_sharing",
+  "apex_hardcoded_id",
+  "apex_see_all_data",
+  "cobol_unstructured_flow",
 ]);
 
 /**
@@ -411,7 +503,6 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
  */
 export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "low_cohesion",
-  "brain_method",
   "primitive_obsession",
   "dry_violation",
   "error_handling",

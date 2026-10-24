@@ -120,6 +120,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
       )}
       {...(collisionInset ? { collisionInset } : {})}
       onDismiss={() => setChatDockHidden(true)}
+      unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
       sendDisabledReason={
         <span>

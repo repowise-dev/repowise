@@ -45,6 +45,7 @@ def test_tiers_follow_the_strength_of_the_evidence() -> None:
             _row("a.py", "tests/test_call.py", "call-graph"),
             _row("a.py", "tests/test_far.py", "import-graph"),
             _row("route.py", "tests/test_route.py", "call-graph"),
+            _row("a.py", "tests/test_fixture.py", "conftest-fixture"),
         ],
     }
     tests = [
@@ -53,6 +54,7 @@ def test_tiers_follow_the_strength_of_the_evidence() -> None:
         "tests/test_edit.py",
         "tests/test_call.py",
         "tests/test_far.py",
+        "tests/test_fixture.py",
         "tests/test_route.py",
         "tests/test_walker.py",
     ]
@@ -66,6 +68,8 @@ def test_tiers_follow_the_strength_of_the_evidence() -> None:
         "tests/test_edit.py": "changed-test",
         "tests/test_call.py": "direct",
         "tests/test_far.py": "transitive",
+        # A fixture reaches the change through its module's imports, not its calls.
+        "tests/test_fixture.py": "transitive",
         "tests/test_route.py": "transitive",
         "tests/test_walker.py": "every-subset",
     }
@@ -80,6 +84,7 @@ def test_tiers_follow_the_strength_of_the_evidence() -> None:
         "tests/test_file.py::t",
         "tests/test_call.py",
         "tests/test_far.py",
+        "tests/test_fixture.py",
         "tests/test_route.py",
         "tests/test_walker.py",
     ]

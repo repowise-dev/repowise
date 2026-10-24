@@ -10,7 +10,7 @@ centralised `LanguageRegistry`; per-language extraction logic lives in
 call-resolution strategy lives behind a seam in `call_resolver.py`. Adding a
 language means dropping one file into each relevant subpackage and registering it
 in that subpackage's dispatcher. No edits are needed to `graph.py`,
-`traverser.py`, or any analysis core file. `parser.py` holds a short per-language
+`traverser.py`, or any analysis core file. The `parser/` package holds a short per-language
 block for a handful of languages whose grammar shape the generic path cannot
 read (C++ qualified definitions, Dart mixins, Object Pascal out-of-line methods,
 [Elixir](#elixir), [F#](#f)); each is a few lines calling into a helper, and a
@@ -32,7 +32,9 @@ new language needs one only when it hits the same kind of wall.
 - [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
-- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
+- [Extensions and import resolution](#extensions-and-import-resolution)
+- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees) · [Salesforce](#salesforce)
+- [Known gaps per language](#known-gaps-per-language)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries) · [test-quality markers per language](#test-quality-markers-per-language)
 - [Workspace contract extraction](#workspace-contract-extraction)
@@ -149,7 +151,8 @@ ingestion/
     django.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
   sfc_source.py        # Multi-language-file (SFC) projection (see below)
-  parser.py            # ASTParser (language-agnostic orchestration)
+  parser/              # ASTParser (language-agnostic orchestration), one module per pass
+  extractors/imports/  # Per-language import rules (LanguageConfig.import_extractor)
   graph.py             # GraphBuilder (import/call/heritage resolution)
 
 analysis/
@@ -308,7 +311,9 @@ receiver typing (step 9).
 
 Add a parser configuration to `LANGUAGE_CONFIGS` in
 `packages/core/src/repowise/core/ingestion/language_configs.py` (re-exported from
-`parser.py` for back-compat):
+the `parser` package for back-compat). A language whose imports need more than
+the generic shape also sets `import_extractor` to an `ImportExtractor` from
+`extractors/imports/<lang>.py`:
 
 ```python
 "mylang": LanguageConfig(
@@ -506,11 +511,12 @@ Pattern families today:
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
+| Dart | Dart | `Type name`, `Type? name`, `final name = Type(...)` |
 | Python | Python | annotations, `name = Type(...)`, target lists |
 
 Two further sets gate the harder half:
 
-- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, java, kotlin, swift}`. Only these
+- **`IMPLICIT_FIELD_LANGUAGES`** = `{csharp, dart, java, kotlin, swift}`. Only these
   look up an unbound receiver among the *enclosing class's fields*. Go is
   deliberately excluded even though its locals and parameters are typed: its
   package-level `var` is a wider scope than a field, and the shape is a rounding
@@ -590,7 +596,7 @@ with different words.
 
 ## Multi-language files (the SFC pattern)
 
-Some file types hold more than one language. A `.svelte` or `.vue` component is
+Some file types hold more than one language. A `.svelte`, `.vue` or `.astro` component is
 TS/JS in its `<script>` blocks, framework-flavoured HTML in its markup, and CSS
 in `<style>`. The markup grammars parse the file but return each `<script>` body
 as one opaque `raw_text` node, so a `.scm` query against them captures no symbol,
@@ -626,8 +632,8 @@ corrupt every unit named after it in the same clause. Its sanitizer
 (`prepare_pascal_source` in `ingestion/lang_helpers/source_prep.py`) is gated on `path`'s
 extension (that syntax is invalid in a plain `.pas`/`.pp` unit file) and is a
 no-op everywhere else, same contract as the `_LOCATORS` path. Registering a
-sanitizer this way, rather than as an if-block in `parser.py`, means it stays
-"zero changes to `parser.py`" for a new language and the health walkers get the
+sanitizer this way, rather than as an if-block in the parser, means it stays
+"zero changes to the parser" for a new language and the health walkers get the
 same clean projection the ingestion parser does.
 
 ### The locator registry
@@ -639,13 +645,13 @@ the regions are found by walking the bytes. The blanking, fencing, caching
 and offset invariants are shared; adding a markup language means adding a
 `Locator`, not a second copy of the walker.
 
-| | Svelte | Vue | Razor |
-|---|---|---|---|
-| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# |
-| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors |
-| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` |
-| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` |
-| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` |
+| | Svelte | Vue | Razor | Astro |
+|---|---|---|---|---|
+| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# | none; byte scan, projected to TS |
+| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors | the `---` frontmatter and every JS `<script>` body (plain, `is:inline`, `type="module"`, `define:vars`); markup `{expr}` is blanked |
+| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` | the `>` of each `<script>` opening tag |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | markup `{expr}` |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->` or a `<script>` |
 
 There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
 anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to
@@ -662,6 +668,12 @@ component call edges, and the file becomes a symbol named after its filename. Th
 ceiling is that the C# body lands at top level with no enclosing class, so
 `@code` members are call targets rather than symbols, and every directive is
 blanked, which is why a Razor file carries no import edges.
+
+Astro has no grammar on PyPI either, so its locator is a byte scan too, projecting
+into TypeScript: the leading `---` frontmatter and every JS `<script>` body keep
+their bytes, a `<script>` whose `type` is data (`application/ld+json`) or that
+sits in an HTML comment is blanked, and PascalCase tags mint component call edges.
+Frontmatter imports are ordinary ESM, so an Astro file does carry import edges.
 
 **Plain HTML deliberately has no locator.** It reuses the same grammar but not
 the projection, and the distinction is the point: a projection exists to turn a
@@ -688,7 +700,41 @@ thing that names a component) and `<Foo />` instantiation call edges (via
 run the filename and the tag through the *same* normaliser, so `back-to-top.vue`
 and `<back-to-top />` cannot disagree about the name `BackToTop`.
 
-The same steps would fit Astro components; only the locator changes.
+---
+
+## Extensions and import resolution
+
+The file extensions each Full and Good language claims, and the build files and
+conventions its import resolver reads. Good-tier languages resolve the
+dependency surface their syntax supports.
+
+| Tier | Language | Extensions | Import resolution |
+|------|----------|-----------|-------------------|
+| Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
+| Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
+| Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |
+| Full | **Java** | `.java` | Maven and Gradle reactor discovery, JPMS, `import static`, package fan-out |
+| Full | **Kotlin** | `.kt` `.kts` | Shares the JVM index with Java, so resolution is cross-language |
+| Full | **Go** | `.go` | Multi-module `go.mod` discovery; a package import fans out to every file in the package |
+| Full | **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
+| Full | **C++** | `.cpp` `.cc` `.cxx` `.h` `.hh` `.hpp` `.hxx` `.inl` `.ipp` `.tpp` `.inc` | `#include` via `compile_commands.json` plus CMake and Bazel header maps, header/implementation pairing |
+| Full | **C#** | `.cs` | `using`, `global using` and aliases via `.csproj` / `.sln`, MSBuild project graph, `partial` class linking |
+| Full | **Scala** | `.scala` | The shared JVM index, with SBT and Mill build parsing as fallback |
+| Full | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, Rails / Zeitwerk autoloading |
+| Full | **Apex** | `.cls` `.trigger` `.apex` | No imports: names resolve within the file's sfdx project, a declared package dependency or a namespace prefix |
+| Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
+| Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
+| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
+| Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
+| Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
+| Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
+| Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
+| Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
+| Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
+| Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
 
 ---
 
@@ -735,7 +781,7 @@ type body and a member the way Elixir shares `call` across everything, so its
 per-language block is about extending and locating rather than reclassifying:
 
 - **A `let rec f ... and g ...` group is one grammar node for every clause**, so
-  `@symbol.def` sits on each clause's left-hand side and `parser.py` extends its
+  `@symbol.def` sits on each clause's left-hand side and the parser extends its
   span forward to the next clause (or the file end), stepping over a return-type
   annotation sitting between the two. The same left-hand side node also marks a
   binding local to another binding's body, which the generic callable-ancestor
@@ -921,6 +967,135 @@ both settles a name two files declare and refuses a class that merely shadows a
 framework widget. A class reached through an `export` barrel is missed, which
 costs an edge rather than inventing one.
 
+### Salesforce
+
+#### Apex
+
+The language pack's `apex` grammar keeps Java's node names, so queries, heritage
+and type heads follow Java; inline SOQL/SOSL and DML never produce call sites.
+Keywords and builtin types compare case-insensitively, declared names keep their
+written case, and CumulusCI `%%%NAMESPACE%%%` tokens are blanked before parsing.
+
+Apex has no imports, so a type name resolves to the top-level class its own
+sfdx project declares, compared without case, then to an un-namespaced package
+it declares a dependency on; another project is reached only through its
+namespace prefix (`usf3.Foo`). Static, inner-class, typed, chained, inherited
+and `super` calls follow Java's tiers, and a bare name never reaches another
+class's method. Ceiling: a call site does not record `new`, so a constructor
+written in lower case is missed.
+
+Dead code starts from triggers, tests, entry annotations such as `@AuraEnabled`
+and `@InvocableMethod`, `global` members and platform interfaces such as
+`Schedulable`. A class is live when a live class or any Salesforce metadata,
+Lightning or project file writes its name in any case, strings included, since
+`Type.forName` reaches classes by name. Ceiling: a mention in a comment counts as
+a use, and a class shaped like a Visualforce controller stays live.
+
+A static resource (`staticresources/`, or an NPSP-style `StaticResourceSources/`
+mirror) is vendored when it sits in a library's release folder (`arbor-v0.92/`)
+or opens with another project's versioned license banner. Ceiling: a library
+copied with neither, such as a minified Google client with no banner, stays
+production.
+
+#### Lightning Web Components, Aura and Visualforce
+
+LWC, Aura, Visualforce and flows reach Apex classes by the same rules from the
+project they sit in, and also reach a class that exactly one other, un-namespaced
+project declares: they name action classes of packages installed separately in the
+same org. A name two projects declare binds nothing. Ceiling: two copies outside
+every package directory of one project (an mdapi export) tie and bind nothing, as
+they do for Apex.
+
+Inside an `lwc/<name>/` bundle, `c/<name>` imports resolve to that bundle's
+main module and `@salesforce/apex/Cls.method` imports to the Apex method.
+Templates link to child components by tag and to their own class's members by
+`{binding}`, `@wire` binds its Apex method, and an exposed bundle is an entry
+point. A bundle two sfdx projects declare goes to the nearer one; a tie gets no edge.
+
+Markup directly inside `aura/<bundle>/` is Aura, and each `key: function` of the
+bundle's Controller, Helper and Renderer JavaScript is a function symbol. Markup
+and JavaScript link to the Apex controller and its methods, to controller and helper
+functions (inherited through `extends`), and to the Aura or LWC bundles that tags,
+events and `$A.createComponent` literals name. Aura names match by exact case, and a
+name with two candidate bundles binds to neither.
+
+Visualforce pages and components link the Apex classes their `controller=` and
+`extensions=` name, and each `{!expr}` binds the identifier before its first `.`
+to a public member (property, `getX`, or `setX` for inputs) of the controller,
+then each extension, up the `extends` chain. Custom component tags, included
+pages and Apex `Page.X` references link pages and components; a
+`PageReference('/apex/X')` literal is a `dynamic_uses` edge. Names fold case,
+and a page or component two equally near files declare binds nothing.
+
+#### Flows and Lightning metadata
+
+Each flow (`.flow-meta.xml`, or a legacy `.flow` in a `flows/` directory) is
+one symbol named by its API name, linked to the Apex invocable actions,
+subflows, screen components and Apex-defined types it names, and a
+record-triggered flow references its object's metadata symbol. Apex
+`Flow.Interview` references and LWC `<lightning-flow>` tags with a literal name
+link back to it. Flexipages, quick actions, tabs, email services and Experience
+sites mark what they name as live; names in another package's namespace are not
+followed.
+
+#### Objects and fields
+
+Object and field metadata files (`.object-meta.xml`, `.field-meta.xml`,
+`.object`) become object and field symbols. SOQL and SOSL queries, DML
+statements, triggers, literal `Database.query` strings, `.soql` files and lookup
+fields reference them, matched case-insensitively, with one edge to one copy when
+an object is defined in several places (the default package directory first). A
+name with no definition in the repository gets no edge; `getDescribe()` schema
+tokens and `TYPEOF` branches are not read.
+
+#### Coverage, health and REST
+
+Salesforce CLI coverage names a class or trigger, never a file, so it maps to
+the one `.cls` or `.trigger` file of that name, ignoring case. A name two files
+share, or no file has, stays unmapped.
+
+Health scores Apex methods, constructors, triggers and property accessors that
+hold code, and reports SOQL, DML, callouts, `Messaging.sendEmail`,
+`System.enqueueJob` and same-class `@future` calls inside loops. It stays quiet on
+the bulk idioms (a query in the loop header, SOQL for-loops over lists, chunked or
+literal-bound loops) and on calls that run once, such as a lazily filled cache.
+Four advisory markers (SOQL injection, missing sharing, hardcoded record Ids,
+`SeeAllData=true`) never move a score. Ceiling: `while` loops,
+`Database.executeBatch` and `System.schedule` are not reported, and untested
+complexity needs measured coverage or a test the graph sees. Extract Method
+writes helpers as Apex methods, static when the host method is, and reads inline
+SOQL only for its `:bind` expressions.
+
+A `@RestResource` class's `@Http*` methods are HTTP providers at
+`/services/apexrest` plus its `urlMapping`, and are entry points in the graph.
+An `HttpRequest` callout is a consumer when its endpoint and verb are literal
+within one method; `callout:Name` keeps the Named Credential as the base. The
+credential's own endpoint is not read.
+
+### Known gaps per language
+
+- **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
+  Handlebars, Blade and Thymeleaf parse as HTML and yield nothing.
+- **Svelte and Vue binding forms are skipped.** `{#each x as y}` and
+  `v-for="x in xs"` are not resolved, and the unused-export pass is off for
+  both, since props are set by the parent as markup attributes.
+- **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
+  vs `implements` split follows the `I`-prefix naming convention.
+- **COBOL dynamic `CALL` targets stay silent**, and free-format source is read
+  without column handling.
+- **Razor has no import edges**, because every directive is blanked by the
+  projection.
+- **GDScript string dispatch is unresolved**, and a script without `class_name`
+  gets no class symbol.
+- **VB.NET leaves a few constructs unparsed**, XML and tuple literals among them.
+- **C has no performance risk support.** Extract Method reuses the C++
+  def/use dialect; C carries none of the C++-only nodes, so the same plan
+  fires for both.
+- **Salesforce references are followed when literal.** Runtime-built names and
+  objects with no metadata file in the repository get no edge.
+- **Scala import resolution is partial**, and ScalaTest's infix DSL
+  (`x shouldBe y`) is not counted as an assertion.
+
 ---
 
 ## Optional language-specific passes
@@ -967,9 +1142,13 @@ cognitive complexity and per-function markers. Optional additions widen it:
 metrics (LCOM4, god-class); `assert_kinds` / `assert_call_kinds` add
 assertion-block smells. See `complexity/README.md`.
 
-C, F# and Objective-C have maps of their own (C separate from C++ despite the
-shared grammar), so they get complexity markers, but none of the three has a perf
-or dataflow dialect yet.
+C, Swift, F# and Objective-C have maps of their own (C separate from C++ despite
+the shared grammar), so they get complexity markers, but none of the four has a
+perf or dataflow dialect yet. Swift's map counts `guard` as a decision, a `for` /
+`catch` `where` filter as one more, and a computed property (also a subscript's
+body, and a `willSet` / `didSet` block) as a function unit named for the property;
+a struct, an enum, an extension and an actor are classes, since the grammar gives
+them all `class_declaration`.
 
 ### 2. Performance: `analysis/health/perf/dialects/` (`PERF_DIALECTS`)
 
@@ -1038,8 +1217,9 @@ language with no row produces no signal.
   and `validate` match production functions, not assertions). Oracles that are
   not plain assertion statements are counted at the broad tier too:
   `with pytest.raises(...)`, Java's split `object` + `name` call shape, chai
-  property chains (`expect(x).to.be.null`), expression-bodied test lambdas and
-  private `_assert_*` helpers.
+  property chains (`expect(x).to.be.null`), AVA's `t.is` / `t.deepEqual` /
+  `t.throwsAsync` methods on the test handle, expression-bodied test lambdas
+  and private `_assert_*` helpers.
 - **Mock saturation** (`analysis/health/mocks/lexicon.py`, `MOCK_DIALECTS`) has
   rows for Python and JS/TS only. Go has no mock vocabulary. Java is held out
   because Mockito states its checks as `verify(...)`, which counts toward
@@ -1116,16 +1296,34 @@ differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
 subscription) registers its extra passes, or its own `keys`, in
 `matching.MATCHERS`.
 
+Every dialect declares `requires`: tokens one of which a file must hold, chosen
+so that every match needs one (a contract format such as `.proto` declares
+`EVERY_FILE`). `dialect.run_dialect` checks the gate, looking each token up
+once per file, and drops a contract whose line is only a comment. `call_sites`,
+`code_matches`, `outside_comments` and `consumer_contracts` skip a match that
+starts in a comment, so a commented-out decorator sets no state either.
+`test_dialect_registry.py` fails on an ungated entry, and
+`test_extraction_dialect_budget.py` on a dialect that costs as much as an
+ungated scan. A Python docstring example is still read, because the mask keeps
+strings, and Ruby, VB and SQL files are not masked: their comment syntax would
+mislead the masker.
+
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
-| **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
+| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
+| **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
+| **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
+
+RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
+a queue named through its declaration's result (`q.Name`).
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
-workspace guide.
+workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,
+registries and contributor recipes.
 
 ---
 

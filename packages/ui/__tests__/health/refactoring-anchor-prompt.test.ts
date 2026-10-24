@@ -9,6 +9,7 @@ import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { buildRefactoringPlanPrompt } from "../../src/health/ai-prompt-builder";
 import {
   LINE_RULE_TEXT,
+  RENAME_NOTE_TEXT,
   SCRIPT_RULE_TEXT,
 } from "../../src/health/ai-prompts/refactoring-plan-steps";
 
@@ -83,6 +84,25 @@ describe("Extract Method anchors", () => {
     expect(prompt).toContain("- **Replace lines 120–140 with:** `total = _sum_rows(rows)`");
     expect(prompt).toContain(SCRIPT_RULE_TEXT);
     expect(prompt).not.toContain(LINE_RULE_TEXT);
+  });
+
+  it("says once that a placeholder name is to be renamed", () => {
+    const note =
+      "The helper's name is a placeholder: rename it for what it returns or does, in its header and its call.";
+    expect(RENAME_NOTE_TEXT).toBe(note);
+    const named = (name: string, extra: Record<string, unknown> = {}) =>
+      buildRefactoringPlanPrompt({ plan: plan({ suggested_name: name, ...extra }) });
+    expect(named("_extracted_helper").split(note).length - 1).toBe(1);
+    // A staged plan's prompt shows stage 1 and says it once too.
+    const staged = named("_extracted_helper", {
+      stages: [
+        { span: { start: 120, end: 130 }, suggested_name: "_extracted_helper" },
+        { span: { start: 131, end: 140 }, suggested_name: "_extracted_helper_2" },
+      ],
+    });
+    expect(staged.split(note).length - 1).toBe(1);
+    // A plan stored with a real name does not call it a placeholder.
+    expect(named("_sum_rows")).not.toContain(note);
   });
 
   it("names no harness tool in the steps it renders", () => {

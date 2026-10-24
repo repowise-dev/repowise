@@ -161,6 +161,8 @@ async def blast_radius_payload(
             f"None of the requested targets matched a service in the graph: "
             f"{result.unresolved_targets}."
         )
+    elif result.undetermined_targets:
+        summary = _undetermined_summary(result)
     # After the override: an unmatched-targets response must not claim consumers.
     if symbol_targets and result.targets:
         consumers = sum(t["consumer_count"] for t in symbol_targets)
@@ -181,12 +183,26 @@ async def blast_radius_payload(
         "max_distance": result.max_distance,
         "total_impacted": result.total_impacted,
         "unresolved_targets": result.unresolved_targets,
+        "undetermined_targets": result.undetermined_targets,
+        "evidence": result.evidence,
         "impact_score_semantics": workspace_impact_score_semantics(),
         "summary": summary,
     }
     if symbol_targets:
         payload["symbol_targets"] = symbol_targets
     return payload
+
+
+def _undetermined_summary(result: Any) -> str:
+    """An empty reach for a target no edge touches is "not seen", said with why."""
+    names = ", ".join(result.undetermined_targets)
+    why = (result.evidence or {}).get("summary") or "no dependency on or from it was detected"
+    if len(result.undetermined_targets) == len(result.targets):
+        return f"Could not determine the downstream impact of {names}: {why}."
+    return (
+        f"Changing {len(result.targets)} service(s) impacts {result.total_impacted} "
+        f"downstream service(s); impact could not be determined for {names}: {why}."
+    )
 
 
 def _graph_node_for(nodes_by_repo: dict[str, list[Any]], contract: dict[str, Any]) -> str | None:

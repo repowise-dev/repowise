@@ -17,6 +17,11 @@ from repowise.core.persistence.models import DecisionRecord
 from repowise.core.precedent.currency import describe_decision_currency
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
+from repowise.server.mcp_server._directory import (
+    _build_directory_origin,
+    _indexed_under,
+    _rows_under,
+)
 from repowise.server.mcp_server._episodes import episode_evidence
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
@@ -27,6 +32,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._why_evidence import annotate_response_evidence_async
 from repowise.server.mcp_server.tool_why.archaeology import _git_archaeology_fallback
 from repowise.server.mcp_server.tool_why.caps import (
@@ -56,7 +62,8 @@ async def _why_path(query: str, repo: str | None) -> dict:
     """Mode 2: query is a path — governing decisions, origin story, alignment."""
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_why", repo_root=ctx.path)
-    if is_excluded(query, _get_exclude_spec(ctx.path)):
+    exclude_spec = _get_exclude_spec(ctx.path)
+    if is_excluded(query, exclude_spec):
         return {"query": query, "error": f"'{query}' is excluded by exclude_patterns."}
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -69,11 +76,23 @@ async def _why_path(query: str, repo: str | None) -> dict:
 
         # Load git metadata for origin story
         git_meta = await _git_metadata_for(session, repository.id, query)
+        matched = _records_naming_path(all_decisions, query)
+        # A typo or a stale path: nothing to excavate, so say so before the
+        # archaeology fallback mines unrelated commits for it.
+        known = git_meta is not None or bool(matched) or _maybe_on_disk(ctx.path, query)
+        if not known and not await _indexed_under(
+            session, repository.id, query, exclude_spec
+        ):
+            return {
+                "mode": "path",
+                "path": query,
+                "error": f"Path not found: '{query}' is neither in the checkout "
+                "nor in the indexed git history.",
+            }
 
-        # Pre-load all git metadata for cross-file search (used by fallback)
+        # Every file's rows: a directory's history, and the fallback's cross-file search.
         all_git_meta = await _all_git_metadata(session, repository.id)
 
-        matched = _records_naming_path(all_decisions, query)
         # A record with no acceptance row is a candidate whatever its status.
         # Over every record, since alignment reads records this path did not match.
         currencies = await decision_currencies(session, repository.id, all_decisions)
@@ -87,8 +106,11 @@ async def _why_path(query: str, repo: str | None) -> dict:
         await _stamp_still_true(governing, matched, ctx.path)
 
         # Every lane: the origin story is evidence, not instruction.
-        origin_story = _build_origin_story(
-            query, git_meta, governing + candidates + retired
+        origin_story = _origin_for(
+            query,
+            git_meta,
+            _rows_under(query, all_git_meta, exclude_spec),
+            governing + candidates + retired,
         )
 
         result_data: dict[str, Any] = {
@@ -133,6 +155,32 @@ async def _why_path(query: str, repo: str | None) -> dict:
         _cap_episodes(result_data, episodes, collector)
         _cap_path_decision_lanes(result_data, collector)
         return _fit_path_response(result_data, ctx.path, collector=collector)
+
+
+def _maybe_on_disk(repo_path: str | Path | None, path: str) -> bool:
+    """False only when the checkout is known and *path* is not in it.
+
+    Resolved and contained, like ``read_repo_file_text``: an absolute path,
+    a ``..`` escape or a symlink out of the checkout is not in it.
+    """
+    if not repo_path:
+        return True
+    root = Path(repo_path).resolve()
+    try:
+        candidate = (root / path).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return candidate.exists()
+
+
+def _origin_for(
+    path: str, git_meta: Any | None, rows_under: list, governing: list[dict]
+) -> dict:
+    """A file's origin story, or a directory's from the files under it."""
+    if git_meta is not None:
+        return _build_origin_story(path, git_meta, governing)
+    return _build_directory_origin(path.rstrip("/"), rows_under, governing)
 
 
 def _records_naming_path(all_decisions: list, path: str) -> list:
@@ -199,6 +247,7 @@ async def _stamp_still_true(
         repo_path,
         created_at=top.created_at,
         nodes=json.loads(top.affected_files_json or "[]"),
+        evidence_commits=json.loads(top.evidence_commits_json or "[]"),
     )
     if sentence:
         governing[0]["still_true"] = sentence
@@ -244,7 +293,7 @@ async def _add_ungoverned_evidence(
         path,
         git_meta,
         all_git_meta,
-        repository,
+        served_root(repository, repo_path),
     )
     # The "why" may live in a code comment.
     rationale = _mine_rationale(
@@ -273,6 +322,8 @@ async def _build_target_context(
         # Load all git metadata for cross-file search
         all_git_meta_list = await _all_git_metadata(session2, repository.id)
 
+        root = served_root(repository, ctx.path)
+        exclude_spec = _get_exclude_spec(ctx.path)
         target_context: dict[str, Any] = {}
         for t in targets:
             target_context[t] = await _target_card(
@@ -280,23 +331,21 @@ async def _build_target_context(
                 all_decisions,
                 target_git.get(t),
                 all_git_meta_list,
-                repository,
+                root,
                 accepted or set(),
+                _rows_under(t, all_git_meta_list, exclude_spec),
             )
         return target_context
 
 
 def _records_governing_target(all_decisions: list, target: str) -> list:
-    """Records naming *target*, or a module it sits under, best-first."""
-    governing_records = []
-    for d in all_decisions:
-        # Same gate as ``_why_path``, which one target routes to.
-        if not binds_to_paths(d.scope_basis):
-            continue
-        affected = json.loads(d.affected_files_json)
-        affected_mods = json.loads(d.affected_modules_json)
-        if target in affected or any(target.startswith(m + "/") for m in affected_mods):
-            governing_records.append(d)
+    """Records naming *target*, best-first, by the same rule as ``_why_path``.
+
+    A record's modules are mostly its files' folders, so a file merely under
+    one shares a folder with the decision, not its subject. Path mode and the
+    decision graph match a module only as itself, and so does this.
+    """
+    governing_records = _records_naming_path(all_decisions, target)
     governing_records.sort(key=_path_decision_sort_key)
     return governing_records
 
@@ -306,8 +355,9 @@ async def _target_card(
     all_decisions: list,
     git_m: Any | None,
     all_git_meta_list: list,
-    repository: Any,
+    repo_root: str | None,
     accepted_ids: set[str],
+    rows_under: list,
 ) -> dict[str, Any]:
     """One target's card: its rules, its candidates, its origin, and archaeology."""
     rows = [
@@ -322,14 +372,7 @@ async def _target_card(
     ]
     t_governing = [r for r in rows if r["authority"] == "accepted"]
     t_candidates = [r for r in rows if r["authority"] != "accepted"]
-    origin = (
-        _build_origin_story(t, git_m, t_governing)
-        if git_m
-        else {
-            "available": False,
-            "summary": f"No git history for {t}.",
-        }
-    )
+    origin = _origin_for(t, git_m, rows_under, t_governing)
     ctx_entry: dict[str, Any] = {
         "governing_decisions": t_governing,
         "origin": origin,
@@ -342,7 +385,7 @@ async def _target_card(
             t,
             git_m,
             all_git_meta_list,
-            repository,
+            repo_root,
         )
     return ctx_entry
 

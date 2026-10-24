@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    cross_repo_cut_inputs,
     get_head_commit,
     load_config,
     load_state,
@@ -22,6 +24,14 @@ from repowise.cli.helpers import (
 from repowise.cli.output import notice_console
 from repowise.core.analysis.dead_code.models import DeadCodeFindingData, DeadCodeReport
 from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+from repowise.core.analysis.dead_code.serving import (
+    CrossRepoLookup,
+    ServedFinding,
+    is_safe,
+    safe_only_note,
+    serve_findings,
+)
+from repowise.core.analysis.finding_registry import preview_lines
 
 #: The floor ``init`` and ``update`` store findings at: they run the analyzer
 #: with its default config, which keeps nothing below this and runs all four
@@ -135,20 +145,45 @@ def _analyze_live(repo_path: Path, config: dict, notices: Any) -> DeadCodeReport
 
     # parsed_files powers the source-scan rescues (dynamic-import markers,
     # bundler resolve.alias targets, export-alias maps).
-    stats = graph_builder.traversal_stats
     analyzer = DeadCodeAnalyzer(
         graph_builder.graph(),
         git_meta_map,
         parsed_files=graph_builder._parsed_files,
         source_map=source_map,
         repo_root=repo_path,
-        unindexed_source_files=[
-            (skipped.path, skipped.reason)
-            for skipped in (*stats.skipped_source_files, *stats.unknown_language_files)
-        ],
+        unindexed_source_files=graph_builder.traversal_stats.unindexed_source_files(),
         dotnet_index=getattr(graph_builder, "dotnet_index", None),
     )
     return analyzer.analyze(config)
+
+
+def _with_cut(served: ServedFinding) -> DeadCodeFindingData:
+    if served.cross_repo_note is None:
+        return served.row
+    return replace(
+        served.row,
+        confidence=served.confidence,
+        safe_to_delete=is_safe(served),
+        evidence=[*served.row.evidence, served.cross_repo_note],
+    )
+
+
+def _cut_cross_repo(
+    report: DeadCodeReport, lookup: CrossRepoLookup | None, alias: str | None, floor: float
+) -> tuple[DeadCodeReport, int]:
+    """The cross-repo cut every surface applies, then the floor again, since it only lowers.
+
+    Returns the report and how many findings the cut touched.
+    """
+    if lookup is None:
+        return report, 0
+    served = serve_findings(report.findings, lookup, alias)
+    cut = [_with_cut(s) for s in served]
+    shown = [f for f in cut if f.confidence >= floor]
+    touched = sum(1 for s in served if s.cross_repo_note)
+    return DeadCodeReport.from_findings(
+        shown, hidden_below_threshold=report.hidden_below_threshold + len(cut) - len(shown)
+    ), touched
 
 
 @click.command("dead-code")
@@ -240,8 +275,9 @@ def dead_code_command(
     with no index, it parses the working tree and analyzes it live.
 
     In workspace mode, analyzes the primary repo by default; pass
-    --repo <alias> to target a different repo. Cross-repo dead-code
-    detection is not yet supported — run once per repo for now.
+    --repo <alias> to target a different repo. A finding whose file another
+    workspace repo may use is never cleanup-ready, with the same confidence as
+    on every other surface. Run once per repo.
     """
     # The live path parses the whole tree, and its structlog lines go to
     # stdout: they would corrupt JSON/Markdown and bury the table.
@@ -254,25 +290,8 @@ def dead_code_command(
         repo_alias=repo_alias,
     )
     notices = notice_console(fmt)
-    target.notice(notices, command="dead-code")
-
-    if target.is_workspace:
-        if target.repo_filter is not None:
-            picked = target.resolve_repo_alias(target.repo_filter)
-            if picked is None:
-                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-            repo_path = picked
-        else:
-            primary = target.primary_path()
-            if primary is None:
-                raise click.ClickException("Workspace has no primary repo configured.")
-            repo_path = primary
-            notices.print("[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]")
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
-
-    notices.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
+    repo_path = target.narrow(notices, command="dead-code")
+    notices.print(f"[bold]repowise dead-code[/bold]: {repo_path}")
 
     config: dict = {
         "min_confidence": min_confidence,
@@ -296,10 +315,20 @@ def dead_code_command(
         report = _analyze_live(repo_path, config, notices)
     else:
         _notice_stored(repo_path, notices)
+    cut = cross_repo_cut_inputs(repo_path, None if no_workspace else target.ws_root)
+    report, touched = _cut_cross_repo(report, cut["lookup"], cut["alias"], min_confidence)
+    if touched:
+        notices.print(
+            f"[dim]{touched} finding(s) not cleanup-ready: another workspace repo may use "
+            "their file.[/dim]"
+        )
     findings = sorted(report.findings, key=_finding_order)
 
     if safe_only:
-        findings = [f for f in findings if f.safe_to_delete]
+        safe = [f for f in findings if f.safe_to_delete]
+        if note := safe_only_note(len(findings), len(safe)):
+            notices.print(f"[dim]{note}[/dim]")
+        findings = safe
 
     if fmt == "json":
         output = []
@@ -328,7 +357,7 @@ def dead_code_command(
         for f in findings:
             safe = " (cleanup-ready)" if f.safe_to_delete else ""
             name = f"`{f.symbol_name}`" if f.symbol_name else f"`{f.file_path}`"
-            click.echo(f"- [{f.kind.value}] {name} — {f.reason} ({f.confidence:.0%}){safe}")
+            click.echo(f"- [{f.kind.value}] {name}: {f.reason} ({f.confidence:.0%}){safe}")
         if report.hidden_below_threshold:
             click.echo(
                 f"\n> {report.hidden_below_threshold} finding(s) hidden below threshold "
@@ -359,6 +388,13 @@ def dead_code_command(
         )
 
     console.print(table)
+    for line in preview_lines(
+        "dead_code",
+        findings,
+        kind="kind",
+        get=lambda f, k: f.kind.value if k == "kind" else getattr(f, k),
+    ):
+        console.print(f"[dim]{line}[/dim]")
     # confidence_summary is a {"high": N, ...} dict; interpolating it printed a
     # raw Python repr, braces and quotes included, at the end of an otherwise
     # formatted report.
@@ -369,7 +405,7 @@ def dead_code_command(
     )
     console.print(
         f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold]"
-        + (f" ({tiers} confidence)" if tiers else "")
+        + (f" · findings by confidence: {tiers}" if tiers else "")
     )
     if report.hidden_below_threshold:
         console.print(

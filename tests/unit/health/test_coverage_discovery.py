@@ -17,7 +17,9 @@ from repowise.core.analysis.health.coverage import (
     discover_artifacts,
     expand_report_patterns,
     normalize_report_path,
+    prefix_hint,
     resolve_reports,
+    suggest_prefixes,
 )
 from repowise.core.analysis.health.coverage.model import CoverageReport, FileCoverage
 
@@ -315,6 +317,41 @@ def test_build_coverage_map_flags_partial(tmp_path: Path) -> None:
     resolved, errors = build_coverage_map(tmp_path, [report_path], keys)
     assert not errors
     assert resolved.mapping_partial is True
+    # A fragment is withheld: nothing to store or score, diagnostics kept.
+    assert resolved.withheld is True
+    assert resolved.files == [] and resolved.coverage_map == {}
+    assert len(resolved.unmatched) == 2
+
+    kept, _ = build_coverage_map(tmp_path, [report_path], keys, allow_partial=True)
+    assert kept.mapping_partial is True and kept.withheld is False
+    assert [f.file_path for f in kept.files] == ["src/a.ts"]
+
+
+def test_partial_mapping_suggests_the_package_the_mapped_files_live_in() -> None:
+    # A package's report names its files from the package root; two names tie
+    # between packages and the third resolves, which settles the prefix.
+    keys = {"web/src/a.py", "api/src/a.py", "web/src/b.py", "api/src/b.py", "web/src/c.py"}
+    report = _report([_fc("src/a.py"), _fc("src/b.py"), _fc("src/c.py")])
+    res = resolve_reports([report], keys)
+    assert res.mapping_partial is True
+    assert res.suggested_prefixes == ("", "web")
+    assert prefix_hint(res.suggested_prefixes) == (
+        "set coverage.path_prefix: web in .repowise/config.yaml"
+    )
+
+
+def test_suggest_prefixes_finds_a_build_prefix_to_strip() -> None:
+    keys = {"a.py", "b.py", "docs/a.py"}
+    assert suggest_prefixes(["/ci/build/a.py", "/ci/build/b.py"], keys) == ("ci/build", "")
+
+
+def test_suggest_prefixes_abstains_without_a_clear_winner() -> None:
+    keys = {"web/a.py", "api/a.py", "x/b.py"}
+    # Two rewrites explain the one path equally, and nothing mapped breaks the tie.
+    assert suggest_prefixes(["a.py"], keys) is None
+    # One rewrite explains only one of three paths.
+    assert suggest_prefixes(["lib/b.py", "lib/q.py", "lib/r.py"], keys) is None
+    assert prefix_hint(None).startswith("fix coverage.strip_prefix or coverage.path_prefix")
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +380,44 @@ def test_coverage_config_parses_block() -> None:
     assert cfg.paths == ("coverage/lcov.info",)
     assert cfg.strip_prefix == "build"
     assert cfg.reingest_on_update is True
+
+
+def test_reingest_rereads_a_report_written_after_the_last_ingest() -> None:
+    from datetime import UTC, datetime
+
+    last = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    before, after = last.timestamp() - 60, last.timestamp() + 60
+    auto = CoverageConfig.from_repo_config({"coverage": {}})
+    assert auto.reingest_on_update is None
+    assert auto.reingest(after, last) is True
+    assert auto.reingest(before, last) is False
+    # A naive stored time is UTC.
+    assert auto.reingest(after, last.replace(tzinfo=None)) is True
+    # Nothing stored yet: any report is read; no report: nothing to read.
+    assert auto.reingest(before, None) is True
+    assert auto.reingest(None, last) is False
+    # A report dated in the future is not newer, or every update would re-read it.
+    assert auto.reingest(after, last, now=last.timestamp() + 30) is False
+    # The setting forces either way.
+    off = CoverageConfig.from_repo_config({"coverage": {"reingest_on_update": False}})
+    on = CoverageConfig.from_repo_config({"coverage": {"reingest_on_update": True}})
+    assert off.reingest(after, last) is False
+    assert on.reingest(before, last) is True
+
+
+def test_watched_reports_stat_fixed_locations_without_a_walk(tmp_path: Path) -> None:
+    (tmp_path / "coverage").mkdir()
+    (tmp_path / "coverage" / "lcov.info").write_text("SF:a.py\nend_of_record\n")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "cobertura.xml").write_text("<coverage/>")
+    cfg = CoverageConfig.from_repo_config(None)
+    # The nested report needs the ``**/cobertura.xml`` walk, so only discovery finds it.
+    assert cfg.watched_reports(tmp_path) == [tmp_path / "coverage" / "lcov.info"]
+    assert len(cfg.reports(tmp_path)) == 2
+    named = CoverageConfig.from_repo_config({"coverage": {"paths": ["pkg/cobertura.xml"]}})
+    assert named.watched_reports(tmp_path) == [tmp_path / "pkg" / "cobertura.xml"]
+    off = CoverageConfig.from_repo_config({"coverage": {"auto_discover": False}})
+    assert off.watched_reports(tmp_path) == []
 
 
 def test_coverage_config_paths_take_globs_and_per_report_prefixes(tmp_path: Path) -> None:

@@ -238,3 +238,25 @@ async def test_a_conventions_record_still_gets_a_date(session):
 
     assert rec.last_code_change is not None
     assert rec.staleness_score == pytest.approx(0.42), "its own score is untouched"
+
+
+async def test_the_commit_that_landed_the_record_is_not_scored_as_drift(session, monkeypatch):
+    """A record written on a branch is born before its squash; that squash is the decision."""
+    from repowise.core.analysis.decisions import landing
+
+    landed = datetime.now(UTC) - timedelta(days=10)
+    rec = await _add_decision(session, files=["src/auth.py"], staleness=0.0)
+    rec.evidence_commits_json = '["abc1234"]'
+    session.add(GitMetadata(repository_id=_REPO_ID, file_path="src/auth.py", last_commit_at=landed))
+    await session.flush()
+    monkeypatch.setattr(
+        landing,
+        "evidence_landings",
+        lambda repo_path, evidence: {"abc1234": landing.Landing("f" * 40, landed)},
+    )
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+    assert rec.staleness_score == 1.0
+
+    await recompute_decision_staleness(session, _REPO_ID, {}, "/repo")
+    assert rec.staleness_score == 0.0

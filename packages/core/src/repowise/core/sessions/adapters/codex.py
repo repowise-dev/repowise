@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 
 from repowise.core.fs_walk import iter_glob
 from repowise.core.sessions.adapters.base import (
+    INTENT_EDIT_CALLS,
     INTENT_SHELL_CALLS,
     INTENT_TOOL_CALLS,
     INTENT_TURNS,
@@ -55,6 +56,13 @@ def _tool_calls_prefilter(raw: str) -> bool:
         # Last: it matches once per file, and every other line pays the scan.
         or _SESSION_META in raw
     )
+
+
+def _edit_calls_prefilter(raw: str) -> bool:
+    """Patch calls, direct or inside a code-mode cell, and the model each turn names."""
+    if "*** Begin Patch" in raw:
+        return '"type":"custom_tool_call"' in raw or '"type":"function_call"' in raw
+    return '"type":"turn_context"' in raw or _SESSION_META in raw
 
 
 def _turns_prefilter(raw: str) -> bool:
@@ -98,6 +106,10 @@ class CodexAdapter(HarnessAdapter):
         if not root.is_dir():
             return []
         return sorted(path for path in iter_glob(root, "*.jsonl") if path.is_file())
+
+    def discover_all(self, *, projects_root: Path | None = None) -> list[Path]:
+        """Every rollout: :meth:`discover` already reads them all."""
+        return self.discover(Path(), projects_root=projects_root)
 
     def normalize(self, raw_line: str) -> Event | None:
         try:
@@ -183,6 +195,9 @@ class CodexAdapter(HarnessAdapter):
 
         if intent == INTENT_TURNS:
             return _turns_prefilter
+
+        if intent == INTENT_EDIT_CALLS:
+            return _edit_calls_prefilter
 
         return None
 

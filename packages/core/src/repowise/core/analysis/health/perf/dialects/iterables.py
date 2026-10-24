@@ -11,11 +11,12 @@ stays ``unknown``, which no reader takes as bounded.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar
 
 from .. import loop_lexicon as lex
 from ..loop_facts import LoopSource
+from ..table_scale import registry_source
 from .base import BasePerfDialect
 
 if TYPE_CHECKING:
@@ -35,6 +36,12 @@ _READS = frozenset({"unknown", "query", "caller_key", "rare_subset"})
 def text_of(node: Node | None) -> str:
     return (node.text or b"").decode("utf-8", "replace") if node is not None else ""
 
+
+# Names a loop's header is followed through to the reads that feed it.
+_TABLE_HOPS = 3
+# What a loop walks when its rows are a read's: a header that mixes a read with
+# anything else (``[*rows, *helper()]``) resolves to none of these.
+_READ_SOURCES = frozenset({"query", "config_table", "rare_subset"})
 
 # The reading recurses once per link of a header's call chain; a header nested
 # deeper than this (a generated chain hundreds of calls long) stays unknown.
@@ -127,6 +134,8 @@ class IterableSources(BasePerfDialect):
     conditional_kinds: frozenset[str] = frozenset()
     # ``None``: a dialect whose own syntax rules size a read (Python, TS).
     read_grows: LoopMagnitude | None = "grows_with_data"
+    # Call nodes of a dialect that does not read calls through :meth:`call_parts`.
+    read_call_kinds: frozenset[str] = frozenset()
     # Declarations whose ``body`` holds more file-level items (a C++ namespace),
     # and class-like declarations whose members a bare name in a method may read.
     file_container_kinds: frozenset[str] = frozenset()
@@ -192,9 +201,10 @@ class IterableSources(BasePerfDialect):
             return parts[1].text
         return None
 
-    def reads_config_table(self, call: Node, nodes: list[Node]) -> bool:
-        """The read names only registry or configuration tables."""
-        return False
+    def read_tables(self, call: Node, nodes: list[Node]) -> tuple[str, ...]:
+        """The tables or ORM models the read *call* names, read off it and the
+        values *nodes* its names are bound to; ``()`` when it names none."""
+        return ()
 
     def is_cap(self, node: Node, loop: Node) -> bool:
         """*node* caps a read at a fixed count (``Limit(10)``, ``setMaxResults(5)``)."""
@@ -237,7 +247,61 @@ class IterableSources(BasePerfDialect):
             iterates, magnitude = self._iterable(node, loop, probe, hop=True)
         if iterates == "unknown" and magnitude is None:
             return None
-        return LoopSource(iterates, magnitude or "unknown")
+        return self.with_read_tables(LoopSource(iterates, magnitude or "unknown"), node, loop, probe)
+
+    def with_read_tables(
+        self, source: LoopSource, expr: Node | None, loop: Node, probe: SinkProbe
+    ) -> LoopSource:
+        """*source*, with the tables its growth reads when it grows by walking a read."""
+        if source.magnitude != "grows_with_data" or source.iterates not in _READ_SOURCES:
+            return source
+        return registry_source(replace(source, tables=self.growth_tables(expr, loop, probe)))
+
+    def growth_tables(
+        self, expr: Node | None, loop: Node, probe: SinkProbe
+    ) -> tuple[str, ...] | None:
+        """The tables named by the reads *expr* walks, followed through names bound
+        before *loop*: ``()`` when one read names none, ``None`` with no read."""
+        level = [expr] if expr is not None else []
+        seen: set[bytes | None] = set()
+        tables: set[str] = set()
+        for _ in range(_TABLE_HOPS):
+            found = self._read_level(level, loop, probe, seen, tables)
+            if found is None:
+                return ()
+            level = found
+        return tuple(sorted(tables)) or None
+
+    def _read_level(
+        self,
+        level: list[Node],
+        loop: Node,
+        probe: SinkProbe,
+        seen: set[bytes | None],
+        tables: set[str],
+    ) -> list[Node] | None:
+        """Add the tables of the reads under *level* to *tables*, and return the
+        values of the names it reads first; ``None`` when a read names no table."""
+        values: list[Node] = []
+        stack = list(level)
+        while stack:
+            node = stack.pop()
+            if self._is_read(node, probe):
+                named = self.read_tables(node, self._query_parts(node, loop)[0])
+                if not named:
+                    return None
+                tables.update(named)
+            elif node.type in self.name_kinds:
+                if node.text not in seen:
+                    seen.add(node.text)
+                    values.extend(filter(None, [self.reaching_value(loop, node.text or b"")]))
+            elif node.type not in _BLOCKS:
+                stack.extend(node.named_children)
+        return values
+
+    def _is_read(self, node: Node, probe: SinkProbe) -> bool:
+        is_call = node.type in self.read_call_kinds or self.call_parts(node) is not None
+        return is_call and (probe(node) in ("db", "network") or self.query_chain(node))
 
     def _unwrap(self, node: Node) -> Node:
         while node.type in self.wrapper_kinds:
@@ -385,7 +449,8 @@ class IterableSources(BasePerfDialect):
         """Rows of one key, a capped read, a rare state, or rows that grow; the
         names the call reads may be bound to their statement before the loop."""
         nodes, text = self._query_parts(call, loop)
-        if self.reads_config_table(call, nodes):
+        tables = self.read_tables(call, nodes)
+        if tables and all(lex.is_config_table(t) for t in tables):
             return "config_table", None
         if lex.is_key_lookup(text):
             return "caller_key", "bounded"

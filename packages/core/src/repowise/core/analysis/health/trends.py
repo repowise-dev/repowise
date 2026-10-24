@@ -86,7 +86,8 @@ class TrendAlert:
 class TrendSummary:
     """Lightweight diff between the newest snapshot and the prior window."""
 
-    current_hotspot_health: float
+    # ``None`` on a snapshot whose repo had no scored hotspot file.
+    current_hotspot_health: float | None
     current_average_health: float
     previous_hotspot_health: float | None
     previous_average_health: float | None
@@ -157,12 +158,18 @@ class _ScopedSnapshot:
 
     taken_at: Any
     average_health: float
-    per_file_scores_json: str
-    hotspot_health: float = 0.0
+    #: The stored row, so the per-file map is read only by a caller that asks
+    #: for it: a route that deferred the maps loads just the rows it reads.
+    source: Any = field(default=None, repr=False)
+    hotspot_health: float | None = None
     worst_performer_path: str | None = None
     worst_performer_score: float | None = None
     structure_average: float | None = None
     history_average: float | None = None
+
+    @property
+    def per_file_scores_json(self) -> str:
+        return self.source.per_file_scores_json
 
 
 def project_scope(history: list[Any], scope: str) -> list[Any]:
@@ -186,7 +193,7 @@ def project_scope(history: list[Any], scope: str) -> list[Any]:
             _ScopedSnapshot(
                 taken_at=snap.taken_at,
                 average_health=float(value),
-                per_file_scores_json=snap.per_file_scores_json,
+                source=snap,
             )
         )
     return out
@@ -196,12 +203,13 @@ def diff_snapshots(history: list[Any]) -> TrendSummary:
     """Compare the newest snapshot against the window behind it.
 
     *history* is expected oldest-first (the natural insertion order in
-    ``HealthSnapshot``). Empty history yields a summary with neutral
-    fields and no alerts.
+    ``HealthSnapshot``). Empty history yields a summary with no alerts and a
+    null hotspot figure, since nothing was measured. ``current_average_health``
+    stays at the neutral 10.0 because the response schema requires a number.
     """
     if not history:
         return TrendSummary(
-            current_hotspot_health=10.0,
+            current_hotspot_health=None,
             current_average_health=10.0,
             previous_hotspot_health=None,
             previous_average_health=None,
@@ -211,14 +219,15 @@ def diff_snapshots(history: list[Any]) -> TrendSummary:
 
     current = history[-1]
     prior = history[-2] if len(history) >= 2 else None
+    current_hotspot = _metric_value(current, "hotspot_health")
+    previous_hotspot = _metric_value(prior, "hotspot_health") if prior else None
     summary = TrendSummary(
-        current_hotspot_health=float(current.hotspot_health),
+        current_hotspot_health=current_hotspot,
         current_average_health=float(current.average_health),
-        previous_hotspot_health=float(prior.hotspot_health) if prior else None,
+        previous_hotspot_health=previous_hotspot,
         previous_average_health=float(prior.average_health) if prior else None,
-        hotspot_delta=_delta(
-            float(current.hotspot_health),
-            float(prior.hotspot_health) if prior else None,
+        hotspot_delta=(
+            _delta(current_hotspot, previous_hotspot) if current_hotspot is not None else None
         ),
         average_delta=_delta(
             float(current.average_health),
@@ -238,12 +247,17 @@ def hotspot_trend(history: list[Any]) -> str | None:
 
     Compared over the same window the declining alert uses, so the two never
     disagree. ``None`` with fewer than two snapshots: one reading is not a
-    trend, and a surface should say nothing rather than print "stable".
+    trend, and a surface should say nothing rather than print "stable". Also
+    ``None`` when either end recorded no hotspot figure.
     """
     if len(history) < 2:
         return None
     baseline = history[max(0, len(history) - 1 - DECLINE_LOOKBACK)]
-    delta = float(history[-1].hotspot_health) - float(baseline.hotspot_health)
+    current = _metric_value(history[-1], "hotspot_health")
+    base = _metric_value(baseline, "hotspot_health")
+    if current is None or base is None:
+        return None
+    delta = current - base
     if delta <= -DECLINE_THRESHOLD:
         return "declining"
     if delta >= DECLINE_THRESHOLD:
@@ -410,14 +424,19 @@ def _point(snap: Any, attr: str) -> float | None:
 
 
 def recent_kpis(
-    history: list[Any], limit: int = 10, *, doc_drift: bool = False
+    history: list[Any],
+    limit: int = 10,
+    *,
+    doc_drift: bool = False,
+    analyzer_version: bool = False,
 ) -> list[dict[str, Any]]:
     """Serialize the most-recent *limit* snapshots for CLI / API consumers.
 
     Newest first (so the CLI table reads top-down chronologically when
     flipped, which matches user expectation for "recent runs"). Each row
-    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count``;
-    off by default so agent-facing trend rows stay as they were.
+    is a plain dict — no ORM leakage. *doc_drift* adds ``doc_drift_count`` and
+    *analyzer_version* the row's ``analyzer_version``; both off by default so
+    agent-facing trend rows stay as they were.
     """
     if not history:
         return []
@@ -427,7 +446,7 @@ def recent_kpis(
         rows.append(
             {
                 "taken_at": snap.taken_at.isoformat() if snap.taken_at else None,
-                "hotspot_health": round(float(snap.hotspot_health), 2),
+                "hotspot_health": _point(snap, "hotspot_health"),
                 "average_health": round(float(snap.average_health), 2),
                 "worst_performer_path": snap.worst_performer_path,
                 "worst_performer_score": (
@@ -446,6 +465,8 @@ def recent_kpis(
         )
         if doc_drift:
             rows[-1]["doc_drift_count"] = getattr(snap, "doc_drift_count", None)
+        if analyzer_version:
+            rows[-1]["analyzer_version"] = getattr(snap, "analyzer_version", None)
     return rows
 
 
@@ -526,7 +547,7 @@ def snapshot_fields(
         return None
     scores_map, deductions_map = snapshot_file_maps(metrics, findings)
     return {
-        "hotspot_health": float(kpis.get("hotspot_health", SCORE_MAX)),
+        "hotspot_health": kpis.get("hotspot_health"),
         "average_health": float(kpis.get("average_health", SCORE_MAX)),
         "worst_performer_path": kpis.get("worst_performer_path"),
         "worst_performer_score": kpis.get("worst_performer_score"),

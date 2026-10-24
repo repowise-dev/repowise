@@ -209,7 +209,7 @@ def _patch_pipeline(monkeypatch, answer_mod, scores=(5.0, 4.0)):
         for i, h in enumerate(hits):
             h["target_path"] = h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Summary text for the page. " * 12
+            h["summary"] = "Summary of the beta module function. " * 12
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if i == 0:

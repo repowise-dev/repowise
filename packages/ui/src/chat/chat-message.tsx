@@ -8,7 +8,22 @@ import { MessageActions } from "./message-actions";
 import { CHAT_STAGES, chatStage } from "./chat-stage";
 import { Markdown } from "../shared/markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
+import { EvidenceCardList, cardRefHref } from "../cards/evidence-card";
+import { ViewPartList } from "./view-part";
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
+
+/** Copy for figures the numeric check could not find in the turn's tool results. */
+export interface UnverifiedFigureCopy {
+  /** Tooltip and screen-reader text on each flagged figure. */
+  flag: string;
+  /** One line under an answer that has flagged figures. */
+  note: string;
+}
+
+export const DEFAULT_UNVERIFIED_FIGURE_COPY: UnverifiedFigureCopy = {
+  flag: "Not found in this turn's tool results",
+  note: "Figures with a dotted underline were not found in this turn's tool results.",
+};
 
 interface ChatMessageProps {
   message: ChatUIMessage;
@@ -27,6 +42,7 @@ interface ChatMessageProps {
   error?: string | null;
   onRetry?: (message: ChatUIMessage) => void | Promise<void>;
   onEditAndResend?: (message: ChatUIMessage, text: string) => void | Promise<void>;
+  unverifiedFigureCopy?: UnverifiedFigureCopy;
 }
 
 /**
@@ -48,10 +64,14 @@ function ChatMessageImpl({
   error,
   onRetry,
   onEditAndResend,
+  unverifiedFigureCopy = DEFAULT_UNVERIFIED_FIGURE_COPY,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const dock = density === "dock";
   const stage = isUser ? null : chatStage(message);
+  const flagged = !message.isStreaming && message.unverifiedFigures?.length
+    ? message.unverifiedFigures
+    : undefined;
 
   if (isUser) {
     return (
@@ -94,14 +114,44 @@ function ChatMessageImpl({
       )}
       <div className={cn("max-w-full", dock ? "space-y-2.5" : "space-y-3")}>
         {message.toolCalls.length > 0 && (
-          <ToolCallGroup
-            toolCalls={message.toolCalls}
-            {...(onViewArtifact ? { onViewArtifact } : {})}
-          />
+          <div className="print:hidden">
+            <ToolCallGroup
+              toolCalls={message.toolCalls}
+              {...(onViewArtifact ? { onViewArtifact } : {})}
+            />
+          </div>
         )}
 
         {message.text && (
-          <Markdown content={message.text} density={dock ? "narrow" : "reading"} streaming={message.isStreaming} fill />
+          <Markdown
+            content={message.text}
+            density={dock ? "narrow" : "reading"}
+            streaming={message.isStreaming}
+            fill
+            {...(flagged ? { flags: flagged, flagLabel: unverifiedFigureCopy.flag } : {})}
+          />
+        )}
+
+        {flagged && (
+          <p data-chat-unverified-figures={flagged.length} className="text-xs text-[var(--color-text-tertiary)]">
+            {unverifiedFigureCopy.note}
+          </p>
+        )}
+
+        {/* Views arrive live, each right after the call that built it. */}
+        {message.views && message.views.length > 0 && (
+          <ViewPartList
+            views={message.views}
+            buildRefHref={(ref) => cardRefHref(ref, linkPrefix ?? `/repos/${repoId}`)}
+          />
+        )}
+
+        {/* Only stored messages carry cards for now; the stream sends none. */}
+        {!message.isStreaming && message.cards && (
+          <EvidenceCardList
+            cards={message.cards}
+            buildRefHref={(ref) => cardRefHref(ref, linkPrefix ?? `/repos/${repoId}`)}
+          />
         )}
 
         {!message.isStreaming && message.toolCalls.length > 0 && (
@@ -127,7 +177,7 @@ function ChatMessageImpl({
           // the turn from thinking through each tool to writing.
           <div
             data-chat-stage={stage}
-            className="flex min-h-8 items-center gap-2 text-xs text-[var(--color-text-tertiary)]"
+            className="flex min-h-8 print:hidden items-center gap-2 text-xs text-[var(--color-text-tertiary)]"
           >
             <WorkingOrb state={CHAT_STAGES[stage].state} />
             <span>{CHAT_STAGES[stage].label}</span>

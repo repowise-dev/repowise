@@ -76,6 +76,10 @@ class TestCaseDialect:
     #: qualified ``@org.junit.jupiter.api.Test`` matches the same row.
     annotations: frozenset[str] = frozenset()
 
+    #: Lowercase modifier keywords that mark a case: Apex's legacy
+    #: ``static testMethod void t()``, read from the same ``modifiers`` subtree.
+    modifiers: frozenset[str] = frozenset()
+
     #: Exact names a rule above would otherwise claim. Go's ``TestMain`` matches
     #: ``TestXxx`` but is the test binary's entry point, not a case.
     excluded_names: frozenset[str] = frozenset()
@@ -98,8 +102,13 @@ _JAVA = TestCaseDialect(
     )
 )
 
+# Apex: ``@IsTest`` on the method or the legacy ``testMethod`` modifier; a
+# class-level ``@IsTest`` alone marks no method.
+_APEX = TestCaseDialect(annotations=frozenset({"istest"}), modifiers=frozenset({"testmethod"}))
+
 #: Keyed by ``LanguageTag``, as the sibling lexicons are.
 TEST_CASE_DIALECTS: dict[str, TestCaseDialect] = {
+    "apex": _APEX,
     "go": _GO,
     "java": _JAVA,
     "javascript": _JS_TS,
@@ -110,12 +119,16 @@ TEST_CASE_DIALECTS: dict[str, TestCaseDialect] = {
 
 
 def _annotation_names(fn_node: Node) -> set[str]:
-    """Lowercase last segments of the annotations on *fn_node*."""
+    """Lowercase last segments of the annotations on *fn_node*, and its
+    lowercase modifier keywords (an Apex ``modifier`` node)."""
     modifiers = next((c for c in fn_node.children if c.type == _JAVA_MODIFIERS), None)
     if modifiers is None:
         return set()
     names: set[str] = set()
     for child in modifiers.children:
+        if child.type == "modifier" and child.text is not None:
+            names.add(child.text.decode("utf-8", errors="replace").lower())
+            continue
         if child.type not in _JAVA_ANNOTATION_KINDS:
             continue
         name = child.child_by_field_name("name")
@@ -176,4 +189,5 @@ def is_test_case(fn_node: Node, name: str, language: str) -> bool:
         return callee.split(".", 1)[0] in dialect.callback_callees
     if _named_case(name, dialect):
         return True
-    return bool(dialect.annotations) and bool(dialect.annotations & _annotation_names(fn_node))
+    marks = dialect.annotations | dialect.modifiers
+    return bool(marks) and bool(marks & _annotation_names(fn_node))

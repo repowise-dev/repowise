@@ -1,4 +1,4 @@
-"""Byte-preserving source sanitizers for grammar gaps in Pascal and Objective-C."""
+"""Byte-preserving source sanitizers for grammar gaps in Pascal, Objective-C and Apex."""
 
 from __future__ import annotations
 
@@ -117,3 +117,12 @@ def prepare_objectivec_source(source: bytes) -> bytes:
     passes blank in place, so every offset outside a match is unchanged.
     """
     return _blank_objc_trailing_macros(_blank_matches(source, _OBJC_BARE_MACRO_LINE_RE))
+
+
+# CumulusCI ``%%%NAMESPACE%%%`` tokens, rewritten at deploy; the grammar errors on them.
+_APEX_NAMESPACE_TOKEN_RE = re.compile(rb"%%%[A-Z_]+%%%")
+
+
+def prepare_apex_source(source: bytes) -> bytes:
+    """Blank CumulusCI namespace tokens in place, preserving offsets."""
+    return _blank_matches(source, _APEX_NAMESPACE_TOKEN_RE)

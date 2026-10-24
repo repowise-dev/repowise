@@ -6,13 +6,15 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...git_head import read_head_commit
+from ...forges import read_remote_url, strip_credentials
+from ...git_head import read_head_commit, resolve_git_dir
 from ..models import (
     GenerationJob,
     Page,
@@ -34,8 +36,8 @@ async def upsert_repository(
     *,
     name: str,
     local_path: str,
-    url: str = "",
-    default_branch: str = "main",
+    url: str | None = None,
+    default_branch: str | None = None,
     settings: dict | None = None,
     head_commit: str | None = None,
     stamp_head: bool = False,
@@ -51,6 +53,16 @@ async def upsert_repository(
     per-repo session routing keyed by that id resolves consistently. Ignored
     when a row for ``local_path`` already exists (the existing id wins).
 
+    ``url``, ``default_branch`` and ``settings`` overwrite an existing row only
+    when passed; ``None`` keeps the stored value, so a command that only needs
+    the row never resets a ``master`` branch to ``main``. Pass ``""`` to clear
+    the url. An empty branch counts as not passed, since a repository always
+    has one. When the call creates the row or records a sync and leaves either
+    one unset, it is read from git: the remote url (``origin``, else
+    ``upstream``) with credentials removed, and the default branch. A value
+    git cannot give keeps the stored one, and a new row defaults to ``""``
+    and ``"main"``.
+
     ``head_commit`` records the git commit the index was built against — the
     value the MCP ``_meta`` freshness check compares to the live HEAD. A new
     row always gets one: the passed value, else ``local_path``'s git HEAD read
@@ -59,39 +71,65 @@ async def upsert_repository(
     ``stamp_head=True`` (read HEAD). Callers that only need the row, such as
     decisions, scans and server registration, leave it alone: moving it there
     made the database claim an index at HEAD while ``state.json`` still named
-    the last real sync.
+    the last real sync. ``updated_at`` (see :func:`index_synced_at`) moves with
+    the commit stamp for the same reason.
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
 
     stamping = repo is None or stamp_head or head_commit is not None
     resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
+    if stamping and (url is None or not default_branch):
+        # Off the event loop: the branch read runs git, and the server awaits this.
+        git_url, git_branch = await asyncio.to_thread(_read_git_remote, local_path)
+        url = git_url if url is None else url
+        default_branch = default_branch or git_branch
 
     if repo is None:
         repo = Repository(
             id=repo_id or _new_uuid(),
             name=name,
             local_path=local_path,
-            url=url,
-            default_branch=default_branch,
+            url=url or "",
+            default_branch=default_branch or "main",
             settings_json=json.dumps(settings or {}),
             head_commit=resolved_head,
         )
         session.add(repo)
     else:
         repo.name = name
-        repo.url = url
-        repo.default_branch = default_branch
+        if url is not None:
+            repo.url = url
+        if default_branch:
+            repo.default_branch = default_branch
         if settings is not None:
             repo.settings_json = json.dumps(keep_analysis_ran(repo.settings_json, settings))
         # Only advance the stamp when we could read a real commit; never blank
         # out a previously recorded one (e.g. a transient non-checkout path).
         if resolved_head:
             repo.head_commit = resolved_head
-        repo.updated_at = _now_utc()
+        if stamping:
+            repo.updated_at = _now_utc()
 
     await session.flush()
     return repo
+
+
+def index_synced_at(repo: Repository | None) -> datetime | None:
+    """When *repo*'s index last synced to the checkout, timezone-aware, or ``None``.
+
+    The one "indexed at" every surface reports. Only a sync moves it: an index
+    run's stamping :func:`upsert_repository` and git-totals write, and the
+    "up to date" re-stamp in ``reconcile_repo_head_commit``.
+    """
+    return as_utc(getattr(repo, "updated_at", None))
+
+
+def as_utc(stamp: datetime | None) -> datetime | None:
+    """*stamp* as timezone-aware UTC; SQLite hands these columns back naive."""
+    if not isinstance(stamp, datetime):
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
 
 
 ANALYSIS_RAN_KEY = "analysis_ran_at"
@@ -149,6 +187,19 @@ def _read_head_commit(local_path: str) -> str | None:
     commit already stored.
     """
     return read_head_commit(local_path)
+
+
+def _read_git_remote(local_path: str) -> tuple[str | None, str | None]:
+    """``(remote url without credentials, default branch)``, ``None`` where git has no answer."""
+    git_dir = resolve_git_dir(local_path)
+    # Without a HEAD git would search parent directories and answer for another repo.
+    if git_dir is None or not (git_dir / "HEAD").is_file():
+        return None, None
+    # Deferred: git_refs pulls in the change-risk stack, which a session open never needs.
+    from ...git_refs import default_branch
+
+    remote = read_remote_url(local_path)
+    return (strip_credentials(remote) if remote else None), default_branch(local_path)
 
 
 async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
@@ -209,6 +260,8 @@ async def update_repo_git_totals(
     for attr, value in updates.items():
         if value is not None:
             setattr(repo, attr, value)
+    # Index persist is the only caller, so this is a sync; it also moves the
+    # stamp ``index_stamp`` caches whole-history answers on.
     repo.updated_at = _now_utc()
     await session.flush()
 

@@ -148,10 +148,8 @@ class TestInitStampsTheCadence:
 
 @pytest.mark.parametrize(
     "module_name",
-    [
-        "repowise.cli.commands.init_cmd.command",
-        "repowise.cli.commands.init_cmd.persistence",
-    ],
+    # Every init path stamps through persistence.stamp_fresh_index.
+    ["repowise.cli.commands.init_cmd.persistence"],
 )
 def test_init_never_stamps_the_cadence_for_a_run_that_scored_nothing(module_name):
     """The stamp says "these rows are current", so it must not outrun the rows.

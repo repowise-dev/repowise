@@ -62,7 +62,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, symbol: dict, path: str | None =
         for i, h in enumerate(hits):
             h["target_path"] = path or h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
-            h["summary"] = "Policy module summary."
+            h["summary"] = "Policy module: the retry loop decides its floor at startup."
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if i == 0:

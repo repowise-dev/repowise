@@ -36,8 +36,10 @@ from .test_paths import is_test_related_path
 
 __all__ = [
     "CODE_ORIGINS",
+    "CONTENT_TEST_SUFFIXES",
     "CodeOrigin",
     "code_origin",
+    "declares_test",
     "is_build_file",
     "is_generated_header",
     "is_migration_path",
@@ -90,6 +92,10 @@ _DOCSTRING_OPENER_RE = re.compile(r"""^[rRuUbB]?(?:\"\"\"|''')""")
 _GENERATED_DIR_TOKENS = frozenset({"__generated__", "generated-src", "generated-sources"})
 _GENERATED_BUILD_DIR = "generated"
 _BUILD_OUTPUT_PARENTS = frozenset({"main", "build", "target"})
+# Adjacent directories a generator owns where neither name does alone:
+# CocoaPods writes ``Pods/Target Support Files/``; a bare ``pods/`` is as often
+# a first-party package (Kubernetes pods).
+_GENERATED_DIR_PAIRS = frozenset({("pods", "target support files")})
 # Beyond the first two lines, only an explicit sentence in a comment counts:
 # Java generators put "This class is generated." in the class Javadoc, after
 # the license and the imports. The looser markers ("DO NOT EDIT") stay
@@ -109,6 +115,12 @@ _GENERATED_SENTENCE_RE = re.compile(
     r"|GENERATED\b.*(?:\bINSTEAD\b|\bDO NOT (?:HAND[- ])?(?:EDIT|MODIFY)|\bNOT BE (?:EDITED|MODIFIED))"
     r")"
 )
+# Dart build_runner's banner, written after the license, past the first two
+# lines. Only the whole line counts: "Do not modify by hand without ..." or
+# "Generated code: see docs" in a hand-written file says something else.
+_GENERATED_BANNER_LINE_RE = re.compile(r"^GENERATED CODE - DO NOT MODIFY BY HAND\s*$")
+# Visual Studio rewrites resource headers, but ingestion must keep their include edges.
+_VISUAL_CPP_BANNER_LINE_RE = re.compile(r"^MICROSOFT VISUAL C\+\+ GENERATED INCLUDE FILE\.?\s*$")
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
 
@@ -174,9 +186,17 @@ def _leading_generated_sentence(header: str) -> bool:
         if text is None:
             if not line.startswith(_PREAMBLE_PREFIXES):
                 return False
-        elif _GENERATED_SENTENCE_RE.search(text.upper()) and not _above_import(lines, i):
+        elif _says_generated(text.upper()) and not _above_import(lines, i):
             return True
     return False
+
+
+def _says_generated(text: str) -> bool:
+    return bool(
+        _GENERATED_SENTENCE_RE.search(text)
+        or _GENERATED_BANNER_LINE_RE.search(text)
+        or _VISUAL_CPP_BANNER_LINE_RE.search(text)
+    )
 
 
 def _above_import(lines: list[str], i: int) -> bool:
@@ -232,6 +252,11 @@ def _deps_suffixes() -> tuple[str, ...]:
 # Kept out of the registry's generated suffixes, which ingestion skips: the file
 # stays in the graph and only leaves the fix lists.
 _BUNDLE_SUFFIXES = (".bundle.js", ".bundle.mjs", ".bundle.cjs")
+# Dart build_runner outputs (json_serializable, freezed, auto_route, mockito,
+# flutter_gen), kept out of the registry for the same reason: a ``part`` file
+# must stay in the graph. ``.config.dart`` is not here: injectable writes one,
+# but the name is as often a hand-written config.
+_CODEGEN_SUFFIXES = (".g.dart", ".freezed.dart", ".gr.dart", ".mocks.dart", ".gen.dart")
 
 
 def _is_generated_name(name: str) -> bool:
@@ -240,7 +265,29 @@ def _is_generated_name(name: str) -> bool:
         ".generated." in lowered
         or lowered.endswith(_generated_suffixes())
         or lowered.endswith(_BUNDLE_SUFFIXES)
+        or lowered.endswith(_CODEGEN_SUFFIXES)
     )
+
+
+# A bundler's output by its content, for chunks with no telling name: a
+# minified head (a mean line over 1,000 chars across at least 2 KB; hand-written
+# code averages well under 100), or webpack's chunk and runtime shapes, which
+# only webpack writes: ``(self.webpackChunkapp = ...).push(`` and a file
+# opening with the ``/******/`` runtime banner that defines
+# ``__webpack_require__``.
+_MINIFIED_MIN_HEAD = 2048
+_MINIFIED_MEAN_LINE = 1000
+_WEBPACK_CHUNK_RE = re.compile(
+    r"\(\s*(?:self|window|this|globalThis)(?:\.|\[\s*[\"'])webpack(?:Chunk|Jsonp)[\w$]*"
+)
+_WEBPACK_RUNTIME_RE = re.compile(r"\A\s*/\*{6}/.*?__webpack_require__", re.DOTALL)
+
+
+def _is_bundler_output(header: str) -> bool:
+    lines = header.count("\n") + 1
+    if len(header) >= _MINIFIED_MIN_HEAD and len(header) > _MINIFIED_MEAN_LINE * lines:
+        return True
+    return bool(_WEBPACK_CHUNK_RE.search(header) or _WEBPACK_RUNTIME_RE.search(header))
 
 
 # --------------------------------------------------------------------------
@@ -258,6 +305,9 @@ _VENDORED_DIR_TOKENS = frozenset(
         "node_modules",
         "bower_components",
         "site-packages",
+        # The Dart SDK's embedding headers that Flutter FFI plugins keep a copy
+        # of (``src/dart-sdk/include/dart_api_dl.h``).
+        "dart-sdk",
     }
 )
 # Matched as the first segment, or as a native tree's library shelf
@@ -288,15 +338,34 @@ def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
         return True
     if _DEPS_DIR in dirs[:-1] and lowered_name.endswith(_deps_suffixes()):
         return True
-    return lowered_name.endswith(_MINIFIED_SUFFIXES)
+    return lowered_name.endswith(_MINIFIED_SUFFIXES) or _in_static_release_dir(dirs)
+
+
+# A library unpacked under its release name in a static resource
+# (``staticresources/arbor-v0.92/``). Elsewhere a versioned folder is as often an
+# API version or the repository's own release. Ceiling: a team's own resource
+# folder named like a release (``app-v2.1/``) reads as vendored too.
+_RELEASE_DIR_RE = re.compile(r"^[a-z][\w.-]*?[-_.]v?\d+(?:\.\d+)+$")
+
+
+def _in_static_release_dir(dirs: list[str]) -> bool:
+    for i, d in enumerate(dirs):
+        if d in _STATIC_RESOURCE_DIRS:
+            return any(_RELEASE_DIR_RE.match(s) for s in dirs[i + 1 :])
+    return False
 
 
 # A copied library is recognisable by its header only in the directories a
 # site serves assets from. Anywhere else a license header is far more often
 # the repository's own.
 # ``min/`` is a minified distribution tree (Monaco ships as ``min/vs/...``); the
-# header rule below keeps a first-party ``src/min/`` out.
-_ASSET_DIR_TOKENS = frozenset({"docs", "doc", "static", "assets", "public", "_static", "min"})
+# header rule below keeps a first-party ``src/min/`` out. Salesforce serves its
+# static resources by name, and NPSP-style repos keep their sources in a mirror.
+_STATIC_RESOURCE_DIRS = frozenset({"staticresources", "staticresourcesources"})
+_ASSET_DIR_TOKENS = (
+    frozenset({"docs", "doc", "static", "assets", "public", "_static", "min"})
+    | _STATIC_RESOURCE_DIRS
+)
 _HEADER_LINES = 20
 _LICENSE_RE = re.compile(
     r"copyright|\(c\)|©|@license|licen[cs]ed\s+under|released\s+under|\bMIT\b",
@@ -424,10 +493,12 @@ _BUILD_SUFFIXES = (
     ".cake",
     ".rockspec",
 )
-# Bundler configs and gulp files, any extension a JS tool's config takes.
+# Bundler configs, gulp files, any extension a JS tool's config takes, and
+# SwiftPM version-specific manifests (``Package@swift-6.0.swift``).
 _BUILD_NAME_RE = re.compile(
     r"^(?:gulpfile|(?:webpack|vite|rollup|rolldown|rspack|esbuild|tsup)\.config(?:\.[\w-]+)*)"
     r"\.[cm]?[jt]s$"
+    r"|^package@swift-\d+(?:\.\d+){0,2}\.swift$"
 )
 # Names a build tool reads only at the root: a nested ``setup.py`` is as often
 # a module (``homeassistant/setup.py`` sets up integrations).
@@ -473,14 +544,13 @@ def is_build_file(path: str) -> bool:
 # Docs, examples, tooling
 # --------------------------------------------------------------------------
 
-# Docs roots count at any depth. Docs are the plural and FastAPI's ``docs_src``
-# only: a singular ``doc/`` is as often a shipped package (cobra's ``doc``
-# generates man pages) as a documentation tree.
+# Plural only: a singular ``doc/`` is as often a shipped package. Where they
+# count is :func:`_is_docs_example`'s rule.
 _DOCS_ROOT_TOKENS = frozenset({"docs", "docs_src"})
 # Examples as ``support_paths`` reads them, less the benchmark harnesses, which
 # run the system (tooling below). Unlike ``support_paths`` these count only as
-# the first segment or directly under a docs root: ``src/pkg/examples/`` is
-# as often shipped code (an example registry, a runner) as a sample.
+# the first segment or under a docs root: ``src/pkg/examples/`` is as often
+# shipped code (an example registry, a runner) as a sample.
 _EXAMPLE_TOKENS = EXAMPLE_DIR_TOKENS - {"bench", "benches", "benchmarks"}
 _TUTORIAL_PREFIX = "tutorial"
 
@@ -565,20 +635,28 @@ def _is_docs_site(folder: str, paired: bool) -> bool:
 def _is_docs_example(
     normalized: str, dirs: list[str], repo_root: str | os.PathLike[str] | None
 ) -> bool:
-    # Anything under a docs root already counts, examples beneath it included.
+    """A docs root or example folder as the first segment, a build tool's example
+    target, or a docs folder deeper beside a docs-site generator's config. A
+    nested ``app/docs/`` with no such config is the product's own docs route."""
     if (
-        any(d in _DOCS_ROOT_TOKENS for d in dirs)
-        or bool(dirs and _is_example_dir(dirs[0]))
+        bool(dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0])))
         or _is_tool_example(normalized, dirs)
     ):
         return True
     if repo_root is None:
         return False
     parts = normalized.split("/")
+    root = os.fspath(repo_root)
+
+    def site(i: int, paired: bool) -> bool:
+        return _is_docs_site(os.path.join(root, *parts[:i]), paired)
+
     return any(
-        (d in _DOCS_SITE_NAMES or _DOCS_SITE_SUFFIXED_RE.match(d))
-        and _is_docs_site(
-            os.path.join(os.fspath(repo_root), *parts[: i + 1]), d in _DOCS_SITE_NAMES
+        # A nested docs root beside its site's config, read from its parent.
+        (d in _DOCS_ROOT_TOKENS and site(i, False))
+        or (
+            (d in _DOCS_SITE_NAMES or _DOCS_SITE_SUFFIXED_RE.match(d))
+            and site(i + 1, d in _DOCS_SITE_NAMES)
         )
         for i, d in enumerate(dirs)
     )
@@ -624,6 +702,12 @@ _TOOLING_STEM_SUFFIXES = ("_benchmark", "_benchmarks")
 _TOOLING_NAME_RE = re.compile(
     r"^(?:eslint\.config|jest\.config|vitest\.config|babel\.config|karma\.conf)\.[cm]?[jt]s$"
 )
+# Dart's package layout keeps private scripts in ``tool/`` beside ``lib/``. A bare
+# ``tool`` is shipped code elsewhere (Go's ``internal/tool``), so it counts only
+# for Dart files, and not once it sits under a package's shipped ``lib``/``bin``/
+# ``web``. Ceiling: path-only, so a ``tool/`` not at a package root also counts.
+_DART_TOOL_DIR = "tool"
+_DART_SHIPPED_DIRS = frozenset({"lib", "bin", "web"})
 
 
 def _header_text(text: str | bytes | None) -> str:
@@ -648,6 +732,7 @@ def _is_generated_path(name: str, dirs: list[str]) -> bool:
     return (
         _is_generated_name(name)
         or any(d in _GENERATED_DIR_TOKENS for d in dirs)
+        or any(pair in _GENERATED_DIR_PAIRS for pair in pairwise(dirs))
         or any(
             d == _GENERATED_BUILD_DIR and i and dirs[i - 1] in _BUILD_OUTPUT_PARENTS
             for i, d in enumerate(dirs)
@@ -688,7 +773,14 @@ def _is_tooling(name: str, dirs: list[str]) -> bool:
         or (not dirs and name in _TOOLING_ROOT_NAMES)
         or bool(_TOOLING_NAME_RE.match(name.lower()))
         or _is_benchmark_file(name)
+        or _is_dart_tool(name, dirs)
     )
+
+
+def _is_dart_tool(name: str, dirs: list[str]) -> bool:
+    if not name.lower().endswith(".dart") or _DART_TOOL_DIR not in dirs:
+        return False
+    return _DART_SHIPPED_DIRS.isdisjoint(dirs[: dirs.index(_DART_TOOL_DIR)])
 
 
 def _is_benchmark_file(name: str) -> bool:
@@ -714,7 +806,8 @@ def code_origin(
     path.
 
     *is_test* is the flag ingestion stored, when the caller has it. ``None``
-    derives it from the path with the shared test classifier.
+    derives it from the path with the shared test classifier, and from *text*
+    where the content decides (:func:`declares_test`).
 
     *project* is the repository's name, so its own release banner is not
     taken for someone else's.
@@ -729,9 +822,7 @@ def code_origin(
     normalized, name, dirs = split
     header = _header_text(text)
 
-    if _is_generated_path(name, dirs) or (
-        header and (_declares_generated(name, header) or _is_reference_stub(name, dirs, header))
-    ):
+    if _is_generated_path(name, dirs) or (header and _is_generated_content(name, dirs, header)):
         return "generated"
     if _is_vendored_path(name.lower(), dirs) or (
         header
@@ -739,7 +830,44 @@ def code_origin(
         and _third_party_header(header, project)
     ):
         return "vendored"
-    return _maintained_origin(normalized, name, dirs, is_test, repo_root)
+    return _maintained_origin(normalized, name, dirs, is_test, repo_root, header)
+
+
+def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
+    return (
+        _declares_generated(name, header)
+        or _is_reference_stub(name, dirs, header)
+        or _is_bundler_output(header)
+    )
+
+
+# --------------------------------------------------------------------------
+# Test, by content
+# --------------------------------------------------------------------------
+
+#: Suffixes whose test status the file's content can decide.
+CONTENT_TEST_SUFFIXES: tuple[str, ...] = (".cls",)
+# An Apex ``@IsTest`` class is test code whatever its name. Comments and strings
+# are blanked first: ApexDoc and annotation arguments can quote the annotation.
+_APEX_CLASS_KEYWORD_RE = re.compile(r"\bclass\b", re.IGNORECASE)
+_APEX_IS_TEST_RE = re.compile(r"@istest\b", re.IGNORECASE)
+
+
+def declares_test(path: str, text: str | bytes | None) -> bool:
+    """Whether *text*, the head of the file at *path*, marks it test code.
+
+    An Apex class annotated ``@IsTest`` is; the annotation must sit before the
+    top-level ``class`` keyword, inside the first 4 KB like every content rule
+    here.
+    """
+    if not path.lower().endswith(CONTENT_TEST_SUFFIXES):
+        return False
+    # Imported here: the ingestion package imports this module.
+    from .ingestion.framework_routes import apex_code
+
+    code = apex_code(_header_text(text))
+    keyword = _APEX_CLASS_KEYWORD_RE.search(code)
+    return keyword is not None and _APEX_IS_TEST_RE.search(code, 0, keyword.start()) is not None
 
 
 def _maintained_origin(
@@ -748,12 +876,17 @@ def _maintained_origin(
     dirs: list[str],
     is_test: bool | None,
     repo_root: str | os.PathLike[str] | None,
+    header: str = "",
 ) -> CodeOrigin:
     """The origin of code this repository maintains: build, test, docs or
     examples, tooling, or production, in that precedence."""
     if _is_build_name(name, dirs, as_origin=True):
         return "build"
-    if is_test if is_test is not None else is_test_related_path(normalized):
+    if (
+        is_test
+        if is_test is not None
+        else is_test_related_path(normalized) or declares_test(normalized, header)
+    ):
         return "test"
     if _is_docs_example(normalized, dirs, repo_root):
         return "docs_example"

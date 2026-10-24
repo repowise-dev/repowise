@@ -13,7 +13,7 @@ import json
 from collections import Counter
 from typing import Any
 
-from repowise.core.author_identity import identity_kind, is_bot
+from repowise.core.author_identity import author_identity_key, identity_kind, is_bot
 
 from ._constants import (
     _DECISION_SIGNAL_WORDS,
@@ -181,13 +181,15 @@ def count_active_contributors(metadata_list: list[dict], *, window_days: int = 9
             if not isinstance(ts, int | float) or ts <= 0:
                 continue
             name = str(a.get("name") or "").strip()
-            if not name:
+            email = a.get("email")
+            key = author_identity_key(name, email)
+            if not key:
                 continue
-            if is_bot(name, a.get("email")):
+            if is_bot(name, email):
                 continue
-            prev = author_last_ts.get(name)
+            prev = author_last_ts.get(key)
             if prev is None or ts > prev:
-                author_last_ts[name] = int(ts)
+                author_last_ts[key] = int(ts)
 
     if not author_last_ts:
         return None

@@ -33,6 +33,7 @@ def compute_staleness(
     affected_files: list[str],
     git_meta_map: dict[str, dict],
     decision_text: str = "",
+    landed_at: datetime | None = None,
 ) -> float:
     """Fraction of *affected_files* that have changed since the record's birth.
 
@@ -40,6 +41,11 @@ def compute_staleness(
     nothing it governs has moved, 1.0 means all of it has. No tuned
     constants and no reading of commit messages. *decision_text* is
     accepted and unused so existing call sites keep working.
+
+    *landed_at* is when the record's own evidence commits reached the main
+    line (see :mod:`.landing`). A record written on a branch is born before
+    the squash that carries it, so the birth is the later of the two: the
+    landing commit is the decision, not a change to it.
 
     A file with no git metadata **after** the caller's gap fill counts as
     changed: the record names something the repository does not track, so
@@ -51,7 +57,7 @@ def compute_staleness(
         # `decision health` reports it as unscoped rather than fresh.
         return 0.0
 
-    created = _as_aware_utc(_coerce_dt(decision_created_at)) if decision_created_at else None
+    created = _anchor(decision_created_at, landed_at)
     changed = 0
     for fp in affected_files:
         meta = git_meta_map.get(fp)
@@ -65,6 +71,14 @@ def compute_staleness(
             changed += 1
 
     return round(changed / len(affected_files), 3)
+
+
+def _anchor(created_at: datetime | str | None, landed_at: datetime | None) -> datetime | None:
+    """The later of a record's birth and its landing, or None with no birth."""
+    if not created_at:
+        return None
+    created = _as_aware_utc(_coerce_dt(created_at))
+    return max(created, _as_aware_utc(landed_at)) if landed_at is not None else created
 
 
 def last_code_change(

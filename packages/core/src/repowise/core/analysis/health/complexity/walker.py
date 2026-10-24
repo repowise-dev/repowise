@@ -57,12 +57,14 @@ from .ast_utils import (
     _parameter_list,
 )
 from .class_analysis import _collect_classes
+from .cobol import walk_cobol
 from .cyclomatic import _walk_function_body
 from .deprecation import is_deprecated
 from .dispatch import dispatch_points, dispatch_share
 from .file_scan import scan_file
 from .gating import is_gated_off, module_false_constants
 from .languages import get_language_map
+from .markup import markup_rows, rows_within
 from .mock_walk import _count_mock_setup, file_may_contain_mocks
 
 # Re-exported so the package façade (``__init__``) and downstream consumers
@@ -82,7 +84,7 @@ from .models import (
 # which imports it directly from this module.
 from .nloc import _count_file_nloc
 from .perf_walk import _collect_perf_hits, perf_pass_runs
-from .signature import is_constructor, is_signature_fixed, typed_param_counts
+from .signature import bound_param_count, is_constructor, is_signature_fixed, typed_param_counts
 from .test_case import is_test_case
 
 if TYPE_CHECKING:
@@ -146,7 +148,8 @@ def walk_file(
     # The grammar follows the path, the language tag does not: everything
     # below still selects its dialects by ``language``. ``engine.py`` keys the
     # walk cache on this same tag, so the two must not drift.
-    grammar = _get_language(grammar_tag_for(language, abs_path))
+    grammar_tag = grammar_tag_for(language, abs_path)
+    grammar = _get_language(grammar_tag)
     if grammar is None:
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
@@ -163,6 +166,9 @@ def walk_file(
         log.debug("complexity_walker_parse_failed", path=abs_path, error=str(exc))
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
+    if language == "cobol":
+        return walk_cobol(tree.root_node, source)
+
     functions: list[FunctionComplexity] = []
     fc_by_node_id: dict[int, FunctionComplexity] = {}
     # Dialect first: it is a dict hit that rules out most languages before the
@@ -176,6 +182,7 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
+    markup = markup_rows(tree.root_node, grammar_tag, source)
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
@@ -203,7 +210,8 @@ def walk_file(
             terminal,
         ) = _collect_assertion_facts(body, lmap, asserts)
         name = _find_function_entry_name(fn_node, lmap)
-        typed, scalar = typed_param_counts(_parameter_list(fn_node), lmap)
+        params = _parameter_list(fn_node)
+        typed, scalar = typed_param_counts(params, lmap)
         dispatch = dispatch_points(body, lmap)
         fc = FunctionComplexity(
             name=name,
@@ -213,10 +221,12 @@ def walk_file(
             max_nesting=max_nest,
             cognitive=cognitive,
             nloc=scan.lines.count(body, source),
+            markup_nloc=rows_within(markup, body) if markup else 0,
             bumps=bumps,
             param_count=_count_parameters(fn_node),
             typed_param_count=typed,
             primitive_param_count=scalar,
+            bound_param_count=bound_param_count(params, lmap),
             is_constructor=is_constructor(fn_node, name, lmap),
             signature_fixed=is_signature_fixed(fn_node, lmap),
             complex_conditions=conditions,
@@ -246,6 +256,10 @@ def walk_file(
     perf_hits, io_boundary_names, perf_fn_facts = _collect_perf_hits(
         tree.root_node, language, lmap, scan.io_names
     )
+    if language == "apex":
+        from ..apex_markers import apex_marker_hits
+
+        perf_hits = [*perf_hits, *apex_marker_hits(tree.root_node)]
     return FileComplexity(
         functions=functions,
         classes=classes,

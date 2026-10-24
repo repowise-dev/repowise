@@ -8,7 +8,8 @@ a framework means dropping one dialect module and appending it to a registry —
 no orchestrator edits. HTTP keeps its own orchestrator rather than the shared
 :class:`..dialect.DialectExtractor` because it runs two passes the others do
 not: router mounts collected across files, and the index-backed routes and
-client calls.
+client calls. Each dialect still runs through :func:`..dialect.run_dialect`,
+the one gate and comment check every contract type shares.
 """
 
 from __future__ import annotations
@@ -16,19 +17,25 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
-from ..dialect import ContractDialect, union_extensions
+from ..dialect import ContractDialect, run_dialect, union_extensions
 from ..langs import PYTHON
+from .apex_callouts import ApexCalloutsDialect
+from .apex_rest import ApexRestDialect
 from .aspnet import AspNetDialect
+from .azure_functions import AzureFunctionsDialect
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
+from .fastify import FastifyDialect
 from .flask import FlaskDialect
 from .go import GoDialect
 from .go_clients import GoClientsDialect
-from .java_clients import JavaClientsDialect
+from .hapi import HapiDialect
+from .java_clients import JavaClientsDialect, MicroProfileClientsDialect, SpringClientsDialect
 from .jaxrs import JaxRsDialect
 from .js_clients import JsClientsDialect
+from .koa import KoaDialect
 from .kotlin_clients import KotlinClientsDialect
 from .laravel import LaravelDialect
 from .micronaut import MicronautDialect
@@ -38,6 +45,7 @@ from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .php_clients import PhpClientsDialect
 from .python_clients import PythonClientsDialect
+from .refit import RefitDialect
 from .remix import RemixDialect
 from .ruby_clients import RubyClientsDialect
 from .rust_axum import RustAxumDialect
@@ -69,6 +77,11 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     MicronautDialect(),
     NextAppDialect(),
     RemixDialect(),
+    ApexRestDialect(),
+    AzureFunctionsDialect(),
+    FastifyDialect(),
+    HapiDialect(),
+    KoaDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).
@@ -82,6 +95,10 @@ CONSUMER_DIALECTS: tuple[ContractDialect, ...] = (
     JavaClientsDialect(),
     KotlinClientsDialect(),
     PhpClientsDialect(),
+    ApexCalloutsDialect(),
+    SpringClientsDialect(),
+    MicroProfileClientsDialect(),
+    RefitDialect(),
 )
 
 
@@ -185,16 +202,12 @@ class HttpExtractor:
                     )
 
             for dialect in self.provider_dialects:
-                if suffix not in dialect.extensions:
-                    continue
                 if from_parse and dialect.name in _INDEX_BACKED_DIALECTS:
                     continue  # superseded by the index pass above
-                contracts.extend(dialect.extract(ctx))
+                contracts.extend(run_dialect(dialect, ctx))
             index_ids = {c.contract_id for c in consumers_from_parse}
             for dialect in self.consumer_dialects:
-                if suffix not in dialect.extensions:
-                    continue
-                found = dialect.extract(ctx)
+                found = run_dialect(dialect, ctx)
                 if index_ids and dialect.name in _INDEX_BACKED_CONSUMER_DIALECTS:
                     # Supersede per *contract*, not per file. Dropping the whole
                     # dialect for a file the index read would delete anything
@@ -221,10 +234,11 @@ class HttpExtractor:
         ]
         per_file: list[dict[str, str]] = []
         for rel_path, suffix, content in files:
-            ctx: ScanContext | None = None
+            ctx = ScanContext(repo_alias, rel_path, suffix, content)
             for dialect in collectors:
-                if suffix in dialect.extensions:
-                    ctx = ctx or ScanContext(repo_alias, rel_path, suffix, content)
+                # A collector may gate its repo-wide pass apart from extraction.
+                gate = getattr(dialect, "mount_requires", dialect.requires)
+                if ctx.suffix in dialect.extensions and ctx.has_any(gate):
                     found = dialect.collect_mounts(ctx)
                     if found:
                         per_file.append(found)

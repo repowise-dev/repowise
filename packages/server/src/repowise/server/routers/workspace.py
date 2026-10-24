@@ -13,8 +13,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.workspace import reads
+from repowise.core.workspace.update import synced_at_iso
 from repowise.server.deps import (
     get_cross_repo_enricher,
     get_workspace_config,
@@ -66,6 +68,13 @@ def _require_workspace(ws_config: object) -> None:
         raise HTTPException(status_code=404, detail="Not running in workspace mode")
 
 
+# The raw-sqlite form of ``crud.indexed_file``: these readers open each repo's
+# store directly, without a session.
+_INDEXED_FILE_SQL = "node_type = 'file' AND language NOT IN ({})".format(
+    ", ".join(f"'{lang}'" for lang in IMPORT_TARGET_LANGUAGES)
+)
+
+
 def _query_top_language(db_path: Path) -> str:
     """Return the most common language across graph_nodes in a repo's wiki.db."""
     if not db_path.exists():
@@ -74,7 +83,7 @@ def _query_top_language(db_path: Path) -> str:
         with sqlite3.connect(str(db_path)) as conn:
             row = conn.execute(
                 "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
-                "WHERE node_type = 'file' AND language IS NOT NULL AND language != '' "
+                f"WHERE {_INDEXED_FILE_SQL} AND language IS NOT NULL AND language != '' "
                 "GROUP BY language ORDER BY cnt DESC LIMIT 1"
             ).fetchone()
             return row[0] if row else "unknown"
@@ -82,47 +91,23 @@ def _query_top_language(db_path: Path) -> str:
         return "unknown"
 
 
-def _compute_health_score(file_count: int, doc_coverage_pct: float, hotspot_count: int) -> int:
-    """Derive a 0-100 health score from available repo metrics."""
-    if file_count == 0:
-        return 0
-    coverage_component = doc_coverage_pct * 0.6
-    hotspot_ratio = min(hotspot_count / max(file_count, 1), 1.0)
-    hotspot_component = (1.0 - hotspot_ratio) * 100 * 0.4
-    return max(0, min(100, round(coverage_component + hotspot_component)))
-
-
-def _resolve_graph_health_score(stats: dict) -> tuple[float, str]:
-    canonical = stats.get("health_score")
-    if canonical is not None:
-        return canonical, "canonical"
-    return (
-        float(
-            _compute_health_score(
-                stats.get("file_count", 0),
-                stats.get("doc_coverage_pct", 0.0),
-                stats.get("hotspot_count", 0),
-            )
-        ),
-        "derived",
-    )
-
-
 def _query_repo_stats(db_path: Path) -> dict:
     """Query basic stats from a repo's wiki.db using raw sqlite3.
 
     Returns a dict with repo_id, file_count, symbol_count, page_count,
-    doc_coverage_pct, hotspot_count, health_score, status, docs_enabled, and
-    docs_skip_reason.  All values default to sensible neutrals on error.
+    fresh_page_count, doc_coverage_pct, hotspot_count, health_score, status,
+    docs_enabled, docs_skip_reason, and (when the row is read) indexed_at.
+    All values default to sensible neutrals on error.
 
-    ``health_score`` is None when the repo carries no health metrics; callers
-    decide whether to fall back to a derived score or to render nothing.
+    ``health_score`` is None when the repo carries no health metrics, and
+    stays None: no other figure here measures code health.
     """
     result: dict = {
         "repo_id": None,
         "file_count": 0,
         "symbol_count": 0,
         "page_count": 0,
+        "fresh_page_count": 0,
         "doc_coverage_pct": 0.0,
         "hotspot_count": 0,
         "health_score": None,
@@ -151,26 +136,28 @@ def _query_repo_stats(db_path: Path) -> dict:
         conn = sqlite3.connect(str(db_path))
         c = conn.cursor()
 
-        # repo id
-        row = c.execute("SELECT id FROM repositories LIMIT 1").fetchone()
+        # repo id, and the sync time every other surface reports
+        row = c.execute("SELECT id, updated_at FROM repositories LIMIT 1").fetchone()
         if row:
             result["repo_id"] = row[0]
+            result["indexed_at"] = synced_at_iso(row[1])
 
-        # file count (graph_nodes)
-        row = c.execute("SELECT COUNT(*) FROM graph_nodes WHERE node_type = 'file'").fetchone()
+        # The raw-sqlite form of crud.count_files.
+        row = c.execute(f"SELECT COUNT(*) FROM graph_nodes WHERE {_INDEXED_FILE_SQL}").fetchone()
         result["file_count"] = row[0] if row else 0
 
-        # symbol count
-        row = c.execute("SELECT COALESCE(SUM(symbol_count), 0) FROM graph_nodes").fetchone()
+        # The raw-sqlite form of crud.count_symbols: one store per repo here.
+        row = c.execute("SELECT COUNT(*) FROM wiki_symbols").fetchone()
         result["symbol_count"] = int(row[0]) if row else 0
 
-        # page count
-        row = c.execute("SELECT COUNT(*) FROM wiki_pages").fetchone()
-        result["page_count"] = row[0] if row else 0
-
-        # doc coverage (avg confidence * 100)
-        row = c.execute("SELECT AVG(confidence) FROM wiki_pages").fetchone()
-        result["doc_coverage_pct"] = round(float(row[0] or 0.0) * 100, 1)
+        # Pages, fresh pages, and mean page confidence * 100. The last is named
+        # doc_coverage_pct on the wire; it is not a share of files documented.
+        pages, fresh, confidence = c.execute(
+            "SELECT COUNT(*), SUM(freshness_status = 'fresh'), AVG(confidence) FROM wiki_pages"
+        ).fetchone()
+        result["page_count"] = pages
+        result["fresh_page_count"] = int(fresh or 0)
+        result["doc_coverage_pct"] = round(float(confidence or 0.0) * 100, 1)
 
         # hotspot count — use the canonical is_hotspot flag, matching the rest
         # of the codebase (module_health, extract-demo-data). The earlier
@@ -221,12 +208,15 @@ async def get_workspace(
             repo_path = (ws_root_path / r.path).resolve()
             db_path = repo_path / ".repowise" / "wiki.db"
             stats = _query_repo_stats(db_path)
+        # The member's own store first: a repo updated on its own leaves the
+        # config's time behind.
+        indexed_at = stats.pop("indexed_at", r.indexed_at)
         repo_entries.append(
             WorkspaceRepoEntry(
                 alias=r.alias,
                 path=r.path,
                 is_primary=r.is_primary,
-                indexed_at=r.indexed_at,
+                indexed_at=indexed_at,
                 last_commit_at_index=r.last_commit_at_index,
                 **stats,
             )
@@ -447,10 +437,6 @@ async def get_workspace_graph(
             db_path = repo_path / ".repowise" / "wiki.db"
             stats = _query_repo_stats(db_path)
             top_language = _query_top_language(db_path)
-            health_score, health_score_source = _resolve_graph_health_score(stats)
-        else:
-            health_score = 0.0
-            health_score_source = "derived"
         rid = stats.get("repo_id") or r.alias
         repo_id_map[r.alias] = rid
         nodes.append(
@@ -459,8 +445,7 @@ async def get_workspace_graph(
                 name=r.alias,
                 file_count=stats.get("file_count", 0),
                 coverage_pct=stats.get("doc_coverage_pct", 0.0),
-                health_score=health_score,
-                health_score_source=health_score_source,
+                health_score=stats.get("health_score"),
                 top_language=top_language,
             )
         )
@@ -701,7 +686,12 @@ async def get_workspace_actions(
             continue
         try:
             async with get_session(resolve_session_factory(request.app.state, repo_id)) as session:
-                view = await load_actions_view(session, repo_id)
+                view = await load_actions_view(
+                    session,
+                    repo_id,
+                    lookup=getattr(request.app.state, "cross_repo_enricher", None),
+                    alias=r.alias,
+                )
         except Exception as exc:  # one repository must not cost the page
             _log.warning("workspace actions: %s unavailable: %s", r.alias, exc)
             repos.append(

@@ -552,6 +552,44 @@ def test_kotlin_assertion_blocks():
     assert few is not None and few.assertion_blocks == []
 
 
+def test_swift_nesting_and_ccn():
+    results = _walk("swift/nested.swift", "swift")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+
+
+def test_swift_scores_the_kotlin_fixture_s_twin_the_same():
+    """``swift/nested.swift`` is ``kotlin/nested.kt`` line for line: the two
+    maps must agree on every number the control flow gives."""
+    swift = {r.name: (r.ccn, r.max_nesting, r.cognitive) for r in _walk("swift/nested.swift", "swift")}
+    kotlin = {r.name: (r.ccn, r.max_nesting, r.cognitive) for r in _walk("kotlin/nested.kt", "kotlin")}
+    assert swift == kotlin
+    assert swift["deeplyNested"] == (5, 4, 10)
+
+
+def test_swift_class_cohesion():
+    classes = _walk_classes("swift/classes.swift", "swift")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert (cohesive.lcom4, cohesive.method_count, cohesive.field_count) == (1, 4, 2)
+    # A struct is a class kind too. Each cluster is an accessor pair over one
+    # field and the loner touches none, as in the Kotlin fixture.
+    assert (splintered.lcom4, splintered.method_count, splintered.field_count) == (1, 5, 2)
+    # ``self.total`` is read as a use of the field: every pair of Cohesive's
+    # methods shares one, and few of Splintered's do. Kotlin's twin agrees.
+    kotlin = _walk_classes("kotlin/classes.kt", "kotlin")
+    assert cohesive.tcc == kotlin["Cohesive"].tcc == 1.0
+    assert splintered.tcc == kotlin["Splintered"].tcc < 0.5
+
+
 def test_cpp_nesting_and_ccn():
     results = _walk("cpp/nested.cpp", "cpp")
     deep = _find(results, "deeplyNested")
@@ -949,3 +987,149 @@ def test_php_assertion_blocks():
     assert many.assertion_blocks[0][2] == 5
     few = _find(results, "testFewAsserts")
     assert few is not None and few.assertion_blocks == []
+
+
+def _walk_source(source: str, language: str, filename: str):
+    _require_language(language)
+    results = walk_file_complexity(filename, language, source.encode())
+    if not results:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    return {r.name: r for r in results}
+
+
+# A try neither branches nor nests: each catch opens one level for its own
+# body, and the guarded and finally bodies stay at the try's depth.
+@pytest.mark.parametrize(
+    ("language", "filename", "source", "ccn", "nesting", "cognitive"),
+    [
+        (
+            "python",
+            "f.py",
+            "def f(a):\n try:\n  g()\n except ValueError:\n  if a:\n   return 2\n return 3\n",
+            3,
+            2,
+            3,
+        ),
+        (
+            "python",
+            "f.py",
+            "def f(a):\n try:\n  if a:\n   g()\n finally:\n  if a:\n   h()\n",
+            3,
+            1,
+            2,
+        ),
+        (
+            "python",
+            "f.py",
+            "def f():\n try:\n  try:\n   g()\n  except KeyError:\n   h()\n except ValueError:\n  k()\n",
+            3,
+            1,
+            2,
+        ),
+        (
+            "java",
+            "F.java",
+            "class F {\n  int f(boolean a) {\n    try (Reader r = open()) {\n      g();\n"
+            "    } catch (IOException e) {\n      if (a) { return 2; }\n    }\n    return 3;\n  }\n}\n",
+            3,
+            2,
+            3,
+        ),
+        (
+            "kotlin",
+            "f.kt",
+            "fun f(a: Boolean): Int {\n    val x = try {\n        g()\n    } catch (e: Exception) {\n"
+            "        if (a) 2 else 3\n    }\n    return x\n}\n",
+            3,
+            2,
+            3,
+        ),
+    ],
+    ids=["try-except-if", "try-finally", "nested-try", "java-try-with-resources", "kotlin-try-expression"],
+)
+def test_try_does_not_nest(language, filename, source, ccn, nesting, cognitive):
+    fn = _walk_source(source, language, filename)["f"]
+    assert (fn.ccn, fn.max_nesting, fn.cognitive) == (ccn, nesting, cognitive)
+
+
+def test_catch_still_nests_its_body():
+    source = (
+        "def f(a):\n"
+        "    try:\n"
+        "        g()\n"
+        "    except ValueError:\n"
+        "        log()\n"
+        "        log()\n"
+        "        log()\n"
+        "    return 3\n"
+    )
+    fn = _walk_source(source, "python", "f.py")["f"]
+    assert fn.max_nesting == 1
+    # The nesting locator names the except clause, not the try around it.
+    assert fn.deepest_block == (4, 7)
+
+
+def test_apex_nesting_and_ccn():
+    results = _walk("apex/nested.cls", "apex")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    # if > for > if > while > catch: a try opens no level of its own.
+    assert deep.max_nesting == 5
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # if + else-if + if + ternary + && + || over the base path; ``??`` is no decision.
+    assert many.ccn == 7
+    # A ``switch on`` counts once for the dispatch, not per ``when``.
+    dispatch = _find(results, "dispatch")
+    assert dispatch is not None and dispatch.ccn == 2
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0 and shallow.param_count == 1
+
+
+def test_apex_property_accessors_are_one_unit_named_for_the_property():
+    results = _walk("apex/nested.cls", "apex")
+    names = [r.name for r in results]
+    # ``total { get { ... } set; }`` is one unit; ``label { get; set; }`` holds
+    # no code and is none.
+    assert names.count("total") == 1
+    assert "label" not in names
+    assert _find(results, "total").ccn == 2
+
+
+def test_apex_trigger_is_a_unit():
+    source = (
+        "trigger AccountTrigger on Account (before insert) {\n"
+        "    for (Account a : Trigger.new) {\n"
+        "        if (a.Name == null) { a.addError('x'); }\n"
+        "    }\n"
+        "}\n"
+    )
+    fn = _walk_source(source, "apex", "AccountTrigger.trigger")["AccountTrigger"]
+    assert (fn.ccn, fn.max_nesting) == (3, 2)
+
+
+def test_apex_class_cohesion():
+    classes = _walk_classes("apex/classes.cls", "apex")
+    assert classes["Cohesive"].lcom4 == 1
+    # Bare ``a`` and ``this.b`` both reach a member.
+    assert classes["Splintered"].lcom4 == 2
+    assert classes["Splintered"].method_count == 4
+    # The accessor unit is a method; the auto-property is a field only.
+    assert classes["WithProperties"].method_count == 2
+    # Interfaces and enums nested in a class are not cohesion units.
+    assert "Shape" not in classes and "Mode" not in classes
+
+
+def test_apex_assertions_and_test_cases():
+    results = _walk("apex/assertions.cls", "apex")
+    many = _find(results, "testManyAsserts")
+    assert many is not None and many.assertion_count == 5
+    # ``Assert.areEqual`` / ``Assert.isTrue`` form a run; ``System.assertEquals``
+    # counts as an assertion but, like any split ``x.assertY`` call, joins no run.
+    assert many.assertion_blocks == [(9, 10, 2)]
+    by_name = {r.name: r for r in results}
+    # ``@IsTest`` in any case, and the legacy ``testMethod`` modifier.
+    for case in ("testManyAsserts", "testFewAsserts", "legacyCase", "checksNothing"):
+        assert by_name[case].is_test_case, case
+    for helper in ("makeData", "compute"):
+        assert not by_name[helper].is_test_case, helper

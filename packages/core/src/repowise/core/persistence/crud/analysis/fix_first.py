@@ -75,6 +75,7 @@ from ...models import (
 from ...read_snapshots import decode_or_none, read_snapshot, refresh_snapshot, snapshot_key
 from ...sql import json_text
 from .plain_rows import plain_rows, row_shape
+from .refactoring import shown_plan_predicate
 from .refactoring_recommendations import repository_checkout, validation_inputs
 
 #: Files read for plan-less finding items, by open code-shape deduction.
@@ -449,10 +450,17 @@ async def _plans(
                 s.refactoring_type,
                 s.file_path,
                 s.target_symbol,
+                s.status,
                 s.evidence_json,
                 s.plan_json,
                 s.rank_json,
-            ).where(s.repository_id == repo_id, or_(*wanted))
+            ).where(
+                s.repository_id == repo_id,
+                or_(*wanted),
+                # The registry's withheld types, as on every plan list. Fix
+                # first is its own measured lens, so no language gate applies.
+                shown_plan_predicate(include_unverified=True),
+            )
         )
     )
 

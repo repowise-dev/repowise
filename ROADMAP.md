@@ -34,7 +34,7 @@ Languages land on a five-rung ladder rather than a yes/no list, because "do you
 support X" has five different useful answers. Each rung is defined, with what it
 buys you, in
 [docs/layers/LANGUAGE_SUPPORT.md](docs/layers/LANGUAGE_SUPPORT.md). Today that
-ladder covers **40 languages, 26 of them parsed to a full AST**.
+ladder covers **42 languages, 28 of them parsed to a full AST**.
 
 ### New languages
 
@@ -44,7 +44,6 @@ ladder covers **40 languages, 26 of them parsed to a full AST**.
 | **ABAP** | Exploring | The same argument as COBOL, in SAP estates. |
 | **RPG / AS400** | Exploring | Named alongside COBOL often enough to track. |
 | **Fortran** | Exploring | Scientific and engineering codebases with long lifespans and thin documentation. |
-| **Apex** | Planned | Salesforce estates, where the org is often the least documented system a company runs. Apex is Java-shaped, and Lightning Web Components are already covered as JavaScript and HTML. |
 | **Ada** | Exploring | Defense and aerospace, long-lived and thinly documented, and usually in the same estates asking about COBOL. |
 | **Template dialects** (Django/Jinja, ERB, Blade, Thymeleaf, Go templates) | Planned | Today they parse cleanly as HTML and yield nothing, because `{% extends "base.html" %}` is plain text to an HTML parser. A stated ceiling, not an oversight. |
 
@@ -70,7 +69,7 @@ Adding one touches per-language subpackages rather than the parser core, which
 is what makes this tractable at the rate above. Open an issue and we will scope
 it in public. Commercial customers can have a language or framework built and
 maintained by us as a line item, which is
-[GA today](docs/business/COMMERCIAL.md#54-enterprise-operations), and the result
+[GA today](docs/business/COMMERCIAL.md#55-enterprise-operations), and the result
 still ships to everyone under AGPL.
 
 ---
@@ -117,7 +116,7 @@ gaps between them.
 |---|---|---|
 | Cross-repo intelligence at scale | In development | Hotspots, dead code and ownership across a whole estate with centralized dashboards, beyond the local-workspace scope already shipping in open source |
 | Column-level blast radius for SQL / dbt | Planned | Lineage is table-level today through `ref()` and `source()`. Column-level answers "who breaks if I drop this field" |
-| Custom decision policies | Planned | Required-reviewer rules, mandatory `get_why` checks on governed paths, and merge gating tied to findings |
+| Organisation-wide change policy | Planned | Local change policy ships today ([POLICY.md](docs/layers/POLICY.md)). This adds central policy management across repositories, approvals and a policy audit trail |
 
 ---
 
@@ -166,6 +165,7 @@ The half of the roadmap that has nothing to do with procurement.
 | Interface-dispatch recall | Exploring | The measured ceiling on our call-graph recall. On `syft`, 44% of what we miss is dynamic dispatch alone and a further 39% is dispatch with a closure at one end. Nobody in the [measured field](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control) has cleared it, at 6.5 possible targets per call site, and matching that recall naively means emitting six edges where one is right. |
 | A sealed JavaScript / TypeScript retrieval corpus | In development | Built and half graded. The sealed half is unrun, and nothing from it is quoted anywhere until it is evaluated, once. |
 | More compiler oracles for graph precision | Exploring | Go and TypeScript are done. C#, Java, Kotlin and C++ each need a toolchain and a working build per repository; Rust has the toolchain and no sound call-graph tool exists for it; Python, Ruby and PHP admit no oracle even in principle. The honest status is "probably not", not "planned". |
+| Foresight | Waitlist | Learned models that rank where a fix goes, what a change forgot and which tests to update, with no LLM. Hosted and enterprise. [FORESIGHT.md](docs/business/FORESIGHT.md) |
 | Session intelligence harvesting | Planned | Architectural decisions surfaced from AI coding sessions and proposed to the team knowledge base, so knowledge generated during agent work does not evaporate when the session ends |
 
 ---

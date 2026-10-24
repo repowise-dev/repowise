@@ -287,11 +287,11 @@ async def list_decisions(
     include_proposed: bool = True,
     accepted: bool | None = None,
     include_dismissed: bool = False,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
     sort: str = "priority",
 ) -> list[DecisionRecord]:
-    """Return decision records with optional filters.
+    """Return decision records with optional filters; ``limit=None`` returns every row.
 
     Dismissed records are tombstones and only show up when explicitly asked
     for via ``status="dismissed"``.

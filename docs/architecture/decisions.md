@@ -101,14 +101,15 @@ and always read `active`. Only `active` and `needs_review` govern.
 
 ## Supersession and conflict detection
 
-`evolution.detect_supersessions_and_conflicts` used embedding similarity to
-scope candidate pairs, then opposing verbs or reversal phrases, with a model
-tiebreaker. It is disabled (`SEMANTIC_SUPERSESSION_ENABLED = False`): among
-records from one repository, high cosine similarity was the baseline, not
-evidence of a shared topic. It was the only writer of `supersedes` and
-`conflicts_with` edges. The diff-driven pass on `update` (`reverts.py`) still
-marks a decision a commit reversed, and `deprecate --superseded-by` records the
-successor on the record.
+`evolution.detect_supersessions_and_conflicts` scopes candidate pairs by
+embedding similarity, then looks for opposing verbs or reversal phrases, with a
+model tiebreaker. It is disabled (`SEMANTIC_SUPERSESSION_ENABLED = False`):
+among records from one repository, high cosine similarity is the baseline, not
+evidence of a shared topic. It is the only writer of `supersedes` and
+`conflicts_with` edges, so those edges are not inferred. Lineage comes from the
+diff-driven pass on `update` (`reverts.py`), which marks a decision a commit
+reversed, and from `deprecate --superseded-by`, which records the successor on
+the record.
 
 ## Session mining
 
@@ -132,6 +133,9 @@ Three stages:
    record is written as a `proposed` candidate with `source: session`. Repeat
    observations add evidence rows.
 
+The `session` source ships off. In a measured run on the Repowise repository it produced 139
+records, none with a context and 115 with neither context nor rationale.
+
 Staging lives in `.repowise/sessions/sessions.db`. Transcripts never leave the
 machine; only distilled decision text is stored. The same switch gates
 injected-decision feedback and update-time hook-efficacy replay.
@@ -147,6 +151,40 @@ must cite sent ids, quote near-verbatim, overlap the claim's content words,
 and name only paths the cited turns' tools touched. Bundled claims are flagged
 for splitting. Unsent prose stays queued oldest-first; a provider failure
 requeues and retries on the next two updates.
+
+## Tracked manifest
+
+`repowise decision export` writes accepted decisions to
+`.repowise/decisions.yaml`; `repowise decision import` reads them back:
+
+```yaml
+# Accepted architectural decisions for this repository.
+version: 1
+decisions:
+- id: 228ddce7b28c4f93a8f1e8976dd1ba4c
+  title: Avoid feature gating
+  decision: Do not add feature gating.
+  reason: Feature flags outlived their purpose here
+  scope:
+  - packages/core
+  currency: active
+  source: session
+  accepted_at: '2026-09-01T13:04:22+00:00'
+  accepted_by: Jane Doe
+```
+
+- The file is ordered by id with a fixed field order, so a one-line change is
+  a one-line diff.
+- `export` un-ignores this one file if a `.repowise/` rule in `.gitignore`
+  hides it.
+- On `import` the file wins: new entries are created and accepted with the
+  file as accepter (signer kind `import`), changed entries are re-accepted, and
+  entries missing a reason or scope are skipped.
+- Records the file does not hold are left alone on `import`, since a missing
+  line may be a bad merge.
+- An empty store never overwrites a non-empty committed file, and a file
+  written by a newer Repowise is refused.
+- Candidates and episodes stay out of the file.
 
 ## Review state and lanes
 
@@ -165,7 +203,9 @@ all-time and a queue a store predates is reported absent.
 ## Hook delivery
 
 `augment_cmd/decision_inject.py`: session start scores records against the
-working set expanded one hop, multiplies relevance by confidence and freshness,
+session's likely working set (dirty and staged files, branch changes, the
+previous session's edits, branch-name tokens) expanded one hop through imports
+and co-change partners, multiplies relevance by confidence and freshness,
 and injects under `_TOKEN_CAP = 400`, with candidates in a separate section
 under `_CANDIDATE_TOKEN_CAP = 120`. Edit-time notices go through
 `decision_node_links`, once per session per decision. Injected ids are recorded

@@ -117,3 +117,19 @@ def test_refactoring_plan_spec_matches_golden(case: dict) -> None:
 def test_refactoring_opportunity_matches_golden(case: dict, flavor: str) -> None:
     text = render_opportunity(case["detail"], flavor, case.get("repo_name"))
     assert text == _GOLDEN["refactoring_opportunity"][case["name"]][flavor]
+
+
+def test_a_step_fences_code_that_spans_lines_and_lists_its_notes() -> None:
+    from repowise.core.agent_prompts.fix_first import _step
+
+    step = {
+        "order": 1, "text": "Extract it", "file_path": "a.py", "line": 9, "mechanical": False,
+        "signature": "class _Ctx:\n    a: int\n\ndef f(ctx: _Ctx):",
+        "call": "f(ctx)", "notes": ["Read a in the helper as ctx.a."],
+    }
+    assert _step(step) == (
+        "1. Extract it (`a.py:9`) [judgment]\n"
+        "   Helper:\n   ```\n   class _Ctx:\n       a: int\n\n   def f(ctx: _Ctx):\n   ```\n"
+        "   Call: `f(ctx)`\n"
+        "   Note: Read a in the helper as ctx.a."
+    )

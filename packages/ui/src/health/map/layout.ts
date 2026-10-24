@@ -1,103 +1,88 @@
 /**
- * Where every node sits, as one pure function of the rows and the canvas size.
+ * Packing files into a disc, and the world square the map lives in.
  *
  * Deterministic on purpose. A reader builds spatial memory of this field, and
  * that memory is only worth having if the same repository lays out the same
- * way every time, under every lens. Nothing here reads a lens.
- */
-
-import * as d3 from "d3-hierarchy";
-import type { CodeHealthMapFile, Galaxy, GalaxyAgg } from "./types";
-
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5)); // ~2.39996 rad
-
-/**
- * Group flat file rows into per-module galaxies, dropping zero-NLOC files
- * (they cannot be sized). Files come back sorted biggest-first.
- */
-export function groupByModule(files: CodeHealthMapFile[]): GalaxyAgg[] {
-  const byModule = new Map<string, CodeHealthMapFile[]>();
-  for (const f of files) {
-    if (f.nloc <= 0) continue;
-    const key = f.module ?? "(ungrouped)";
-    const arr = byModule.get(key);
-    if (arr) arr.push(f);
-    else byModule.set(key, [f]);
-  }
-  const out: GalaxyAgg[] = [];
-  for (const [module, group] of byModule) {
-    group.sort((a, b) => b.nloc - a.nloc);
-    out.push({
-      module,
-      files: group,
-      totalNloc: group.reduce((s, f) => s + f.nloc, 0),
-      maxNloc: group[0]?.nloc ?? 1,
-    });
-  }
-  // Biggest galaxies first -> stable z-order (small ones paint on top).
-  out.sort((a, b) => b.totalNloc - a.totalNloc);
-  return out;
-}
-
-/** Stable, well-spread hash so a module maps to a consistent palette family. */
-export function moduleColorId(module: string): number {
-  let h = 0;
-  for (let i = 0; i < module.length; i++) h = (h * 31 + module.charCodeAt(i)) | 0;
-  return Math.abs(h);
-}
-
-/**
- * Galaxy placement (d3-pack) plus hub-and-spoke file layout (phyllotaxis).
+ * way every time, under every lens. Nothing here reads a lens or the canvas
+ * size: the field is laid out once into a fixed world square and the camera
+ * fits that square to whatever box it is given.
  *
- * `S` is the square the field is packed into; the caller centres it in the
- * container. Returns an empty field for an empty input rather than throwing,
- * because a host renders before its data lands.
+ * Where the discs go is `area-layout.ts`; this module fills one disc with the
+ * files it hosts, packed tight within each folder, biggest first, so related
+ * files sit side by side and nothing overlaps.
  */
-export function packGalaxies(files: CodeHealthMapFile[], S: number): Galaxy[] {
-  if (S === 0 || files.length === 0) return [];
-  const aggs = groupByModule(files);
-  const root = d3
-    .hierarchy<{ value?: number; agg?: GalaxyAgg; children?: unknown[] }>(
-      { children: aggs.map((a) => ({ value: a.totalNloc, agg: a })) },
-      (d) => d.children as { value?: number; agg?: GalaxyAgg }[] | undefined,
-    )
-    .sum((d) => d.value ?? 0);
-  d3.pack<{ value?: number; agg?: GalaxyAgg }>().size([S, S]).padding(S * 0.012)(
-    root as d3.HierarchyNode<{ value?: number; agg?: GalaxyAgg }>,
-  );
-  const galaxies: Galaxy[] = [];
-  for (const leaf of root.leaves() as d3.HierarchyCircularNode<{ agg?: GalaxyAgg }>[]) {
-    const agg = leaf.data.agg;
-    if (!agg) continue;
-    const R = leaf.r;
-    const cx = leaf.x;
-    const cy = leaf.y;
-    const n = agg.files.length;
-    const spread = R * 0.84;
-    const maxNodeR = Math.max(2, R * 0.16);
-    galaxies.push({
-      module: agg.module,
-      cx,
-      cy,
-      R,
-      fileCount: n,
-      colorId: moduleColorId(agg.module),
-      nodes: agg.files.map((file, i) => {
-        const rr = spread * Math.sqrt((i + 0.55) / n);
-        const ang = i * GOLDEN_ANGLE;
-        const nodeR = Math.max(
-          1.2,
-          Math.min(maxNodeR, maxNodeR * Math.sqrt(file.nloc / agg.maxNloc)),
-        );
-        return { file, x: cx + rr * Math.cos(ang), y: cy + rr * Math.sin(ang), r: nodeR };
-      }),
-    });
-  }
-  return galaxies;
+
+import { packEnclose, packSiblings } from "d3-hierarchy";
+import { dirOf } from "../../lib/areas";
+import type { CodeHealthMapFile } from "./types";
+
+/** Side of the world square the field is laid out in. */
+export const WORLD = 1000;
+
+/** Lines below which a file is drawn at the floor size, so it stays a dot. */
+const NLOC_FLOOR = 4;
+/** Air around each dot, in floor radii, so neighbours never touch. */
+const DOT_GAP = 0.45;
+/** Air around each folder cluster, in floor radii, so folders read apart. */
+const FOLDER_GAP = 1.6;
+const FLOOR_R = Math.sqrt(NLOC_FLOOR);
+
+export const byNlocThenPath = (a: CodeHealthMapFile, b: CodeHealthMapFile) =>
+  b.nloc - a.nloc || (a.file_path < b.file_path ? -1 : 1);
+
+/** A file placed relative to its cluster's centre, before scaling. */
+export interface LocalNode {
+  file: CodeHealthMapFile;
+  x: number;
+  y: number;
+  r: number;
 }
 
-/** Deterministic pseudo-random in [0,1) for the static starfield. */
-export function rand(i: number): number {
-  const x = Math.sin(i * 127.1) * 43758.5453;
-  return x - Math.floor(x);
+/**
+ * Pack one disc's files: tight within each folder, then the folders packed
+ * together. `radius` maps lines to a radius; the result is centred on 0,0 and
+ * `R` is the smallest circle that holds it.
+ */
+export function packCluster(
+  files: readonly CodeHealthMapFile[],
+  radius: (nloc: number) => number = fileRadius,
+): { nodes: LocalNode[]; R: number } {
+  const dotPad = FLOOR_R * DOT_GAP;
+  const byDir = new Map<string, CodeHealthMapFile[]>();
+  for (const f of [...files].sort(byNlocThenPath)) {
+    const d = dirOf(f.file_path);
+    const arr = byDir.get(d);
+    if (arr) arr.push(f);
+    else byDir.set(d, [f]);
+  }
+  const clusters = [...byDir.entries()].map(([dir, group]) => {
+    const dots = packSiblings(group.map((file) => ({ file, r: radius(file.nloc) + dotPad })));
+    const enc = packEnclose(dots) ?? { x: 0, y: 0, r: dotPad };
+    return { dir, dots, ex: enc.x, ey: enc.y, r: enc.r + (byDir.size > 1 ? FLOOR_R * FOLDER_GAP : 0) };
+  });
+  clusters.sort((a, b) => b.r - a.r || (a.dir < b.dir ? -1 : 1));
+  const placed = packSiblings(clusters);
+  const enc = packEnclose(placed) ?? { x: 0, y: 0, r: FLOOR_R };
+  const nodes: LocalNode[] = [];
+  for (const c of placed) {
+    for (const d of c.dots) {
+      nodes.push({
+        file: d.file,
+        x: c.x - enc.x + (d.x - c.ex),
+        y: c.y - enc.y + (d.y - c.ey),
+        r: d.r - dotPad,
+      });
+    }
+  }
+  return { nodes, R: enc.r + FLOOR_R };
+}
+
+/** A file's radius before scaling: area is lines, floored so a tiny file is a dot. */
+export function fileRadius(nloc: number): number {
+  return Math.sqrt(Math.max(NLOC_FLOOR, nloc));
+}
+
+/** The camera that shows the whole world square in a `w` by `h` box. */
+export function fitCamera(w: number, h: number): { cx: number; cy: number; scale: number } {
+  return { cx: WORLD / 2, cy: WORLD / 2, scale: (Math.max(1, Math.min(w, h)) * 0.94) / WORLD };
 }

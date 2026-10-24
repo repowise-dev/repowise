@@ -58,14 +58,14 @@ def _row(co_change_partners_json: str) -> SimpleNamespace:
 
 def test_well_formed_partners_pass_through() -> None:
     raw = json.dumps([{"file_path": "b.py", "co_change_count": 4.25}])
-    out = GitMetadataResponse.from_orm(_row(raw))
+    out = GitMetadataResponse.from_orm(_row(raw), attribution_on=True)
     assert out.co_change_partners == [{"file_path": "b.py", "co_change_count": 4.25}]
 
 
 def test_malformed_partners_yield_an_empty_list_not_an_error() -> None:
-    assert GitMetadataResponse.from_orm(_row("not json")).co_change_partners == []
+    assert GitMetadataResponse.from_orm(_row("not json"), attribution_on=True).co_change_partners == []
 
 
 def test_non_record_elements_are_dropped() -> None:
     raw = json.dumps(["b.py", {"file_path": "c.py"}])
-    assert GitMetadataResponse.from_orm(_row(raw)).co_change_partners == [{"file_path": "c.py"}]
+    assert GitMetadataResponse.from_orm(_row(raw), attribution_on=True).co_change_partners == [{"file_path": "c.py"}]

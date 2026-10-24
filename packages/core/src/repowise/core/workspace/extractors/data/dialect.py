@@ -13,6 +13,8 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import line_at
 from ..dialect import build_contract
 from .names import normalize_table_name
@@ -29,7 +31,7 @@ def build_table_provider(
     table_raw: str,
     framework: str,
     line: int | None = None,
-    confidence: float = 0.85,
+    origin: ContractOrigin = ContractOrigin.EXPLICIT_TABLE,
     schema: str | None = None,
 ) -> Contract | None:
     """Build a provider contract for a declared table, or ``None``.
@@ -49,7 +51,7 @@ def build_table_provider(
         contract_type="data",
         role="provider",
         symbol_name=f"{framework}:{table_raw}",
-        confidence=confidence,
+        origin=origin,
         line=line,
         meta={"table": table, "framework": framework, **({"schema": schema} if schema else {})},
     )
@@ -62,7 +64,7 @@ def build_table_consumer(
     verb: str,
     client: str,
     line: int | None = None,
-    confidence: float = 0.7,
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL,
 ) -> Contract | None:
     """Build a consumer contract for a table referenced from app code.
 
@@ -79,7 +81,7 @@ def build_table_consumer(
         contract_type="data",
         role="consumer",
         symbol_name=f"{client}:{verb} {table}",
-        confidence=confidence,
+        origin=origin,
         line=line,
         meta={"table": table, "verb": verb, "client": client},
     )
@@ -102,20 +104,14 @@ def dedup_consumers(
     return out
 
 
-EXPLICIT_CONFIDENCE = 0.85
-CONVENTION_CONFIDENCE = 0.6
-# A declaration that evolves a table (``ALTER TABLE``, ``Schema::table``).
-ALTER_CONFIDENCE = 0.8
-
-
-#: One table declaration: ``(raw_name, confidence, line)``.
-_Found = tuple[str, float, int]
+#: One table declaration: ``(raw_name, origin, line)``.
+_Found = tuple[str, ContractOrigin, int]
 
 
 def found_names(
     pattern: re.Pattern[str],
     content: str,
-    confidence: float,
+    origin: ContractOrigin,
     transform: Callable[[str], str] = str,
 ) -> list[_Found]:
     r"""Every match of *pattern*'s first group, with the line it sits on.
@@ -126,7 +122,7 @@ def found_names(
     declaration.
     """
     return [
-        (transform(m.group(1)), confidence, line_at(content, m.start(1)))
+        (transform(m.group(1)), origin, line_at(content, m.start(1)))
         for m in pattern.finditer(content)
     ]
 
@@ -142,7 +138,7 @@ def dedup_emit(
     """One provider per raw name in *found*, skipping names already in *seen*."""
     out: list[Contract] = []
     seen = set() if seen is None else seen
-    for raw, confidence, line in found:
+    for raw, origin, line in found:
         if raw in seen:
             continue
         seen.add(raw)
@@ -151,7 +147,7 @@ def dedup_emit(
             table_raw=raw,
             framework=framework,
             line=line,
-            confidence=confidence,
+            origin=origin,
             schema=schema,
         )
         if contract is not None:
