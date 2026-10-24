@@ -309,6 +309,31 @@ class TestSqlStringConsumers:
         contracts = DataExtractor().extract(tmp_path, "api", make_exclude_predicate())
         assert contracts == []
 
+    def test_csharp_verbatim_multiline_dapper_queries(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "src/Repositories/OrderRepo.cs",
+            '''
+            public class OrderRepo {
+                const string query = @"
+                    SELECT o.Id, c.Name
+                    FROM Orders o
+                    JOIN Customers c ON o.CustomerId = c.Id
+                    WHERE o.Total > 100";
+
+                public void MarkPaid(int id) {
+                    var sql = $@"
+                        UPDATE Invoices
+                        SET Status = ""Paid""
+                        WHERE Id = {id}";
+                }
+            }
+            ''',
+        )
+        contracts = DataExtractor().extract(tmp_path, "billing")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"data::orders", "data::customers", "data::invoices"}
+
     def test_system_catalogs_and_alembic_version_skipped(self, tmp_path: Path) -> None:
         _write(
             tmp_path,

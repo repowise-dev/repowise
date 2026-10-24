@@ -39,6 +39,7 @@ _STRING_RE = re.compile(
     r'"""(?P<t1>.*?)"""'
     r"|'''(?P<t2>.*?)'''"
     r"|`(?P<bt>[^`]*)`"
+    r'|(?:@\$?|\$@)"(?P<cs_verb>(?:""|[^"])*)"(?!")'
     r'|"(?P<dq>(?:[^"\\\n]|\\.)*)"'
     r"|'(?P<sq>(?:[^'\\\n]|\\.)*)'",
     re.DOTALL,
@@ -160,6 +161,8 @@ class SqlStringsDialect:
         literals: list[tuple[str, int]] = []
         for m in _STRING_RE.finditer(content):
             s = next(g for g in m.groups() if g is not None)
+            if m.group("cs_verb") is not None:
+                s = s.replace('""', '"')
             if (
                 len(s) >= _MIN_LITERAL_LEN
                 and _opens_with_sql(s)
@@ -202,9 +205,7 @@ class SqlStringsDialect:
             # reads. sqlglot models a reference to one as exp.Table all the
             # same, so ``WITH ranked AS (...) ... FROM ranked`` reported a
             # table named ``ranked``. Only unqualified references shadow.
-            cte_names = {
-                cte.alias.lower() for cte in stmt.find_all(exp.CTE) if cte.alias
-            }
+            cte_names = {cte.alias.lower() for cte in stmt.find_all(exp.CTE) if cte.alias}
             for table in stmt.find_all(exp.Table):
                 name = table.name
                 if not name:
