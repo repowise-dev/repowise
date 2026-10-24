@@ -245,6 +245,24 @@ class TestHttpExtractor:
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"}
         assert "http::GET::/api/v1/users" in ids
 
+    def test_go_routes_in_a_raw_string_fixture_are_not_providers(self, tmp_path: Path) -> None:
+        # A test writing another program's main.go: only the file's own route counts.
+        self._write_file(tmp_path, "internal/watch/watch_test.go", """
+            const mainGo = `package main
+            func main() {
+                r := gin.Default()
+                r.GET("/users/{id}", getUser)
+                r.POST("/orders", createOrder)
+            }
+            `
+
+            func TestWatch(t *testing.T) {
+                r.GET("/health", healthHandler)
+            }
+        """)
+        providers = [c for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"]
+        assert [(c.contract_id, c.line) for c in providers] == [("http::GET::/health", 11)]
+
     def test_fetch_consumer(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
             const users = await fetch('/api/users');
