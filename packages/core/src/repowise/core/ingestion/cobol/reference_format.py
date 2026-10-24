@@ -38,7 +38,11 @@ def normalize_fixed_format(text: str) -> str:
         if indicator in _COMMENT_INDICATORS or not body.strip():
             out.append(eol)
             continue
-        if not seen_division and _COMPILER_DIRECTIVE.match(body):
+        if not seen_division and (
+            _COMPILER_DIRECTIVE.match(body) or _COMPILER_DIRECTIVE.match(line)
+        ):
+            # A compiler-option card may also start in column 1, where its text
+            # is outside the 8-72 program area (#4475).
             out.append(eol)
             continue
         seen_division = True
