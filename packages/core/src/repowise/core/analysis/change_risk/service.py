@@ -10,7 +10,13 @@ from pathlib import Path
 from ...owned_paths import OWNED_PATTERNS
 from ..git_cli import generated_worktree_paths
 from ..risk_semantics import change_risk_authority, change_risk_scales
-from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
+from .baseline import (
+    BaselineSample,
+    baseline_samples_cached,
+    densities_excluding,
+    resolve_anchor_sha,
+    scores_excluding,
+)
 from .features import (
     GIT_TIMEOUT_SECONDS,
     ChangeFeatures,
@@ -66,6 +72,10 @@ class ChangeRiskResult:
     # line-scoped fix record can be read at the same point. ``None`` when the
     # change came from file stats with no checkout behind it.
     history_ref: str | None = None
+    # The commit the baseline sample runs back from (the same ref as
+    # ``history_ref``, resolved), so a kept rank can say what it ranked
+    # against. ``None`` when no sample was walked.
+    baseline_as_of: str | None = None
 
 
 def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
@@ -103,32 +113,6 @@ def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
     )
 
 
-def _commit_anchor(repo_path: str, target: str) -> tuple[str, str]:
-    """Return ``(anchor, resolved sha)`` for a commit target.
-
-    A commit in ``HEAD``'s history is ranked against the repo's current sample
-    rather than building a private one, so every such target in a process shares
-    a single walk. A commit that is not (another branch, an unrelated ref) keeps
-    its own anchor, since HEAD's history is not its cohort.
-
-    The sha comes back because self-exclusion needs it: the sample holds commit
-    shas, while the target is whatever the caller spelled — ``"HEAD"`` most of
-    the time, which matches no sha and so excluded nothing.
-    """
-    # ^{commit} peels an annotated tag to the commit it points at. Without it the
-    # tag object's own sha comes back, which is in no sample and is never equal
-    # to a merge-base, so both the anchor and the self-exclusion below miss.
-    target_sha = _git(
-        ["rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"], repo_path, check=False
-    ).strip()
-    if target == "HEAD" or not target_sha:
-        return "HEAD" if target == "HEAD" else target, target_sha
-    # merge-base == the target itself is exactly "target is an ancestor of HEAD",
-    # read off stdout because _git does not surface a return code.
-    merge_base = _git(["merge-base", target, "HEAD"], repo_path, check=False).strip()
-    return ("HEAD" if merge_base == target_sha else target), target_sha
-
-
 def range_anchor(repo_path: str, base: str, head: str) -> str:
     """Anchor a range's baseline to where its two sides diverged.
 
@@ -142,9 +126,11 @@ def range_anchor(repo_path: str, base: str, head: str) -> str:
 
 
 def history_ref(repo_path: str, revspec: str | None, *, working_tree: bool = False) -> str:
-    """The ref a change's fix history is read at: strictly before the change.
+    """The ref a change's fix history and baseline sample are read at, before the change.
 
-    Uncommitted work reads at ``HEAD``; a range at its merge-base, not at
+    One anchor for every spelling, so a merge scored as ``sha`` and as
+    ``sha^1..sha`` ranks against the same commits, wherever HEAD has moved
+    since. Uncommitted work reads at ``HEAD``; a range at its merge-base, not at
     ``base``'s tip (with three dots the diff starts there, so base's later
     commits are not this change's ground); a commit at its parent, so it is
     never credited with fixes that only landed because of it. A root commit's
@@ -215,11 +201,10 @@ def score_live_change(
     if working_tree:
         from_riskignore = worktree_ignores
     effective_excludes = from_riskignore + exclude_patterns
-    # Ref whose history the fix record is read from (see ``history_ref``).
+    # Ref the fix record and the baseline sample are read from (see ``history_ref``).
     history = history_ref(repo_path, target, working_tree=working_tree)
     if working_tree:
         features = uncommitted
-        anchor, excluded_ref = "HEAD", ""
     elif (parts := split_revspec(target)) is not None:
         base, sep, head = parts
         features = extract_range_features(
@@ -231,9 +216,6 @@ def score_live_change(
             include_paths=include_paths,
             sep=sep,
         )
-        # The baseline shares the fix history's anchor: the range's merge-base.
-        anchor = history
-        excluded_ref = ""
     else:
         features = extract_commit_features(
             repo_path,
@@ -242,7 +224,6 @@ def score_live_change(
             exclude_patterns=effective_excludes,
             include_paths=include_paths,
         )
-        anchor, excluded_ref = _commit_anchor(repo_path, target)
 
     try:
         pressure: dict[str, float] | None = fix_pressure(repo_path, history)
@@ -250,10 +231,12 @@ def score_live_change(
         pressure = None
 
     samples: list[BaselineSample] = []
+    as_of = None
     if baseline:
+        as_of = resolve_anchor_sha(repo_path, history)
         samples = baseline_samples_cached(
             repo_path,
-            anchor,
+            history,
             baseline,
             extensions,
             exclude_patterns=baseline_excludes,
@@ -263,15 +246,16 @@ def score_live_change(
     result = assess_change(
         features,
         fix_pressure=pressure,
-        baseline_scores=scores_excluding(samples, excluded_ref),
-        baseline_fix_densities=densities_excluding(samples, excluded_ref, pressure or {}),
+        # The sample ends before the change, so there is no self to exclude.
+        baseline_scores=scores_excluding(samples, ""),
+        baseline_fix_densities=densities_excluding(samples, "", pressure or {}),
         working_tree=working_tree,
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
     )
     owned = tuple(p for p in from_riskignore if p in OWNED_PATTERNS)
     owned += generated if working_tree else ()
-    return replace(result, history_ref=history, owned_excludes=owned)
+    return replace(result, history_ref=history, owned_excludes=owned, baseline_as_of=as_of)
 
 
 def assess_change(

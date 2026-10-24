@@ -33,6 +33,8 @@ def apex_rest_path(url_mapping: str) -> str:
 class ApexRestDialect:
     name = "apex-rest"
     extensions = APEX
+    # Apex is case-insensitive; `apex_rest_routes` reads the exact spelling.
+    requires = ("RestResource", "restresource", "Restresource", "RESTRESOURCE", "restResource")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content

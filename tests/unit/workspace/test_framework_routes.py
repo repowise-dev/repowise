@@ -861,8 +861,7 @@ def test_spring_contracts_compose_each_prefix_and_skip_what_they_cannot_read(
         '@RestController\n@RequestMapping("/pets")\nclass PetController {\n'
         '    @GetMapping(path = ["/{id}"])\n    fun one(): String = ""\n}\n'
     )
-    # A root route, bare or spelled "/", is dropped as JAX-RS and Micronaut roots
-    # are: build_provider_contract refuses a path that normalizes to "/".
+    # A root route, bare or spelled "/", is the one route `GET /`.
     (tmp_path / "Welcome.java").write_text(
         "@RestController\npublic class Welcome {\n"
         "    @GetMapping\n    public String a() { return null; }\n"
@@ -888,6 +887,7 @@ def test_spring_contracts_compose_each_prefix_and_skip_what_they_cannot_read(
         "http::PUT::/v2/d",
         "http::GET::/plain",
         "http::GET::/pets/{param}",
+        "http::GET::/",
     }
 
 

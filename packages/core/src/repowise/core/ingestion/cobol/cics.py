@@ -1,9 +1,11 @@
-"""CICS ``LINK`` / ``XCTL`` programs and ``SEND`` / ``RECEIVE MAP`` mapsets, with constant tracking.
+"""CICS ``LINK`` / ``XCTL`` programs, ``SEND`` / ``RECEIVE MAP`` mapsets and
+``RETURN`` / ``START`` transactions, with constant tracking.
 
 ``PROGRAM('X')`` names its target. ``PROGRAM(VAR)`` names every value the
 program moves into ``VAR`` that is a literal or a constant (a data item with a
 ``VALUE`` literal that nothing reassigns). Any other assignment makes the
-target dynamic, reported as such and never guessed. ``MAPSET`` reads the same way.
+target dynamic, reported as such and never guessed. ``MAPSET`` and ``TRANSID``
+read the same way.
 
 Ceiling: only the program's own text is read, so a constant defined in a
 copybook, or a value arriving through a group move (a COMMAREA), is dynamic.
@@ -28,6 +30,9 @@ _PROGRAM = re.compile(r"\bPROGRAM" + _OPERAND, re.IGNORECASE)
 _MAP_COMMAND = re.compile(r"^\s*(SEND|RECEIVE)\s+MAP\b", re.IGNORECASE)
 _MAPSET = re.compile(r"\bMAPSET" + _OPERAND, re.IGNORECASE)
 _MAP = re.compile(r"\bMAP" + _OPERAND, re.IGNORECASE)
+# ``STARTBR`` is a browse, not a START.
+_TRANSID_COMMAND = re.compile(r"^\s*(RETURN|START)\b", re.IGNORECASE)
+_TRANSID = re.compile(r"\bTRANSID" + _OPERAND, re.IGNORECASE)
 _MOVE = re.compile(
     # The receivers are a lookahead, so a MOVE inside them is matched on its own.
     rf"(?<![\w-])MOVE\s+(?P<src>{_LITERAL}|{_NAME}(?:\s*\([^)]*\))?)\s+TO\s+(?=(?P<dst>[^.]*))",
@@ -103,6 +108,11 @@ def program_transfers(code: str) -> list[CicsTarget]:
 def mapset_uses(code: str) -> list[CicsTarget]:
     """Every SEND/RECEIVE MAP in *code*, by its MAPSET (CICS defaults it to the MAP)."""
     return _cics_targets(code, _MAP_COMMAND, _MAPSET, fallback=_MAP)
+
+
+def transid_uses(code: str) -> list[CicsTarget]:
+    """Every RETURN/START naming a TRANSID in *code*: the transaction the region runs next."""
+    return _cics_targets(code, _TRANSID_COMMAND, _TRANSID)
 
 
 def _cics_targets(

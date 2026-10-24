@@ -984,7 +984,7 @@ def test_history_at_the_busy_floor_or_uncounted_is_not_flagged() -> None:
 
 def _dead_row(path: str) -> dict:
     return {"id": path, "kind": "unused_export", "file_path": path, "symbol_name": "old",
-            "lines": 5, "safe_to_delete": True, "status": "open"}
+            "lines": 5, "confidence": 0.9, "safe_to_delete": True, "status": "open"}
 
 
 def test_dead_code_actions_skip_tests_by_the_shared_classifier() -> None:

@@ -248,3 +248,21 @@ async def test_the_architecture_payload_is_the_tool_answer_without_meta(workspac
         enricher.get_architecture_metrics()
     )
     assert tool["node_count"] == 2
+
+
+def test_an_unseen_graph_reads_not_determined_to_an_agent():
+    """No edge between services is no score and no "no cycles", with the reason."""
+    from repowise.core.workspace.architecture_metrics import compute_architecture_metrics
+    from repowise.server.mcp_server.tool_architecture import architecture_payload
+    from repowise.server.mcp_server.tool_conformance import conformance_payload
+
+    graph = SystemGraph(nodes=[*_graph().nodes], edges=[])
+    payload = architecture_payload(compute_architecture_metrics(graph).to_dict())
+    assert payload["score"] is None
+    assert payload["cycle_count"] is None
+    assert payload["evidence"]["state"] == "insufficient"
+    assert payload["summary"].startswith("Architecture not determined for 2 service(s)")
+
+    report = conformance_payload(build_conformance_report(graph, []).to_dict())
+    assert report["cycles_determined"] is False
+    assert "cycles not determined" in report["summary"]

@@ -77,7 +77,7 @@ def test_the_trend_says_the_controls_do_not_reach_it() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend", "--counts", "code_shape"])
         render.assert_called_once()
@@ -95,7 +95,7 @@ def test_the_trend_stays_quiet_when_no_control_was_passed() -> None:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", "--trend"])
     assert "do not apply to it" not in result.output
@@ -168,7 +168,7 @@ def _mostly_unanalysed_output(*args: str) -> str:
             resolve.return_value = SimpleNamespace(
                 is_workspace=False,
                 repo_path=Path("."),
-                notice=lambda *a, **k: None,
+                narrow=lambda *a, **k: Path("."),
             )
             result = runner.invoke(cli, ["health", *args])
     assert result.exit_code == 0, result.output

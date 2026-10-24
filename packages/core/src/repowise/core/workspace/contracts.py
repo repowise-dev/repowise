@@ -26,6 +26,7 @@ from repowise.core.workspace.config import (
     ensure_workspace_data_dir,
 )
 from repowise.core.workspace.contract_schema import ContractSchema
+from repowise.core.workspace.origins import LinkStrategy, legacy_strategy
 from repowise.core.workspace.signature_schema import attach_signature_schemas
 
 if TYPE_CHECKING:
@@ -65,7 +66,18 @@ CONTRACTS_FILENAME = "contracts.json"
 # Version 13 adds Angular HttpClient calls, with bases folded from environment
 # files and class fields.
 # Version 14 adds MassTransit message-type topic contracts (C# and VB.NET).
-CONTRACTS_VERSION = 14
+# Version 15 stamps each contract with its origin and each link with its
+# strategy (see :mod:`.origins`), and stops linking a Laravel job class to a
+# publisher that is not Laravel; HTTP consumers resolve hosts through the
+# service-name map (:mod:`.service_names`), and ``service_links`` holds the
+# service-level edges for calls whose host is known but whose route is not;
+# each repo also counts the files whose network calls produced no contract
+# (see :mod:`.network_probe`). Gateway routes (Spring Cloud Gateway, Zuul)
+# rewrite the calls they forward and add gateway-to-service service links.
+# Go routes from chi, fiber, gorilla/mux and Go 1.22 method patterns are read.
+# A data consumer in a file that opens SQLite carries ``meta['embedded']`` and
+# links only within its repo.
+CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans
@@ -104,7 +116,7 @@ class Contract:
     role: str  # "provider" | "consumer"
     file_path: str  # relative to repo root
     symbol_name: str  # handler name, service.method, etc. — display only
-    confidence: float  # 0.7–0.9 based on extraction strategy
+    confidence: float  # the origin's confidence, see :data:`.origins.ORIGIN_CONFIDENCE`
     service: str | None = None  # service boundary path (monorepo)
     #: 1-indexed line of the declaration or call this contract was read from.
     #: The key :func:`bind_symbol_ids` binds against, and what says *where* a
@@ -119,12 +131,15 @@ class Contract:
     # Optional request/response shape — populated by dialects that can recover
     # it (proto message fields today). Drives schema-level breaking-change diffs.
     schema: ContractSchema | None = None
+    #: What established this contract, a :class:`.origins.ContractOrigin`. None
+    #: on a row stored before origins existed.
+    origin: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         if d["service"] is None:
             del d["service"]
-        for optional in ("line", "symbol_id"):
+        for optional in ("line", "symbol_id", "origin"):
             if d[optional] is None:
                 del d[optional]
         if not d["meta"]:
@@ -152,6 +167,7 @@ class Contract:
             symbol_id=data.get("symbol_id"),
             meta=data.get("meta", {}),
             schema=ContractSchema.from_dict(raw_schema) if raw_schema else None,
+            origin=data.get("origin"),
         )
 
 
@@ -161,7 +177,7 @@ class ContractLink:
 
     contract_id: str
     contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
-    match_type: str  # "exact" | "candidate" | "manual"
+    match_type: str  # "exact" | "candidate" | "manual", derived from ``strategy``
     confidence: float
     provider_repo: str
     provider_file: str
@@ -181,6 +197,8 @@ class ContractLink:
     #: or a path matched across case, a wildcard method or a mount prefix.
     #: None when both ends share ``contract_id``.
     consumer_contract_id: str | None = None
+    #: The matching rule that made this link, a :class:`.origins.LinkStrategy`.
+    strategy: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -188,17 +206,23 @@ class ContractLink:
             del d["provider_service"]
         if d["consumer_service"] is None:
             del d["consumer_service"]
-        for optional in ("provider_symbol_id", "consumer_symbol_id", "consumer_contract_id"):
+        for optional in (
+            "provider_symbol_id",
+            "consumer_symbol_id",
+            "consumer_contract_id",
+            "strategy",
+        ):
             if d[optional] is None:
                 del d[optional]
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ContractLink:
+        match_type = data.get("match_type", "exact")
         return cls(
             contract_id=data["contract_id"],
             contract_type=data["contract_type"],
-            match_type=data.get("match_type", "exact"),
+            match_type=match_type,
             confidence=data.get("confidence", 1.0),
             provider_repo=data["provider_repo"],
             provider_file=data["provider_file"],
@@ -211,6 +235,8 @@ class ContractLink:
             provider_symbol_id=data.get("provider_symbol_id"),
             consumer_symbol_id=data.get("consumer_symbol_id"),
             consumer_contract_id=data.get("consumer_contract_id"),
+            # A store written before strategies existed: read its match_type.
+            strategy=data.get("strategy") or legacy_strategy(match_type),
         )
 
 
@@ -233,6 +259,15 @@ class ContractStore:
     #: A repo absent from here has never been extracted by a provenance-aware
     #: run and must be re-extracted rather than trusted.
     repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Service-level edges (:attr:`.origins.LinkStrategy.HOST_ONLY`): a consumer
+    #: whose host names a workspace repo while no route there serves its path;
+    #: and a gateway's edge to each service it routes to
+    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). Kept out of ``contract_links``, which only ever pairs two contracts.
+    service_links: list[ContractLink] = field(default_factory=list)
+    #: The service-name map matching used (:mod:`.service_names`): each name, its
+    #: repo, and the source and file that placed it, plus the fingerprint that
+    #: lets a run re-reading no repo reuse it.
+    service_names: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -240,6 +275,8 @@ class ContractStore:
             "generated_at": self.generated_at,
             "contracts": [c.to_dict() for c in self.contracts],
             "contract_links": [lk.to_dict() for lk in self.contract_links],
+            "service_links": [lk.to_dict() for lk in self.service_links],
+            "service_names": self.service_names,
             "extraction_stats": self.extraction_stats,
             "repo_provenance": self.repo_provenance,
         }
@@ -257,6 +294,8 @@ class ContractStore:
             # freshness", so the next run re-extracts everything — the safe
             # direction for a one-off cost.
             repo_provenance=data.get("repo_provenance", {}),
+            service_links=[ContractLink.from_dict(lk) for lk in data.get("service_links", [])],
+            service_names=data.get("service_names", {}),
         )
 
     def rows_for_repo(self, alias: str) -> list[Contract]:
@@ -407,6 +446,7 @@ def _build_manual_links(
                     contract_type=ml.contract_type,
                     match_type="manual",
                     confidence=1.0,
+                    strategy=LinkStrategy.MANUAL,
                     provider_repo=ml.to_repo,
                     provider_file="",
                     provider_symbol="",
@@ -424,6 +464,7 @@ def _build_manual_links(
                     contract_type=ml.contract_type,
                     match_type="manual",
                     confidence=1.0,
+                    strategy=LinkStrategy.MANUAL,
                     provider_repo=ml.from_repo,
                     provider_file="",
                     provider_symbol="",
@@ -546,11 +587,13 @@ async def run_contract_extraction(
     mislabel both. Matching is dict-indexed and costs milliseconds against
     seconds of extraction, so scoping it would buy nothing and risk everything.
     """
-    from .code_api import CodeSurface, build_code_surface
+    from .code_api import CodeSurface, build_code_surface, find_workspace_packages
     from .extractors import build_message_type_index
     from .extractors.base import make_exclude_predicate
     from .extractors.masstransit import MessageTypeIndex
-    from .matching import annotate_consumer_targets, match_contracts
+    from .matching import annotate_consumer_targets, run_matching
+    from .matching.base_paths import apply_base_paths
+    from .service_names import ServiceNameMap, build_service_name_map, service_names_fingerprint
 
     contract_config = ws_config.contracts
     exclude = make_exclude_predicate(tuple(contract_config.exclude_globs))
@@ -560,13 +603,13 @@ async def run_contract_extraction(
     if len(repo_paths) < 2:
         return ContractStore()
 
-    # Built once, workspace-wide: a code consumer only exists when some *other*
-    # repo publishes the package it imports, so neither half of it can be
-    # decided inside one repo's extraction.
-    code_surface = (
-        await asyncio.to_thread(build_code_surface, repo_paths, workspace_index, exclude)
-        if contract_config.detect_code_api
-        else CodeSurface()
+    # Workspace-wide: a code consumer only exists when some *other* repo
+    # publishes the package it imports. Manifests alone name the packages; the
+    # symbol indexes behind them are opened below, only when a repo is extracted.
+    packages = (
+        await asyncio.to_thread(find_workspace_packages, repo_paths)
+        if contract_config.detect_code_api and workspace_index is not None
+        else ([], {})
     )
 
     # A MassTransit consumer resolves its message type against every repo's
@@ -580,13 +623,30 @@ async def run_contract_extraction(
     )
 
     prior = previous_store or ContractStore()
-    config_fp = _extraction_config_fingerprint(contract_config, code_surface, message_types)
+    config_fp = _extraction_config_fingerprint(
+        contract_config, {p.name for p in packages[0]}, message_types
+    )
     heads: dict[str, str | None] = {}
     reusable = await _reusable_repos(
         repo_paths, previous_store, prior, set(changed_repos), config_fp, heads
     )
     to_extract = {alias: path for alias, path in repo_paths.items() if alias not in reusable}
     await _probe_missing_heads(to_extract, heads)
+
+    # A reused repo keeps its stored rows, so only the extracted repos, and the
+    # packages they may import, need their symbols loaded.
+    code_surface = CodeSurface()
+    if to_extract and workspace_index is not None:
+        await workspace_index.ensure({*to_extract, *(p.repo for p in packages[0])})
+        if contract_config.detect_code_api:
+            code_surface = await asyncio.to_thread(
+                build_code_surface,
+                repo_paths,
+                workspace_index,
+                exclude,
+                packages=packages,
+                consumers=to_extract,
+            )
 
     extraction = _RepoExtraction(
         contract_config=contract_config,
@@ -607,8 +667,17 @@ async def run_contract_extraction(
     )
 
     # Resolve each consumer's target service / third-party host, then match.
-    annotate_consumer_targets(all_contracts, contract_config.service_bases)
-    links = match_contracts(all_contracts)
+    # The name map is read from repo files, so a run that re-reads no repo (a
+    # settings-only change) reuses the stored map when its fingerprint holds.
+    names_fp = service_names_fingerprint(heads, workspace_root)
+    if not to_extract and prior.service_names.get("fingerprint") == names_fp:
+        names = ServiceNameMap.from_dict(prior.service_names)
+    else:
+        names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
+    apply_base_paths(all_contracts, names.base_paths)
+    annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
+    matched = run_matching(all_contracts, names.routes)
+    links = matched.links
 
     # Merge manual links
     if contract_config.manual_links:
@@ -621,6 +690,8 @@ async def run_contract_extraction(
         contract_links=links,
         extraction_stats=extraction_stats,
         repo_provenance=provenance,
+        service_links=matched.service_links,
+        service_names=names.to_dict(names_fp),
     )
 
     out_path = save_contract_store(store, workspace_root)
@@ -652,16 +723,24 @@ def _indexed_repo_paths(ws_config: WorkspaceConfig, workspace_root: Path) -> dic
 
 
 def _extraction_config_fingerprint(
-    contract_config: Any, code_surface: CodeSurface, message_types: MessageTypeIndex
+    contract_config: Any, package_names: set[str], message_types: MessageTypeIndex
 ) -> str:
     """Fingerprint of everything that decides what extraction looks for.
 
-    The contract settings, plus the published-package and message-type sets:
-    both depend on *other* repos, so a change there moves no HEAD here.
+    The contract settings that feed extraction, plus the published-package and
+    message-type sets: both depend on *other* repos, so a change there moves no
+    HEAD here. Matching settings stay out: they re-link the stored rows, which
+    every run does anyway, so editing one re-extracts nothing.
     """
+    from .config import STAGE_EXTRACTION
+
     return hashlib.sha256(
         json.dumps(
-            [contract_config.to_dict(), sorted(code_surface.members), sorted(message_types.fqns)],
+            [
+                contract_config.stage_dict(STAGE_EXTRACTION),
+                sorted(package_names),
+                sorted(message_types.fqns),
+            ],
             sort_keys=True,
         ).encode()
     ).hexdigest()[:16]
@@ -787,6 +866,7 @@ async def _extract_one_repo(
     from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
     from .extractors.base import iter_source_files
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+    from .network_probe import UNRECOGNISED_CALL_FILES_STAT, count_unrecognised_call_files
 
     code_surface = extraction.code_surface
     contracts: list[Contract] = []
@@ -843,6 +923,12 @@ async def _extract_one_repo(
 
     stats.update(bind_symbol_ids(contracts, repo_index))
     stats.update(attach_signature_schemas(contracts, repo_index))
+
+    # The calls no dialect read, the miss half of any coverage figure.
+    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
+    stats[UNRECOGNISED_CALL_FILES_STAT] = await asyncio.to_thread(
+        count_unrecognised_call_files, files, consumer_files
+    )
 
     unresolved = stats.get("http_consumer_unresolved", 0)
     if unresolved:

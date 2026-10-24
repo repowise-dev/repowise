@@ -1,7 +1,8 @@
 """Dead code by confidence tier, with the findings gated languages hold back.
 
-Counts come from the stored summary every dead-code surface serves; the
-stored ``safe_to_delete`` flag is never read.
+Counts come from the stored summary every dead-code surface serves, with the
+workspace's cross-repo cut when the context carries one; the stored
+``safe_to_delete`` flag is never read.
 """
 
 from __future__ import annotations
@@ -27,7 +28,9 @@ async def collect(ctx: ReportContext) -> list[dict[str, Any]]:
                 basis="unresolved",
             )
         ]
-    summary = await get_dead_code_summary(ctx.session, ctx.repository_id)
+    summary = await get_dead_code_summary(
+        ctx.session, ctx.repository_id, **(ctx.cross_repo or {})
+    )
     tiers = summary["confidence_summary"]
     out = [
         check(

@@ -234,6 +234,9 @@ def build_dead_code_map(dead_code_report: Any | None) -> dict[str, list[dict]]:
 
     Kinds the finding-type registry withholds, and findings on a language it
     gates for dead code, never reach a page prompt.
+
+    Ceiling: the analyzer's own values, without the workspace's cross-repo cut;
+    pages are generated per repository, before the workspace pass writes it.
     """
     dead_code_by_file: dict[str, list[dict]] = {}
     withheld = excluded_types()

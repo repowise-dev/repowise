@@ -295,7 +295,11 @@ def _components(items: dict[str, Any]) -> list[dict[str, Any]]:
     comps = items.get("components_touched")
     if not _known(comps):
         return []
-    return [{"name": r["name"], "team": r.get("owner")} for r in comps.get("details") or ()]
+    return [
+        {"name": r["name"], "team": r.get("owner")}
+        for r in comps.get("details") or ()
+        if not r.get("outside")
+    ]
 
 
 def _checklist(evidence: dict[str, Any], kept: bool) -> dict[str, Any]:
@@ -342,6 +346,7 @@ def entry(
     kept = evidence is not None
     evidence = evidence or {"items": []}
     answers = _answers(record, evidence, kept, context)
+    items = {i["kind"]: i for i in evidence.get("items") or ()}
     return {
         "id": record["id"],
         "ref": record["forge_ref"] or record["id"],
@@ -352,7 +357,9 @@ def entry(
         "files_changed": record["files_changed"],
         "lines_added": record["lines_added"],
         "lines_deleted": record["lines_deleted"],
-        "components": _components({i["kind"]: i for i in evidence.get("items") or ()}),
+        "components": _components(items),
+        # Known and empty: every file is outside every component.
+        "components_known": _known(items.get("components_touched")),
         **answers,
         "complete": all(answers[k]["status"] == "known" for k in ANSWERS),
         "checklist": _checklist(evidence, kept),

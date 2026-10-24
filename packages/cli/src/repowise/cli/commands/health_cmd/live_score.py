@@ -1,8 +1,9 @@
 """``repowise health --score``: score files as they are on disk, before a PR exists.
 
 Structure comes from parsing the bytes; history, coverage, test pairing, blame
-findings and dependents come from the index (``IndexInputs``), so a file scores
-about as the next ``repowise update`` would, with no update run.
+findings, dependents and clone partners come from the index (``IndexInputs``),
+so a file scores as the next ``repowise update`` would, with no update run: an
+unedited file scores what the index stores.
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ def _index_inputs(repo_path: Path) -> IndexInputs:
             if opened is None:
                 return IndexInputs()
             session, repo_id = opened
-            return await load_index_inputs(session, repo_id)
+            return await load_index_inputs(session, repo_id, repo_path / ".repowise")
 
     try:
         return run_async(_do())
@@ -133,6 +134,11 @@ def render_live(scores: LiveScores, fmt: str) -> None:
             f"{change.head:.2f} ({change.head - change.base:+.2f}; structure deduction "
             f"{change.structure_delta:+.2f})"
         )
+    if scores.indexed and scores.head.clone_source == "analyzed_files":
+        console.print(
+            "[dim]The index's clone state is unavailable (run `repowise update`): "
+            "duplication counts only clones among the scored files.[/dim]"
+        )
     if not scores.indexed:
         console.print(
             "[dim]No index history: history, coverage and test pairing are left out "
@@ -151,6 +157,7 @@ def live_payload(scores: LiveScores) -> dict[str, Any]:
         "basis": "live",
         "analyzer_version": HEALTH_ANALYZER_VERSION,
         "history_source": "index" if scores.indexed else "none",
+        "clone_source": scores.head.clone_source,
         "against": scores.against,
         "files": [
             {**row.as_dict(), "head_history": _history(scores.head, row.path)}

@@ -114,7 +114,12 @@ _NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "ass
 # means the caller's own instance; TypeScript's ``self`` is a global, not
 # ``this``. Go has no such name: its receiver is a parameter, typed from the
 # body, and a ``pkg.Var`` head types nothing, so it cannot pass for ``s.field``.
-_CHAIN_SELF: dict[str, str | None] = {"python": "self", "typescript": "this", "go": None}
+_CHAIN_SELF: dict[str, str | None] = {
+    "python": "self",
+    "typescript": "this",
+    "go": None,
+    "dart": "this",
+}
 # Fields walked after the head, at most: ``h.f1.f2.f3.m()``.
 _MAX_CHAIN_FIELDS = 3
 # A chain is only as scoped as its weakest hop.
@@ -777,7 +782,8 @@ class ReceiverTypingMixin(
         """The class *field* of *found*'s class holds, tiered by the weaker hop.
 
         A Python field no assignment types may be a ``@property``, typed by its
-        getter's return annotation.
+        getter's return annotation; a Dart one may be a getter, typed by its
+        declared return type.
         """
         class_file, class_id, tier = found
         fields = self._field_types_in(class_file, language).get(class_id, {})
@@ -786,11 +792,24 @@ class ReceiverTypingMixin(
             hop = None if type_name is None else self._class_named(class_file, type_name, class_id)
         elif language == "python":
             hop = self._located(class_file, self._property_type_id(class_file, class_id, field))
+        elif language == "dart":
+            hop = self._located(class_file, self._dart_getter_type_id(class_file, class_id, field))
         else:
             hop = None
         if hop is None:
             return None
         return hop[0], hop[1], max(tier, hop[2], key=_CHAIN_TIER_RANK.__getitem__)
+
+    def _dart_getter_type_id(self, class_file: str, class_id: str, name: str) -> str | None:
+        """The class the Dart getter *name* of *class_id* is declared to return.
+
+        Only a getter carries a bare ``name -> Type`` signature, with no
+        parameter list; a method of the name is a call, never a field read.
+        """
+        symbol = self._symbols_by_id.get(self._declares(class_id, name) or "")
+        if symbol is None or symbol.language != "dart" or "(" in (symbol.signature or ""):
+            return None
+        return self._written_returned_class(symbol, class_file)
 
     def _located(self, file_path: str, type_id: str | None) -> tuple[str, str, str] | None:
         """``(file, class id, tier)`` for a class already known by id, seen from *file_path*."""
@@ -830,7 +849,25 @@ class ReceiverTypingMixin(
         if type_name in self._externally_bound_names(file_path):
             return None
         class_id = self._only_type_in(file_path, type_name)
-        return None if class_id is None else (file_path, class_id, "same_file")
+        if class_id is None:
+            return self._dart_class_seen(file_path, type_name, scope_id)
+        return file_path, class_id, "same_file"
+
+    def _dart_class_seen(
+        self, file_path: str, type_name: str, scope_id: str | None
+    ) -> tuple[str, str, str] | None:
+        """``_class_named`` for a Dart class a whole-library import brings in.
+
+        ``import 'repo.dart';`` binds no names, so the file's own free-call
+        tiers say which class a written name means. A nullable ``T?`` is the
+        class ``T``; a generic or prefixed spelling types nothing.
+        """
+        scope = self._symbols_by_id.get(scope_id or "")
+        written = type_name.rstrip("?")
+        if scope is None or scope.language != "dart" or not written.isidentifier():
+            return None
+        found = self._class_seen_from(file_path, scope.id, written, scope.start_line)
+        return None if found is None else self._located(file_path, found.callee_id)
 
     def _only_type_in(self, file_path: str, type_name: str) -> str | None:
         """The id of the single type *file_path* declares as *type_name*."""

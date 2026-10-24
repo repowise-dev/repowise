@@ -11,8 +11,9 @@ class Biomarker(Protocol):
 
 ## Registered detectors
 
-`registry.py` registers 58 detectors: the 29 code-health markers below, 22
-performance markers, 3 SQL maintainability markers and 4 advisory Apex markers. Every id with its threshold
+`registry.py` registers 59 detectors: the 29 code-health markers below, 22
+performance markers, 3 SQL maintainability markers, 4 advisory Apex markers and
+1 advisory COBOL marker. Every id with its threshold
 and weight is in
 [the full roster](../../../../../../../../docs/architecture/code-health.md#the-full-roster).
 

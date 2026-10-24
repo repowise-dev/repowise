@@ -98,6 +98,7 @@ LanguageTag = Literal[
     "soql",
     "jcl",
     "bms",
+    "csd",
     "unknown",
 ]
 
@@ -183,6 +184,9 @@ class FileInfo:
     # Reached from outside the import graph (a runner or loader starts it), so
     # dead-code analysis never flags it. Read through ``is_reachability_root``.
     is_reachability_root: bool = False
+    # Starts a framework application (``SpringApplication.run``): ranked with
+    # the manifest entries, but not a public API the way those are.
+    is_application_main: bool = False
 
 
 @dataclass
@@ -208,6 +212,9 @@ class RepoStructure:
     total_files: int
     total_loc: int
     entry_points: list[str]
+    # The entry points that start a framework application, which make the repo
+    # a service and lead the orientation list.
+    application_mains: list[str] = field(default_factory=list)
 
 
 @dataclass

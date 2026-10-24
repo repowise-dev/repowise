@@ -18,7 +18,7 @@ async def _seed(session, rid: str) -> None:
     )  # fmt: skip
     session.add_all(
         DeadCodeFinding(repository_id=rid, kind="unused_export", file_path="src/dead.py",
-                        symbol_name=f"f{i}", lines=10, safe_to_delete=True)
+                        symbol_name=f"f{i}", lines=10, confidence=0.9, safe_to_delete=True)
         for i in range(3)
     )  # fmt: skip
     session.add(
@@ -88,7 +88,7 @@ async def test_a_failed_read_is_omitted_with_a_reason(setup_mcp, monkeypatch):
     from repowise.server.mcp_server import get_overview
     from repowise.server.mcp_server.tool_overview import actions as mod
 
-    async def boom(session, repo_id):
+    async def boom(session, repo_id, **_cut):
         raise RuntimeError("no such table: action_states")
 
     monkeypatch.setattr(mod, "load_actions_view", boom)
@@ -181,7 +181,7 @@ def _record(monkeypatch, gate=None):
             await gate.wait()  # finishes only if next_actions runs meanwhile
         return {"average_health": 7.0}
 
-    async def next_actions(session, _repo, full=False):
+    async def next_actions(session, _repo, full=False, alias=None):
         seen["next_actions"] = session
         if gate is not None:
             gate.set()
@@ -231,7 +231,7 @@ async def test_a_failed_overview_leaves_no_slow_read_running(tmp_path, monkeypat
     _record(monkeypatch, gate=asyncio.Event())
     from repowise.server.mcp_server.tool_overview import tool
 
-    async def stuck(session, _repo, full=False):
+    async def stuck(session, _repo, full=False, alias=None):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(tool, "_build_next_actions", stuck)

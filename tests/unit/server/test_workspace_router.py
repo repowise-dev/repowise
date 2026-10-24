@@ -1237,6 +1237,31 @@ class TestGetBlastRadius:
         assert "frontend" in {n["id"] for n in data["impacted"]}
         assert data["structural_count"] >= 1
         assert "frontend" in data["impacted_repos"]
+        assert data["undetermined_targets"] == []
+        assert data["evidence"]["state"] == "measured"
+
+    @pytest.mark.asyncio
+    async def test_architecture_states_its_evidence(self, tmp_path: Path) -> None:
+        enricher = _make_system_graph_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/architecture")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["score"] is not None
+        assert data["evidence"]["state"] == "measured"
+
+    @pytest.mark.asyncio
+    async def test_architecture_without_a_graph_claims_no_score(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=None)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/architecture")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["score"] is None
+        assert data["architecture_type"] == "undetermined"
 
     @pytest.mark.asyncio
     async def test_unresolved_target_reported(self, tmp_path: Path) -> None:

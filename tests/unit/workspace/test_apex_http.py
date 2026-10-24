@@ -2,13 +2,15 @@
 
 A provider is a ``@RestResource`` class's verb-annotated method, served under
 ``/services/apexrest``. A consumer is an ``HttpRequest`` whose endpoint and one
-verb are both literal inside one method; anything the file does not settle is
-refused rather than guessed.
+verb resolve inside one method or at its wrapper's literal call sites; anything
+the file does not settle is refused rather than guessed.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from repowise.core.ingestion.framework_routes import apex_rest_routes
 from repowise.core.workspace.extractors.base import ScanContext
@@ -334,6 +336,208 @@ class TestApexCalloutConsumer:
             "}\n"
         )
         assert ids(source) == set()
+
+
+WRAPPER = """public class Client {
+    private HttpResponse makeApiCall(String endpoint, String method) {
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint(endpoint);
+        req.setMethod(method);
+        return new Http().send(req);
+    }
+    public void run(String endpoint, String method) {
+        CALLS
+    }
+    MEMBERS
+}
+"""
+
+
+def wrapper(calls: str, members: str = "") -> str:
+    return WRAPPER.replace("CALLS", calls).replace("MEMBERS", members)
+
+
+class TestApexCalloutWrapper:
+    def test_literal_arguments_record_the_callers_line(self) -> None:
+        source = wrapper("makeApiCall('callout:Billing/invoices', 'GET');")
+        [c] = contracts(source)
+        assert c.contract_id == "http::GET::/invoices"
+        assert c.line == 9
+        assert c.meta["base_token"] == "Billing"
+        assert c.meta["client"] == "apex-callout"
+        assert c.symbol_name == "apex-callout:GET callout:Billing/invoices"
+        assert c.origin == "client_call"
+        assert c.confidence == 0.75
+
+    def test_each_caller_supplies_its_own_endpoint_and_verb(self) -> None:
+        source = wrapper(
+            "makeApiCall('callout:Billing/invoices', 'GET');\n"
+            "        makeApiCall('https://billing.example.com/payments', 'POST');\n"
+            "        makeApiCall('callout:Billing/invoices', 'GET');"
+        )
+        rows = contracts(source)
+        assert [(c.contract_id, c.line) for c in rows] == [
+            ("http::GET::/invoices", 9),
+            ("http::POST::/payments", 10),
+            ("http::GET::/invoices", 11),
+        ]
+        assert rows[1].meta["host"] == "billing.example.com"
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            "endpoint, 'GET'",
+            "'callout:Billing/' + endpoint, 'GET'",
+            "'callout:Billing/' + 'invoices', 'GET'",
+            "getEndpoint(), 'GET'",
+            "URL, 'GET'",
+            "'callout:Billing/invoices', method",
+            "'callout:Billing/invoices', 'G' + 'ET'",
+            "'callout:Billing/invoices', 'INVALID'",
+            "'callout:Billing/invoices'",
+            "'callout:Billing/invoices', 'GET', true",
+        ],
+    )
+    def test_non_literal_or_invalid_arguments_add_nothing(self, args: str) -> None:
+        source = wrapper(
+            f"makeApiCall({args});",
+            "static final String URL = 'callout:Billing/invoices';",
+        )
+        assert ids(source) == set()
+
+    def test_a_literal_verb_inside_the_wrapper_still_works(self) -> None:
+        source = wrapper("makeApiCall('callout:Billing/invoices', method);")
+        source = source.replace("req.setMethod(method)", "req.setMethod('POST')")
+        assert ids(source) == {"http::POST::/invoices"}
+
+    def test_an_unresolved_caller_does_not_hide_a_literal_caller(self) -> None:
+        source = wrapper(
+            "makeApiCall(endpoint, method);\n"
+            "        makeApiCall('callout:Billing/invoices', 'GET');"
+        )
+        [c] = contracts(source)
+        assert c.contract_id == "http::GET::/invoices"
+        assert c.line == 10
+
+    @pytest.mark.parametrize("prefix", ["new ", "NEW Client."])
+    def test_a_constructor_with_the_same_name_is_not_a_wrapper_call(self, prefix: str) -> None:
+        source = wrapper(
+            f"{prefix}makeApiCall('callout:Wrong/constructor', 'GET');",
+            "class makeApiCall { public makeApiCall(String endpoint, String method) {} }",
+        )
+        assert ids(source) == set()
+
+    @pytest.mark.parametrize("verb", ["", "req.setMethod('DELETE');", "req.setMethod(other);"])
+    def test_missing_or_conflicting_verbs_are_refused(self, verb: str) -> None:
+        source = wrapper("makeApiCall('callout:Billing/invoices', 'GET');")
+        if not verb:
+            source = source.replace("req.setMethod(method);", "")
+        else:
+            source = source.replace("req.setMethod(method);", f"req.setMethod(method); {verb}")
+        assert ids(source) == set()
+
+    def test_repeated_setters_that_resolve_to_the_same_verb_are_unambiguous(self) -> None:
+        source = wrapper("makeApiCall('callout:Billing/invoices', 'GET');")
+        source = source.replace("req.setMethod(method);", "req.setMethod(method); req.setMethod('GET');")
+        assert ids(source) == {"http::GET::/invoices"}
+
+    @pytest.mark.parametrize("url", ["/relative/path", "callout:", "ftp://example.com/path"])
+    def test_unusable_literal_endpoints_are_refused(self, url: str) -> None:
+        assert ids(wrapper(f"makeApiCall('{url}', 'GET');")) == set()
+
+    def test_a_call_inside_a_nested_block_uses_the_enclosing_class(self) -> None:
+        source = wrapper("if (endpoint == null) { makeApiCall('callout:Billing/invoices', 'GET'); }")
+        assert ids(source) == {"http::GET::/invoices"}
+
+    def test_a_wrapper_inside_an_inner_class_has_its_own_call_sites(self) -> None:
+        source = "class Outer {\n" + wrapper("this.makeApiCall('callout:Billing/invoices', 'GET');") + "}\n"
+        assert ids(source) == {"http::GET::/invoices"}
+
+    def test_a_verb_parameter_named_after_a_verb_still_requires_a_literal(self) -> None:
+        source = wrapper("makeApiCall('callout:Billing/invoices', method);")
+        source = source.replace("String method)", "String GET)").replace("setMethod(method)", "setMethod(GET)")
+        assert ids(source) == set()
+
+    def test_a_field_initializer_call_is_not_an_overload(self) -> None:
+        source = wrapper(
+            "makeApiCall('callout:Billing/invoices', 'GET');",
+            "HttpResponse initial = makeApiCall('callout:Billing/payments', 'POST');",
+        )
+        assert ids(source) == {"http::GET::/invoices", "http::POST::/payments"}
+
+    def test_annotations_and_case_insensitive_parameters(self) -> None:
+        source = wrapper("makeApiCall('callout:Billing/invoices', 'GET');")
+        source = source.replace(
+            "private HttpResponse", "@AuraEnabled(cacheable=true) public static HttpResponse"
+        )
+        source = source.replace("setEndpoint(endpoint)", "setEndpoint(ENDPOINT)")
+        source = source.replace("setMethod(method)", "setMethod(METHOD)")
+        assert ids(source) == {"http::GET::/invoices"}
+
+    @pytest.mark.parametrize(
+        "member",
+        [
+            "void makeApiCall(String endpoint) {}",
+            "void MAKEAPICALL(String endpoint, Integer method) {}",
+            "abstract HttpResponse makeApiCall(String endpoint);",
+        ],
+    )
+    def test_overloads_are_refused(self, member: str) -> None:
+        assert ids(wrapper("makeApiCall('callout:Billing/invoices', 'GET');", member)) == set()
+
+    def test_a_forwarded_parameter_is_not_traced_a_second_level(self) -> None:
+        source = wrapper(
+            "forward('callout:Billing/invoices', 'GET');",
+            "void forward(String endpoint, String method) { makeApiCall(endpoint, method); }",
+        )
+        assert ids(source) == set()
+
+    @pytest.mark.parametrize("receiver", ["", "this.", "Client.", "THIS . "])
+    def test_unambiguous_same_class_receivers(self, receiver: str) -> None:
+        source = wrapper(f"{receiver}MAKEAPICALL('callout:Billing/invoices', 'GET');")
+        assert ids(source) == {"http::GET::/invoices"}
+
+    @pytest.mark.parametrize(
+        "receiver", ["other.", "OtherClass.", "holder.Client.", "getClient()."]
+    )
+    def test_calls_on_other_objects_are_refused(self, receiver: str) -> None:
+        assert ids(wrapper(f"{receiver}makeApiCall('callout:Billing/invoices', 'GET');")) == set()
+
+    def test_callers_and_overloads_in_other_classes_are_ignored(self) -> None:
+        source = wrapper(
+            "makeApiCall('callout:Billing/invoices', 'GET');",
+            "class Inner { void run() { makeApiCall('callout:Wrong/inner', 'DELETE'); } "
+            "void makeApiCall(String endpoint) {} }",
+        )
+        source += (
+            "class Other { void run() { Client.makeApiCall('callout:Wrong/outer', 'POST'); } }"
+        )
+        assert ids(source) == {"http::GET::/invoices"}
+
+    def test_comments_and_strings_do_not_count_as_call_sites(self) -> None:
+        source = wrapper(
+            "// makeApiCall('callout:Wrong/comment', 'GET');\n"
+            r"String example = 'makeApiCall(\'callout:Wrong/string\', \'GET\');';"
+        )
+        assert ids(source) == set()
+
+    @pytest.mark.parametrize(
+        "assignment",
+        ["endpoint = 'callout:Wrong/path';", "endpoint += '/more';", "method = 'DELETE';"],
+    )
+    def test_reassigned_parameters_are_not_read_from_the_caller(self, assignment: str) -> None:
+        source = wrapper("makeApiCall('callout:Billing/invoices', 'GET');")
+        source = source.replace("HttpRequest req", f"{assignment}\n        HttpRequest req")
+        assert ids(source) == set()
+
+    def test_argument_positions_and_nested_arguments(self) -> None:
+        source = wrapper("makeApiCall(buildOptions('a', 'b'), 'GET', 'callout:Billing/invoices');")
+        source = source.replace(
+            "String endpoint, String method",
+            "Map<String, String> options, String method, String endpoint",
+            1,
+        )
+        assert ids(source) == {"http::GET::/invoices"}
 
 
 JS_CONSUMER = """export async function load(id) {

@@ -141,7 +141,7 @@ survives re-indexing, and a re-detected `resolved` finding reopens.
 
 ### Detector families
 
-The 58 detectors fall into families whose caps keep any one from dominating a file.
+The 59 detectors fall into families whose caps keep any one from dominating a file.
 Every id with its threshold and weight:
 [the full roster](../architecture/code-health.md#the-full-roster).
 
@@ -156,6 +156,7 @@ Every id with its threshold and weight:
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
 | SQL | 4 | none | Complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE`, cartesian joins |
 | Apex | 4 | none | SOQL injection, a class with queries and no sharing keyword, hardcoded record Ids, `SeeAllData=true` tests; all advisory |
+| COBOL | 1 | none | `ALTER`, `GO TO ... DEPENDING ON`, and `GO TO` out of a paragraph's `PERFORM THRU` range; advisory |
 | Performance | 21 | none | See [PERFORMANCE.md](PERFORMANCE.md) |
 
 - Caps are code-health caps; SQL deducts only in maintainability (2.0) and performance

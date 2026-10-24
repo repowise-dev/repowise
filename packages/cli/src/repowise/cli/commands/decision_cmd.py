@@ -56,15 +56,7 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table", *, needs_store:
     """
 
     target = resolve_command_target(path=path)
-    target.notice(notice_console(fmt), command="decision")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        repo_path = primary
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
+    repo_path = target.narrow(notice_console(fmt), command="decision", repo_option=False)
     return _checkout_with_index(repo_path, fmt) if needs_store else repo_path
 
 

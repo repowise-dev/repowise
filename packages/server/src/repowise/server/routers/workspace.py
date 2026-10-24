@@ -686,7 +686,12 @@ async def get_workspace_actions(
             continue
         try:
             async with get_session(resolve_session_factory(request.app.state, repo_id)) as session:
-                view = await load_actions_view(session, repo_id)
+                view = await load_actions_view(
+                    session,
+                    repo_id,
+                    lookup=getattr(request.app.state, "cross_repo_enricher", None),
+                    alias=r.alias,
+                )
         except Exception as exc:  # one repository must not cost the page
             _log.warning("workspace actions: %s unavailable: %s", r.alias, exc)
             repos.append(

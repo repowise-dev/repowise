@@ -249,7 +249,13 @@ DEAD_CONFIDENCE = 0.8
 
 def dead_spans(rows: Iterable[Any]) -> dict[str, list[DeadSpan]]:
     """Sure, open dead-code findings by file: ``(symbol, start, end)``, the
-    symbol ``None`` for an unreachable file."""
+    symbol ``None`` for an unreachable file.
+
+    Ceiling: stored values, without the workspace's cross-repo cut. Fix first
+    and plan annotations are built per repository, before the workspace pass
+    that writes the cut's data. Upgrade path: pass ``serve_findings`` rows once
+    those builds run with the workspace's lookup.
+    """
     out: dict[str, list[DeadSpan]] = {}
     for row in rows:
         sure = float(field(row, "confidence") or 0.0) >= DEAD_CONFIDENCE or field(

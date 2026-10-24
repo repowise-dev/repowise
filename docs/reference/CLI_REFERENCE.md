@@ -33,7 +33,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`impacted-tests`](#repowise-impacted-tests-revspec), [`coverage`](#repowise-coverage),
   [`components`](#repowise-components), [`packages`](#repowise-packages), [`changes`](#repowise-changes),
   [`suspects`](#repowise-suspects), [`events`](#repowise-events), [`report
-  assessment`](#repowise-report-assessment-path)
+  assessment`](#repowise-report-assessment-path), [`report estate`](#repowise-report-estate-path)
 - **Decisions:** [`decision`](#repowise-decision)
 - **Agent wiring:** [`agents`](#repowise-agents), [`generate-claude-md`](#repowise-generate-claude-md-path), [`AGENTS.md`](#agentsmd), [`attribution`](#repowise-attribution)
 - **Hooks and distill:** [`distill`](#repowise-distill-command), [`expand`](#repowise-expand-ref),
@@ -45,7 +45,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`hook health-gate`](#repowise-hook-health-gate-installuninstallstatus), [`augment`](#repowise-augment)
 - **Server:** [`serve`](#repowise-serve-path), [`mcp`](#repowise-mcp-path)
 - **Workspace:** [`workspace list`](#repowise-workspace-list), [`workspace add`](#repowise-workspace-add-path),
-  [`workspace remove`](#repowise-workspace-remove-alias), [`workspace scan`](#repowise-workspace-scan-path), [`workspace
+  [`workspace remove`](#repowise-workspace-remove-alias), [`workspace scan`](#repowise-workspace-scan-path), [`workspace update`](#repowise-workspace-update), [`workspace
   set-default`](#repowise-workspace-set-default-alias), [`workspace diagnostics`](#repowise-workspace-diagnostics),
   [`workspace check`](#repowise-workspace-check), [`workspace metrics`](#repowise-workspace-metrics-path), [`workspace
   impacted-tests`](#repowise-workspace-impacted-tests-repopath)
@@ -60,6 +60,9 @@ Grouped by task; `PATH` and flags are in each command's section.
 ## Workspace auto-detect (cross-cutting)
 
 Most commands detect a workspace root and route to it, with a one-line `[workspace] …` notice.
+A command that reads one repo (`health`, `dead-code`, `events`, `next`, `doc-drift`, `coverage`,
+`decision`, `impacted-tests`, `costs` without `--all`) names it: `[workspace] health reads one repo:
+carts (primary) of 5 in sockshop; pass --repo <alias> for another`.
 
 | Flag | What it does | Default |
 |------|--------------|---------|
@@ -881,7 +884,7 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 | `--counts` | `everything` or `code_shape` (drops the git-derived half, which rises as a file is worked on: is the code itself improving?). | `everything` |
 | `--refactoring-targets` | Stored queue: per file, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps, Break Cycle advisory; MCP and web UI order. Needs `repowise init`; [REFACTORING.md](../layers/REFACTORING.md). | off |
 | `--recompute` | Analyze the working tree in-process (slow on large repos; needed without an index); see notes. | off |
-| `--score <path>` | Score on-disk files pre-update or PR; repeatable. Bytes give structure, the index the rest (history, coverage, test pairing, dependents), as the next update would; no index: code shape. JSON: `files`, `score_change`. | |
+| `--score <path>` | Score on-disk files pre-update or PR; repeatable. Bytes give structure, the index the rest (history, coverage, test pairing, dependents, clone partners), as the next update would, so an unedited file scores what the index stores; no index: code shape. JSON: `files`, `score_change`, `clone_source`. | |
 | `--against <rev>` | With `--score`: before, after, change, nloc-weighted average at `<rev>`. | |
 | `--generate-code <selector>` | Patch for one `path::symbol` target; the only LLM flag (needs a provider). | |
 | `--plan <id>` | Stored plan as an agent prompt; JSON: recipe (preconditions, steps, postconditions). Reads the index. | |
@@ -1418,6 +1421,8 @@ repowise events --since 7d --kind bus_factor_drop
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--path` | Repo path. | cwd |
+| `--repo` | One workspace repo (implies workspace mode). | primary repo |
+| `--no-workspace` | Force single-repo mode. | auto-detect |
 | `--since` | `7d`, `12h` or ISO date. | |
 | `--kind` | Only this kind. Repeatable. | all kinds |
 | `--limit` | 1 to 10000. | `200` |
@@ -1528,6 +1533,32 @@ lists components with no owner team.
   naming.
 - A period summary and a method appendix (what git alone cannot attest) both state the window. Unknown counts apart, never as failure; people counted, never named.
 - Shares the `changes export` evidence pass: missing checklists are built and stored a few at a time, after stderr says how many and how long.
+
+---
+
+### `repowise report estate [PATH]`
+
+One document for a whole workspace, read from what `repowise update --workspace` stored; nothing is extracted again.
+
+```bash
+repowise report estate --format html --out estate.html
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--sections`, `--format`, `--out` | As `assessment`. | all, `markdown`, stdout |
+
+| Section | Holds | Basis |
+|---|---|---|
+| `estate-summary` | Repos configured, indexed, read and in the graph; contracts read at an older commit than the index; services; the graph's evidence state with its reasons | `measured`; services `inferred`; `unresolved` when evidence is insufficient |
+| `estate-map` | Service dependency edges by kind with strategy and confidence; architecture score, propagation cost, core, cycles, roles | `inferred`; score `unresolved` when evidence is insufficient, and named partial beside it when partial |
+| `estate-contracts` | Providers, consumers and links by type and repo pair; HTTP calls read, located but unresolved, and files calling out through code no extractor reads; each consumer that matched no provider in another service (consumer, file, target, contract id), capped with a count of the rest; calls to public hosts counted apart | `measured` |
+| `estate-health` | Per repo: average file health from the workspace store's newest snapshot; churn hotspots (recent commit churn, not defects) and bug magnets from each index, with their top files; a repo with fewer than 2 commits indexed is listed as not measured | `measured`; `unresolved` without the store or any history |
+| `estate-seams` | Service pairs joined by an edge, ranked by link confidence x reach x (1 + co-change no contract explains), every input shown per pair; a fixed heuristic, not a calibrated risk | `inferred`; `unresolved` when evidence is insufficient |
+| `estate-start` | Services ranked by how many others a change to them reaches; per repo, the most central production files with the least written documentation | `inferred` |
+
+Outside a workspace it exits 1. A section is a `Section(scope="workspace", report="estate")` in
+`repowise/core/report/sections/`; it runs once with a `WorkspaceReportContext`.
 
 ---
 
@@ -1726,6 +1757,14 @@ repowise workspace scan --yes
 | `--yes` / `-y` | Add all without prompting. | off |
 | `--exclude` | Skip paths matching this glob, relative to the workspace root (e.g. `'test-repos/*'`). Repeatable. | |
 | `--verbose`, `-v` | Debug logs. | off |
+
+### `repowise workspace update`
+
+The same command as `repowise update --workspace`, with the same flags. It updates the stale repos, then re-runs the cross-repo analysis when a repo changed or the `contracts:` or `conformance:` settings did.
+
+```bash
+repowise workspace update --index-only
+```
 
 ### `repowise workspace set-default <alias>`
 

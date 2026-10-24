@@ -991,6 +991,12 @@ Lightning or project file writes its name in any case, strings included, since
 `Type.forName` reaches classes by name. Ceiling: a mention in a comment counts as
 a use, and a class shaped like a Visualforce controller stays live.
 
+A static resource (`staticresources/`, or an NPSP-style `StaticResourceSources/`
+mirror) is vendored when it sits in a library's release folder (`arbor-v0.92/`)
+or opens with another project's versioned license banner. Ceiling: a library
+copied with neither, such as a minified Google client with no banner, stays
+production.
+
 #### Lightning Web Components, Aura and Visualforce
 
 LWC, Aura, Visualforce and flows reach Apex classes by the same rules from the
@@ -1290,16 +1296,34 @@ differently (HTTP mount prefixes, a queue bound to an exchange, a pattern
 subscription) registers its extra passes, or its own `keys`, in
 `matching.MATCHERS`.
 
+Every dialect declares `requires`: tokens one of which a file must hold, chosen
+so that every match needs one (a contract format such as `.proto` declares
+`EVERY_FILE`). `dialect.run_dialect` checks the gate, looking each token up
+once per file, and drops a contract whose line is only a comment. `call_sites`,
+`code_matches`, `outside_comments` and `consumer_contracts` skip a match that
+starts in a comment, so a commented-out decorator sets no state either.
+`test_dialect_registry.py` fails on an ungated entry, and
+`test_extraction_dialect_budget.py` on a dialect that costs as much as an
+ungated scan. A Python docstring example is still read, because the mask keeps
+strings, and Ruby, VB and SQL files are not masked: their comment syntax would
+mislead the masker.
+
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
-| **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
-| **Topic** | Kafka (Spring Kafka, kafkajs, kafka-python/confluent, sarama), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
+| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
+| **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
+| **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
+
+RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
+a queue named through its declaration's result (`q.Name`).
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
-workspace guide.
+workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,
+registries and contributor recipes.
 
 ---
 

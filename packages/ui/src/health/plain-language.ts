@@ -63,6 +63,10 @@ const BY_CATEGORY: Record<BiomarkerCategory, PlainIssue> = {
     title: "Apex security or test risk",
     why: "It can expose records, break in another org, or depend on org data.",
   },
+  cobol: {
+    title: "Jump out of structured flow",
+    why: "Where control goes next has to be traced by hand.",
+  },
 };
 
 const BY_BIOMARKER: Record<string, PlainIssue> = {

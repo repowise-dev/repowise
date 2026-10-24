@@ -18,6 +18,7 @@ from pathlib import Path
 import structlog
 
 from .cobol.bms import parse_bms_file
+from .cobol.csd import parse_csd_file
 from .cobol.jcl import parse_jcl_file
 from .models import FileInfo, Import, ParsedFile, Symbol
 from .salesforce_flow import parse_flow_file
@@ -40,6 +41,7 @@ SPECIAL_HANDLER_LANGUAGES = frozenset(
         "soql",
         "jcl",
         "bms",
+        "csd",
     }
 )
 
@@ -61,6 +63,7 @@ def parse_special(file_info: FileInfo, source: bytes, lang: str) -> ParsedFile:
         "soql": parse_soql_file,
         "jcl": parse_jcl_file,
         "bms": parse_bms_file,
+        "csd": parse_csd_file,
     }.get(lang, _parse_unknown)
     try:
         return handler(file_info, source)

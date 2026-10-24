@@ -118,6 +118,16 @@ def workspace_alias_for(app_state, repo_id: str) -> str | None:
     return None
 
 
+def cross_repo_cut_inputs(request: Request, repo_id: str) -> dict:
+    """``lookup`` and ``alias`` for the dead-code cross-repo cut (``serve_findings``)
+    on *repo_id*; both ``None`` outside a workspace, which cuts nothing."""
+    state = request.app.state
+    return {
+        "lookup": getattr(state, "cross_repo_enricher", None),
+        "alias": workspace_alias_for(state, repo_id),
+    }
+
+
 def client_is_local(request: Request) -> bool:
     """True when the request's peer address is a loopback address.
 

@@ -377,8 +377,9 @@ def _curate_entry_points(
     (a resolver's deep ``index.py``) are dropped from candidacy outright.
     ``project.entry_points`` holds the top few, ``project.entry_candidates`` the
     full ranked list. A manifest-declared entry (``FileInfo.is_manifest_entry``)
-    ranks first and is exempt from the barrel and glue drops: a package's
-    declared ``src/index.ts`` is its front door whatever its shape or depth.
+    or an application main (``FileInfo.is_application_main``) ranks first and
+    is exempt from the barrel and glue drops: a package's declared
+    ``src/index.ts`` is its front door whatever its shape or depth.
     When ingestion flagged no entries at all, the strong
     :func:`score_entry_points` scorers (entry-style filenames) fill in, so the
     orientation panel never opens empty on repos without a detectable main.
@@ -389,7 +390,10 @@ def _curate_entry_points(
     betweenness = _betweenness(graph_builder)
 
     manifest = frozenset(
-        path for path, pf in pf_by_path.items() if getattr(pf.file_info, "is_manifest_entry", False)
+        path
+        for path, pf in pf_by_path.items()
+        if getattr(pf.file_info, "is_manifest_entry", False)
+        or getattr(pf.file_info, "is_application_main", False)
     )
     paths = _flagged_entry_paths(kg, pf_by_path, manifest)
     if not paths:

@@ -71,6 +71,7 @@ BIOMARKER_LABELS: dict[str, str] = {
     "apex_missing_sharing": "Apex class without sharing",
     "apex_hardcoded_id": "Hardcoded record Id",
     "apex_see_all_data": "Test sees all org data",
+    "cobol_unstructured_flow": "GO TO or ALTER out of range",
 }
 
 

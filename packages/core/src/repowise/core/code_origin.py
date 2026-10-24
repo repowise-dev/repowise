@@ -338,15 +338,34 @@ def _is_vendored_path(lowered_name: str, dirs: list[str]) -> bool:
         return True
     if _DEPS_DIR in dirs[:-1] and lowered_name.endswith(_deps_suffixes()):
         return True
-    return lowered_name.endswith(_MINIFIED_SUFFIXES)
+    return lowered_name.endswith(_MINIFIED_SUFFIXES) or _in_static_release_dir(dirs)
+
+
+# A library unpacked under its release name in a static resource
+# (``staticresources/arbor-v0.92/``). Elsewhere a versioned folder is as often an
+# API version or the repository's own release. Ceiling: a team's own resource
+# folder named like a release (``app-v2.1/``) reads as vendored too.
+_RELEASE_DIR_RE = re.compile(r"^[a-z][\w.-]*?[-_.]v?\d+(?:\.\d+)+$")
+
+
+def _in_static_release_dir(dirs: list[str]) -> bool:
+    for i, d in enumerate(dirs):
+        if d in _STATIC_RESOURCE_DIRS:
+            return any(_RELEASE_DIR_RE.match(s) for s in dirs[i + 1 :])
+    return False
 
 
 # A copied library is recognisable by its header only in the directories a
 # site serves assets from. Anywhere else a license header is far more often
 # the repository's own.
 # ``min/`` is a minified distribution tree (Monaco ships as ``min/vs/...``); the
-# header rule below keeps a first-party ``src/min/`` out.
-_ASSET_DIR_TOKENS = frozenset({"docs", "doc", "static", "assets", "public", "_static", "min"})
+# header rule below keeps a first-party ``src/min/`` out. Salesforce serves its
+# static resources by name, and NPSP-style repos keep their sources in a mirror.
+_STATIC_RESOURCE_DIRS = frozenset({"staticresources", "staticresourcesources"})
+_ASSET_DIR_TOKENS = (
+    frozenset({"docs", "doc", "static", "assets", "public", "_static", "min"})
+    | _STATIC_RESOURCE_DIRS
+)
 _HEADER_LINES = 20
 _LICENSE_RE = re.compile(
     r"copyright|\(c\)|©|@license|licen[cs]ed\s+under|released\s+under|\bMIT\b",
@@ -674,6 +693,13 @@ _TOOLING_ROOT_DIRS = frozenset(
 # directory with another name is recognised only by its sibling ``env.py``,
 # which a path-only classifier cannot see.
 _MIGRATION_DIR = "migrations"
+# Rails also keeps migration-like scripts in ``db/`` directories named with a
+# prefix: retired one-shot scripts in ``db/old_migrations/``, data migrations in
+# ``db/data_migrations/``. Only directly under ``db/``: elsewhere a name ending
+# in ``_migrations`` is as likely a package's own source
+# (``src/django_test_migrations/``).
+_MIGRATION_DB_DIR = "db"
+_MIGRATION_DB_SUBDIR_SUFFIX = "_migrations"
 _MIGRATION_DIR_PAIRS = frozenset({("db", "migrate"), ("alembic", "versions")})
 _TOOLING_ROOT_NAMES = frozenset({"fabfile.py"})
 # Benchmarks kept beside the code they measure (abseil's
@@ -736,7 +762,14 @@ def is_vendored_or_generated_path(path: str) -> bool:
 
 
 def _is_migration_dir(dirs: list[str]) -> bool:
-    return _MIGRATION_DIR in dirs or any(pair in _MIGRATION_DIR_PAIRS for pair in pairwise(dirs))
+    return (
+        _MIGRATION_DIR in dirs
+        or any(pair in _MIGRATION_DIR_PAIRS for pair in pairwise(dirs))
+        or any(
+            parent == _MIGRATION_DB_DIR and child.endswith(_MIGRATION_DB_SUBDIR_SUFFIX)
+            for parent, child in pairwise(dirs)
+        )
+    )
 
 
 def is_migration_path(path: str) -> bool:

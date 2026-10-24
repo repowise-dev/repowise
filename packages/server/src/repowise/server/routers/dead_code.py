@@ -10,7 +10,7 @@ from repowise.core.analysis.dead_code.risk_factors import (
 )
 from repowise.core.analysis.dead_code.serving import FindingFilters, ServedFinding, serve_findings
 from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session, verify_api_key, workspace_alias_for
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session, verify_api_key
 from repowise.server.routers._unverified import UnverifiedQuery
 from repowise.server.schemas import (
     DeadCodeAnalyzeResponse,
@@ -24,15 +24,6 @@ router = APIRouter(
     tags=["dead-code"],
     dependencies=[Depends(verify_api_key)],
 )
-
-
-def _cross_repo(request: Request, repo_id: str) -> dict:
-    """The cross-repo cut's inputs for *repo_id*; empty outside a workspace."""
-    state = request.app.state
-    return {
-        "lookup": getattr(state, "cross_repo_enricher", None),
-        "alias": workspace_alias_for(state, repo_id),
-    }
 
 
 def _response(f: ServedFinding) -> DeadCodeFindingResponse:
@@ -71,7 +62,7 @@ async def list_dead_code(
     filters = FindingFilters(
         kind=None, safe_only=safe_only, min_confidence=min_confidence, directory=None, owner=None
     )
-    findings = serve_findings(rows, **_cross_repo(request, repo_id), filters=filters)
+    findings = serve_findings(rows, **cross_repo_cut_inputs(request, repo_id), filters=filters)
     findings.sort(key=lambda f: -f.confidence)
     return [_response(f) for f in findings[:limit]]
 
@@ -136,7 +127,7 @@ async def dead_code_summary(
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
     summary = await crud.get_dead_code_summary(
-        session, repo_id, include_unverified=include_unverified, **_cross_repo(request, repo_id)
+        session, repo_id, include_unverified=include_unverified, **cross_repo_cut_inputs(request, repo_id)
     )
     analyzed_at = await dead_code_analyzed_at(session, repo_id)
     return DeadCodeSummaryResponse(**summary, analyzed_at=analyzed_at)
@@ -161,4 +152,4 @@ async def resolve_finding(
     if finding is None:
         raise HTTPException(status_code=404, detail="Finding not found")
     repo_id = finding.repository_id
-    return _response(serve_findings([finding], **_cross_repo(request, repo_id))[0])
+    return _response(serve_findings([finding], **cross_repo_cut_inputs(request, repo_id))[0])

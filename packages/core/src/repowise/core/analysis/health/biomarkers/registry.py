@@ -24,6 +24,7 @@ from .brain_method import BrainMethodDetector
 from .change_entropy import ChangeEntropyDetector
 from .churn_risk import ChurnRiskDetector
 from .co_change_scatter import CoChangeScatterDetector
+from .cobol_unstructured_flow import CobolUnstructuredFlowDetector
 from .code_age_volatility import CodeAgeVolatilityDetector
 from .complex_conditional import ComplexConditionalDetector
 from .complex_method import ComplexMethodDetector
@@ -140,6 +141,8 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     ApexMissingSharingDetector,  # type: ignore[list-item]
     ApexHardcodedIdDetector,  # type: ignore[list-item]
     ApexSeeAllDataDetector,  # type: ignore[list-item]
+    # COBOL markers (advisory: listed, never scored).
+    CobolUnstructuredFlowDetector,  # type: ignore[list-item]
 ]
 
 

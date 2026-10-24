@@ -512,7 +512,9 @@ async def _hub_repo(session, *, tests=(), edges=()):
     nodes = {"tests/test_bystander.py": True, "tests/test_runner.py": True, "src/util.py": False}
     nodes |= dict.fromkeys(tests, True)
     for path, is_test in nodes.items():
-        session.add(GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test))
+        session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
     for name, start, end in (("walk", 1, 20), ("other", 30, 40), ("lonely", 50, 60)):
         session.add(
             GraphNode(
@@ -708,7 +710,11 @@ _KY_LIKE = {
 
 async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path, async_session):
     """A test importing a package's ``index.ts`` reaches the files it imports."""
-    from repowise.core.analysis.test_reachability import any_tests_reaching, clear_test_map_cache
+    from repowise.core.analysis.test_reachability import (
+        any_reached,
+        any_tests_reaching,
+        clear_test_map_cache,
+    )
     from repowise.core.persistence.crud.graph import batch_upsert_graph_edges
     from repowise.core.pipeline.persist import _edge_row, persist_graph_nodes
     from tests.unit.analysis.test_public_api_flag import build_fixture
@@ -726,6 +732,9 @@ async def test_any_reach_passes_through_the_package_entry_tests_import(tmp_path,
     # The helper hop stops at pool.ts (source imports it too), but the import
     # closure does not: a test importing pool.ts runs retry.ts, so it is not unreached.
     assert found["src/retry.ts"].reached.entries == {"test/x.test.ts": frozenset({"src/pool.ts"})}
+
+    rank_free = await any_reached(async_session, repo.id, ["src/core/Ky.ts", "src/retry.ts"])
+    assert rank_free.keys() == found.keys()
 
 
 _SWAPPED = {
@@ -981,7 +990,9 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
     asked = [*paths, "app/added.py", "app/types.py"]
     evidence = {
         "changed_tests": ["tests/test_lonely.py"],
-        "contents": {"app/types.py": "from typing import TypedDict\nclass R(TypedDict):\n    a: int\n"},
+        "contents": {
+            "app/types.py": "from typing import TypedDict\nclass R(TypedDict):\n    a: int\n"
+        },
     }
     in_memory = reach_states(maps, asked, **evidence)
     assert await reach_states_from_db(async_session, repo.id, asked, **evidence) == in_memory
@@ -993,7 +1004,9 @@ async def test_the_stored_walk_and_the_in_memory_walk_return_the_same_rows(tmp_p
     # so only replacing tests reach either.
     swap = 'from unittest.mock import patch\n\n@patch("app.util")\ndef test_swapped(m): ...\n'
     texts = dict.fromkeys(["tests/test_core.py", "tests/test_pkg.py"], swap)
-    texts["test/x.test.ts"] = 'import {vi} from "vitest";\nvi.mock("../src/retry", () => ({retry: 1}));\n'
+    texts["test/x.test.ts"] = (
+        'import {vi} from "vitest";\nvi.mock("../src/retry", () => ({retry: 1}));\n'
+    )
     masks = replaced_files(texts, _PARITY)
     assert masks == {
         **{t: {"app/util.py"} for t in ("tests/test_core.py", "tests/test_pkg.py")},
@@ -1016,7 +1029,10 @@ async def test_stored_call_hubs_match_the_in_memory_ones(async_session):
     from repowise.core.analysis.test_reachability import clear_test_map_cache as clear
 
     tests = [f"tests/test_{i:02}.py" for i in range(10)]
-    edges = [("src/hub.py", "src/hub.py::run", "defines"), ("src/few.py", "src/few.py::f", "defines")]
+    edges = [
+        ("src/hub.py", "src/hub.py::run", "defines"),
+        ("src/few.py", "src/few.py::f", "defines"),
+    ]
     for t in tests:
         edges += [(t, f"{t}::t", "defines"), (f"{t}::t", "src/hub.py::run", "calls")]
     edges += [(f"{t}::t", "src/few.py::f", "calls", "global_unique") for t in tests]

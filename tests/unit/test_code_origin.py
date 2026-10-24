@@ -96,6 +96,8 @@ _OWN_HEADER = (
         ("fabfile.py", "tooling"),
         ("eslint.config.mjs", "tooling"),
         ("db/migrate/20240101_add_users.rb", "tooling"),
+        ("db/data_migrations/20240101_backfill.rb", "tooling"),
+        ("src/django_test_migrations/logic.py", "production"),
         ("src/__generated__/schema.ts", "generated"),
         ("api/user_pb2.py", "generated"),
         ("api/user_grpc.pb.go", "generated"),
@@ -144,6 +146,14 @@ _OWN_HEADER = (
         ("dist/Main.Bundle.JS", "generated"),
         ("src/Forms/Main.designer.cs", "generated"),
         ("src/logging/diagnostic-support-bundle.ts", "production"),
+        # a library release unpacked in a Salesforce static resource, or its source mirror
+        ("force-app/main/default/staticresources/Libs/arbor-v0.92/src/etc.js", "vendored"),
+        ("StaticResourceSources/arbor-v0.92/lib/arbor.js", "vendored"),
+        ("src/staticresources/jquery-ui-1.12.1/ui.js", "vendored"),
+        ("force-app/main/default/staticresources/npsp-slds/modal.js", "production"),
+        ("force-app/main/default/staticresources/lmsvf/templates.js", "production"),
+        ("static/arbor-v0.92/src/etc.js", "production"),  # static resources only
+        ("src/api/v1.2/handler.js", "production"),
     ],
 )
 def test_path_rules(path: str, expected: str) -> None:
@@ -291,10 +301,22 @@ def test_path_only_vendored_or_generated() -> None:
     assert not is_vendored_or_generated_path("src/Monaco/monacoSRC/min/vs/loader.js")
     assert not is_vendored_or_generated_path("src/pkg/external/client.py")
     assert not is_vendored_or_generated_path("tests/test_app.py")
+    assert is_vendored_or_generated_path("src/staticresources/Libs/arbor-v0.92/src/etc.js")
+    assert not is_vendored_or_generated_path("src/staticresources/Libs/npsp-slds/modal.js")
 
 
 @pytest.mark.parametrize("header", [_JQUERY, _TYPEAHEAD])
-@pytest.mark.parametrize("folder", ["docs/_static", "static/js", "assets", "public/lib"])
+@pytest.mark.parametrize(
+    "folder",
+    [
+        "docs/_static",
+        "static/js",
+        "assets",
+        "public/lib",
+        "force-app/main/default/staticresources/Bootstrap/js",
+        "StaticResourceSources/jquery",
+    ],
+)
 def test_third_party_header_under_asset_dirs_is_vendored(header: str, folder: str) -> None:
     assert code_origin(f"{folder}/lib.js", header) == "vendored"
 
@@ -506,6 +528,16 @@ def test_migration_paths() -> None:
     assert is_migration_path("alembic/versions/abc.py")
     assert not is_migration_path("api/versions/v1.py")
     assert not is_migration_path("src/migrate.py")
+
+
+def test_prefixed_migration_dirs_under_db() -> None:
+    # Rails keeps retired and data migrations in prefixed directories under db/.
+    assert is_migration_path("db/old_migrations/x.rb")
+    assert is_migration_path("db/data_migrations/x.rb")
+    # Elsewhere a name containing or ending in "migrations" is ordinary source.
+    assert not is_migration_path("app/migrations_helper/x.rb")
+    assert not is_migration_path("src/django_test_migrations/logic.py")
+    assert not is_migration_path("django_test_migrations/contrib/unittest_case.py")
 
 
 def test_ship_rank_puts_product_code_first_and_tests_last() -> None:

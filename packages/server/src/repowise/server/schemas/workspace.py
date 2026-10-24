@@ -107,6 +107,10 @@ class WorkspaceContractEntry(BaseModel):
     #: index or nothing is declared at ``line`` — the contract still matches, it
     #: just cannot be traversed into the call graph.
     symbol_id: str | None = None
+    #: What established the contract (``route_registration``, ``client_call``,
+    #: ``sql_string``...), one of the closed origins in
+    #: ``repowise.core.workspace.origins``. None on a row stored before origins.
+    origin: str | None = None
     #: Extractor-supplied detail (``extraction_layer``, ``framework``, ``method``,
     #: ``path``, ``table``, ``package``...). Keys vary by contract type.
     meta: dict = {}
@@ -116,6 +120,10 @@ class WorkspaceContractLinkEntry(BaseModel):
     contract_id: str
     contract_type: str
     match_type: str
+    #: The matching rule that made the link (``exact_id``, ``binding_routed``,
+    #: ``prefix_stripped``...), one of ``repowise.core.workspace.origins``.
+    #: ``match_type`` is derived from it.
+    strategy: str | None = None
     confidence: float
     provider_repo: str
     provider_file: str
@@ -265,6 +273,9 @@ class WorkspaceSystemEdge(BaseModel):
     weight: int = 1
     structural: bool = True
     contract_refs: list[str] = []
+    #: Strategy of the link that gave the edge its confidence (``manifest`` on
+    #: a package edge); None on a co-change edge.
+    strategy: str | None = None
 
 
 class WorkspaceRepoDiagnostics(BaseModel):
@@ -291,6 +302,8 @@ class WorkspaceOrphanProvider(BaseModel):
     file_path: str
     contract_id: str
     contract_type: str
+    #: Other files of the same repo and service declaring the same id.
+    other_files: list[str] = []
 
 
 class WorkspaceSymbolIdentity(BaseModel):
@@ -346,18 +359,58 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     unmatched_consumers: list[WorkspaceUnmatchedConsumer] = []
     unmatched_by_reason: dict[str, int] = {}
     orphan_providers: list[WorkspaceOrphanProvider] = []
+    #: Consumers served by their own repo + service, kept out of the unmatched list.
+    in_service_consumers: list[WorkspaceUnmatchedConsumer] = []
     providers_by_layer: dict[str, int] = {}
     consumers_by_layer: dict[str, int] = {}
     http_consumers_unresolved: int = 0
-    #: Share of located HTTP client calls that became a contract. ``None`` when
-    #: none were located — 0/0 is not 100%.
+    #: Share of client calls that became an HTTP contract, counting one miss per
+    #: file that calls out through code no dialect reads. ``None`` when nothing
+    #: was seen (0/0 is not 100%) or the artifact predates that count.
     http_consumer_coverage: float | None = None
+    #: HTTP consumers that linked to another service, and their share of the
+    #: same denominator. ``None`` on an artifact written before the count.
+    http_consumers_linked: int | None = None
+    http_link_coverage: float | None = None
+    #: Per repo, files with a network-call token and no consumer contract.
+    #: ``None`` on an artifact written before the count existed.
+    unrecognised_call_files: dict[str, int] | None = None
+    unrecognised_call_file_count: int | None = None
 
     symbol_identity: dict[str, WorkspaceSymbolIdentity] = {}
     schema_coverage: WorkspaceSchemaCoverage = WorkspaceSchemaCoverage()
     code_api: WorkspaceCodeApiCoverage = WorkspaceCodeApiCoverage()
     openapi: WorkspaceOpenApiCoverage = WorkspaceOpenApiCoverage()
     model_config = ConfigDict(extra="forbid")
+
+
+class WorkspaceEvidenceReason(BaseModel):
+    """One reason a graph's evidence is short of measured."""
+
+    code: str
+    #: The state this reason alone implies: ``partial`` or ``insufficient``.
+    state: str
+    message: str
+    subjects: list[str] = []
+
+
+class WorkspaceGraphEvidence(BaseModel):
+    """How much evidence the system graph rests on.
+
+    Mirrors ``repowise.core.workspace.graph_evidence.GraphEvidence``. When
+    ``determined`` is false, a score, cycle verdict or impact set over the
+    graph would be vacuous and is reported as not determined.
+    """
+
+    state: Literal["measured", "partial", "insufficient"]
+    determined: bool
+    summary: str = ""
+    reasons: list[WorkspaceEvidenceReason] = []
+    services: int = 0
+    runtime_edges: int = 0
+    build_edges: int = 0
+    providers: int = 0
+    consumers: int = 0
 
 
 class WorkspaceSystemGraphResponse(BaseModel):
@@ -395,6 +448,10 @@ class WorkspaceBlastRadiusResponse(BaseModel):
     max_distance: int = 0
     total_impacted: int = 0
     unresolved_targets: list[str] = []
+    #: Resolved targets no structural edge touches: an empty reach for one of
+    #: these means "not seen", not "nothing depends on it".
+    undetermined_targets: list[str] = []
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +531,10 @@ class WorkspaceDependencyCycle(BaseModel):
     nodes: list[str] = []
     edge_ids: list[str] = []
     length: int = 0
+    #: Edge kinds on each leg (``leg_kinds[i]`` joins ``nodes[i]`` to the next).
+    leg_kinds: list[list[str]] = []
+    #: Legs only an asynchronous (event) edge joins.
+    async_legs: int = 0
 
 
 class WorkspaceConformanceResponse(BaseModel):
@@ -490,6 +551,10 @@ class WorkspaceConformanceResponse(BaseModel):
     cycle_count: int = 0
     total_cycles: int = 0
     violating_repos: list[str] = []
+    #: False when the graph had too little evidence for "no cycles" to mean
+    #: anything; ``None`` on a report written before evidence was recorded.
+    cycles_determined: bool | None = None
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 class WorkspaceNodeArchitectureRole(BaseModel):
@@ -502,22 +567,27 @@ class WorkspaceNodeArchitectureRole(BaseModel):
 
 
 class WorkspaceArchitectureResponse(BaseModel):
-    """Architecture-complexity metrics over the system graph (Phase 6)."""
+    """Architecture-complexity metrics over the system graph (Phase 6).
+
+    Every measured figure is ``None`` when there is no graph, or when its
+    ``evidence`` is insufficient: nothing seen is not a 10/10.
+    """
 
     node_count: int = 0
     structural_edge_count: int = 0
-    propagation_cost: float = 0.0
-    propagation_cost_pct: float = 0.0
-    core_size: int = 0
-    core_ratio: float = 0.0
+    propagation_cost: float | None = None
+    propagation_cost_pct: float | None = None
+    core_size: int | None = None
+    core_ratio: float | None = None
     core_members: list[str] = []
-    cycle_count: int = 0
+    cycle_count: int | None = None
     conformance_violations: int = 0
-    architecture_type: str = "hierarchical"
-    score: float = 10.0
+    architecture_type: str = "undetermined"
+    score: float | None = None
     role_breakdown: dict[str, int] = {}
     roles: list[WorkspaceNodeArchitectureRole] = []
     generated_at: str = ""
+    evidence: WorkspaceGraphEvidence | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -104,8 +104,8 @@ Each marker is a stateless class implementing the `Biomarker` Protocol
 
 ### The full roster
 
-`biomarkers/registry.py` registers **58 detectors**; counting the three governance
-findings written by the additive pass (`governance.py`) there are **61 marker ids**. They
+`biomarkers/registry.py` registers **59 detectors**; counting the three governance
+findings written by the additive pass (`governance.py`) there are **62 marker ids**. They
 divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
@@ -114,7 +114,7 @@ divide by what each is permitted to affect:
 | Performance | 22 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing: the finding surfaces, the score is untouched |
-| Advisory | 9 | nothing: measured by construction, out of impact-ranked lists unless requested |
+| Advisory | 10 | nothing: measured by construction, out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. An unlisted biomarker defaults into
 `defect`, so every `sql_*` and performance name is listed explicitly: an omission would
@@ -166,6 +166,7 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `apex_missing_sharing` | Apex | A top-level class with queries or updates and no sharing keyword | Medium; not subclasses, inner or test classes | Advisory |
 | `apex_hardcoded_id` | Apex | A record Id as a string literal | Medium; 18 chars with a valid checksum or 15 on a standard prefix; non-test Apex | Advisory |
 | `apex_see_all_data` | Apex | `@IsTest(SeeAllData=true)` | Low | Advisory |
+| `cobol_unstructured_flow` | COBOL | A paragraph or section with `ALTER`, `GO TO ... DEPENDING ON`, or a `GO TO` that is not a forward jump to an `...EXIT` paragraph of its own `PERFORM THRU` range | Low; one finding per paragraph | Advisory |
 | `io_in_loop` | Performance | I/O per loop iteration (N+1), across functions | Medium | perf 1.0 |
 | `string_concat_in_loop` | Performance | `+=` of a provable string in a loop | Low | perf 0.7 |
 | `blocking_sync_in_async` | Performance | A sync blocking call in `async def` | Medium; Python, Rust, C#, Kotlin, Scala | perf 0.7 |

@@ -15,9 +15,11 @@ it moves under ``ingestion`` the day one does.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
 from ..strings import StringSyntax, literal_span, resolve_string
@@ -42,6 +44,9 @@ class ClientCallMatch:
     argument, a builder terminal, an explicit option) and ``None`` when only
     the callee's name carries it, in which case :func:`method_from_callee`
     reads ``callee``. ``offset`` is where the call starts, for its line.
+    ``compose``, when set, rewrites the resolved URL text before it is read:
+    the base a client instance carries, or the template a wrapper method
+    builds around its argument.
     """
 
     client: str
@@ -49,7 +54,8 @@ class ClientCallMatch:
     offset: int
     callee: str = ""
     method: str | None = None
-    confidence: float = 0.75
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL
+    compose: Callable[[str], str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -113,12 +119,19 @@ def consumer_contracts(
     *rooted_only* drops a URL that is neither absolute nor rooted. A client
     with a configured base composes ``"some/path"`` onto it, so the path the
     request reaches has a prefix this layer cannot see.
+
+    A call in a comment (a usage example in a doc comment) is skipped here,
+    once for every recogniser.
     """
     out: list[Contract] = []
     for m in matches:
+        if ctx.in_comment(m.offset):
+            continue
         url = resolve_string(m.url, syntax, constants)
         if url is None or (path_only and "/" not in url):
-            continue
+            continue  # judged on what the call itself names, before a base joins it
+        if m.compose is not None:
+            url = m.compose(url)
         if rooted_only and not is_rooted_url(url):
             continue
         method = m.method or method_from_callee(m.callee)
@@ -128,7 +141,7 @@ def consumer_contracts(
             url=url,
             client=m.client,
             line=line_at(ctx.content, m.offset),
-            confidence=m.confidence,
+            origin=m.origin,
         )
         if c is not None:
             out.append(c)
@@ -143,7 +156,7 @@ def matches_in(
     url_group: int,
     method_group: int | None = None,
     callee_group: int | None = None,
-    confidence: float = 0.75,
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL,
     prefix_group: int | None = None,
 ) -> Iterator[ClientCallMatch]:
     """Rows for every match of *pattern* whose *url_group* captured a literal body.
@@ -163,7 +176,7 @@ def matches_in(
             offset=m.start(),
             callee=m.group(callee_group) if callee_group is not None else "",
             method=m.group(method_group).upper() if method_group is not None else None,
-            confidence=confidence,
+            origin=origin,
         )
 
 

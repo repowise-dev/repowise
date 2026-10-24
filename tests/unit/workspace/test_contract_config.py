@@ -154,3 +154,47 @@ class TestContractProjectPattern:
     def test_invalid_regex_falls_back_to_the_default(self) -> None:
         cfg = ContractConfig.from_dict({"contract_project_pattern": "(unclosed"})
         assert cfg.contract_project_pattern == ContractConfig().contract_project_pattern
+
+
+class TestSettingStages:
+    """Each contract setting says whether it feeds extraction or only matching."""
+
+    def test_every_setting_declares_its_stage(self) -> None:
+        from dataclasses import fields
+
+        from repowise.core.workspace.config import STAGE_EXTRACTION, STAGE_MATCHING
+
+        undeclared = [
+            f.name
+            for f in fields(ContractConfig)
+            if f.metadata.get("stage") not in {STAGE_EXTRACTION, STAGE_MATCHING}
+        ]
+        assert undeclared == []
+
+    def test_matching_settings_stay_out_of_the_extraction_half(self) -> None:
+        from repowise.core.workspace.config import STAGE_EXTRACTION, STAGE_MATCHING
+
+        cfg = ContractConfig(
+            service_bases={"API_BASE": "api"},
+            manual_links=[ManualContractLink("a", "b", "http", "http::GET::/x")],
+        )
+        assert cfg.stage_dict(STAGE_EXTRACTION) == ContractConfig().to_dict()
+        assert set(cfg.stage_dict(STAGE_MATCHING)) == {"service_bases", "manual_links"}
+
+    def test_a_lone_non_default_setting_survives_save(self, tmp_path) -> None:
+        ws = WorkspaceConfig(
+            repos=[RepoEntry(path="a", alias="a")],
+            contracts=ContractConfig(detect_code_api=False),
+        )
+        ws.save(tmp_path)
+        assert WorkspaceConfig.load(tmp_path).contracts.detect_code_api is False
+
+    def test_analysis_fingerprint_follows_settings_not_repos(self) -> None:
+        base = WorkspaceConfig(repos=[RepoEntry(path="a", alias="a")])
+        moved = WorkspaceConfig(repos=[RepoEntry(path="a", alias="a", last_commit_at_index="f00")])
+        edited = WorkspaceConfig(
+            repos=[RepoEntry(path="a", alias="a")],
+            contracts=ContractConfig(service_bases={"API_BASE": "a"}),
+        )
+        assert base.analysis_fingerprint() == moved.analysis_fingerprint()
+        assert base.analysis_fingerprint() != edited.analysis_fingerprint()

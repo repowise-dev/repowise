@@ -377,13 +377,15 @@ def write_private_file(
     """Write a secret ``.repowise/<name>``: git-ignored first, owner-only after.
 
     Some repositories commit ``.repowise/`` for its shared config, so a secret
-    there needs its own ignore rule. Ignore rule first, secret second: if the
-    .gitignore write fails (a read-only checkout, a root-owned file) this
-    raises before the secret is on disk rather than after, which costs the
-    caller a saved secret instead of leaving a committable one behind.
+    there needs its own ignore rule. It goes in ``.repowise/.gitignore``, not
+    the repo root's: nothing outside ``.repowise/`` is touched, and the rule
+    travels with the directory when it is committed. Ignore rule first, secret
+    second: if that write fails this raises before the secret is on disk
+    rather than after, which costs the caller a saved secret instead of
+    leaving a committable one behind.
     """
     if ignore:
-        _ensure_gitignored(repo_path, f".repowise/{name}", comment)
+        _ensure_gitignored(repo_path, name, comment)
     path = get_repowise_dir(repo_path) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -439,24 +441,23 @@ def ensure_manifest_tracked(repo_path: Path | str) -> bool:
     return True
 
 
-def _ensure_gitignored(repo_path: Path | str, pattern: str, comment: str) -> None:
-    """Add *pattern* to the repo's ``.gitignore`` unless git already ignores it."""
-    gitignore = Path(repo_path) / ".gitignore"
-    if _git_ignores(repo_path, pattern):
-        return  # e.g. a ``.repowise/`` rule: a second line would only dirty the file
+def _ensure_gitignored(repo_path: Path | str, name: str, comment: str) -> None:
+    """Ignore ``.repowise/<name>`` from ``.repowise/.gitignore`` unless git already does."""
+    if _git_ignores(repo_path, f".repowise/{name}"):
+        return  # e.g. a root ``.repowise/`` rule: a second line would only add noise
 
-    if gitignore.exists():
-        content = gitignore.read_text(encoding="utf-8")
-        # Line membership, not substring, so the pattern buried in an unrelated
-        # comment doesn't suppress the real ignore rule.
-        if pattern in {line.strip() for line in content.splitlines()}:
-            return
-        if not content.endswith("\n"):
-            content += "\n"
-        content += f"\n# {comment}\n{pattern}\n"
-        gitignore.write_text(content, encoding="utf-8")
-    else:
-        gitignore.write_text(f"# {comment}\n{pattern}\n", encoding="utf-8")
+    gitignore = get_repowise_dir(repo_path) / ".gitignore"
+    rule = f"/{name}"
+    content = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    # Line membership, not substring, so the name buried in an unrelated
+    # comment doesn't suppress the real ignore rule.
+    if rule in {line.strip() for line in content.splitlines()}:
+        return
+    if content:
+        content = content.rstrip("\n") + "\n\n"
+    content += f"# {comment}\n{rule}\n"
+    gitignore.parent.mkdir(parents=True, exist_ok=True)
+    gitignore.write_text(content, encoding="utf-8")
 
 
 def _git_ignores(repo_path: Path | str, pattern: str) -> bool:

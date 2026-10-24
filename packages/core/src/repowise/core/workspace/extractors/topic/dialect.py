@@ -10,7 +10,9 @@ A value that cannot be settled inside the file is refused.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.contracts import (
@@ -23,13 +25,13 @@ from repowise.core.workspace.contracts import (
     TOPIC_PREFIX,
     TOPIC_ROUTING_KEY_UNRESOLVED,
 )
+from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
-from ..calls import call_sites
-from ..dialect import build_contract
+from ..calls import call_sites, declared_receivers
+from ..dialect import build_contract, rows_gate
 
 if TYPE_CHECKING:
-    import re
     from collections.abc import Callable
 
     from repowise.core.workspace.contracts import Contract
@@ -37,6 +39,7 @@ if TYPE_CHECKING:
     from ..base import ScanContext
     from ..calls import FileStrings
     from ..strings import Arg
+    from .declared import QueueDeclaration
 
 #: Wildcard characters of each subscription-pattern syntax, which a name must
 #: contain to be read as a pattern (``regex`` names are patterns outright).
@@ -53,7 +56,9 @@ class TopicCall:
     substrings (the library's import) one of which the file must contain.
     ``normalize`` maps a resolved name to the broker's own (a queue URL to its
     last segment). ``pattern`` is the subscription-pattern syntax of a
-    consumer whose name may carry wildcards.
+    consumer whose name may carry wildcards. ``declared`` reads a queue
+    named through its declaration's result (``q.Name``): the ``queue`` of a
+    binding, else the ``name``.
     """
 
     head: re.Pattern[str]
@@ -62,13 +67,52 @@ class TopicCall:
     extensions: frozenset[str]
     name: Arg
     kind: str = TOPIC_KIND_TOPIC
-    confidence: float = 0.8
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL
     routing_key: Arg | None = None
     queue: Arg | None = None
+    declared: QueueDeclaration | None = None
     default_exchange: bool = False
     requires: tuple[str, ...] = ()
     normalize: Callable[[str], str | None] | None = None
     pattern: str = ""
+
+
+@dataclass(frozen=True)
+class ReceiverCall:
+    """A broker call read on any name the file declares with one of the client's types.
+
+    ``send`` and ``produce`` are too common to read on any receiver, and the
+    receiver's name is the author's choice (``KafkaTemplate<K, V> kt``), so the
+    file's own declarations of *types* (:func:`..calls.declared_receivers`)
+    name the receivers, and ``verbs`` (a regex alternation) are read on those
+    alone. The other fields are a :class:`TopicCall`'s.
+    """
+
+    types: re.Pattern[str]
+    verbs: str
+    role: str
+    label: str
+    extensions: frozenset[str]
+    name: Arg
+    requires: tuple[str, ...]
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL
+
+
+@lru_cache(maxsize=256)
+def _receiver_call(row: ReceiverCall, receivers: tuple[str, ...]) -> TopicCall:
+    alts = "|".join(re.escape(r) for r in receivers)
+    head = re.compile(
+        rf"(?<![\w$.])(?:(?:this|self)\s*\.\s*)?(?:{alts})\s*\.\s*(?:{row.verbs})\s*\("
+    )
+    return TopicCall(
+        head=head,
+        role=row.role,
+        label=row.label,
+        extensions=row.extensions,
+        name=row.name,
+        origin=row.origin,
+        requires=row.requires,
+    )
 
 
 def topic_contract(
@@ -79,7 +123,7 @@ def topic_contract(
     kind: str,
     role: str,
     label: str,
-    confidence: float,
+    origin: ContractOrigin,
     offset: int,
     **extra: str | bool,
 ) -> Contract:
@@ -91,7 +135,7 @@ def topic_contract(
         contract_id=f"{TOPIC_PREFIX}{name.lower()}",
         role=role,
         symbol_name=f"{label}('{name}')",
-        confidence=confidence,
+        origin=origin,
         line=line_at(ctx.content, offset),
         meta=meta,
     )
@@ -113,9 +157,13 @@ def call_contracts(
     queues: list[str] = []
     if call.queue is not None:
         queues, _ = strings.resolve(args, call.queue)
+        if not queues and call.declared is not None:
+            queues = call.declared.queues(ctx, args, call.queue, strings)
         if not queues:
             return []  # a binding with no readable queue binds nothing we can name
     names, _ = strings.resolve(args, call.name, call.normalize)
+    if not names and call.declared is not None and call.queue is None:
+        names = call.declared.queues(ctx, args, call.name, strings)
     out: list[Contract] = []
     for name in names:
         kind, key, unresolved = call.kind, routing_key, key_refused
@@ -145,7 +193,7 @@ def call_contracts(
                 kind=kind,
                 role=call.role,
                 label=call.label,
-                confidence=call.confidence,
+                origin=call.origin,
                 offset=offset,
                 **extra,
             )
@@ -156,14 +204,35 @@ def call_contracts(
 class TopicDialect:
     """One broker library's calls, for the files whose extension its calls read."""
 
-    def __init__(self, name: str, calls: tuple[TopicCall, ...]) -> None:
+    def __init__(
+        self,
+        name: str,
+        calls: tuple[TopicCall, ...],
+        receivers: tuple[ReceiverCall, ...] = (),
+    ) -> None:
         self.name = name
         self.calls = calls
-        self.extensions = frozenset().union(*(c.extensions for c in calls))
+        self.receivers = receivers
+        rows = (*receivers, *calls)
+        self.extensions = frozenset().union(*(c.extensions for c in rows))
+        self.requires = rows_gate(rows)
+
+    def _typed_calls(self, ctx: ScanContext) -> list[TopicCall]:
+        """A :class:`TopicCall` per receiver row, on the names this file declares."""
+        out: list[TopicCall] = []
+        for row in self.receivers:
+            if ctx.suffix not in row.extensions or not ctx.has_any(row.requires):
+                continue
+            names = declared_receivers(ctx.content, row.types)
+            if names:
+                out.append(_receiver_call(row, tuple(sorted(names))))
+        return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []
-        for call, args, m, strings in call_sites(ctx, self.calls):
+        # Typed rows first: a call both read is kept with the typed row's origin.
+        calls = [*self._typed_calls(ctx), *self.calls]
+        for call, args, m, strings in call_sites(ctx, calls):
             out.extend(call_contracts(ctx, self.name, call, args, m.start(), strings))
         return out
 
@@ -191,6 +260,7 @@ def last_segment(sep: str) -> Callable[[str], str | None]:
 
 
 __all__ = [
+    "ReceiverCall",
     "TopicCall",
     "TopicDialect",
     "last_segment",

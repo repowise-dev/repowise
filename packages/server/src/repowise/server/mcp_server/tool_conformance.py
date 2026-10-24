@@ -103,10 +103,16 @@ def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict
     shown_violations = violations[:_MCP_VIOLATION_LIMIT]
     shown_cycles = cycles[:_MCP_CYCLE_LIMIT]
 
+    evidence = report.get("evidence") or {}
     if violations or cycles:
         summary = (
             f"{len(violations)} architecture rule violation(s) and {total_cycles} "
             f"dependency cycle(s) from {report.get('rules_evaluated', 0)} declared rule(s)."
+        )
+    elif report.get("cycles_determined") is False:
+        summary = (
+            f"{report.get('rules_evaluated', 0)} declared rule(s), no violation; dependency "
+            f"cycles not determined: {evidence.get('summary')}."
         )
     elif report.get("rules_evaluated", 0):
         summary = "No conformance violations or dependency cycles detected."
@@ -127,5 +133,7 @@ def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict
         "cycle_count": len(cycles),
         "total_cycles": total_cycles,
         "checked_at": report.get("generated_at"),
+        "cycles_determined": report.get("cycles_determined"),
+        "evidence": evidence or None,
         "summary": summary,
     }

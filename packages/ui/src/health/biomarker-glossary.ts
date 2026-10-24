@@ -22,7 +22,8 @@ export type BiomarkerCategory =
   | "performance"
   | "organizational"
   | "sql"
-  | "apex";
+  | "apex"
+  | "cobol";
 
 export interface BiomarkerInfo {
   label: string;
@@ -42,6 +43,7 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   organizational: "Organizational",
   sql: "SQL",
   apex: "Apex",
+  cobol: "COBOL",
 };
 
 export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
@@ -63,6 +65,8 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   sql: 2.0,
   // Apex markers are advisory: listed, never deducted.
   apex: 0,
+  // The COBOL marker is advisory too.
+  cobol: 0,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -432,6 +436,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A test class or method annotated @IsTest(SeeAllData=true): it reads the org's live data, so it can pass in one org and fail in another. Advisory: it never deducts.",
   },
+  cobol_unstructured_flow: {
+    label: BIOMARKER_LABELS.cobol_unstructured_flow,
+    category: "cobol",
+    description:
+      "A COBOL paragraph or section with an ALTER, a GO TO ... DEPENDING ON, or a GO TO to anything other than an exit paragraph of the PERFORM THRU range it sits in, so where control goes next has to be traced by hand. GO TO X-EXIT inside its own range is not flagged. Advisory: it never deducts.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
@@ -476,6 +486,7 @@ export const ADVISORY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "apex_missing_sharing",
   "apex_hardcoded_id",
   "apex_see_all_data",
+  "cobol_unstructured_flow",
 ]);
 
 /**

@@ -145,3 +145,94 @@ def test_benchmark_in_a_same_named_class_of_another_namespace_does_not_count(
         "        public void Sort() { }\n    }\n}\n"
     )
     assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+_ISOLATED_FUNCTION = (
+    "using Microsoft.Azure.Functions.Worker;\nnamespace App;\npublic class OrderFn\n{\n"
+    '    [Function("GetOrder")]\n'
+    '    public object Run([HttpTrigger(AuthorizationLevel.Function, "get")] object req) => null;\n'
+    "}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _ISOLATED_FUNCTION,
+        "using Microsoft.Azure.WebJobs;\nnamespace App;\npublic static class Cleanup\n{\n"
+        '    [FunctionName("Cleanup")]\n'
+        '    public static void Run([TimerTrigger("0 */5 * * * *")] object timer) { }\n}\n',
+        "namespace App;\npublic class Orchestrator\n{\n    [Function(nameof(Run))]\n"
+        "    public void Run([OrchestrationTrigger] object context) { }\n}\n",
+    ],
+    ids=["isolated-http", "in-process-timer", "durable-orchestrator"],
+)
+def test_azure_function_class_is_a_root(tmp_path: Path, text: str) -> None:
+    assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+def test_function_attribute_without_a_trigger_is_not_a_root(tmp_path: Path) -> None:
+    """linq2db's ``[Sql.Function]`` maps a method to SQL; nothing hosts it."""
+    text = (
+        "using LinqToDB;\nnamespace App;\npublic static class SqlFns\n{\n"
+        '    [Sql.Function("LOWER")]\n    public static string Lower(string s) => s;\n}\n'
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+def test_azure_function_next_to_an_unused_class_keeps_the_file_judged(tmp_path: Path) -> None:
+    text = _ISOLATED_FUNCTION + "public class DeadSibling { }\n"
+    assert _roots(tmp_path, {"A.cs": text}) == set()
+
+
+_CONTRACT = (
+    "using System.ServiceModel;\nnamespace App;\n[ServiceContract]\n"
+    "public interface IOrderService { [OperationContract] string Place(string id); }\n"
+)
+_SERVICE = "public class OrderService : IOrderService { public string Place(string id) => id; }\n"
+
+
+def test_wcf_service_implementation_is_a_root(tmp_path: Path) -> None:
+    files = {"IOrderService.cs": _CONTRACT, "OrderService.cs": "namespace App;\n" + _SERVICE}
+    assert _roots(tmp_path, files) == {"OrderService.cs"}
+
+
+def test_wcf_contract_and_service_in_one_file_is_a_root(tmp_path: Path) -> None:
+    assert _roots(tmp_path, {"A.cs": _CONTRACT + _SERVICE}) == {"A.cs"}
+
+
+def test_wcf_client_proxy_is_not_a_root(tmp_path: Path) -> None:
+    proxy = (
+        "namespace App;\n"
+        "public class OrderServiceClient : ClientBase<IOrderService>, IOrderService\n"
+        "{ public string Place(string id) => Channel.Place(id); }\n"
+    )
+    assert _roots(tmp_path, {"IOrderService.cs": _CONTRACT, "Client.cs": proxy}) == set()
+
+
+def test_implementing_an_interface_without_service_contract_is_not_a_root(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "IOrderService.cs": (
+            "namespace App;\npublic interface IOrderService { string Place(string id); }\n"
+        ),
+        "OrderService.cs": "namespace App;\n" + _SERVICE,
+    }
+    assert _roots(tmp_path, files) == set()
+
+
+def test_trigger_after_another_attribute_in_one_bracket_counts(tmp_path: Path) -> None:
+    text = (
+        "namespace App;\npublic class Resize\n{\n    [Function(\"Resize\")]\n"
+        '    public void Run([Blob("out"), BlobTrigger("in/{name}")] string blob) { }\n}\n'
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}
+
+
+def test_class_carrying_service_contract_itself_is_a_root(tmp_path: Path) -> None:
+    text = (
+        "using System.ServiceModel;\nnamespace App;\n[ServiceContract]\n"
+        "public class Echo { [OperationContract] public string Say(string s) => s; }\n"
+    )
+    assert _roots(tmp_path, {"A.cs": text}) == {"A.cs"}

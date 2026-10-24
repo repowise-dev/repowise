@@ -8,11 +8,13 @@ An Apex callout is a ``System.HttpRequest`` configured statement by statement::
     new Http().send(req);
 
 A row needs, inside one method, an ``HttpRequest`` declared there (or taken as
-a parameter), its ``setEndpoint`` and exactly one literal verb; anything else is
+a parameter), its ``setEndpoint`` and exactly one resolved verb; anything else is
 refused rather than guessed. The endpoint must be an absolute URL or
 ``callout:Name/path``, whose credential name becomes the call's base token
 (the ``${API_BASE}/users`` shape) for ``service_bases`` to map. A name folds
-only as a ``final`` field or a local the method assigns once, never a parameter.
+only as a ``final`` field or a local the method assigns once. An endpoint
+parameter can instead read literal arguments at unambiguous same-class calls
+to its wrapper, one level only; a verb parameter must resolve at that call too.
 
 Ceiling: the Named Credential's own ``.xml`` endpoint is not read; reading it
 would add a host and path prefix to each ``callout:`` row.
@@ -24,6 +26,7 @@ import re
 from typing import TYPE_CHECKING
 
 from repowise.core.ingestion.framework_routes import apex_code
+from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
 from ..langs import APEX
@@ -57,7 +60,8 @@ _CALLOUT_RE = re.compile(
 )
 _ABSOLUTE_RE = re.compile(r"https?://[^/$?]+(?:[/?]|$)", re.IGNORECASE)
 
-_CONFIDENCE = 0.75
+_METHOD_HEADER_RE = re.compile(r"\b(?P<name>[A-Za-z_]\w*)\s*\([^()]*\)\s*$")
+_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'", re.DOTALL)
 
 
 def _blocks(code: str) -> list[tuple[int, int, bool]]:
@@ -101,13 +105,23 @@ def _method_scope(
     return None
 
 
-def _verb(content: str, code: str, recv: str, start: int, end: int) -> str | None:
+def _verb(
+    content: str,
+    code: str,
+    recv: str,
+    start: int,
+    end: int,
+    bindings: dict[str, str | None] | None = None,
+) -> str | None:
     """The one literal verb *recv*'s ``setMethod`` calls name in ``[start, end)``, else None."""
     pattern = re.compile(rf"\b{re.escape(recv)}\s*\.\s*setMethod\s*\(", re.IGNORECASE)
     verbs: set[str | None] = set()
     for m in pattern.finditer(code, start, end):
         args = call_arguments(content, m.end() - 1)
-        verbs.add(method_from_argument(args[0]) if args and len(args) == 1 else None)
+        expr = args[0] if args and len(args) == 1 else None
+        if expr is not None and bindings is not None:
+            expr = bindings.get(expr.lower(), expr)
+        verbs.add(method_from_argument(expr) if expr is not None else None)
     if len(verbs) != 1:
         return None
     return verbs.pop()
@@ -183,9 +197,114 @@ def _url(
     return resolve_string(_cut_query(expr), APEX_SYNTAX, constants)
 
 
+def _type_scope(blocks: list[tuple[int, int, bool]], offset: int) -> tuple[int, int, bool] | None:
+    """The innermost class/interface/enum containing *offset*."""
+    return max(
+        (b for b in blocks if b[2] and b[0] < offset < b[1]),
+        default=None,
+    )
+
+
+def _wrapper_calls(
+    content: str,
+    code: str,
+    blocks: list[tuple[int, int, bool]],
+    scope: tuple[int, int],
+    recv: str,
+    expr: str,
+) -> list[tuple[str, str, int]]:
+    """``(verb, URL, caller offset)`` for literal calls to an endpoint wrapper."""
+    start, end = scope
+    body = code.find("{", start, end)
+    header = code[start:body] if body != -1 else ""
+    method = _METHOD_HEADER_RE.search(header)
+    owner = _type_scope(blocks, start)
+    if method is None or owner is None:
+        return []
+    # Angle brackets nest type arguments in declarations, like brackets nest
+    # expressions at a call site. Keep their commas out of parameter splitting.
+    params = call_arguments(
+        header.replace("<", "[").replace(">", "]"), header.index("(", method.start())
+    )
+    if not params or any(not p for p in params):
+        return []
+    names = [p.rsplit(None, 1)[-1].lower() for p in params]
+    if expr.lower() not in names or len(set(names)) != len(names):
+        return []
+    endpoint_pos = names.index(expr.lower())
+    name = method.group("name")
+    pattern = re.compile(rf"\b{re.escape(name)}\s*\(", re.IGNORECASE)
+    sites = [m for m in pattern.finditer(code) if _type_scope(blocks, m.start()) == owner]
+    # Headers live directly in the type body, as do field initializers. Only
+    # a declaration prefix (modifiers and a return type) counts as an overload.
+    declarations: set[int] = set()
+    for site in sites:
+        if _method_scope(blocks, code, site.start()) is not None:
+            continue
+        boundary = max(
+            code.rfind("{", 0, site.start()),
+            code.rfind("}", 0, site.start()),
+            code.rfind(";", 0, site.start()),
+        )
+        prefix = re.sub(r"@\w+(?:\s*\([^()]*\))?", "", code[boundary + 1 : site.start()]).strip()
+        if prefix and re.fullmatch(r"[\w.<>,\[\]\s]+", prefix):
+            declarations.add(site.start())
+    if declarations != {start + method.start("name")}:
+        return []
+    mutated = {
+        n
+        for n in names
+        if re.search(
+            rf"(?<![.\w]){re.escape(n)}\s*[-+*/%&|^]?=(?!=)", code[body:end], re.IGNORECASE
+        )
+    }
+    type_header = code[
+        max(
+            code.rfind("{", 0, owner[0]), code.rfind("}", 0, owner[0]), code.rfind(";", 0, owner[0])
+        )
+        + 1 : owner[0]
+    ]
+    type_name = re.search(r"\bclass\s+([A-Za-z_]\w*)", type_header, re.IGNORECASE)
+    out: list[tuple[str, str, int]] = []
+    for site in sites:
+        if site.start() in declarations:
+            continue
+        prefix = code[: site.start()].rstrip()
+        before = prefix
+        if prefix.endswith("."):
+            qualifier = re.search(r"(?<![.\w])([A-Za-z_]\w*)\s*\.\s*$", prefix)
+            if qualifier is None or prefix[: qualifier.start()].rstrip().endswith("."):
+                continue
+            before = prefix[: qualifier.start()]
+            receiver = qualifier.group(1)
+            if receiver.lower() != "this" and (
+                type_name is None
+                or receiver.lower() != type_name.group(1).lower()
+                or _declared_in(code, receiver, owner[0], owner[1])
+            ):
+                continue
+        if re.search(r"\bnew\s*$", before, re.IGNORECASE):
+            continue  # constructing a same-named type does not invoke the wrapper
+        args = call_arguments(content, site.end() - 1)
+        if args is None or len(args) != len(names):
+            continue
+        bindings = {
+            n: arg if n not in mutated and _LITERAL_RE.fullmatch(arg) else None
+            for n, arg in zip(names, args, strict=True)
+        }
+        literal = bindings[names[endpoint_pos]]
+        url = resolve_string(literal, APEX_SYNTAX) if literal is not None else None
+        verb = _verb(content, code, recv, start, end, bindings)
+        if url is not None and verb is not None:
+            out.append((verb, url, site.start()))
+    return out
+
+
 class ApexCalloutsDialect:
     name = "apex-callouts"
     extensions = APEX
+    # Apex is case-insensitive; `extract` reads the exact spelling.
+    requires = ("setEndpoint", "setendpoint", "SetEndpoint", "SETENDPOINT")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
@@ -207,23 +326,29 @@ class ApexCalloutsDialect:
                 continue  # not a request this method holds
             method = _verb(content, code, recv, start, end)
             args = call_arguments(content, m.end() - 1)
-            if method is None or not args or len(args) != 1:
+            if not args or len(args) != 1:
                 continue
             if constants is None:
                 constants = _final_fields(content, code)
             url = _url(content, code, args[0], scope, constants)
-            endpoint = _endpoint(url) if url is not None else None
-            if endpoint is None:
-                continue
-            c = build_consumer_contract(
-                ctx,
-                method=method,
-                url=endpoint,
-                client="apex-callout",
-                line=line_at(content, m.start()),
-                confidence=_CONFIDENCE,
+            sites = (
+                [(method, url, m.start())]
+                if method is not None and url is not None
+                else _wrapper_calls(content, code, blocks, scope, recv, args[0])
             )
-            if c is not None:
-                c.symbol_name = f"apex-callout:{method} {url}"  # as written, not rewritten
-                out.append(c)
+            for method, url, offset in sites:
+                endpoint = _endpoint(url)
+                if endpoint is None:
+                    continue
+                c = build_consumer_contract(
+                    ctx,
+                    method=method,
+                    url=endpoint,
+                    client="apex-callout",
+                    line=line_at(content, offset),
+                    origin=ContractOrigin.CLIENT_CALL,
+                )
+                if c is not None:
+                    c.symbol_name = f"apex-callout:{method} {url}"  # as written, not rewritten
+                    out.append(c)
         return out

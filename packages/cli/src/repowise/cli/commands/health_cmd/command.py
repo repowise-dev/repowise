@@ -386,19 +386,7 @@ def _resolve_repo_path(
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(status, command="health")
-    if not target.is_workspace:
-        assert target.repo_path is not None
-        return target.repo_path
-    if target.repo_filter is not None:
-        picked = target.resolve_repo_alias(target.repo_filter)
-        if picked is None:
-            raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
-        return picked
-    primary = target.primary_path()
-    if primary is None:
-        raise click.ClickException("Workspace has no primary repo configured.")
-    return primary
+    return target.narrow(status, command="health")
 
 
 def _render_stored_view(repo_path: Path, status: Any, opts: _Options) -> bool:
@@ -685,7 +673,7 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
         score_color = BAND_TERMINAL_COLOR[band_for(m.score)]
         table.add_row(
             m.file_path,
-            f"[{score_color}]{m.score:.1f}[/{score_color}]"
+            f"[{score_color}]{m.score:.2f}[/{score_color}]"
             + ("*" if m.file_path in short_history else ""),
             str(m.max_ccn),
             str(m.max_nesting),

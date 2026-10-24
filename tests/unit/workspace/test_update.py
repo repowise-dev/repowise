@@ -255,6 +255,54 @@ class TestUpdateWorkspace:
         assert results[0].updated is False
         assert results[0].skipped_reason == "up_to_date"
 
+    def test_a_caller_that_restamped_leaves_up_to_date_members_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """The CLI restamps the up-to-date members whose fingerprint moved
+        before the pass; the pass must not reopen every other member's store,
+        which would rewrite each one (and its editor files) on every change.
+        The member that changed is still stamped."""
+        import asyncio
+
+        backend = _make_git_repo(tmp_path, "backend")
+        backend_head = get_head_commit(backend)
+        _write_state(backend, backend_head)
+        frontend = _make_git_repo(tmp_path, "frontend")
+        old_head = get_head_commit(frontend)
+        _write_state(frontend, old_head)
+        new_head = _add_commit(frontend, "page.txt")
+        ws_config = WorkspaceConfig(
+            repos=[
+                RepoEntry(path="backend", alias="backend", last_commit_at_index=backend_head),
+                RepoEntry(path="frontend", alias="frontend", last_commit_at_index=old_head),
+            ],
+        )
+        ws_config.save(tmp_path)
+        stamp = AsyncMock()
+
+        async def _run():
+            with (
+                patch(
+                    "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
+                    new_callable=AsyncMock,
+                    return_value=RepoUpdateResult(alias="frontend", updated=True),
+                ),
+                patch(
+                    "repowise.core.workspace.update.workspace_pass.reconcile_repo_head_commit",
+                    stamp,
+                ),
+            ):
+                return await update_workspace(
+                    tmp_path, ws_config, run_hooks=False, restamp_up_to_date=False
+                )
+
+        results = asyncio.run(_run())
+        assert {r.alias: r.skipped_reason for r in results} == {
+            "backend": "up_to_date",
+            "frontend": None,
+        }
+        assert [c.args for c in stamp.await_args_list] == [(frontend.resolve(), new_head)]
+
     def test_up_to_date_repo_reconciles_freshness_stamp(self, tmp_path: Path) -> None:
         """An up-to-date workspace sync still refreshes the repo row timestamp."""
         from repowise.core.persistence import (
@@ -360,6 +408,67 @@ class TestUpdateWorkspace:
         assert updated[0].alias == "backend"
         saved_state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
         assert saved_state["phase_timings"]["run"] >= 0
+
+    def test_reports_stored_counts_not_run_figures(self, tmp_path: Path) -> None:
+        """A commit with nothing to re-parse reports 0/0 from the run; the result
+        carries the store's files and symbols, the figures `workspace list` shows."""
+        import asyncio
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+        from repowise.core.persistence.database import resolve_db_url
+        from repowise.core.persistence.models import GraphNode
+        from tests.unit.persistence.helpers import make_wiki_symbol
+
+        repo = _make_git_repo(tmp_path, "backend")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "notes.txt")
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=old_head)],
+        )
+        ws_config.save(tmp_path)
+
+        async def _seed() -> None:
+            engine = create_engine(resolve_db_url(repo))
+            await init_db(engine)
+            try:
+                async with get_session(create_session_factory(engine)) as session:
+                    row = await upsert_repository(
+                        session, name="backend", local_path=str(repo), head_commit=old_head
+                    )
+                    session.add_all([
+                        GraphNode(repository_id=row.id, node_id="a.py", language="python"),
+                        GraphNode(repository_id=row.id, node_id="b.py", language="python"),
+                        # An import target is not an indexed file.
+                        GraphNode(repository_id=row.id, node_id="requests", language="external"),
+                        *(make_wiki_symbol(row.id, "a.py", n) for n in ("f", "g", "h")),
+                    ])
+                    await session.flush()
+            finally:
+                await engine.dispose()
+
+        asyncio.run(_seed())
+        done: list[RepoUpdateResult] = []
+
+        async def _run():
+            with patch(
+                "repowise.core.workspace.update.workspace_pass.update_single_repo_index",
+                new_callable=AsyncMock,
+                return_value=RepoUpdateResult(alias="backend", updated=True),
+            ):
+                return await update_workspace(
+                    tmp_path, ws_config, run_hooks=False, on_repo_done=done.append
+                )
+
+        results = asyncio.run(_run())
+        assert (results[0].file_count, results[0].symbol_count) == (2, 3)
+        assert (done[0].file_count, done[0].symbol_count) == (2, 3)
 
     def test_detects_config_only_staleness(self, tmp_path: Path) -> None:
         """A workspace member with no new commit still runs when its local
@@ -1015,6 +1124,7 @@ class TestCrossRepoHooks:
 
         async def _phases(*_a, **_k):
             order.append("phases")
+            return True, set()
 
         async def _refresh(path):
             order.append(path.name)
@@ -1028,6 +1138,99 @@ class TestCrossRepoHooks:
         ):
             asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["api"]))
         assert order == ["phases", "api"]
+
+    def test_an_unchanged_provider_whose_consumers_moved_is_measured(self, tmp_path: Path) -> None:
+        """A change in one repo that adds or drops a call to another repo's
+        contract moves that provider's consumer counts: its facts refresh
+        too, and no other member's store is opened."""
+        ws_config = WorkspaceConfig(
+            repos=[
+                RepoEntry(path="web", alias="web"),
+                RepoEntry(path="api", alias="api"),
+                RepoEntry(path="mail", alias="mail"),
+            ]
+        )
+        refreshed: list[str] = []
+
+        async def _phases(*_a, **_k):
+            return True, {"api"}
+
+        async def _refresh(path):
+            refreshed.append(path.name)
+
+        import asyncio
+
+        with (
+            patch("repowise.core.workspace.update.phases._run_phases", _phases),
+            patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
+            patch("repowise.core.workspace.update.phases._refresh_contract_facts", _refresh),
+        ):
+            asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, ["web"]))
+        assert refreshed == ["web", "api"]
+
+    def test_consumer_counts_moved_names_only_the_affected_provider(self) -> None:
+        from repowise.core.workspace.contracts import Contract, ContractLink, ContractStore
+        from repowise.core.workspace.update.phases import _contract_counts_moved
+
+        def _provider(repo: str, cid: str) -> Contract:
+            return Contract(repo, cid, "http", "provider", "app.py", "h", 1.0)
+
+        def _link(consumer: str, provider: str, cid: str) -> ContractLink:
+            return ContractLink(
+                cid, "http", "exact", 1.0, provider, "app.py", "h", None,
+                consumer, "client.py", "c", None,
+            )
+
+        contracts = [_provider("api", "http::GET::/a"), _provider("mail", "http::POST::/m")]
+        before = ContractStore(
+            contracts=list(contracts),
+            contract_links=[_link("web", "api", "http::GET::/a"), _link("web", "mail", "http::POST::/m")],
+        )
+        # web drops its call to api; mail's consumers and every contract stay.
+        after = ContractStore(
+            contracts=list(contracts),
+            contract_links=[_link("web", "mail", "http::POST::/m")],
+        )
+        assert _contract_counts_moved(before, after) == {"api"}
+        assert _contract_counts_moved(after, after) == set()
+        # A provided contract that appears is a move of its own repo.
+        grown = ContractStore(
+            contracts=[*contracts, _provider("mail", "http::GET::/n")],
+            contract_links=list(after.contract_links),
+        )
+        assert _contract_counts_moved(after, grown) == {"mail"}
+
+    def test_detect_http_off_still_opens_the_index_for_code_contracts(
+        self, tmp_path: Path
+    ) -> None:
+        """``code`` contracts read the symbol index too, so turning HTTP off
+        must not hand extraction an empty index."""
+        from repowise.core.workspace.repo_index import WorkspaceIndex
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
+        )
+        ws_config.contracts.detect_http = False
+        seen: list[WorkspaceIndex] = []
+
+        async def _phases(_cfg, _root, _changed, _timings, index):
+            seen.append(index)
+            return True, set()
+
+        opened = WorkspaceIndex({}, {"api": tmp_path / "api"})
+
+        import asyncio
+
+        with (
+            patch("repowise.core.workspace.update.phases._run_phases", _phases),
+            patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
+            patch(
+                "repowise.core.workspace.repo_index.open_workspace_index",
+                AsyncMock(return_value=opened),
+            ),
+        ):
+            asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, []))
+        assert seen == [opened]
 
 
 # ---------------------------------------------------------------------------
@@ -1073,3 +1276,104 @@ class TestSavedExcludeSources:
         _merge_settings_excludes(patterns, "{not json")
         assert patterns == ["dist/**"]
         assert "saved exclude patterns not applied" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo settings edited with every repo up to date
+# ---------------------------------------------------------------------------
+
+
+class TestAnalysisConfigChange:
+    """An edited contracts: or conformance: block moves no repo, and used to do nothing."""
+
+    def _workspace(self, tmp_path: Path) -> WorkspaceConfig:
+        for name in ("api", "web"):
+            repo = _make_git_repo(tmp_path, name)
+            _write_state(repo, get_head_commit(repo))
+        return WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
+        )
+
+    def _run(
+        self, tmp_path: Path, ws_config: WorkspaceConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> AsyncMock:
+        import asyncio
+
+        from repowise.core.workspace.update import workspace_pass
+
+        hooks = AsyncMock()
+        monkeypatch.setattr(workspace_pass, "run_cross_repo_hooks", hooks)
+        asyncio.run(update_workspace(tmp_path, ws_config))
+        return hooks
+
+    def test_settings_edit_runs_the_hooks_and_the_stamp_settles_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from repowise.core.workspace.config import ContractConfig
+        from repowise.core.workspace.update.phases import stamp_analysis_config
+
+        ws_config = self._workspace(tmp_path)
+        stamp_analysis_config(ws_config, tmp_path)
+        assert not self._run(tmp_path, ws_config, monkeypatch).await_count
+
+        ws_config.contracts = ContractConfig(service_bases={"API_BASE": "api"})
+        hooks = self._run(tmp_path, ws_config, monkeypatch)
+        hooks.assert_awaited_once_with(ws_config, tmp_path, [])
+
+    def test_no_stamp_runs_the_hooks_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No stamp: the analysis never ran under these settings, so it runs."""
+        ws_config = self._workspace(tmp_path)
+        assert self._run(tmp_path, ws_config, monkeypatch).await_count == 1
+
+    def test_run_hooks_false_leaves_them_to_the_caller(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from repowise.core.workspace.update import workspace_pass
+
+        ws_config = self._workspace(tmp_path)
+        hooks = AsyncMock()
+        monkeypatch.setattr(workspace_pass, "run_cross_repo_hooks", hooks)
+        asyncio.run(update_workspace(tmp_path, ws_config, run_hooks=False))
+        hooks.assert_not_awaited()
+
+    def test_hooks_stamp_the_settings_they_ran_with(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from repowise.core.workspace.update import analysis_config_changed
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
+        )
+        assert analysis_config_changed(ws_config, tmp_path)
+        with (
+            patch(
+                "repowise.core.workspace.update.phases._run_phases",
+                AsyncMock(return_value=(True, set())),
+            ),
+            patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
+        ):
+            asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, []))
+        assert not analysis_config_changed(ws_config, tmp_path)
+
+    def test_failed_analysis_is_not_stamped(self, tmp_path: Path) -> None:
+        """A failed extraction is retried on the next update, not settled."""
+        import asyncio
+
+        from repowise.core.workspace.update import analysis_config_changed
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="api", alias="api"), RepoEntry(path="web", alias="web")]
+        )
+        with (
+            patch(
+                "repowise.core.workspace.update.phases._run_phases",
+                AsyncMock(return_value=(False, set())),
+            ),
+            patch("repowise.core.workspace.store.refresh_workspace_store", AsyncMock()),
+        ):
+            asyncio.run(run_cross_repo_hooks(ws_config, tmp_path, []))
+        assert analysis_config_changed(ws_config, tmp_path)

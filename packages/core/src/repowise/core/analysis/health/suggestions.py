@@ -333,6 +333,11 @@ _TEMPLATES: dict[str, str] = {
         "Create the test's data. Insert the records the test needs (a test data "
         "factory or @TestSetup) and drop SeeAllData=true."
     ),
+    "cobol_unstructured_flow": (
+        "Return through the range exit. Replace the jump with a flag the caller "
+        "tests, or PERFORM the target paragraph, and set the next step with a "
+        "value instead of ALTER."
+    ),
 }
 
 

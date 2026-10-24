@@ -397,15 +397,15 @@ MIN_DENSITY_POPULATION = 8
 
 
 #: Manifest parsers whose files hold build logic as well as dependencies.
-_BUILD_ECOSYSTEMS = frozenset({"cmake", "bazel"})
+_BUILD_ECOSYSTEMS = frozenset({"cmake", "bazel", "gradle"})
 
 
 def is_dependency_file(path: str) -> bool:
     """A dependency manifest or lockfile: a fix that bumps a dependency edits it.
 
     Such a file did not break. Runner configs (``tox.ini``, ``tsconfig.json``)
-    and build files the cmake and bazel parsers read (``CMakeLists.txt``,
-    ``BUILD``) are not dependency files and keep their fix record.
+    and build files the cmake, bazel and gradle parsers read (``CMakeLists.txt``,
+    ``BUILD``, ``build.gradle``) are not dependency files and keep their fix record.
     """
     ecosystem = manifest_ecosystem(path)
     if ecosystem is not None:

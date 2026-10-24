@@ -11,6 +11,7 @@ from repowise.core.workspace.contracts import (
     normalize_contract_id,
     same_service,
 )
+from repowise.core.workspace.origins import LinkStrategy, link_confidence, match_type_for
 
 
 def internal(provider: Contract, consumer: Contract) -> bool:
@@ -31,15 +32,23 @@ class MatchState:
     links: list[ContractLink] = field(default_factory=list)
     seen: set[tuple[str, ...]] = field(default_factory=set)
     matched: set[int] = field(default_factory=set)
+    #: Service-level edges for consumers whose target repo is known but whose
+    #: route is not (:func:`.http.service_pass`); never mixed into ``links``.
+    service_links: list[ContractLink] = field(default_factory=list)
 
     @classmethod
     def build(cls, contracts: list[Contract]) -> MatchState:
-        """Index providers by normalized id; consumers resolved to a third party are dropped."""
+        """Index providers by normalized id; consumers resolved to a third party are dropped.
+
+        A vendored ``.proto`` copy (see :func:`shared_idl`) is not indexed.
+        """
         provider_index: dict[str, list[Contract]] = defaultdict(list)
         consumers: list[Contract] = []
+        vendored = shared_idl(contracts)
         for c in contracts:
             if c.role == "provider":
-                provider_index[normalize_contract_id(c.contract_id)].append(c)
+                if id(c) not in vendored:
+                    provider_index[normalize_contract_id(c.contract_id)].append(c)
             elif not c.meta.get("external"):
                 consumers.append(c)
         return cls(provider_index, consumers)
@@ -60,12 +69,16 @@ class MatchState:
         self,
         consumer: Contract,
         provider: Contract,
-        match_type: str,
-        confidence: float,
+        strategy: LinkStrategy,
         *,
+        via: Contract | None = None,
         via_alias: bool = False,
     ) -> bool:
-        """Record one link unless an identical one exists; True when it was added.
+        """Record one link made by *strategy* unless an identical one exists; True when added.
+
+        Its confidence is the weakest of the two ends (and *via*, the binding a
+        queue was reached through) scaled by the strategy's, and its
+        ``match_type`` is the strategy's (see :mod:`..origins`).
 
         A link's ``contract_id`` is the provider's id, and ``consumer_contract_id``
         the consumer's whenever it is spelled differently (another case, a
@@ -84,14 +97,22 @@ class MatchState:
             normalize_contract_id(provider.contract_id) if via_alias else "",
         )
         if dedup_key in self.seen:
+            # The same call written twice in one file: already linked, so later
+            # passes must not place it again.
+            self.matched.add(id(consumer))
             return False
         self.seen.add(dedup_key)
         self.links.append(
             ContractLink(
                 contract_id=provider.contract_id,
                 contract_type=consumer.contract_type,
-                match_type=match_type,
-                confidence=confidence,
+                match_type=match_type_for(strategy),
+                confidence=link_confidence(
+                    strategy,
+                    provider.confidence,
+                    consumer.confidence,
+                    *((via.confidence,) if via is not None else ()),
+                ),
                 provider_repo=provider.repo,
                 provider_file=provider.file_path,
                 provider_symbol=provider.symbol_name,
@@ -105,6 +126,7 @@ class MatchState:
                 consumer_contract_id=(
                     consumer.contract_id if consumer.contract_id != provider.contract_id else None
                 ),
+                strategy=strategy,
             )
         )
         self.matched.add(id(consumer))
@@ -133,7 +155,10 @@ def find_matching_keys(consumer_id: str, provider_index: dict[str, list[Contract
             if wildcard_key in provider_index:
                 return [wildcard_key]
 
-    # gRPC wildcard: grpc::service/* matches grpc::service/Method
+    if normalized.startswith("grpc::"):
+        return _grpc_keys(normalized, provider_index)
+
+    # Any other wildcard: kind::name/* matches kind::name/Member
     if normalized.endswith("/*"):
         prefix = normalized[:-1]  # "grpc::service/"
         return [k for k in provider_index if k.startswith(prefix)]
@@ -141,17 +166,99 @@ def find_matching_keys(consumer_id: str, provider_index: dict[str, list[Contract
     return []
 
 
+def _same_grpc_service(provider: str, consumer: str) -> bool:
+    """Whether two lower-cased service names are one service.
+
+    A generated stub often names its service without the proto package
+    (``CurrencyService``) while the ``.proto`` names it with one
+    (``hipstershop.CurrencyService``): a bare name meets a qualified one on its
+    last segment. Two different packages are two services.
+    """
+    if provider == consumer:
+        return True
+    if "." in provider and "." in consumer:
+        return False
+    return provider.rpartition(".")[2] == consumer.rpartition(".")[2]
+
+
+def _grpc_keys(normalized: str, provider_index: dict[str, list[Contract]]) -> list[str]:
+    """gRPC index keys *normalized* reaches: the same method, or any for ``/*``."""
+    service, _, method = normalized[len("grpc::") :].rpartition("/")
+    if not service:
+        return []
+    keys = []
+    for k in provider_index:
+        if not k.startswith("grpc::"):
+            continue
+        k_service, _, k_method = k[len("grpc::") :].rpartition("/")
+        if (method == "*" or k_method == method) and _same_grpc_service(k_service, service):
+            keys.append(k)
+    return keys
+
+
+def _grpc_service(contract: Contract) -> str:
+    """The lower-cased service segment of a gRPC contract id."""
+    return normalize_contract_id(contract.contract_id)[len("grpc::") :].rpartition("/")[0]
+
+
+def shared_idl(contracts: list[Contract]) -> set[int]:
+    """The ``id()`` of each ``.proto`` provider row that is a vendored copy, not the server.
+
+    Services keep a copy of the protos they call (often the whole estate's
+    file), so a service declared in 2+ repos is served by whichever of them
+    registers it in code. With no code server anywhere, the one copy outside
+    the repos that call the service stands; when that is not exactly one,
+    no copy is trusted. A service declared in one repo is untouched.
+    """
+    copies: dict[str, list[Contract]] = defaultdict(list)
+    servers: dict[str, set[str]] = defaultdict(set)
+    callers: dict[str, set[str]] = defaultdict(set)
+    for c in contracts:
+        if c.contract_type != "grpc":
+            continue
+        service = _grpc_service(c)
+        bare = service.rpartition(".")[2]
+        if c.role == "provider" and c.meta.get("source") == "proto":
+            copies[service].append(c)
+        elif c.role == "provider":
+            servers[bare].add(c.repo)
+        elif c.role == "consumer":
+            callers[bare].add(c.repo)
+    vendored: set[int] = set()
+    for service, rows in copies.items():
+        repos = {c.repo for c in rows}
+        if len(repos) < 2:
+            continue
+        bare = service.rpartition(".")[2]
+        if servers.get(bare):
+            keep = repos & servers[bare]
+        else:
+            keep = repos - callers.get(bare, set())
+            if len(keep) != 1:
+                keep = set()
+        vendored.update(id(c) for c in rows if c.repo not in keep)
+    return vendored
+
+
 def prefer_target_repo(providers: list[Contract], consumer: Contract) -> list[Contract]:
     """Narrow *providers* to the consumer's resolved ``target_repo`` when set.
 
     Falls back to the full list if the target declares no matching provider, so
-    a stale/typo'd ``service_bases`` entry never silently drops a real link.
+    a stale/typo'd ``service_bases`` entry never silently drops a real link. A
+    target the service-name map placed (it carries ``target_evidence``) does
+    not fall back: the file named that repo, so a same-path route elsewhere is
+    not the call's destination.
     """
     target = consumer.meta.get("target_repo")
     if not target:
         return providers
     preferred = [p for p in providers if p.repo == target]
-    return preferred or providers
+    if preferred or consumer.meta.get("target_evidence"):
+        # A target the workspace's own config placed does not fall back to
+        # another repo that happens to serve the path; the service pass draws
+        # the dependency instead.
+        return preferred
+    return providers
 
 
 __all__ = [

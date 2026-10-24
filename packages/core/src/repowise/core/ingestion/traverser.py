@@ -34,7 +34,12 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 
 from ..code_origin import CONTENT_TEST_SUFFIXES, declares_test, is_generated_header
 from ..dotnet_test_projects import DotnetTestProjects, read_dotnet_test_projects
-from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..entry_candidacy import (
+    APPLICATION_MAIN_LANGUAGES,
+    boots_application,
+    conventional_entry_stems,
+    not_an_execution_start,
+)
 from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
 from ..phpunit_roots import (
     PHPUNIT_CONFIG_NAMES,
@@ -567,11 +572,14 @@ class FileTraverser:
 
         lang_counts: dict[str, int] = {}
         entry_points: list[str] = []
+        application_mains: list[str] = []
 
         for f in files:
             lang_counts[f.language] = lang_counts.get(f.language, 0) + 1
             if f.is_entry_point:
                 entry_points.append(f.path)
+                if f.is_application_main:
+                    application_mains.append(f.path)
 
         # Display-only estimate (~40 bytes/line), so no file is opened to count.
         total_loc = sum(f.size_bytes // 40 for f in files)
@@ -588,6 +596,7 @@ class FileTraverser:
             total_files=len(files),
             total_loc=total_loc,
             entry_points=sorted(entry_points),
+            application_mains=sorted(application_mains),
         )
 
     # ------------------------------------------------------------------
@@ -804,7 +813,7 @@ class FileTraverser:
             return "skipped_dir_ignore"
         if self._blocked_patterns.match_file(rel_str):
             return "skipped_blocked_pattern"
-        if _is_repowise_output(abs_path, rel_str):
+        if is_repowise_output(abs_path, rel_str):
             return "skipped_repowise_output"
         return None
 
@@ -903,7 +912,9 @@ class FileTraverser:
             rel_str.lower().endswith(CONTENT_TEST_SUFFIXES)
             and declares_test(rel_str, _read_head(abs_path))
         )
-        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry
+        # A test-scoped ``@SpringBootApplication`` boots a test context, not the system.
+        app_main = not is_test and _boots_application(abs_path, language)
+        entry = _is_entry_point(rel_str, abs_path, language) or manifest_entry or app_main
         return FileInfo(
             path=rel_str,
             abs_path=str(abs_path),
@@ -918,6 +929,7 @@ class FileTraverser:
             is_entry_point=entry and not is_test,
             is_manifest_entry=manifest_entry,
             is_reachability_root=entry,
+            is_application_main=app_main,
         )
 
     def _is_package_root_dir(self, rel_dir: str) -> bool:
@@ -1114,6 +1126,63 @@ def _objc_header_language(abs_path: Path, source: bytes | None = None) -> Langua
     return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
 
 
+# Unlike .inl/.ipp/.tpp, .inc is shared with PL/I, Pascal and PHP. Keep the
+# extension's C++ default only when the head contains a C/C++ construct.
+_CPP_INC_SNIFF_BYTES = 16384
+_CPP_INC_SIGNAL_RE = re.compile(
+    rb"^[ \t]*#[ \t]*(?:include|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|error|line)\b"
+    rb"|\bnamespace\s+[A-Za-z_]|\btemplate\s*<"
+    rb"|\b[A-Za-z_]\w*::[A-Za-z_]"
+    rb"|\b(?:class|struct|union|enum)\s+[A-Za-z_]"
+    rb"|\b(?:void|bool|char|short|int|long|float|double|auto)(?:\s+|\s*[*&]+\s*)[A-Za-z_]",
+    re.MULTILINE,
+)
+_C_COMMENT_OR_STRING_RE = re.compile(
+    rb"//[^\n]*|/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+    re.DOTALL,
+)
+
+
+def _inc_declarations(head: bytes) -> bytes:
+    """Blank nested brace blocks and Pascal comments, retaining declarations.
+
+    A brace alone cannot distinguish C++ code from a Pascal comment. C++
+    declarations outside a body still supply evidence; text inside Pascal
+    comments must not supply it, even when comments nest.
+    """
+    blanked = bytearray(head)
+    closers: list[bytes] = []
+    start = 0
+    for m in re.finditer(rb"\{|\}|\(\*|\*\)", head):
+        token = m.group()
+        if token in (b"{", b"(*"):
+            if not closers:
+                start = m.start()
+            closers.append(b"}" if token == b"{" else b"*)")
+        elif closers and token == closers[-1]:
+            closers.pop()
+            if not closers:
+                blanked[start : m.end()] = re.sub(rb"[^\n]", b" ", head[start : m.end()])
+    if closers:
+        blanked[start:] = re.sub(rb"[^\n]", b" ", head[start:])
+    return bytes(blanked)
+
+
+def _cpp_inc_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
+    """``cpp`` for an .inc with C++ evidence outside comments and strings, else None.
+
+    Includes in an unsupported language must stay unindexed, rather than
+    becoming C++ files whose missing importers look like dead code.
+    """
+    head = _head(abs_path, source, _CPP_INC_SNIFF_BYTES)
+    if head is None:
+        return None
+    head = _C_COMMENT_OR_STRING_RE.sub(lambda m: re.sub(rb"[^\n]", b" ", m.group(0)), head)
+    if b"<?" in head:
+        return None  # PHP's opening tags override any C++-like declarations.
+    return "cpp" if _CPP_INC_SIGNAL_RE.search(_inc_declarations(head)) else None
+
+
 # DCLGEN writes the table declaration, then the ``01`` record, at the top of a
 # member; a 750-column table (the DB2 maximum) declares in about 62 KB.
 _DCLGEN_SNIFF_BYTES = 131072
@@ -1140,6 +1209,8 @@ def _content_language(
     so the working tree is not read in their place.
     """
     if language == "cpp":
+        if abs_path.suffix.lower() == ".inc":
+            return _cpp_inc_language(abs_path, source)
         return _objc_header_language(abs_path, source) or language
     return language or _dclgen_language(abs_path, source)
 
@@ -1312,6 +1383,19 @@ def _is_entry_point(rel_str: str, abs_path: Path, language: str) -> bool:
         or _stem_is_entry_point(abs_path)
     )
     return named_entry and not not_an_execution_start(rel_str, language)
+
+
+# Ceiling: a bootstrap call past the first 16 KB is missed. An application
+# main is a short file; reading every JVM file whole would double the walk's I/O.
+_APPLICATION_MAIN_SNIFF_BYTES = 16384
+
+
+def _boots_application(abs_path: Path, language: str) -> bool:
+    """Whether the file starts a framework application (:func:`boots_application`)."""
+    if language not in APPLICATION_MAIN_LANGUAGES:
+        return False
+    head = _head(abs_path, None, _APPLICATION_MAIN_SNIFF_BYTES)
+    return head is not None and boots_application(language, head.decode("utf-8", errors="ignore"))
 
 
 class ConsoleScriptTables(NamedTuple):
@@ -1813,11 +1897,16 @@ def in_blocked_dir(
     )
 
 
-def _is_repowise_output(abs_path: Path, rel_str: str) -> bool:
+def is_repowise_output(
+    abs_path: Path, rel_str: str, committed: Callable[[], str] | None = None
+) -> bool:
     """Whether repowise wrote the whole file: an owned path, or a shared one holding only its part.
 
     A shared file (``CLAUDE.md``, ``.mcp.json``) with anything the user wrote
     stays indexed, repowise's block included, since the user's part is theirs.
+    *committed* returns the file's text at ``HEAD``, so a working-tree check
+    can tell repowise's refresh of a tracked file from the user's edit; it is
+    only called for a managed file.
     """
     if _OWNED_SPEC.match_file(rel_str):
         return True
@@ -1827,7 +1916,7 @@ def _is_repowise_output(abs_path: Path, rel_str: str) -> bool:
         text = abs_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    return only_repowise_differs(rel_str, "", text)
+    return only_repowise_differs(rel_str, committed() if committed else "", text)
 
 
 def is_candidate_source_path(

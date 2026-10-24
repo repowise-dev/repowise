@@ -118,6 +118,26 @@ class TestUnwrapAndConcat:
     def test_concat_with_a_call_is_refused(self):
         assert resolve_string('base + "/" + fmt(x)', GO_SYNTAX) is None
 
+    def test_a_converted_name_past_the_base_is_a_parameter(self):
+        expr = 'base + "/catalogue/" + req.body.id.toString()'
+        assert resolve_string(expr, JS_SYNTAX) == "${base}/catalogue/${req.body.id}"
+        assert resolve_string('getBase() + "/x"', JS_SYNTAX) is None
+        assert resolve_string('base.trim() + "/x"', JS_SYNTAX) is None
+        assert resolve_string('"/a/" + cfg.getBasePath()', JS_SYNTAX) is None
+
+    def test_python_concat_and_format_method(self):
+        assert resolve_string('"/product/" + product', PYTHON_SYNTAX) == "/product/${product}"
+        expr = "'/api/rate/{}/{}'.format(item['sku'], randint(1, 5))"
+        assert resolve_string(expr, PYTHON_SYNTAX) == "/api/rate/${x}/${x}"
+        assert resolve_string("'/a/{}'.format(x).strip()", PYTHON_SYNTAX) is None
+        assert resolve_string("tmpl.format(x)", PYTHON_SYNTAX) is None
+        assert resolve_string('"/x/{{y}}".format(a)', PYTHON_SYNTAX) is None
+
+    def test_node_util_format(self):
+        expr = 'util.format("http://carts%s/carts", domain)'
+        assert resolve_string(expr, JS_SYNTAX) == "http://carts${x}/carts"
+        assert resolve_string('util.format("/a%20b/%s", x)', JS_SYNTAX) == "/a%20b/${x}"
+
     def test_a_concat_of_two_names_carries_no_path(self):
         assert resolve_string("c.InfoAPIURL + id.Name", GO_SYNTAX) == "${c.InfoAPIURL}${id.Name}"
 
@@ -316,3 +336,35 @@ class TestConsumerUrlShapes:
     def test_a_scheme_after_a_leading_interpolation_is_the_urls(self):
         assert absolute_host("${proto}://h.com/api/u") == "h.com"
         assert extract_path_from_url("${proto}://h.com/api/u") == "/api/u"
+
+
+class TestLocust:
+    _FILE = (
+        "from locust import HttpUser, task\n"
+        "def browse(l):\n"
+        "    l.client.get('/product/' + product)\n"
+        "class U(HttpUser):\n"
+        "    @task\n"
+        "    def load(self):\n"
+        "        self.client.get('/')\n"
+        "        self.client.put('/api/rate/{}/{}'.format(sku, 5), headers=h)\n"
+        "        self.client.post('/cart', {'id': 1})\n"
+        "        # self.client.get('/api/commented')\n"
+        "        self.client.get('relative')\n"
+    )
+
+    def _ids(self, content: str) -> list[str]:
+        from repowise.core.workspace.extractors.http.python_clients import PythonClientsDialect
+
+        ctx = ScanContext("load", "locustfile.py", ".py", content, {}, None)
+        return sorted(c.contract_id for c in PythonClientsDialect().extract(ctx))
+
+    def test_user_client_calls_are_consumers(self):
+        assert self._ids(self._FILE) == [
+            "http::GET::/product/{param}",
+            "http::POST::/cart",
+            "http::PUT::/api/rate/{param}/{param}",
+        ]
+
+    def test_a_client_attribute_without_locust_is_not_read(self):
+        assert self._ids(self._FILE.replace("from locust import", "from mylib import")) == []

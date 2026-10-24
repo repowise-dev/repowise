@@ -124,6 +124,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "apex_missing_sharing": "apex",
     "apex_hardcoded_id": "apex",
     "apex_see_all_data": "apex",
+    "cobol_unstructured_flow": "cobol",
 }
 
 

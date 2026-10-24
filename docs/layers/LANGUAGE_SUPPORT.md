@@ -73,8 +73,11 @@ within each sfdx project's namespace.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 [Limits](#limits).
 
-\* COBOL is excluded from dead-code claims: JCL, schedulers and dynamic program
-calls are entry paths the repository graph cannot observe.
+\* COBOL files and programs get no dead-code claims: schedulers, region
+definitions outside the repo and dynamic program calls are entry paths the
+repository graph cannot observe. The one COBOL claim is a paragraph that
+nothing names and nothing falls through into, at low confidence and never
+deletion-ready.
 The COBOL and Apex grammars download on first use; offline, set
 `REPOWISE_GRAMMAR_DIR` to a pre-staged grammar cache. `repowise doctor` reports
 whether it is cached.
@@ -82,6 +85,10 @@ COBOL is read in fixed reference format, with `EXEC SQL/CICS/DLI` blocks and
 `COPY` statements masked before parsing; a copybook parses as a data or
 procedure fragment. `COPY` and `EXEC SQL INCLUDE` members resolve to the
 nearest copybook with that name; system copybooks such as `DFHAID` stay external.
+A program with no `PROCEDURE DIVISION` text, whose header comes from a copybook
+(the CICS `COPY CENTRY.` idiom), takes the first `COPY` followed by a statement
+or paragraph header as that header, so its paragraphs, `PERFORM`s and `CALL`s
+are read.
 A DB2 DCLGEN member (`.dcl`) is a copybook when it holds an
 `EXEC SQL DECLARE ... TABLE` and level-numbered data entries. PL/I DCLGEN
 output and OpenVMS DCL procedures share the extension and are not indexed.
@@ -92,14 +99,23 @@ its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
 unique PROGRAM-ID. JCL (`.jcl`, `.prc`, `.proc`) links each job step to the
 program or PROC it runs, which makes that program an entry point, and BMS
 mapsets (`.bms`) are linked from the programs that send or receive their maps.
+CICS CSD definitions, in a `.csd` file or a DFHCSDUP step's in-stream input,
+link each defined program and each transaction's program, which makes it an
+entry point. `EXEC CICS RETURN` and `START` with a `TRANSID` link to the
+program that transaction runs when every definition of it agrees.
 Health measures each paragraph and section as a function: `IF`, `WHEN` arms,
 `PERFORM UNTIL/VARYING` loops and `AND`/`OR` add to its complexity, and data-only
 copybooks have no functions to flag.
 A level-88 condition name is a child of the data item it tests, with an id such
 as `PROG.cbl::WS-RETURN-FLAG::APPL-AOK`, and stays findable by symbol search.
 These children do not count toward the 500-symbol warning for generated files.
+The advisory `cobol_unstructured_flow` marker lists each paragraph with an `ALTER`,
+a `GO TO ... DEPENDING ON`, or a `GO TO` that does not jump forward to an `...EXIT`
+paragraph of its own `PERFORM THRU` range; it never deducts from a score.
+A paragraph whose performer is in another file (a copybook's) is judged by the
+target's name alone.
 Apex dead-code findings are review-only, since the platform also reaches classes
-by name.
+by name. A third-party library in a static resource counts as vendored.
 
 ## How accurate is the graph per language
 
@@ -187,7 +203,7 @@ reported as unreachable.
 | Ruby | Rails (routes to controller actions, Zeitwerk), RSpec mirror edges |
 | Java / Kotlin | Spring, Jakarta / JPA, Quarkus, Micronaut, Android manifest |
 | C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
-| Go | net/http, gin, echo, chi, gRPC server registration |
+| Go | net/http, gin, echo, chi, fiber, gorilla/mux, gRPC server registration |
 | Rust | Axum, Actix |
 | JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |

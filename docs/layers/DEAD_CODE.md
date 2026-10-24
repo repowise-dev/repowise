@@ -189,7 +189,11 @@ tier its new confidence names, so one cut below `0.4` is hidden by the default
 floor. The dashboard adds the note to the finding's evidence. `repo="all"` merges every
 workspace repo and tags each finding with its alias. The CLI analyzes one repo
 per run (the primary repo unless `--repo <alias>`), and `--no-workspace` skips
-the cut. See [WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
+the cut. The file page, Overview's attention list, Do next (web, `repowise next`,
+`get_overview`), related work, the code graph, the chat dataset, `repowise export
+--full` and the assessment report read the same cut. Fix first and plan annotations
+are built per repo before the workspace pass, so they read stored values. See
+[WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
 ## Accuracy and limits
 

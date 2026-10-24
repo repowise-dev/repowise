@@ -173,7 +173,7 @@ async def _seed(session) -> str:
     add(
         [
             DeadCodeFinding(repository_id=rid, kind="unused_export", file_path="src/dead.py",
-                            symbol_name=f"f{i}", lines=10, safe_to_delete=True)
+                            symbol_name=f"f{i}", lines=10, confidence=0.9, safe_to_delete=True)
             for i in range(3)
         ]
     )

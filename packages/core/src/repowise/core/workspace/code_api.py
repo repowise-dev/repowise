@@ -40,9 +40,10 @@ from typing import TYPE_CHECKING, Any
 
 from repowise.core.fsutils import repo_relative
 from repowise.core.pyparse import parse_python
+from repowise.core.workspace.origins import ContractOrigin, origin_confidence
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from pathlib import Path
 
     from repowise.core.workspace.repo_index import IndexedSymbol, RepoIndex, WorkspaceIndex
@@ -54,7 +55,7 @@ CODE_CONTRACT_TYPE = "code"
 
 #: Both sides are index-resolved, not regex-matched — the manifest and the
 #: import edge each name their half outright.
-_CONFIDENCE = 0.9
+_ORIGIN = ContractOrigin.PACKAGE_EXPORT
 
 #: Manifest basenames handled here, mapped to the ecosystem they declare.
 _MANIFESTS: dict[str, str] = {
@@ -430,16 +431,40 @@ class CodeSurface:
         return self.by_repo.get(alias, [])
 
 
+def find_workspace_packages(
+    repo_paths: dict[str, Path],
+) -> tuple[list[PublishedPackage], dict[str, dict[str, int]]]:
+    """Every package the workspace repos publish, plus per-repo skip counters.
+
+    Read from manifests alone, so it needs no repo's index open.
+    """
+    published: list[PublishedPackage] = []
+    stats: dict[str, dict[str, int]] = {}
+    for alias, repo_path in repo_paths.items():
+        packages, counts = find_published_packages(alias, repo_path)
+        published.extend(packages)
+        if counts:
+            stats.setdefault(alias, {}).update(counts)
+    return published, stats
+
+
 def build_code_surface(
     repo_paths: dict[str, Path],
     workspace_index: WorkspaceIndex | None,
     exclude: Callable[[str], bool],
+    *,
+    packages: tuple[list[PublishedPackage], dict[str, dict[str, int]]] | None = None,
+    consumers: Collection[str] | None = None,
 ) -> CodeSurface:
     """Build every ``code`` contract in the workspace, providers before consumers.
 
     Workspace-wide by necessity, not by preference: a consumer contract only
     exists when the package it imports is published by *some* repo, so neither
     half can be decided inside a single repo's extraction.
+
+    *packages* is :func:`find_workspace_packages` already run. *consumers*
+    limits the consumer rows to those repos (every repo by default): a caller
+    reusing a repo's stored rows needs none built for it.
     """
     from repowise.core.workspace.contracts import Contract
     from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_INDEX
@@ -448,12 +473,9 @@ def build_code_surface(
     if workspace_index is None:
         return surface
 
-    published: list[PublishedPackage] = []
-    for alias, repo_path in repo_paths.items():
-        packages, counts = find_published_packages(alias, repo_path)
-        published.extend(packages)
-        if counts:
-            surface.stats.setdefault(alias, {}).update(counts)
+    published, manifest_stats = packages or find_workspace_packages(repo_paths)
+    for alias, counts in manifest_stats.items():
+        surface.stats.setdefault(alias, {}).update(counts)
 
     # -- providers ---------------------------------------------------------
     by_name: dict[str, PublishedPackage] = {}
@@ -493,7 +515,8 @@ def build_code_surface(
                     role="provider",
                     file_path=symbol.file_path,
                     symbol_name=exported,
-                    confidence=_CONFIDENCE,
+                    confidence=origin_confidence(_ORIGIN),
+                    origin=_ORIGIN,
                     line=symbol.start_line,
                     # Known at emission, so bind_symbol_ids is a no-op here and
                     # attach_signature_schemas reaches the parameter list.
@@ -510,7 +533,7 @@ def build_code_surface(
         stats["code_provider_symbols"] = stats.get("code_provider_symbols", 0) + len(seen)
 
     # -- consumers ---------------------------------------------------------
-    for alias in repo_paths:
+    for alias in repo_paths if consumers is None else [a for a in repo_paths if a in consumers]:
         index = workspace_index.get(alias)
         if index is None:
             continue
@@ -537,7 +560,8 @@ def build_code_surface(
                             role="consumer",
                             file_path=edge.source_file,
                             symbol_name=f"{package.name}:{exported}",
-                            confidence=_CONFIDENCE,
+                            confidence=origin_confidence(_ORIGIN),
+                            origin=_ORIGIN,
                             meta={
                         "package": package.name,
                         "ecosystem": package.ecosystem,

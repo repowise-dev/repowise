@@ -54,6 +54,15 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
                 break
             returns += node_text(child, src)
         return f"{name}{params_text} -> {returns}" if returns else f"{name}{params_text}"
+    if node_type == "getter_signature":
+        # Dart: the return type is the nodes ahead of ``get``. A getter takes no
+        # parameters, so it reads ``name -> Type``, with no parameter list.
+        returns = ""
+        for child in def_node.children:
+            if child.type == "get":
+                break
+            returns += node_text(child, src)
+        return f"{name} -> {returns}" if returns else name
     if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
         base = f"class {name}"
         if params_text:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import itertools
 import json
 import os
 import re
@@ -24,14 +25,20 @@ _PROGRAM_EXTS = {".cbl", ".cob", ".cobol"}
 _COPYBOOK_EXTS = {".cpy", ".dcl"}
 _JCL_EXTS = {".jcl", ".prc", ".proc"}
 _BMS_EXTS = {".bms"}
+_CSD_EXTS = {".csd"}
+_CSD_COMMAND = re.compile(r"^\s*(?:DEFINE|ADD|ALTER|APPEND|COPY|DELETE|LIST|REMOVE)\s", re.I | re.M)
 _NOT_A_PARAGRAPH = {"UNTIL", "VARYING", "WITH", "TEST", "FOREVER", "THRU", "THROUGH"}
 _STRUCTURAL = ("calls", "imports", "framework")
+_NOT_PROCEDURE = (
+    r"^\s*(?:(?:IDENTIFICATION|ID|ENVIRONMENT|DATA)\s+DIVISION|PROGRAM-ID"
+    r"|(?:FILE|WORKING-STORAGE|LOCAL-STORAGE|LINKAGE)\s+SECTION)\s*\."
+)
 
 
 def _walk(root: str) -> dict[str, dict[str, list[str]]]:
     """``{kind: {STEM: [relpath, ...]}}`` for programs, copybooks, JCL and BMS."""
     found: dict[str, dict[str, list[str]]] = {
-        k: collections.defaultdict(list) for k in ("program", "copybook", "jcl", "bms")
+        k: collections.defaultdict(list) for k in ("program", "copybook", "jcl", "bms", "csd")
     }
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in (".git", ".repowise")]
@@ -48,6 +55,8 @@ def _walk(root: str) -> dict[str, dict[str, list[str]]]:
                 if ext in _JCL_EXTS
                 else "bms"
                 if ext in _BMS_EXTS
+                else "csd"
+                if ext in _CSD_EXTS
                 else None
             )
             if kind:
@@ -70,9 +79,20 @@ def _code_lines(path: str) -> list[tuple[int, str, str]]:
 def truth(root: str) -> dict:
     files = _walk(root)
     progs, cpys, jcls, bms = (files[k] for k in ("program", "copybook", "jcl", "bms"))
+    transactions = _csd_truth(root, files, progs, pairs := collections.defaultdict(set))
     paragraphs: set[tuple[str, str]] = set()
     performs: set[tuple[str, str]] = set()
-    pairs: dict[str, set[tuple[str, str]]] = collections.defaultdict(set)
+    # A copybook whose code is the division header (a CICS ``COPY CENTRY.``) opens it too.
+    headers = {
+        stem
+        for stem, rels in cpys.items()
+        for rel in rels
+        if re.match(
+            r"\s*PROCEDURE\s+DIVISION\b",
+            "\n".join(t for _, _, t in _code_lines(os.path.join(root, rel))),
+            re.I,
+        )
+    }
 
     for rels in progs.values():
         for rel in rels:
@@ -81,13 +101,19 @@ def truth(root: str) -> dict:
             own: set[str] = set()
             in_proc = False
             for _, area_a, body in lines:
-                if re.search(r"PROCEDURE\s+DIVISION", body, re.I):
+                copied = re.match(r"\s*COPY\s+'?([A-Z0-9#@$-]+)", body, re.I)
+                if re.search(r"PROCEDURE\s+DIVISION", body, re.I) or (
+                    copied and copied.group(1).upper() in headers
+                ):
                     in_proc = True
                     continue
+                # A nested program's header and data division close the procedure.
+                if re.search(_NOT_PROCEDURE, body, re.I):
+                    in_proc = False
                 if not in_proc:
                     continue
                 m = re.match(r"([A-Z0-9][A-Z0-9-]*)(\s+SECTION)?\s*\.\s*$", body.rstrip(), re.I)
-                if m and area_a != " ":
+                if m and area_a != " " and m.group(1).upper() != "DECLARATIVES":
                     own.add(m.group(1).upper())
             paragraphs |= {(rel, p) for p in own}
             for m in re.finditer(r"\bPERFORM\s+([A-Z0-9][A-Z0-9-]*)", text, re.I):
@@ -117,6 +143,18 @@ def truth(root: str) -> dict:
                         if dst != rel:
                             pairs["cics"].add((rel, dst))
             for m in re.finditer(
+                r"EXEC\s+CICS\s+(?:RETURN|START)\b(.*?)END-EXEC", text, re.I | re.S
+            ):
+                tm = re.search(r"TRANSID\s*\(\s*('?)([A-Z0-9#@$-]+)'?\s*\)", m.group(1), re.I)
+                if not tm:
+                    continue
+                name = tm.group(2).upper()
+                for tran in {name} if tm.group(1) else literals.get(name, set()):
+                    runs = transactions.get(tran, set())
+                    for dst in progs.get(next(iter(runs)), []) if len(runs) == 1 else []:
+                        if dst != rel:
+                            pairs["transid"].add((rel, dst))
+            for m in re.finditer(
                 r"EXEC\s+CICS\s+(?:SEND|RECEIVE)\s+MAP\s*\(.*?END-EXEC", text, re.I | re.S
             ):
                 ms = re.search(r"MAPSET\s*\(\s*'?([A-Z0-9#@$-]+)'?\s*\)", m.group(0), re.I)
@@ -140,6 +178,44 @@ def truth(root: str) -> dict:
         "performs": performs,
         "pairs": pairs,
     }
+
+
+def _csd_truth(root: str, files: dict, progs: dict, pairs: dict) -> dict[str, set[str]]:
+    """CSD pairs (definer, program) into *pairs*; returns ``{TRANSACTION: {PROGRAM, ...}}``.
+
+    Definitions are read from ``.csd`` files and from JCL in-stream data
+    (``DD *`` up to ``/*`` or the next ``//`` statement).
+    """
+    transactions: dict[str, set[str]] = collections.defaultdict(set)
+    for kind in ("csd", "jcl"):
+        for rel in (r for rels in files[kind].values() for r in rels):
+            with open(os.path.join(root, rel), encoding="latin-1") as fh:
+                raw = fh.read().splitlines()
+            if kind == "jcl":
+                kept, inside = [], False
+                for line in raw:
+                    if line.startswith("/"):
+                        inside = bool(re.search(r"\bDD\s+(\*|DATA)", line, re.I))
+                    elif inside:
+                        kept.append(line)
+                raw = kept
+            text = "\n".join(line for line in raw if not line.startswith("*"))
+            starts = [m.start() for m in _CSD_COMMAND.finditer(text)] + [len(text)]
+            for a, b in itertools.pairwise(starts):
+                chunk = text[a:b]
+                d = re.match(r"\s*DEFINE\s+(PROGRAM|TRANSACTION)\s*\(\s*(\S+?)\s*\)", chunk, re.I)
+                if not d:
+                    continue
+                name = d.group(2).upper()
+                if d.group(1).upper() == "TRANSACTION":
+                    pm = re.search(r"\sPROGRAM\s*\(\s*(\S+?)\s*\)", chunk[d.end() :], re.I)
+                    if not pm:
+                        continue
+                    name = pm.group(1).upper()
+                    transactions[d.group(2).upper()].add(name)
+                for dst in progs.get(name, []):
+                    pairs["csd"].add((rel, dst))
+    return transactions
 
 
 def _literal_assignments(text: str) -> dict[str, set[str]]:
@@ -175,7 +251,10 @@ def index_view(db: str) -> dict:
     edges = con.execute(
         "select source_node_id, target_node_id, edge_type from graph_edges"
     ).fetchall()
-    symbols = [r for r in nodes.values() if r[1] == "symbol" and r[2] == "cobol"]
+    # The per-file ``__module__`` node is graph plumbing, not a symbol ``wiki_symbols`` holds.
+    symbols = [
+        r for r in nodes.values() if r[1] == "symbol" and r[2] == "cobol" and r[4] != "__module__"
+    ]
     procs = {(r[3], r[4].upper()) for r in symbols if r[5] == "function"}
     same_file_calls: set[tuple[str, str]] = set()
     cross_perform: list[tuple[str, str]] = []
@@ -223,7 +302,7 @@ def metrics(root: str, db: str) -> dict:
             len(t["pairs"][kind] & (imports if kind in ("copy", "include") else any_pairs)),
             len(t["pairs"][kind]),
         )
-        for kind in ("copy", "include", "call", "cics", "jcl", "bms")
+        for kind in ("copy", "include", "call", "cics", "jcl", "bms", "csd", "transid")
     }
     return {
         "cobol_symbols": ix["cobol_symbols"],

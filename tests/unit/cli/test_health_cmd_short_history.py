@@ -32,5 +32,5 @@ def test_table_marks_the_score_and_explains_the_mark() -> None:
         console.file = io.StringIO()
         health_module._render_files_table([_metric("src/old.py")], {"src/new.py"})
         plain = console.file.getvalue()
-    assert "7.0*" in marked and "Short history" in marked
+    assert "7.00*" in marked and "Short history" in marked
     assert "*" not in plain and "Short history" not in plain

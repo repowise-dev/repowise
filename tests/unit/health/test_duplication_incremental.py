@@ -433,3 +433,46 @@ def test_incremental_does_not_pair_across_languages(tmp_path: Path):
     cross = {(p.file_a, p.file_b) for p in report.pairs if p.file_a != p.file_b}
     assert cross == set()
     assert _key(report) == _key(_full(parsed))
+
+
+def _against_index(parsed, cache_dir):
+    from repowise.core.analysis.health.duplication.detector import clones_against_index
+
+    return clones_against_index(
+        parsed, None, cache_dir, window_tokens=WINDOW, min_lines=MIN_LINES, limits=LIMITS
+    )
+
+
+def _file_view(report, path):
+    pairs = sorted(
+        (p.file_a, p.file_b, p.a_start_line, p.a_end_line, p.b_start_line, p.b_end_line)
+        for p in report.pairs_by_file.get(path, [])
+    )
+    return pairs, report.duplication_pct.get(path)
+
+
+def test_against_index_reads_one_file_and_finds_partners_it_never_read(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+    stored = {p.name: p.read_bytes() for p in cache_dir.iterdir()}
+    one = [_pf(tmp_path, "a.py")]
+
+    report = _against_index(one, cache_dir)
+    assert report is not None
+    assert _file_view(report, "a.py") == _file_view(_full(_parsed(tmp_path)), "a.py")
+    assert _file_view(report, "a.py")[0]  # b.py was never read, yet pairs with a.py
+    # Read-only: the index's clone state is left as it was.
+    assert {p.name: p.read_bytes() for p in cache_dir.iterdir()} == stored
+
+
+def test_against_index_rescores_an_edited_file(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+    (tmp_path / "a.py").write_text(_OTHER.replace("other", "mutated"))
+
+    report = _against_index([_pf(tmp_path, "a.py")], cache_dir)
+    assert report is not None
+    assert _file_view(report, "a.py") == _file_view(_full(_parsed(tmp_path)), "a.py")
+
+
+def test_against_index_without_one_is_none(tmp_path: Path):
+    _write(tmp_path, {"a.py": _BODY})
+    assert _against_index([_pf(tmp_path, "a.py")], tmp_path / ".repowise") is None

@@ -392,3 +392,35 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
                 await session.flush()
     finally:
         await engine.dispose()
+
+
+async def stored_index_counts(repo_path: Path) -> tuple[int, int] | None:
+    """``(files, symbols)`` as persisted for *repo_path*, or ``None`` when unreadable.
+
+    The ``count_files`` / ``count_symbols`` figures ``workspace list`` and
+    ``status`` show, so an update reports what it stored rather than what it
+    parsed this run: a run with nothing to re-parse parsed nothing.
+    """
+    # Never raises: a count the store cannot give must not fail the update.
+    try:
+        from ...persistence import create_engine, create_session_factory, get_session
+        from ...persistence.crud import count_files, count_symbols, get_repository_by_path
+        from ...persistence.database import has_db_store, resolve_db_url
+
+        if not has_db_store(repo_path):
+            return None
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return None
+                return (
+                    await count_files(session, repo.id),
+                    await count_symbols(session, repo.id),
+                )
+        finally:
+            await engine.dispose()
+    except Exception:
+        _log.debug("Could not read stored index counts for %s", repo_path, exc_info=True)
+        return None

@@ -167,6 +167,15 @@ def _is_workspace_mode() -> bool:
     return _state._registry is not None
 
 
+def _cross_repo_cut(alias: str | None) -> dict:
+    """``lookup`` and ``alias`` for the dead-code cross-repo cut
+    (``serve_findings``) on the repo *alias* names; both ``None`` outside
+    workspace mode, and an empty artifact simply cuts nothing."""
+    if not _is_workspace_mode():
+        return {"lookup": None, "alias": None}
+    return {"lookup": _state._cross_repo_enricher, "alias": alias}
+
+
 async def _resolve_repo_context(repo: str | None = None) -> Any:
     """Resolve the per-repo resource context for the given ``repo`` parameter.
 

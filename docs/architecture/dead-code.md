@@ -146,7 +146,9 @@ only at `>= 0.7` with no risk factor.
 
 `unused_internal`: private symbols with no `calls` edge and no cross-file
 importer, base `0.65`, never deletion-ready. Hidden on default surfaces by
-`finding_registry.py` (measured 0.5% precision, 1,511 findings).
+`finding_registry.py` (measured 0.5% precision, 1,511 findings). A COBOL
+paragraph is judged from the program's source text instead of edges
+(`cobol_paragraphs.py`), at `0.30`.
 
 `zombie_package`: a top-level directory with no inter-package import edges,
 base `0.50`, never deletion-ready. `_NEVER_PACKAGE_DIRS` skips non-package
@@ -177,8 +179,9 @@ built from the `risk_factors.py` constants. The TypeScript mirror is
 `DEAD_CODE_CONFIDENCE` in `packages/types/src/dead-code.ts`, so CLI, web and
 MCP tier identically.
 
-`serve_findings` is the one read the MCP tool, the REST routes and the CLI
-share: it applies `cross_repo_cut` to each stored row, then the filters, and
+`serve_findings` is the one read every surface shares (MCP, REST, CLI, and
+the file, attention, actions, related-work, graph, chat, export and report
+readers): it applies `cross_repo_cut` to each stored row, then the filters, and
 tiering reads the result. A file another repo's contract link points at gets
 confidence `* 0.3`. Cross-repo co-change partners, or an `unused_export` in a
 repo other repos depend on as a package, keep the confidence. Each adds a

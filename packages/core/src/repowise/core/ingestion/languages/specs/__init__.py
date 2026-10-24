@@ -21,6 +21,7 @@ from .clojure import SPEC as _CLOJURE
 from .cobol import SPEC as _COBOL
 from .cpp import SPEC as _CPP
 from .crystal import SPEC as _CRYSTAL
+from .csd import SPEC as _CSD
 from .csharp import SPEC as _CSHARP
 from .dart import SPEC as _DART
 from .dlang import SPEC as _DLANG
@@ -160,9 +161,11 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # Salesforce object/field metadata and saved SOQL queries.
     _SALESFORCE_OBJECT,
     _SOQL,
-    # Mainframe job control and CICS screen maps; edges from framework_edges/mainframe.py.
+    # Mainframe job control, CICS screen maps and CSD definitions; edges from
+    # framework_edges/mainframe.py.
     _JCL,
     _BMS,
+    _CSD,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though

@@ -11,6 +11,8 @@ Call init_db() once at startup to create all tables and the FTS index.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import os
 import sqlite3
 import warnings
@@ -681,6 +683,49 @@ def _reconcile_schema(connection: object) -> None:
         raise failures[0][1]
 
 
+#: Bump when ``_reconcile_schema`` learns a repair the model shape alone does
+#: not reveal, so stores stamped by the old code reconcile again.
+_RECONCILE_LOGIC_VERSION = 1
+
+
+@functools.cache
+def _model_signature() -> str:
+    """What ``create_all`` and ``_reconcile_schema`` act on, as text.
+
+    Tables, column names, types, lengths and nullability, and index names.
+    """
+    parts = [f"logic={_RECONCILE_LOGIC_VERSION}"]
+    for name in sorted(Base.metadata.tables):
+        table = Base.metadata.tables[name]
+        columns = sorted(
+            (c.name, type(c.type).__name__, str(getattr(c.type, "length", None)), str(c.nullable))
+            for c in table.columns
+        )
+        indexes = sorted(str(i.name) for i in table.indexes)
+        parts.append(f"{name}|{columns}|{indexes}")
+    return "\n".join(parts)
+
+
+def schema_stamp(schema_cookie: int) -> int:
+    """The ``PRAGMA user_version`` a store reconciled by these models carries.
+
+    Folds in SQLite's ``schema_version`` cookie, which SQLite itself bumps on
+    every DDL statement, so any schema change made after the stamp (an older
+    repowise, a ``VACUUM``, a hand edit) reads as unstamped and reconciles.
+    A positive 31-bit int: 0 is what every unstamped store reads.
+    """
+    signature = f"{_model_signature()}\ncookie={schema_cookie}"
+    digest = hashlib.sha256(signature.encode()).digest()
+    return int.from_bytes(digest[:4], "big") % (2**31 - 1) + 1
+
+
+async def _sqlite_stamp_state(conn: Any) -> tuple[int, int]:
+    """``(user_version, schema_version)`` of the store behind *conn*."""
+    user_version = (await conn.execute(text("PRAGMA user_version"))).scalar()
+    cookie = (await conn.execute(text("PRAGMA schema_version"))).scalar()
+    return int(user_version or 0), int(cookie or 0)
+
+
 async def init_db(engine: AsyncEngine) -> None:
     """Create all SQLAlchemy tables and the FTS index for the given engine.
 
@@ -689,10 +734,23 @@ async def init_db(engine: AsyncEngine) -> None:
     missing columns/indexes back-filled in place rather than hitting a
     cryptic ``no such column`` error from the ORM.
 
+    On SQLite a complete pass records :func:`schema_stamp` in
+    ``PRAGMA user_version``, and a store still carrying it skips the table
+    walk: two header reads in place of reflecting every table, which cost
+    about 150ms per open of an unchanged store. Another repowise's models, or
+    any schema change since the stamp, reads as unstamped and reconciles as
+    before. Other backends reconcile on every call.
+
     Safe to call on an already-initialised database (idempotent).
     """
+    sqlite = engine.dialect.name == "sqlite"
     async with engine.begin() as conn:
+        if sqlite:
+            stamped, cookie = await _sqlite_stamp_state(conn)
+            if stamped == schema_stamp(cookie):
+                return
         await conn.run_sync(Base.metadata.create_all)
+        # Raises when the walk is incomplete, so a partial reconcile is never stamped.
         await conn.run_sync(_reconcile_schema)
 
         # SQLite-only: create FTS5 virtual table for full-text search.
@@ -706,6 +764,27 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+            # Last, so the cookie read covers every statement above.
+            _, cookie = await _sqlite_stamp_state(conn)
+            await _write_stamp(conn, schema_stamp(cookie))
+
+
+async def _write_stamp(conn: Any, stamp: int) -> None:
+    """Record *stamp*, giving up at once on a read-only or locked store.
+
+    A store already on the current schema was opened without any write before
+    the stamp existed, so the stamp must not make such an open wait on another
+    writer's lock or fail on a read-only file. Unstamped, the next open simply
+    reconciles again.
+    """
+    timeout = (await conn.execute(text("PRAGMA busy_timeout"))).scalar()
+    await conn.execute(text("PRAGMA busy_timeout = 0"))
+    try:
+        await conn.execute(text(f"PRAGMA user_version = {stamp}"))
+    except DBAPIError as exc:
+        log.debug("schema_stamp_not_written", error=str(exc))
+    finally:
+        await conn.execute(text(f"PRAGMA busy_timeout = {int(timeout or 0)}"))
 
 
 # A table whose row count moved past this factor of the count ANALYZE recorded

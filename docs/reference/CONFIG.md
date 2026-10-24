@@ -22,9 +22,11 @@ Everything Repowise knows about your repository, created at the repo root by
 └── .env                 # API keys (gitignored automatically)
 ```
 
-Repowise adds `.repowise/` to `.gitignore`: it is a local cache, not a source
-of truth. Only [`decisions.yaml`](#repowisedecisionsyaml) is meant to be
-committed.
+`.repowise/` is a local cache, not a source of truth: add it to your
+`.gitignore` if you like, as Repowise does not edit that file during `init`. Only
+[`decisions.yaml`](#repowisedecisionsyaml) is meant to be committed. The secrets
+`.env` and `events.key` are ignored by `.repowise/.gitignore`, so they stay out
+of git even where `.repowise/` is committed.
 
 ## `config.yaml`
 
