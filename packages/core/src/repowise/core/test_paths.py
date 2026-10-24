@@ -79,7 +79,7 @@ if TYPE_CHECKING:
 # Ceiling: a product package named ``testsuite`` (a library for running suites)
 # reads as test material too; none seen so far.
 _TEST_DIR_TOKENS: frozenset[str] = frozenset(
-    {"test", "tests", "__tests__", "__test__", "e2e", "integration_test", "testsuite"}
+    {"test", "tests", "__tests__", "__test__", "e2e", "integration_test", "testsuite", "cypress"}
 )
 
 # A compound segment (``e2e-tests``, ``pkg_tests``, ``client-e2e``) is a test
@@ -189,7 +189,7 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "testdata", "storybook"}
 )
 
 # Helper directories named for tests, matched on the segment's words run
@@ -220,6 +220,10 @@ _SUPPORT_DIR_WORDS_UNLESS_PACKAGE: frozenset[str] = frozenset(
 _SUPPORT_NAME_WORDS: frozenset[str] = frozenset(
     {"harness", "support", "helper", "helpers", "mock", "mocks", "fixture", "fixtures", "setup"}
 )
+
+# Storybook story modules (``Button.stories.tsx``): test support, wherever they
+# sit - Storybook itself has no required directory the way pytest has ``tests/``.
+_STORY_NAME_WORDS: frozenset[str] = frozenset({"stories", "story"})
 
 # ``utils`` reads as support only when a dot ties it to a module
 # (``foo.test-utils.ts``), which no published ``test-utils`` entry is named.
@@ -377,8 +381,26 @@ def _is_support_name(filename: str) -> bool:
     lowered = filename.lower()
     if PurePosixPath(lowered).stem in rules.support_stems or _is_support_compound(filename):
         return True
+    if _is_story_file(lowered):
+        return True
     camel_re = rules.support_camel_res.get(PurePosixPath(lowered).suffix)
     return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
+
+
+def _is_story_file(lowered: str) -> bool:
+    """``Button.stories.tsx``: a Storybook story module, test support wherever it sits.
+
+    The dot matters: a story file is always a qualified sibling of the
+    component it stories (``stories.ts`` alone is an ordinary module name).
+    """
+    path = PurePosixPath(lowered)
+    words = _words(path.stem)
+    return (
+        bool(words)
+        and words[-1] in _STORY_NAME_WORDS
+        and "." in path.stem
+        and path.suffix in _conventions().source_exts
+    )
 
 
 def _is_support_compound(filename: str) -> bool:
