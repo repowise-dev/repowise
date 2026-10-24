@@ -1656,7 +1656,7 @@
       "unmatched": "Unmatched consumers",
       "orphans": "Providers with no caller",
       "orphansSub": "in this workspace; not the same as unused",
-      "httpResolved": "HTTP calls resolved",
+      "httpRead": "HTTP calls read",
       "httpUnresolved": "{count} located but not resolvable",
       "httpSub": "of the client calls extraction located"
     },
@@ -1889,8 +1889,14 @@
       "contractLinksHint": "Consumer calls matched to the provider that serves them, across services.",
       "unmatched": "Unmatched consumers",
       "unmatchedSub": "calls with no provider in the workspace",
-      "unmatchedHint": "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service."
+      "unmatchedHint": "Consumer contracts that matched no provider: missing, or a third-party host. Calls a repository makes to its own service are served and not counted."
     }
+  },
+  "linkCoverage": {
+    "label": "Linked to another service",
+    "sub": "{linked} of {seen} HTTP calls; {read} read",
+    "hint": "HTTP calls that matched a route another service serves, out of every call seen, counting one per file that calls out through code no dialect reads. Of the calls read, {readNotLinked} matched no other service in the workspace and {inService} are calls a repository makes to its own service, which need no link.",
+    "inServiceHint": "Consumers that matched no provider in the workspace: missing, or a third-party host. {count, plural, =0 {} one {# call a repository makes to its own service is served and not counted here.} other {# calls a repository makes to its own service are served and not counted here.}}"
   },
   "loading": {
     "workspace": "Loading workspace",
