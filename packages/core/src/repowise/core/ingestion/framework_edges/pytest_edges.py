@@ -650,6 +650,7 @@ def _binds_otherwise(node: ast.AST, name: str) -> bool:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return node.name == name
     if isinstance(node, ast.alias):
+        # `import a.b` binds `a`: the head of a module path, not a type name.
         return (node.asname or node.name.split(".")[0]) == name
     return isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names
 
