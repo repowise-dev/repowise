@@ -124,7 +124,7 @@ def capped(
             )
         )
     else:
-        ordered = tuple(tests)
+        ordered = tuple(sorted(tests))
     return ReachedBy(
         list(ordered[:MAX_TESTS_PER_TARGET]),
         via,
