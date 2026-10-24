@@ -12,9 +12,10 @@ without being a package, while build files such as ``*.csproj`` mark packages
 inside one service.
 
 :func:`_index_manifests` reads every repo once up front: one pruned walk finds
-the .NET, Maven and composer manifests, and the declared npm workspace gives
-the npm packages the repo publishes, so a dependency can match a sibling repo
-by package *name*, not only by a relative path.
+the .NET, Maven and composer manifests, the declared npm workspace gives the
+npm packages the repo publishes, and the root ``pyproject.toml`` with its uv
+workspace members gives the Python distributions, so a dependency can match a
+sibling repo by package *name*, not only by a relative path.
 """
 
 from __future__ import annotations
@@ -32,9 +33,14 @@ from repowise.core.ingestion.composer import (
     is_package_dir,
     read_composer,
 )
+from repowise.core.ingestion.external_systems import _dist_key, pypi
 from repowise.core.ingestion.resolvers.ts_workspace import (
     build_workspace_map,
     read_workspaces_field,
+)
+from repowise.core.ingestion.workspace_members import (
+    declared_workspace_members,
+    manifest_package_name,
 )
 
 _log = logging.getLogger("repowise.workspace.manifests")
@@ -55,7 +61,7 @@ class CrossRepoPackageDep:
     target_repo: str
     source_manifest: str
     # npm_local_path, npm_workspace, npm_package, composer_path, composer_package,
-    # pip_path, cargo_path, go_replace, dotnet_project_ref, dotnet_nuget_internal,
+    # pip_path, pip_package, cargo_path, go_replace, dotnet_project_ref, dotnet_nuget_internal,
     # maven_coordinate
     kind: str
     target_package: str = ""
@@ -101,6 +107,8 @@ class _ManifestIndex:
     #: alias -> [(repo-relative manifest path, decoded package.json)]
     npm_by_repo: dict[str, list[tuple[str, dict]]] = field(default_factory=dict)
     composer_by_repo: dict[str, list[ComposerManifest]] = field(default_factory=dict)
+    #: alias -> repo-relative dirs of the Python projects it ships ("" is the root)
+    python_by_repo: dict[str, list[str]] = field(default_factory=dict)
     #: (ecosystem, published name) -> (alias, manifest), None once two repos claim it
     published: dict[tuple[str, str], tuple[str, str] | None] = field(default_factory=dict)
 
@@ -142,6 +150,21 @@ def _npm_packages(repo_path: Path) -> list[tuple[str, dict]]:
         if isinstance(data, dict):
             out.append((rel, data))
     return out
+
+
+def _python_projects(repo_path: Path) -> list[str]:
+    """The repo root and every declared uv workspace member.
+
+    The same rule as npm: the package manager's member list says which
+    ``pyproject.toml`` files are projects the repo ships, so a fixture or an
+    example project never claims a distribution name.
+    """
+    members = declared_workspace_members(repo_path).get("pyproject.toml", set())
+    return ["", *sorted(members)]
+
+
+def _in_dir(rel_dir: str, filename: str) -> str:
+    return f"{rel_dir}/{filename}" if rel_dir else filename
 
 
 def _walk_project_manifests(
@@ -220,6 +243,11 @@ def _index_manifests(repo_paths: dict[str, Path]) -> _ManifestIndex:
         for manifest in index.composer_by_repo[alias]:
             if manifest.name:
                 index.claim("composer", manifest.name, alias, _composer_path(manifest))
+        index.python_by_repo[alias] = _python_projects(path)
+        for rel_dir in index.python_by_repo[alias]:
+            rel = _in_dir(rel_dir, "pyproject.toml")
+            if name := manifest_package_name(path / rel):
+                index.claim("pypi", _dist_key(name), alias, rel)
     return index
 
 
@@ -287,7 +315,7 @@ def _name_dep(
     alias: str,
     ecosystem: str,
     name: str,
-    version: str,
+    version: str | None,
     manifest: str,
     kind: str,
 ) -> CrossRepoPackageDep | None:
@@ -351,22 +379,71 @@ def _load_toml(path: Path) -> dict:
         return {}
 
 
-def _scan_pyproject(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
-    """Poetry and PEP 621 path dependencies."""
-    toml_path = repo_path / "pyproject.toml"
-    if not toml_path.is_file():
-        return
-    data = _load_toml(toml_path)
-    poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
-    specs = list(poetry_deps.values()) if isinstance(poetry_deps, dict) else []
-    # PEP 621 dependencies with path (uncommon but possible via tool configs)
-    for group_key in ("dependencies", "optional-dependencies"):
-        group = data.get("project", {}).get(group_key, {})
-        if isinstance(group, dict):
-            specs.extend(group.values())
-    for spec in specs:
-        if isinstance(spec, dict) and "path" in spec:
-            yield _path_dep(index, alias, repo_path, spec["path"], "pyproject.toml", "pip_path")
+def _python_path_sources(data: dict) -> Iterator[tuple[str, str]]:
+    """``(name, path)`` for each Poetry path dependency and uv path source."""
+    tool = data.get("tool")
+    tool = tool if isinstance(tool, dict) else {}
+    poetry = tool.get("poetry")
+    uv = tool.get("uv")
+    tables = (
+        poetry.get("dependencies") if isinstance(poetry, dict) else None,
+        uv.get("sources") if isinstance(uv, dict) else None,
+    )
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for name, spec in table.items():
+            # uv allows a list of sources split by markers.
+            for one in spec if isinstance(spec, list) else [spec]:
+                if isinstance(one, dict) and isinstance(one.get("path"), str):
+                    yield str(name), one["path"]
+
+
+def _is_requirements(filename: str) -> bool:
+    lower = filename.lower()
+    return lower.startswith("requirements") and lower.endswith(".txt")
+
+
+def _scan_python(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
+    """Path dependencies into a sibling, and requirements of a sibling's distribution.
+
+    Each project the repo ships is read: its ``pyproject.toml`` (PEP 621,
+    optional dependencies, Poetry and its groups) and the ``requirements*.txt``
+    beside it. Names compare in their PEP 503 spelling. A main Poetry path
+    dependency or a uv path source resolves by that path alone, as an npm
+    ``file:`` spec does.
+    """
+    for rel_dir in index.python_by_repo.get(alias, ()):
+        base = repo_path / rel_dir
+        pathed: set[str] = set()
+        toml_path = base / "pyproject.toml"
+        if toml_path.is_file():
+            rel = _in_dir(rel_dir, "pyproject.toml")
+            for name, ref in _python_path_sources(_load_toml(toml_path)):
+                pathed.add(_dist_key(name))
+                yield _path_dep(index, alias, base, ref, rel, "pip_path")
+        try:
+            filenames = sorted(f.name for f in base.iterdir() if f.is_file())
+        except OSError:
+            continue
+        for filename in filenames:
+            if filename != "pyproject.toml" and not _is_requirements(filename):
+                continue
+            try:
+                records = pypi.parse(base / filename, repo_path)
+            except Exception:  # a malformed manifest must not fail the workspace pass
+                _log.debug("Could not read %s", base / filename, exc_info=True)
+                continue
+            for record in records:
+                # A URL or VCS line (`git+https://...`, `https://...`) reads as
+                # the name `git` / `https`; it names no distribution.
+                if (record.version or "").startswith(("+", ":")):
+                    continue
+                key = _dist_key(record.name)
+                if key not in pathed:
+                    yield _name_dep(
+                        index, alias, "pypi", key, record.version, record.declared_in, "pip_package"
+                    )
 
 
 def _scan_cargo(index: _ManifestIndex, alias: str, repo_path: Path) -> _Deps:
@@ -514,7 +591,7 @@ class Ecosystem:
 ECOSYSTEMS: tuple[Ecosystem, ...] = (
     Ecosystem("npm", (PACKAGE_JSON,), _scan_npm),
     Ecosystem("composer", (COMPOSER_JSON,), _scan_composer),
-    Ecosystem("python", ("pyproject.toml", "requirements.txt"), _scan_pyproject),
+    Ecosystem("python", ("pyproject.toml", "requirements.txt"), _scan_python),
     Ecosystem("cargo", ("Cargo.toml",), _scan_cargo),
     Ecosystem("go", ("go.mod",), _scan_go_mod),
     Ecosystem("dotnet", (), _scan_dotnet),

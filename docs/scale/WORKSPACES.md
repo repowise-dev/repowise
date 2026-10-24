@@ -253,9 +253,9 @@ Reads package manifests (`package.json`, `composer.json`, `pyproject.toml`,
 `Cargo.toml`, `go.mod`, `.csproj`, and Maven `pom.xml`) to detect when one repo
 depends on another as a package or project.
 
-npm and composer dependencies match through a local path that resolves into a
-sibling repo, or a package name that exactly one sibling repo publishes; a name
-two repos publish links to neither. Maven matching is filesystem-only: it links
+npm, composer and Python dependencies match through a local path that resolves
+into a sibling repo, or a package name that exactly one sibling repo publishes; a
+name two repos publish links to neither. Maven matching is filesystem-only: it links
 an active direct compile/runtime dependency when exactly one workspace project
 publishes that `groupId:artifactId`, and never runs Maven or downloads
 artifacts. Details: [contract matching reference](../reference/WORKSPACE_CONTRACTS.md#package-matching).
