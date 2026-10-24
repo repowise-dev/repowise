@@ -18,7 +18,11 @@ from repowise.core.generation.house_vocabulary import cell
 from repowise.core.generation.onboarding import get_spec
 from repowise.core.generation.onboarding.signals import OnboardingSignals
 from repowise.core.generation.onboarding.slots import SLOT_GLOSSARY
-from repowise.core.generation.onboarding.subkinds.glossary import _build
+from repowise.core.generation.onboarding.subkinds.glossary import (
+    _build,
+    _evidence_references,
+    _valid_generated_content,
+)
 from repowise.core.generation.page_generator.structural import oneline
 from repowise.core.ingestion.models import RepoStructure
 
@@ -261,6 +265,19 @@ def test_two_builds_of_one_repository_agree():
     assert _build(_signals(SIX_TERMS)) == _build(_signals(SIX_TERMS))
 
 
+def test_synthesis_evidence_is_deduplicated_in_glossary_order():
+    terms = [
+        _term(term.term, definition=term.definition, definition_source="docs/terms.md")
+        for term in SIX_TERMS[:3]
+    ] + [
+        _term(term.term, definition=term.definition, definition_source="docs/model.md")
+        for term in SIX_TERMS[3:]
+    ]
+    ctx = _build(_signals(terms))
+    assert ctx is not None
+    assert _evidence_references(ctx) == ("docs/terms.md", "docs/model.md")
+
+
 def test_the_order_of_the_corroboration_corpus_does_not_change_the_page():
     assert _build(_signals(SIX_TERMS)) == _build(_signals(SIX_TERMS, modules=MODULES[::-1]))
 
@@ -338,19 +355,53 @@ def test_the_page_says_how_much_of_its_vocabulary_it_could_define(render):
     assert "5 of 6 terms carry a definition" in page
 
 
+def test_the_keyed_prompt_limits_synthesis_to_eligible_terms():
+    from pathlib import Path
+
+    import repowise.core.generation as generation
+
+    ctx = _build(_signals(SIX_TERMS))
+    assert ctx is not None
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(Path(generation.__file__).parent / "templates")),
+        undefined=jinja2.StrictUndefined,
+        autoescape=False,
+    )
+    prompt = env.get_template("onboarding/glossary.j2").render(ctx=ctx)
+    assert "Do not add, rename, merge, or omit terms" in prompt
+    assert "general knowledge" in prompt
+    assert all(term.term in prompt for term in SIX_TERMS)
+
+
 # ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
 
 
-def test_the_glossary_is_registered_and_needs_no_model():
-    """Enumerable facts written by a model are resampled on every render. The
-    whole page is enumerable facts, so no model is in its path."""
+def test_the_glossary_uses_grounded_synthesis_with_a_keyless_fallback():
+    """A provider may edit definitions, but keyless generation keeps the stub."""
     spec = get_spec(SLOT_GLOSSARY)
     assert spec is not None
-    assert spec.deterministic is True
+    assert spec.deterministic is False
+    assert spec.evidence_references is _evidence_references
+    assert spec.validate_generated_content is _valid_generated_content
     assert spec.needs_module_corroboration is True
     assert spec.title == "Glossary"
+
+
+def test_generated_glossary_must_retain_every_term_row():
+    ctx = _build(_signals(SIX_TERMS))
+    assert ctx is not None
+    rows = "\n".join(
+        f"| **{entry.term}** | — | area | `{entry.source_path}` |" for entry in ctx.entries
+    )
+    complete = (
+        "| Term | Definition | Used in | Evidence |\n"
+        "|---|---|---|---|\n"
+        f"{rows}\n\n## Coverage\n\nCoverage text."
+    )
+    assert _valid_generated_content(ctx, complete) is True
+    assert _valid_generated_content(ctx, "## Coverage\n\nCoverage text.") is False
 
 
 def test_every_subkind_has_the_templates_its_flags_promise():
@@ -380,13 +431,11 @@ def test_every_subkind_has_the_templates_its_flags_promise():
             assert prompt.is_file(), f"{spec.slot} has no prompt template at {prompt}"
 
 
-def test_a_deterministic_subkind_reaches_the_no_provider_path():
+def test_a_deterministic_run_reaches_the_no_provider_path():
     """The flag has to be read, not merely set.
 
-    ``generate_onboarding_page`` branches on it, and the glossary has no prompt
-    template at all — so if that branch is ever dropped the page raises
-    ``TemplateNotFound`` in production while every assertion about the spec
-    still passes.
+    ``generate_onboarding_page`` must still branch before rendering a prompt so
+    a keyless glossary uses the sparse, honest stub without a provider call.
     """
     import inspect
 
