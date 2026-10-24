@@ -141,6 +141,9 @@ links are appended after it.
 4. **Type passes**, in `MATCHERS` order: HTTP `gateway_pass` (`gateway_route`),
    `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`) and `service_pass`; topic
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
+   HTTP's `accepts` (`matching/http.py`) holds every pass to one rule: a generic
+   operational path (`/health`, `/metrics`, the root) links only to the consumer's
+   resolved target repo, or with none to its own repo.
 5. **Service links**: `service_pass` gives each HTTP consumer whose target is a
    workspace repo, but whose path no provider serves, one `host_only` link with no
    provider file. These live in `ContractStore.service_links`, apart from

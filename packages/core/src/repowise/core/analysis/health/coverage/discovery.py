@@ -477,6 +477,12 @@ class ResolvedCoverage:
     withheld: bool = False
     # With ``mapping_partial``, the :func:`suggest_prefixes` answer (``None``: abstained).
     suggested_prefixes: tuple[str, str] | None = None
+    # When the reports actually read were written, as the oldest of their mtimes.
+    # A report found on disk is a measurement from the last time the suite ran,
+    # which can be long before the commit now at HEAD; the writers stamp the
+    # ingest against this rather than live HEAD so drift reads forward from the
+    # right commit (#3901). ``None`` when nothing was read from disk.
+    measured_at: datetime | None = None
 
     @property
     def matched(self) -> int:
@@ -497,6 +503,7 @@ class ResolvedCoverage:
             unmatched_sample=tuple((self.unmatched + self.ambiguous)[:UNMATCHED_SAMPLE_CAP]),
             mapping_partial=self.mapping_partial,
             scope=self.scope,
+            measured_at=self.measured_at,
         )
 
     @property
@@ -529,6 +536,11 @@ class CoverageProvenance:
     mapping_partial: bool = False
     # ``None`` when the writer did not resolve the reports itself.
     scope: CoverageScope | None = None
+    # When the reports were written (the oldest of their mtimes), so the writer
+    # can stamp the ingest at the commit the measurement describes instead of
+    # the one that happens to be HEAD now (#3901). Transient: the stored columns
+    # keep their shapes, and ``ingested_at`` stays the ingest time.
+    measured_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -1318,6 +1330,7 @@ def build_coverage_map(
     """
     prefixes = report_prefixes or {}
     parsed: list[CoverageReport] = []
+    parsed_paths: list[Path] = []
     errors: list[tuple[Path, str]] = []
     for path in report_paths:
         if is_coverage_data_file(path):
@@ -1338,6 +1351,7 @@ def build_coverage_map(
         report.origin_dir = report_origin_dir(path, repo_root)
         report.path_prefix = prefixes.get(path)
         parsed.append(report)
+        parsed_paths.append(path)
     resolved = resolve_reports(
         parsed,
         repo_keys,
@@ -1353,7 +1367,29 @@ def build_coverage_map(
     )
     if resolved.mapping_partial and not allow_partial:
         resolved.coverage_map, resolved.files, resolved.withheld = {}, [], True
+    # Only the reports that were actually read: one unreadable or empty
+    # artifact must not drag the whole measurement back to its own date. A
+    # withheld mapping contributed no rows at all, so it reports no time.
+    resolved.measured_at = None if resolved.withheld else oldest_report_time(parsed_paths)
     return resolved, errors
+
+
+def oldest_report_time(paths: Iterable[Path]) -> datetime | None:
+    """The oldest mtime among *paths*, as an aware UTC datetime.
+
+    A coverage report is written when the suite runs, not when repowise reads
+    it, so the oldest of several merged reports is the one whose lines have had
+    the most chance to move since. ``None`` when *paths* is empty or none of
+    them can be stat'ed: the caller then stamps with live HEAD, which is what a
+    report written just now is anyway.
+    """
+    times: list[float] = []
+    for path in paths:
+        try:
+            times.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return datetime.fromtimestamp(min(times), UTC) if times else None
 
 
 def report_origin_dir(path: Path, repo_root: Path) -> str | None:

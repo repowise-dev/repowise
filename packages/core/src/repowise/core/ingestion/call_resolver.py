@@ -122,6 +122,13 @@ log = structlog.get_logger(__name__)
 # bare call there is a free function and this tier would resolve it wrongly.
 _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
 
+# JS/TS (and the single-file components parsed as TypeScript): a member is only
+# reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
+# class method never means a member of that class, whatever the file declares.
+_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
+    {"javascript", "typescript", "svelte", "vue", "astro"}
+)
+
 # Languages where a call the caller's own class cannot answer is looked for on
 # its ancestors, for an explicit ``self``/``this`` receiver and an implicit one.
 #
@@ -1494,7 +1501,15 @@ class CallResolver(
         own = self._enclosing_class_method(file_path, call, caller_id)
         if self._is_anonymous_id(own):
             return True, _own_member_call(caller_id, own, call)
-        callee_id = self._file_symbols.get(file_path, {}).get(call.target_name)
+        # ``_file_symbols`` is flat and holds class members, but a JS/TS bare
+        # call can only name a top-level binding: a same-named method must not
+        # shadow an import (or hide a top-level function declared before it).
+        table = (
+            self._file_top_level
+            if self._language_of(file_path) in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES
+            else self._file_symbols
+        )
+        callee_id = table.get(file_path, {}).get(call.target_name)
         if callee_id is None:
             return False, None
         if own is not None and own != callee_id and _rivals_a_class_method(callee_id):

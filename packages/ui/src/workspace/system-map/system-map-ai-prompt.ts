@@ -18,6 +18,7 @@ import {
   type AiPromptFlavor,
   type PreambleParts,
 } from "../../health/ai-prompts/shared";
+import { linkStrategyCopy } from "../link-provenance";
 
 /** Evidence rows listed in full before the prompt says how many it left out. */
 export const SYSTEM_MAP_PROMPT_MAX_ROWS = 25;
@@ -160,6 +161,8 @@ export interface PromptEdgeEvidence {
   consumer_repo: string;
   consumer_file: string;
   match_type?: string;
+  /** The matching rule that made the link, a core `LinkStrategy` value. */
+  strategy?: string | null;
   confidence?: number;
 }
 
@@ -168,6 +171,8 @@ export interface BuildEdgePromptOptions {
     id: string;
     kind: string;
     match_type: string;
+    /** Strategy of the link that gave the edge its confidence. */
+    strategy?: string | null;
     confidence: number;
     weight: number;
     structural: boolean;
@@ -188,6 +193,12 @@ export interface BuildEdgePromptOptions {
   flavor?: AiPromptFlavor;
 }
 
+/** `, matched by service name (service_mapped)`, or nothing when the link names no strategy. */
+function matchedBy(strategy: string | null | undefined): string {
+  const copy = linkStrategyCopy(strategy);
+  return copy ? `, ${copy.label.toLowerCase()} (\`${strategy}\`)` : "";
+}
+
 export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
   const flavor = o.flavor ?? "generic";
   const e = o.edge;
@@ -196,7 +207,7 @@ export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
       ? capped(
           o.evidence,
           (l) =>
-            `- \`${l.contract_id}\`: provider \`${l.provider_repo}:${l.provider_file}\`, consumer \`${l.consumer_repo}:${l.consumer_file}\``,
+            `- \`${l.contract_id}\`: provider \`${l.provider_repo}:${l.provider_file}\`, consumer \`${l.consumer_repo}:${l.consumer_file}\`${matchedBy(l.strategy)}`,
           "links",
         )
       : o.refs.length > 0
@@ -215,7 +226,7 @@ export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
     `\n## Relationship: ${o.source.name} -> ${o.target.name} (\`${e.id}\`)`,
     `\n${bulletList([
       o.sentence,
-      `Kind: ${e.kind}. Match: ${e.match_type}. Confidence: ${Math.round(e.confidence * 100)}%.`,
+      `Kind: ${e.kind}. Match: ${e.match_type}${matchedBy(e.strategy)}. Confidence: ${Math.round(e.confidence * 100)}%.`,
       `Weight: ${o.weightLabel}.`,
       e.structural
         ? "Structural: built from a contract or import in code. Changing the provider side can break the consumer."

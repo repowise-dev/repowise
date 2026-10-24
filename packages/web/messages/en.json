@@ -1656,7 +1656,7 @@
       "unmatched": "Unmatched consumers",
       "orphans": "Providers with no caller",
       "orphansSub": "in this workspace; not the same as unused",
-      "httpResolved": "HTTP calls resolved",
+      "httpRead": "HTTP calls read",
       "httpUnresolved": "{count} located but not resolvable",
       "httpSub": "of the client calls extraction located"
     },
@@ -1720,6 +1720,20 @@
       },
       "col": {
         "match": "Match"
+      },
+      "strategy": {
+        "exact_id": "Matched by exact name",
+        "pattern_matched": "Matched by subscription pattern",
+        "binding_routed": "Routed through a queue binding",
+        "shared_table": "Shares a table",
+        "service_mapped": "Matched by service name",
+        "host_only": "Host only",
+        "gateway_route": "Routed through a gateway",
+        "unique_path": "Matched by path only",
+        "ambiguous_path": "Path served by several services",
+        "prefix_stripped": "Matched after stripping a prefix",
+        "manual": "Declared by hand",
+        "manifest": "Declared in a manifest"
       },
       "reasonTitle": {
         "no_provider": "No provider found",
@@ -1889,8 +1903,15 @@
       "contractLinksHint": "Consumer calls matched to the provider that serves them, across services.",
       "unmatched": "Unmatched consumers",
       "unmatchedSub": "calls with no provider in the workspace",
-      "unmatchedHint": "Consumer contracts that matched no provider: missing, a third-party host, or inside the same service."
+      "unmatchedHint": "Consumer contracts that matched no provider: missing, or a third-party host. Calls a repository makes to its own service are served and not counted."
     }
+  },
+  "linkCoverage": {
+    "label": "Linked to another service",
+    "sub": "{linked} of {seen} HTTP calls; {read} read",
+    "hint": "HTTP calls that matched a route another service serves, out of every call seen, counting one per file that calls out through code no dialect reads. Of the calls read, {readNotLinked} matched no other service in the workspace and {inService} are calls a repository makes to its own service, which need no link.",
+    "unmatchedHint": "Consumers that matched no provider in the workspace: missing, or a third-party host.",
+    "inServiceHint": "{count, plural, one {# call a repository makes to its own service is served and not counted here.} other {# calls a repository makes to its own service are served and not counted here.}}"
   },
   "loading": {
     "workspace": "Loading workspace",

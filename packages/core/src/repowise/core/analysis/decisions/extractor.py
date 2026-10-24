@@ -54,6 +54,7 @@ from .model_answers import (  # noqa: F401  (_coerce_paths, _collect_batches re-
     _collect_batches,
     _run_batches,
     parse_decisions_json,
+    parse_decisions_reply,
 )
 from .prompts import (
     _SYSTEM_PROMPT,
@@ -63,11 +64,12 @@ from .prompts import (
     PR_BODY_MINING_PROMPT,
     README_MINING_PROMPT,
 )
-from .records import (  # noqa: F401  (the two errors are re-exported)
+from .records import (  # noqa: F401  (the three errors are re-exported)
     DecisionExtractionReport,
     DecisionSourceError,
     EmptyModelResponseError,
     ExtractedDecision,
+    TruncatedModelResponseError,
 )
 from .source_files import (
     _BINARY_EXTENSIONS,
@@ -404,7 +406,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
             )
-            decisions.extend(parse_decisions_json(response.content))
+            decisions.extend(parse_decisions_reply(response))
         return decisions
 
     # ------------------------------------------------------------------
@@ -433,7 +435,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = parse_decisions_json(response.content)
+            extracted = parse_decisions_reply(response)
 
             # Enrich with commit metadata
             for d in extracted:
@@ -510,7 +512,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
             )
-            for d in parse_decisions_json(response.content):
+            for d in parse_decisions_reply(response):
                 d.source = "adr"
                 d.status = "proposed"
                 d.confidence = 0.80
@@ -580,12 +582,13 @@ class DecisionExtractor:
                 bodies_block += pr_commit_block(c, files_by_sha.get(c["sha"], []), forge)
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
-            # Not caught: _run_batches counts a failed batch, so an outage is
-            # reported rather than read as nothing found.
+            # Not caught: _run_batches counts a failed batch, so an outage or a
+            # reply cut off at max_tokens is reported rather than read as
+            # nothing found.
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
-            extracted = parse_decisions_json(response.content)
+            extracted = parse_decisions_reply(response)
             for d in extracted:
                 _attribute_to_commit(d, batch, "subject", files_by_sha, source_by_sha)
                 d.source = "pr"
@@ -631,7 +634,7 @@ class DecisionExtractor:
             response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
             )
-            extracted = parse_decisions_json(response.content)
+            extracted = parse_decisions_reply(response)
             for d in extracted:
                 best_fp, best_prose = _snippet_for(d, batch)
                 d.source = "comment"

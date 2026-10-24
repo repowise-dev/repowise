@@ -96,6 +96,8 @@ _OWN_HEADER = (
         ("fabfile.py", "tooling"),
         ("eslint.config.mjs", "tooling"),
         ("db/migrate/20240101_add_users.rb", "tooling"),
+        ("db/data_migrations/20240101_backfill.rb", "tooling"),
+        ("src/django_test_migrations/logic.py", "production"),
         ("src/__generated__/schema.ts", "generated"),
         ("api/user_pb2.py", "generated"),
         ("api/user_grpc.pb.go", "generated"),
@@ -526,6 +528,16 @@ def test_migration_paths() -> None:
     assert is_migration_path("alembic/versions/abc.py")
     assert not is_migration_path("api/versions/v1.py")
     assert not is_migration_path("src/migrate.py")
+
+
+def test_prefixed_migration_dirs_under_db() -> None:
+    # Rails keeps retired and data migrations in prefixed directories under db/.
+    assert is_migration_path("db/old_migrations/x.rb")
+    assert is_migration_path("db/data_migrations/x.rb")
+    # Elsewhere a name containing or ending in "migrations" is ordinary source.
+    assert not is_migration_path("app/migrations_helper/x.rb")
+    assert not is_migration_path("src/django_test_migrations/logic.py")
+    assert not is_migration_path("django_test_migrations/contrib/unittest_case.py")
 
 
 def test_ship_rank_puts_product_code_first_and_tests_last() -> None:

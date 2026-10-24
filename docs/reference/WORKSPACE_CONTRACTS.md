@@ -89,7 +89,7 @@ binding site itself is linked. A publish to the default exchange
 
 ## Data contracts
 
-Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](../scale/WORKSPACES.md#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
+Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](../scale/WORKSPACES.md#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. A reader in a file that opens an embedded database (SQLite) links only to tables declared in its own repo, since that file is its own database. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 
 ## HTTP routes and calls
 
@@ -118,7 +118,10 @@ builds. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path (`unique_path`) and a lower-confidence **candidate** when the target
-is ambiguous (`ambiguous_path`).
+is ambiguous (`ambiguous_path`). A generic operational path (`/health`, `/healthz`, `/ready`,
+`/metrics`, `/status`, `/version`, `/actuator/info`, the root) names no service, so it links
+only to the repo its host or base resolves to or, with neither, to a server in the caller's
+own repo; it never links to another repo by path alone.
 
 ## Service names
 
@@ -193,6 +196,14 @@ vendored or fixture `package.json` never claims a name. For composer, every
 directories, tests, fixtures and examples, which covers split packages such as
 `src/Illuminate/Support/composer.json`. A name two repos publish links to
 neither.
+
+Python dependencies match the same way. A repo publishes the distribution its root
+`pyproject.toml` names and those of its `[tool.uv.workspace]` members. A dependency
+is read from each of those projects' `pyproject.toml` (`[project]` dependencies and
+optional dependencies, Poetry dependencies and groups) and the `requirements*.txt`
+beside it, and names compare in their PEP 503 spelling (`Acme.Core` is `acme-core`).
+A Poetry path dependency or a `[tool.uv.sources]` path source resolves by its path
+alone. Lock files and `setup.cfg` are not read.
 
 Maven matching is filesystem-only and coordinate-based. Repowise resolves local
 reactor modules, local parents, properties, and dependency-management versions,

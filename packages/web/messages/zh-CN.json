@@ -1656,7 +1656,7 @@
       "unmatched": "未匹配的消费方",
       "orphans": "没有调用方的提供方",
       "orphansSub": "仅限本工作区；与「未使用」不同",
-      "httpResolved": "已解析的 HTTP 调用",
+      "httpRead": "已读取的 HTTP 调用",
       "httpUnresolved": "定位到 {count} 个但无法解析",
       "httpSub": "占提取定位到的客户端调用"
     },
@@ -1720,6 +1720,20 @@
       },
       "col": {
         "match": "匹配方式"
+      },
+      "strategy": {
+        "exact_id": "按名称精确匹配",
+        "pattern_matched": "按订阅模式匹配",
+        "binding_routed": "经队列绑定路由",
+        "shared_table": "共享数据表",
+        "service_mapped": "按服务名匹配",
+        "host_only": "仅主机",
+        "gateway_route": "经网关路由",
+        "unique_path": "仅按路径匹配",
+        "ambiguous_path": "路径由多个服务提供",
+        "prefix_stripped": "去除前缀后匹配",
+        "manual": "手动声明",
+        "manifest": "在清单中声明"
       },
       "reasonTitle": {
         "no_provider": "未找到提供方",
@@ -1889,8 +1903,15 @@
       "contractLinksHint": "跨服务匹配到对应提供方的消费方调用。",
       "unmatched": "未匹配的消费方",
       "unmatchedSub": "工作区内没有提供方的调用",
-      "unmatchedHint": "没有匹配到提供方的消费方契约：缺失、属于第三方主机，或位于同一服务内。"
+      "unmatchedHint": "没有匹配到提供方的消费方契约：缺失，或属于第三方主机。仓库对自身服务的调用已有提供方，不计入。"
     }
+  },
+  "linkCoverage": {
+    "label": "关联到其他服务",
+    "sub": "{seen} 个 HTTP 调用中 {linked} 个已关联；已读取 {read} 个",
+    "hint": "匹配到其他服务所提供路由的 HTTP 调用，占所见全部调用的比例；通过任何方言都无法读取的代码对外调用的文件，每个计为一次。在已读取的调用中，{readNotLinked} 个没有匹配到工作区内的其他服务，{inService} 个是仓库对自身服务的调用，无需关联。",
+    "unmatchedHint": "在工作区内没有匹配到提供方的消费方：缺失，或属于第三方主机。",
+    "inServiceHint": "{count, plural, other {仓库对自身服务的 # 个调用已有提供方，不计入此处。}}"
   },
   "loading": {
     "workspace": "正在加载工作区",

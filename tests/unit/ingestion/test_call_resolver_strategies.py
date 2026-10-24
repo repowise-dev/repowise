@@ -2435,3 +2435,136 @@ class TestPythonNameAliasAssignment:
 
         assert len(attributes_symbols) == 2
         assert len({symbol.id for symbol in attributes_symbols}) == 2
+
+
+_JS_TS = [("javascript", "js"), ("typescript", "ts")]
+
+
+class TestJsBareCallSkipsClassMembers:
+    """A JS/TS bare ``foo()`` never names a class method: that needs ``this.``.
+
+    ``_file_symbols`` is flat and holds class members, so Tier 1 used to bind a
+    bare call to a same-named method ahead of the import tier.
+    """
+
+    @pytest.mark.parametrize(("lang", "ext"), _JS_TS)
+    def test_an_imported_name_beats_a_same_named_method(
+        self, tmp_path: Path, lang: str, ext: str
+    ) -> None:
+        lib, caller = f"a.{ext}", f"b.{ext}"
+        parsed = _parse_all(
+            tmp_path,
+            {
+                lib: (lang, "export function getSettings() { return 1; }\n"),
+                caller: (
+                    lang,
+                    "import { getSettings } from './a';\n"
+                    "class C {\n"
+                    "  getSettings() { return 2; }\n"
+                    "  load() { return getSettings(); }\n"
+                    "}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {caller: {imp.module_path: lib for imp in parsed[caller].imports}})
+        edges = [
+            (callee, origin)
+            for src, callee, _, origin in _edges(parsed, tmp_path, {caller: {lib}, lib: set()})
+            if src == f"{caller}::C::load"
+        ]
+        assert edges == [(f"{lib}::getSettings", "import_scoped")]
+
+    @pytest.mark.parametrize(("lang", "ext"), _JS_TS)
+    def test_a_method_alone_is_not_a_same_file_bare_call_target(
+        self, tmp_path: Path, lang: str, ext: str
+    ) -> None:
+        """Tier 1 declines; a later tier may still guess, but never as ``same_file``."""
+        caller = f"b.{ext}"
+        parsed = _parse_all(
+            tmp_path,
+            {
+                caller: (
+                    lang,
+                    "class C {\n"
+                    "  getSettings() { return 2; }\n"
+                    "  load() { return getSettings(); }\n"
+                    "}\n",
+                ),
+            },
+        )
+        assert not [
+            e
+            for e in _edges(parsed, tmp_path)
+            if e[1] == f"{caller}::C::getSettings" and e[3] == "same_file"
+        ]
+
+    @pytest.mark.parametrize(("lang", "ext"), _JS_TS)
+    def test_a_top_level_function_still_resolves_same_file(
+        self, tmp_path: Path, lang: str, ext: str
+    ) -> None:
+        caller = f"b.{ext}"
+        parsed = _parse_all(
+            tmp_path,
+            {
+                caller: (
+                    lang,
+                    "function helper() { return 1; }\n"
+                    "class C {\n"
+                    "  load() { return helper(); }\n"
+                    "}\n",
+                ),
+            },
+        )
+        assert (f"{caller}::C::load", f"{caller}::helper", 0.95, "same_file") in _edges(
+            parsed, tmp_path
+        )
+
+    @pytest.mark.parametrize(("lang", "ext"), _JS_TS)
+    def test_a_top_level_function_beats_a_later_same_named_method(
+        self, tmp_path: Path, lang: str, ext: str
+    ) -> None:
+        """The flat index is last-wins; a bare call must still find the top level."""
+        caller = f"b.{ext}"
+        parsed = _parse_all(
+            tmp_path,
+            {
+                caller: (
+                    lang,
+                    "function helper() { return 1; }\n"
+                    "class C {\n"
+                    "  load() { return helper(); }\n"
+                    "}\n"
+                    "class D {\n"
+                    "  helper() { return 3; }\n"
+                    "}\n",
+                ),
+            },
+        )
+        callees = {
+            callee for src, callee, _, _ in _edges(parsed, tmp_path) if src == f"{caller}::C::load"
+        }
+        assert callees == {f"{caller}::helper"}
+
+    @pytest.mark.parametrize(("lang", "ext"), _JS_TS)
+    def test_this_call_still_reaches_the_method(
+        self, tmp_path: Path, lang: str, ext: str
+    ) -> None:
+        caller = f"b.{ext}"
+        parsed = _parse_all(
+            tmp_path,
+            {
+                caller: (
+                    lang,
+                    "class C {\n"
+                    "  getSettings() { return 2; }\n"
+                    "  load() { return this.getSettings(); }\n"
+                    "}\n",
+                ),
+            },
+        )
+        assert (
+            f"{caller}::C::load",
+            f"{caller}::C::getSettings",
+            0.95,
+            "self_scope",
+        ) in _edges(parsed, tmp_path)

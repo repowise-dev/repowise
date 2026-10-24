@@ -17,7 +17,7 @@ from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import line_at
 from ..dialect import build_contract
-from .names import normalize_table_name
+from .names import is_system_table, normalize_table_name
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -57,6 +57,39 @@ def build_table_provider(
     )
 
 
+#: Driver and connection-string tokens that place a file's tables in an
+#: embedded database, one row per engine. An embedded database is a file the
+#: program opens itself, so its tables are never another repo's server tables.
+#: Deliberate ceiling: server engines (Postgres vs MySQL) are not told apart;
+#: upgrade path is a row per server engine and comparing both ends' engines.
+_EMBEDDED_ENGINES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "sqlite",
+        (
+            "sqlite3",
+            "SQLite3",
+            "aiosqlite",
+            "bun:sqlite",
+            "modernc.org/sqlite",
+            "jdbc:sqlite",
+            "sqlite://",
+            "PDO('sqlite:",
+            'PDO("sqlite:',
+            "Microsoft.Data.Sqlite",
+            "UseSqlite",
+        ),
+    ),
+)
+
+
+def embedded_engine(ctx: ScanContext) -> str | None:
+    """The embedded engine *ctx*'s file opens (``sqlite``), or ``None``."""
+    for engine, tokens in _EMBEDDED_ENGINES:
+        if ctx.has_any(tokens):
+            return engine
+    return None
+
+
 def build_table_consumer(
     ctx: ScanContext,
     *,
@@ -70,11 +103,13 @@ def build_table_consumer(
 
     ``verb`` is the SQL operation that touched the table (``select`` /
     ``insert`` / ``update`` / ``delete`` / ``join``), carried in ``meta`` so
-    downstream views can distinguish readers from writers.
+    downstream views can distinguish readers from writers. ``embedded``
+    names the embedded engine the file opens, when it opens one.
     """
     table = normalize_table_name(table_raw)
-    if table is None:
+    if table is None or is_system_table(table):
         return None
+    engine = embedded_engine(ctx)
     return build_contract(
         ctx,
         contract_id=f"data::{table}",
@@ -83,7 +118,12 @@ def build_table_consumer(
         symbol_name=f"{client}:{verb} {table}",
         origin=origin,
         line=line,
-        meta={"table": table, "verb": verb, "client": client},
+        meta={
+            "table": table,
+            "verb": verb,
+            "client": client,
+            **({"embedded": engine} if engine else {}),
+        },
     )
 
 

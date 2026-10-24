@@ -50,6 +50,33 @@ if TYPE_CHECKING:
 _MOUNT_PREFIX_SEGMENTS = frozenset({"api", "rest"})
 _VERSION_SEGMENT_RE = re.compile(r"^v\d+$")
 
+# Segments of the operational endpoints nearly every service serves (health,
+# readiness, liveness, metrics, version, Spring's actuator). A path made only of
+# these, after the mount prefixes above, names no service: two services both
+# answer ``/health``, so a call to it links only where a host or base placed it,
+# or with neither inside the caller's own repo (:func:`accepts`).
+_GENERIC_SEGMENTS = frozenset(
+    {
+        "health",
+        "healthz",
+        "healthcheck",
+        "health-check",
+        "ready",
+        "readyz",
+        "readiness",
+        "live",
+        "livez",
+        "liveness",
+        "alive",
+        "ping",
+        "metrics",
+        "status",
+        "version",
+        "info",
+        "actuator",
+    }
+)
+
 # Request paths ending in these suffixes are static assets, never API contracts.
 # They are excluded from the candidate pass so a ``fetch('/static/app.js')``
 # can't spuriously link to a provider route that shares a suffix. ``.json`` and
@@ -276,6 +303,33 @@ def _is_static_asset_path(path: str) -> bool:
     return last.endswith(_STATIC_ASSET_SUFFIXES)
 
 
+def _is_generic_path(path: str) -> bool:
+    """True when *path* is the root or only operational segments (``/health``, ``/api/v1/metrics``).
+
+    Leading mount and version prefixes and leading unresolved ``{param}``
+    segments are stripped first, so ``/{param}/status`` is generic: the
+    unresolved segment cannot place the call, and the rest names no service.
+    """
+    segments = [s for s in _candidate_http_path(path).split("/") if s]
+    if not segments:
+        return not path.strip("/")  # the root; a bare ``/{param}`` or ``/api/v1`` is not generic
+    return all(s in _GENERIC_SEGMENTS for s in segments)
+
+
+def accepts(provider: Contract, consumer: Contract) -> bool:
+    """Whether *provider* may serve *consumer* when the path alone joins them.
+
+    A generic path (:func:`_is_generic_path`) links only to the consumer's
+    resolved target repo, or, with no target, to a provider in the consumer's
+    own repo (a script probing the server it ships beside). Any other path
+    is accepted.
+    """
+    split = _split_http_id(normalize_contract_id(consumer.contract_id))
+    if split is None or not _is_generic_path(consumer.meta.get("route_path", split[1]).lower()):
+        return True
+    return provider.repo == (consumer.meta.get("target_repo") or consumer.repo)
+
+
 def _methods_compatible(consumer_method: str, provider_method: str) -> bool:
     """HTTP methods match if equal or either side is the ``*`` wildcard."""
     return consumer_method == provider_method or consumer_method == "*" or provider_method == "*"
@@ -357,7 +411,7 @@ def base_resolved_pass(state: MatchState) -> None:
             p
             for k in matching_keys
             for p in state.provider_index[k]
-            if not internal(p, consumer)
+            if not internal(p, consumer) and accepts(p, consumer)
         ]
         if not providers:
             continue
@@ -403,7 +457,7 @@ def candidate_pass(state: MatchState) -> None:
             continue
 
         for provider in prefer_target_repo(candidate_index.get(core, []), consumer):
-            if internal(provider, consumer):
+            if internal(provider, consumer) or not accepts(provider, consumer):
                 continue
             psplit = _split_http_id(normalize_contract_id(provider.contract_id))
             if psplit is None or not _methods_compatible(method, psplit[0]):
@@ -454,6 +508,7 @@ def service_pass(state: MatchState) -> None:
 
 
 __all__ = [
+    "accepts",
     "annotate_consumer_targets",
     "base_resolved_pass",
     "candidate_pass",

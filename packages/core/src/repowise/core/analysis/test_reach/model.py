@@ -105,15 +105,26 @@ def capped(
     reach: Mapping[str, ReachDistance] | None = None,
     direct: Collection[str] = frozenset(),
     changed: Collection[str] = frozenset(),
+    edited: Collection[str] | None = None,
     entries: Mapping[str, frozenset[str]] | None = None,
     transitive: Collection[str] = frozenset(),
+    rank: bool = True,
 ) -> ReachedBy:
     """*tests* ranked by :func:`rank_reaching`, then cut to ``MAX_TESTS_PER_TARGET``."""
-    ordered = tuple(
-        rank_reaching(
-            target, tests, reach=reach, direct=direct, changed=changed, transitive=transitive
+    if rank:
+        ordered = tuple(
+            rank_reaching(
+                target,
+                tests,
+                reach=reach,
+                direct=direct,
+                changed=changed,
+                edited=edited,
+                transitive=transitive,
+            )
         )
-    )
+    else:
+        ordered = tuple(sorted(tests))
     return ReachedBy(
         list(ordered[:MAX_TESTS_PER_TARGET]),
         via,
@@ -132,6 +143,7 @@ def rank_reaching(
     reach: Mapping[str, ReachDistance] | None = None,
     direct: Collection[str] = frozenset(),
     changed: Collection[str] = frozenset(),
+    edited: Collection[str] | None = None,
     transitive: Collection[str] = frozenset(),
 ) -> list[str]:
     """*tests* reaching *target*, the likeliest to exercise it first. Cap after this.
@@ -148,7 +160,8 @@ def rank_reaching(
     names = paired_test_names(path_of)
     dirs = set(path_of.split("/")[:-1])
     reach = reach or {}
-    edited = {c.split("::", 1)[0] for c in changed}
+    if edited is None:
+        edited = {c.split("::", 1)[0] for c in changed}
 
     def key(test: str) -> tuple[bool, bool, int, bool, int, bool, int, str]:
         path = test.split("::", 1)[0]

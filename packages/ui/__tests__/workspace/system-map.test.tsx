@@ -216,6 +216,20 @@ describe("SystemMapFindings", () => {
     expect(screen.getByRole("button", { name: "Break the cycle" })).toBeInTheDocument();
     expect(screen.queryByText(/no dependency cycles/i)).not.toBeInTheDocument();
   });
+
+  it("never counts in-service calls as unmatched, even on an older artifact", () => {
+    const call = (reason: "no_provider" | "internal_only") => ({
+      repo: "a", file_path: "x.ts", contract_id: "GET /x", contract_type: "http", reason,
+    });
+    // Before in-service calls were split out, they sat in the unmatched list.
+    const diagnostics = {
+      unmatched_consumers: [call("no_provider"), call("internal_only"), call("internal_only")],
+      unmatched_by_reason: { no_provider: 1, internal_only: 2 },
+    } as never;
+    render(<SystemMapFindings {...base} conformance={conformance} breaking={breaking} diagnostics={diagnostics} />);
+    expect(screen.getByText(/1 call to a contract match no provider in the workspace/)).toBeInTheDocument();
+    expect(screen.queryByText(/inside their own service/)).not.toBeInTheDocument();
+  });
 });
 
 describe("resolveViewSelection", () => {

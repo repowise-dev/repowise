@@ -46,6 +46,7 @@ class TypeMatcher:
 MATCHERS: dict[str, TypeMatcher] = {
     "http": TypeMatcher(
         deferred=http.is_deferred,
+        accepts=http.accepts,
         passes=(
             http.gateway_pass,
             http.base_resolved_pass,
@@ -59,7 +60,7 @@ MATCHERS: dict[str, TypeMatcher] = {
         passes=(topic.binding_pass,),
         keys=topic.matching_keys,
     ),
-    "data": TypeMatcher(passes=(data.shared_table_pass,)),
+    "data": TypeMatcher(accepts=data.accepts, passes=(data.shared_table_pass,)),
 }
 
 _NO_RULES = TypeMatcher()

@@ -28,6 +28,7 @@ import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon"
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { unmatchedOutsideService } from "@repowise-dev/ui/workspace/contract-facts";
 import type { NodeArchitectureRole, SystemGraph, ConformanceReport } from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
@@ -37,6 +38,7 @@ import {
   useWorkspaceConformance,
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
+import { httpLinkedStat } from "@/lib/http-link-coverage";
 import { useRepoContracts } from "./use-repo-contracts";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
@@ -56,6 +58,7 @@ function contractsHref(repo: string): string {
 
 export default function SystemMapPage() {
   const t = useTranslations("systemMap");
+  const tLinks = useTranslations("linkCoverage");
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -203,7 +206,7 @@ export default function SystemMapPage() {
       {graph && (
         <Lede graph={graph} architecture={architecture} conformance={conformance} t={t} />
       )}
-      {graph && <StatRibbon stats={ribbon(t, graph, architecture)} LinkComponent={Link} />}
+      {graph && <StatRibbon stats={ribbon(t, tLinks, graph, architecture)} LinkComponent={Link} />}
 
       <OverviewSection title={t("section.title")} description={t("section.description")}>
         {isLoading ? (
@@ -422,6 +425,7 @@ function Lede({
 
 function ribbon(
   t: Translator,
+  tLinks: Translator,
   graph: SystemGraph,
   architecture: ReturnType<typeof useWorkspaceArchitecture>["data"],
 ): RibbonStat[] {
@@ -462,9 +466,10 @@ function ribbon(
         : undefined,
       hint: t("ribbon.contractLinksHint"),
     },
-    {
+    // An artifact older than the linked count keeps the unmatched stat.
+    (diag && httpLinkedStat(tLinks, diag)) ?? {
       label: t("ribbon.unmatched"),
-      value: diag ? formatNumber(diag.unmatched_consumers.length) : "–",
+      value: diag ? formatNumber(unmatchedOutsideService(diag).length) : "–",
       sub: t("ribbon.unmatchedSub"),
       hint: t("ribbon.unmatchedHint"),
     },

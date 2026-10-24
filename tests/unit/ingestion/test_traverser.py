@@ -13,6 +13,7 @@ from repowise.core.ingestion import traverser as traverser_mod
 from repowise.core.ingestion.traverser import (
     FileTraverser,
     _compile_gitignore,
+    _content_language,
     _detect_language,
     _is_generated,
     _scan_package_dir,
@@ -182,6 +183,80 @@ class TestLanguageDetection:
         assert _detect_language(f) == "python"
 
 
+class TestIncLanguageDetection:
+    @pytest.mark.parametrize("suffix", [".inc", ".INC"])
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '#include "impl.h"\n',
+            "# define REGISTER(T) register_type<T>()\n",
+            "#if defined(USE_FAST_PATH)\n#endif\n",
+            "namespace library\n",
+            "template <typename T> T identity(T);\n",
+            "constexpr int answer() { return 42; }\n",
+            "int answer() { return 42; }\n",
+            "int counts[] = { 1, 2 };\n",
+            'std::string name() { return "example"; }\n',
+            'const char *tag = "<?php";\n',
+            "/* <?php */\n// <?php\nstruct Value { int count; };\n",
+            "/* License banner */\n// implementation\nint answer() { return 42; }\n",
+        ],
+    )
+    def test_cpp_fragments_stay_cpp(self, tmp_path: Path, suffix: str, content: str) -> None:
+        f = tmp_path / f"impl{suffix}"
+        f.write_text(content)
+        assert _detect_language(f) == "cpp"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "/* BankDemo-style PL/I include member */\n"
+            "    05 DD_AREAS,\n      10 DD_ENV CHAR(4);\n",
+            "DCL 1 RECORD,\n    5 NAME CHAR(20);\n",
+            "%INCLUDE CBANKVAC;\n",
+            "/* #include <header.h>\nnamespace example { template <class T> } */\n"
+            "// #define EXAMPLE\n05 DD_AREAS,\n",
+            "DCL TEXT CHAR(80) INIT('namespace example { template <class T> }');\n",
+            'DCL TEXT CHAR(80) INIT("/* not a comment */ namespace example {}");\n',
+            "/* An unfinished comment containing { and #define\n",
+            "{ field layout }\nvar Count: Integer;\n",
+            "{$I types.inc}\n",
+            "{ namespace example { template <class T> } }\nvar Count: Integer;\n",
+            "(* #include <example.h>\nnamespace example { } *)\nvar Count: Integer;\n",
+            "{ An unfinished comment with namespace example\n",
+            "<?php\nfunction countItems() { return 1; }\n",
+            "<?php\nnamespace App\\Models;\n",
+            "<?= renderItems(); ?>\n",
+            "<? function countItems() { return 1; } ?>\n",
+            # Braces without a C++ declaration can also be a Pascal comment.
+            "{ 1, 2 },\n",
+            "",
+        ],
+    )
+    def test_members_without_cpp_evidence_are_unknown(self, tmp_path: Path, content: str) -> None:
+        f = tmp_path / "member.inc"
+        f.write_text(content)
+        assert _detect_language(f) == "unknown"
+
+    def test_source_bytes_take_precedence_over_the_working_tree(self, tmp_path: Path) -> None:
+        f = tmp_path / "member.inc"
+        f.write_text("namespace library {}\n")
+        assert _content_language(f, "cpp", b"05 DD_AREAS,\n10 DD_ENV CHAR(4);\n") is None
+        f.write_text("05 DD_AREAS,\n10 DD_ENV CHAR(4);\n")
+        assert _content_language(f, "cpp", b"namespace library {}\n") == "cpp"
+
+    def test_unreadable_member_is_not_assumed_to_be_cpp(self, tmp_path: Path) -> None:
+        assert _content_language(tmp_path / "missing.inc", "cpp") is None
+
+    def test_other_cpp_fragment_extensions_do_not_need_a_content_signal(
+        self, tmp_path: Path
+    ) -> None:
+        for suffix in (".inl", ".ipp", ".tpp"):
+            f = tmp_path / f"table{suffix}"
+            f.write_text("REGISTER_TYPE(Widget)\n")
+            assert _detect_language(f) == "cpp"
+
+
 # ---------------------------------------------------------------------------
 # File traversal
 # ---------------------------------------------------------------------------
@@ -224,6 +299,15 @@ class TestFileTraverser:
         traverser = FileTraverser(tmp_path)
         found = {f.path: f.language for f in traverser.traverse()}
         assert found == {"DCLTRTYP.dcl": "cobol"}
+        assert traverser.stats.skipped_unknown_language == 1
+
+    def test_only_cpp_inc_members_are_indexed(self, tmp_path: Path) -> None:
+        (tmp_path / "CDATED.inc").write_text(
+            "/* PL/I include */\n05 DD_AREAS,\n10 DD_ENV CHAR(4);\n"
+        )
+        (tmp_path / "impl.inc").write_text("inline int answer() { return 42; }\n")
+        traverser = FileTraverser(tmp_path)
+        assert {f.path: f.language for f in traverser.traverse()} == {"impl.inc": "cpp"}
         assert traverser.stats.skipped_unknown_language == 1
 
     def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:

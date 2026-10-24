@@ -1126,6 +1126,63 @@ def _objc_header_language(abs_path: Path, source: bytes | None = None) -> Langua
     return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
 
 
+# Unlike .inl/.ipp/.tpp, .inc is shared with PL/I, Pascal and PHP. Keep the
+# extension's C++ default only when the head contains a C/C++ construct.
+_CPP_INC_SNIFF_BYTES = 16384
+_CPP_INC_SIGNAL_RE = re.compile(
+    rb"^[ \t]*#[ \t]*(?:include|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|error|line)\b"
+    rb"|\bnamespace\s+[A-Za-z_]|\btemplate\s*<"
+    rb"|\b[A-Za-z_]\w*::[A-Za-z_]"
+    rb"|\b(?:class|struct|union|enum)\s+[A-Za-z_]"
+    rb"|\b(?:void|bool|char|short|int|long|float|double|auto)(?:\s+|\s*[*&]+\s*)[A-Za-z_]",
+    re.MULTILINE,
+)
+_C_COMMENT_OR_STRING_RE = re.compile(
+    rb"//[^\n]*|/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+    re.DOTALL,
+)
+
+
+def _inc_declarations(head: bytes) -> bytes:
+    """Blank nested brace blocks and Pascal comments, retaining declarations.
+
+    A brace alone cannot distinguish C++ code from a Pascal comment. C++
+    declarations outside a body still supply evidence; text inside Pascal
+    comments must not supply it, even when comments nest.
+    """
+    blanked = bytearray(head)
+    closers: list[bytes] = []
+    start = 0
+    for m in re.finditer(rb"\{|\}|\(\*|\*\)", head):
+        token = m.group()
+        if token in (b"{", b"(*"):
+            if not closers:
+                start = m.start()
+            closers.append(b"}" if token == b"{" else b"*)")
+        elif closers and token == closers[-1]:
+            closers.pop()
+            if not closers:
+                blanked[start : m.end()] = re.sub(rb"[^\n]", b" ", head[start : m.end()])
+    if closers:
+        blanked[start:] = re.sub(rb"[^\n]", b" ", head[start:])
+    return bytes(blanked)
+
+
+def _cpp_inc_language(abs_path: Path, source: bytes | None = None) -> LanguageTag | None:
+    """``cpp`` for an .inc with C++ evidence outside comments and strings, else None.
+
+    Includes in an unsupported language must stay unindexed, rather than
+    becoming C++ files whose missing importers look like dead code.
+    """
+    head = _head(abs_path, source, _CPP_INC_SNIFF_BYTES)
+    if head is None:
+        return None
+    head = _C_COMMENT_OR_STRING_RE.sub(lambda m: re.sub(rb"[^\n]", b" ", m.group(0)), head)
+    if b"<?" in head:
+        return None  # PHP's opening tags override any C++-like declarations.
+    return "cpp" if _CPP_INC_SIGNAL_RE.search(_inc_declarations(head)) else None
+
+
 # DCLGEN writes the table declaration, then the ``01`` record, at the top of a
 # member; a 750-column table (the DB2 maximum) declares in about 62 KB.
 _DCLGEN_SNIFF_BYTES = 131072
@@ -1152,6 +1209,8 @@ def _content_language(
     so the working tree is not read in their place.
     """
     if language == "cpp":
+        if abs_path.suffix.lower() == ".inc":
+            return _cpp_inc_language(abs_path, source)
         return _objc_header_language(abs_path, source) or language
     return language or _dclgen_language(abs_path, source)
 

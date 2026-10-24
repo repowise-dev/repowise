@@ -32,12 +32,56 @@ export interface WorkspaceContractSummary {
   by_type: Record<string, number>;
 }
 
+/**
+ * How a cross-repo link was matched. Closed vocabulary owned by
+ * `core/workspace/origins.py::LinkStrategy`; the two are edited together.
+ * Render via `linkStrategyCopy` (`@repowise-dev/ui/workspace/link-provenance`).
+ */
+export type LinkStrategy =
+  | "exact_id"
+  | "pattern_matched"
+  | "binding_routed"
+  | "shared_table"
+  | "service_mapped"
+  | "host_only"
+  | "gateway_route"
+  | "unique_path"
+  | "ambiguous_path"
+  | "prefix_stripped"
+  | "manual"
+  | "manifest";
+
+/** A strategy as received: a newer index can stamp a value this build predates. */
+export type LinkStrategyWire = LinkStrategy | (string & {});
+
+/**
+ * What established a contract. Closed vocabulary owned by
+ * `core/workspace/origins.py::ContractOrigin`; the two are edited together.
+ * Render via `contractOriginCopy` (`@repowise-dev/ui/workspace/link-provenance`).
+ */
+export type ContractOrigin =
+  | "idl"
+  | "package_export"
+  | "route_registration"
+  | "typed_client"
+  | "ddl"
+  | "explicit_table"
+  | "client_call"
+  | "instance_base"
+  | "dataflow"
+  | "sql_string"
+  | "name_heuristic"
+  | "name_convention";
+
+/** An origin as received. See `LinkStrategyWire`. */
+export type ContractOriginWire = ContractOrigin | (string & {});
+
 export interface WorkspaceContractLinkEntry {
   contract_id: string;
   contract_type: string;
   match_type: string;
   /** The matching rule that made the link (`exact_id`, `binding_routed`, ...); `match_type` derives from it. */
-  strategy?: string | null;
+  strategy?: LinkStrategyWire | null;
   confidence: number;
   provider_repo: string;
   provider_file: string;
@@ -147,7 +191,7 @@ export interface SystemEdge {
   /** Back-pointers to the underlying evidence, for drill-down (bounded). */
   contract_refs: string[];
   /** Strategy of the link that gave the edge its confidence; null on a co-change edge. */
-  strategy?: string | null;
+  strategy?: LinkStrategyWire | null;
 }
 
 export interface SystemGraph {

@@ -213,3 +213,55 @@ class Foo with M1 {}
         result = parser.parse_file(_file(), src)
         rels = {(r.child_name, r.kind, r.parent_name) for r in result.heritage}
         assert ("Foo", "mixin", "M1") in rels
+
+
+class TestDartFieldPathCalls:
+    """``r.item.save()``: a Dart call on a dotted receiver keeps the path as its receiver."""
+
+    @staticmethod
+    def _calls(parser: ASTParser, body: str) -> list[tuple[str, str | None]]:
+        src = f"void run(Repo r, List<Repo> repos) {{\n{body}\n}}\n".encode()
+        return [(c.target_name, c.receiver_name) for c in parser.parse_file(_file(), src).calls]
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("r.item.save();", ("save", "r.item")),
+            ("this.repo.item.save();", ("save", "this.repo.item")),
+            ("r.a.b.c.save();", ("save", "r.a.b.c")),  # the chain bound, three fields
+            ("p.Repo.named();", ("named", "p.Repo")),
+            ("r.close();", ("close", "r")),  # a plain member call is unchanged
+        ],
+    )
+    def test_dotted_receiver_yields_one_call_site(
+        self, parser: ASTParser, body: str, expected: tuple[str, str]
+    ) -> None:
+        assert self._calls(parser, body) == [expected]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "r.item?.save();",  # a null-aware hop
+            "r?.item.save();",
+            "repos[0].item.save();",  # an index
+            "r.a.b.c.d.save();",  # past the chain bound
+        ],
+    )
+    def test_receiver_that_is_not_a_plain_field_path_is_dropped(
+        self, parser: ASTParser, body: str
+    ) -> None:
+        assert self._calls(parser, body) == []
+
+    def test_call_inside_the_run_is_left_to_the_return_type_lane(self, parser: ASTParser) -> None:
+        assert ("save", "r.item") not in self._calls(parser, "r.item(1).save();")
+
+    def test_getter_signature_carries_the_declared_type(self, parser: ASTParser) -> None:
+        src = (
+            b"class Repo {\n  Item get current => Item();\n"
+            b"  Item? get maybe => null;\n  int get n => 1;\n}\n"
+        )
+        signatures = {s.name: s.signature for s in parser.parse_file(_file(), src).symbols}
+
+        assert signatures["current"] == "current -> Item"
+        assert signatures["maybe"] == "maybe -> Item?"
+        assert signatures["n"] == "n -> int"
