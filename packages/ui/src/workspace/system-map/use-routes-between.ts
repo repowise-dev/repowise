@@ -83,12 +83,13 @@ function useKindPages({ load, a, b, q, key }: Query) {
   const fetchPage = useCallback(
     (kind: string, offset: number) => {
       if (!load) return;
+      // A reply for an earlier pair or filter is dropped, never written over the current one.
       const patch = (next: (prior: KindRows) => KindRows) =>
-        setPages((p) => {
-          const base = p.key === key ? p.byKind : {};
-          return { key, byKind: { ...base, [kind]: next(base[kind] ?? EMPTY_KIND) } };
-        });
-      patch((prior) => ({ ...prior, loading: true, error: false }));
+        setPages((p) => (p.key !== key ? p : { key, byKind: { ...p.byKind, [kind]: next(p.byKind[kind] ?? EMPTY_KIND) } }));
+      setPages((p) => {
+        const base = p.key === key ? p.byKind : {};
+        return { key, byKind: { ...base, [kind]: { ...(base[kind] ?? EMPTY_KIND), loading: true, error: false } } };
+      });
       load(a, b, { kind, ...withQ(q), limit: ROUTES_PAGE, offset }).then(
         (page) => patch((prior) => ({ rows: [...prior.rows.slice(0, offset), ...page.links], loading: false, error: false })),
         () => patch((prior) => ({ ...prior, loading: false, error: true })),
@@ -119,6 +120,7 @@ export function useRoutesBetween({ load, a, b, families, q }: RoutesBetweenArgs)
   const loadMore = useCallback(
     (kind: string) => {
       const prior = byKind[kind];
+      // After an error this retries the page that failed.
       if (prior && !prior.loading) fetchPage(kind, prior.rows.length);
     },
     [byKind, fetchPage],

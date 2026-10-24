@@ -861,8 +861,8 @@ function EdgeRouteRows({
   return (
     <>
       <ul className="m-0 flex list-none flex-col divide-y divide-[var(--color-border-default)] p-0">
-        {routes.rows.map((r) => (
-          <RouteRow key={routeKey(r)} row={r} contractHref={contractHref} LinkComponent={LinkComponent} />
+        {routes.rows.map((r, i) => (
+          <RouteRow key={`${routeKey(r)}#${i}`} row={r} contractHref={contractHref} LinkComponent={LinkComponent} />
         ))}
       </ul>
       <p className="text-xs text-[var(--color-text-tertiary)]">

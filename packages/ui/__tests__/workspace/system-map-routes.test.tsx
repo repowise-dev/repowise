@@ -244,6 +244,34 @@ describe("SystemMapRoutesPanel", () => {
     expect(screen.getByText("Route detail is not available here.")).toBeInTheDocument();
   });
 
+  it("drops a reply for an earlier filter, and retries a page that failed", async () => {
+    const real = fakeServer();
+    let failNext = true;
+    let releaseStale: (() => void) | null = null;
+    const load = vi.fn(async (a: string, b: string, opts: { kind?: string; q?: string; limit?: number; offset?: number }) => {
+      // The first unfiltered HTTP page is held back until a filter has landed, then answers for the old query.
+      if (opts.kind === "http" && !opts.q && releaseStale === null) {
+        await new Promise<void>((resolve) => (releaseStale = resolve));
+        return real(a, b, opts);
+      }
+      if (opts.kind === "event" && failNext) {
+        failNext = false;
+        throw new Error("down");
+      }
+      return real(a, b, opts);
+    });
+    render(<SystemMapRoutesPanel {...base} loadLinksBetween={load} />);
+    expect(await screen.findByText("This page of routes could not be loaded.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("http::GET::/api/orders/99")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter routes" }), { target: { value: "orders/7" } });
+    expect(await screen.findByText("HTTP · 1")).toBeInTheDocument();
+    await act(async () => releaseStale?.());
+    // The stale unfiltered page never replaces the filtered rows.
+    expect(screen.queryByText("Showing 50 of 60 routes")).toBeNull();
+    expect(screen.getAllByText(/http::GET::\/api\/orders\/7/).length).toBeGreaterThan(0);
+  });
+
   it("says when the pair has no routes in the families shown", async () => {
     const empty = vi.fn(async (a: string, b: string): Promise<ServiceLinksBetween> => ({ a, b, links: [], total: 0, totals: [] }));
     render(<SystemMapRoutesPanel {...base} loadLinksBetween={empty} />);

@@ -68,6 +68,7 @@ export function SystemMapBetweenControl({ graph, families, open, onOpenChange, f
       </PopoverTrigger>
       <PopoverContent align="end" className="w-auto border-0 bg-transparent p-0 shadow-none">
         <PathFinderPanel
+          key={from ?? ""}
           searchNodes={searchNodes}
           findPath={findPath}
           onPathFound={onPathFound}

@@ -139,12 +139,12 @@ function useMapInput(levelView: LevelView | null, state: SystemMapState, onShowF
   return { actions, onActivate, onEscape };
 }
 
-/** The Between picker's state and the verbs the rail offers (focus, between, show a family). */
 /** The focus level around one service; leaves Between, keeps the families and open groups. */
 function focusService(view: MapViewState, id: string): MapViewState {
   return { ...view, focus: id, between: null };
 }
 
+/** The Between picker's state and the verbs the rail offers (focus, between, show a family). */
 function useRailVerbs(state: SystemMapState) {
   const { view, setView, setSelection } = state;
   const [picker, setPicker] = useState<{ open: boolean; from?: string }>({ open: false });

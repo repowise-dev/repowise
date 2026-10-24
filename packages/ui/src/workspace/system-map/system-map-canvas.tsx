@@ -45,7 +45,7 @@ const NODE_TYPES = {
 };
 const EDGE_TYPES = { systemEdge: SystemMapEdge, systemBand: SystemMapBand };
 
-const NODE_HELP = "Click a service for its details. Press Enter or double-click to open a group or focus a service. Escape goes back a level.";
+const NODE_HELP = "Press Space for details. Press Enter to open a group or focus a service. Escape goes back a level.";
 
 const FIT_OPTIONS = { padding: 0.08, maxZoom: 1.2 } as const;
 
@@ -95,7 +95,8 @@ export function SystemMapCanvas({ nodes, edges, focus, fitKey, settled, onActiva
       // Only the focused card or connector itself; a control inside a card keeps its own key handling.
       if (!el || !id || el !== target) return;
       e.preventDefault();
-      onActivate(id, el.classList.contains("react-flow__node") ? "node" : "edge", "key");
+      // Space selects, as a click does; Enter opens a group or focuses a service, as a double-click does.
+      onActivate(id, el.classList.contains("react-flow__node") ? "node" : "edge", e.key === " " ? "click" : "key");
     },
     [onActivate, onEscape],
   );

@@ -192,8 +192,9 @@ function KindSection({ section, rows, a, b, onMore, contractHref, LinkComponent 
               {directionLabel(g.direction, a, b)} · {(section.byDirection[g.direction] ?? g.rows.length).toLocaleString()}
             </h4>
             <ul className="m-0 flex list-none flex-col divide-y divide-[var(--color-border-default)] p-0">
-              {g.rows.map((r) => (
-                <RouteRow key={routeKey(r)} row={r} contractHref={contractHref} LinkComponent={LinkComponent} />
+              {g.rows.map((r, i) => (
+                // The position keeps two rows with the same evidence apart.
+                <RouteRow key={`${routeKey(r)}#${i}`} row={r} contractHref={contractHref} LinkComponent={LinkComponent} />
               ))}
             </ul>
           </div>
@@ -205,7 +206,16 @@ function KindSection({ section, rows, a, b, onMore, contractHref, LinkComponent 
 }
 
 function PageFooter({ shown, total, rows, onMore }: { shown: number; total: number; rows: KindRows | undefined; onMore: () => void }) {
-  if (rows?.error) return <p className={QUIET}>This page of routes could not be loaded.</p>;
+  if (rows?.error) {
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <p className={QUIET}>This page of routes could not be loaded.</p>
+        <button type="button" className={BUTTON} onClick={onMore}>
+          Retry
+        </button>
+      </div>
+    );
+  }
   if (shown === 0 || shown >= total) return null;
   return (
     <div className="flex items-center justify-between gap-3">

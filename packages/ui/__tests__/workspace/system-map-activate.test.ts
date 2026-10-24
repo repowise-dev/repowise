@@ -36,4 +36,9 @@ describe("activateNode", () => {
     expect(activateNode(undefined, "key")).toBeNull();
     expect(activateEdge(undefined)).toBeNull();
   });
+
+  it("opens a closed tray on a click", () => {
+    const tray: DrawnNode = { type: "tray", id: "tray", open: false, serviceIds: ["z"] };
+    expect(activateNode(tray, "click")).toEqual({ kind: "open", id: "tray" });
+  });
 });
