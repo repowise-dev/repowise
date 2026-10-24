@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
-import type { CrossRepoBlastRadius, SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
+import type { CrossRepoBlastRadius, GraphEvidence, SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
 import { SystemMap } from "../../src/workspace/system-map/system-map";
 import { Segmented, SystemMapFilters } from "../../src/workspace/system-map/system-map-filters";
 import { SystemMapLegend } from "../../src/workspace/system-map/system-map-legend";
+import { SystemMapEvidenceNotice } from "../../src/workspace/system-map/system-map-evidence-notice";
 import { SystemMapDrawer, selectionRepo } from "../../src/workspace/system-map/system-map-drawer";
 import { SystemMapFindings } from "../../src/workspace/system-map/system-map-findings";
 import { resolveViewSelection } from "../../src/workspace/system-map/system-map-model";
@@ -255,6 +256,48 @@ describe("SystemMapLegend", () => {
     expect(screen.queryByText(/candidate/i)).not.toBeInTheDocument();
     expect(screen.getByText("Healthy 8+")).toBeInTheDocument();
     expect(screen.getByText("Alert below 4")).toBeInTheDocument();
+    expect(screen.queryByText(/gateway route/i)).not.toBeInTheDocument();
+  });
+
+  it("names gateway-routed lines in words when the graph has any", () => {
+    render(<SystemMapLegend matchTypes={new Set(["exact"])} gatewayRouted={2} />);
+    expect(screen.getByText(/lines run through a gateway route/i)).toBeInTheDocument();
+  });
+});
+
+describe("SystemMapEvidenceNotice", () => {
+  const evidence = (state: GraphEvidence["state"], summary: string): GraphEvidence => ({
+    state,
+    determined: state !== "insufficient",
+    summary,
+    reasons: [],
+    services: 3,
+    runtime_edges: 0,
+    build_edges: 2,
+    providers: 4,
+    consumers: 1,
+  });
+
+  it("renders nothing when the evidence is measured or absent", () => {
+    const { container, rerender } = render(<SystemMapEvidenceNotice evidence={evidence("measured", "")} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<SystemMapEvidenceNotice evidence={null} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("names the state and the reason as one sentence", () => {
+    const { rerender } = render(
+      <SystemMapEvidenceNotice evidence={evidence("partial", "every detected dependency is a build reference")} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Partial evidence");
+    expect(screen.getByText("Every detected dependency is a build reference.")).toBeInTheDocument();
+    rerender(
+      <SystemMapEvidenceNotice
+        evidence={evidence("insufficient", "no service carries a contract")}
+        insufficientLabel="Unknown here"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Unknown here");
   });
 });
 

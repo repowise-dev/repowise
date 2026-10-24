@@ -88,6 +88,8 @@ export function collapseToRepos(graph: SystemGraph): SystemGraph {
       continue;
     }
     existing.weight += edge.weight;
+    // The strategy names the strongest link, as the core graph builder keeps it.
+    if (edge.confidence > existing.confidence) existing.strategy = edge.strategy ?? null;
     existing.confidence = Math.max(existing.confidence, edge.confidence);
     existing.match_type = strongerMatch(existing.match_type, edge.match_type);
     if (existing.contract_refs.length < MAX_REFS) {

@@ -42,9 +42,11 @@ const LINE_LABEL: Record<SystemEdgeMatchType, string> = {
 export interface SystemMapLegendProps {
   /** Match types present on the drawn edges; only these get a key. */
   matchTypes?: ReadonlySet<SystemEdgeMatchType>;
+  /** Drawn lines a gateway route made; they share the HTTP line, so the key names them in words. */
+  gatewayRouted?: number;
 }
 
-export function SystemMapLegend({ matchTypes }: SystemMapLegendProps) {
+export function SystemMapLegend({ matchTypes, gatewayRouted = 0 }: SystemMapLegendProps) {
   const order: SystemEdgeMatchType[] = ["exact", "manual", "candidate", "inferred"];
   const shown = order.filter((m) => !matchTypes || matchTypes.has(m));
   // Exact and manual draw the same solid line; one key covers both.
@@ -64,6 +66,12 @@ export function SystemMapLegend({ matchTypes }: SystemMapLegendProps) {
           }
         />
       ))}
+      {gatewayRouted > 0 && (
+        <span className="text-xs text-[var(--color-text-secondary)]">
+          <span className="font-mono tabular-nums">{gatewayRouted}</span>{" "}
+          {gatewayRouted === 1 ? "line runs" : "lines run"} through a gateway route; hover shows which
+        </span>
+      )}
       <span className="inline-flex items-center gap-2.5">
         <span className="text-xs text-[var(--color-text-tertiary)]">Repository health</span>
         <Item swatch={<Dot color="var(--color-success)" />} label="Healthy 8+" />

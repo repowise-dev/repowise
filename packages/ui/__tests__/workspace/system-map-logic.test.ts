@@ -10,6 +10,8 @@ import {
 } from "../../src/workspace/system-map/layout";
 import {
   edgeKindStyle,
+  edgeLabel,
+  isGatewayRouted,
   matchTypeDash,
   matchTypeLabel,
   EDGE_KIND_ORDER,
@@ -134,6 +136,19 @@ describe("collapseToRepos", () => {
     );
     expect(collapseToRepos(mixed).nodes[0]!.kind).toBe("service");
   });
+
+  it("keeps the strategy of the strongest merged link, as the core builder does", () => {
+    const g = graph(
+      [node("api::a", "api"), node("api::b", "api"), node("gw", "gw")],
+      [
+        edge("gw", "api::a", { confidence: 0.6, strategy: "prefix_stripped" }),
+        edge("gw", "api::b", { confidence: 1, strategy: "gateway_route" }),
+      ],
+    );
+    expect(collapseToRepos(g).edges[0]!.strategy).toBe("gateway_route");
+    const weakerSecond = graph(g.nodes, [g.edges[1]!, { ...g.edges[0]!, id: "x" }]);
+    expect(collapseToRepos(weakerSecond).edges[0]!.strategy).toBe("gateway_route");
+  });
 });
 
 describe("applyView", () => {
@@ -179,6 +194,15 @@ describe("edge-kind registry", () => {
   it("marks co-change as the only behavioral kind", () => {
     expect(edgeKindStyle("co_change").category).toBe("behavioral");
     expect(edgeKindStyle("http").category).toBe("structural");
+  });
+
+  it("names a gateway-routed link in words, keeping its transport kind", () => {
+    const routed = { kind: "http" as const, strategy: "gateway_route" };
+    expect(isGatewayRouted(routed)).toBe(true);
+    expect(edgeLabel(routed)).toBe("HTTP via gateway");
+    expect(edgeKindStyle(routed.kind).label).toBe("HTTP");
+    expect(isGatewayRouted({ strategy: "service_mapped" })).toBe(false);
+    expect(edgeLabel({ kind: "http", strategy: null })).toBe("HTTP");
   });
 
   it("falls back gracefully for an unknown kind", () => {

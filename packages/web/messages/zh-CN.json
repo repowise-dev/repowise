@@ -1827,12 +1827,14 @@
       "title": "服务与关系",
       "description": "每个方块是一个服务；每条连线是两者之间的契约、导入或共同变更。选择一个视角，一次向这张图提一个问题。"
     },
+    "evidence": {
+      "partial": "证据不完整",
+      "insufficient": "无法确定"
+    },
     "lede": {
       "label": "架构评分",
       "labelHint": "对影响范围、循环核心规模、依赖循环与规则违反的 1 到 10 综合评分，仅统计结构边。分数越高表示耦合越低。",
       "unit": "满分 10",
-      "notDetermined": "无法确定：{reason}。",
-      "partialEvidence": "证据不完整：{reason}。",
       "counts": "{services} 个服务分布在 {repos} 个仓库中，由 {relationships} 条关系相连：{structural} 条结构关系（代码中的契约或导入）与 {behavioral} 条共同变更关系（在同一批提交中一起改动的文件，而非调用）。",
       "cycleMore": "另有 {count} 个循环列在「需要注意」下。",
       "cycleOne": "它列在「需要注意」下，并附有一段打破它的提示词。",

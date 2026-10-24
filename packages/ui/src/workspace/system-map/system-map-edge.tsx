@@ -13,7 +13,7 @@
 
 import { memo } from "react";
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
-import { edgeKindStyle, matchTypeDash } from "./edge-kinds";
+import { edgeKindStyle, edgeLabel, matchTypeDash } from "./edge-kinds";
 import { useEdgeActive } from "./system-map-focus";
 import { weightShort } from "./system-map-model";
 import type { SystemMapEdgeData } from "./types";
@@ -97,7 +97,7 @@ function SystemMapEdgeInner(props: EdgeProps) {
             }}
           >
             <Icon size={10} aria-hidden style={{ flexShrink: 0 }} />
-            {style.label} · {weightShort(edge)}
+            {edgeLabel(edge)} · {weightShort(edge)}
             {overlay?.badge && (
               <span style={{ color: badgeColor(overlay.badge.tone), fontWeight: 600 }}>
                 · {overlay.badge.label}

@@ -35,7 +35,7 @@ import { SystemMapLegend } from "./system-map-legend";
 import { SystemMapFilters } from "./system-map-filters";
 import { SystemMapDrawer, type SystemMapDrawerData } from "./system-map-drawer";
 import { SystemMapFocusContext, createSystemMapFocusStore } from "./system-map-focus";
-import { edgeKindStyle } from "./edge-kinds";
+import { edgeKindStyle, isGatewayRouted } from "./edge-kinds";
 import { useSystemMapLayout } from "./use-system-map-layout";
 import { resolveViewSelection } from "./system-map-model";
 import { SYSTEM_MAP_MAX_LAYOUT_NODES, SYSTEM_MAP_NODE_SIZE, applyCollapse, type SystemMapView } from "./layout";
@@ -177,6 +177,7 @@ function SystemMapInner({
     () => new Set<SystemEdgeMatchType>((viewGraph?.edges ?? []).map((e) => e.match_type)),
     [viewGraph],
   );
+  const gatewayRouted = useMemo(() => (viewGraph?.edges ?? []).filter(isGatewayRouted).length, [viewGraph]);
 
   // Hover and selection for edges live outside React state (see system-map-focus).
   const focus = useMemo(() => createSystemMapFocusStore(), []);
@@ -256,7 +257,7 @@ function SystemMapInner({
           />
         </div>
 
-        <SystemMapLegend matchTypes={matchTypes} />
+        <SystemMapLegend matchTypes={matchTypes} gatewayRouted={gatewayRouted} />
 
         <div
           ref={canvasRef}

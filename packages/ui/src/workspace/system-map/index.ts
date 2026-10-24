@@ -12,6 +12,7 @@ export {
   type SystemMapProps,
 } from "./system-map";
 export { SystemMapLegend, type SystemMapLegendProps } from "./system-map-legend";
+export { SystemMapEvidenceNotice, type SystemMapEvidenceNoticeProps } from "./system-map-evidence-notice";
 export {
   SystemMapFilters,
   Segmented,

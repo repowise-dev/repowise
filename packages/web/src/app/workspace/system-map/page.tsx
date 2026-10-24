@@ -8,6 +8,7 @@ import { Waypoints } from "lucide-react";
 import {
   SystemMap,
   SYSTEM_MAP_CANVAS_HEIGHT,
+  SystemMapEvidenceNotice,
   SystemMapFindings,
   SystemMapLensControl,
   SystemMapLensResults,
@@ -206,6 +207,12 @@ export default function SystemMapPage() {
       {graph && <StatRibbon stats={ribbon(t, graph, architecture)} LinkComponent={Link} />}
 
       <OverviewSection title={t("section.title")} description={t("section.description")}>
+        {/* Said once, beside the map it qualifies; the score above reads "–" when not determined. */}
+        <SystemMapEvidenceNotice
+          evidence={architecture?.evidence}
+          partialLabel={t("evidence.partial")}
+          insufficientLabel={t("evidence.insufficient")}
+        />
         {isLoading ? (
           // Same rows as the loaded map: lens, filters, legend, then the canvas.
           <div className="flex flex-col gap-3" aria-hidden>
@@ -371,16 +378,6 @@ function Lede({
       unit={t("lede.unit")}
       layout="beside"
     >
-      {architecture?.evidence && architecture.evidence.state !== "measured" ? (
-        <p>
-          {t(
-            architecture.evidence.state === "insufficient"
-              ? "lede.notDetermined"
-              : "lede.partialEvidence",
-            { reason: architecture.evidence.summary },
-          )}
-        </p>
-      ) : null}
       <p>
         {t("lede.counts", {
           services: graph.nodes.length,

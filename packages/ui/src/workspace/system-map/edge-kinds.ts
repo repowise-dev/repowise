@@ -13,7 +13,7 @@
  */
 
 import { ArrowRight, Boxes, Database, Link2, Radio, Signal, Zap, type LucideIcon } from "lucide-react";
-import type { SystemEdgeKind, SystemEdgeMatchType } from "@repowise-dev/types";
+import type { SystemEdge, SystemEdgeKind, SystemEdgeMatchType } from "@repowise-dev/types";
 
 /** Whether an edge reflects a structural contract/dependency or behavioral co-change. */
 export type EdgeCategory = "structural" | "behavioral";
@@ -54,6 +54,22 @@ const FALLBACK_KIND: SystemEdgeKindStyle = {
 /** Resolve the style for an edge kind, tolerant of an unknown future kind. */
 export function edgeKindStyle(kind: string): SystemEdgeKindStyle {
   return SYSTEM_EDGE_KINDS[kind as SystemEdgeKind] ?? FALLBACK_KIND;
+}
+
+/**
+ * A link a gateway's route config made (`gateway_route` strategy). It keeps
+ * its transport kind and its match dash: routing is how the link was found,
+ * not a third line style, so it is named in words on hover, in the legend and
+ * in the drawer instead.
+ */
+export function isGatewayRouted(edge: Pick<SystemEdge, "strategy">): boolean {
+  return edge.strategy === "gateway_route";
+}
+
+/** The edge's hover label: its kind, plus "via gateway" when a gateway route made it. */
+export function edgeLabel(edge: Pick<SystemEdge, "kind" | "strategy">): string {
+  const label = edgeKindStyle(edge.kind).label;
+  return isGatewayRouted(edge) ? `${label} via gateway` : label;
 }
 
 /** Every edge kind, in legend/display order (structural first, behavioral last). */
