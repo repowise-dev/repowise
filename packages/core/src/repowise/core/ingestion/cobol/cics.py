@@ -48,6 +48,10 @@ _PARAGRAPH = re.compile(rf"^ {{7,10}}{_NAME}(?:\s+SECTION)?\s*\.\s*$", re.IGNORE
 _ARM = re.compile(r"(?<![\w-])(?:WHEN|ELSE)(?![\w-])", re.IGNORECASE)
 _SCOPE_END = re.compile(r"(?<![\w-])END-(?:IF|EVALUATE)(?![\w-])", re.IGNORECASE)
 _WORD = re.compile(rf"{_NAME}|\([^)]*\)|,|\S+", re.IGNORECASE)
+_CALL = re.compile(
+    rf"({_LITERAL})|(?<![\w-])CALL\s+(?:(?P<lit>{_LITERAL})|(?P<var>{_NAME}))",
+    re.IGNORECASE,
+)
 # A MOVE's receiving list ends at the next statement's verb or a scope end.
 _VERBS = frozenset(
     [
@@ -115,23 +119,65 @@ def transid_uses(code: str) -> list[CicsTarget]:
     return _cics_targets(code, _TRANSID_COMMAND, _TRANSID)
 
 
+def call_transfers(code: str) -> list[CicsTarget]:
+    """Every CALL identifier in *code*, resolved to static programs where known."""
+    tracker = _VariableTracker.from_code(code)
+    out: list[CicsTarget] = []
+    for m in _CALL.finditer(tracker.statements):
+        if m.group(1) or m.group("lit"):
+            continue
+        var = m.group("var").upper()
+        line = code.count("\n", 0, m.start()) + 1
+        targets, dynamic = tracker.resolve(var, m.start())
+        out.append(CicsTarget("CALL", line, targets, var if dynamic else None))
+    return out
+
+
+@dataclass
+class _VariableTracker:
+    statements: str
+    moves: list[tuple[int, str, set[str]]]
+    other_writes: set[str]
+    constants: dict[str, str]
+    paragraphs: list[int]
+    arms: list[int]
+
+    @classmethod
+    def from_code(cls, code: str) -> _VariableTracker:
+        statements = mask_statements(code)
+        moves = _moves(statements)
+        other_writes = {m.group(1).upper() for m in _OTHER_WRITE.finditer(statements)}
+        rewritten = {name for _, _, dsts in moves for name in dsts} | other_writes
+        constants = {
+            m.group("name").upper(): _unquote(m.group("lit"))
+            for m in _VALUE.finditer(statements)
+            if m.group("name").upper() not in rewritten
+        }
+        paragraphs = [m.start() for m in _PARAGRAPH.finditer(statements)]
+        arms = sorted(paragraphs + [m.start() for m in _ARM.finditer(statements)])
+        return cls(statements, moves, other_writes, constants, paragraphs, arms)
+
+    def resolve(self, var: str, pos: int) -> tuple[tuple[str, ...], bool]:
+        var = var.upper()
+        scoped = self.moves
+        for bounds in (self.arms, self.paragraphs):
+            start = max((p for p in bounds if p < pos), default=0)
+            local = [m for m in self.moves if start < m[0] < pos and var in m[2]]
+            if local and not _SCOPE_END.search(self.statements, local[-1][0], pos):
+                scoped = local
+                break
+        targets, dynamic = _values_of(var, scoped, self.constants)
+        dynamic = dynamic or var in self.other_writes
+        return targets, dynamic
+
+
 def _cics_targets(
     code: str,
     command: re.Pattern[str],
     option: re.Pattern[str],
     fallback: re.Pattern[str] | None = None,
 ) -> list[CicsTarget]:
-    statements = mask_statements(code)
-    moves = _moves(statements)
-    other_writes = {m.group(1).upper() for m in _OTHER_WRITE.finditer(statements)}
-    rewritten = {name for _, _, dsts in moves for name in dsts} | other_writes
-    constants = {
-        m.group("name").upper(): _unquote(m.group("lit"))
-        for m in _VALUE.finditer(statements)
-        if m.group("name").upper() not in rewritten
-    }
-    paragraphs = [m.start() for m in _PARAGRAPH.finditer(statements)]
-    arms = sorted(paragraphs + [m.start() for m in _ARM.finditer(statements)])
+    tracker = _VariableTracker.from_code(code)
     out: list[CicsTarget] = []
     for block in exec_blocks(code):
         verb = command.match(block.body) if block.kind == "CICS" else None
@@ -145,17 +191,7 @@ def _cics_targets(
             out.append(CicsTarget(name, block.line, (_unquote(operand.group("lit")),)))
             continue
         var = operand.group("var").upper()
-        # The nearest scope (WHEN/ELSE arm, then paragraph) whose last assignment
-        # is unconditional decides; otherwise every assignment in the program does.
-        scoped = moves
-        for bounds in (arms, paragraphs):
-            start = max((p for p in bounds if p < block.start), default=0)
-            local = [m for m in moves if start < m[0] < block.start and var in m[2]]
-            if local and not _SCOPE_END.search(statements, local[-1][0], block.start):
-                scoped = local
-                break
-        targets, dynamic = _values_of(var, scoped, constants)
-        dynamic = dynamic or var in other_writes
+        targets, dynamic = tracker.resolve(var, block.start)
         out.append(CicsTarget(name, block.line, targets, var if dynamic else None))
     return out
 

@@ -272,19 +272,49 @@ class TestCobolCalls:
         assert targets["worker.cbl::WORKER"] == "global_unique"
         assert targets["main.cbl::CLEANUP"] == "same_file"
 
-    def test_dynamic_call_target_is_deliberately_silent(self, parser: ASTParser) -> None:
-        source = b"""       IDENTIFICATION DIVISION.
-       PROGRAM-ID. DYNAMIC-CALLER.
+    def test_call_through_constant_or_moved_data_item_resolves(
+        self, parser: ASTParser
+    ) -> None:
+        caller_source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
        DATA DIVISION.
        WORKING-STORAGE SECTION.
-       01 PROGRAM-NAME PIC X(8).
+       01 WS-PGM PIC X(8) VALUE 'SUBPGM'.
+       01 WS-OTHER PIC X(8).
+       01 WS-INPUT PIC X(8).
        PROCEDURE DIVISION.
-       MAIN-PARAGRAPH.
-           CALL PROGRAM-NAME.
+       MAIN-PARA.
+           CALL WS-PGM USING WS-OTHER.
+           MOVE 'SUBPGM' TO WS-OTHER.
+           CALL WS-OTHER.
+           ACCEPT WS-INPUT.
+           CALL WS-INPUT.
            STOP RUN.
 """
-        result = parser.parse_file(_cobol("dynamic.cbl"), source)
-        assert result.calls == []
+        callee_source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SUBPGM.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           GOBACK.
+"""
+        caller = parser.parse_file(_cobol("caller.cbl"), caller_source)
+        callee = parser.parse_file(_cobol("subpgm.cbl"), callee_source)
+        parsed = {"caller.cbl": caller, "subpgm.cbl": callee}
+        resolver = CallResolver(parsed, {path: set() for path in parsed})
+
+        resolved = resolver.resolve_file("caller.cbl", caller.calls)
+        targets = [(edge.callee_id, edge.origin) for edge in resolved]
+
+        assert targets == [
+            ("subpgm.cbl::SUBPGM", "global_unique"),
+            ("subpgm.cbl::SUBPGM", "global_unique"),
+        ]
+        dynamic_imports = [
+            (i.raw_statement, i.module_path)
+            for i in caller.imports
+            if i.module_path.startswith("dynamic:")
+        ]
+        assert dynamic_imports == [("CALL WS-INPUT", "dynamic:WS-INPUT")]
 
 
 class TestCobolCallScope:
