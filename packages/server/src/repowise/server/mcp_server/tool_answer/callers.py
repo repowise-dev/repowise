@@ -21,7 +21,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line
-from repowise.server.mcp_server._graph_files import graph_file_paths
+from repowise.server.mcp_server._graph_files import file_test_map, graph_file_paths
 from repowise.server.mcp_server._helpers import filter_dicts_by_key
 from repowise.server.mcp_server._query_shape import _unmistakably_code
 from repowise.server.mcp_server._wrapper_callers import (
@@ -158,7 +158,7 @@ async def _named_targets(
     )
     by_leaf: dict[str, list[GraphNode]] = {}
     for node in res.scalars().all():
-        if node.file_path and not is_test_path(node.file_path, node.language):
+        if node.file_path and not (node.is_test if node.is_test is not None else is_test_path(node.file_path, node.language)):
             by_leaf.setdefault(node.name, []).append(node)
     modules = await _modules_meant(session, repo_id, names, question)
     out: list[GraphNode] = []
@@ -220,9 +220,12 @@ async def _module_files(session: AsyncSession, repo_id: str, names: set[str]) ->
     files: dict[str, set[str]] = {}
     if not names:
         return files
+    test_map = await file_test_map(session, repo_id)
     for path in await graph_file_paths(session, repo_id):
         stem = PurePosixPath(path).stem
-        if stem in names and not is_test_path(path):
+        is_t = test_map.get(path)
+        is_test = is_t if is_t is not None else is_test_path(path)
+        if stem in names and not is_test:
             files.setdefault(stem, set()).add(path)
     return files
 
@@ -239,7 +242,11 @@ async def _retrieved_targets(
     """The top hit's symbols whose names carry the question's terms."""
     top = hits[0] if hits else {}
     path = top.get("target_path")
-    if not path or is_test_path(path):
+    if not path:
+        return []
+    test_map = await file_test_map(session, repo_id)
+    is_t = test_map.get(path)
+    if is_t if is_t is not None else is_test_path(path):
         return []
     picked = sorted(
         (
@@ -384,9 +391,11 @@ async def caller_evidence(
             row["via_wrapper"] = h["via_wrapper"]
             rows.append(row)
 
-    rows.extend(await _registering_files(session, repo_id, rows, nodes))
+    test_map = await file_test_map(session, repo_id)
+    rows.extend(await _registering_files(session, repo_id, rows, nodes, test_map))
     for row in rows:
-        if is_test_path(row["file"]):
+        is_t = test_map.get(row["file"])
+        if is_t if is_t is not None else is_test_path(row["file"]):
             row["test"] = True
     rows = filter_dicts_by_key(rows, "file", exclude_spec)
     rows.sort(key=lambda r: bool(r.get("test")))
@@ -398,7 +407,11 @@ async def caller_evidence(
 
 
 async def _registering_files(
-    session: AsyncSession, repo_id: str, rows: list[dict], nodes: dict[str, GraphNode]
+    session: AsyncSession,
+    repo_id: str,
+    rows: list[dict],
+    nodes: dict[str, GraphNode],
+    test_map: dict[str, bool],
 ) -> list[dict]:
     """Files importing, by name, a production caller that no production code calls."""
     callers = [
@@ -408,7 +421,11 @@ async def _registering_files(
         and "via_wrapper" not in r
         and r["caller"] in nodes
         and nodes[r["caller"]].kind in ("function", "method", "class")
-        and not is_test_path(r["file"])
+        and not (
+            nodes[r["caller"]].is_test
+            if nodes[r["caller"]].is_test is not None
+            else (test_map.get(r["file"]) if test_map.get(r["file"]) is not None else is_test_path(r["file"]))
+        )
     ]
     if not callers:
         return []
@@ -420,7 +437,15 @@ async def _registering_files(
             GraphEdge.confidence >= MIN_CALL_CONFIDENCE,
         )
     )
-    called = {dst for src, dst in res.all() if not is_test_path(src.split("::")[0])}
+    called = {
+        dst
+        for src, dst in res.all()
+        if not (
+            test_map.get(src.split("::")[0])
+            if test_map.get(src.split("::")[0]) is not None
+            else is_test_path(src.split("::")[0])
+        )
+    }
     unreached = [c for c in callers if c.node_id not in called]
     if not unreached:
         return []
@@ -429,7 +454,9 @@ async def _registering_files(
     imported = [t for t in await files_importing(session, repo_id, unreached, listed) if t[3]]
     # Production importers first, so a test importing the same symbol cannot
     # take the only slots.
-    imported.sort(key=lambda t: is_test_path(t[0]))
+    imported.sort(
+        key=lambda t: test_map.get(t[0]) if test_map.get(t[0]) is not None else is_test_path(t[0])
+    )
     return [
         caller_row(importer, importer, None, symbol_id, "imports")
         for importer, _conf, symbol_id, _named in imported[:_MAX_IMPORTER_ROWS]

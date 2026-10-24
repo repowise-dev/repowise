@@ -103,6 +103,7 @@ from repowise.server.mcp_server._entry_trace import (
     expand_via_entry_trace as _expand_via_entry_trace,
 )
 from repowise.server.mcp_server._flow_path import expand_via_flow_path as _expand_via_flow_path
+from repowise.server.mcp_server._graph_files import file_test_map
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -342,7 +343,11 @@ async def _run_retrieval_pipeline(
             hits = await _expand_via_parent_page(hits, question, ctx)
     # Demote noise (decisions on non-why, test pages on non-test questions)
     # below real pages. Non-dropping; after anchoring, which never injects noise.
-    hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))
+    test_map = None
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            test_map = await file_test_map(session, repo_id)
+    hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question), test_map=test_map)
     # Files on a pasted stack trace lead; files defining a named identifier
     # join just below the top three. No-op when the question has neither.
     try:

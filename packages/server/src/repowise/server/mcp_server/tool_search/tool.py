@@ -111,10 +111,14 @@ async def _issue_files(repo: str | None, query: str, names: set[str]) -> IssueFi
     return None
 
 
-async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id: Any) -> list[dict]:
+async def _rank_concept_pages(
+    ctx: Any, output: list[dict], query: str, repo_id: Any
+) -> tuple[list[dict], dict[str, bool]]:
     """Drop tombstoned and excluded pages, then boost, demote and dedupe the rest."""
     async with get_session(ctx.session_factory) as session:
-        page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
+        page_info, tombstoned, git_map, test_map = await _load_page_info(
+            session, output, repository_id=repo_id, with_git=True
+        )
         path_index = await file_path_index(session, repo_id)
     # Tombstoned pages document deleted/renamed files — never results.
     output = [item for item in output if item["page_id"] not in tombstoned]
@@ -129,9 +133,9 @@ async def _rank_concept_pages(ctx: Any, output: list[dict], query: str, repo_id:
     boost_named_paths(
         output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
     )
-    _downweight_test_pages(output, query)
+    _downweight_test_pages(output, query, test_map)
     _sort_demoting_noise(output, query)
-    return _dedup_decisions(output)
+    return _dedup_decisions(output), test_map
 
 
 async def _concept_search(
@@ -155,10 +159,11 @@ async def _concept_search(
     output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
+    test_map: dict[str, bool] = {}
     if output:
-        output = await _rank_concept_pages(ctx, output, query, repository.id)
+        output, test_map = await _rank_concept_pages(ctx, output, query, repository.id)
 
-    output = _filter_by_kind(output, kind)
+    output = _filter_by_kind(output, kind, test_map)
     # A file page and a symbol page of one file are one place to look.
     output = _collapse_by_file(output)
     # Files the page retrievers cannot see (a private helper, a local name) get

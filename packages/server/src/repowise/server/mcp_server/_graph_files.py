@@ -141,3 +141,20 @@ async def graph_file_paths(session: Any, repo_id: str) -> tuple[str, ...]:
         return tuple(sorted(p for (p,) in res.all() if p))
 
     return await per_index(session, repo_id, "graph_file_paths", build)
+
+
+async def file_test_map(session: Any, repo_id: str) -> dict[str, bool]:
+    """{file_path: is_test} for every indexed file node in the graph."""
+
+    async def build() -> dict[str, bool]:
+        res = await session.execute(
+            select(GraphNode.node_id, GraphNode.is_test).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.node_type == "file",
+                ~GraphNode.node_id.startswith("external:"),
+            )
+        )
+        return {p: bool(is_t) for p, is_t in res.all() if p}
+
+    return await per_index(session, repo_id, "file_test_map", build)
+
