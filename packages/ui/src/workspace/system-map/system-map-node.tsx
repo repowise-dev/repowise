@@ -19,10 +19,11 @@ import { SystemMapLensBadge } from "./system-map-lens-badge";
 import type { SystemMapNodeData } from "./types";
 
 function SystemMapNodeInner({ data, selected }: NodeProps) {
-  const { node, health, overlay, role } = data as unknown as SystemMapNodeData;
+  const { node, health, overlay, role, horizontal, focusLinks, endpoint } = data as unknown as SystemMapNodeData;
   // Repo health arrives 0-100; the mark reads 0-10.
   const mark = health ? healthMark(health.score / 10) : null;
-  const lensed = overlay?.highlighted ?? false;
+  // A compared service is marked like a lensed one: ink, never a hue.
+  const lensed = (overlay?.highlighted ?? false) || Boolean(endpoint);
   const dimmed = overlay?.dimmed ?? false;
   const where = node.service_path ? `${node.repo} / ${node.service_path}` : `${node.repo} repository`;
 
@@ -53,7 +54,7 @@ function SystemMapNodeInner({ data, selected }: NodeProps) {
         transition: "opacity 120ms, border-color 120ms",
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ opacity: 0, pointerEvents: "none" }} />
+      <Handle type="target" position={horizontal ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: "none" }} />
 
       {overlay?.badge && (
         <SystemMapLensBadge badge={overlay.badge} style={{ position: "absolute", top: -9, right: 10 }} />
@@ -129,12 +130,13 @@ function SystemMapNodeInner({ data, selected }: NodeProps) {
           color: "var(--color-text-secondary)",
         }}
       >
-        {node.is_isolated
-          ? "no cross-service edges"
-          : `${node.provider_count.toLocaleString()} provided · ${node.consumer_count.toLocaleString()} consumed`}
+        {focusLinks ??
+          (node.is_isolated
+            ? "no cross-service edges"
+            : `${node.provider_count.toLocaleString()} provided · ${node.consumer_count.toLocaleString()} consumed`)}
       </span>
 
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, pointerEvents: "none" }} />
+      <Handle type="source" position={horizontal ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: "none" }} />
     </div>
   );
 }

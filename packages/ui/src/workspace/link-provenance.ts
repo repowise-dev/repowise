@@ -140,6 +140,23 @@ export function linkStrategyCopy(strategy: string | null | undefined): Provenanc
   );
 }
 
+/**
+ * Strategies a reader should check before relying on the link: the call's
+ * base URL was not read, or the paths matched only after loosening them.
+ * Route rows name only these, so the exception stands out and the stronger
+ * rules stay the quiet default.
+ */
+const WEAK_STRATEGIES: ReadonlySet<string> = new Set<LinkStrategy>([
+  "unique_path",
+  "ambiguous_path",
+  "prefix_stripped",
+  "host_only",
+]);
+
+export function strategyNeedsCheck(strategy: string | null | undefined): boolean {
+  return Boolean(strategy && WEAK_STRATEGIES.has(strategy));
+}
+
 /** Describe a contract origin. Null only when the contract carries none. */
 export function contractOriginCopy(origin: string | null | undefined): ProvenanceCopy | null {
   if (!origin) return null;

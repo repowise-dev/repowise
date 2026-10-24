@@ -26,6 +26,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { ActivateTrigger } from "./activate";
 import { SystemMapBand } from "./system-map-band";
+import { SystemMapColumnLabel } from "./system-map-column-label";
 import { SystemMapEdge } from "./system-map-edge";
 import type { SystemMapFocusStore } from "./system-map-focus";
 import { SystemMapGroupNode } from "./system-map-group-node";
@@ -40,10 +41,11 @@ const NODE_TYPES = {
   systemGroup: SystemMapGroupNode,
   systemTray: SystemMapTrayNode,
   systemMore: SystemMapMoreNode,
+  systemColumnLabel: SystemMapColumnLabel,
 };
 const EDGE_TYPES = { systemEdge: SystemMapEdge, systemBand: SystemMapBand };
 
-const NODE_HELP = "Press Enter to open a group or show a service's details. Escape goes back a level.";
+const NODE_HELP = "Click a service for its details. Press Enter or double-click to open a group or focus a service. Escape goes back a level.";
 
 const FIT_OPTIONS = { padding: 0.08, maxZoom: 1.2 } as const;
 

@@ -80,13 +80,13 @@ function TrayNodeInner({ data, selected }: NodeProps) {
 }
 
 function MoreNodeInner({ data, selected }: NodeProps) {
-  const { more } = data as unknown as MoreNodeData;
+  const { more, horizontal } = data as unknown as MoreNodeData;
   const { showFolded } = useSystemMapActions();
   const { width, height } = LEVEL_NODE_SIZES.more;
   const groups = more.groupIds.length;
   return (
     <div style={{ ...dashed(Boolean(selected)), width, height, display: "flex", flexDirection: "column", gap: 3, padding: "9px 12px" }}>
-      <Handle type="target" position={Position.Top} style={HIDDEN_HANDLE} />
+      <Handle type="target" position={horizontal ? Position.Left : Position.Top} style={HIDDEN_HANDLE} />
       <span style={{ fontSize: 15, lineHeight: "20px", fontWeight: 600, color: "var(--color-text-primary)", fontVariantNumeric: "tabular-nums" }}>
         +{more.serviceIds.length.toLocaleString()} more
       </span>
@@ -99,7 +99,7 @@ function MoreNodeInner({ data, selected }: NodeProps) {
           <CardAction label="List them" onClick={() => showFolded(more.serviceIds)} />
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} style={HIDDEN_HANDLE} />
+      <Handle type="source" position={horizontal ? Position.Right : Position.Bottom} style={HIDDEN_HANDLE} />
     </div>
   );
 }

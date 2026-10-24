@@ -21,6 +21,12 @@ export interface SystemMapNodeData {
   overlay: NodeOverlayState | null;
   /** Architecture role label ("Core", "Shared"...), named in text on the node. */
   role: string | null;
+  /** Focus level: connectors join card sides, since its columns read left to right. */
+  horizontal?: boolean;
+  /** Focus level: the links to the neighbour column ("8 · HTTP 2, Event 6"), in place of the contract counts. */
+  focusLinks?: string | null;
+  /** Between level: one of the two services compared. */
+  endpoint?: boolean;
   [key: string]: unknown;
 }
 

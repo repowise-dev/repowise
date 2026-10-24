@@ -8,7 +8,6 @@ import {
   buildServiceAiPrompt,
 } from "../../src/workspace/system-map/system-map-ai-prompt";
 import {
-  edgeLinks,
   edgeSentence,
   serviceDiagnostics,
   serviceResolver,
@@ -126,17 +125,6 @@ describe("system map model", () => {
       unusedProviders: 0,
     });
     expect(serviceDiagnostics(graph.diagnostics, "api", resolve).unusedProviders).toBe(1);
-  });
-
-  it("joins an edge to the links it aggregates, consumer to provider", () => {
-    const e = graph.edges[0]!;
-    const links = edgeLinks(
-      e,
-      [link({}), link({ consumer_file: "server/r.py" }), link({ contract_type: "code" }), link({})],
-      serviceResolver(graph),
-    );
-    // Wrong service, wrong type and a duplicate are all dropped.
-    expect(links).toHaveLength(1);
   });
 
   it("names the weight's unit and says the relationship as a sentence", () => {
