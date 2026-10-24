@@ -376,9 +376,8 @@ _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
 # The default is deliberately generous: a first full index of a large
 # repository can run several slow git subprocesses per file (log, blame,
 # renames), and a premature fire here would silently record partial data for
-# files that were simply still working — the same premature-timeout failure
-# mode reported for long-running build/compile commands. Override per-repo or
-# per-machine with ``REPOWISE_GIT_INDEX_TIMEOUT_S`` (a positive float, seconds).
+# files that were simply still working. Override per-repo or per-machine
+# with ``REPOWISE_GIT_INDEX_TIMEOUT_S`` (a positive float, seconds).
 _FILE_INDEX_TIMEOUT_SECS_ENV = "REPOWISE_GIT_INDEX_TIMEOUT_S"
 _FILE_INDEX_TIMEOUT_SECS_DEFAULT: float = 120.0
 
