@@ -793,7 +793,7 @@ These run, but the summary counts them apart and JSON lists them:
 
 | Field | Holds |
 |-------|-------|
-| `selected.import_closure` | tests reached only through imports, over one file away, with no call path, coverage or paired name: an import error breaks them, though nothing they call runs the change |
+| `selected.import_closure` | tests reached only through imports, over one file away, with no call path, coverage or paired name: an import error breaks them, though nothing they call runs the change. Importing `pkg.a.b` counts as importing `pkg/__init__.py` and `pkg/a/__init__.py`, since Python runs them first (basis `package-init`) |
 | `selected.broadcast` | tests a conftest adds that nothing else reaches |
 | `selected.basis` | what drove each selection |
 | `selected.why` | the `--explain` answer per selected test |
