@@ -82,5 +82,71 @@ def test_last_change_author_is_the_one_committing_at_that_moment():
         ]
     )
     assert _author_at(authors, moment) == "Bob"
+    tie = json.dumps(
+        [{"name": n, "last_commit_ts": int(moment.timestamp())} for n in ("Alice", "Bob")]
+    )
+    assert _author_at(tie, moment) is None
     assert _author_at("[]", moment) is None
     assert _author_at("not json", moment) is None
+
+
+async def _set_authors(session, path: str, authors: list[dict]) -> None:
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == path)
+        .values(top_authors_json=json.dumps(authors))
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_file_last_change_names_who_made_it_not_the_owner(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    last = int(datetime(2026, 3, 15, tzinfo=UTC).timestamp())
+    await _set_authors(
+        session,
+        "src/auth/service.py",
+        [
+            {"name": "Alice", "commit_count": 27, "last_commit_ts": last - 86400},
+            {"name": "Bob", "commit_count": 15, "last_commit_ts": last},
+        ],
+    )
+    card = (await get_context(["src/auth/service.py"], include=["ownership", "last_change"]))[
+        "targets"
+    ]["src/auth/service.py"]
+    assert card["ownership"]["primary_owner"] == "Alice"
+    assert card["last_change"]["author"] == "Bob"
+
+
+@pytest.mark.asyncio
+async def test_file_last_change_omits_an_author_no_stored_commit_matches(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    # The newest commit was by no stored author (a pure move, or past the cap).
+    last = int(datetime(2026, 3, 15, tzinfo=UTC).timestamp())
+    await _set_authors(
+        session,
+        "src/auth/service.py",
+        [{"name": "Alice", "commit_count": 27, "last_commit_ts": last - 86400}],
+    )
+    result = await get_context(["src/auth/service.py"], include=["last_change"])
+    last_change = result["targets"]["src/auth/service.py"]["last_change"]
+    assert last_change["date"].startswith("2026-03-15")
+    assert "author" not in last_change
+
+
+@pytest.mark.asyncio
+async def test_partial_module_match_is_case_sensitive(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    targets = (await get_context(["SRC", "DB", "db"]))["targets"]
+    # SQLite's LIKE ignores case; a module match must not.
+    assert targets["SRC"].get("type") != "module", targets["SRC"]
+    assert targets["DB"].get("type") != "module", targets["DB"]
+    assert targets["db"]["type"] == "module"
+    assert targets["db"]["docs"]["title"]

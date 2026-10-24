@@ -212,9 +212,13 @@ async def _module_page_partial(q: TargetQuery) -> Page | None:
             ),
         )
     )
-    # Deterministic pick among several matches: shortest path, then
-    # lexicographic.
-    candidates = sorted(res.scalars().all(), key=lambda p: (len(p.target_path), p.target_path))
+    # SQLite's LIKE ignores case; the exact segment test decides, as in
+    # _directory._git_rows_under. Deterministic pick among several matches:
+    # shortest path, then lexicographic.
+    candidates = sorted(
+        (p for p in res.scalars().all() if f"/{clean_target}/" in f"/{p.target_path}/"),
+        key=lambda p: (len(p.target_path), p.target_path),
+    )
     return candidates[0] if candidates else None
 
 

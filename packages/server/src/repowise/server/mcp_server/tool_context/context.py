@@ -20,7 +20,7 @@ Optional ``include`` parameter widens the response:
   - include=["ownership"] → primary owner, bus factor, contributor count; on a
                             component target, declared owners against recent
                             activity, with findings
-  - include=["last_change"]→ last commit date and author
+  - include=["last_change"]→ last commit date, and its author when stored
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
   - include=["decisions"] → decisions governing the target, in three labelled

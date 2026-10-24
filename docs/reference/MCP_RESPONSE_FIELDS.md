@@ -207,7 +207,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 |-----------|------|
 | `full_doc` | `content_md`, plus `digest_md` (questions answered, concept index, public API, git signals); dropped first over budget |
 | `ownership` | Primary owner, bus factor, contributor count; on a directory, `owners_by_files` (top 3, `owners_total` beyond) and `basis` |
-| `last_change`, `community` | Newest change; community |
+| `last_change`, `community` | Newest change: `date`, `days_ago`, and `author` only when a stored author's own newest commit is that change; community |
 | `callers`, `callees` | Call-graph neighbours |
 | `references` | Symbol edit set; see [references](#references) |
 | `metrics` | PageRank, betweenness, percentiles |

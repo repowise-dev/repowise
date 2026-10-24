@@ -376,50 +376,51 @@ async def _last_change_section(card: CardState) -> None:
     if card.dir_path is not None:
         card.data["last_change"] = await _directory_last_change(card)
         return
-    last_change: dict[str, Any] = {}
     meta = await _git_meta_row(card, card.git_path)
-    if meta:
-        last_change["date"] = meta.last_commit_at.isoformat() if meta.last_commit_at else None
-        last_change["author"] = meta.primary_owner_name
-        last_change["days_ago"] = await _days_since_last_change(
-            card.session, card.repo_id, meta.last_commit_at, card.query.as_of_ts
-        )
-    else:
-        last_change["date"] = None
-        last_change["author"] = None
-        last_change["days_ago"] = None
-    card.data["last_change"] = last_change
+    card.data["last_change"] = await _change_of(card, meta)
 
 
 async def _directory_last_change(card: CardState) -> dict[str, Any]:
-    """The newest commit under a directory: its date and the file it touched.
-
-    ``author`` is the author whose own newest commit on that file is at that
-    moment, and is absent when no stored author matches.
-    """
+    """The newest commit under a directory, as a file's, plus the file it touched."""
     dated = [r for r in await card.dir_rows() if r.last_commit_at]
     if not dated:
-        return {"date": None, "days_ago": None}
+        return await _change_of(card, None)
     newest = max(dated, key=lambda r: (_as_utc(r.last_commit_at), r.file_path))
-    last_change: dict[str, Any] = {
-        "date": newest.last_commit_at.isoformat(),
-        "path": newest.file_path,
+    return {**await _change_of(card, newest), "path": newest.file_path}
+
+
+async def _change_of(card: CardState, row: Any) -> dict[str, Any]:
+    """A file's newest commit from its git row: date, days since, and author.
+
+    ``author`` is the stored author whose own newest commit is that one, and is
+    absent when none matches: the primary owner is not who made the change.
+    """
+    if row is None or row.last_commit_at is None:
+        return {"date": None, "days_ago": None}
+    change: dict[str, Any] = {
+        "date": row.last_commit_at.isoformat(),
         "days_ago": await _days_since_last_change(
-            card.session, card.repo_id, newest.last_commit_at, card.query.as_of_ts
+            card.session, card.repo_id, row.last_commit_at, card.query.as_of_ts
         ),
     }
-    author = _author_at(newest.top_authors_json, _as_utc(newest.last_commit_at))
+    author = _author_at(row.top_authors_json, _as_utc(row.last_commit_at))
     if author:
-        last_change["author"] = author
-    return last_change
+        change["author"] = author
+    return change
 
 
 def _author_at(top_authors_json: str | None, moment: datetime) -> str | None:
-    """The stored author whose newest commit on the file is at *moment*."""
+    """The one stored author whose newest commit on the file is at *moment*;
+    None when none or several match, since a tie cannot say which made it."""
     with contextlib.suppress(TypeError, ValueError):
-        for a in json.loads(top_authors_json or "[]"):
-            if int(a.get("last_commit_ts") or -1) == int(moment.timestamp()):
-                return a.get("name")
+        ts = int(moment.timestamp())
+        names = {
+            a.get("name")
+            for a in json.loads(top_authors_json or "[]")
+            if int(a.get("last_commit_ts") or -1) == ts
+        }
+        if len(names) == 1:
+            return names.pop()
     return None
 
 
