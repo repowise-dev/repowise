@@ -292,12 +292,12 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
             )
             for m in code_metas
         ]
-        unique_keys = sorted(set(keys))
+        key_counts = Counter(keys)
         rank_lookup: dict[tuple[float, int], float] = {}
         running = 0
-        for key in unique_keys:
+        for key in sorted(key_counts):
             rank_lookup[key] = running / (total - 1)
-            running += sum(1 for k in keys if k == key)
+            running += key_counts[key]
 
         for meta, key in zip(code_metas, keys, strict=True):
             churn_pct = min(rank_lookup[key], 1.0)
