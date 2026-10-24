@@ -212,6 +212,8 @@ class ASTParser:
                 parse_errors = _collect_error_nodes(root)
 
         src = source.decode("utf-8", errors="replace")
+        if grammar_tag == "tsx" and lang == "javascript":
+            config = LANGUAGE_CONFIGS.get("typescript", config)
 
         # Execute the compiled query ONCE per file; every pass below reads
         # the same capture dicts.

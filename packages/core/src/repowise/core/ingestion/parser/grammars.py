@@ -35,8 +35,13 @@ def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | 
     # The spec names the query file, so a language can reuse another's
     # queries wholesale (svelte -> typescript.scm). Every other spec declares
     # ``<tag>.scm``, which is what the default preserves.
-    spec = _LANG_REGISTRY.get(lang)
-    scm_name = (spec.scm_file if spec and spec.scm_file else None) or f"{lang}.scm"
+    query_lang = (
+        "typescript"
+        if grammar_tag in ("typescript", "tsx") and lang == "javascript"
+        else lang
+    )
+    spec = _LANG_REGISTRY.get(query_lang)
+    scm_name = (spec.scm_file if spec and spec.scm_file else None) or f"{query_lang}.scm"
     scm_path = QUERIES_DIR / scm_name
     if not scm_path.exists():
         log.debug("No .scm query file found", language=lang, path=str(scm_path))
@@ -46,7 +51,7 @@ def _compile_query(lang: str, grammar_tag: str | None = None) -> tuple[object | 
     # Grammar-variant-specific additions (e.g. JSX node captures that are
     # only valid against the ``tsx`` grammar but not the plain ``typescript``
     # one). Appended to the base SCM only when the variant scm file exists.
-    if grammar_tag and grammar_tag != lang:
+    if grammar_tag and grammar_tag != query_lang:
         extra_scm = QUERIES_DIR / f"{grammar_tag}.scm"
         if extra_scm.exists():
             scm_text = scm_text + "\n" + extra_scm.read_text(encoding="utf-8")
@@ -279,6 +284,39 @@ def grammar_tag_for(language: str, path: str) -> str:
     return language
 
 
+_FLOW_PARAM_ANNOTATION_RE = re.compile(
+    rb"""(?:\bfunction\b[^(]*\([^)]*:[^)]*|\([a-zA-Z_$][\w$]*\s*:\s*[a-zA-Z_$][^)]*\)\s*=>)"""
+)
+
+
+def _has_flow_signal(source: bytes) -> bool:
+    """True when *source* carries a Flow marker: leading @flow pragma or parameter type annotation."""
+    head = source[:4096]
+    in_block = False
+    for line in head.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if in_block:
+            if b"@flow" in s:
+                return True
+            if b"*/" in s:
+                in_block = False
+            continue
+        if s.startswith(b"//"):
+            if b"@flow" in s:
+                return True
+            continue
+        if s.startswith(b"/*"):
+            if b"@flow" in s:
+                return True
+            if b"*/" not in s:
+                in_block = True
+            continue
+        break
+    return bool(_FLOW_PARAM_ANNOTATION_RE.search(source))
+
+
 def _parse_tree(
     lang: str, language: Language, grammar_tag: str, source: bytes
 ) -> tuple[Node, list[str], str, Language]:
@@ -291,12 +329,15 @@ def _parse_tree(
 
     # A .ts file (or a .vue render function) holding JSX errors under the
     # TypeScript grammar; retry as TSX and keep it only when it errors less.
+    # A Flow-typed .js file holding Flow annotations similarly retries as TSX.
     # ``source`` is the markup-blanked projection, so the token test sees real JSX.
     if (
         parse_errors
-        and lang in ("typescript", "vue")
         and grammar_tag != "tsx"
-        and (b"/>" in source or b"</" in source)
+        and (
+            (lang in ("typescript", "vue") and (b"/>" in source or b"</" in source))
+            or (lang == "javascript" and _has_flow_signal(source))
+        )
     ):
         tsx_language = _get_language("tsx")
         if tsx_language is not None:
