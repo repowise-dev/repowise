@@ -259,6 +259,105 @@ class TestCobolSymbols:
         assert calls["CLEANUP"].caller_symbol_id == paragraph.id
 
 
+class TestCobolXmlStatements:
+    def test_xml_generate_with_end_xml_preserves_subsequent_paragraphs(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. XMLGEN.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 XML-DOC PIC X(100).
+       01 SRC-REC PIC X(10).
+       PROCEDURE DIVISION.
+       FIRST-PARA.
+           XML GENERATE XML-DOC FROM SRC-REC
+               COUNT IN WS-COUNT
+               ON EXCEPTION
+                   DISPLAY 'XML ERROR'
+           END-XML.
+           PERFORM CLEANUP.
+       SECOND-PARA.
+           DISPLAY 'SECOND'.
+       CLEANUP.
+           STOP RUN.
+"""
+        result = parser.parse_file(_cobol("xmlgen.cbl"), source)
+        para_names = {s.name for s in result.symbols if s.kind == "function"}
+        assert {"FIRST-PARA", "SECOND-PARA", "CLEANUP"}.issubset(para_names)
+        calls = {call.target_name for call in result.calls}
+        assert "CLEANUP" in calls
+
+    def test_xml_parse_period_terminated_preserves_subsequent_paragraphs(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. XMLPARSE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 XML-DOC PIC X(100).
+       PROCEDURE DIVISION.
+       FIRST-PARA.
+           XML PARSE XML-DOC
+               PROCESSING PROCEDURE HANDLE-XML.
+       SECOND-PARA.
+           DISPLAY 'SECOND'.
+       HANDLE-XML.
+           STOP RUN.
+"""
+        result = parser.parse_file(_cobol("xmlparse.cbl"), source)
+        para_names = {s.name for s in result.symbols if s.kind == "function"}
+        assert {"FIRST-PARA", "SECOND-PARA", "HANDLE-XML"}.issubset(para_names)
+
+    def test_string_literal_containing_xml_keywords_is_not_masked(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. XMLFAIL.
+       PROCEDURE DIVISION.
+       FIRST-PARA.
+           DISPLAY 'XML PARSE FAILED'.
+           DISPLAY "XML GENERATE FAILED".
+           PERFORM CLEANUP.
+       SECOND-PARA.
+           DISPLAY 'SECOND'.
+       CLEANUP.
+           STOP RUN.
+"""
+        result = parser.parse_file(_cobol("xmlfail.cbl"), source)
+        para_names = {s.name for s in result.symbols if s.kind == "function"}
+        assert {"FIRST-PARA", "SECOND-PARA", "CLEANUP"}.issubset(para_names)
+        calls = {call.target_name for call in result.calls}
+        assert "CLEANUP" in calls
+
+    def test_xml_generate_with_string_containing_periods_or_end_xml(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. XMLGENSTR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 XML-DOC PIC X(100).
+       01 SRC-REC PIC X(10).
+       PROCEDURE DIVISION.
+       FIRST-PARA.
+           XML GENERATE XML-DOC FROM SRC-REC
+               ON EXCEPTION
+                   DISPLAY 'XML PARSE ERROR. PLEASE RETRY END-XML'
+           END-XML.
+           PERFORM CLEANUP.
+       SECOND-PARA.
+           DISPLAY 'SECOND'.
+       CLEANUP.
+           STOP RUN.
+"""
+        result = parser.parse_file(_cobol("xmlgenstr.cbl"), source)
+        para_names = {s.name for s in result.symbols if s.kind == "function"}
+        assert {"FIRST-PARA", "SECOND-PARA", "CLEANUP"}.issubset(para_names)
+        calls = {call.target_name for call in result.calls}
+        assert "CLEANUP" in calls
+
+
 class TestCobolCalls:
     def test_static_call_and_perform_resolve(self, parser: ASTParser) -> None:
         main = parser.parse_file(_cobol("main.cbl"), MAIN_SOURCE)
