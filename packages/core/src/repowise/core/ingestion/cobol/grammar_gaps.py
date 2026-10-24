@@ -32,7 +32,16 @@ _COMMENT_ENTRY = re.compile(
 )
 
 
+# ``EJECT``, ``SKIP1``-``SKIP3`` and ``TITLE 'text'``: compiler listing directives
+# that change nothing in the program, alone on their line.
+_LISTING_DIRECTIVE = re.compile(
+    r"^[ \t]*(?:EJECT|SKIP[123]|TITLE[ \t]+(?:'[^'\r\n]*'|\"[^\"\r\n]*\"))[ \t]*\.?[ \t]*(?=\r?$)",
+    _I | re.MULTILINE,
+)
+
+
 def rewrite_gaps(code: str) -> str:
+    code = _LISTING_DIRECTIVE.sub(lambda m: _blank(m.group(0)), code)
     code = _NOT_EQUAL.sub(lambda m: m.group(0)[:3] + " =", code)
     code = _HEX_PREFIX.sub("X", code)
     code = _FUNCTION_REFMOD.sub(lambda m: m.group(1) + _blank(m.group(2)), code)
