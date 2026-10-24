@@ -112,6 +112,14 @@ describe("getRepositoryChatContext", () => {
         params({ view: "coupling" }),
       ).label,
     ).toBe("Architecture · Coupling");
+    // The tree scope is a third reading of the same graph, and names itself so
+    // a chat grounded on it is not labelled as the canvas.
+    expect(
+      getRepositoryChatContext(
+        "/repos/r1/architecture",
+        params({ view: "tree" }),
+      ).label,
+    ).toBe("Architecture · Tree");
     expect(
       getRepositoryChatContext(
         "/repos/r1/code-health",
