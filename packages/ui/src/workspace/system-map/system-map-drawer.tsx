@@ -27,6 +27,7 @@ import { FilePath } from "../../shared/file-path";
 import { AiPromptButton } from "../../health/ai-prompt-button";
 import { AiPromptModal } from "../../health/ai-prompt-modal";
 import type { AiPromptFlavor } from "../../health/ai-prompt-builder";
+import { healthMark } from "../../health/tokens";
 import { roleStyle } from "./architecture";
 import { edgeKindStyle, matchTypeLabel } from "./edge-kinds";
 import { nodeKindStyle } from "./node-kinds";
@@ -39,7 +40,6 @@ import {
   cyclesWithEdge,
   edgeLinks,
   edgeSentence,
-  healthMark,
   neighbourGroups,
   nodeLocation,
   plural,
@@ -263,7 +263,8 @@ function NodeBody({
   onPrompt,
 }: BodyProps<{ node: SystemNode }>) {
   const health = healthByRepo?.get(node.repo);
-  const mark = health ? healthMark(health.score) : null;
+  // Repo health arrives 0-100; the mark reads 0-10.
+  const mark = health ? healthMark(health.score / 10) : null;
   // Roles are computed per service, so a merged repo node has none.
   const role = collapsed ? undefined : roleByNodeId?.get(node.id);
   const style = role ? roleStyle(role.role) : null;

@@ -9,6 +9,7 @@
  */
 
 import type { SystemEdgeMatchType } from "@repowise-dev/types";
+import { HEALTH_MARK_BANDS } from "../../health/tokens";
 import { matchTypeDash } from "./edge-kinds";
 
 function Item({ swatch, label }: { swatch: React.ReactNode; label: string }) {
@@ -39,6 +40,15 @@ const LINE_LABEL: Record<SystemEdgeMatchType, string> = {
   inferred: "Co-change from git history",
 };
 
+/** "8+", "4 to 8", "below 4": each band's range, read off the shared edges. */
+function markRange(i: number): string {
+  const b = HEALTH_MARK_BANDS[i]!;
+  if (i === 0) return `${b.min}+`;
+  const above = HEALTH_MARK_BANDS[i - 1]!.min;
+  if (i === HEALTH_MARK_BANDS.length - 1) return `below ${above}`;
+  return `${b.min} to ${above}`;
+}
+
 export interface SystemMapLegendProps {
   /** Match types present on the drawn edges; only these get a key. */
   matchTypes?: ReadonlySet<SystemEdgeMatchType>;
@@ -66,9 +76,9 @@ export function SystemMapLegend({ matchTypes }: SystemMapLegendProps) {
       ))}
       <span className="inline-flex items-center gap-2.5">
         <span className="text-xs text-[var(--color-text-tertiary)]">Repository health</span>
-        <Item swatch={<Dot color="var(--color-success)" />} label="Healthy 8+" />
-        <Item swatch={<Dot color="var(--color-warning)" />} label="Warning 4 to 8" />
-        <Item swatch={<Dot color="var(--color-error)" />} label="Alert below 4" />
+        {HEALTH_MARK_BANDS.map((b, i) => (
+          <Item key={b.band} swatch={<Dot color={b.color} />} label={`${b.label} ${markRange(i)}`} />
+        ))}
       </span>
       <span className="text-xs text-[var(--color-text-tertiary)]">
         Hover a line for its kind and weight. Click a service or line for details.

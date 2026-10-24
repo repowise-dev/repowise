@@ -35,26 +35,6 @@ export interface SystemMapRepoContracts {
 }
 
 // ---------------------------------------------------------------------------
-// Health: the canonical three bands beside a health mark.
-// ---------------------------------------------------------------------------
-
-export interface HealthMark {
-  /** 0-10, one decimal. */
-  value: string;
-  label: "Healthy" | "Warning" | "Alert";
-  color: string;
-}
-
-/** Repo health arrives 0-100; the product reads it 0-10 in three bands. */
-export function healthMark(score100: number): HealthMark {
-  const score = score100 / 10;
-  const value = score.toFixed(1);
-  if (score >= 8) return { value, label: "Healthy", color: "var(--color-success)" };
-  if (score >= 4) return { value, label: "Warning", color: "var(--color-warning)" };
-  return { value, label: "Alert", color: "var(--color-error)" };
-}
-
-// ---------------------------------------------------------------------------
 // Files to services.
 // ---------------------------------------------------------------------------
 

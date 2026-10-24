@@ -290,7 +290,7 @@ function toRow(repo: WorkspaceRepoEntry): RepoRow {
     localPath: repo.path,
     href: repo.repo_id ? `/repos/${repo.repo_id}/overview` : "/workspace",
     status: statusOf(repo),
-    // The wire carries 0-100; RepoRows and `bandForScore` are both 0-10.
+    // The wire carries 0-100; RepoRows reads 0-10.
     // Optional on the type, so a web build ahead of its server shows "—"
     // rather than NaN.
     health: repo.health_score == null ? null : repo.health_score / 10,

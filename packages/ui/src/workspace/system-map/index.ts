@@ -38,7 +38,6 @@ export {
   SYSTEM_MAP_PROMPT_MAX_ROWS,
 } from "./system-map-ai-prompt";
 export {
-  healthMark,
   serviceResolver,
   summarizeServiceContracts,
   serviceDiagnostics,

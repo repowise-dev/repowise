@@ -12,7 +12,7 @@
 
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { healthMark } from "./system-map-model";
+import { healthMark } from "../../health/tokens";
 import { SYSTEM_MAP_NODE_SIZE } from "./layout";
 import type { SystemMapNodeData } from "./types";
 
@@ -24,7 +24,8 @@ function badgeColor(tone: "danger" | "warning" | "info"): string {
 
 function SystemMapNodeInner({ data, selected }: NodeProps) {
   const { node, health, overlay, role } = data as unknown as SystemMapNodeData;
-  const mark = health ? healthMark(health.score) : null;
+  // Repo health arrives 0-100; the mark reads 0-10.
+  const mark = health ? healthMark(health.score / 10) : null;
   const lensed = overlay?.highlighted ?? false;
   const dimmed = overlay?.dimmed ?? false;
   const where = node.service_path ? `${node.repo} / ${node.service_path}` : `${node.repo} repository`;

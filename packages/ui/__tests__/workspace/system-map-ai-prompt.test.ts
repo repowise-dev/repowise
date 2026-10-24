@@ -10,7 +10,6 @@ import {
 import {
   edgeLinks,
   edgeSentence,
-  healthMark,
   serviceDiagnostics,
   serviceResolver,
   summarizeServiceContracts,
@@ -93,12 +92,6 @@ const graph: SystemGraph = {
 };
 
 describe("system map model", () => {
-  it("reads health in the canonical three bands", () => {
-    expect(healthMark(85)).toMatchObject({ value: "8.5", label: "Healthy" });
-    expect(healthMark(67.4)).toMatchObject({ value: "6.7", label: "Warning" });
-    expect(healthMark(30)).toMatchObject({ label: "Alert" });
-  });
-
   it("puts a file in its deepest service, else the repo root, and in its repo when collapsed", () => {
     const resolve = serviceResolver(graph, false);
     expect(resolve("mono", "packages/web/src/x.ts")).toBe("mono::packages/web");

@@ -2,12 +2,12 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, RefObject } from "react";
-import { HEALTHY_MIN, NEEDS_WORK_MIN, formatScore } from "@repowise-dev/types/health";
+import { formatScore } from "@repowise-dev/types/health";
 
 import { EmptyState } from "../shared/empty-state";
 import { seriesColor } from "../shared/series";
 import { formatDate } from "../lib/format";
-import { deltaColor, formatDelta } from "./tokens";
+import { HEALTH_MARK_BANDS, deltaColor, formatDelta } from "./tokens";
 
 export interface TrendSeriesPoint {
   taken_at: string | null;
@@ -62,11 +62,12 @@ const LINES: Record<LineKey, Series> = {
 };
 
 /** The canonical three bands, top to bottom, as faint grounds behind the lines. */
-const BANDS = [
-  { label: "Healthy", from: 10, to: HEALTHY_MIN, fill: "var(--color-success)" },
-  { label: "Warning", from: HEALTHY_MIN, to: NEEDS_WORK_MIN, fill: "var(--color-warning)" },
-  { label: "Alert", from: NEEDS_WORK_MIN, to: 0, fill: "var(--color-error)" },
-] as const;
+const BANDS = HEALTH_MARK_BANDS.map((b, i) => ({
+  label: b.label,
+  from: i === 0 ? 10 : HEALTH_MARK_BANDS[i - 1]!.min,
+  to: b.min,
+  fill: b.color,
+}));
 
 // The right pad holds the band names, outside the lines they would collide with.
 const PAD = { l: 28, r: 56, t: 10, b: 24 };
