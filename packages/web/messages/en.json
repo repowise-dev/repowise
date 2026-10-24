@@ -1721,6 +1721,20 @@
       "col": {
         "match": "Match"
       },
+      "strategy": {
+        "exact_id": "Matched by exact name",
+        "pattern_matched": "Matched by subscription pattern",
+        "binding_routed": "Routed through a queue binding",
+        "shared_table": "Shares a table",
+        "service_mapped": "Matched by service name",
+        "host_only": "Host only",
+        "gateway_route": "Routed through a gateway",
+        "unique_path": "Matched by path only",
+        "ambiguous_path": "Path served by several services",
+        "prefix_stripped": "Matched after stripping a prefix",
+        "manual": "Declared by hand",
+        "manifest": "Declared in a manifest"
+      },
       "reasonTitle": {
         "no_provider": "No provider found",
         "unlinked": "No link formed",

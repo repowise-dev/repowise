@@ -1721,6 +1721,20 @@
       "col": {
         "match": "匹配方式"
       },
+      "strategy": {
+        "exact_id": "按名称精确匹配",
+        "pattern_matched": "按订阅模式匹配",
+        "binding_routed": "经队列绑定路由",
+        "shared_table": "共享数据表",
+        "service_mapped": "按服务名匹配",
+        "host_only": "仅主机",
+        "gateway_route": "经网关路由",
+        "unique_path": "仅按路径匹配",
+        "ambiguous_path": "路径由多个服务提供",
+        "prefix_stripped": "去除前缀后匹配",
+        "manual": "手动声明",
+        "manifest": "在清单中声明"
+      },
       "reasonTitle": {
         "no_provider": "未找到提供方",
         "unlinked": "未建立链接",

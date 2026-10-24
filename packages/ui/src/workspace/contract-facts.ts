@@ -26,6 +26,8 @@ export interface ContractEntry {
   service: string | null;
   line: number | null;
   symbol_id: string | null;
+  /** What established the contract; absent on a row stored before origins. */
+  origin?: string | null;
   meta: Record<string, unknown>;
 }
 
