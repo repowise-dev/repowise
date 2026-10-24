@@ -460,6 +460,8 @@ class WorkspaceSystemGraphMapResponse(BaseModel):
     generated_at: str = ""
     nodes: list[WorkspaceSystemNode] = []
     edges: list[WorkspaceSystemMapEdge] = []
+    #: Service groups; empty when the estate is too small to group.
+    groups: list[WorkspaceServiceGroup] = []
 
 
 # ---------------------------------------------------------------------------
