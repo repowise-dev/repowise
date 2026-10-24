@@ -56,6 +56,19 @@ class TestNormalizeHttpPath:
     def test_root_path(self) -> None:
         assert normalize_http_path("/") == "/"
 
+    def test_gin_echo_catchall_param(self) -> None:
+        assert normalize_http_path("/swagger/*any") == "/swagger/{param}"
+        assert normalize_http_path("/static/*filepath") == "/static/{param}"
+        assert normalize_http_path("/*any") == "/{param}"
+
+    def test_asterisk_in_segment_not_catchall(self) -> None:
+        assert normalize_http_path("/a*b") == "/a*b"
+
+    def test_bare_star_keeps_the_shared_wildcard_normalization(self) -> None:
+        assert normalize_http_path("/files/*") == "/files/{param}"
+        assert normalize_http_path("/*") == "/{param}"
+        assert normalize_http_path("/owners/*/pets") == "/owners/{param}/pets"
+
     def test_optional_param_keeps_its_brace_and_the_rest_of_the_path(self) -> None:
         assert normalize_http_path("/brand/{brandId?}") == "/brand/{param}"
         assert normalize_http_path("orders/{id:int?}/lines") == "/orders/{param}/lines"
