@@ -36,8 +36,9 @@ are files, so that entry file is what stands for the role.
 
 Known ceilings, recorded as absent edges rather than guesses:
 
-* ``import_tasks`` with a loop or ``apply:`` is still a single literal file;
-  covered. Role ``dependencies`` under ``galaxy_info`` only: a bare top-level
+* ``import_tasks`` with a loop or ``apply:`` is still a single literal file,
+  so it is covered.
+* Role ``dependencies`` count only alongside ``galaxy_info``: a bare top-level
   ``dependencies:`` list without ``galaxy_info`` is not claimed as role wiring,
   because generic config files use that key freely.
 * Galaxy/collection roles and custom ``roles_path`` directories are not visible

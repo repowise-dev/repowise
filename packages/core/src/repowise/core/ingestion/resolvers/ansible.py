@@ -3,8 +3,9 @@
 Two reference shapes arrive from ``lightweight_imports.ansible``:
 
 * plain file paths (``import_playbook`` / ``import_tasks`` / ``include_tasks``),
-  resolved relative to the importing file first, then the repo root, with
-  ``.yml`` / ``.yaml`` probing when the target omits the extension;
+  resolved relative to the importing file only (Ansible's own rule; the repo
+  root is never a fallback, so a same-named root file cannot steal the edge),
+  with ``.yml`` / ``.yaml`` probing when the target omits the extension;
 * ``role:<name>`` stamps (``roles:`` entries, ``import_role`` / ``include_role``,
   role ``meta/main.yml`` dependencies), resolved to the role's conventional
   entry file ``roles/<name>/tasks/main.yml`` -- the graph's nodes are files,
@@ -48,10 +49,9 @@ def _resolve_file(target: str, importer_path: str, ctx: ResolverContext) -> str 
     )
     importer_dir = PurePosixPath(importer_path).parent
     for name in names:
-        for base in (importer_dir, PurePosixPath("")):
-            candidate = _join_relative(base, name)
-            if candidate is not None and candidate in ctx.path_set:
-                return candidate
+        candidate = _join_relative(importer_dir, name)
+        if candidate is not None and candidate in ctx.path_set:
+            return candidate
     return None
 
 

@@ -177,6 +177,15 @@ class TestAnsibleResolution:
         # sub/play.yml's own setup.yml wins over the repo-root one.
         assert resolve_import("setup.yml", "sub/play.yml", "yaml", ctx) == "sub/setup.yml"
 
+    def test_repo_root_is_not_a_fallback(self) -> None:
+        # Ansible resolves import_playbook from the including file; a root
+        # other.yml must not stand in for a missing sub/other.yml.
+        files = dict(FILES)
+        files["other.yml"] = "- name: other\n  hosts: all\n"
+        ctx = _ctx(None, files)
+        assert resolve_import("other.yml", "sub/play.yml", "yaml", ctx) is None
+        assert resolve_ansible_import("other", "sub/play.yml", ctx) is None
+
     def test_extension_probing(self) -> None:
         ctx = _ctx(None, FILES)
         assert resolve_ansible_import("tasks/setup", "site.yml", ctx) == "tasks/setup.yml"
