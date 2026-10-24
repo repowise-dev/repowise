@@ -594,6 +594,9 @@ def test_a_configured_database_is_listed_as_kept_with_a_reason(repo: Path, monke
     assert "s3cret" not in result.output
     assert "alice" not in result.output
 
+    table = _invoke(["uninstall", str(repo), "--all", "--dry-run"])
+    assert "db.example:5432/wiki" in table.output
+
 
 def test_a_real_run_keeps_the_database_and_exits_with_leftovers(
     repo: Path, tmp_path: Path, monkeypatch

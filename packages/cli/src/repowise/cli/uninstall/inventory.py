@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class Group(StrEnum):
@@ -465,9 +465,12 @@ def _store_item() -> Item | None:
     except Exception:
         # A label must never stop the inventory from being printed.
         pass
+    # Only a SQLite locator is a file path. ``host:port/database`` is text, and
+    # ``Path`` would print it as ``host:port\database`` on Windows.
+    path = Path(locator) if dialect == "sqlite" else PurePosixPath(locator)
     return Item(
         group=Group.INDEX,
-        path=Path(locator),
+        path=path,
         label=f"index in the configured {dialect} database",
         exists=True,
         blocked=(
