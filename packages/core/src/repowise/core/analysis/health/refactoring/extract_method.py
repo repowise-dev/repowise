@@ -104,7 +104,7 @@ Plan shape (open dict, no migration):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -228,7 +228,7 @@ class ExtractMethodDetector(RefactoringDetector):
     ) -> None:
         """Add *analysis*'s plan to *out*: the staged split when one is anchored,
         else the best single span; why none was offered goes on *matched*."""
-        markers = {getattr(f, "biomarker_type", "") for f in matched}
+        markers = {getattr(f, "biomarker_type", ""): getattr(f, "severity", None) for f in matched}
         fn_node = analysis.fn_node
         receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
         # The slicer's per-block walk, read again by a staged plan.
@@ -463,7 +463,7 @@ def _staged(
     clear the floor a single span does. Why a stage was not offered is kept
     on *findings* (:data:`STAGE_REFUSED_DETAIL`), so refusals are counted
     from the index."""
-    markers = {getattr(f, "biomarker_type", "") for f in findings}
+    markers = {getattr(f, "biomarker_type", ""): getattr(f, "severity", None) for f in findings}
     # Only languages with a staged renderer, each with the outputs one call binds.
     max_returns = render.staged_outputs(language)
     if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
@@ -988,13 +988,16 @@ def host_is_async(fn_node: Any, lmap: LanguageNodeMap, language: str | None) -> 
 
 
 def _worth_extracting(
-    analysis: FunctionAnalysis, extraction: Extraction, markers: set[str]
+    analysis: FunctionAnalysis,
+    extraction: Extraction,
+    markers: set[str] | Mapping[str, Any],
 ) -> bool:
     """The minimum-worth floor, applied while choosing among candidates."""
+    severities = markers if isinstance(markers, Mapping) else {}
     for marker in markers:
         rule = _SEVERITY_RULE[marker]
         helper = rule(extraction.ccn_removed + 1, extraction.slice_nloc)
-        before = rule(analysis.ccn, analysis.nloc)
+        before = severities.get(marker) or rule(analysis.ccn, analysis.nloc)
         # The helper inherits the finding undiminished: the smell moved.
         if helper is not None and (
             before is None or severity_deduction(helper) >= severity_deduction(before)
@@ -1004,7 +1007,9 @@ def _worth_extracting(
 
 
 def _choose(
-    analysis: FunctionAnalysis, candidates: list[Extraction], markers: set[str]
+    analysis: FunctionAnalysis,
+    candidates: list[Extraction],
+    markers: set[str] | Mapping[str, Any],
 ) -> Extraction | None:
     """The strongest span worth doing and offerable, best-first.
 

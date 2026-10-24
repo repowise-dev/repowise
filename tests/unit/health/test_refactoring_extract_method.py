@@ -51,6 +51,7 @@ class _Finding:
     function_name: str
     line_start: int
     health_impact: float
+    severity: str | None = None
 
 
 def _require_python() -> None:
@@ -914,6 +915,41 @@ def test_a_helper_inheriting_the_finding_undiminished_is_not_worth_it():
     assert not _worth_extracting(_Shape(13, 36), _Span(12, 30), {"complex_method"})
     # CCN 25 (critical) -> helper CCN 9 (medium): a real partial step.
     assert _worth_extracting(_Shape(25, 117), _Span(8, 40), {"complex_method"})
+
+
+def test_dispatch_heavy_function_refuses_helper_matching_finding_severity():
+    from repowise.core.analysis.health.biomarkers.base import FileContext
+    from repowise.core.analysis.health.biomarkers.complex_method import ComplexMethodDetector
+    from repowise.core.analysis.health.complexity.models import FunctionComplexity
+
+    fc = FunctionComplexity(
+        name="tokenize",
+        start_line=1,
+        end_line=100,
+        ccn=30,
+        cognitive=20,
+        nloc=80,
+        max_nesting=3,
+        dispatch_share=0.6,
+        dispatch_arm=0,
+    )
+    ctx = FileContext(
+        file_path="src/tok.py",
+        language="python",
+        nloc=100,
+        has_test_file=False,
+        module=None,
+        all_functions=(fc,),
+    )
+    [finding] = ComplexMethodDetector().detect(ctx)
+    assert finding.severity == "medium"
+
+    shape = _Shape(30, 80)
+    span = _Span(12, 30)  # helper CCN 13 -> medium
+    assert not _worth_extracting(shape, span, {"complex_method": finding.severity})
+    # The same span on a plain CCN 30 function (critical finding) is still offered.
+    assert _worth_extracting(shape, span, {"complex_method": "critical"})
+    assert _worth_extracting(shape, span, {"complex_method"})
 
 
 def test_detector_offers_the_next_best_span_when_the_best_misses_the_floor():
