@@ -120,8 +120,11 @@ export const PLACEMENT_EDGES_PER_CARD = 2;
 
 /**
  * One edge per unordered card pair, pointing the way most links go (ties to
- * the lower id first), then the strongest `perCard` times the card count,
- * ties by id. Deterministic and independent of input order.
+ * the lower id first). Every card first keeps its strongest pair, so no
+ * linked card is left edgeless in layer 0; the rest of a budget of `perCard`
+ * times the card count goes to the strongest remaining pairs, ties by id.
+ * Layers follow the kept edges only, so a weak drawn connector may run
+ * against them. Deterministic and independent of input order.
  */
 export function placementEdges(
   weights: ReadonlyMap<string, { source: string; target: string; links: number }>,
@@ -131,7 +134,7 @@ export function placementEdges(
   const pairs = new Map<string, { source: string; target: string; links: number; net: number }>();
   for (const w of weights.values()) {
     const forward = compareIds(w.source, w.target) < 0;
-    const key = forward ? `${w.source}|${w.target}` : `${w.target}|${w.source}`;
+    const key = forward ? `${w.source}\u0000${w.target}` : `${w.target}\u0000${w.source}`;
     let p = pairs.get(key);
     if (!p) {
       const [a, b] = forward ? [w.source, w.target] : [w.target, w.source];
@@ -145,10 +148,19 @@ export function placementEdges(
     return { id: `${source}>${target}`, source, target, links: p.links };
   });
   ranked.sort((x, y) => y.links - x.links || compareIds(x.id, y.id));
-  return ranked
-    .slice(0, Math.max(0, Math.ceil(cards * perCard)))
-    .map(({ id, source, target }) => ({ id, source, target }))
-    .sort((x, y) => compareIds(x.id, y.id));
+  const kept = new Set<(typeof ranked)[number]>();
+  const linked = new Set<string>();
+  for (const r of ranked) {
+    if (linked.has(r.source) && linked.has(r.target)) continue;
+    kept.add(r);
+    linked.add(r.source).add(r.target);
+  }
+  const budget = Math.ceil(cards * perCard);
+  for (const r of ranked) {
+    if (kept.size >= budget) break;
+    kept.add(r);
+  }
+  return [...kept].map(({ id, source, target }) => ({ id, source, target })).sort((x, y) => compareIds(x.id, y.id));
 }
 
 type PairWeights = Map<string, { source: string; target: string; links: number }>;

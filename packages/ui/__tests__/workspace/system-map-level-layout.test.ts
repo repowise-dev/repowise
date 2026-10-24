@@ -122,6 +122,18 @@ describe("placementEdges", () => {
     expect(placementEdges(new Map([...pairs].reverse()), 2)).toEqual(forward);
   });
 
+  it("never leaves a linked card edgeless, however strong a hub's other pairs are", () => {
+    const hub = ["x", "y", "z", "w"].flatMap((o) => [w("hub", o, 50), w(o, "hub", 40)]);
+    const leaves = [w("leaf1", "leaf2", 1), w("leaf3", "x", 1)];
+    const edges = placementEdges(new Map([...hub, ...leaves]), 2, 1);
+    const ends = new Set(edges.flatMap((e) => [e.source, e.target]));
+    for (const id of ["hub", "x", "y", "z", "w", "leaf1", "leaf2", "leaf3"]) expect(ends.has(id), id).toBe(true);
+  });
+
+  it("points a pair with equal links both ways from the lower id", () => {
+    expect(placementEdges(new Map([w("b", "a", 3), w("a", "b", 3)]), 2).map((e) => e.id)).toEqual(["a>b"]);
+  });
+
   it("caps a dense 300-service estate at two placement edges per card", () => {
     const g = makeSyntheticSystemGraph({ services: 300, edges: 3000, groups: 30, seed: 300 });
     const groups = [...new Set(g.nodes.map((n) => n.group!))].map((id) => ({ id }));
