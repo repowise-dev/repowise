@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class Group(StrEnum):
@@ -449,6 +449,7 @@ def _store_item() -> Item | None:
     if raw is None:
         return None
     dialect, locator = "database", "configured database"
+    is_file = False
     try:
         from sqlalchemy.engine import make_url
 
@@ -456,6 +457,7 @@ def _store_item() -> Item | None:
         dialect = url.get_backend_name()
         if dialect == "sqlite":
             locator = url.database or ":memory:"
+            is_file = True
         else:
             locator = url.host or "unknown-host"
             if url.port:
@@ -467,7 +469,10 @@ def _store_item() -> Item | None:
         pass
     return Item(
         group=Group.INDEX,
-        path=Path(locator),
+        # A ``host:port/database`` locator is not a local path: ``Path`` would
+        # print it as ``host:port\database`` on Windows. The row is always
+        # blocked, so the runner never treats it as a file.
+        path=Path(locator) if is_file else PurePosixPath(locator),  # type: ignore[arg-type]
         label=f"index in the configured {dialect} database",
         exists=True,
         blocked=(
