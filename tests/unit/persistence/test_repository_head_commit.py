@@ -170,6 +170,19 @@ def test_read_head_commit_submodule_gitdir(tmp_path: Path) -> None:
     assert _read_head_commit(str(checkout)) == sha
 
 
+def test_git_common_dir_worktree_and_main(tmp_path: Path) -> None:
+    from repowise.core.git_head import git_common_dir
+
+    sha = "a" * 40
+    checkout = linked_worktree(tmp_path, sha, how="loose")
+    common = git_common_dir(checkout)
+    assert common is not None
+    assert common == (tmp_path / "main" / ".git").resolve()
+    assert git_common_dir(tmp_path / "main") == (tmp_path / "main" / ".git").resolve()
+    assert git_common_dir(tmp_path / "nonexistent") is None
+    assert git_common_dir("") is None
+
+
 @pytest.mark.asyncio
 async def test_upsert_repository_stamps_and_advances_head(tmp_path: Path) -> None:
     sha1 = "1" * 40
@@ -228,7 +241,9 @@ async def test_upsert_repository_keeps_head_when_path_not_git(tmp_path: Path) ->
         # Same DB row keyed by local_path, but pretend the .git vanished.
         (tmp_path / ".git" / "HEAD").unlink()
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name="r", local_path=str(tmp_path), stamp_head=True)
+            repo = await upsert_repository(
+                session, name="r", local_path=str(tmp_path), stamp_head=True
+            )
             assert repo.head_commit == sha  # preserved, not nulled
     finally:
         await engine.dispose()
@@ -253,12 +268,16 @@ async def test_upsert_repository_advances_worktree_head(tmp_path: Path) -> None:
             sha2 + "\n", encoding="utf-8"
         )
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name="wt", local_path=str(checkout), stamp_head=True)
+            repo = await upsert_repository(
+                session, name="wt", local_path=str(checkout), stamp_head=True
+            )
             assert repo.head_commit == sha2
 
         (checkout / ".git").write_text("not a gitdir\n", encoding="utf-8")
         async with get_session(sf) as session:
-            repo = await upsert_repository(session, name="wt", local_path=str(checkout), stamp_head=True)
+            repo = await upsert_repository(
+                session, name="wt", local_path=str(checkout), stamp_head=True
+            )
             assert repo.head_commit == sha2
     finally:
         await engine.dispose()
