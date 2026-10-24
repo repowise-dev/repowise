@@ -43,6 +43,7 @@ import {
 import { markSystemMap, useSystemMapPerfMarks } from "@/lib/system-map-perf";
 import { mapLede, mapRibbon, useListJoin, type Translator } from "./map-summary";
 import { useRepoContracts } from "./use-repo-contracts";
+import { useServiceLinks } from "./use-service-links";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];
 /** URL params a selection is written to, one per selection type. */
@@ -164,6 +165,7 @@ export default function SystemMapPage() {
 
   const focusRepo = useMemo(() => selectionRepo(graph, selection), [graph, selection]);
   const { data: repoContracts, isLoading: repoContractsLoading } = useRepoContracts(focusRepo);
+  const loadLinksBetween = useServiceLinks();
 
   const roleByNodeId = useMemo<Map<string, NodeArchitectureRole>>(() => {
     const m = new Map<string, NodeArchitectureRole>();
@@ -255,6 +257,7 @@ export default function SystemMapPage() {
             estateLabel={t("estate")}
             onPhase={markSystemMap}
             drawer={drawer}
+            loadLinksBetween={loadLinksBetween}
             toolbar={
               <SystemMapLensControl
                 value={lens}

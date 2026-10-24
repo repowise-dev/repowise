@@ -155,44 +155,6 @@ export function serviceDiagnostics(
 // An edge's evidence.
 // ---------------------------------------------------------------------------
 
-/** The contract type each structural edge kind is built from. */
-const KIND_CONTRACT_TYPE: Partial<Record<SystemEdgeKind, string>> = {
-  http: "http",
-  grpc: "grpc",
-  socket: "socket",
-  event: "topic",
-  package: "code",
-  db: "data",
-};
-
-/**
- * The matched links an edge aggregates. Edge direction is consumer to
- * provider, so the link's consumer must resolve to the source and its provider
- * to the target. The edge's own refs are capped; the links are not.
- */
-export function edgeLinks(
-  edge: SystemEdge,
-  links: readonly WorkspaceContractLinkEntry[],
-  resolve: ServiceResolver,
-): WorkspaceContractLinkEntry[] {
-  if (!edge.structural) return [];
-  const type = KIND_CONTRACT_TYPE[edge.kind];
-  const refs = new Set(edge.contract_refs ?? []);
-  const seen = new Set<string>();
-  const out: WorkspaceContractLinkEntry[] = [];
-  for (const lk of links) {
-    if (type ? lk.contract_type !== type : !refs.has(lk.contract_id)) continue;
-    if (resolve(lk.consumer_repo, lk.consumer_file) !== edge.source) continue;
-    if (resolve(lk.provider_repo, lk.provider_file) !== edge.target) continue;
-    const key = `${linkKey(lk.provider_repo, lk.provider_file, lk.contract_id)}\u0000${lk.consumer_file}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(lk);
-  }
-  out.sort((a, b) => a.contract_id.localeCompare(b.contract_id));
-  return out;
-}
-
 /** Co-change refs are `source_file~target_file`. */
 export function coChangePairs(edge: SystemEdge): [string, string | null][] {
   return (edge.contract_refs ?? []).map((ref) => {

@@ -9,9 +9,10 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import type { NodeArchitectureRole, SystemEdge, SystemNode } from "@repowise-dev/types";
 import type { C4LayoutPosition } from "../../c4/layout/elk-c4-layout";
-import { bandSentence, groupSourceLabel, healthCounts, type HealthCounts } from "./aggregate-facts";
+import { bandSentence, groupSourceLabel, healthCounts, kindMixText, type HealthCounts } from "./aggregate-facts";
 import { roleStyle } from "./architecture";
 import { edgeLabel } from "./edge-kinds";
+import { focusColumnLabels, type ColumnLabelData } from "./focus-labels";
 import type {
   DrawnBand,
   DrawnGroupNode,
@@ -50,6 +51,8 @@ export interface TrayNodeData {
 
 export interface MoreNodeData {
   more: DrawnMoreNode;
+  /** In a focus column: connectors join its sides. */
+  horizontal?: boolean;
   [key: string]: unknown;
 }
 
@@ -112,15 +115,28 @@ export function drawnLabel(n: DrawnNode | undefined, nodesById: ReadonlyMap<stri
 
 type Shaped = { type: string; data: Record<string, unknown> } | null;
 
-function serviceData(n: DrawnServiceNode, { nodesById, healthByRepo, overlay, roleByNodeId }: FlowInputs): Shaped {
+/** A focus-column card's links to its neighbour column: "8 · HTTP 2, Event 6", plus "both ways". */
+function focusLinksText(n: DrawnServiceNode): string | null {
+  if (!n.links) return null;
+  const mix = kindMixText(n.links.kinds);
+  const head = mix ? `${n.links.links.toLocaleString()} · ${mix}` : n.links.links.toLocaleString();
+  return n.bothWays ? `${head} · both ways` : head;
+}
+
+function serviceData(n: DrawnServiceNode, { view, nodesById, healthByRepo, overlay, roleByNodeId }: FlowInputs): Shaped {
   const node = nodesById.get(n.serviceId);
   if (!node) return null;
   const role = roleByNodeId?.get(n.serviceId);
+  const pair = view.between;
   const data: SystemMapNodeData = {
     node,
     health: healthByRepo?.get(node.repo) ?? null,
     overlay: resolveNodeOverlay(overlay, n.serviceId),
     role: role ? roleStyle(role.role).label : null,
+    // Focus columns read left to right, so their connectors join card sides.
+    horizontal: view.level === "focus",
+    focusLinks: focusLinksText(n),
+    endpoint: pair !== null && (n.serviceId === pair.a || n.serviceId === pair.b),
   };
   return { type: "systemService", data };
 }
@@ -148,8 +164,8 @@ function trayData(n: DrawnTrayNode, { nodesById }: FlowInputs): Shaped {
   return { type: "systemTray", data };
 }
 
-function moreData(n: DrawnMoreNode): Shaped {
-  const data: MoreNodeData = { more: n };
+function moreData(n: DrawnMoreNode, { view }: FlowInputs): Shaped {
+  const data: MoreNodeData = { more: n, horizontal: view.level === "focus" };
   return { type: "systemMore", data };
 }
 
@@ -162,7 +178,7 @@ function nodeData(n: DrawnNode, inputs: FlowInputs): Shaped {
     case "tray":
       return trayData(n, inputs);
     default:
-      return moreData(n);
+      return moreData(n, inputs);
   }
 }
 
@@ -235,5 +251,22 @@ export function toFlowElements(inputs: FlowInputs): FlowElements {
     const flow = e.type === "edge" ? singleEdge(e, inputs, name) : bandEdge(e, inputs, name);
     if (flow) edges.push(selectedId === e.id ? { ...flow, selected: true } : flow);
   }
+  if (view.focus) nodes.push(...columnLabelNodes(view, positions));
   return { nodes, edges };
+}
+
+/** The focus level's column headings, as inert nodes above each column. */
+function columnLabelNodes(view: LevelView, positions: ReadonlyMap<string, C4LayoutPosition>): Node[] {
+  return focusColumnLabels(view.focus!, positions).map((l): Node => {
+    const data: ColumnLabelData = { label: l.label };
+    return {
+      id: l.id,
+      type: "systemColumnLabel",
+      position: { x: l.x, y: l.y },
+      data,
+      selectable: false,
+      focusable: false,
+      draggable: false,
+    };
+  });
 }

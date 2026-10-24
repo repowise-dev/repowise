@@ -11,11 +11,11 @@
  * Built on `GraphCanvasShell`: the lens and extra actions in the title row,
  * the family chips and key above the canvas, the caption under it, and the
  * details in the rail, a grid peer of the canvas (a bottom sheet on phones).
- * The host supplies data and routes through props only; it may control the
- * level state and the selection to keep them in its URL.
+ * The host supplies data, routes and the links loader through props only; it
+ * may control the level state and the selection to keep them in its URL.
  */
 
-import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import type { NodeArchitectureRole, SystemGraph } from "@repowise-dev/types";
 import { GraphCanvasShell } from "../../graph/graph-canvas-shell";
@@ -31,12 +31,14 @@ import { SystemMapCanvasEmpty } from "./system-map-empty";
 import { SystemMapFilters } from "./system-map-filters";
 import { SystemMapFocusContext, createSystemMapFocusStore, type SystemMapFocusStore } from "./system-map-focus";
 import { SystemMapLegend, legendKeyFor } from "./system-map-legend";
-import { railContent } from "./system-map-rail-content";
+import type { LoadLinksBetween } from "./routes-between";
+import { SystemMapBetweenControl } from "./system-map-between-control";
+import { railContent, type RailVerbs } from "./system-map-rail-content";
 import type { RepoHealth, SystemMapOverlay, SystemMapSelection } from "./types";
 import { useDropUndrawnAggregate, useMapLevel, type MapLevel } from "./use-map-level";
 import type { SystemMapPhase } from "./use-system-map-phases";
 import { useSystemMapState, type SystemMapState } from "./use-system-map-state";
-import { backOut, closeContainer, openContainer, toggleFamily, type MapViewState } from "./view-state";
+import { backOut, closeContainer, openContainer, showFamily, toggleFamily, type MapViewState } from "./view-state";
 
 /** The canvas's height, shared with the host's loading placeholder so nothing reflows. */
 export const SYSTEM_MAP_CANVAS_HEIGHT = "h-[420px] sm:h-[clamp(460px,calc(100dvh-240px),800px)]";
@@ -67,8 +69,12 @@ export interface SystemMapProps {
   /** Controlled level state (`open`, `focus`, `a`/`b`, `kinds` in a URL). */
   view?: MapViewState;
   onViewChange?: (view: MapViewState) => void;
-  /** Rail content for the current level when nothing is selected, e.g. the routes between two services. */
-  levelRail?: ReactNode;
+  /**
+   * One page of routes between two services (`GET /api/workspace/system-graph/links`).
+   * The Between level lists them in the rail and a relationship shows its own;
+   * without it both say route detail is not available.
+   */
+  loadLinksBetween?: LoadLinksBetween;
   /** Lists what a "+N more" card folded; the card offers it only when present. */
   onShowFolded?: (serviceIds: readonly string[]) => void;
   /** The breadcrumb's root, e.g. the workspace name. */
@@ -113,9 +119,10 @@ function useMapInput(levelView: LevelView | null, state: SystemMapState, onShowF
     (a: Activation) => {
       if (a?.kind === "select") setSelection(a.selection);
       else if (a?.kind === "open") actions.openContainer(a.id);
+      else if (a?.kind === "focus") setView(focusService(view, a.serviceId));
       else if (a?.kind === "folded") actions.showFolded?.(a.serviceIds);
     },
-    [setSelection, actions],
+    [setSelection, actions, setView, view],
   );
   const onActivate = useCallback(
     (id: string, kind: "node" | "edge", trigger: ActivateTrigger) =>
@@ -134,6 +141,35 @@ function useMapInput(levelView: LevelView | null, state: SystemMapState, onShowF
   return { actions, onActivate, onEscape };
 }
 
+/** The focus level around one service; leaves Between, keeps the families and open groups. */
+function focusService(view: MapViewState, id: string): MapViewState {
+  return { ...view, focus: id, between: null };
+}
+
+/** The Between picker's state and the verbs the rail offers (focus, between, show a family). */
+function useRailVerbs(state: SystemMapState) {
+  const { view, setView, setSelection } = state;
+  const [picker, setPicker] = useState<{ open: boolean; from?: string }>({ open: false });
+  const onBetween = useCallback(
+    (a: string, b: string) => {
+      setSelection(null);
+      setView({ ...view, between: { a, b } });
+    },
+    [view, setView, setSelection],
+  );
+  const verbs = useMemo<RailVerbs>(
+    () => ({
+      onFocus: (id) => setView(focusService(view, id)),
+      onRoutesFrom: (id) => setPicker({ open: true, from: id }),
+      onBetween,
+      onShowFamily: (f) => setView(showFamily(view, f)),
+      onLeaveBetween: () => setView({ ...view, between: null }),
+    }),
+    [view, setView, onBetween],
+  );
+  return { verbs, picker, setPicker, onBetween };
+}
+
 function SystemMapInner(props: SystemMapProps) {
   const { graph, healthByRepo, overlay, roleByNodeId, toolbar, actions: extraActions } = props;
   const state = useSystemMapState(props);
@@ -143,6 +179,7 @@ function SystemMapInner(props: SystemMapProps) {
   const { nodesById, edgesById, levelView, layout } = level;
   const { focus, canvasRef } = useFocusStore(level);
   const input = useMapInput(levelView, state, props.onShowFolded);
+  const rail = useRailVerbs(state);
   const selectedId = level.resolved?.drawnId ?? null;
 
   const flow = useMemo<FlowElements>(
@@ -157,7 +194,7 @@ function SystemMapInner(props: SystemMapProps) {
   const legend = useMemo(() => legendKeyFor(levelView?.edges ?? [], edgesById), [levelView, edgesById]);
 
   const hasGraph = Boolean(graph && graph.nodes.length > 0);
-  const rail =
+  const railNode =
     graph && levelView
       ? railContent({
           graph,
@@ -168,11 +205,23 @@ function SystemMapInner(props: SystemMapProps) {
           healthByRepo,
           roleByNodeId,
           drawer: props.drawer,
-          levelRail: props.levelRail,
+          loadLinksBetween: props.loadLinksBetween,
           onSelect: setSelection,
           onOpenGroup: input.actions.openContainer,
+          verbs: rail.verbs,
         })
       : null;
+  const betweenControl =
+    graph && levelView && graph.nodes.length > 1 ? (
+      <SystemMapBetweenControl
+        graph={graph}
+        families={levelView.families}
+        open={rail.picker.open}
+        onOpenChange={(open) => rail.setPicker(open ? { ...rail.picker, open } : { open: false })}
+        from={rail.picker.from}
+        onBetween={rail.onBetween}
+      />
+    ) : null;
   const breadcrumb =
     graph && levelView && levelView.level !== "estate" ? (
       <SystemMapBreadcrumb graph={graph} level={levelView.level} view={view} onViewChange={setView} estateLabel={props.estateLabel} />
@@ -204,9 +253,9 @@ function SystemMapInner(props: SystemMapProps) {
           variant="section"
           breadcrumb={breadcrumb}
           title={props.title}
-          titleActions={toolbar || extraActions ? <>{toolbar}{extraActions}</> : undefined}
+          titleActions={toolbar || extraActions || betweenControl ? <>{toolbar}{extraActions}{betweenControl}</> : undefined}
           banner={banner}
-          rail={rail}
+          rail={railNode}
           footer={hasGraph && caption.length > 0 ? <p className="text-xs text-[var(--color-text-secondary)]">{caption.join(" ")}</p> : undefined}
         >
           <MapCanvas

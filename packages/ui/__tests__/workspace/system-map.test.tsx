@@ -398,11 +398,10 @@ describe("selectionRepo", () => {
     [node("api::svc/a", { repo: "api", service_path: "svc/a" }), node("web")],
     [edge("web", "api::svc/a")],
   );
-  it("names the repository a node or edge lives in, and none for an aggregate", () => {
+  it("names a service's repository, and none for a relationship (its routes come from the loader) or an aggregate", () => {
     expect(selectionRepo(g, { type: "node", id: "api::svc/a" })).toBe("api");
     expect(selectionRepo(g, { type: "group", id: "tag:api" })).toBeNull();
-    expect(selectionRepo(g, { type: "edge", id: "web->api::svc/a" })).toBe("web");
-    expect(selectionRepo(g, { type: "edge", id: "web->api::http" })).toBe("web");
+    expect(selectionRepo(g, { type: "edge", id: "web->api::svc/a" })).toBeNull();
     expect(selectionRepo(g, null)).toBeNull();
   });
 });

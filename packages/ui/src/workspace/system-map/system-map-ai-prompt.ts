@@ -23,7 +23,7 @@ import { linkStrategyCopy } from "../link-provenance";
 /** Evidence rows listed in full before the prompt says how many it left out. */
 export const SYSTEM_MAP_PROMPT_MAX_ROWS = 25;
 
-const PREAMBLE_PARTS: PreambleParts = {
+export const SYSTEM_MAP_PREAMBLE: PreambleParts = {
   role: WORKSPACE_ROLE,
   source: "The facts below come from repowise's system graph, which is built from code and git history.",
   open: "the files behind each relationship in each repository",
@@ -36,7 +36,7 @@ function countsLine(counts: Record<string, number>): string {
   return entries.length === 0 ? "none" : entries.map(([t, n]) => `${n} ${t}`).join(", ");
 }
 
-function capped<T>(rows: T[], render: (row: T) => string, noun: string): string {
+export function capped<T>(rows: T[], render: (row: T) => string, noun: string): string {
   const shown = rows.slice(0, SYSTEM_MAP_PROMPT_MAX_ROWS).map(render).join("\n");
   const hidden = rows.length - SYSTEM_MAP_PROMPT_MAX_ROWS;
   return hidden > 0 ? `${shown}\n- ...and ${hidden} more ${noun} not listed here.` : shown;
@@ -114,7 +114,7 @@ export function buildServiceAiPrompt(o: BuildServicePromptOptions): string {
   // These prompts keep a blank line between sections, so each section after
   // the preamble carries its own leading newline.
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Service: ${s.name} (\`${s.id}\`)`,
     `\n${bulletList([
       `Location: \`${location}\``,
@@ -196,7 +196,7 @@ export interface BuildEdgePromptOptions {
 }
 
 /** `, matched by service name (service_mapped)`, or nothing when the link names no strategy. */
-function matchedBy(strategy: string | null | undefined): string {
+export function matchedBy(strategy: string | null | undefined): string {
   const copy = linkStrategyCopy(strategy);
   return copy ? `, ${copy.label.toLowerCase()} (\`${strategy}\`)` : "";
 }
@@ -226,7 +226,7 @@ export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
     : `Check whether this co-change hides a real dependency. Files that change together without a declared contract often share an undocumented format, a copied type or a coordinated release. Decide which it is for the pairs above.`;
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Relationship: ${o.source.name} -> ${o.target.name} (\`${e.id}\`)`,
     `\n${bulletList([
       o.sentence,
@@ -294,7 +294,7 @@ export function buildCycleAiPrompt(o: BuildCyclePromptOptions): string {
     .join("\n");
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Dependency cycle: ${loop}`,
     `\n${bulletList([
       `Services: ${o.ids.map((id) => `\`${id}\``).join(", ")}`,
@@ -349,7 +349,7 @@ export function buildBlastRadiusAiPrompt(o: BuildBlastRadiusPromptOptions): stri
     `- **${n.name}** (\`${n.id}\`, repo ${n.repo}): ${n.distance} ${n.distance === 1 ? "hop" : "hops"}, impact ${n.score.toFixed(2)}, via ${n.edge_kinds.join(", ")}`;
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Blast radius of ${o.target.name} (\`${o.target.id}\`)`,
     `\n${bulletList([
       `${o.impacted.length} downstream ${o.impacted.length === 1 ? "service is" : "services are"} reachable: ${structural.length} through structural dependencies, ${behavioral.length} only through co-change.`,

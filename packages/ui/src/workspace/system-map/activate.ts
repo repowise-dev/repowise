@@ -1,8 +1,9 @@
 /**
  * What a click, a double-click or Enter on a drawn card or connector does,
- * as data: select something, open a container, or list what a "+N more"
- * card folded. A single click selects; a double-click or Enter opens an
- * aggregate. Pure, no React.
+ * as data: select something, open a container, focus a service, or list
+ * what a "+N more" card folded. A single click selects; a double-click or
+ * Enter opens an aggregate or focuses a service (its callers and
+ * dependencies). Pure, no React.
  */
 
 import type { DrawnEdge, DrawnNode } from "./level-types";
@@ -14,6 +15,7 @@ export type ActivateTrigger = "click" | "double" | "key";
 export type Activation =
   | { kind: "select"; selection: SystemMapSelection }
   | { kind: "open"; id: string }
+  | { kind: "focus"; serviceId: string }
   | { kind: "folded"; serviceIds: readonly string[] }
   | null;
 
@@ -22,7 +24,9 @@ export function activateNode(n: DrawnNode | undefined, trigger: ActivateTrigger)
   const opens = trigger !== "click";
   switch (n.type) {
     case "service":
-      return { kind: "select", selection: { type: "node", id: n.serviceId } };
+      return opens
+        ? { kind: "focus", serviceId: n.serviceId }
+        : { kind: "select", selection: { type: "node", id: n.serviceId } };
     case "group":
       return opens && !n.open
         ? { kind: "open", id: n.groupId }
