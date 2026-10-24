@@ -156,6 +156,7 @@ def _pr_candidate(commit: dict, body: str) -> dict | None:
         "subject": commit.get("message", ""),
         "body": body,
         "pr": commit.get("pr_number"),
+        "date": commit.get("date", ""),
     }
 
 

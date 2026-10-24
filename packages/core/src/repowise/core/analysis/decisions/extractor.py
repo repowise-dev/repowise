@@ -250,6 +250,7 @@ class DecisionExtractor:
         parsed_files: list[Any] | None = None,
         source_map: dict[str, bytes] | None = None,
         policy: DecisionPolicy | None = None,
+        existing_pr_shas: set[str] | Sequence[str] | None = None,
     ) -> None:
         self._repo_path = Path(repo_path)
         self._provider = provider
@@ -261,6 +262,7 @@ class DecisionExtractor:
         # Ingestion's {rel_path: bytes} for the indexed set. When given, the
         # marker scan reads it instead of walking and re-reading the tree.
         self._source_map = source_map
+        self._existing_pr_shas = set(existing_pr_shas or ())
 
     def _llm(self, source: str) -> Any | None:
         """The provider *source* may use, or None when its model stage is off.
@@ -604,7 +606,14 @@ class DecisionExtractor:
         if not self._git_meta_map:
             return [], {}
         candidates, files_by_sha = pr_candidates(self._git_meta_map)
-        return list(candidates.values())[:_MAX_PR_BODIES], files_by_sha
+        ordered = sorted(
+            candidates.values(),
+            key=lambda c: c.get("date", ""),
+            reverse=True,
+        )
+        if self._existing_pr_shas:
+            ordered = [c for c in ordered if c.get("sha") not in self._existing_pr_shas]
+        return ordered[:_MAX_PR_BODIES], files_by_sha
 
     # ------------------------------------------------------------------
     # Source 5: Comment archaeology (centrality-bounded)

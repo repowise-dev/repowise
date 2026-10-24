@@ -350,3 +350,52 @@ async def test_an_unattributed_archaeology_decision_keeps_no_model_paths(tmp_pat
 
     assert decisions[0].proposed_files is None
     assert decisions[0].affected_files == []
+
+
+def test_pr_candidates_ordered_by_date_and_skips_existing(tmp_path):
+    body_text = (
+        "## Why\n\n"
+        "The hook imported core.workspace.config only to reach "
+        "find_workspace_root, which initialized the extractor stack. We "
+        "chose instead to resolve CLI command modules lazily, because the "
+        "import cost was charged to every invocation."
+    )
+    commits_a = [
+        {
+            "sha": "sha_old",
+            "message": "fix: old change",
+            "body": body_text,
+            "date": "2026-01-01T12:00:00Z",
+            "pr_number": 10,
+        }
+    ]
+    commits_b = [
+        {
+            "sha": "sha_new",
+            "message": "fix: new change",
+            "body": body_text,
+            "date": "2026-06-01T12:00:00Z",
+            "pr_number": 20,
+        }
+    ]
+    commits_c = [
+        {
+            "sha": "sha_already_mined",
+            "message": "fix: already mined",
+            "body": body_text,
+            "date": "2026-07-01T12:00:00Z",
+            "pr_number": 30,
+        }
+    ]
+    meta = {
+        "file_a.py": {"significant_commits_json": json.dumps(commits_a)},
+        "file_b.py": {"significant_commits_json": json.dumps(commits_b)},
+        "file_c.py": {"significant_commits_json": json.dumps(commits_c)},
+    }
+    ex = DecisionExtractor(
+        repo_path=tmp_path,
+        git_meta_map=meta,
+        existing_pr_shas={"sha_already_mined"},
+    )
+    candidates, _ = ex._pr_body_candidates()
+    assert [c["sha"] for c in candidates] == ["sha_new", "sha_old"]
