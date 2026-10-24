@@ -333,6 +333,55 @@ class TestDataMatching:
         contracts += DataExtractor().extract(worker, "worker")
         assert len(match_contracts(contracts)) == 1
 
+    def test_embedded_database_reader_not_linked_across_repos(self, tmp_path: Path) -> None:
+        # A table name shared with another repo's server schema is a second
+        # database when the reader opens a SQLite file of its own.
+        backend = tmp_path / "backend"
+        tool = tmp_path / "tool"
+        _write(backend, "migrations/001.sql", "CREATE TABLE repos (id INT);")
+        _write(
+            tool,
+            "store.py",
+            'import sqlite3\nq = "SELECT id FROM repos WHERE x = 1"\n',
+        )
+        _write(
+            tool,
+            "web/db.ts",
+            "import Database from 'better-sqlite3';\n"
+            "const q = 'SELECT id FROM repos WHERE x = 1';\n",
+        )
+        consumers = DataExtractor().extract(tool, "tool")
+        assert [c.meta.get("embedded") for c in consumers] == ["sqlite", "sqlite"]
+        contracts = DataExtractor().extract(backend, "backend") + consumers
+        assert match_contracts(contracts) == []
+
+    def test_embedded_database_reader_linked_within_its_repo(self, tmp_path: Path) -> None:
+        from repowise.core.workspace.matching.data import accepts
+
+        repo = tmp_path / "app"
+        _write(repo, "schema.sql", "CREATE TABLE repos (id INT);")
+        _write(repo, "store.py", 'import sqlite3\nq = "SELECT id FROM repos WHERE x = 1"\n')
+        contracts = DataExtractor().extract(repo, "app")
+        (consumer,) = [c for c in contracts if c.role == "consumer"]
+        (provider,) = [c for c in contracts if c.role == "provider"]
+        assert consumer.meta.get("embedded") == "sqlite"
+        assert accepts(provider, consumer)
+
+    def test_server_database_reader_still_linked_across_repos(self, tmp_path: Path) -> None:
+        backend = tmp_path / "backend"
+        worker = tmp_path / "worker"
+        _write(backend, "migrations/001.sql", "CREATE TABLE repos (id INT);")
+        _write(
+            worker,
+            "job.py",
+            "import psycopg\n"
+            'URL = "postgresql://db/app"\n'
+            'q = "SELECT id FROM repos WHERE x = 1"\n',
+        )
+        contracts = DataExtractor().extract(backend, "backend")
+        contracts += DataExtractor().extract(worker, "worker")
+        assert len(match_contracts(contracts)) == 1
+
 
 _ELOQUENT_HEAD = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\n"
 

@@ -59,7 +59,7 @@ MATCHERS: dict[str, TypeMatcher] = {
         passes=(topic.binding_pass,),
         keys=topic.matching_keys,
     ),
-    "data": TypeMatcher(passes=(data.shared_table_pass,)),
+    "data": TypeMatcher(accepts=data.accepts, passes=(data.shared_table_pass,)),
 }
 
 _NO_RULES = TypeMatcher()
