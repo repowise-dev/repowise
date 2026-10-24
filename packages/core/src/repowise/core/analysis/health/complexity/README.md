@@ -25,9 +25,15 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > `from repowise.core.analysis.health.complexity import ...` and are unaffected
 > by the internal split.
 
-- **CCN** — McCabe cyclomatic complexity. Counts branching constructs
-  (`if`, `for`, `while`, `case`, `catch`) plus boolean operators
-  (`&&`, `||`).
+- **CCN** — McCabe cyclomatic complexity starting at 1 per function. Adds +1
+  for branching constructs (`if`, `elif` / `else if`, ternaries and conditional
+  expressions, comprehension `if` filters), statement loops (`for`, `while`,
+  `do`), `catch` / `except` clauses, `case` arms (except inside a flat
+  `switch` / `when` / `match` with simple single-expression arms, which counts
+  +1 once for the whole dispatch; Python `match` still counts per `case`), and
+  boolean operators (`&&`, `||`, `and`, `or`). Comprehension `for` clauses,
+  `try`, `finally`, and `??` add no point (see
+  [`docs/architecture/code-health.md` §5.6](../../../../../../../docs/architecture/code-health.md#56-ccn-counting-rules)).
 - **max nesting depth** — deepest nested control-flow block per function.
   `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
   JSX (`flat_ternary_kinds`), plus Python conditional-expression chains

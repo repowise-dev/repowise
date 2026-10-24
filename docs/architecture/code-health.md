@@ -347,6 +347,31 @@ object literal inside JSX (`{fmt(a ? b : c)}`), with a non-JSX branch
 
 </details>
 
+### 5.6 CCN counting rules
+
+Every function starts at **CCN 1** (the entry path). The AST walker (`complexity/cyclomatic.py` and the per-language node maps in `complexity/languages.py`) increments CCN on the following constructs and leaves others at zero, which is why `max_ccn` and the CCN quoted in findings can differ from a token-based counter such as `lizard`:
+
+- **Branches and loops (+1 each):** `if`, `elif` / `else if`, ternaries and Python conditional expressions (`x if c else y`), statement-level loops (`for`, `while`, `do`), and inline guards (`if_clause`, `guard`, `where_clause`).
+- **Boolean operators (+1 each):** `&&`, `||`, `and`, and `or` (`_is_boolean_operator` in `complexity/cyclomatic.py`), whether in a branch condition or a value expression.
+- **Comprehension `for` (+0) vs. comprehension `if` (+1):** a comprehension `for` (`for_in_clause` in `[x for x in xs]`) is a generator, not a decision, so it adds no point; each `if` filter (`if_clause` in `[x for x in xs if x]`) is a branch point and adds +1.
+- **`try` and `finally` (+0) vs. `catch` / `except` (+1 each):** opening a `try` block or a `finally` cleanup block adds no branch point or nesting level; each `catch` / `except` / `rescue` handler adds +1.
+- **Flat `switch` / `when` / `match` (+1 total) vs. Python `match` (+1 per `case`):** when every arm of a `switch`, `when`, or Rust/Ruby/PHP `match` is a single expression with no nested branch, loop, switch, or multi-statement block (`_is_flat_match` in `complexity/cyclomatic.py`), the whole dispatch is one decision and adds +1 in total instead of +1 per arm. When any arm contains complex control flow, each `case` arm adds +1. Python's `match_statement` is excluded from `_is_flat_match` because structural pattern matching is equivalent to an `if` / `elif` chain, so each `case` adds +1.
+- **Nullish coalescing `??` (+0):** `??` is not in the boolean-operator set and adds no point.
+- **Nested functions vs. lambdas:** a nested named function or method (`function_kinds`) gets its own `FunctionComplexity` entry and does not add to the enclosing function's CCN; a lambda or arrow function (`lambda_kinds`) rolls up into the enclosing function.
+
+| Construct | Repowise CCN | Token counter (`lizard`) | Why |
+|---|---:|---:|---|
+| Python `if a and b or c:` | 4 | 4 | Entry (1) + `if` (1) + `and` (1) + `or` (1) |
+| Python `x = a and b; return x or a` | 3 | 3 | Entry (1) + `and` (1) + `or` (1) |
+| Python `[x for x in xs]` | 1 | 2 | Comprehension `for` is a generator, not a decision |
+| Python `[x for x in xs if x]` | 2 | 3 | Generator `for` (+0); `if` filter (+1) |
+| Python `try: ... finally: ...` | 1 | 2 | Neither `try` nor `finally` is a decision point |
+| Python `try` + 2 `except` clauses | 3 | 3 | Entry (1) + +1 per `except` handler |
+| Python `match` with 3 `case` arms | 4 | 4 | Pattern matching counts +1 per `case` |
+| TypeScript flat `switch` (2 `case` + `default`) | 2 | 3 | Flat dispatch counts +1 once for the `switch` |
+| TypeScript `a ?? b` | 1 | 3 | `??` is not counted as a branch or boolean operator |
+| TypeScript `try / catch / finally` | 2 | 2 | Entry (1) + `catch` (1); `try` and `finally` add 0 |
+
 ---
 
 ## 6. Scoring (`scoring.py`)

@@ -248,6 +248,7 @@ six months of bug fixes ([method](../architecture/code-health.md#62-validation-a
 - `get_health(include=["accuracy"])` reports how many of your 20 lowest-scoring files had
   a bug fix in the last 180 days against the base rate: an association, not a forward
   test, silent below 25 scored files or 5 fixed ones.
+- CCN values (`max_ccn`, and the CCN quoted in findings and thresholds) come from the AST walker, not a token counter: comprehension `for`, `try` / `finally`, `??`, and individual arms of a flat `switch` / `when` / `match` (except Python `match`, where each `case` adds a point) do not add a point. Full counting rule: [architecture/code-health.md](../architecture/code-health.md#56-ccn-counting-rules).
 
 Every test: [BENCHMARKS.md](../BENCHMARKS.md#code-health-predicts-defects).
 

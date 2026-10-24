@@ -1133,3 +1133,52 @@ def test_apex_assertions_and_test_cases():
         assert by_name[case].is_test_case, case
     for helper in ("makeData", "compute"):
         assert not by_name[helper].is_test_case, helper
+
+
+@pytest.mark.parametrize(
+    ("language", "filename", "source", "expected_ccn"),
+    [
+        ("python", "f.py", "def f(xs):\n    return [x for x in xs]\n", 1),
+        ("python", "f.py", "def f(xs):\n    return [x for x in xs if x]\n", 2),
+        ("python", "f.py", "def f():\n    try:\n        g()\n    finally:\n        h()\n", 1),
+        (
+            "python",
+            "f.py",
+            "def f():\n    try:\n        g()\n    except ValueError:\n        h()\n    except TypeError:\n        k()\n",
+            3,
+        ),
+        (
+            "python",
+            "f.py",
+            "def f(x):\n    match x:\n        case 1:\n            return 10\n        case 2:\n            return 20\n        case _:\n            return 30\n",
+            4,
+        ),
+        (
+            "typescript",
+            "f.ts",
+            "function f(x: number): number {\n  switch (x) {\n    case 1: return 10;\n    case 2: return 20;\n    default: return 30;\n  }\n}\n",
+            2,
+        ),
+        ("typescript", "f.ts", "function f(a: number | null, b: number): number {\n  return a ?? b;\n}\n", 1),
+        (
+            "typescript",
+            "f.ts",
+            "function f(): number {\n  try {\n    return g();\n  } catch (e) {\n    return 0;\n  } finally {\n    cleanup();\n  }\n}\n",
+            2,
+        ),
+    ],
+    ids=[
+        "py-comprehension-for",
+        "py-comprehension-if",
+        "py-try-finally",
+        "py-try-two-excepts",
+        "py-match-three-cases",
+        "ts-flat-switch",
+        "ts-nullish-coalescing",
+        "ts-try-catch-finally",
+    ],
+)
+def test_documented_ccn_counting_rules(language, filename, source, expected_ccn):
+    fn = _walk_source(source, language, filename)["f"]
+    assert fn.ccn == expected_ccn
+
