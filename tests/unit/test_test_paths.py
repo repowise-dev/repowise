@@ -327,6 +327,24 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/foo.test-d.ts", None, "test"),  # a type test, not a scaffolding word
     ("docs/test-helpers.md", None, ""),  # filename rules are source rules
     ("src/logging/diagnostic-support-bundle.ts", None, ""),
+    # Storybook stories and Cypress e2e scaffolding are test material: a
+    # `*.stories.*` / `*.story.*` file is the rendered example tests
+    # exercise, `.storybook/` holds the config they render against, and
+    # `cypress/` is the e2e framework's root, so its `support/` and
+    # `fixtures/` scaffolding count the way `tests/helpers/` does.
+    ("src/Button.stories.tsx", None, "support"),
+    ("src/Button.story.tsx", None, "support"),
+    (".storybook/preview.ts", None, "support"),
+    ("cypress/support/commands.ts", None, "support"),
+    ("cypress/fixtures/user.json", None, "support"),
+    ("cypress/e2e/login.cy.ts", None, "test"),
+    # ...but the anchors stay anchored: a bare `stories` stem, a module
+    # named `storybook`, and the root Cypress config are not test material,
+    # and a stories file that is itself a test stays a test.
+    ("stories.tsx", None, ""),
+    ("src/storybook.ts", None, ""),
+    ("cypress.config.ts", None, ""),
+    ("Button.stories.test.tsx", None, "test"),
 )
 
 

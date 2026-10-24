@@ -47,6 +47,14 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        # Storybook stories and Cypress e2e scaffolding are test material,
+        # so they read as test origin; the root Cypress config stays
+        # production code.
+        ("src/Button.stories.tsx", "test"),
+        (".storybook/preview.ts", "test"),
+        ("cypress/support/commands.ts", "test"),
+        ("cypress/fixtures/user.json", "test"),
+        ("cypress.config.ts", "production"),
         # a `tests/` folder inside a JS-family `src` tree is a product feature
         ("packages/web/src/app/repos/[id]/tests/page.tsx", "production"),
         ("packages/web/src/components/tests/tests-view.tsx", "production"),
