@@ -101,11 +101,15 @@ def _enricher(
     origins: bool = True,
     strategy: str | None = "prefix_stripped",
     legacy_diagnostics: bool = False,
+    unread_repo: bool = True,
 ) -> CrossRepoEnricher:
     contracts = _contracts(origins=origins)
     links = [_link(strategy=strategy)]
     graph = build_system_graph(contracts, links, CrossRepoOverlay(), {}, generated_at="t")
     raw_graph = {**graph.to_dict(), "diagnostics": _diagnostics(legacy=legacy_diagnostics)}
+    # A walked repo with no contracts leaves the evidence partial.
+    walked = ("api", "web", "mongo") if unread_repo else ("api", "web")
+    raw_graph["repo_provenance"] = {alias: {"head": "h"} for alias in walked}
     (tmp_path / "system_graph.json").write_text(json.dumps(raw_graph), encoding="utf-8")
     (tmp_path / "contracts.json").write_text(
         json.dumps(
@@ -174,7 +178,7 @@ def test_change_risk_block_carries_strategy_evidence_and_the_repos_calls(tmp_pat
         block = _cross_repo_block("api", [PROVIDER_FILE])
     assert block["consumers"][0]["strategy"] == "prefix_stripped"
     assert block["consumers"][0]["origin"] == "client_call"
-    assert block["graph_evidence"]["state"] in {"measured", "partial", "insufficient"}
+    assert block["graph_evidence"] == {"state": "partial", "reason": "repos_without_contracts"}
     # api reads no HTTP call, so it has nothing to split.
     assert "http_calls" not in block
 
@@ -193,7 +197,7 @@ def test_get_risk_rows_and_analysis_carry_provenance_and_evidence(tmp_path: Path
     assert (rows[0]["strategy"], rows[0]["origin"]) == ("prefix_stripped", "route_registration")
     with _in_workspace(enricher):
         analysis = _cross_repo_relationships("web")["analysis"]
-    assert analysis["graph_evidence"]["state"] in {"measured", "partial", "insufficient"}
+    assert analysis["graph_evidence"] == {"state": "partial", "reason": "repos_without_contracts"}
     assert analysis["http_calls"] == {"read": 3, "not_linked": 1, "in_service": 1}
 
 
@@ -216,12 +220,23 @@ def test_evidence_and_calls_are_absent_without_a_graph():
     assert enricher.http_call_split() is None
 
 
-def test_evidence_brief_is_core_state_with_its_reason(tmp_path: Path):
+def test_evidence_brief_is_core_state_with_its_reason_codes(tmp_path: Path):
     from repowise.core.workspace.graph_evidence import graph_evidence
     from repowise.core.workspace.system_graph import SystemGraph
 
     enricher = _enricher(tmp_path)
     core = graph_evidence(SystemGraph.from_dict(enricher.get_system_graph()))
-    brief = enricher.graph_evidence_brief()
-    assert brief["state"] == core.state
-    assert brief.get("reason", "") == core.summary
+    assert enricher.graph_evidence_brief() == {
+        "state": core.state,
+        "reason": ", ".join(r.code for r in core.reasons),
+    }
+
+
+def test_a_measured_graph_adds_no_evidence_field(tmp_path: Path):
+    enricher = _enricher(tmp_path, unread_repo=False)
+    assert enricher.graph_evidence_brief() is None
+    with _in_workspace(enricher):
+        block = _cross_repo_block("api", [PROVIDER_FILE])
+        analysis = _cross_repo_relationships("web")["analysis"]
+    assert "graph_evidence" not in block
+    assert "graph_evidence" not in analysis

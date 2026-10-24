@@ -144,7 +144,10 @@ links are appended after it.
 5. **Service links**: `service_pass` gives each HTTP consumer whose target is a
    workspace repo, but whose path no provider serves, one `host_only` link with no
    provider file. These live in `ContractStore.service_links`, apart from
-   `contract_links`. A target that only equals a repo alias draws none.
+   `contract_links`. A target that only equals a repo alias draws none. A gateway's
+   edge to each service it routes to is a `gateway_route` service link, while a
+   consumer call routed through that gateway to a served route is a `gateway_route`
+   link in `contract_links`.
 6. **Manual links** from `contracts.manual_links` are appended with strategy
    `manual`.
 

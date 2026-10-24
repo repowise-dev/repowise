@@ -569,23 +569,28 @@ class CrossRepoEnricher:
         return self._system_graph.get("diagnostics")
 
     def graph_evidence_brief(self) -> dict | None:
-        """The system graph's evidence ``state`` and, short of measured, its ``reason``.
+        """The graph's evidence ``state`` and ``reason`` codes when short of measured.
 
-        Core's :func:`graph_evidence`, the one every view reads; ``None``
-        without a graph.
+        Core's :func:`graph_evidence`, the one every view reads; ``None`` when
+        measured or without a graph, so a default response stays flat.
         """
         if self._evidence_brief is _ABSENT:
             self._evidence_brief = None
             if self._system_graph is not None:
-                from repowise.core.workspace.graph_evidence import graph_evidence
+                from repowise.core.workspace.graph_evidence import (
+                    EVIDENCE_MEASURED,
+                    graph_evidence,
+                )
                 from repowise.core.workspace.system_graph import SystemGraph
 
                 try:
                     evidence = graph_evidence(SystemGraph.from_dict(self._system_graph))
-                    self._evidence_brief = {
-                        "state": evidence.state,
-                        **({"reason": evidence.summary} if evidence.summary else {}),
-                    }
+                    # Measured needs no caveat; otherwise the reason codes, not prose.
+                    if evidence.state != EVIDENCE_MEASURED:
+                        self._evidence_brief = {
+                            "state": evidence.state,
+                            "reason": ", ".join(r.code for r in evidence.reasons),
+                        }
                 except Exception:
                     # An additive field: a bad graph never hides the block it rides on.
                     _log.debug("Graph evidence unavailable", exc_info=True)
