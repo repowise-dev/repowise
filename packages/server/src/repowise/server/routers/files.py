@@ -286,9 +286,7 @@ async def file_detail(
     # predicate described was always reachable by key. The repo check stays
     # because one database can hold several repositories while the page id is
     # unique across the table.
-    page_row = await session.get(Page, f"file_page:{file_path}")
-    if page_row is not None and page_row.repository_id != repo_id:
-        page_row = None
+    page_row = await session.get(Page, {"id": f"file_page:{file_path}", "repository_id": repo_id})
     wiki_page = (
         {
             "id": page_row.id,

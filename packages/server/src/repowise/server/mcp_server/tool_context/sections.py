@@ -196,10 +196,11 @@ async def _parent_page_section(card: CardState) -> None:
     page = card.page
     if page is None or not page.parent_page_id:
         return
-    parent = await card.session.get(Page, page.parent_page_id)
+    parent = await card.session.get(
+        Page, {"id": page.parent_page_id, "repository_id": card.repo_id}
+    )
     if (
         parent is not None
-        and parent.repository_id == card.repo_id
         and getattr(parent, "freshness_status", "") != "tombstone"
     ):
         # Skip a tombstoned parent, for the reason _tombstone_section redirects.
@@ -556,7 +557,9 @@ async def _freshness_section(card: CardState) -> None:
     file_path = card.resolved.file_path
     page = card.page
     if not page and card.resolved.target_type == "symbol" and file_path:
-        page = await card.session.get(Page, f"file_page:{file_path}")
+        page = await card.session.get(
+            Page, {"id": f"file_page:{file_path}", "repository_id": card.repo_id}
+        )
     freshness = _page_freshness(page)
     if file_path and uncommitted_targets(
         served_root(card.query.repository, card.query.repo_root), [file_path]
