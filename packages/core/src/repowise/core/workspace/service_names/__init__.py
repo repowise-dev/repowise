@@ -36,6 +36,7 @@ from typing import Any
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
 from . import (
+    apim,
     aspire,
     compose,
     dockerfile,
@@ -53,6 +54,7 @@ from .base import ENV, HOST, Claim, Route, ServiceNameSource, SourceFile
 _log = logging.getLogger("repowise.workspace.service_names")
 
 SOURCES: tuple[ServiceNameSource, ...] = (
+    apim.SOURCE,
     aspire.SOURCE,
     compose.SOURCE,
     dockerfile.SOURCE,
