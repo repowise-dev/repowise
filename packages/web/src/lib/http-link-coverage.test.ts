@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ExtractionDiagnostics, UnmatchedConsumer } from "@repowise-dev/types/workspace";
 import {
-  httpLinkCoverage,
-  httpLinkedStat,
   inServiceConsumers,
-  percentOf,
   unmatchedOutsideService,
-} from "./http-link-coverage";
+  unmatchedReasonsOutsideService,
+} from "@repowise-dev/ui/workspace/contract-facts";
+import { httpLinkCoverage, httpLinkedStat, percentOf, unmatchedHint } from "./http-link-coverage";
 
 function consumer(reason: UnmatchedConsumer["reason"], type = "http"): UnmatchedConsumer {
   return { repo: "web", file_path: "a.ts", contract_id: "GET /x", contract_type: type, reason };
@@ -104,6 +103,12 @@ describe("in-service calls on an older artifact", () => {
   it("are never counted as unmatched", () => {
     expect(unmatchedOutsideService(old).map((u) => u.reason)).toEqual(["no_provider"]);
   });
+
+  it("are dropped from the reason counts", () => {
+    expect(unmatchedReasonsOutsideService({ no_provider: 2, internal_only: 5, unlinked: 0 })).toEqual({
+      no_provider: 2,
+    });
+  });
 });
 
 describe("httpLinkedStat", () => {
@@ -121,5 +126,15 @@ describe("httpLinkedStat", () => {
 describe("percentOf", () => {
   it("never rounds a near miss up to 100%", () => {
     expect(percentOf(996, 1000)).toBe("99%");
+  });
+});
+
+describe("unmatchedHint", () => {
+  it("names the in-service calls when there are some", () => {
+    expect(unmatchedHint(t, diag())).toBe('unmatchedHint inServiceHint {"count":2}');
+  });
+
+  it("ends cleanly when there are none", () => {
+    expect(unmatchedHint(t, diag({ in_service_consumers: [] }))).toBe("unmatchedHint");
   });
 });

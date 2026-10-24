@@ -1,6 +1,7 @@
 import type { ExtractionDiagnostics } from "@repowise-dev/types/workspace";
 import type { RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { inServiceConsumers } from "@repowise-dev/ui/workspace/contract-facts";
 
 /** The `linkCoverage` message namespace; next-intl's `t` fits. */
 type Translator = (key: string, values?: Record<string, string | number>) => string;
@@ -50,22 +51,6 @@ export function percentOf(part: number, whole: number): string {
 }
 
 /**
- * Consumers served by their own service. An artifact written before these were
- * split out lists them as unmatched with reason `internal_only`; both count.
- */
-export function inServiceConsumers(diag: ExtractionDiagnostics) {
-  return [
-    ...(diag.in_service_consumers ?? []),
-    ...diag.unmatched_consumers.filter((u) => u.reason === "internal_only"),
-  ];
-}
-
-/** Consumers that matched no provider, never counting in-service calls. */
-export function unmatchedOutsideService(diag: ExtractionDiagnostics) {
-  return diag.unmatched_consumers.filter((u) => u.reason !== "internal_only");
-}
-
-/**
  * The ribbon stat for the CLI headline "N of M linked to another service; K
  * read". Null on an artifact without the counts, so the page keeps its old stat.
  */
@@ -85,4 +70,11 @@ export function httpLinkedStat(t: Translator, diag: ExtractionDiagnostics): Ribb
       inService: formatNumber(c.inService),
     }),
   };
+}
+
+/** What the unmatched count leaves out: the in-service calls, named only when there are some. */
+export function unmatchedHint(t: Translator, diag: ExtractionDiagnostics): string {
+  const inService = inServiceConsumers(diag).length;
+  const base = t("unmatchedHint");
+  return inService > 0 ? `${base} ${t("inServiceHint", { count: inService })}` : base;
 }

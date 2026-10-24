@@ -7,7 +7,11 @@ import { PageShell } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
-import { groupOrphanProviders } from "@repowise-dev/ui/workspace/contract-facts";
+import {
+  groupOrphanProviders,
+  unmatchedOutsideService,
+  unmatchedReasonsOutsideService,
+} from "@repowise-dev/ui/workspace/contract-facts";
 import { MAX_PROMPT_ROWS } from "@repowise-dev/ui/workspace/contract-ai-prompt";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
@@ -15,11 +19,7 @@ import {
   getWorkspaceContracts,
   getWorkspaceDiagnostics,
 } from "@/lib/api/workspace";
-import {
-  httpLinkedStat,
-  inServiceConsumers,
-  unmatchedOutsideService,
-} from "@/lib/http-link-coverage";
+import { httpLinkedStat, unmatchedHint } from "@/lib/http-link-coverage";
 import { BreakingChangesSection } from "./breaking-changes-section";
 import { ContractDrawerProvider } from "./contract-drawer-host";
 import { ContractListControls, ContractListPager } from "./contract-filters";
@@ -138,9 +138,7 @@ export default async function ContractsPage({ searchParams }: Props) {
       label: t("ribbon.unmatched"),
       value: diagnostics ? formatNumber(unmatchedOutsideService(diagnostics).length) : "",
       sub: unmatchedReasonSub(t, diagnostics),
-      hint: diagnostics
-        ? tLinks("inServiceHint", { count: inServiceConsumers(diagnostics).length })
-        : undefined,
+      hint: diagnostics ? unmatchedHint(tLinks, diagnostics) : undefined,
     },
     {
       label: t("ribbon.orphans"),
@@ -293,9 +291,7 @@ function unmatchedReasonSub(
   diagnostics: ExtractionDiagnostics | null,
 ): string {
   if (!diagnostics) return "";
-  // In-service calls are served; an older artifact still counts them here.
-  const reasons = Object.entries(diagnostics.unmatched_by_reason ?? {})
-    .filter(([reason, n]) => n > 0 && reason !== "internal_only")
+  const reasons = Object.entries(unmatchedReasonsOutsideService(diagnostics.unmatched_by_reason))
     .sort((a, b) => b[1] - a[1]);
   if (reasons.length === 0) return t("reasons.everyMatched");
   return reasons

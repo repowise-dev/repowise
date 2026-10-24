@@ -28,6 +28,7 @@ import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon"
 import { OverviewSection } from "@repowise-dev/ui/overview/section";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { unmatchedOutsideService } from "@repowise-dev/ui/workspace/contract-facts";
 import type { NodeArchitectureRole, SystemGraph, ConformanceReport } from "@/lib/api/types";
 import {
   useWorkspaceSystemGraph,
@@ -37,7 +38,7 @@ import {
   useWorkspaceConformance,
   useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
-import { httpLinkedStat, unmatchedOutsideService } from "@/lib/http-link-coverage";
+import { httpLinkedStat } from "@/lib/http-link-coverage";
 import { useRepoContracts } from "./use-repo-contracts";
 
 const LENSES: readonly SystemMapLens[] = ["none", "blast", "breaking", "conformance", "core"];

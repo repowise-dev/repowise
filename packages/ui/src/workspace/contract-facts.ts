@@ -8,7 +8,12 @@
  */
 
 import { contractTypeLabel } from "./contract-type-label";
-import type { ContractSchema, SchemaField } from "@repowise-dev/types/workspace";
+import type {
+  ContractSchema,
+  ExtractionDiagnostics,
+  SchemaField,
+  UnmatchedConsumer,
+} from "@repowise-dev/types/workspace";
 
 /**
  * One detected contract, as both the workspace list and the detail endpoint
@@ -346,6 +351,35 @@ export function sortUnmatchedReasons<T extends { reason: string; count: number }
         Number(unmatchedReasonCopy(b.reason).actionable) -
           Number(unmatchedReasonCopy(a.reason).actionable) || b.count - a.count,
     );
+}
+
+/**
+ * Consumers served by their own service. An artifact written before these were
+ * split out lists them as unmatched with reason `internal_only`; both count.
+ */
+export function inServiceConsumers(
+  diag: Pick<ExtractionDiagnostics, "unmatched_consumers" | "in_service_consumers">,
+): UnmatchedConsumer[] {
+  return [
+    ...(diag.in_service_consumers ?? []),
+    ...diag.unmatched_consumers.filter((u) => u.reason === "internal_only"),
+  ];
+}
+
+/** Consumers that matched no provider, never counting in-service calls. */
+export function unmatchedOutsideService(
+  diag: Pick<ExtractionDiagnostics, "unmatched_consumers">,
+): UnmatchedConsumer[] {
+  return diag.unmatched_consumers.filter((u) => u.reason !== "internal_only");
+}
+
+/** `unmatched_by_reason` without `internal_only`, which an older artifact still counts there. */
+export function unmatchedReasonsOutsideService(
+  byReason: Record<string, number> | null | undefined,
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(byReason ?? {}).filter(([reason, n]) => n > 0 && reason !== "internal_only"),
+  );
 }
 
 /** One consumer's unmatched state as a paragraph, with the concrete next step. */
