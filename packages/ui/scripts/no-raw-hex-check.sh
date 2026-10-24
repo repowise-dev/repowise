@@ -70,7 +70,12 @@ if [ ! -d "$ROOT" ]; then
   exit 2
 fi
 
-violations=$(grep -rnE '#[0-9a-fA-F]{3,8}\b' "$ROOT" 2>/dev/null \
+# The leading `(^|[^&])` is what keeps an HTML numeric entity out: `&#183;`
+# (a middle dot) is a character reference, not a hex literal. ERE has no
+# lookbehind, so the preceding character is matched instead and consumed --
+# a real colour, in a string or a style, still matches on the `"`/space/`{`
+# before its `#`, and `^` keeps one at the start of a line.
+violations=$(grep -rnE '(^|[^&])#[0-9a-fA-F]{3,8}\b' "$ROOT" 2>/dev/null \
   | grep -vE "$ALLOW" || true)
 
 if [ -n "$violations" ]; then

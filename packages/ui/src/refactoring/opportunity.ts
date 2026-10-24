@@ -177,12 +177,12 @@ export function salienceOrder(marks: StructuralMark[]): string[] {
  * anything becoming unreadable.
  *
  * **`--color-accent-primary`, not `--color-accent-fill`.** They are the same
- * bright orange in dark mode, but light mode deepens the former to `#A16215`
- * precisely so it reads on warm paper: measured against `--color-bg-root`,
+ * bright orange in dark mode, but light mode deepens the former precisely so
+ * it reads on warm paper: measured against `--color-bg-root`,
  * `accent-fill` is 2.12:1 in light and `accent-primary` is 4.58:1, against a
  * 3.0 floor for non-text UI. The theme doc records the same correction being
  * made once already, when the community graph's orange hub had to be deepened
- * from `#F59520` to `#C0641A` for the same reason on the same kind of canvas.
+ * for the same reason on the same kind of canvas.
  *
  * The neutral tiers do *not* clear that floor on their own (1.25 to 2.45:1),
  * and they are not asked to: every mark carries a separating stroke, so the
