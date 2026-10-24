@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,10 +95,12 @@ from .models import (
 )
 
 __all__ = [
+    "DEFAULT_LEXICAL_DEDUP_TAU",
     "DedupePlan",
     "FoldPlan",
     "apply_dedupe",
     "plan_dedupe",
+    "plan_lexical_dedupe",
     "render_plan",
 ]
 
@@ -114,6 +117,8 @@ _UNION_FIELDS: tuple[tuple[str, str], ...] = (
 #: candidate whatever this column says, so ``active`` belongs here; the retired
 #: statuses do not, because their lineage would go with them.
 _FOLDABLE_STATUSES: frozenset[str] = frozenset({"proposed", "active"})
+
+DEFAULT_LEXICAL_DEDUP_TAU = 0.70
 
 
 @dataclass
@@ -133,9 +138,7 @@ class FoldPlan:
         return {
             "canonical_id": self.canonical_id,
             "canonical_title": self.canonical_title,
-            "folded": [
-                {"id": i, "title": t, "similarity": round(s, 4)} for i, t, s in self.folded
-            ],
+            "folded": [{"id": i, "title": t, "similarity": round(s, 4)} for i, t, s in self.folded],
         }
 
 
@@ -199,7 +202,7 @@ async def _foldable(session: AsyncSession, repository_id: str) -> list[DecisionR
     accepted = await accepted_decision_ids(session, repository_id)
     reviewed = {
         decision_id
-        for decision_id, in (
+        for (decision_id,) in (
             await session.execute(
                 select(DecisionCandidateMeta.decision_id).where(
                     DecisionCandidateMeta.repository_id == repository_id,
@@ -261,6 +264,46 @@ async def plan_dedupe(
             edges[rec.id][other_id] = best
             edges[other_id][rec.id] = best
     plan.pairs = sum(len(v) for v in edges.values()) // 2
+    plan.clusters = _star_cover(records, edges)
+    return plan
+
+
+def _lexical_match_text(record: DecisionRecord) -> str:
+    """Normalize match text without changing its word order or punctuation."""
+    return " ".join(decision_match_text(record.title, record.decision or "").casefold().split())
+
+
+async def plan_lexical_dedupe(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    tau: float = DEFAULT_LEXICAL_DEDUP_TAU,
+) -> DedupePlan:
+    """Plan same-commit lexical duplicate folds without a vector store."""
+    records = await _foldable(session, repository_id)
+    plan = DedupePlan(tau=tau, eligible=len(records))
+    if len(records) < 2:
+        return plan
+
+    by_commit: dict[str, list[DecisionRecord]] = defaultdict(list)
+    for record in records:
+        for commit in set(_json_list(record.evidence_commits_json)):
+            if commit:
+                by_commit[commit].append(record)
+
+    texts = {record.id: _lexical_match_text(record) for record in records}
+    edges: dict[str, dict[str, float]] = defaultdict(dict)
+    for group in by_commit.values():
+        for i, left in enumerate(group):
+            for right in group[i + 1 :]:
+                left_text, right_text = sorted((texts[left.id], texts[right.id]))
+                score = SequenceMatcher(None, left_text, right_text).ratio()
+                if score < tau:
+                    continue
+                edges[left.id][right.id] = max(score, edges[left.id].get(right.id, 0.0))
+                edges[right.id][left.id] = max(score, edges[right.id].get(left.id, 0.0))
+
+    plan.pairs = sum(len(neighbours) for neighbours in edges.values()) // 2
     plan.clusters = _star_cover(records, edges)
     return plan
 
@@ -464,9 +507,7 @@ async def _repoint_references(session: AsyncSession, canonical_id: str, folded_i
     )
     for column in (DecisionEdge.src_decision_id, DecisionEdge.dst_decision_id):
         edges = (
-            (await session.execute(select(DecisionEdge).where(column == folded_id)))
-            .scalars()
-            .all()
+            (await session.execute(select(DecisionEdge).where(column == folded_id))).scalars().all()
         )
         for edge in edges:
             src = canonical_id if edge.src_decision_id == folded_id else edge.src_decision_id

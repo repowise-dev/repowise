@@ -115,9 +115,7 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
     default="open",
     show_default=True,
 )
-@click.option(
-    "--lane", default=None, help="Only candidates raised by this extraction lane."
-)
+@click.option("--lane", default=None, help="Only candidates raised by this extraction lane.")
 @click.option("--limit", default=30, show_default=True)
 @format_option()
 def candidates_command(
@@ -256,12 +254,17 @@ def merge_command(decision_id: str, into_id: str, path: str | None, fmt: str) ->
 @click.argument("path", required=False, default=None)
 @click.option("--apply", "apply_", is_flag=True, default=False, help="Write the plan.")
 @click.option(
+    "--lexical",
+    is_flag=True,
+    help="Compare title and decision text lexically within shared evidence commits.",
+)
+@click.option(
     "--tau",
     default=None,
     # Floored well below the 0.83 default but not at zero: this command deletes
     # what it groups, and a threshold near zero groups the whole corpus.
     type=click.FloatRange(0.5, 1.0),
-    help="Cosine threshold to fold at  [default: 0.83]",
+    help="Similarity threshold (default: 0.83 cosine, 0.70 lexical).",
 )
 @click.option(
     "--limit",
@@ -272,52 +275,65 @@ def merge_command(decision_id: str, into_id: str, path: str | None, fmt: str) ->
 )
 @format_option()
 def dedupe_command(
-    path: str | None, apply_: bool, tau: float | None, limit: int, fmt: str
+    path: str | None,
+    apply_: bool,
+    lexical: bool,
+    tau: float | None,
+    limit: int,
+    fmt: str,
 ) -> None:
     """Fold candidates that duplicate another candidate into one record.
 
     Dry run by default. Folds only into a record the duplicate is itself
     measured against, so a chain of near-neighbours is never collapsed into
-    one decision. Evidence and governed files move to the surviving record,
-    and every folded id keeps resolving.
+    one decision. Use --lexical to compare only records with a shared evidence
+    commit without requiring an embedder. Evidence and governed files move to
+    the surviving record, and every folded id keeps resolving.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
-    from repowise.cli.providers.embedders import (
-        build_embedder,
-        resolve_embedder_for_repo,
-        semantic_search_command,
-    )
-    from repowise.cli.providers.vector_store import build_vector_store
-    from repowise.core.analysis.decisions.semantic_match import DEFAULT_DEDUP_TAU
-    from repowise.core.providers.embedding.base import MockEmbedder
 
     repo_path = _resolve_decision_repo(path, fmt)
-    threshold = DEFAULT_DEDUP_TAU if tau is None else tau
+    if lexical:
+        from repowise.core.persistence.decision_dedupe import DEFAULT_LEXICAL_DEDUP_TAU
 
-    embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
-    # Test vectors are hashes, so they would group decisions that have nothing
-    # to do with each other, and this command deletes what it groups.
-    if isinstance(embedder, MockEmbedder):
-        emit_refusal(
-            "no_real_embedder",
-            "Decisions can only be compared with a real embedder, not test vectors.",
-            fmt,
-            remedy=f"Run '{semantic_search_command(repo_path)}'.",
+        threshold = DEFAULT_LEXICAL_DEDUP_TAU if tau is None else tau
+        vector_store = None
+    else:
+        from repowise.cli.providers.embedders import (
+            build_embedder,
+            resolve_embedder_for_repo,
+            semantic_search_command,
         )
-    vector_store = build_vector_store(repo_path, embedder)
-    if vector_store is None:
-        emit_refusal(
-            "no_vector_store",
-            "This repo has no vector store to compare decisions with.",
-            fmt,
-            remedy=f"Run '{semantic_search_command(repo_path)}'.",
-        )
+        from repowise.cli.providers.vector_store import build_vector_store
+        from repowise.core.analysis.decisions.semantic_match import DEFAULT_DEDUP_TAU
+        from repowise.core.providers.embedding.base import MockEmbedder
+
+        threshold = DEFAULT_DEDUP_TAU if tau is None else tau
+        embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
+        # Test vectors are hashes, so they would group decisions that have nothing
+        # to do with each other, and this command deletes what it groups.
+        if isinstance(embedder, MockEmbedder):
+            emit_refusal(
+                "no_real_embedder",
+                "Decisions can only be compared with a real embedder, not test vectors.",
+                fmt,
+                remedy=f"Run '{semantic_search_command(repo_path)}'.",
+            )
+        vector_store = build_vector_store(repo_path, embedder)
+        if vector_store is None:
+            emit_refusal(
+                "no_vector_store",
+                "This repo has no vector store to compare decisions with.",
+                fmt,
+                remedy=f"Run '{semantic_search_command(repo_path)}'.",
+            )
 
     async def _run():
         from repowise.core.persistence import get_session
         from repowise.core.persistence.decision_dedupe import (
             apply_dedupe,
             plan_dedupe,
+            plan_lexical_dedupe,
             render_plan,
         )
 
@@ -325,28 +341,32 @@ def dedupe_command(
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
-                plan = await plan_dedupe(
-                    session, repo_id, vector_store=vector_store, tau=threshold
-                )
+                if lexical:
+                    plan = await plan_lexical_dedupe(session, repo_id, tau=threshold)
+                else:
+                    plan = await plan_dedupe(
+                        session, repo_id, vector_store=vector_store, tau=threshold
+                    )
                 if apply_:
                     try:
                         plan = await apply_dedupe(
                             session, repo_id, vector_store=vector_store, plan=plan
                         )
                     except Exception:
-                        # A fold that dies after its vectors are dropped leaves
-                        # records the matcher can no longer see; reindex is what
-                        # puts them back, and nothing else says so.
-                        notice_console(fmt).print(
-                            "[yellow]The sweep failed partway. No records were "
-                            "folded, but run [cyan]repowise reindex[/cyan] to "
-                            "restore any decision vectors it had removed.[/yellow]"
-                        )
+                        if not lexical:
+                            # A failed semantic fold can leave a record without
+                            # its vector, which reindex restores.
+                            notice_console(fmt).print(
+                                "[yellow]The sweep failed partway. No records were "
+                                "folded, but run [cyan]repowise reindex[/cyan] to "
+                                "restore any decision vectors it had removed.[/yellow]"
+                            )
                         raise
                 return plan, render_plan(plan, limit=limit)
         finally:
             await engine.dispose()
-            await vector_store.close()
+            if vector_store is not None:
+                await vector_store.close()
 
     plan, report = run_async(_run())
     if fmt == "json":
@@ -486,9 +506,7 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
                 try:
-                    outcome = await import_manifest(
-                        session, repo_id, repo_path, dry_run=dry_run
-                    )
+                    outcome = await import_manifest(session, repo_id, repo_path, dry_run=dry_run)
                 except ManifestConflictError as exc:
                     emit_refusal("manifest_unreadable", str(exc), fmt)
                 return outcome.as_dict()
@@ -584,8 +602,7 @@ def _render_status(report: dict) -> None:
     backlog = report["backlog"]
     if backlog["available"]:
         console.print(
-            "\n  Backlog: "
-            + "  ".join(f"{k} {v}" for k, v in backlog.items() if k != "available")
+            "\n  Backlog: " + "  ".join(f"{k} {v}" for k, v in backlog.items() if k != "available")
         )
     else:
         console.print(f"\n  [dim]Backlog: {backlog.get('reason', 'unavailable')}[/dim]")

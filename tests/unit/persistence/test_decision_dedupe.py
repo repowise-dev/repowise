@@ -30,6 +30,7 @@ from repowise.core.persistence.crud.authority import (
 from repowise.core.persistence.decision_dedupe import (
     apply_dedupe,
     plan_dedupe,
+    plan_lexical_dedupe,
     render_plan,
 )
 from repowise.core.persistence.models import (
@@ -99,9 +100,7 @@ async def _seed(session, store, repo_id, specs: list[dict]) -> list[DecisionReco
         records.append(rec)
     await session.flush()
     for rec in records:
-        await upsert_decision_vector(
-            store, rec.id, title=rec.title, decision=rec.decision or ""
-        )
+        await upsert_decision_vector(store, rec.id, title=rec.title, decision=rec.decision or "")
     return records
 
 
@@ -227,9 +226,7 @@ async def test_fold_moves_evidence_without_downgrading_the_canonical(async_sessi
     assert by_key[("pr", "a.py")].confidence == pytest.approx(0.8)
 
 
-async def test_a_fold_moves_the_canonical_to_the_checkable_noun(
-    async_session, repo_id
-):
+async def test_a_fold_moves_the_canonical_to_the_checkable_noun(async_session, repo_id):
     """An agreement that absorbs a record about the code is about the code too.
 
     The union gives the canonical the folded record's files, and a record that
@@ -286,9 +283,7 @@ async def test_folded_id_still_resolves_and_its_files_survive(async_session, rep
         for row in (
             (
                 await async_session.execute(
-                    select(DecisionNodeLink).where(
-                        DecisionNodeLink.decision_id == canonical.id
-                    )
+                    select(DecisionNodeLink).where(DecisionNodeLink.decision_id == canonical.id)
                 )
             )
             .scalars()
@@ -387,6 +382,131 @@ async def test_a_keyless_store_says_so_instead_of_saying_clean(async_session, re
     assert plan.degraded is True
     assert plan.clusters == []
     assert "nothing could be examined" in render_plan(plan)
+
+
+async def test_lexical_dedupe_matches_reworded_decisions_from_the_same_commit(
+    async_session, repo_id
+):
+    await _seed(
+        async_session,
+        _store(),
+        repo_id,
+        [
+            {
+                "title": "marked pin moves to the UMD path that marked v18 ships",
+                "decision": "The marked pin moves to the UMD path shipped in marked v18.",
+                "source": "pr",
+                "commits": ["sha-1"],
+            },
+            {
+                "title": "marked pin moved to the UMD path that marked v18 ships",
+                "decision": "The marked pin moved to the UMD path shipped in marked v18.",
+                "source": "pr",
+                "commits": ["sha-1"],
+            },
+        ],
+    )
+
+    plan = await plan_lexical_dedupe(async_session, repo_id)
+
+    assert plan.degraded is False
+    assert plan.pairs == 1
+    assert plan.folded_count == 1
+
+
+async def test_lexical_dedupe_does_not_compare_different_or_missing_commits(async_session, repo_id):
+    await _seed(
+        async_session,
+        _store(),
+        repo_id,
+        [
+            {
+                "title": "Use a stable cache key",
+                "decision": "Use stable cache keys.",
+                "commits": ["sha-a"],
+            },
+            {
+                "title": "Use a stable cache key",
+                "decision": "Use stable cache keys.",
+                "commits": ["sha-b"],
+            },
+            {"title": "Use a stable cache key", "decision": "Use stable cache keys."},
+        ],
+    )
+
+    plan = await plan_lexical_dedupe(async_session, repo_id)
+
+    assert plan.pairs == 0
+    assert plan.clusters == []
+
+
+async def test_lexical_dedupe_respects_the_similarity_threshold(async_session, repo_id):
+    await _seed(
+        async_session,
+        _store(),
+        repo_id,
+        [
+            {
+                "title": "Use a stable cache key for sessions",
+                "decision": "Store sessions with a stable cache key.",
+                "commits": ["sha-1"],
+            },
+            {
+                "title": "Use a stable cache key for session data",
+                "decision": "Store session data with a stable cache key.",
+                "commits": ["sha-1"],
+            },
+        ],
+    )
+
+    plan = await plan_lexical_dedupe(async_session, repo_id, tau=0.70)
+    strict_plan = await plan_lexical_dedupe(async_session, repo_id, tau=0.95)
+
+    assert plan.pairs == 1
+    assert plan.clusters
+    assert strict_plan.tau == 0.95
+    assert strict_plan.clusters == []
+
+
+async def test_lexical_dedupe_apply_folds_and_is_idempotent(async_session, repo_id):
+    first, second = await _seed(
+        async_session,
+        _store(),
+        repo_id,
+        [
+            {
+                "title": "marked pin moves to the UMD path that marked v18 ships",
+                "decision": "The marked pin moves to the UMD path shipped in marked v18.",
+                "source": "pr",
+                "commits": ["sha-1"],
+            },
+            {
+                "title": "marked pin moved to the UMD path that marked v18 ships",
+                "decision": "The marked pin moved to the UMD path shipped in marked v18.",
+                "source": "pr",
+                "commits": ["sha-1"],
+            },
+        ],
+    )
+    plan = await plan_lexical_dedupe(async_session, repo_id)
+    canonical_id = plan.clusters[0].canonical_id
+    duplicate_id = next(folded_id for folded_id, _title, _score in plan.clusters[0].folded)
+
+    applied = await apply_dedupe(async_session, repo_id, vector_store=None, plan=plan)
+
+    assert applied.folded_count == 1
+    assert {first.id, second.id} == {canonical_id, duplicate_id}
+    assert await resolve_decision_id(async_session, duplicate_id) == canonical_id
+    canonical = await async_session.get(DecisionRecord, canonical_id)
+    assert canonical is not None
+    assert set(json.loads(canonical.evidence_commits_json)) == {"sha-1"}
+    second_apply = await apply_dedupe(
+        async_session,
+        repo_id,
+        vector_store=None,
+        plan=await plan_lexical_dedupe(async_session, repo_id),
+    )
+    assert second_apply.folded_count == 0
 
 
 async def test_a_record_a_reviewer_flagged_is_not_folded(async_session, repo_id):
@@ -526,9 +646,7 @@ async def _links(session, decision_id) -> set[str]:
     rows = (
         (
             await session.execute(
-                select(DecisionNodeLink).where(
-                    DecisionNodeLink.decision_id == decision_id
-                )
+                select(DecisionNodeLink).where(DecisionNodeLink.decision_id == decision_id)
             )
         )
         .scalars()
@@ -537,9 +655,7 @@ async def _links(session, decision_id) -> set[str]:
     return {row.node_id for row in rows}
 
 
-async def test_a_footprint_folding_in_does_not_resurrect_its_files(
-    async_session, repo_id
-):
+async def test_a_footprint_folding_in_does_not_resurrect_its_files(async_session, repo_id):
     """The union widens the canonical past the bar, so the basis is
     recomputed rather than inherited: the canonical's ``source`` is usually
     not one ``backfill_scope_basis`` would repair afterwards."""
@@ -627,9 +743,7 @@ async def test_a_fold_of_two_selected_scopes_stays_selected(async_session, repo_
     assert await _links(async_session, canonical.id) == set(_WIDE)
 
 
-async def test_a_narrow_footprint_folding_in_does_not_become_binding(
-    async_session, repo_id
-):
+async def test_a_narrow_footprint_folding_in_does_not_become_binding(async_session, repo_id):
     """A small union of unchosen files must not come back as a claim.
 
     The recompute asks ``commit_scope_basis``, which answers with the binding
@@ -699,9 +813,7 @@ async def test_a_fold_does_not_promote_a_repository_scope(async_session, repo_id
     assert await _links(async_session, canonical.id) == set()
 
 
-async def test_a_footprint_folding_into_a_selected_scope_demotes_it(
-    async_session, repo_id
-):
+async def test_a_footprint_folding_into_a_selected_scope_demotes_it(async_session, repo_id):
     """One unchosen list in the union makes the union unchosen again.
 
     The fold takes the union of the file lists, so a footprint folding in
