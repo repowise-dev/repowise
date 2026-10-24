@@ -679,11 +679,20 @@ def _keeps_binding(tree: ast.Module, sym: Any, param: str) -> bool:
     if node is None:
         return False
     args = sum(isinstance(n, ast.arg) and n.arg == param for n in ast.walk(node))
-    stores = any(
-        isinstance(n, ast.Name) and n.id == param and not isinstance(n.ctx, ast.Load)
-        for n in ast.walk(node)
-    )
+    stores = any(_rebinds(n, param) for n in ast.walk(node))
     return args == 1 and not stores and f"nonlocal {param}" not in ast.unparse(node)
+
+
+def _rebinds(n: ast.AST, param: str) -> bool:
+    """Whether node *n* binds *param*: an assignment target, ``except ... as``,
+    an import alias, or a nested ``def`` / ``class`` of that name."""
+    if isinstance(n, ast.Name):
+        return n.id == param and not isinstance(n.ctx, ast.Load)
+    if isinstance(n, (ast.ExceptHandler, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return n.name == param
+    if isinstance(n, ast.alias):
+        return (n.asname or n.name.partition(".")[0]) == param  # `import a.b` binds `a`
+    return False
 
 
 def _constant_names(tree: ast.Module, name: str) -> list[str] | None:

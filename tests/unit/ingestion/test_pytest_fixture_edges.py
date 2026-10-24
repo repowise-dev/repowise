@@ -628,6 +628,18 @@ class TestUnrecordedRequests:
             # A parametrized name the text cannot pin to its literal values.
             "import pytest\n\n\n@pytest.mark.parametrize('f', ['db'])\n"
             "def test_x(f, request):\n    f = 'other'\n    request.getfixturevalue(f)\n",
+            # Rebinding forms that are not a plain assignment.
+            *(
+                "import pytest\n\n\n@pytest.mark.parametrize('f', ['db'])\n"
+                f"def test_x(f, request):\n{rebind}    request.getfixturevalue(f)\n"
+                for rebind in (
+                    "    try:\n        pass\n    except Exception as f:\n        pass\n",
+                    "    import f\n",
+                    "    from os import path as f\n",
+                    "    def f():\n        pass\n",
+                    "    class f:\n        pass\n",
+                )
+            ),
             "import pytest\n\nNAMES = ['db']\nNAMES.append('other')\n\n\n"
             "@pytest.mark.parametrize('f', NAMES)\n"
             "def test_x(f, request):\n    request.getfixturevalue(f)\n",
