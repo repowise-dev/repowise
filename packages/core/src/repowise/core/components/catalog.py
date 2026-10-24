@@ -96,11 +96,13 @@ class Component:
     criticality: str | None = None
     tags: tuple[str, ...] = ()
     capability: str | None = None
-    #: "declared", or how a derived one was found: "service", "module", "directory".
+    #: "declared", or how a derived one was found: "service", "module", "directory",
+    #: or "repo" for one component covering a repo nothing else divides.
     source: str = "declared"
     #: The catalog file a declared component came from.
     declared_in: str | None = None
-    #: Directory a derived component covers; files go to the deepest one.
+    #: Directory a derived component covers (``"."`` for the whole repo); files
+    #: go to the deepest one.
     root: str | None = None
 
     @property

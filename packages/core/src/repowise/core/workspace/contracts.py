@@ -74,6 +74,7 @@ CONTRACTS_FILENAME = "contracts.json"
 # each repo also counts the files whose network calls produced no contract
 # (see :mod:`.network_probe`). Gateway routes (Spring Cloud Gateway, Zuul)
 # rewrite the calls they forward and add gateway-to-service service links.
+# Go routes from chi, fiber, gorilla/mux and Go 1.22 method patterns are read.
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.

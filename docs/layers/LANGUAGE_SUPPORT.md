@@ -203,7 +203,7 @@ reported as unreachable.
 | Ruby | Rails (routes to controller actions, Zeitwerk), RSpec mirror edges |
 | Java / Kotlin | Spring, Jakarta / JPA, Quarkus, Micronaut, Android manifest |
 | C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
-| Go | net/http, gin, echo, chi, gRPC server registration |
+| Go | net/http, gin, echo, chi, fiber, gorilla/mux, gRPC server registration |
 | Rust | Axum, Actix |
 | JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS, Angular |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |

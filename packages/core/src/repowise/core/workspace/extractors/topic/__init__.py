@@ -13,6 +13,7 @@ from .aws import SNS, SQS
 from .bullmq import BULLMQ
 from .csharp_events import CSHARP_EVENTS
 from .dialect import topic_identity
+from .jms import JMS
 from .kafka import KAFKA
 from .laravel import LARAVEL_QUEUES
 from .nats import NATS
@@ -34,6 +35,7 @@ DIALECTS: tuple[ContractDialect, ...] = (
     NESTJS,
     LARAVEL_QUEUES,
     CSHARP_EVENTS,
+    JMS,
 )
 
 

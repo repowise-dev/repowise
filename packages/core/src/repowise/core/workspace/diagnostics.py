@@ -30,6 +30,7 @@ from repowise.core.workspace.contracts import (
     same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+from repowise.core.workspace.matching.common import shared_idl
 from repowise.core.workspace.network_probe import UNRECOGNISED_CALL_FILES_STAT
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
@@ -557,7 +558,9 @@ def build_diagnostics(
     contract. Omitting it costs the coverage figures, not the rest.
     """
     stats_by_repo = extraction_stats or {}
-    providers = [c for c in contracts if c.role == "provider"]
+    # A vendored proto copy is counted with its repo's rows, never as an orphan.
+    vendored = shared_idl(contracts)
+    providers = [c for c in contracts if c.role == "provider" and id(c) not in vendored]
     consumers = [c for c in contracts if c.role == "consumer"]
 
     # Per-repo breakdown ----------------------------------------------------
