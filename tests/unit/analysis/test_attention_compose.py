@@ -110,9 +110,11 @@ def test_proposed_wording_names_a_hand_recorded_decision() -> None:
         [
             DecisionAttentionInput(id="d-manual", title="Manual", source="cli"),
             DecisionAttentionInput(id="d-auto", title="Auto", source="inferred"),
+            DecisionAttentionInput(id="d-agent", title="Agent", source="agent"),
         ],
         [],
     )
     descriptions = {item["target_id"]: item["description"] for item in result.items}
     assert descriptions["d-manual"] == "Decision recorded by hand, awaiting review"
+    assert descriptions["d-agent"] == "Decision recorded by an agent, awaiting review"
     assert descriptions["d-auto"] == "Auto-proposed decision awaiting review"

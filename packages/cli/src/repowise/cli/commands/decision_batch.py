@@ -20,14 +20,22 @@ from repowise.cli.output import emit_json, emit_refusal
 async def _open_store(repo_path: Path):
     """Yield a session factory on the repo's store; the engine is disposed after.
 
-    A factory, so ``add`` can embed after its session commits.
+    A factory, so ``add`` can embed after its session commits. A locked or
+    unreadable store is reported as one line, not a SQL traceback.
     """
+    from sqlalchemy.exc import OperationalError
+
     from repowise.core.persistence import create_engine, create_session_factory, init_db
 
     engine = create_engine(get_db_url_for_repo(repo_path))
     try:
         await init_db(engine)
         yield create_session_factory(engine)
+    except OperationalError as exc:
+        raise click.ClickException(
+            f"Could not use the index at {repo_path}: {exc.orig}. "
+            "If `repowise update` is running, retry once it finishes."
+        ) from exc
     finally:
         await engine.dispose()
 
@@ -97,15 +105,27 @@ class _PreviewRollbackError(Exception):
 _ID_SHAPED = re.compile(r"[0-9a-fA-F]{4,64}\Z")
 
 
+def _require_ids(ids: list[str], verb: str, fmt: str) -> None:
+    """Refuse a run that names no decision, pointing at where ids come from."""
+    if not ids:
+        emit_refusal(
+            "no_decision_ids",
+            f"Name the decision ids to {verb}.",
+            fmt,
+            remedy="List candidates and their ids with `repowise decision candidates`.",
+        )
+
+
 def _split_ids_and_path(tokens: tuple[str, ...]) -> tuple[list[str], str | None]:
     """Separate decision ids from the optional trailing repo path.
 
     ``confirm ID [PATH]`` shipped before batch arity, so the path is still a
     positional. An id-shaped last token stays an id even when a directory of
     that name happens to exist, because reading one as a path would drop it
-    from the batch and still exit 0.
+    from the batch and still exit 0. A lone directory is the path, so
+    ``confirm .`` reports that no id was named rather than an unknown id.
     """
-    last = tokens[-1] if len(tokens) > 1 else ""
+    last = tokens[-1] if tokens else ""
     # An empty token would otherwise read as the current directory.
     if last and not _ID_SHAPED.match(last) and Path(last).is_dir():
         return list(tokens[:-1]), last

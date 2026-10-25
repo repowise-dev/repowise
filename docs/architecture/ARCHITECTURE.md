@@ -1060,7 +1060,7 @@ are flagged as stale.
 repowise decision add        # interactive capture
 repowise decision list       # tabular list with filters
 repowise decision show <id>  # full detail
-repowise decision confirm    # proposed → active
+repowise decision confirm <id>  # candidate → accepted
 repowise decision dismiss    # dismiss proposed (sticky tombstone)
 repowise decision deprecate  # active → deprecated
 repowise decision health     # health summary

@@ -585,12 +585,13 @@ _ACCEPTED_HEADER = (
     "(accumulated from prior sessions; follow them unless the user says otherwise):"
 )
 
-#: Candidates are mined, not agreed. The header carries the whole of that
+#: Candidates are proposed, not agreed. The header carries the whole of that
 #: distinction in the transcript, so it says it in words rather than leaving an
-#: agent to infer a lane from a blank line.
+#: agent to infer a lane from a blank line. Source-neutral: candidates come
+#: from PRs, commits, comments and agents as well as sessions.
 _CANDIDATE_HEADER = (
-    "[repowise] Proposed but NOT accepted - mined from prior sessions and "
-    "awaiting review. Weigh these; do not treat them as rules:"
+    "[repowise] Candidate decisions awaiting review, NOT accepted; weigh them, "
+    "do not treat them as rules. Review: repowise decision candidates"
 )
 
 
@@ -849,7 +850,7 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
     if why:
         line += f" because {why}"
     if sessions_n >= 2:
-        line += f" (confirmed across {sessions_n} sessions)"
+        line += f" (seen in {sessions_n} sessions)"
     line += "."
 
     if session_id:

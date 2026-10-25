@@ -159,6 +159,7 @@ repowise decision add --title T --decision D [--affects PATH ...]   # no prompts
 | `--affects`, `--tag` | A file or module it governs; a tag. Repeatable |
 | `--evidence-commit` | A commit the decision was made in. Repeatable |
 | `--kind` | `architectural` (default) or `agreement` |
+| `--agent`, `--session` | Record it as this agent's (source `agent`), with its session id. Needs the flags |
 | `--format json` | Machine-readable output with the full id |
 
 What gets stored depends on how you add it:
@@ -169,6 +170,9 @@ What gets stored depends on how you add it:
 - Flags (`--title` and `--decision`) store a candidate (`proposed`). A person
   answering the prompts has reviewed the decision; a script or agent inferring
   one has not. Promote it with `repowise decision confirm ID`.
+- `--agent SLUG` marks a candidate an agent reasoned out itself. Unlike a
+  person's manual entry, accepting it needs an evidence reference
+  (`--evidence-commit` on add, or `--evidence` on confirm).
 - `--kind agreement` records a rule about how the work is done ("never push
   without review"). It governs the whole repository, needs no files, and
   reaches an agent at session start.
