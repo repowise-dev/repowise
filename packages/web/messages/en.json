@@ -1097,9 +1097,7 @@
       "chatSelectionLabel": "Ask about a selection",
       "chatSelectionHint": "The control that appears when you select text in code or documentation. Hiding it removes that control; selecting text behaves normally.",
       "chatSelectionAria": "Show the Ask about selection control",
-      "chatGatedHint": "{hint} Unavailable while Ask Repowise is hidden.",
-      "tipsLabel": "Show repowise.dev tips",
-      "tipsHint": "An occasional one-line tip about what repowise.dev adds, at most one per page. Never shown once you have signed in with repowise login."
+      "chatGatedHint": "{hint} Unavailable while Ask Repowise is hidden."
     },
     "mcp": {
       "title": "Editor config",

@@ -55,7 +55,6 @@ export function DisplaySection() {
     ask: true,
     selection: true,
   });
-  const [tipsShown, setTipsShown] = useState(true);
   const [savedRow, setSavedRow] = useState<string | null>(null);
   const save = useSaveState();
   const t = useTranslations("settings");
@@ -94,7 +93,6 @@ export function DisplaySection() {
   // Read after mount so SSR and the first client render agree.
   useEffect(() => {
     setWeekend(config.getWeekend() || DEFAULT_WEEKEND_PRESET.id);
-    setTipsShown(!config.getHostedTipsHidden());
   }, []);
 
   // The same two listeners the affordances themselves use: `storage` covers
@@ -130,11 +128,6 @@ export function DisplaySection() {
     markSaved("weekend");
   }
 
-  function handleTipsChange(shown: boolean) {
-    setTipsShown(shown);
-    config.setHostedTipsHidden(!shown);
-    markSaved("tips");
-  }
 
   function handleChatChange(
     entry: { key: ChatSwitchKey; write: (shown: boolean) => void },
@@ -194,13 +187,6 @@ export function DisplaySection() {
             </SettingsRow>
           );
         })}
-        <SettingsRow inline label={t("display.tipsLabel")} hint={t("display.tipsHint")} {...tick("tips")}>
-          <Switch
-            checked={tipsShown}
-            onCheckedChange={handleTipsChange}
-            aria-label={t("display.tipsLabel")}
-          />
-        </SettingsRow>
       </SettingsRows>
   );
 }

@@ -1097,9 +1097,7 @@
       "chatSelectionLabel": "就选中内容提问",
       "chatSelectionHint": "在代码或文档中选中文本时出现的控件。隐藏后该控件会消失；选中文本的行为不受影响。",
       "chatSelectionAria": "显示「就选中内容提问」控件",
-      "chatGatedHint": "{hint} 隐藏「向 Repowise 提问」时不可用。",
-      "tipsLabel": "显示 repowise.dev 提示",
-      "tipsHint": "偶尔显示一行关于 repowise.dev 新增功能的提示，每页最多一条。使用 repowise login 登录后不再显示。"
+      "chatGatedHint": "{hint} 隐藏「向 Repowise 提问」时不可用。"
     },
     "mcp": {
       "title": "编辑器配置",
