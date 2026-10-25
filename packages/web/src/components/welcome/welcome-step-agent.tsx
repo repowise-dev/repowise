@@ -65,6 +65,7 @@ export function WelcomeStepAgent({
             agent={agent}
             connected={connected[agent.id] ?? agent.connected}
             writesAllowed={setup?.writes_allowed ?? false}
+            callsKnown={setup?.calls_available ?? false}
             onConnected={(value) => setConnected((c) => ({ ...c, [agent.id]: value }))}
           />
         ))
@@ -90,12 +91,15 @@ function AgentRow({
   agent,
   connected,
   writesAllowed,
+  callsKnown,
   onConnected,
 }: {
   repoId: string;
   agent: SetupAgent;
   connected: boolean;
   writesAllowed: boolean;
+  /** False when the local call log could not be read: say nothing about calls. */
+  callsKnown: boolean;
   onConnected: (value: boolean) => void;
 }) {
   const t = useTranslations("welcome.agent");
@@ -148,11 +152,13 @@ function AgentRow({
         {!connected && !writesAllowed && <CommandLine command={command} />}
       </div>
       {connected ? (
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          {agent.first_call_at
-            ? t("firstCall", { when: format.relativeTime(new Date(agent.first_call_at)) })
-            : t("waiting")}
-        </span>
+        callsKnown && (
+          <span className="text-xs text-[var(--color-text-tertiary)]">
+            {agent.first_call_at
+              ? t("firstCall", { when: format.relativeTime(new Date(agent.first_call_at)) })
+              : t("waiting")}
+          </span>
+        )
       ) : (
         <span className="flex flex-wrap items-center justify-end gap-1.5 max-[560px]:justify-start">
           <AiPromptButton label={t("copyPrompt")} onClick={() => void copyPrompt()} />
