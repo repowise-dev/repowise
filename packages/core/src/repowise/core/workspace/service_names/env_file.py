@@ -19,17 +19,16 @@ from collections.abc import Iterable
 
 from .base import ENV, Claim, ServiceNameSource, SourceFile, host_of, with_defaults
 
-_EXPORT_RE = re.compile(r"^export\s+")
+_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=(.*)$")
 _COMMENT_RE = re.compile(r"\s#")
 
 
 def read(file: SourceFile) -> Iterable[Claim]:
     for line in file.text.splitlines():
-        line = _EXPORT_RE.sub("", line.strip())
-        key, sep, value = line.partition("=")
-        key = key.strip()
-        if not sep or not key or key.startswith("#") or " " in key:
+        m = _LINE_RE.match(line)
+        if m is None:
             continue
+        key, value = m.groups()
         host = host_of(key, with_defaults(_COMMENT_RE.split(value, maxsplit=1)[0]))
         if host:
             yield Claim(name=key.lower(), kind=ENV, ref=host)
