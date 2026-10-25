@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactElement } from "react";
 import { Check, ClipboardCopy } from "lucide-react";
 import { cn } from "../lib/cn";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
@@ -112,7 +112,7 @@ export function AiPromptButton({
 }: AiPromptButtonProps) {
   const [result, flagResult] = useCopyResult();
   const copied = result === "copied";
-  const shown = result === "failed" ? failedLabel : copied ? copiedLabel : label;
+  const shown = { copied: copiedLabel, failed: failedLabel }[result ?? "copied"];
 
   function handleClick(e: MouseEvent<HTMLButtonElement>) {
     e.stopPropagation();
@@ -134,22 +134,39 @@ export function AiPromptButton({
         aria-hidden
         className={cn("h-3.5 w-3.5 shrink-0", copied && "text-[var(--color-success)]")}
       />
-      {variant !== "icon" && shown}
+      {variant !== "icon" && (result ? shown : label)}
     </button>
   );
   if (!copyText) return button;
   return (
+    <WithPromptPeek build={copyText} announce={result ? shown : ""}>
+      {button}
+    </WithPromptPeek>
+  );
+}
+
+/** The copy button with its prompt preview on hover or focus, and the polite announcement. */
+function WithPromptPeek({
+  build,
+  announce,
+  children,
+}: {
+  build: () => string;
+  announce: string;
+  children: ReactElement;
+}) {
+  return (
     <>
       <TooltipProvider delayDuration={300}>
         <Tooltip>
-          <TooltipTrigger asChild>{button}</TooltipTrigger>
+          <TooltipTrigger asChild>{children}</TooltipTrigger>
           <TooltipContent side="bottom" align="end">
-            <PromptPeek build={copyText} />
+            <PromptPeek build={build} />
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
       <span aria-live="polite" className="sr-only">
-        {result ? shown : ""}
+        {announce}
       </span>
     </>
   );
