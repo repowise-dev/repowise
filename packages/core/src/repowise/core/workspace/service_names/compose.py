@@ -3,10 +3,14 @@
 ``services.catalogue.build.context: ../catalogue`` puts the name ``catalogue``
 in the repo at that path; a ``dockerfile`` narrows it to the Dockerfile's
 directory. A service with no build names a repo only through its image's
-basename (``org/cart:1.2`` -> ``cart``). ``container_name`` and ``hostname``
-are the same container under another name. Every ``environment`` value that
-reads as an address (``CATALOGUE_URL: http://catalogue:8080``) makes its key a
-reference to that host.
+basename (``org/cart:1.2`` -> ``cart``), as does a build context that is
+missing or empty on disk (an uninitialised submodule, the service checked out
+as its own repo). ``container_name``
+and ``hostname`` are the same container under another name. Every
+``environment`` value that reads as an address (``CATALOGUE_URL:
+http://catalogue:8080``) makes its key a reference to that host. A
+``${VAR-default}`` or ``${VAR:-default}`` reads as its default, the value
+compose uses when nothing sets the variable.
 """
 
 from __future__ import annotations
@@ -16,14 +20,22 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from .base import ENV, Claim, ServiceNameSource, SourceFile, host_of, join_config_path
+from .base import (
+    ENV,
+    Claim,
+    ServiceNameSource,
+    SourceFile,
+    host_of,
+    join_config_path,
+    with_defaults,
+)
 from .yaml_docs import load_yaml_docs
 
 _PLACEHOLDER_RE = re.compile(r"\$\{[^}]*\}")
 
 
 def _image_basename(image: str) -> str | None:
-    name = _PLACEHOLDER_RE.sub("", image).rsplit("/", 1)[-1]
+    name = _PLACEHOLDER_RE.sub("", with_defaults(image)).rsplit("/", 1)[-1]
     name = name.split("@", 1)[0].split(":", 1)[0].strip()
     return name or None
 
@@ -40,7 +52,15 @@ def _build_dir(build: Any, base: Path) -> Path | None:
     where = join_config_path(base, context)
     if isinstance(dockerfile, str) and "$" not in dockerfile and "/" in dockerfile.replace("\\", "/"):
         where = join_config_path(where, dockerfile).parent
-    return where
+    return where if _has_files(where) else None
+
+
+def _has_files(where: Path) -> bool:
+    # A missing or empty context (an uninitialised git submodule) builds nothing here.
+    try:
+        return next(where.iterdir(), None) is not None
+    except OSError:
+        return False
 
 
 def _environment(env: Any) -> Iterator[tuple[str, str]]:
@@ -70,7 +90,7 @@ def _service_claims(svc: str, conf: dict[str, Any], base: Path) -> Iterator[Clai
         for name in sorted(names):
             yield Claim(name=name, at=at, aliases=aliases)
     for key, value in _environment(conf.get("environment")):
-        host = host_of(key, value)
+        host = host_of(key, with_defaults(value))
         if host:
             yield Claim(name=key.lower(), kind=ENV, ref=host)
 
