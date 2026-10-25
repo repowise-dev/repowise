@@ -30,6 +30,7 @@ import { VersionFooter } from "./version-footer";
 import { NewMark, useNavNewMark } from "./new-mark";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
+import { SetupPill, setupPillRepoId } from "@/components/setup/setup-pill";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface SidebarProps {
@@ -96,6 +97,7 @@ export function Sidebar({
   };
 
   const isIconOnly = collapsed;
+  const pillRepoId = setupPillRepoId(repos, derivedActiveRepoId);
 
   return (
     <aside
@@ -427,6 +429,7 @@ export function Sidebar({
           version were unreachable without expanding first. */}
       {isIconOnly ? (
         <div className="flex flex-col items-center gap-1 border-t border-[var(--color-border-default)] py-1.5">
+          {pillRepoId && <SetupPill repoId={pillRepoId} compact />}
           <LanguageSwitcher compact />
           <ThemeToggle
             switchToDarkLabel={ts("switchToDarkTheme")}
@@ -435,6 +438,7 @@ export function Sidebar({
         </div>
       ) : (
         <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-3 py-2">
+          {pillRepoId && <SetupPill repoId={pillRepoId} />}
           <FeedbackButton />
           {/* Version, language and theme share a row. The toggle was a
               full-width bordered track stacked on its own line, which made a

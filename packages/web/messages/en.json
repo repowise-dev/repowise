@@ -189,7 +189,8 @@
     "zoom": "Zoom Map",
     "files": "Files",
     "tests": "Tests",
-    "docDrift": "Doc drift"
+    "docDrift": "Doc drift",
+    "setup": "Setup"
   },
   "errors": {
     "workspaceErrorTitle": "Failed to load the workspace",
@@ -1124,6 +1125,31 @@
       "embedderHint": "What semantic search is built from. The mock embedder disables it.",
       "embedderOffNote": "Semantic search is off. Set <code>REPOWISE_EMBEDDER</code> on the server for real retrieval.",
       "embedderOnNote": "Set with <code>{env}</code> on the server."
+    },
+    "groups": {
+      "navLabel": "Settings sections",
+      "setup": {
+        "title": "Setup"
+      },
+      "agents": {
+        "title": "Agents & editors",
+        "description": "Connected agents read the index through MCP. Connecting writes the editor's own config file, named on each row."
+      },
+      "models": {
+        "title": "Models & documentation"
+      },
+      "sync": {
+        "title": "Sync & hooks"
+      },
+      "coverage": {
+        "title": "Coverage"
+      },
+      "server": {
+        "title": "Server"
+      },
+      "privacy": {
+        "title": "Privacy"
+      }
     }
   },
   "repos": {
@@ -2161,5 +2187,154 @@
     "commits": "Loading commits",
     "coverage": "Loading coverage",
     "knowledgeGraph": "Loading knowledge graph"
+  },
+  "setup": {
+    "title": "Setup",
+    "doneTitle": "You're set up",
+    "progress": "{done} of 3 essentials done. Each row also shows its terminal command.",
+    "doneLede": "{agent} made its first call {when}. The index updates after each commit.",
+    "yourAgent": "Your agent",
+    "loading": "Checking this repository's setup. The first check can take about 20 seconds.",
+    "loadFailedLabel": "Couldn't check",
+    "loadFailed": "The setup check didn't finish. Run repowise doctor in a terminal to see why, or try again.",
+    "retry": "Try again",
+    "writesOffLabel": "Read only",
+    "writesOff": "Changes from the browser are off on this server, because it uses an API key or isn't on this machine. Copy the command or the prompt and run it in a terminal.",
+    "writesOffShort": "Changes from the browser are off on this server. Run the command in a terminal.",
+    "writeFailed": "That didn't work",
+    "attention": "Needs attention",
+    "essentials": "Essentials",
+    "optional": "Optional",
+    "tour": "Take the tour",
+    "copyPrompt": "Copy prompt for your agent",
+    "promptDescription": "Hand this to your coding agent. It names the command and how to check the result.",
+    "promptPreview": "Prompt preview",
+    "copied": "copied",
+    "showFiles": "Show files",
+    "hideFiles": "Hide files",
+    "connect": "Connect {agent}",
+    "disconnect": "Disconnect",
+    "disconnectAgent": "Disconnect {agent}",
+    "useReport": "Use this report",
+    "addModel": "Add a model",
+    "changeModel": "Change model",
+    "syncOff": {
+      "title": "Turn off sync?",
+      "body": "This runs repowise hook uninstall, which also removes the pre-commit security check and the health gate. The index will update only when you run repowise update.",
+      "confirm": "Turn off",
+      "cancel": "Keep it on"
+    },
+    "hosted": {
+      "eyebrow": "Hosted repowise",
+      "title": "All of this, run for you and your team",
+      "lede": "Take a look whenever you need it.",
+      "items": {
+        "push": "Indexed on every push",
+        "reviews": "Pull request reviews",
+        "dashboard": "One dashboard for the team",
+        "webApps": "Use it from Claude.ai and ChatGPT"
+      },
+      "start": "Start free",
+      "see": "See what hosted adds",
+      "hide": "Hide on this machine"
+    },
+    "pill": {
+      "label": "Setup",
+      "progress": "{done} of {total}",
+      "aria": "Setup: {done} of {total} essentials done",
+      "hide": "Hide the setup reminder on this machine"
+    },
+    "settings": {
+      "repoLead": "Index, coding agent and sync for this repository, each with its terminal command.",
+      "openSetup": "Open Setup",
+      "openSetupFor": "Open Setup for {repo}",
+      "globalLead": "Setup is per repository: its index, its coding agent and keeping it in sync.",
+      "noRepos": "Add a repository to set it up.",
+      "telemetryTitle": "Anonymous usage telemetry",
+      "telemetryDescription": "repowise sends anonymous usage counts: command names and coarse environment, never code, paths or names. DO_NOT_TRACK=1 also turns it off.",
+      "telemetryCheck": "See whether it's on:",
+      "telemetryOff": "Turn it off:"
+    },
+    "row": {
+      "index": {
+        "title": "Index",
+        "statusUpToDate": "Up to date",
+        "statusIncomplete": "Not indexed",
+        "statusBehind": "Behind",
+        "statusSkipped": "{count, plural, one {# file skipped} other {# files skipped}}",
+        "detailUpToDate": "{files} files indexed at {commit}.",
+        "detailIncomplete": "There's no complete index for this repository yet.",
+        "detailBehind": "Indexed at {indexed}. HEAD has moved on to {live}.",
+        "detailSkipped": "{count, plural, one {# file could not be parsed, so its symbols are missing from the graph.} other {# files could not be parsed, so their symbols are missing from the graph.}}"
+      },
+      "agent": {
+        "title": "Coding agent",
+        "statusConnected": "Connected",
+        "statusWaiting": "Waiting",
+        "statusOff": "Not connected",
+        "statusNoCalls": "No calls yet",
+        "detailCalled": "{agent} made its first call {when}.",
+        "detailCalledAnon": "An agent made its first call {when}.",
+        "detailWaiting": "{agents} is registered. This ticks on its first call.",
+        "detailWaitingOther": "{agents} is registered. This ticks on its first call. {other} is installed, not connected.",
+        "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
+        "detailNone": "No coding agent found on this machine. Install one, then connect it here.",
+        "detailUnavailable": "Couldn't list the agents on this machine.",
+        "detailNoCalls": "{agent} is registered but hasn't reached this index. If it opened a different folder, open {repo} in it or run repowise init there."
+      },
+      "sync": {
+        "title": "Keep the index in sync",
+        "statusOn": "On",
+        "statusOff": "Off",
+        "statusUnknown": "Couldn't check",
+        "detailOn": "Updates after each commit.",
+        "detailOff": "The index updates only when you run repowise update.",
+        "detailUnknown": "The post-commit hook couldn't be read."
+      },
+      "model": {
+        "title": "A model for docs, chat and answers",
+        "statusLlm": "Written by a model",
+        "statusBuilt": "Built from index",
+        "detailActive": "Using {provider}.",
+        "detailReady": "{providers} ready on this machine.",
+        "detailNone": "Docs are built from the index. A model writes fuller docs and answers in chat."
+      },
+      "coverage": {
+        "title": "Test coverage",
+        "statusOn": "On",
+        "statusFound": "Found",
+        "statusOff": "Not found",
+        "detailOn": "Coverage stored {when}.",
+        "detailFound": "Found {path}, {age, plural, =0 {from today} one {# day old} other {# days old}}.",
+        "detailNone": "No coverage report found. Run your tests with coverage, then add the report."
+      },
+      "rewrite": {
+        "title": "Shorter command output",
+        "statusOn": "On",
+        "statusOff": "Off",
+        "statusNa": "Needs Claude Code",
+        "statusUnknown": "Couldn't check",
+        "detail": "Claude Code reads test, build and git output through distill.",
+        "detailNa": "This works with Claude Code, which isn't on this machine."
+      },
+      "check": {
+        "statusWarn": "Warning",
+        "statusFail": "Failed"
+      },
+      "agents": {
+        "statusConnected": "Connected",
+        "statusNotConnected": "Not connected",
+        "statusNotInstalled": "Not installed",
+        "statusHosted": "Hosted",
+        "detailLastCall": "Last call {when}. {path}",
+        "detailNoCall": "No calls yet. {path}",
+        "detailInstalledWrites": "Installed. Writes {path}.",
+        "detailInstalled": "Installed.",
+        "detailNotInstalled": "Connect after installing, or copy the editor config in global settings.",
+        "hostedTitle": "Claude.ai and ChatGPT",
+        "hostedDetail": "Use this repo from the web apps too, through hosted repowise's MCP address.",
+        "hostedLink": "See hosted"
+      }
+    }
   }
 }

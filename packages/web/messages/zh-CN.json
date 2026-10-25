@@ -189,7 +189,8 @@
     "zoom": "缩放地图",
     "files": "文件",
     "tests": "测试",
-    "docDrift": "文档漂移"
+    "docDrift": "文档漂移",
+    "setup": "设置向导"
   },
   "errors": {
     "workspaceErrorTitle": "无法加载工作区",
@@ -1124,6 +1125,31 @@
       "embedderHint": "语义搜索基于它构建。mock 嵌入模型会禁用语义搜索。",
       "embedderOffNote": "语义搜索已关闭。请在服务端设置 <code>REPOWISE_EMBEDDER</code> 以启用真实检索。",
       "embedderOnNote": "通过服务端的 <code>{env}</code> 设置。"
+    },
+    "groups": {
+      "navLabel": "设置分组",
+      "setup": {
+        "title": "设置向导"
+      },
+      "agents": {
+        "title": "智能体与编辑器",
+        "description": "已连接的智能体通过 MCP 读取索引。连接时会写入该编辑器自己的配置文件，每一行都注明了文件名。"
+      },
+      "models": {
+        "title": "模型与文档"
+      },
+      "sync": {
+        "title": "同步与钩子"
+      },
+      "coverage": {
+        "title": "覆盖率"
+      },
+      "server": {
+        "title": "服务器"
+      },
+      "privacy": {
+        "title": "隐私"
+      }
     }
   },
   "repos": {
@@ -2161,5 +2187,154 @@
     "commits": "正在加载提交",
     "coverage": "正在加载覆盖率",
     "knowledgeGraph": "正在加载知识图谱"
+  },
+  "setup": {
+    "title": "设置向导",
+    "doneTitle": "已全部设置好",
+    "progress": "已完成 {done}/3 项必备设置。每一行也列出了对应的终端命令。",
+    "doneLede": "{agent} 在{when}首次调用了索引。每次提交后索引都会更新。",
+    "yourAgent": "你的智能体",
+    "loading": "正在检查此仓库的设置。首次检查可能需要约 20 秒。",
+    "loadFailedLabel": "无法检查",
+    "loadFailed": "设置检查没有完成。可在终端运行 repowise doctor 查看原因，或重试。",
+    "retry": "重试",
+    "writesOffLabel": "只读",
+    "writesOff": "此服务器使用了 API 密钥或不在本机上，因此无法从浏览器修改设置。请复制命令或提示词，在终端中运行。",
+    "writesOffShort": "此服务器不允许从浏览器修改设置。请在终端中运行命令。",
+    "writeFailed": "操作未成功",
+    "attention": "需要处理",
+    "essentials": "必备",
+    "optional": "可选",
+    "tour": "查看导览",
+    "copyPrompt": "复制给智能体的提示词",
+    "promptDescription": "把它交给你的编程智能体。其中写明了要运行的命令以及如何检查结果。",
+    "promptPreview": "提示词预览",
+    "copied": "已复制",
+    "showFiles": "显示文件",
+    "hideFiles": "隐藏文件",
+    "connect": "连接 {agent}",
+    "disconnect": "断开连接",
+    "disconnectAgent": "断开 {agent}",
+    "useReport": "使用此报告",
+    "addModel": "添加模型",
+    "changeModel": "更换模型",
+    "syncOff": {
+      "title": "关闭同步？",
+      "body": "这会运行 repowise hook uninstall，同时移除提交前的安全检查和健康门禁。之后只有运行 repowise update 时索引才会更新。",
+      "confirm": "关闭",
+      "cancel": "保持开启"
+    },
+    "hosted": {
+      "eyebrow": "托管版 repowise",
+      "title": "以上这些，都可以替你和团队运行",
+      "lede": "需要时随时看看。",
+      "items": {
+        "push": "每次推送都会索引",
+        "reviews": "拉取请求审查",
+        "dashboard": "团队共用一个仪表盘",
+        "webApps": "在 Claude.ai 和 ChatGPT 中使用"
+      },
+      "start": "免费开始",
+      "see": "了解托管版的更多功能",
+      "hide": "在此电脑上隐藏"
+    },
+    "pill": {
+      "label": "设置向导",
+      "progress": "{done}/{total}",
+      "aria": "设置向导：已完成 {done}/{total} 项必备设置",
+      "hide": "在此电脑上隐藏设置提醒"
+    },
+    "settings": {
+      "repoLead": "此仓库的索引、编程智能体和同步，每项都附有终端命令。",
+      "openSetup": "打开设置向导",
+      "openSetupFor": "打开 {repo} 的设置向导",
+      "globalLead": "设置向导按仓库区分：每个仓库的索引、编程智能体以及同步。",
+      "noRepos": "添加一个仓库后即可设置。",
+      "telemetryTitle": "匿名使用遥测",
+      "telemetryDescription": "repowise 会发送匿名使用统计：命令名称和大致的运行环境，从不包含代码、路径或名称。设置 DO_NOT_TRACK=1 也可以关闭。",
+      "telemetryCheck": "查看是否开启：",
+      "telemetryOff": "关闭："
+    },
+    "row": {
+      "index": {
+        "title": "索引",
+        "statusUpToDate": "已是最新",
+        "statusIncomplete": "未索引",
+        "statusBehind": "落后",
+        "statusSkipped": "跳过了 {count} 个文件",
+        "detailUpToDate": "已在 {commit} 索引 {files} 个文件。",
+        "detailIncomplete": "此仓库还没有完整的索引。",
+        "detailBehind": "索引位于 {indexed}，HEAD 已前进到 {live}。",
+        "detailSkipped": "有 {count} 个文件无法解析，因此图中缺少它们的符号。"
+      },
+      "agent": {
+        "title": "编程智能体",
+        "statusConnected": "已连接",
+        "statusWaiting": "等待中",
+        "statusOff": "未连接",
+        "statusNoCalls": "尚无调用",
+        "detailCalled": "{agent} 在{when}首次调用。",
+        "detailCalledAnon": "有智能体在{when}首次调用。",
+        "detailWaiting": "{agents} 已注册，首次调用后此项即完成。",
+        "detailWaitingOther": "{agents} 已注册，首次调用后此项即完成。{other} 已安装，但尚未连接。",
+        "detailInstalled": "已安装 {agent}。连接时会写入它的 MCP 配置。",
+        "detailNone": "此电脑上没有找到编程智能体。安装一个后，在这里连接即可。",
+        "detailUnavailable": "无法列出此电脑上的智能体。",
+        "detailNoCalls": "{agent} 已注册，但还没有访问此索引。如果它打开的是其他文件夹，请在其中打开 {repo}，或在那个文件夹中运行 repowise init。"
+      },
+      "sync": {
+        "title": "保持索引同步",
+        "statusOn": "开启",
+        "statusOff": "关闭",
+        "statusUnknown": "无法检查",
+        "detailOn": "每次提交后更新。",
+        "detailOff": "只有运行 repowise update 时索引才会更新。",
+        "detailUnknown": "无法读取 post-commit 钩子。"
+      },
+      "model": {
+        "title": "用于文档、对话和回答的模型",
+        "statusLlm": "由模型撰写",
+        "statusBuilt": "基于索引生成",
+        "detailActive": "正在使用 {provider}。",
+        "detailReady": "此电脑上可用：{providers}。",
+        "detailNone": "文档目前基于索引生成。模型能写出更完整的文档，并在对话中回答问题。"
+      },
+      "coverage": {
+        "title": "测试覆盖率",
+        "statusOn": "开启",
+        "statusFound": "已找到",
+        "statusOff": "未找到",
+        "detailOn": "覆盖率已于{when}保存。",
+        "detailFound": "找到 {path}，{age, plural, =0 {今天生成} other {已有 # 天}}。",
+        "detailNone": "没有找到覆盖率报告。运行带覆盖率的测试，然后添加生成的报告。"
+      },
+      "rewrite": {
+        "title": "更简短的命令输出",
+        "statusOn": "开启",
+        "statusOff": "关闭",
+        "statusNa": "需要 Claude Code",
+        "statusUnknown": "无法检查",
+        "detail": "Claude Code 通过 distill 读取测试、构建和 git 的输出。",
+        "detailNa": "此功能配合 Claude Code 使用，而此电脑上没有安装它。"
+      },
+      "check": {
+        "statusWarn": "警告",
+        "statusFail": "失败"
+      },
+      "agents": {
+        "statusConnected": "已连接",
+        "statusNotConnected": "未连接",
+        "statusNotInstalled": "未安装",
+        "statusHosted": "托管版",
+        "detailLastCall": "最近一次调用：{when}。{path}",
+        "detailNoCall": "尚无调用。{path}",
+        "detailInstalledWrites": "已安装。会写入 {path}。",
+        "detailInstalled": "已安装。",
+        "detailNotInstalled": "安装后即可连接，或在全局设置中复制编辑器配置。",
+        "hostedTitle": "Claude.ai 和 ChatGPT",
+        "hostedDetail": "通过托管版 repowise 的 MCP 地址，也能在这些网页应用中使用此仓库。",
+        "hostedLink": "了解托管版"
+      }
+    }
   }
 }

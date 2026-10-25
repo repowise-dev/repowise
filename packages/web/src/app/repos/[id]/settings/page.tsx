@@ -14,6 +14,18 @@ import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
 import { OperationsPanel } from "@/components/repos/operations-panel";
 import { getTranslations } from "next-intl/server";
 import { PublishPanel } from "@/components/hosted/publish";
+import {
+  SettingsGroup,
+  SettingsGroupNav,
+  settingsGroupTitles,
+  type SettingsGroupId,
+} from "@/components/settings/settings-groups";
+import { RepoAgentRows, RepoSetupRows, SetupLinkRow } from "@/components/setup/setup-settings";
+
+/** Telemetry is per machine, so Privacy lives on global settings only. */
+const GROUPS: SettingsGroupId[] = ["setup", "agents", "models", "sync", "coverage", "server"];
+const SYNC_ROWS = ["sync", "rewrite"];
+const COVERAGE_ROWS = ["coverage"];
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -31,6 +43,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 /**
  * Per-repository settings.
+ *
+ * Grouped by what people manage, under the same group names as global
+ * settings. The Setup page's own rows (agents, hooks, coverage) render here
+ * too, with the same controls.
  *
  * Was seven `Card`s and two `Separator`s. Sections carry the grouping now, and
  * the page shares its frame and its vocabulary with global settings.
@@ -53,6 +69,8 @@ export default async function RepoSettingsPage({ params }: Props) {
   }
 
   const coordinatorHealth = await getCoordinatorHealth(id).catch(() => null);
+  const tg = await getTranslations("settings.groups");
+  const titles = settingsGroupTitles(tg);
 
   return (
     <PageShell
@@ -60,56 +78,75 @@ export default async function RepoSettingsPage({ params }: Props) {
       description={t("description", { repo: repo.name })}
       maxWidth="narrow"
     >
-      <OverviewSection
-        title={t("generalTitle")}
-        description={t("generalDescription")}
-        flush
-      >
-        <RepoSettingsForm repo={repo} />
-      </OverviewSection>
+      <SettingsGroupNav groups={GROUPS} label={tg("navLabel")} titles={titles} />
 
-      <OverviewSection
-        title={t("syncTitle")}
-        description={t("syncDescription")}
-      >
-        <OperationsPanel repoId={id} repoName={repo.name} />
-      </OverviewSection>
+      <SettingsGroup id="setup" title={titles.setup}>
+        <SetupLinkRow repoId={id} />
+        <OverviewSection
+          title={t("generalTitle")}
+          description={t("generalDescription")}
+        >
+          <RepoSettingsForm repo={repo} />
+        </OverviewSection>
 
-      <OverviewSection
-        id="provider"
-        title={t("providerTitle")}
-        description={t("providerDescription")}
-      >
-        <ProviderSettingsPanel repoId={id} />
-      </OverviewSection>
+        <OverviewSection
+          title={t("healthTitle")}
+          description={t("healthDescription")}
+        >
+          <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />
+        </OverviewSection>
+      </SettingsGroup>
 
-      <OverviewSection
-        title={t("captureTitle")}
-        description={t("captureDescription")}
-      >
-        <DecisionCaptureSettingsWrapper repoId={id} />
-      </OverviewSection>
+      <SettingsGroup id="agents" title={titles.agents} description={tg("agents.description")}>
+        <RepoAgentRows repoId={id} repoName={repo.name} />
+      </SettingsGroup>
 
-      <OverviewSection
-        title={t("refactoringTitle")}
-        description={t("refactoringDescription")}
-      >
-        <RefactoringSettingsSection repoId={id} />
-      </OverviewSection>
+      <SettingsGroup id="models" title={titles.models}>
+        <OverviewSection
+          id="provider"
+          title={t("providerTitle")}
+          description={t("providerDescription")}
+        >
+          <ProviderSettingsPanel repoId={id} />
+        </OverviewSection>
 
-      <OverviewSection
-        title={t("healthTitle")}
-        description={t("healthDescription")}
-      >
-        <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />
-      </OverviewSection>
+        <OverviewSection
+          title={t("captureTitle")}
+          description={t("captureDescription")}
+        >
+          <DecisionCaptureSettingsWrapper repoId={id} />
+        </OverviewSection>
 
-      <OverviewSection
-        title="Publish on repowise.dev"
-        description="Put this repository on repowise.dev, indexed from its GitHub remote. Nothing on this machine is uploaded."
-      >
-        <PublishPanel repoId={id} />
-      </OverviewSection>
+        <OverviewSection
+          title={t("refactoringTitle")}
+          description={t("refactoringDescription")}
+        >
+          <RefactoringSettingsSection repoId={id} />
+        </OverviewSection>
+      </SettingsGroup>
+
+      <SettingsGroup id="sync" title={titles.sync}>
+        <OverviewSection
+          title={t("syncTitle")}
+          description={t("syncDescription")}
+        >
+          <OperationsPanel repoId={id} repoName={repo.name} />
+        </OverviewSection>
+        <RepoSetupRows repoId={id} repoName={repo.name} ids={SYNC_ROWS} />
+      </SettingsGroup>
+
+      <SettingsGroup id="coverage" title={titles.coverage}>
+        <RepoSetupRows repoId={id} repoName={repo.name} ids={COVERAGE_ROWS} />
+      </SettingsGroup>
+
+      <SettingsGroup id="server" title={titles.server}>
+        <OverviewSection
+          title="Publish on repowise.dev"
+          description="Put this repository on repowise.dev, indexed from its GitHub remote. Nothing on this machine is uploaded."
+        >
+          <PublishPanel repoId={id} />
+        </OverviewSection>
+      </SettingsGroup>
 
       {/* Not a tinted card. A destructive action earns emphasis on the verb and
           the sentence, not on a coloured ground the eye reads before either. */}
