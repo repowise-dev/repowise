@@ -160,6 +160,8 @@
   --color-release-card: var(--color-bg-surface);
   --color-release-glow-1: #f8dfc2;
   --color-release-glow-2: #e8deef;
+  /* The welcome's band runs plum into this blue instead of orange into plum. */
+  --color-release-glow-3: #dde7f3;
   /* Supporting cast beside an accent series: tertiary ink stepped into the well. */
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
@@ -536,6 +538,7 @@
   --color-release-card: #1b191e;
   --color-release-glow-1: #2b1c0e;
   --color-release-glow-2: #1f1729;
+  --color-release-glow-3: #121a26;
   --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
   --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
   --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));

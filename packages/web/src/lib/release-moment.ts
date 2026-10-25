@@ -6,7 +6,9 @@
  * What's new dialog once, and a patch shows a quiet "Updated to vX" note. A
  * fresh browser stores the version and shows nothing; a browser with earlier
  * repowise state but no stored version counts as an upgrade. Highlighted pages carry a
- * "New" mark in the nav until visited, or for 14 days.
+ * "New" mark in the nav until visited, or for 14 days. The welcome
+ * (`welcome-moment.ts`) shares a session guard with it: one interruption per
+ * session.
  *
  * Every storage call is best-effort: blocked site data means no moment, never
  * an error.
@@ -18,8 +20,12 @@ const LAST_SEEN_KEY = "repowise:last-seen-server-version";
 const NEW_SURFACES_KEY = "repowise:new-surfaces";
 const NEW_SURFACES_EVENT = "repowise:new-surfaces";
 const LAST_REPO_KEY = "repowise:last-repo";
+/** Set once, on the first visit of a browser with no earlier repowise use. */
+const NEW_BROWSER_KEY = "repowise:new-browser";
+/** One interruption per session: What's new, a patch note or the welcome. */
+const SESSION_MOMENT_KEY = "repowise:session-moment";
 /** Keys this module writes itself, which say nothing about earlier use. */
-const OWN_KEYS = new Set([LAST_SEEN_KEY, NEW_SURFACES_KEY, LAST_REPO_KEY]);
+const OWN_KEYS = new Set([LAST_SEEN_KEY, NEW_SURFACES_KEY, LAST_REPO_KEY, NEW_BROWSER_KEY]);
 export const NEW_MARK_DAYS = 14;
 
 export type UpgradeMoment = "none" | "dialog" | "notice";
@@ -78,7 +84,7 @@ function write(key: string, value: string): void {
  *  app's own keys (banner dismissals, chat and docs state). Browsers that
  *  predate the last-seen key would otherwise count as first visits and never
  *  see the release they upgraded to. */
-function hasPriorUse(): boolean {
+export function hasPriorUse(): boolean {
   try {
     const store = window.localStorage;
     for (let i = 0; i < store.length; i++) {
@@ -97,9 +103,47 @@ function hasPriorUse(): boolean {
 export function takeUpgradeMoment(current: string, hasHighlights: boolean): UpgradeMoment {
   // "0" stands for "some earlier version": prior use with nothing stored.
   const stored = read(LAST_SEEN_KEY) ?? (hasPriorUse() ? "0" : null);
+  if (stored === null) write(NEW_BROWSER_KEY, "1");
   const moment = upgradeMoment(stored, current, hasHighlights);
-  write(LAST_SEEN_KEY, current);
+  markVersionSeen(current);
   return moment;
+}
+
+/** Stores `version` as seen, so the release moment stays quiet for it. */
+export function markVersionSeen(version: string): void {
+  write(LAST_SEEN_KEY, version);
+}
+
+/** Whether this browser started out with no repowise use: a first visit now,
+ *  or one recorded by an earlier visit. A browser that predates this mark has
+ *  a stored version or other repowise state, so an upgrading user never
+ *  counts as new. */
+export function isNewBrowser(): boolean {
+  if (read(NEW_BROWSER_KEY) === "1") return true;
+  return read(LAST_SEEN_KEY) === null && !hasPriorUse();
+}
+
+// --- One moment per session ---------------------------------------------------
+
+/** Fallback for blocked session storage: the guard then lasts for this page load. */
+let sessionMomentFallback = false;
+
+/** Whether What's new, a patch note or the welcome already showed this session. */
+export function sessionMomentTaken(): boolean {
+  try {
+    return window.sessionStorage.getItem(SESSION_MOMENT_KEY) === "1";
+  } catch {
+    return sessionMomentFallback;
+  }
+}
+
+/** Records that this session had its one interruption. */
+export function takeSessionMoment(): void {
+  try {
+    window.sessionStorage.setItem(SESSION_MOMENT_KEY, "1");
+  } catch {
+    sessionMomentFallback = true;
+  }
 }
 
 // --- "New" marks ------------------------------------------------------------
@@ -204,7 +248,8 @@ export function previewMoment(search: string): UpgradeMoment | null {
 }
 
 /** The moment due on load: a `?whats-new=` replay, or the real upgrade check,
- *  which also starts the "New" marks for that release. */
+ *  which also starts the "New" marks for that release. When the welcome
+ *  already showed this session, the upgrade waits for the next one. */
 export function decideMoment(
   version: string,
   highlights: ChangelogHighlight[],
@@ -212,8 +257,12 @@ export function decideMoment(
 ): { moment: UpgradeMoment; preview: boolean } {
   const replay = previewMoment(search);
   if (replay) return { moment: replay, preview: true };
+  if (sessionMomentTaken()) return { moment: "none", preview: false };
   const moment = takeUpgradeMoment(version, highlights.length > 0);
-  if (moment !== "none") startNewSurfaces(version, highlights);
+  if (moment !== "none") {
+    startNewSurfaces(version, highlights);
+    takeSessionMoment();
+  }
   return { moment, preview: false };
 }
 

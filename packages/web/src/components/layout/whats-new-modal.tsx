@@ -12,6 +12,7 @@ import {
 import { useChangelog } from "@/lib/hooks/use-meta-version";
 import { highlightRepoId } from "@/lib/release-moment";
 import { useTranslations } from "next-intl";
+import { MOMENT_GROUND } from "./moment-shell";
 import { ReleaseHeader, ReleaseNotes, releaseName } from "./release-notes";
 
 /** How many earlier releases the switcher lists. */
@@ -62,7 +63,7 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* Its own deeper ground and a glow band: the release moment is the one
           dialog that presents rather than asks. */}
-      <DialogContent className="max-h-[85vh] gap-0 overflow-y-auto bg-[var(--color-release-ground)] p-0 sm:max-w-3xl">
+      <DialogContent className={`${MOMENT_GROUND} max-h-[85vh] overflow-y-auto sm:max-w-3xl`}>
         {entry ? (
           <ReleaseHeader key={`h-${entry.version}`} entry={entry} title={title} />
         ) : (
