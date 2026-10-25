@@ -518,6 +518,14 @@ def _repowise_entries(saved: dict, event: str) -> list:
     ]
 
 
+#: What a fresh install puts under PostToolUse: the augment entry, and the
+#: capture prompt's shell entry, which ships on.
+_INSTALLED_POST = [
+    (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND),
+    (claude_config._CAPTURE_MATCHER, claude_config._CAPTURE_HOOK_COMMAND),
+]
+
+
 def _post_repowise_entries(saved: dict) -> list:
     return _repowise_entries(saved, "PostToolUse")
 
@@ -539,9 +547,7 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert settings_path == tmp_path / ".claude" / "settings.json"
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
-    ]
+    assert _post_repowise_entries(saved) == _INSTALLED_POST
     assert _session_start_repowise_entries(saved) == [
         ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
     ]
@@ -590,9 +596,7 @@ def test_install_claude_code_hooks_preserves_user_pretool_hooks(
     assert saved["hooks"]["PreToolUse"][0]["matcher"] == "Read"
     assert saved["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo read"
     # PostToolUse now has the repowise hook.
-    assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
-    ]
+    assert _post_repowise_entries(saved) == _INSTALLED_POST
 
 
 # ---------------------------------------------------------------------------
@@ -636,9 +640,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
-    ]
+    assert _post_repowise_entries(saved) == _INSTALLED_POST
 
 
 def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
@@ -676,9 +678,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
-    ]
+    assert _post_repowise_entries(saved) == _INSTALLED_POST
 
 
 def test_install_claude_code_hooks_idempotent_on_current_shape(
@@ -1169,7 +1169,8 @@ def test_plugin_hooks_json_mirrors_settings_entries(repo_root: Path) -> None:
         ]
 
     assert rows("PostToolUse") == [
-        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND),
+        (claude_config._CAPTURE_MATCHER, claude_config._CAPTURE_HOOK_COMMAND),
     ]
     assert rows("SessionStart") == [
         (claude_config._SESSION_START_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)

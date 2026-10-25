@@ -25,6 +25,17 @@
             "statusMessage": "Checking codebase context..."
           }
         ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); case \"$input\" in *\"git commit\"*) if command -v repowise-augment >/dev/null 2>&1; then printf \"%s\" \"$input\" | repowise-augment; fi;; esac",
+            "timeout": 10,
+            "statusMessage": "Checking for a decision to record..."
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

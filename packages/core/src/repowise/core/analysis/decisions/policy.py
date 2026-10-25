@@ -348,9 +348,10 @@ class DecisionPolicy:
     #: default: agents do most of the reviewing, and every grant is signed
     #: as the agent's, never a person's. ``--off`` restores a person-only gate.
     agent_acceptance: bool = True
-    #: Whether the commit hook asks the agent to record a decision. An agent
-    #: cannot decline a hook, so this ships off and no preset turns it on.
-    capture_prompt: bool = False
+    #: Whether the commit hook asks the agent to record a decision. On by
+    #: default: it fires at most once a session, only on a commit that states
+    #: a choice, and what it records lands as a candidate, never a rule.
+    capture_prompt: bool = True
 
     # -- queries ---------------------------------------------------------
 
@@ -499,8 +500,8 @@ class DecisionPolicy:
             block["harnesses"] = list(self.harnesses)
         if not self.agent_acceptance:
             block["agent_acceptance"] = False
-        if self.capture_prompt:
-            block["capture_prompt"] = True
+        if not self.capture_prompt:
+            block["capture_prompt"] = False
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -796,7 +797,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     if capture_prompt is None:
         if "capture_prompt" in raw:
             warnings.append("`decisions.capture_prompt` is not a boolean; ignoring it.")
-        capture_prompt = False
+        capture_prompt = True
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
