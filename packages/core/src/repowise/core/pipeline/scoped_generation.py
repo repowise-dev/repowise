@@ -42,6 +42,29 @@ from repowise.core.generation.scope import (
 logger = structlog.get_logger(__name__)
 
 
+def _canonical_repo_name(records: list[PageRecord], fallback: str) -> str:
+    """Return the persisted repo-wide page identity for a scoped run.
+
+    A checkout directory may be renamed (for example, ``repowise`` checked out
+    as ``rw-upper``), while persisted structural page ids remain keyed by the
+    repository name used when the wiki was created.  Reusing the suffix of the
+    overview page id keeps scope resolution and generation on that same
+    identity.  ``target_path`` is deliberately not authoritative: legacy rows
+    may already contain the renamed checkout directory there.
+    """
+    prefix = "repo_overview:"
+    overview_names = {
+        record.page_id.removeprefix(prefix).strip()
+        for record in records
+        if record.page_type == "repo_overview"
+        and record.page_id.startswith(prefix)
+        and record.page_id.removeprefix(prefix).strip()
+    }
+    if len(overview_names) == 1:
+        return overview_names.pop()
+    return fallback
+
+
 @dataclass
 class RehydratedRepo:
     """The rehydrated, re-parsed view a scoped generation runs against.
@@ -151,7 +174,7 @@ async def rehydrate_repo(
         include_nested_repos=include_nested_repos,
     )
 
-    repo_name = repo_path.name
+    repo_name = _canonical_repo_name(records, repo_path.name)
     kg_ctx = load_kg_context(repo_path)
     # build_dependencies runs select_pages, which forces pagerank / betweenness /
     # community detection on the rehydrated graph — seconds of pure CPU on a large
@@ -219,6 +242,7 @@ async def execute_scoped_generation(
 
     generated_pages = await run_generation(
         repo_path=repo_path,
+        repo_name=rehydrated.repo_name,
         parsed_files=rehydrated.parsed_files,
         source_map=rehydrated.source_map,
         graph_builder=rehydrated.graph_builder,
@@ -246,9 +270,7 @@ async def execute_scoped_generation(
         # runs a full index, because the full sweep cannot run here — it would
         # delete every page of a type this run did not reproduce, which on a
         # scoped run is nearly all of them.
-        swept_page_ids = await sweep_superseded_generated_pages(
-            session, repo_id, generated_pages
-        )
+        swept_page_ids = await sweep_superseded_generated_pages(session, repo_id, generated_pages)
         # Rows of a page type that no longer exists. Safe on a scoped run
         # precisely because it does not ask what the run produced: nothing can
         # emit a retired type, so absence is never evidence of a narrow scope.

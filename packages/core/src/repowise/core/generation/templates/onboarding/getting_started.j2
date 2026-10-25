@@ -2,6 +2,9 @@ You are writing the "Getting Started" page for `{{ ctx.repo_name }}` —
 the page where reading stops and doing starts. The reader wants the
 shortest correct path to a working local checkout.
 
+This page owns setup and verification only. Do not repeat the repository
+overview, architecture tour, concept explanations, activity report, or glossary.
+
 ## Detected build signal (ground every command in this data)
 {% if ctx.package_managers %}
 - **Package managers / ecosystems**: {{ ctx.package_managers | join(", ") }}
@@ -68,4 +71,6 @@ Hard rules:
   worktree name; the product turns backticked paths into file-page links.
 - Aim for 450–700 words when the evidence supports it. Prefer a shorter honest
   page when the repository does not document a complete setup.
+- Link to a supplied setup authority for detail instead of restating long
+  background passages from it.
 - Output markdown only. No preamble, no apologies, no closing summary.

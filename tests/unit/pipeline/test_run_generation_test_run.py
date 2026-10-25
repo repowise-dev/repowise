@@ -22,9 +22,11 @@ class _StubGenerator:
 
     def __init__(self) -> None:
         self.parsed_files: list | None = None
+        self.repo_name: str | None = None
 
     async def generate_all(self, parsed_files, *args, **kwargs) -> list:
         self.parsed_files = list(parsed_files)
+        self.repo_name = args[3]
         return []
 
 
@@ -102,3 +104,23 @@ async def test_no_test_run_generates_every_file(
     )
     assert _stub_generator.parsed_files is not None
     assert len(_stub_generator.parsed_files) == 15
+
+
+async def test_explicit_repo_name_overrides_checkout_directory(
+    _stub_generator: _StubGenerator, tmp_path: pytest.TempPathFactory
+) -> None:
+    await run_generation(
+        repo_path=tmp_path / "renamed-checkout",
+        repo_name="canonical-repo",
+        parsed_files=[],
+        source_map={},
+        graph_builder=_graph_builder_for([]),
+        repo_structure=SimpleNamespace(),
+        git_meta_map={},
+        llm_client=SimpleNamespace(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=None,
+    )
+    assert _stub_generator.repo_name == "canonical-repo"
