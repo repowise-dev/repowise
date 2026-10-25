@@ -52,6 +52,11 @@ class StoreUnavailableError(RuntimeError):
     """
 
 
+#: Store served for a directory with no ``.repowise/``: empty, so tools report
+#: "not indexed", and never written to disk.
+_NO_INDEX_DB_URL = "sqlite+aiosqlite:///:memory:"
+
+
 def _store_unavailable(
     where: str | None, repo_path: str | None, exc: BaseException
 ) -> StoreUnavailableError:
@@ -582,30 +587,30 @@ async def _lifespan(server: FastMCP):
 
     # When repo path is set and no env override, prefer repo-local DB.
     store_location: str | None = None
+    db_url: str | None = None
     try:
         if _state._repo_path and configured_db_url is None:
             db_path = get_repo_db_path(_state._repo_path)
             repowise_dir = db_path.parent
             store_location = str(repowise_dir)
-            if not repowise_dir.is_dir():
-                # Creating the store directory here made whatever directory an
-                # MCP host spawned the server from look initialised: it left a
-                # stray .repowise/ behind, silenced the CLI's "run 'repowise
-                # init'" warning for every later start, and seeded an empty
-                # wiki.db. Fail the way an unopenable store does instead (#3163).
-                await _abort_startup(_release_task, _warm_task)
-                raise _store_unavailable(
-                    store_location,
-                    _state._repo_path,
-                    FileNotFoundError(f"no {repowise_dir.name} directory"),
+            if not repowise_dir.exists():
+                # An unindexed directory, often just wherever a globally
+                # installed plugin was launched. Exiting here made the host
+                # respawn the server in a loop and the agent never saw why.
+                # Serve an empty in-memory store instead, so every tool returns
+                # the "no index, run repowise init" notice, without leaving a
+                # stray .repowise/ on disk (#3163).
+                _log.warning(
+                    "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
                 )
-            if not db_path.exists():
+                db_url = _NO_INDEX_DB_URL
+            elif not db_path.exists():
                 _log.warning(
                     "No wiki.db in %s — run 'repowise init' to generate the wiki",
                     repowise_dir,
                 )
 
-        db_url = resolve_db_url(_state._repo_path)
+        db_url = db_url or resolve_db_url(_state._repo_path)
 
         _log.info("repowise MCP: initialising database…")
         engine = create_engine(db_url, short_lived=False)
@@ -665,6 +670,7 @@ async def _lifespan(server: FastMCP):
 # ---------------------------------------------------------------------------
 # Create the MCP server
 # ---------------------------------------------------------------------------
+
 
 class _RepowiseMCP(FastMCP):
     """FastMCP plus the HTTP bearer gate and per-call principal scope.
