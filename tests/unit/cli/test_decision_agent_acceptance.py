@@ -179,3 +179,114 @@ def test_the_flag_is_checked_before_anything_is_written(
     assert result.exit_code != 0
     assert expected in result.output
     assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"] is None
+
+
+# --- decision add --agent ----------------------------------------------------
+
+
+def _add(repo: Path, *extra: str, size: int = 512):
+    return _run(
+        repo,
+        "add",
+        "--title", f"Bound the cache at {size}",
+        "--decision", f"Cap the cache at {size} entries",
+        "--rationale", "unbounded growth ran a worker out of memory",
+        "--affects", "src/cache.py",
+        *extra,
+    )
+
+
+def _grounding(repo: Path, decision_id: str) -> dict:
+    import sqlite3
+
+    conn = sqlite3.connect(repo / ".repowise" / "wiki.db")
+    try:
+        row = conn.execute(
+            "SELECT grounding_json FROM decision_candidate_meta WHERE decision_id = ?",
+            (decision_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return json.loads(row[0])
+
+
+def test_an_agent_records_a_decision_as_its_own(repo: Path) -> None:
+    added = _add(repo, "--agent", "claude_code", "--session", "s-9")
+    assert added.exit_code == 0, added.output
+    decision_id = json.loads(added.output)["decision"]["id"]
+
+    shown = json.loads(_run(repo, "show", decision_id).output)["decision"]
+    assert shown["source"] == "agent"
+    assert shown["status"] == "proposed"
+    assert _grounding(repo, decision_id) == {"agent": "claude_code", "session": "s-9"}
+
+
+def test_an_agent_record_gets_no_manual_entry_evidence_exemption(repo: Path) -> None:
+    """A person's typed record is its own evidence; an agent's is not."""
+    by_person = json.loads(_add(repo, size=256).output)["decision"]["id"]
+    by_agent = json.loads(_add(repo, "--agent", "claude_code").output)["decision"]["id"]
+
+    assert _run(repo, "confirm", by_person).exit_code == 0
+
+    refused = _run(repo, "confirm", by_agent)
+    assert refused.exit_code == 1, refused.output
+    assert any("evidence" in b for b in json.loads(refused.output)["blockers"])
+
+    accepted = _run(repo, "confirm", by_agent, "--evidence", "abc1234")
+    assert accepted.exit_code == 0, accepted.output
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (("--session", "s-1"), "pass --agent too"),
+        (("--agent", "Claude Code"), "not a well-formed agent slug"),
+    ],
+)
+def test_add_checks_the_signing_flags_before_writing(
+    repo: Path, args: tuple[str, ...], expected: str
+) -> None:
+    result = _add(repo, *args)
+
+    assert result.exit_code != 0
+    assert expected in result.output
+    assert json.loads(_run(repo, "list").output)["total"] == 2
+
+
+def test_add_with_only_the_agent_flag_is_refused_not_prompted(repo: Path) -> None:
+    result = CliRunner().invoke(
+        cli, ["decision", "add", "--agent", "claude_code", str(repo)], input=""
+    )
+
+    assert result.exit_code != 0
+    assert "--title and --decision are both required" in result.output
+
+
+# --- confirm / dismiss with no ids -------------------------------------------
+
+
+@pytest.mark.parametrize("verb", ["confirm", "dismiss"])
+def test_a_review_verb_with_no_ids_points_at_the_candidates(repo: Path, verb: str) -> None:
+    result = _run(repo, verb)
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["error"] == "no_decision_ids"
+    assert "repowise decision candidates" in payload["remedy"]
+
+
+def test_a_locked_store_is_one_line_not_a_traceback(repo: Path, monkeypatch) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    import repowise.core.persistence as persistence
+
+    async def _locked(engine):
+        raise OperationalError("PRAGMA", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(persistence, "init_db", _locked)
+    result = CliRunner().invoke(cli, ["decision", "confirm", "aaaa", str(repo)])
+
+    assert result.exit_code == 1
+    assert "database is locked" in result.output
+    assert "retry once it finishes" in result.output
+    assert "Traceback" not in result.output

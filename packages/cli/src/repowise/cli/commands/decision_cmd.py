@@ -18,6 +18,7 @@ from repowise.cli.commands.decision_batch import (
     _emit_lifecycle,
     _emit_single,
     _open_store,
+    _require_ids,
     _resolve_decision_id,
     _review_batch,
     _split_ids_and_path,
@@ -269,6 +270,7 @@ class _DecisionFields:
     show_default=True,
     help="'architectural' governs the code; 'agreement' governs how the work is done.",
 )
+@_signing_options
 @format_option()
 def decision_add(
     path: str | None,
@@ -282,6 +284,8 @@ def decision_add(
     tags: tuple[str, ...],
     evidence_commits: tuple[str, ...],
     kind: str,
+    agent: str,
+    agent_session: str,
     fmt: str,
 ) -> None:
     """Add a decision, interactively or from flags.
@@ -296,13 +300,18 @@ def decision_add(
     A person answering eight questions has reviewed the decision; a caller
     inferring one from a diff has not, and the store should be able to tell
     them apart. Promote with `repowise decision confirm <id>`.
+
+    `--agent <slug>` records the decision as that agent's (source `agent`),
+    so review can tell it from one a person typed. It needs the flags.
     """
+    signer = _signer(agent, agent_session)
     non_interactive = bool(title and decision_text)
     if not non_interactive:
         _refuse_partial_flags(
             fmt,
             title, context, decision_text, rationale,
             alternatives, consequences, affected, tags, evidence_commits,
+            agent, agent_session,
         )
 
     repo_path = _resolve_decision_repo(path, fmt)
@@ -325,7 +334,7 @@ def decision_add(
         fields = _prompt_decision_fields(kind)
 
     decision_id, stored_status = run_async(
-        _persist_decision(repo_path, fields, status, list(evidence_commits))
+        _persist_decision(repo_path, fields, status, list(evidence_commits), signer)
     )
     if stored_status != "active" and not non_interactive:
         console.print(
@@ -426,10 +435,15 @@ def _prompt_decision_fields(kind: str) -> _DecisionFields:
 
 
 async def _persist_decision(
-    repo_path: Path, fields: _DecisionFields, status: str, evidence_commits: list[str]
+    repo_path: Path,
+    fields: _DecisionFields,
+    status: str,
+    evidence_commits: list[str],
+    signer: _Signer,
 ) -> tuple[str, str]:
     """Write the record, accept it when the prompts earned that; return id and status."""
     from repowise.core.persistence import get_session, upsert_decision, upsert_repository
+    from repowise.core.persistence.crud.authority import upsert_candidate_meta
 
     async with _open_store(repo_path) as sf:
         async with get_session(sf) as session:
@@ -452,9 +466,19 @@ async def _persist_decision(
                 # asks again next session for a commit already recorded.
                 evidence_commits=evidence_commits,
                 kind=fields.kind,
-                source="cli",
+                # Not ``cli``: an agent's record gets no self-authored evidence
+                # exemption at acceptance.
+                source="agent" if signer.agent else "cli",
                 # No confidence: upsert_decision scores a manual entry.
             )
+            # A restated record keeps its first source, so only on an agent's own.
+            if signer.agent and rec.source == "agent":
+                # Who proposed it, for the reviewer: the record has no column for it.
+                await upsert_candidate_meta(
+                    session,
+                    rec,
+                    grounding={"agent": signer.agent, "session": signer.session},
+                )
             # An architectural decision needs files to govern, so without them
             # it stays a candidate for ``confirm --scope``. An agreement names no
             # file by definition; its scope is the repository.
@@ -817,7 +841,7 @@ _ACCEPT_REMEDY = "Supply the missing parts with --reason, --scope or --evidence.
 
 
 @decision_group.command("confirm")
-@click.argument("decision_ids", nargs=-1, required=True)
+@click.argument("decision_ids", nargs=-1)
 @click.option("--reason", default="", help="Rationale, or why the constraint needs none.")
 @click.option(
     "--scope",
@@ -863,6 +887,7 @@ def decision_confirm(
     unless ``decision config agent-acceptance`` is on for this repository.
     """
     ids, path = _split_ids_and_path(decision_ids)
+    _require_ids(ids, "accept", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
 
     signer = _signer(agent, agent_session, accepter=accepter)
@@ -900,7 +925,7 @@ def decision_confirm(
 
 
 @decision_group.command("dismiss")
-@click.argument("decision_ids", nargs=-1, required=True)
+@click.argument("decision_ids", nargs=-1)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
 @click.option("--reason", default="", help="Why it was tombstoned.")
 @_signing_options
@@ -922,6 +947,7 @@ def decision_dismiss(
     Takes one id or many, and an optional repository path after them.
     """
     ids, path = _split_ids_and_path(decision_ids)
+    _require_ids(ids, "dismiss", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
 
