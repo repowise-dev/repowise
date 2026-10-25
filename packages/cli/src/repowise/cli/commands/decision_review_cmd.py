@@ -10,8 +10,8 @@ from __future__ import annotations
 import click
 from rich.table import Table
 
-from repowise.cli.helpers import console, get_db_url_for_repo, run_async
 from repowise.cli.commands.decision_batch import _signer, _signing_options
+from repowise.cli.helpers import console, get_db_url_for_repo, run_async
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 
 __all__ = [
