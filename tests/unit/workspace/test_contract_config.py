@@ -15,6 +15,7 @@ class TestContractConfig:
         cfg = ContractConfig()
         assert cfg.detect_http is True
         assert cfg.detect_grpc is True
+        assert cfg.detect_graphql is True
         assert cfg.detect_socket is True
         assert cfg.detect_topics is True
         assert cfg.manual_links == []
@@ -30,6 +31,7 @@ class TestContractConfig:
         cfg = ContractConfig(
             detect_http=True,
             detect_grpc=False,
+            detect_graphql=False,
             detect_socket=True,
             detect_topics=True,
             manual_links=[
@@ -45,6 +47,7 @@ class TestContractConfig:
         d = cfg.to_dict()
         loaded = ContractConfig.from_dict(d)
         assert loaded.detect_grpc is False
+        assert loaded.detect_graphql is False
         assert len(loaded.manual_links) == 1
         assert loaded.manual_links[0].from_repo == "worker"
 
@@ -218,3 +221,23 @@ class TestSettingStages:
             "group:core", "python"
         ).analysis_fingerprint()
         assert ws("group:core").analysis_fingerprint() != ws("group:edge").analysis_fingerprint()
+
+
+class TestDetectGraphql:
+    def test_an_older_config_without_the_key_detects_graphql(self) -> None:
+        assert ContractConfig.from_dict({"detect_http": False}).detect_graphql is True
+
+    def test_detect_graphql_is_an_extraction_setting(self) -> None:
+        # Switching it off must re-extract every repo, not just re-link.
+        assert "detect_graphql" in ContractConfig().stage_dict("extraction")
+        assert "detect_graphql" not in ContractConfig().stage_dict("matching")
+
+    def test_the_extractor_follows_the_switch(self) -> None:
+        from repowise.core.workspace.contracts import _enabled_extractors
+        from repowise.core.workspace.extractors import GraphqlExtractor
+
+        def names(cfg: ContractConfig) -> list[str]:
+            return [type(e).__name__ for e in _enabled_extractors(cfg)]
+
+        assert GraphqlExtractor.__name__ in names(ContractConfig())
+        assert GraphqlExtractor.__name__ not in names(ContractConfig(detect_graphql=False))

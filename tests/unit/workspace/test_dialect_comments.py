@@ -145,3 +145,25 @@ def test_a_python_docstring_example_is_still_read() -> None:
         '"""\n'
     )
     assert _http("main.py", content) == [("provider", "http::GET::/from-docstring", 4)]
+
+
+def test_a_commented_graphql_field_is_not_a_provider() -> None:
+    from repowise.core.workspace.extractors import GraphqlExtractor
+
+    sdl = "type Query {\n  # legacy: Int\n  live: Int\n}\n"
+    found = GraphqlExtractor().extract(Path("."), "svc", files=[("s.graphql", ".graphql", sdl)])
+    assert [c.contract_id for c in found] == ["graphql::Query.live"]
+
+
+def test_a_commented_out_graphql_resolver_is_not_a_provider() -> None:
+    from repowise.core.workspace.extractors import GraphqlExtractor
+
+    java = (
+        "import org.springframework.graphql.data.method.annotation.QueryMapping;\n"
+        "class C {\n"
+        "  // @QueryMapping\n  // Book gone() { return null; }\n"
+        "  @QueryMapping\n  Book live() { return null; }\n"
+        "}\n"
+    )
+    found = GraphqlExtractor().extract(Path("."), "svc", files=[("C.java", ".java", java)])
+    assert [c.contract_id for c in found] == ["graphql::Query.live"]

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.workspace.extractors import data, grpc, http, socket, topic
+from repowise.core.workspace.extractors import data, graphql, grpc, http, socket, topic
 from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.dialect import EVERY_FILE, run_dialect
 from repowise.core.workspace.origins import ContractOrigin
@@ -23,12 +23,13 @@ REGISTERED = (
     *topic.DIALECTS,
     *socket.DIALECTS,
     *grpc.DIALECTS,
+    *graphql.DIALECTS,
     *data.PROVIDER_DIALECTS,
     *data.CONSUMER_DIALECTS,
 )
 
 #: Contract file formats, where the extension alone says the file is one.
-FORMAT_EXTENSIONS = frozenset({".proto", ".sql", ".prisma"})
+FORMAT_EXTENSIONS = frozenset({".proto", ".sql", ".prisma", ".graphql", ".graphqls", ".gql"})
 
 
 def _ids(dialect: object) -> str:
@@ -68,6 +69,7 @@ def test_dialect_names_are_unique_per_contract_type() -> None:
         topic.DIALECTS,
         socket.DIALECTS,
         grpc.DIALECTS,
+        graphql.DIALECTS,
         data.PROVIDER_DIALECTS + data.CONSUMER_DIALECTS,
     ):
         names = [d.name for d in registry]

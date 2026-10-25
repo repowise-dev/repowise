@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 from repowise.core.test_paths import is_skippable_test_path
 
-from .langs import APEX, CSHARP, GO, JAVA, JS_TS, KOTLIN, PHP, PROTO, RUST
+from .langs import APEX, CSHARP, GO, GRAPHQL, JAVA, JS_TS, KOTLIN, PHP, PROTO, RUST
 
 if TYPE_CHECKING:
     from repowise.core.workspace.repo_index import RepoIndex
@@ -84,9 +84,12 @@ def _comment_mask(suffix: str, content: str) -> str | None:
         return mask_source(content, suffix)
     if suffix in JS_TS:
         return mask_source(content, ".js")
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+    if suffix in GRAPHQL:  # `#` comments; strings are tracked so a `#` in one opens nothing
+        return mask_comments_and_strings(content, strings=False)
     if suffix not in _SLASH_COMMENT_SUFFIXES:
         return None
-    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
 
     return mask_comments_and_strings(
         content, strings=False, hash_comments=False, **mask_dialect(suffix)

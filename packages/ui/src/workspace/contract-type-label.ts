@@ -15,6 +15,7 @@
 const TYPE_LABELS: Record<string, string> = {
   http: "HTTP",
   grpc: "gRPC",
+  graphql: "GraphQL",
   socket: "Socket",
   topic: "Topic",
   data: "Table",

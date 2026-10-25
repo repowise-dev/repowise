@@ -89,7 +89,7 @@ Each repo is indexed independently into its own `.repowise/wiki.db`, the same fo
 |---------|-------------|-----------|
 | Per-repo docs, graph, search | Yes | Yes (for each repo) |
 | Co-change detection | Within repo | Within + across repos |
-| API contract extraction | No | Yes (HTTP, gRPC, topics, sockets, data) |
+| API contract extraction | No | Yes (HTTP, gRPC, GraphQL, topics, sockets, data) |
 | Package dependency mapping | No | Yes |
 | Web UI | Repo pages | Repo pages + workspace dashboard |
 | MCP | One server per repo | One server, all repos |
@@ -132,7 +132,7 @@ to check when a backend API changes.
 
 ### API Contract Extraction
 
-Scans source files for HTTP routes, gRPC services, database tables, message topics and socket events. Then matches providers (servers) with consumers (clients) across repos.
+Scans source files for HTTP routes, gRPC services, GraphQL root fields, database tables, message topics and socket events. Then matches providers (servers) with consumers (clients) across repos.
 
 **HTTP routes and calls:**
 
@@ -168,6 +168,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Type | Providers | Consumers |
 |------|-----------|-----------|
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
+| GraphQL | The schema (`.graphql`, `.graphqls`, `.gql` SDL: every field of `Query`, `Mutation` and `Subscription`, including `extend type` and a `schema { query: ... }` rename), plus resolvers: Spring for GraphQL (`@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`, `@SchemaMapping(typeName = "Query")`), graphql-java (`newTypeWiring("Query").dataFetcher(...)`, `.type("Query", b -> b.dataFetcher(...))`), NestJS (`@Query()`, `@Mutation()`, `@Subscription()` from `@nestjs/graphql`) | Operation documents: `.graphql` / `.gql` operation files, `gql` / `graphql` templates in JS / TS and `gql("...")` in Python. The id is the root field, `graphql::Query.bookById`; the `POST /graphql` it rides on stays an HTTP contract |
 | Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 | Topics: C# integration events | `new T(...)` of an `IntegrationEvent` subclass the repo declares, reaching `PublishAsync` / `Publish` or a repo method taking an `IntegrationEvent`; the id is the short type name, which the event bus routes by | `AddSubscription<T, TH>()`, `Subscribe<T, TH>()` on a declared event, and `IIntegrationEventHandler<T>` classes for events no registration subscribes |
@@ -201,6 +202,7 @@ returns one contract with its schema.
 contracts:
   detect_http: true
   detect_grpc: true
+  detect_graphql: true
   detect_socket: true
   detect_topics: true
   detect_data: true

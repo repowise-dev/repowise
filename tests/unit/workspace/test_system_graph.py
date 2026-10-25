@@ -122,6 +122,8 @@ def test_monorepo_yields_multiple_service_nodes():
 def test_contract_type_to_edge_kind():
     assert edge_kind_for_contract_type("http") == "http"
     assert edge_kind_for_contract_type("grpc") == "grpc"
+    # GraphQL rides HTTP: no new edge kind, so EDGE_KINDS stays fixed.
+    assert edge_kind_for_contract_type("graphql") == "http"
     assert edge_kind_for_contract_type("socket") == "socket"
     assert edge_kind_for_contract_type("topic") == "event"
     assert edge_kind_for_contract_type("unknown") == "unknown"

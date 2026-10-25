@@ -263,7 +263,7 @@ _REASON_LABELS = {
 _REASON_RANK = {"no_provider": 0, "unlinked": 1, "external_host": 3}
 
 #: Call types listed first; tables collapse to one line per repo.
-_TYPE_ORDER = ("http", "grpc", "topic")
+_TYPE_ORDER = ("http", "grpc", "graphql", "topic")
 _DATA_TYPE = "data"
 _ROW_CAP = 20
 _NAME_CAP = 12
