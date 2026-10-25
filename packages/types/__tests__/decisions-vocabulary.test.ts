@@ -156,10 +156,10 @@ describe("the acceptance contract, mirrored", () => {
     expect(decisionAcceptanceBlockers({ ...accepted, decision: "  " })).toEqual([
       "no decision text: state what was chosen",
     ]);
-    // A typed record's title is its claim, as on the engine side.
+    // A typed record needs it too; only its evidence is exempt.
     expect(
       decisionAcceptanceBlockers({ ...accepted, decision: "", source: "cli" }),
-    ).toEqual([]);
+    ).toEqual(["no decision text: state what was chosen"]);
   });
 
   it("falls back to the context when there is no rationale", () => {

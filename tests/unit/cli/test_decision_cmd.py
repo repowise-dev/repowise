@@ -728,6 +728,8 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
             "confirm",
             "badbadba",
             str(indexed_repo),
+            "--decision",
+            "Keep the measured faster path",
             "--reason",
             "Because the alternative was measured slower",
             "--scope",

@@ -300,6 +300,8 @@ export interface DecisionRecord {
   accepter?: string | null;
   accepter_kind?: AccepterKind | "" | null;
   accepter_session?: string | null;
+  /** Why a record just created stayed a candidate. Create endpoint only. */
+  blockers?: string[] | null;
   /** Number of evidence rows backing the record. List endpoint only. */
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
@@ -501,13 +503,14 @@ export const DECISION_PRESETS = [
  *
  * `selfAuthored` is the exemption for a record somebody typed: they wrote the
  * claim rather than reviewing an inference, so the entry is its own provenance.
- * The engine grants it to `source === "cli"` when an accepter is known.
+ * The engine grants it to `source === "cli"` when an accepter is known. It
+ * covers evidence only.
  *
  * The reason reads `rationale` then `context`, never `decision`: `context` is
  * what forced the choice, `decision` is the choice itself, and letting the what
- * stand in for the why is what marked empty records acceptable. A mined record
- * still needs its `decision`: one that never says what was chosen binds nobody
- * to anything. A typed record's title is its claim.
+ * stand in for the why is what marked empty records acceptable. Every record
+ * needs its `decision`, typed or mined: one that never says what was chosen
+ * binds nobody to anything.
  */
 export function decisionAcceptanceBlockers(record: {
   // Required so a caller cannot leave it out and have every record refused.
@@ -526,7 +529,7 @@ export function decisionAcceptanceBlockers(record: {
     values.some((v) => (v ?? "").trim().length > 0);
 
   const selfAuthored = record.source === "cli";
-  if (!selfAuthored && !nonBlank([record.decision])) {
+  if (!nonBlank([record.decision])) {
     blockers.push("no decision text: state what was chosen");
   }
   if (!nonBlank([record.rationale, record.context])) {

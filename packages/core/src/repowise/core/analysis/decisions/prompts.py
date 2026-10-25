@@ -6,10 +6,14 @@ Extracted from the former decision_extractor.py; imported back into
 
 from __future__ import annotations
 
+# Every lane behind the substring gate asks for ``decision`` as a verbatim
+# quote: the gate drops any field the source does not contain, so a reworded
+# decision is stored blank.
 _SYSTEM_PROMPT = (
     "You are an architectural decision extractor. "
     "You extract structured decision records from code context. "
-    "Return only valid JSON. Never invent rationale not present in the source."
+    "Return only valid JSON. Never invent rationale not present in the source. "
+    "Copy the decision field word for word from the source; never reword it."
 )
 
 INLINE_MARKER_PROMPT = """\
@@ -25,7 +29,7 @@ For each marker, return a JSON object:
   "marker_line": the line number of the marker this decision came from,
   "title": "short title of the decision",
   "context": "what situation forced this",
-  "decision": "what was chosen",
+  "decision": "the words from the marker that state what was chosen, copied verbatim",
   "rationale": "why",
   "alternatives": ["rejected alternatives if mentioned"],
   "consequences": ["tradeoffs if mentioned"],
@@ -70,7 +74,7 @@ system structure, patterns, migrations, or technology), return a JSON object:
   "commit_sha": "the sha",
   "title": "short title",
   "context": "what situation forced this",
-  "decision": "what was chosen or changed",
+  "decision": "the sentence or clause from the commit message that states what was chosen, copied verbatim",
   "rationale": "why this approach (infer from message and files only)",
   "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": [],
@@ -104,7 +108,7 @@ Return a JSON array of decisions:
 {{
   "title": "short title",
   "context": "situation that forced it",
-  "decision": "what was chosen",
+  "decision": "the sentence or clause from the document that states what was chosen, copied verbatim",
   "rationale": "why",
   "alternatives": [],
   "consequences": [],
@@ -128,7 +132,7 @@ For each decision return a JSON object:
   "commit_sha": "the sha shown",
   "title": "short title",
   "context": "what situation forced this (only if stated)",
-  "decision": "what was chosen or changed",
+  "decision": "the sentence or clause from the body that states what was chosen, copied verbatim",
   "rationale": "why (quote/paraphrase the body — never invent)",
   "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": ["rejected alternatives if mentioned"],
@@ -157,7 +161,7 @@ For each decision return a JSON object:
 {{
   "title": "short title",
   "context": "what situation forced this (only if stated)",
-  "decision": "what was chosen",
+  "decision": "the sentence or clause from the comment that states what was chosen, copied verbatim",
   "rationale": "why (quote/paraphrase the comment — never invent)",
   "alternatives": [],
   "consequences": [],

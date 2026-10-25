@@ -71,6 +71,9 @@ class DecisionRecordResponse(BaseModel):
     accepter: str | None = None
     accepter_kind: str | None = None
     accepter_session: str | None = None
+    # Why a record just created stayed a candidate, in the acceptance
+    # contract's words. Set by the create route only.
+    blockers: list[str] | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
