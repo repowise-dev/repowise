@@ -20,6 +20,16 @@ from .repo_checks import _run_repo_checks
 from .workspace_checks import _run_workspace_checks
 
 
+def _check_repair_flags(fmt: str, quick: bool) -> None:
+    """``--repair`` writes, and needs the store drift ``--quick`` skips."""
+    if fmt != "table":
+        raise click.UsageError(
+            "--repair is not supported with --format json (json mode is read-only)."
+        )
+    if quick:
+        raise click.UsageError("--repair needs the store checks that --quick skips.")
+
+
 @click.command("doctor")
 @click.argument("path", required=False, default=None)
 @click.option("--repair", is_flag=True, default=False, help="Attempt to fix detected mismatches.")
@@ -65,12 +75,8 @@ def doctor_command(
     workspace mode, runs the full check battery against each indexed repo
     and prints a per-repo table plus a workspace-level summary.
     """
-    if fmt != "table" and repair:
-        raise click.UsageError(
-            "--repair is not supported with --format json (json mode is read-only)."
-        )
-    if quick and repair:
-        raise click.UsageError("--repair needs the store checks that --quick skips.")
+    if repair:
+        _check_repair_flags(fmt, quick)
 
     silencer = silence_logs_for_machine_output() if fmt != "table" else contextlib.nullcontext()
     with silencer:
