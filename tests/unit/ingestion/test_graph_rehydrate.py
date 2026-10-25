@@ -215,6 +215,7 @@ def test_parse_only_symbol_attrs_come_back_from_the_reparse():
         decorators=["@override"],
         parent_name="A",
         modifiers=("override",),
+        generated=True,
     )
     parsed = _parsed("a.py")
     parsed.symbols.append(sym)
@@ -224,10 +225,12 @@ def test_parse_only_symbol_attrs_come_back_from_the_reparse():
     nodes, edges = _serialize(original)
     hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
     assert "modifiers" not in hydrated.graph().nodes[sym.id]
+    assert "generated" not in hydrated.graph().nodes[sym.id]
     hydrated.restore_parse_only_attrs([parsed])
     node = hydrated.graph().nodes[sym.id]
     assert node["modifiers"] == ("override",)
     assert node["decorators"] == ["@override"]
+    assert node["generated"] is True
 
 
 def test_type_only_edges_survive_rehydration_and_suppress_cycles():

@@ -249,6 +249,13 @@ class Symbol:
     # stubs and TypeScript overload signatures are declarations too: they share
     # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
+    # True when this symbol is a synthetic stub for a class a code generator
+    # writes outside the source declaration (MapStruct ``XMapperImpl``,
+    # AutoValue ``AutoValue_X``, Immutables ``ImmutableX``, Lombok ``XBuilder``).
+    # The stub stays in the graph so call and type edges resolve, but dead-code
+    # never reports it, because there is no such declaration in the source file
+    # to delete.
+    generated: bool = False
     # C# type declarations only: how many type parameters it declares, which is
     # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
     type_parameter_count: int | None = None
