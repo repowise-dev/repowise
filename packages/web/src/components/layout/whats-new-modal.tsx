@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
+import type { ChangelogEntry } from "@/lib/api/meta";
 import { useChangelog } from "@/lib/hooks/use-meta-version";
 import { highlightRepoId } from "@/lib/release-moment";
 import { useTranslations } from "next-intl";
@@ -108,30 +109,47 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
             )}
 
             {earlier.length > 0 && (
-              <nav aria-label={t("whatsNewModal.earlier")} className="space-y-3">
-                <p className={MOMENT_MICRO}>{t("whatsNewModal.earlier")}</p>
-                <ul className="flex flex-wrap gap-2">
-                  {earlier.map((e) => (
-                    <li key={e.version}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelected(e.version);
-                          scroller.current?.scrollTo?.({ top: 0 });
-                        }}
-                        className="inline-flex h-11 items-center gap-2 rounded-lg border border-[var(--color-border-default)] px-3 font-mono min-[561px]:h-8 text-xs tabular-nums text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-                      >
-                        {releaseName(e.version, t("whatsNewModal.nextRelease"))}
-                        {e.label && <span className="text-[var(--color-text-tertiary)]">{e.label}</span>}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </nav>
+              <EarlierReleases
+                entries={earlier}
+                onSelect={(v) => {
+                  setSelected(v);
+                  scroller.current?.scrollTo?.({ top: 0 });
+                }}
+              />
             )}
           </div>
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** The switcher to earlier releases, as quiet version chips. */
+function EarlierReleases({
+  entries,
+  onSelect,
+}: {
+  entries: ChangelogEntry[];
+  onSelect: (version: string) => void;
+}) {
+  const t = useTranslations("shell.whatsNewModal");
+  return (
+    <nav aria-label={t("earlier")} className="space-y-3">
+      <p className={MOMENT_MICRO}>{t("earlier")}</p>
+      <ul className="flex flex-wrap gap-2">
+        {entries.map((e) => (
+          <li key={e.version}>
+            <button
+              type="button"
+              onClick={() => onSelect(e.version)}
+              className="inline-flex h-11 items-center gap-2 rounded-lg border border-[var(--color-border-default)] px-3 font-mono text-xs tabular-nums text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] min-[561px]:h-8"
+            >
+              {releaseName(e.version, t("nextRelease"))}
+              {e.label && <span className="text-[var(--color-text-tertiary)]">{e.label}</span>}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </nav>
   );
 }

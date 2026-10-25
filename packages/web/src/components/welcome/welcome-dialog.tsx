@@ -54,8 +54,8 @@ export interface WelcomeDialogProps {
  *  Keydowns from portalled children (the model sheet, the sync confirm)
  *  bubble here through React, so the target must sit in this dialog's DOM. */
 function advancesOnEnter(e: KeyboardEvent<HTMLElement>): boolean {
-  if (e.key !== "Enter" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return false;
-  if (e.nativeEvent.isComposing) return false;
+  const modified = [e.shiftKey, e.metaKey, e.ctrlKey, e.altKey, e.nativeEvent.isComposing].some(Boolean);
+  if (e.key !== "Enter" || modified) return false;
   const target = e.target as HTMLElement;
   if (!e.currentTarget.contains(target)) return false;
   return !target.closest(
@@ -135,38 +135,55 @@ export function WelcomeDialog(props: WelcomeDialogProps) {
           </div>
         </div>
 
-        <footer
-          className={`${MOMENT_GUTTER} flex shrink-0 flex-col gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-release-ground)] pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between`}
-        >
-          <StepIndicator index={index} />
-          <div className="flex gap-2">
-            {index === 0 ? (
-              <Button variant="ghost" className={FOOTER_BUTTON} onClick={close}>
-                {t("skip")}
-              </Button>
-            ) : (
-              <Button variant="ghost" className={FOOTER_BUTTON} onClick={() => setIndex(index - 1)}>
-                {t("back")}
-              </Button>
-            )}
-            {!last ? (
-              <Button
-                className={`${FOOTER_BUTTON} flex-1 min-[561px]:flex-none`}
-                onClick={() => setIndex(index + 1)}
-              >
-                {index === 0 ? t("nextAgent") : t("nextYours")}
-              </Button>
-            ) : (
-              <Button asChild className={`${FOOTER_BUTTON} flex-1 min-[561px]:flex-none`}>
-                <Link href={`/repos/${encodeURIComponent(repoId)}/settings/setup`} onClick={close}>
-                  {t("finish")}
-                </Link>
-              </Button>
-            )}
-          </div>
-        </footer>
+        <StepFooter index={index} repoId={repoId} onStep={setIndex} onClose={close} />
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Stays put across steps: the step indicator, then Skip or Back and the one
+ *  ink primary on the right. */
+function StepFooter({
+  index,
+  repoId,
+  onStep,
+  onClose,
+}: {
+  index: number;
+  repoId: string;
+  onStep: (index: number) => void;
+  onClose: () => void;
+}) {
+  const t = useTranslations("welcome");
+  const primary = `${FOOTER_BUTTON} flex-1 min-[561px]:flex-none`;
+  return (
+    <footer
+      className={`${MOMENT_GUTTER} flex shrink-0 flex-col gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-release-ground)] pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between`}
+    >
+      <StepIndicator index={index} />
+      <div className="flex gap-2">
+        {index === 0 ? (
+          <Button variant="ghost" className={FOOTER_BUTTON} onClick={onClose}>
+            {t("skip")}
+          </Button>
+        ) : (
+          <Button variant="ghost" className={FOOTER_BUTTON} onClick={() => onStep(index - 1)}>
+            {t("back")}
+          </Button>
+        )}
+        {index < STEPS.length - 1 ? (
+          <Button className={primary} onClick={() => onStep(index + 1)}>
+            {index === 0 ? t("nextAgent") : t("nextYours")}
+          </Button>
+        ) : (
+          <Button asChild className={primary}>
+            <Link href={`/repos/${encodeURIComponent(repoId)}/settings/setup`} onClick={onClose}>
+              {t("finish")}
+            </Link>
+          </Button>
+        )}
+      </div>
+    </footer>
   );
 }
 
