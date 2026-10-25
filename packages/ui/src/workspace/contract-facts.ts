@@ -328,6 +328,13 @@ export const UNMATCHED_REASONS: Record<string, UnmatchedReasonCopy> = {
       "Calls to a literal third-party host, left out of matching on purpose. Nothing to fix unless the host is one of your own services.",
     actionable: false,
   },
+  ambiguous_provider: {
+    title: "Several repos serve this route",
+    short: "several repos serve it",
+    meaning:
+      "Two or more repositories serve these routes and nothing in the call names one, so no link is drawn. A contracts.service_bases entry for the host or base, or a manual link, places them.",
+    actionable: true,
+  },
 };
 
 const UNKNOWN_REASON: UnmatchedReasonCopy = {
@@ -396,6 +403,8 @@ export function unmatchedConsumerProse(reason: string | null, contract: Contract
       return `Nothing in this workspace declares ${contractHeading(contract)}. Check for a typo in the path, an endpoint that was renamed or removed, a service outside these repositories, or a route declared in a form extraction does not recognise.`;
     case "unlinked":
       return "A declaration with this id exists in another service, but no link was formed between the two. That is rare, and it points at a gap in the matcher rather than at the code.";
+    case "ambiguous_provider":
+      return "Two or more repositories serve this route, and neither the host nor the base of the call says which one it reaches, so no link is drawn to any of them. To place it, add a contracts.service_bases entry for its host or base, or a manual link.";
     default:
       return "This call matched no declaration, and no reason was recorded for it. Reasons come from the system graph, so a workspace that has not built one reports the count without the explanation.";
   }

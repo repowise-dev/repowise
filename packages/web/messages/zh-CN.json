@@ -1813,6 +1813,7 @@
       "unlinked": "未建立链接",
       "internal_only": "仅限同一服务内部",
       "external_host": "外部主机",
+      "ambiguous_provider": "多个仓库提供",
       "unknown": "未记录原因",
       "everyMatched": "每个消费方都匹配到了提供方"
     },
@@ -1888,6 +1889,7 @@
         "unlinked": "未建立链接",
         "internal_only": "不是跨仓库链接",
         "external_host": "不在本工作区内",
+        "ambiguous_provider": "多个仓库提供该路由",
         "unknown": "未找到提供方"
       },
       "prose": {
@@ -1900,6 +1902,7 @@
         "unmatchedExternalHostGeneric": "该调用发往第三方主机，而它不是本工作区中的服务。发往字面外部主机的调用按设计不参与匹配，因此没有可建立的链接。如果该主机是你自己的服务之一，请把它的仓库加入工作区。",
         "unmatchedInternalOnly": "与该调用匹配的声明都位于同一仓库、同一服务内，因此它从未跨越边界。服务内部的调用按设计不进入链接集合：一条链接意味着两个服务互相依赖。",
         "unmatchedNoProvider": "本工作区内没有任何内容声明 {contract}。请检查路径是否有拼写错误、端点是否被重命名或删除、该服务是否在这些仓库之外，或者路由是否以提取无法识别的方式声明。",
+        "unmatchedAmbiguousProvider": "有两个或更多仓库提供该路由，而该调用的主机和基础地址都没有指明它调用的是哪一个，因此不会与其中任何一个建立链接。如需确定目标，请为其主机或基础地址添加 contracts.service_bases 条目，或添加手动链接。",
         "unmatchedUnlinked": "另一个服务中存在具有该 id 的声明，但两者之间没有建立链接。这种情况很少见，它指向匹配器的缺口，而不是代码的问题。",
         "unmatchedDefault": "该调用没有匹配到任何声明，也没有记录原因。原因来自系统图，因此尚未构建系统图的工作区只能报告数量，而无法给出解释。"
       },

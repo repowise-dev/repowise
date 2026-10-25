@@ -13,10 +13,19 @@ from repowise.core.workspace.contracts import (
 )
 from repowise.core.workspace.origins import LinkStrategy, link_confidence, match_type_for
 
+#: ``meta`` key on a consumer two or more repos could serve, none of them
+#: placed by its host or base: it links to none of them (see :meth:`MatchState.refuse`).
+AMBIGUOUS_PROVIDER = "ambiguous_provider"
+
 
 def internal(provider: Contract, consumer: Contract) -> bool:
     """One program calling itself, which no pass links."""
     return same_service(provider.repo, provider.service, consumer.repo, consumer.service)
+
+
+def spans_repos(providers: list[Contract]) -> bool:
+    """Whether *providers* sit in two or more repos, so the route alone cannot pick one."""
+    return len({p.repo for p in providers}) > 1
 
 
 @dataclass
@@ -49,8 +58,11 @@ class MatchState:
             if c.role == "provider":
                 if id(c) not in vendored:
                     provider_index[normalize_contract_id(c.contract_id)].append(c)
-            elif not c.meta.get("external"):
-                consumers.append(c)
+            else:
+                # Stamped by this run's passes, never carried from a stored row.
+                c.meta.pop(AMBIGUOUS_PROVIDER, None)
+                if not c.meta.get("external"):
+                    consumers.append(c)
         return cls(provider_index, consumers)
 
     def unmatched(self, contract_type: str) -> list[Contract]:
@@ -63,6 +75,13 @@ class MatchState:
 
     def mark_served(self, consumer: Contract) -> None:
         """Mark *consumer* as served internally so later matching passes skip it."""
+        self.matched.add(id(consumer))
+
+    def refuse(self, consumer: Contract) -> None:
+        """Link *consumer* to nothing: its route is served by two or more repos and
+        neither its host nor its base says which one it calls. Later passes skip
+        it, and diagnostics count it as an ambiguous provider."""
+        consumer.meta[AMBIGUOUS_PROVIDER] = True
         self.matched.add(id(consumer))
 
     def add(
@@ -262,8 +281,10 @@ def prefer_target_repo(providers: list[Contract], consumer: Contract) -> list[Co
 
 
 __all__ = [
+    "AMBIGUOUS_PROVIDER",
     "MatchState",
     "find_matching_keys",
     "internal",
     "prefer_target_repo",
+    "spans_repos",
 ]

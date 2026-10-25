@@ -21,6 +21,7 @@ _METHOD = (
 _REASONS = {
     "no_provider": "no provider in the workspace",
     "unlinked": "a provider exists, no link formed",
+    "ambiguous_provider": "two or more repos serve it, none named",
 }
 
 

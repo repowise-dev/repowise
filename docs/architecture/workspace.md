@@ -134,7 +134,9 @@ links are appended after it.
    and gRPC service wildcards included. Strategy `exact_id`, `pattern_matched` for a
    pattern subscription, `service_mapped` when the provider sits in the consumer's
    resolved target. A target the map placed does not fall back to another repo that
-   serves the same path (`common.prefer_target_repo`).
+   serves the same path (`common.prefer_target_repo`). An HTTP or gRPC call whose id
+   two or more repos serve, with nothing placing it in one, links to none of them
+   (`MatchState.refuse`, `meta['ambiguous_provider']`); the HTTP passes keep that rule.
    A package-less gRPC stub id (`grpc::CurrencyService/*`) meets the package-qualified
    proto id (`grpc::shop.CurrencyService/Convert`) on the service's last segment. A proto
    declared in 2+ repos is served only by the repo that registers the service in code

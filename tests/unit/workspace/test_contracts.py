@@ -25,6 +25,8 @@ from repowise.core.workspace.extractors.service_boundary import (
 )
 from repowise.core.workspace.extractors.socket import SocketExtractor
 from repowise.core.workspace.matching import annotate_consumer_targets, match_contracts
+from repowise.core.workspace.matching.common import AMBIGUOUS_PROVIDER
+from repowise.core.workspace.origins import LinkStrategy
 
 # ---------------------------------------------------------------------------
 # normalize_http_path
@@ -1077,18 +1079,30 @@ class TestCandidateMatching:
         assert len(links) == 1
         assert links[0].match_type == "exact"
 
-    def test_base_stripped_consumer_ambiguous_is_candidate(self) -> None:
-        # The same stripped path provided by two distinct services is ambiguous —
-        # we can't tell which one the base points at, so both links are candidate.
+    def test_base_stripped_consumer_two_services_of_one_repo_is_candidate(self) -> None:
+        # Two services of one repo serve the stripped path: the repo is known,
+        # the service is not, so both links are candidates.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource",
+                    service="orders"),
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource",
+                    service="billing", file_path="g.py"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c.ts", meta={"base_stripped": True}),
+        ]
+        links = match_contracts(contracts)
+        assert [lk.strategy for lk in links] == [LinkStrategy.AMBIGUOUS_PATH] * 2
+
+    def test_base_stripped_consumer_two_repos_links_none(self) -> None:
+        # Two repos serve the stripped path and the base names neither.
         contracts = [
             self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
             self._c(repo="payments", role="provider", contract_id="http::GET::/resource"),
             self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
                     file_path="c.ts", meta={"base_stripped": True}),
         ]
-        links = match_contracts(contracts)
-        assert len(links) == 2
-        assert all(lk.match_type == "candidate" for lk in links)
+        assert match_contracts(contracts) == []
+        assert contracts[2].meta[AMBIGUOUS_PROVIDER] is True
 
     def test_base_stripped_consumer_resolved_by_service_bases(self) -> None:
         # An ambiguous stripped path is promoted to exact (and narrowed to the
@@ -1173,7 +1187,7 @@ class TestCandidateMatching:
         assert len(links) == 1
         assert links[0].provider_repo == "backend"
 
-    def test_base_stripped_stale_service_base_stays_candidate(self) -> None:
+    def test_base_stripped_stale_service_base_stays_ambiguous(self) -> None:
         # A service_bases target that matches no provider must fall back to the
         # ambiguity rule, not emit exact links to every service.
         contracts = [
@@ -1183,9 +1197,8 @@ class TestCandidateMatching:
                     file_path="c.ts", meta={"base_stripped": True, "base_token": "API_BASE"}),
         ]
         annotate_consumer_targets(contracts, {"API_BASE": "typo_repo"})
-        links = match_contracts(contracts)
-        assert len(links) == 2
-        assert all(lk.match_type == "candidate" for lk in links)
+        assert match_contracts(contracts) == []
+        assert contracts[2].meta[AMBIGUOUS_PROVIDER] is True
 
     def test_method_mismatch_no_candidate(self) -> None:
         contracts = [

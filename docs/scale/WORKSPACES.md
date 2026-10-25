@@ -344,6 +344,7 @@ The report covers:
   - `no_provider`, a dangling call: no provider anywhere declares a matching route/service/topic/table.
   - `unlinked`, a cross-service provider with a matching id exists, but no link formed (a candidate worth inspecting).
   - `external_host`, the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
+  - `ambiguous_provider`, two or more repos serve the call's route and neither its host nor its base names one, so it links to none of them. A `contracts.service_bases` entry for its host or base, or a `manual_links` entry, places it.
 - **In-service consumers** (`in_service_consumers`, reason `internal_only`): the only matching provider is in the same repo + service. They are served, so they are counted apart and never listed as unmatched.
 - **Orphan providers**, endpoints declared but never consumed by any repo. One row per repo, service and id; a table declared in a model and a migration lists the second file under `other_files`.
 - **Weak links**, matched links below the confidence threshold.

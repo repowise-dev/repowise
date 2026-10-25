@@ -302,7 +302,8 @@ export type UnmatchedReason =
   | "no_provider"
   | "internal_only"
   | "unlinked"
-  | "external_host";
+  | "external_host"
+  | "ambiguous_provider";
 
 export interface RepoDiagnostics {
   repo: string;

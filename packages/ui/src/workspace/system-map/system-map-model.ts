@@ -296,6 +296,7 @@ const UNMATCHED_REASON: Record<string, string> = {
   external_host: "call a third-party host",
   internal_only: "stay inside their own service",
   unlinked: "have a provider that did not link",
+  ambiguous_provider: "match a route two or more repos serve",
 };
 
 /** "54 have no provider anywhere, 26 call a third-party host", largest first. */
