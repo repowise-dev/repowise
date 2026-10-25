@@ -1452,6 +1452,53 @@ class TestInitSeedFrom:
         finally:
             _remove_worktree(git_work_repo, worktree_dir)
 
+    def test_update_seeds_worktree_behind_its_base(self, git_work_repo, monkeypatch):
+        """The base synced past the worktree's fork point: update still seeds.
+
+        Its catch-up diffs two trees, so the base's last sync need not be an
+        ancestor. This used to exit 1 with "No previous sync found".
+        """
+        import json
+
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        worktree_dir = git_work_repo.parent / "behind-worktree"
+        _git(["worktree", "add", "-b", "behind", str(worktree_dir), "HEAD"], git_work_repo)
+        try:
+            (git_work_repo / "base_only.py").write_text("x = 1\n", encoding="utf-8")
+            _git(["add", "base_only.py"], git_work_repo)
+            _git(["commit", "-m", "base moves on"], git_work_repo)
+            r1 = CliRunner().invoke(
+                cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+            )
+            assert r1.exit_code == 0, r1.output
+
+            (worktree_dir / "wt_only.py").write_text("y = 2\n", encoding="utf-8")
+            _git(["add", "wt_only.py"], worktree_dir)
+            _git(["commit", "-m", "worktree work"], worktree_dir)
+
+            r2 = CliRunner().invoke(
+                cli, ["update", str(worktree_dir), "--index-only"], catch_exceptions=False
+            )
+            assert r2.exit_code == 0, r2.output
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            assert state["last_sync_commit"] == _rev_parse(worktree_dir, "HEAD")
+            db = worktree_dir / ".repowise" / "wiki.db"
+            nodes = "SELECT COUNT(*) FROM graph_nodes WHERE node_id = '{}'"
+            assert _db_scalar(db, nodes.format("wt_only.py")) == 1
+            assert _db_scalar(db, nodes.format("base_only.py")) == 0
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
     def test_seed_from_self_fails(self, git_work_repo):
         from click.testing import CliRunner
 

@@ -566,7 +566,7 @@ def _compute_alignment(
             "This file is ungoverned — it may be an outlier or simply undocumented."
             if currencies
             else "This index holds no accepted decisions, so no file is governed "
-            "yet; a person accepts a candidate with `repowise decision confirm`."
+            "yet; a person accepts a candidate with `repowise decision confirm <id>`."
         )
         return {
             "score": "none",

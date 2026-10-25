@@ -119,7 +119,8 @@ def doctor_command(
                 )
             ok, checks = _run_repo_checks(abs_path, repair, fmt=fmt)
             overall_ok = overall_ok and ok
-            all_checks.extend(DoctorCheck(f"{entry.alias}: {c.name}", c.ok, c.detail) for c in checks)
+            # The alias goes on the display name only; ids stay the check's own.
+            all_checks.extend(c._replace(name=f"{entry.alias}: {c.name}") for c in checks)
 
         if fmt != "table":
             all_ok = overall_ok and not ws_issues and not not_indexed

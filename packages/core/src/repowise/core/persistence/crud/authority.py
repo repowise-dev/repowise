@@ -480,6 +480,7 @@ def decision_fields(record: DecisionRecord) -> dict[str, Any]:
         "kind": record.kind,
         "rationale": record.rationale,
         "context": record.context,
+        "decision": record.decision,
         "source": record.source,
         "evidence_commits": record.evidence_commits_json,
         "evidence_file": record.evidence_file,
@@ -561,6 +562,9 @@ async def record_acceptance(
         evidence=evidence,
         accepter=accepter,
         artifact=artifact,
+        # An import carries a signature given elsewhere; refusing it here would
+        # demote a decision someone already accepted.
+        grant=action == "accepted" and kind != "import",
     )
     blockers = acceptance_blockers(req)
     for check in (
@@ -672,9 +676,10 @@ async def accept_decision(
     reason: str = "",
     scope: list[str] | None = None,
     evidence: list[str] | None = None,
+    decision: str = "",
     note: str = "",
 ) -> DecisionAcceptance:
-    """Accept a candidate, optionally editing its reason and scope on the way.
+    """Accept a candidate, optionally editing its reason, scope and decision text.
 
     The edit is applied to the record too: accepting a claim with a corrected
     scope must not leave the record describing the uncorrected one. *evidence*
@@ -689,6 +694,8 @@ async def accept_decision(
         )
     if reason:
         record.rationale = reason
+    if decision.strip():
+        record.decision = decision
     if scope is not None:
         # The accepter chose these files, so the record binds to them rather
         # than keeping the basis it was mined with.

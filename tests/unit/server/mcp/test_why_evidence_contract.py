@@ -191,6 +191,7 @@ def sealed_evidence_fixture() -> tuple[list[SimpleNamespace], dict]:
 def test_provenance_vocabulary_is_explicit_and_legacy_safe() -> None:
     assert provenance_for_source("session") == "human_decision"
     assert provenance_for_source("inline_marker") == "extracted_rationale"
+    assert provenance_for_source("agent") == "extracted_rationale"
     assert provenance_for_source("git_archaeology") == "historical"
     assert provenance_for_source("inferred") == "inferred"
     assert provenance_for_source("future_extractor") == "unknown"

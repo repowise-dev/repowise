@@ -66,6 +66,7 @@ _EXIT_GRACE_S = 5.0
 _STDERR_DRAIN_GRACE_S = 2.0
 
 CHECK_NAME = "MCP server responds"
+CHECK_ID = "mcp-responds"
 
 
 def _read_response(stdout, request_id: int, deadline: float) -> dict | None:
@@ -193,7 +194,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
             env=child_env,
         )
     except OSError as exc:
-        return _check(CHECK_NAME, False, f"could not launch {command}: {exc}")
+        return _check(CHECK_NAME, False, f"could not launch {command}: {exc}", check_id=CHECK_ID)
 
     stderr_ring, stderr_reader = _drain_stderr(proc)
     try:
@@ -203,11 +204,15 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         if response is not None and "result" in response:
             server = response["result"].get("serverInfo") or {}
             return _check(
-                CHECK_NAME, True, f"{server.get('name', 'repowise')} initialised in {elapsed_ms}ms"
+                CHECK_NAME,
+                True,
+                f"{server.get('name', 'repowise')} initialised in {elapsed_ms}ms",
+                check_id=CHECK_ID,
             )
         if response is not None:
             error = response.get("error") or {}
-            return _check(CHECK_NAME, False, f"initialize failed: {error.get('message', response)}")
+            detail = f"initialize failed: {error.get('message', response)}"
+            return _check(CHECK_NAME, False, detail, check_id=CHECK_ID)
 
         # No response. Whether the process is gone (the crash-loop case) or up
         # and mute changes the remedy, so the detail says which.
@@ -220,6 +225,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
                 CHECK_NAME,
                 False,
                 f"no initialize response within {int(_SMOKE_TIMEOUT_S)}s (still running)",
+                check_id=CHECK_ID,
             )
         detail = f"server exited with code {exit_code}"
         # The child has exited; give the reader a moment to drain the pipe's
@@ -228,6 +234,6 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         stderr = _stderr_tail(stderr_ring)
         if stderr:
             detail += f": {stderr}"
-        return _check(CHECK_NAME, False, detail)
+        return _check(CHECK_NAME, False, detail, check_id=CHECK_ID)
     finally:
         _shutdown(proc)

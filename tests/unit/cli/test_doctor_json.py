@@ -18,14 +18,14 @@ def _git_init(p: Path) -> None:
 
 class TestCheckCarriesOk:
     def test_check_returns_named_tuple_with_ok(self) -> None:
-        c = _check("Some check", True, "all good")
+        c = _check("Some check", True, "all good", check_id="some-check")
         assert isinstance(c, DoctorCheck)
         assert c.name == "Some check"
         assert c.ok is True
         assert c.detail == "all good"
 
     def test_check_failure(self) -> None:
-        c = _check("Some check", False, "broken")
+        c = _check("Some check", False, "broken", check_id="some-check")
         assert c.ok is False
 
 

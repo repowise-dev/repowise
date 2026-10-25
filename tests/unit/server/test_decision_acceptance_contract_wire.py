@@ -133,6 +133,7 @@ async def test_blockers_and_review_signals_over_extracted_records(
             session,
             repository_id=repo["id"],
             title="Mined agreement",
+            decision="commit on feature branches",
             kind="agreement",
             rationale="r",
             source="inline_marker",
