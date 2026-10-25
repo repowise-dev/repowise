@@ -66,7 +66,7 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
 }
 
 const ITEM_CLASS =
-  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)] disabled:pointer-events-none disabled:opacity-50";
+  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)] disabled:pointer-events-none disabled:opacity-50";
 
 /** Base, tone and selected-state classes for one item. */
 function itemClass(item: DocsMenuItem): string {
@@ -192,7 +192,7 @@ export function DocsMoreMenu({
           aria-expanded={open}
           aria-label={label}
           className={cn(
-            "flex h-7 shrink-0 items-center gap-1.5 rounded-md border bg-[var(--color-bg-elevated)] px-2 text-xs transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] sm:px-2.5",
+            "flex h-7 shrink-0 items-center gap-1.5 rounded-md border bg-[var(--color-bg-elevated)] px-2 text-xs transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] sm:px-2.5",
             // A view inside the menu is on screen: the trigger takes the
             // active-tab look, so the bar still says where the reader is.
             current
