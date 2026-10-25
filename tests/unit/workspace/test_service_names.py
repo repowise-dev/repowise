@@ -172,6 +172,15 @@ def test_only_deployed_config_claims_a_name(tmp_path: Path, rel: str) -> None:
     assert not m.ambiguous
 
 
+def test_a_docs_gateway_config_states_no_route(tmp_path: Path) -> None:
+    conf = "server {\n  location /api/ { proxy_pass http://api:8080/; }\n}\n"
+    for rel in ("nginx/default.conf", "docs/nginx/default.conf"):
+        (tmp_path / "web" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "web" / rel).write_text(conf)
+    m = build_service_name_map(_repos(tmp_path, "web"))
+    assert {r.file for r in m.routes} == {"web/nginx/default.conf"}
+
+
 def test_k8s_service_by_selector_label_and_never_a_sibling_by_location() -> None:
     m = build_service_name_map({"petclinic": FIXTURES / "petclinic"})
     # demo-db sits in the same repo beside another Service: not its own.
