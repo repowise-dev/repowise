@@ -782,11 +782,15 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
     harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
+    # Absent means the default, on. Present but not a boolean (a quoted "no")
+    # was written by someone saying something, so it reads as off, not on.
     agent_acceptance = _as_bool(raw.get("agent_acceptance"))
     if agent_acceptance is None:
-        if "agent_acceptance" in raw:
-            warnings.append("`decisions.agent_acceptance` is not a boolean; ignoring it.")
-        agent_acceptance = True
+        agent_acceptance = "agent_acceptance" not in raw
+        if not agent_acceptance:
+            warnings.append(
+                "`decisions.agent_acceptance` is not a boolean; treating it as false."
+            )
 
     capture_prompt = _as_bool(raw.get("capture_prompt"))
     if capture_prompt is None:

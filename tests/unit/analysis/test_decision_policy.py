@@ -623,10 +623,12 @@ def test_agent_acceptance_is_on_with_no_block():
     assert resolve_policy({}).policy.agent_acceptance is True
 
 
-def test_a_non_boolean_agent_acceptance_falls_back_to_the_default():
-    resolution = resolve_policy({"decisions": {"agent_acceptance": "yes"}})
+@pytest.mark.parametrize("value", ["no", "yes", 0])
+def test_a_non_boolean_agent_acceptance_reads_as_off(value):
+    """Someone wrote something there; a quoted "no" must not grant."""
+    resolution = resolve_policy({"decisions": {"agent_acceptance": value}})
 
-    assert resolution.policy.agent_acceptance is True
+    assert resolution.policy.agent_acceptance is False
     assert any("agent_acceptance" in w for w in resolution.warnings)
 
 
