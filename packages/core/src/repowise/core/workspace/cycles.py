@@ -170,7 +170,9 @@ def _shortest_cycles(digraph: Any) -> list[list[str]]:
 
     Raises the bound one length at a time and stops once the pass holds
     :data:`MAX_CYCLES` cycles (the shortest ones are then all in it) or the
-    budget cuts it (the previous complete pass is kept).
+    budget cuts it. The previous complete pass is then kept, even with fewer
+    than :data:`MAX_CYCLES`: a cut pass is an arbitrary subset, and listing
+    fewer cycles beats listing ones that change from run to run.
     """
     best: list[list[str]] = []
     for bound in range(1, MAX_CYCLE_LENGTH + 1):
@@ -214,8 +216,10 @@ def detect_cycles(graph: SystemGraph) -> tuple[list[DependencyCycle], int, bool]
         raw_cycles, complete = _enumerate(digraph, None)
         total = len(raw_cycles)
         if not complete:
-            raw_cycles = _shortest_cycles(digraph)
-            total = max(total, len(raw_cycles))
+            # No cycle within MAX_CYCLE_LENGTH: list some from the cut full pass
+            # rather than none beside "at least N" (which ones then follows
+            # networkx iteration order).
+            raw_cycles = _shortest_cycles(digraph) or raw_cycles
     except Exception:  # pragma: no cover - defensive
         _log.warning("cycle enumeration failed", exc_info=True)
         return [], 0, False

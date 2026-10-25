@@ -442,3 +442,17 @@ def test_cycle_total_says_at_least_when_capped():
 
     assert cycle_total(7, False) == "7"
     assert cycle_total(20000, True) == "at least 20000"
+
+
+def test_a_capped_count_with_only_long_cycles_still_lists_one():
+    import repowise.core.workspace.cycles as cy
+
+    # Two 7-service rings through "a": no cycle within MAX_CYCLE_LENGTH.
+    rings = [list("abcdefg"), ["a", *"hijklm"]]
+    names = sorted({n for ring in rings for n in ring})
+    edges = [_edge(r[i], r[(i + 1) % len(r)]) for r in rings for i in range(len(r))]
+    g = _graph([_node(n) for n in names], edges)
+    with patch.object(cy, "MAX_ENUMERATED_CYCLES", 1):
+        cycles, total, capped = detect_cycles(g)
+    assert (total, capped) == (1, True)
+    assert [c.length for c in cycles] == [7]
