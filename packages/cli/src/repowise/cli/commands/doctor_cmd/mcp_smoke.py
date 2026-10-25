@@ -55,6 +55,8 @@ _TEARDOWN_ERRORS = (OSError, ValueError, subprocess.TimeoutExpired)
 # before the process is reaped. Polling at that instant reports "still running"
 # for a process that is already on its way out - which is the crash loop, the
 # one case this check exists to name. Wait briefly for the exit status first.
+# Only then: a server still mute at the deadline is not about to exit, and
+# waiting on it only delays the "still running" answer.
 _EXIT_GRACE_S = 5.0
 
 # The child having exited does not mean the stderr reader has consumed the
@@ -182,6 +184,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         child_env = {**os.environ, **{str(k): str(v) for k, v in env.items()}}
 
     started = time.monotonic()
+    deadline = started + _SMOKE_TIMEOUT_S
     try:
         proc = subprocess.Popen(
             [command, *args],
@@ -198,7 +201,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
 
     stderr_ring, stderr_reader = _drain_stderr(proc)
     try:
-        response = _initialize(proc, started + _SMOKE_TIMEOUT_S)
+        response = _initialize(proc, deadline)
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
         if response is not None and "result" in response:
@@ -217,7 +220,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         # No response. Whether the process is gone (the crash-loop case) or up
         # and mute changes the remedy, so the detail says which.
         exit_code = proc.poll()
-        if exit_code is None:
+        if exit_code is None and time.monotonic() < deadline:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 exit_code = proc.wait(timeout=_EXIT_GRACE_S)
         if exit_code is None:
