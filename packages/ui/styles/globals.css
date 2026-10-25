@@ -133,7 +133,7 @@
   --color-control-selected-text: var(--color-text-on-action);
   --color-tab-active: var(--color-text-primary);
   --color-selection-wash: var(--color-bg-selected);
-  --color-selection-border: var(--color-border-hover);
+  --color-selection-border: var(--color-text-tertiary);
   --color-progress-fill: var(--color-text-secondary);
 
   /* Series — the one categorical palette for every chart (seriesColor in

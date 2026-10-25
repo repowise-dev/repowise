@@ -223,6 +223,8 @@ CHECKS = [
     ("text-on-action", "action-primary", 4.5, "Text on selected segment or switch"),
     ("action-primary", "bg-surface", 3.0, "Selected control / tab underline on card"),
     ("action-primary", "bg-root", 3.0, "Selected control / tab underline on page"),
+    ("text-tertiary", "bg-surface", 3.0, "Selected chip border on card"),
+    ("text-tertiary", "bg-root", 3.0, "Selected chip border on page"),
     ("text-secondary", "bg-surface", 3.0, "Progress and data bar on card"),
     ("text-secondary", "bg-inset", 3.0, "Progress and data bar on inset track"),
     ("text-secondary", "bg-elevated", 3.0, "Progress and data bar on elevated track"),
