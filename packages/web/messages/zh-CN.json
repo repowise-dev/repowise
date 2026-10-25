@@ -535,7 +535,7 @@
       "coChangeNoticeTitle": "本次发布中健康分数发生了变化。",
       "coChangeNoticeMore": "有哪些变化",
       "coChangeNoticeLess": "收起",
-      "coChangeNoticeBody": "结构良好的大型代码得分更公平。文件的代码形态扣分采用饱和曲线，同一函数上的多个发现按一组计算，因此单个大函数不会再拖垮整个文件，而严重超标的函数超出阈值越多，扣分仍然越多。brain_method 改为提示性标记，不再在其概括的复杂度和规模发现之外重复扣分。重复的变更历史发现中，最大的一项全额计入，其余按比例计入。参数计数覆盖 C、C++ 和 Kotlin，primitive_obsession 也随之适用于这些语言；bumpy-road 标记更名为 repeated nesting（重复嵌套）。大多数文件的分数会升高；远超阈值的函数以及 C、C++ 和 Kotlin 文件的分数可能升高也可能降低。",
+      "coChangeNoticeBody": "部分文件的代码类型已重新归类。仓库根目录以下的 tools/ 文件夹现在算作产品代码并参与评分；只有根目录或工程用的 tools/ 文件夹仍算作工具代码。Python 的 _vendor/ 文件夹和 Salesforce 静态资源库算作第三方代码，db/ 下带前缀的迁移文件夹算作迁移代码，因此不再参与评分。含有这些文件夹的仓库分数可能升高或降低；其他仓库分数不变。",
       "tabs": {
         "performance": "性能",
         "findings": "发现",

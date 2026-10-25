@@ -535,7 +535,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Large, well-structured code scores fairer. A file's code-shape deductions follow a saturating curve, and several findings on one function count as one group, so a single big function no longer sinks a whole file, while a critical function still costs more the further it passes its threshold. brain_method is advisory, so it no longer deducts on top of the complexity and size findings it summarises. Repeated change-history findings count the largest in full and the rest at a fraction. Parameter counts cover C, C++ and Kotlin, so primitive_obsession reaches those languages, and the bumpy-road marker is called repeated nesting. Most files score higher; functions far past their thresholds, and C, C++ and Kotlin files, can move either way.",
+      "coChangeNoticeBody": "Some files now count as a different kind of code. A tools/ folder below the repo root is product code, so it is scored; only a root-level or engineering tools/ folder stays tooling. Python _vendor/ folders and Salesforce static-resource libraries count as vendored code, and prefixed migration folders under db/ count as migrations, so they leave the score. Repos with those folders can move either way; other repos keep their scores.",
       "tabs": {
         "performance": "Performance",
         "findings": "Findings",
