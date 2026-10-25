@@ -25,7 +25,8 @@
  */
 
 import * as React from "react";
-import { Layers, Sparkles, Terminal } from "lucide-react";
+import { Layers, Terminal } from "lucide-react";
+import { AiPromptButton } from "../health/ai-prompt-button";
 
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
@@ -515,14 +516,7 @@ function DrawerBody({
           agent an empty plan. */}
       {onAiPrompt && !stepsUnavailable ? (
         <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
-          <button
-            type="button"
-            onClick={() => onAiPrompt(detail)}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-model)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-model)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-          >
-            <Sparkles className="h-4 w-4" aria-hidden="true" />
-            Copy prompt for an agent
-          </button>
+          <AiPromptButton onClick={() => onAiPrompt(detail)} />
           <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:block">
             The ordered steps, the evidence, and the id to query it back.
           </span>
@@ -679,7 +673,7 @@ function StepCode({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="rounded text-xs font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="rounded text-xs font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         {open ? "Hide the code" : "Show the code"}
       </button>

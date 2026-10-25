@@ -84,7 +84,7 @@ export function RefView({ cardRef, buildRefHref }: { cardRef: CardRef; buildRefH
     <a
       href={href}
       title={cardRef.id}
-      className={`${className} text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]`}
+      className={`${className} text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`}
     >
       {label}
     </a>
@@ -175,7 +175,7 @@ export function EvidenceCardView({ card, buildRefHref }: EvidenceCardViewProps) 
             return (
               <li key={i} className="text-xs">
                 {href ? (
-                  <a href={href} className="text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+                  <a href={href} className="text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
                     {link.label}
                   </a>
                 ) : (

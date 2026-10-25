@@ -91,7 +91,7 @@ export function CentralityLeaderboard({
                 <button
                   type="button"
                   aria-label="What do these metrics mean?"
-                  className="inline-flex shrink-0 items-center rounded-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="inline-flex shrink-0 items-center rounded-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <Info className="h-3 w-3" aria-hidden />
                 </button>

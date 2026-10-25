@@ -2,8 +2,8 @@ import { cn } from "../lib/cn";
 
 /**
  * The quiet card: a 1px hairline on the page ground, no fill, no shadow, no
- * lift. The hairline strengthens on hover and focus; the accent appears only
- * as a focus ring. For a discrete object a person opens or acts on, never for
+ * lift. The hairline strengthens on hover and focus, and a control gets the
+ * neutral focus ring. For a discrete object a person opens or acts on, never for
  * a section or a statistic (DESIGN_LANGUAGE "Sections before cards").
  *
  * - `static`: a card nothing in it reacts to.
@@ -24,7 +24,7 @@ const STRONG = "border-[var(--color-border-hover)]";
 const VARIANT: Record<HairlineCardVariant, string> = {
   static: REST,
   group: `${REST} transition-colors hover:border-[var(--color-border-hover)] focus-within:border-[var(--color-border-hover)]`,
-  link: `${REST} transition-colors hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]`,
+  link: `${REST} transition-colors hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`,
 };
 
 export function hairlineCardClass(

@@ -120,7 +120,6 @@ function indexParseRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       repoName: o.repoName,
       title: "Files that could not be parsed",
       state: `repowise could not parse ${count} file${count === 1 ? "" : "s"} while indexing, so their symbols are missing from the graph. For each file, tell me whether it should be excluded (exclude_patterns in .repowise/config.yaml) or whether its syntax needs a fix.`,
-      command: "repowise doctor --format json",
       verify: "doctor",
       fix: true,
       items: files,
@@ -197,7 +196,6 @@ function agentSilentRow(agent: SetupAgent, o: DeriveOptions): SetupRow {
       repoName: o.repoName,
       title: "Coding agent has not reached the index",
       state: `${agent.display_name} is registered but has not called this repository's index in the day since it connected. It may have opened a different folder: if so, open ${o.repoName} in it, or run \`repowise init\` in the folder it opened.`,
-      command,
       verify: "doctor",
       fix: true,
     },
@@ -430,23 +428,35 @@ function rewriteRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   };
 }
 
+/** A trailing "(run X)" or "(run: X)" in doctor text, with X captured. */
+const RUN_HINT = /\s*\(run:?\s+`?([^`)]+?)`?\)\s*\.?\s*$/;
+
+/** Doctor text without a closing "(run X)" that repeats the row's command. */
+export function withoutRunHint(detail: string, command: string): string {
+  const hint = RUN_HINT.exec(detail);
+  if (!hint || hint[1]?.trim() !== command.trim()) return detail;
+  return detail.slice(0, hint.index).trimEnd();
+}
+
 function checkRow(check: NonNullable<SetupResponse["checks"]>[number], o: DeriveOptions): SetupRow {
   const command = check.fix ?? "repowise doctor --format json";
+  const detail = withoutRunHint(check.detail ?? "", command);
   return {
     id: `check-${check.id}`,
     tone: "attention",
     status: msg(check.level === "fail" ? "check.statusFail" : "check.statusWarn"),
     title: { text: check.name },
-    detail: { text: check.detail ?? "" },
+    detail: { text: detail },
     action: { kind: "prompt" },
     command,
     prompt: {
       repoName: o.repoName,
       title: check.name,
-      state: `\`repowise doctor\` reports ${check.level === "fail" ? "a failure" : "a warning"} for "${check.name}": ${check.detail ?? ""}`,
-      command,
+      state: detail,
+      ...(check.fix ? { command: check.fix } : {}),
       verify: "doctor",
       fix: true,
+      fromDoctor: true,
     },
   };
 }
@@ -567,8 +577,7 @@ export function agentListRows(s: SetupResponse, o: DeriveOptions): SetupRow[] {
         prompt: {
           repoName: o.repoName,
           title: "Coding agents",
-          state: "repowise could not list the coding agents on this machine.",
-          command: "repowise agents",
+          state: "repowise could not list the coding agents on this machine. `repowise agents` shows why.",
           verify: "doctor",
           fix: true,
         },

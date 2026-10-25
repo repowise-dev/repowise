@@ -25,6 +25,7 @@ For the exact settings entries each install writes, see the
 | **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Index-freshness line, core-tool pointer, and the standing decisions relevant to this session |
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
+| **Decision capture prompt** | Claude Code, Codex | `repowise init` and the Claude Code plugin; `repowise decision config capture-prompt --off` silences it per repository | a fresh `git commit` via `Bash` / `PowerShell` whose message states a choice | Once a session, asks the agent to record the decision with `repowise decision add --agent`; it lands as a candidate |
 | **Coverage re-ingest** (opt-in) | Claude Code | `hooks.coverage_reingest: true`, then the next `repowise coverage add` / `init` / `update` | `Bash` / `PowerShell` | Re-ingests a fresh full-suite coverage report in the background |
 | **Health gate** (opt-in) | Claude Code | `repowise hook health-gate install` | `git commit` / `git push` via `Bash` / `PowerShell` | Runs `repowise health check` on what the command records and blocks it when the gate fails ([details](../start/CI.md#before-an-agent-commits-or-pushes)) |
 | **Command rewrite (distill)** | Claude Code, Codex, Cursor | `repowise hook rewrite install`, or Yes at the `repowise init` prompt | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
@@ -257,11 +258,16 @@ Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `~/.claude/settings.json` |
 | Claude Code | `PreToolUse` (opt-in rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json` |
-| Claude Code | `PostToolUse` (opt-in decision capture prompt) | `Bash\|PowerShell` | `~/.claude/settings.json` |
+| Claude Code | `PostToolUse` (decision capture prompt) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | the repo's `.claude/settings.local.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | the repo's `.codex/hooks.json` |
 | Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | the repo's `.codex/hooks.json` |
 | Cursor | `preToolUse` (opt-in rewrite) | `Shell` | `~/.cursor/hooks.json` |
+
+The capture prompt's entry checks the payload for `git commit` in the shell
+and starts `repowise-augment` only on a match, so any other shell call costs
+only the shell start. `init` skips it when the repowise plugin already ships
+it, so it never runs twice.
 
 The coverage re-ingest entries are written by the next `repowise coverage add`,
 `init` or `update` once `hooks.coverage_reingest: true` is set, and removed when

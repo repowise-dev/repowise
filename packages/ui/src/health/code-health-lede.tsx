@@ -39,7 +39,7 @@ import { Info } from "lucide-react";
 
 /** The lede's two quiet toggles: "Breakdown" under the figure, "How it is scored" under the prose. */
 const DISCLOSURE =
-  "inline-flex cursor-pointer list-none items-center gap-1 rounded text-[11px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden";
+  "inline-flex cursor-pointer list-none items-center gap-1 rounded text-[11px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden";
 
 const HEALTH_HINT =
   "Fitted against real bug history to predict where defects appear. Built from " +
@@ -384,7 +384,7 @@ export function CodeHealthLede({
 
   return (
     <details className="group/lede">
-      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden">
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Code health
         </span>

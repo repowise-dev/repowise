@@ -357,7 +357,12 @@ if n > 30_000:  # _LARGE_REPO_THRESHOLD
 
 Instead of computing exact betweenness using all N×N pairs, it samples 500 random source nodes and approximates. Research shows this gives good results; the ranking of "which files are most bridge-like" stays accurate even with sampling, just the exact scores shift slightly.
 
-For repos under 30,000 nodes, exact computation is used.
+For graphs with at most 30,000 nodes, exact computation is used. Symbol
+betweenness runs the exact kernel only on nodes with call or heritage edges.
+Isolated symbols receive `0.0`, and normalization still uses the full symbol
+node count, so removing isolated nodes from the computation preserves scores.
+The sampling threshold, sampling population and disk-cache signature continue
+to use the full graph.
 
 ### How Repowise uses betweenness
 

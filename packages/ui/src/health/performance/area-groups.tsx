@@ -140,7 +140,7 @@ const AreaCard = memo(function AreaCard({
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded text-left sm:w-auto sm:flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded text-left sm:w-auto sm:flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <ChevronRight
             aria-hidden="true"

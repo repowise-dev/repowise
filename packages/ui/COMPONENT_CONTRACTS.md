@@ -1266,6 +1266,7 @@ multi-tenant settings persistence is deferred to Phase 5 RBAC.
 |------|------|----------|
 | `value` | `RepoSettingsValue` | yes |
 | `onSubmit` | `(next: RepoSettingsValue) => Promise<void>` | no |
+| `autosave` | `boolean` (saves each field on commit, rolls back when `onSubmit` rejects) | no |
 | `localPath` | `string` | no |
 | `remoteUrl` | `string` | no |
 | `disabledHint` | `string` | no |

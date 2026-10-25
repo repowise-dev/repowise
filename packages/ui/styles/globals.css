@@ -119,12 +119,27 @@
   --color-model-hover: var(--color-plum-600);
   --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
 
-  /* Primary action: a solid ink button. Orange stays for links, focus,
+  /* Primary action: a solid ink button. Orange stays for links,
      selection, indexing, "New" marks and the brand. Ground and text alias the
      ink pair so they flip with the theme; hover steps toward the page. */
   --color-action-primary: var(--color-text-primary);
   --color-action-primary-hover: #3b2f45;
   --color-text-on-action: var(--color-text-inverse);
+  /* Soft ink: a tonal fill for a frequent secondary action (copy prompt)
+     that should read as clickable without competing with the ink button. */
+  --color-action-soft: rgba(36, 27, 44, 0.06);
+  --color-action-soft-hover: rgba(36, 27, 44, 0.11);
+
+  /* Keyboard focus ring: neutral ink, so focus never reads as an alert or
+     a brand mark. Aliases text-secondary, which clears 3:1 against every
+     ground in both themes (contrast-check.py), so it needs no dark override. */
+  --color-focus-ring: var(--color-text-secondary);
+
+  /* Form fields: a recessed well a notch below the card, so a value reads
+     as something you can edit. On focus the well lifts to the surface. */
+  --color-field-bg: #f5f1ed;
+  --color-field-border: rgba(88, 67, 108, 0.16);
+  --color-field-border-hover: rgba(88, 67, 108, 0.28);
 
   /* Neutral roles for state that used to be painted orange. Named by job so a
      palette change is one edit here. Each aliases a themed token, so none
@@ -531,6 +546,12 @@
      and need no override; see the light block for the family. */
   --color-model-hover: var(--color-plum-200);
   --color-action-primary-hover: #d6d6d9;
+  --color-action-soft: rgba(255, 255, 255, 0.08);
+  --color-action-soft-hover: rgba(255, 255, 255, 0.12);
+  /* Form fields: a notch below the card, see the light block. */
+  --color-field-bg: #101012;
+  --color-field-border: rgba(255, 255, 255, 0.10);
+  --color-field-border-hover: rgba(255, 255, 255, 0.18);
 
   /* Series, the tail and heat steps — see the light block. */
   --color-series-1: #f59520;
@@ -768,7 +789,7 @@ body {
 /* -------------------------------------------------------------------- */
 
 :focus-visible {
-  outline: 2px solid var(--color-accent-fill);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
 }
 

@@ -55,7 +55,7 @@ export function SystemMapFilters({ familyCounts, kindCounts, families, onToggleF
             onClick={() => onToggleFamily(family)}
             aria-pressed={active}
             title={`${copy.label}: ${copy.meaning}${mix ? ` (${mix})` : ""}. ${active ? "Click to hide." : "Click to show."}`}
-            className={`inline-flex min-h-[28px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
+            className={`inline-flex min-h-[28px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
               active
                 ? "border-[var(--color-border-hover)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)]"
                 : "border-dashed border-[var(--color-border-default)] text-[var(--color-text-secondary)]"

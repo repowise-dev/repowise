@@ -54,7 +54,7 @@ export const MOMENT_CARD =
 
 /** A quiet text action: links and copy buttons inside a moment. */
 export const MOMENT_LINK =
-  "rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] hover:decoration-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] hover:decoration-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 /** A micro-label with the series dot that keys a card. */
 export function MomentLabel({ color, children }: { color: string; children: ReactNode }) {

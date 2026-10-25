@@ -27,7 +27,7 @@ export function NoProviderReason({
       {t.rich(message, {
         link: (chunks) => (
           <Link
-            href="/settings"
+            href="/settings/models"
             className="text-[var(--color-accent-primary)] hover:underline"
           >
             {chunks}

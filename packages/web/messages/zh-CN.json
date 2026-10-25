@@ -481,7 +481,7 @@
       "gotWorse": "变差的部分",
       "gotWorseDescription": "该变更新增或加重的问题，按严重程度从高到低排列。",
       "gotWorseShown": "显示 {total} 个中最严重的 {shown} 个。",
-      "promptAction": "复制给你的智能体的提示词",
+      "promptAction": "复制提示词",
       "promptTitle": "该变更的提示词",
       "promptDescription": "把该变更让代码变差的地方（含文件和行号）交给你的智能体；若没有变差，则交给它清单标记的项目。",
       "checksPassed": "{count, plural, other {# 项检查通过}}",
@@ -679,7 +679,7 @@
       "openInOffboarding": "在离职模拟中打开",
       "matrixLoadFailed": "无法加载每个文件的作者占比。请确认 API 可以访问，然后重试。",
       "ui": {
-        "agentPrompt": "复制给智能体的提示词",
+        "agentPrompt": "复制提示词",
         "promptForGroup": "{count, plural, one {为这一项复制提示词} other {为这 # 项复制提示词}}",
         "repositoryRoot": "（仓库根目录）",
         "hotspot": "热点",
@@ -858,11 +858,8 @@
     "repoSettings": {
       "title": "设置",
       "description": "{repo} 的索引、模型密钥与健康度。服务器、webhook 与编辑器配置由所有代码仓库共享。",
-      "generalTitle": "通用",
       "generalDescription": "这个代码仓库所在的位置，以及索引的是哪个分支。",
-      "syncTitle": "同步与索引",
       "syncDescription": "把最近的提交拉进现有索引，或者从零重建索引。",
-      "providerTitle": "AI 提供商",
       "providerDescription": "有了模型密钥，这个代码仓库的文档就可以用 AI 撰写。密钥随仓库一起保存，供界面或 CLI 触发的生成使用。",
       "captureTitle": "决策采集",
       "captureDescription": "从哪些来源为这个代码仓库挖掘架构决策，以及其中是否有任何环节会把正文发送给你配置的模型。采集只会产生候选：这里没有任何操作能替你接受一条决策。",
@@ -871,13 +868,14 @@
       "healthTitle": "索引健康",
       "healthDescription": "按群体对比漂移：wiki 页面与其页面向量、决策记录与其决策向量。出现缺口意味着搜索正在用过期的集合作答。",
       "deleteTitle": "删除这个代码仓库",
-      "deleteDescription": "删除索引以及由它生成的一切——页面、符号、决策和历史。你的源文件不会被改动。此操作无法撤销。",
-      "footer": "服务器连接、webhook、模型默认值和 MCP 配置都在 <link>全局设置</link> 里。"
+      "deleteDescription": "删除索引以及由它生成的一切：页面、符号、决策和历史。你的源文件不会被改动。此操作无法撤销。",
+      "dangerTitle": "危险操作",
+      "publishTitle": "发布到 repowise.dev",
+      "publishDescription": "把此仓库放到 repowise.dev 上，从它的 GitHub 远程仓库建立索引。不会上传本机上的任何内容。"
     },
     "globalSettings": {
       "title": "设置",
-      "description": "这个仪表盘如何连接你的服务器、默认使用哪个模型，以及 MCP 服务器向智能体提供什么。改动会随改随存。",
-      "footer": "同步计划、排除规则与删除按代码仓库分别设置，见<link>代码仓库页面</link>。"
+      "description": "这个仪表盘如何连接你的服务器、默认使用哪个模型，以及 MCP 服务器向智能体提供什么。改动会随改随存。"
     },
     "workspace": {
       "emptyAction": "阅读快速入门",
@@ -994,7 +992,7 @@
     "tests": {
       "title": "测试",
       "description": "你的测试覆盖了哪些代码：已导入覆盖率报告时为实测结果，否则根据依赖图推断。",
-      "promptAction": "为你的智能体复制提示词",
+      "promptAction": "复制提示词",
       "cleanTitle": "{files} 个已测量文件中没有未测试的热点",
       "cleanBody": "所有频繁变更或被大量代码依赖的文件都有测试覆盖。",
       "batchPromptAction": "为这 {count} 项复制提示词",
@@ -1110,13 +1108,14 @@
     "mcpTools": {
       "title": "工具集",
       "description": "MCP 服务器向智能体提供哪些工具。会保存到代码仓库的 .repowise/config.yaml，并在你下次为它启动 repowise mcp 时生效。",
-      "empty": "索引一个代码仓库后，它的工具集就会显示在这里。",
-      "repoLabel": "代码仓库",
-      "repoHint": "工具集按代码仓库分别保存。",
       "workspaceOnly": "仅工作区",
       "summary": "已开放 {on}/{total} 个工具。{mode}",
       "summaryWorkspace": "当前为工作区模式，因此仅限工作区的工具可用。",
-      "summarySingleRepo": "当前为单仓库模式，因此仅限工作区的工具在此不可用。"
+      "summarySingleRepo": "当前为单仓库模式，因此仅限工作区的工具在此不可用。",
+      "perRepoLabel": "每个仓库的工具",
+      "perRepoHint": "MCP 服务器提供哪些工具按仓库保存，在该仓库的智能体设置中选择。",
+      "chooseTools": "选择工具",
+      "chooseToolsFor": "为 {repo} 选择工具"
     },
     "provider": {
       "title": "默认模型",
@@ -1142,14 +1141,34 @@
         "title": "同步与钩子"
       },
       "coverage": {
-        "title": "覆盖率"
+        "title": "覆盖率",
+        "description": "此仓库读取的测试覆盖率报告，让健康度和测试使用实测覆盖率。"
       },
       "server": {
         "title": "服务器"
       },
       "privacy": {
         "title": "隐私"
+      },
+      "general": {
+        "title": "常规"
+      },
+      "display": {
+        "title": "显示"
       }
+    },
+    "advanced": "高级",
+    "advancedHints": {
+      "agents": "智能体在此仓库中可用的 MCP 工具。",
+      "models": "决策捕获、重构代码生成和文档导出。",
+      "sync": "索引健康：搜索读取的页面和决策是否与数据库一致。"
+    },
+    "scope": {
+      "allRepos": "在设置中为所有仓库设置",
+      "defaultModelLabel": "默认模型",
+      "defaultModelHint": "没有单独设置模型的仓库使用服务器默认模型。",
+      "webhooksLabel": "Webhook",
+      "webhooksHint": "GitHub 或 GitLab 上的推送可以触发同步。所有仓库使用相同的地址。"
     }
   },
   "repos": {
@@ -1199,20 +1218,24 @@
       "refresh": "刷新"
     },
     "ops": {
-      "syncStarted": "同步已开始 —— {name}",
+      "syncStarted": "已开始同步 {name}",
       "syncFailed": "同步失败",
-      "resyncStarted": "全量重新同步已开始 —— {name}",
+      "resyncStarted": "已开始全量重新同步 {name}",
       "resyncFailed": "重新同步失败",
-      "title": "运维操作",
       "export": "导出",
       "starting": "正在启动…",
       "sync": "同步",
       "resync": "全量重新同步",
       "resyncConfirm": "这会从头重新生成 <repo>{name}</repo> 的每一个页面。所有现有页面都会被覆盖。",
-      "resyncConfirmAction": "重新同步全部"
+      "resyncConfirmAction": "重新同步全部",
+      "syncLabel": "立即同步",
+      "syncHint": "把最近的提交拉取到现有索引中。",
+      "resyncLabel": "全量重新同步",
+      "resyncHint": "从头重建索引并重新生成每个页面。执行前会先确认。",
+      "exportLabel": "导出文档",
+      "exportHint": "把生成的文档下载为 Markdown 文件的 zip 压缩包。"
     },
     "settings": {
-      "toastSaved": "代码仓库设置已保存",
       "saveFailed": "保存设置失败",
       "regenQueued": "Wiki 重新生成已排队",
       "regenFailed": "重新生成排队失败",
@@ -1451,8 +1474,7 @@
       "connect": "连接",
       "connecting": "正在连接",
       "connectFailed": "无法连接 {name}",
-      "copyPrompt": "复制设置提示词",
-      "promptCopied": "已复制设置提示词",
+      "copyPrompt": "复制提示词",
       "prompt": "为此仓库将 repowise 连接到 {name}。在仓库根目录运行 `{command}`，然后重启 {name}，让它加载 repowise 工具。运行 `repowise doctor` 检查连接。",
       "listLabel": "本机上的智能体",
       "moreAgents": "还找到 {count} 个智能体。设置页列出了全部。",
@@ -1462,6 +1484,7 @@
       "askStart": "我应该从哪里开始阅读这个仓库？",
       "copy": "复制",
       "copied": "已复制",
+      "copyFailed": "无法复制",
       "copyQuestion": "复制：{question}"
     },
     "yours": {
@@ -1532,7 +1555,7 @@
       "fixPromptLabel": "复制提示词，修复此提交带来的问题",
       "fixPromptTitle": "修复此提交带来的问题",
       "fixPromptDescription": "一段可直接粘贴的提示词，让你的 AI 智能体在对应的文件和行修复此提交引入或加重的问题，而不撤销该提交。",
-      "reviewPromptLabel": "复制审查提示词给你的智能体",
+      "reviewPromptLabel": "复制审查提示词",
       "reviewPromptTitle": "AI 提交审查",
       "reviewPromptDescription": "一段可直接粘贴的提示词，让你的 AI 智能体审查此提交的变更风险，指出需要仔细检查的地方，并推荐审查者。",
       "openFile": "打开文件"
@@ -1556,7 +1579,7 @@
       "lastTogether": "最近一次 {date}",
       "unexplained": "{count, number} 个文件对没有直接导入（{pct}%）",
       "allExplained": "全部可解释",
-      "promptLabel": "为你的智能体复制提示词",
+      "promptLabel": "复制提示词",
       "bulkPromptLabel": "为这 {count, number} 组复制提示词",
       "promptTitle": "解耦提示词",
       "promptDescription": "一段可直接粘贴的提示词，让你的智能体找出这些区域在彼此没有依赖的情况下为何一起变更，并对偶然产生的耦合进行解耦。",
@@ -1720,7 +1743,7 @@
     "promptDescription": "一段可直接粘贴的提示词，引导 AI 智能体确认并修复这条安全发现项。",
     "rescan": "重新扫描",
     "rescanning": "正在重新扫描…",
-    "promptAction": "为你的智能体复制提示词",
+    "promptAction": "复制提示词",
     "deadCodeClean": {
       "title": "未发现死代码",
       "titleScoped": "{files} 个文件中没有死代码",
@@ -2322,12 +2345,14 @@
     "essentials": "必备",
     "optional": "可选",
     "tour": "查看导览",
-    "copyPrompt": "复制给智能体的提示词",
+    "copyPrompt": "复制提示词",
     "promptDescription": "把它交给你的编程智能体。其中写明了要运行的命令以及如何检查结果。",
-    "promptPreview": "提示词预览",
     "copied": "已复制",
+    "copyFailed": "无法复制",
     "showFiles": "显示文件",
     "hideFiles": "隐藏文件",
+    "showDetails": "显示详情",
+    "hideDetails": "收起详情",
     "connect": "连接 {agent}",
     "disconnect": "断开连接",
     "disconnectAgent": "断开 {agent}",
@@ -2361,15 +2386,15 @@
       "hide": "在此电脑上隐藏设置提醒"
     },
     "settings": {
-      "repoLead": "此仓库的索引、编程智能体和同步，每项都附有终端命令。",
       "openSetup": "打开设置向导",
       "openSetupFor": "打开 {repo} 的设置向导",
       "globalLead": "设置向导按仓库区分：每个仓库的索引、编程智能体以及同步。",
       "noRepos": "添加一个仓库后即可设置。",
       "telemetryTitle": "匿名使用遥测",
       "telemetryDescription": "repowise 会发送匿名使用统计：命令名称和大致的运行环境，从不包含代码、路径或名称。设置 DO_NOT_TRACK=1 也可以关闭。",
-      "telemetryCheck": "查看是否开启：",
-      "telemetryOff": "关闭："
+      "telemetryCheckLabel": "查看是否已开启",
+      "telemetryOffLabel": "关闭遥测",
+      "telemetryOffHint": "在本机终端中运行。"
     },
     "row": {
       "index": {
@@ -2454,6 +2479,7 @@
         "status": "无法检查",
         "detail": "此处无法读取。请在终端运行 {command} 进行检查。"
       }
-    }
+    },
+    "changeIn": "在{group}中更改"
   }
 }

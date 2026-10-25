@@ -219,7 +219,7 @@ function Body({
               {fileHref ? (
                 <a
                   href={fileHref}
-                  className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <FilePath path={contract.file_path} line={contract.line} mode="full" accent />
                 </a>
@@ -473,7 +473,7 @@ function CounterpartRow({
         <button
           type="button"
           onClick={() => onSelectContract({ repo, file_path: file, contract_id: id })}
-          className="-mx-1 min-w-0 flex-1 rounded-md px-1 py-0.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="-mx-1 min-w-0 flex-1 rounded-md px-1 py-0.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           aria-label={`Open the ${side} in ${repo}, ${file}`}
         >
           {content}

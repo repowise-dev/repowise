@@ -3,20 +3,73 @@ import { cn } from "@/lib/utils/cn";
 
 /**
  * Settings, grouped by what people manage, in this order. Privacy sits last.
- * The global page and the repo page use the same names, and each shows the
- * groups it has something for.
+ * Each group is its own sub-page (`/settings/<group>`,
+ * `/repos/<id>/settings/<group>`), and each surface shows the groups it has
+ * something for.
  */
 export const SETTINGS_GROUPS = [
   "setup",
+  "general",
   "agents",
   "models",
   "sync",
   "coverage",
   "server",
+  "display",
   "privacy",
 ] as const;
 
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number];
+
+/** General and Coverage are per repository, so global settings has neither. */
+export const GLOBAL_SETTINGS_GROUPS: readonly SettingsGroupId[] = [
+  "setup",
+  "agents",
+  "models",
+  "sync",
+  "server",
+  "display",
+  "privacy",
+];
+
+/** Server, display and telemetry are per machine, so repo settings has none of them. */
+export const REPO_SETTINGS_GROUPS: readonly SettingsGroupId[] = [
+  "setup",
+  "general",
+  "agents",
+  "models",
+  "sync",
+  "coverage",
+];
+
+export const GLOBAL_SETTINGS_BASE = "/settings";
+
+export function repoSettingsBase(repoId: string): string {
+  return `/repos/${encodeURIComponent(repoId)}/settings`;
+}
+
+/** A global settings sub-page. */
+export function settingsHref(group: SettingsGroupId): string {
+  return `${GLOBAL_SETTINGS_BASE}/${group}`;
+}
+
+/** One repository's settings sub-page. */
+export function repoSettingsHref(repoId: string, group: SettingsGroupId): string {
+  return `${repoSettingsBase(repoId)}/${group}`;
+}
+
+/** Anchors from when settings was one long page, and where each lives now. */
+const LEGACY_ANCHORS: Record<string, SettingsGroupId> = { provider: "models" };
+
+/**
+ * The sub-page an old in-page link meant: `#group-<id>` or `#provider`. Null
+ * when the hash names nothing this surface has.
+ */
+export function groupFromHash(hash: string, groups: readonly SettingsGroupId[]): SettingsGroupId | null {
+  const anchor = hash.replace(/^#/, "");
+  const id = LEGACY_ANCHORS[anchor] ?? anchor.replace(/^group-/, "");
+  return (groups as readonly string[]).includes(id) ? (id as SettingsGroupId) : null;
+}
 
 /** Every group's title, from `settings.groups.<id>.title`. */
 export function settingsGroupTitles(t: (key: string) => string): Record<SettingsGroupId, string> {
@@ -26,62 +79,22 @@ export function settingsGroupTitles(t: (key: string) => string): Record<Settings
   >;
 }
 
-export const settingsGroupAnchor =(id: SettingsGroupId) => `group-${id}`;
-
-/** In-page links to the groups a page shows; wraps instead of scrolling sideways. */
-export function SettingsGroupNav({
-  groups,
-  label,
-  titles,
-}: {
-  groups: readonly SettingsGroupId[];
-  label: string;
-  titles: Record<SettingsGroupId, string>;
-}) {
-  return (
-    <nav aria-label={label} className="-mt-2">
-      <ul className="flex flex-wrap gap-1.5">
-        {SETTINGS_GROUPS.filter((g) => groups.includes(g)).map((g) => (
-          <li key={g}>
-            <a
-              href={`#${settingsGroupAnchor(g)}`}
-              className="inline-flex rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-            >
-              {titles[g]}
-            </a>
-          </li>
-        ))}
-      </ul>
-    </nav>
-  );
-}
-
-/** One group: a heading the nav links to, then the sections it holds, unchanged. */
+/** One sub-page: its heading, one line on what it holds, then its rows. */
 export function SettingsGroup({
-  id,
   title,
   description,
   children,
   className,
 }: {
-  id: SettingsGroupId;
   title: string;
-  description?: string;
+  description?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
-  const anchor = settingsGroupAnchor(id);
   return (
-    <section
-      id={anchor}
-      aria-labelledby={`${anchor}-title`}
-      className={cn("flex scroll-mt-24 flex-col gap-6 sm:gap-8", className)}
-    >
-      <header className="-mb-2 border-t-2 border-[var(--color-border-hover)] pt-4">
-        <h2
-          id={`${anchor}-title`}
-          className="font-mono text-[11px] uppercase tracking-[0.1em] text-[var(--color-text-tertiary)]"
-        >
+    <section aria-labelledby="settings-group-title" className={cn("flex flex-col gap-4", className)}>
+      <header>
+        <h2 id="settings-group-title" className="text-base font-semibold text-[var(--color-text-primary)]">
           {title}
         </h2>
         {description && (
@@ -94,3 +107,31 @@ export function SettingsGroup({
     </section>
   );
 }
+
+/** A titled block inside a group's Advanced, e.g. decision capture. */
+export function SettingsBlock({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] py-4 first:border-t-0 first:pt-1">
+      <div>
+        <h3 className="text-sm font-medium text-[var(--color-text-primary)]">{title}</h3>
+        {description && (
+          <p className="mt-0.5 max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">
+            {description}
+          </p>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+export const SETTINGS_LINK =
+  "text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] hover:decoration-[var(--color-text-primary)]";

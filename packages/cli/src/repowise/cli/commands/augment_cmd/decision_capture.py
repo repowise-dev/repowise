@@ -53,7 +53,7 @@ _PROMPT = (
     "[repowise] Commit {sha} states a choice and nothing records it. If it is a "
     "decision a future edit should follow, record it while you still have the "
     "reasoning:\n"
-    "  repowise decision add --title '<short>' --decision '<what you chose>' "
+    "  repowise decision add --agent <your slug> --title '<short>' --decision '<what you chose>' "
     "--rationale '<why, and what you rejected>' --affects <path> "
     "--evidence-commit {sha} --format json\n"
     "  Lands as a candidate for review, never as a rule. Once a session. "
@@ -90,8 +90,8 @@ def _notice(tool_input: dict, tool_output: object, cwd: str, session_id: str) ->
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None or not (repo_path / ".repowise").exists():
         return None
-    # Checked before the session state is read: the switch ships off, so the
-    # opted-out repository should pay one config read and nothing else.
+    # Checked before the session state is read: an opted-out repository
+    # should pay one config read and nothing else.
     if not _capture_enabled(repo_path):
         return None
     # ``.repowise`` marks the indexed repository, not the git one. This tree
@@ -152,7 +152,7 @@ def _failed(tool_output: object) -> bool:
 
 
 def _capture_enabled(repo_path: Path) -> bool:
-    """Whether this repository switched the prompt on. Off is the default.
+    """Whether this repository has the prompt on. On is the default.
 
     ``decisions.enabled`` gates it too. That flag is the master switch for
     capture and ``preset off`` is how a repository says it wants none, so a

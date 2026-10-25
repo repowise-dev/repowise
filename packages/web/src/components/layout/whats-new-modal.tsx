@@ -142,7 +142,7 @@ function EarlierReleases({
             <button
               type="button"
               onClick={() => onSelect(e.version)}
-              className="inline-flex h-11 items-center gap-2 rounded-lg border border-[var(--color-border-default)] px-3 font-mono text-xs tabular-nums text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] min-[561px]:h-8"
+              className="inline-flex h-11 items-center gap-2 rounded-lg border border-[var(--color-border-default)] px-3 font-mono text-xs tabular-nums text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] min-[561px]:h-8"
             >
               {releaseName(e.version, t("nextRelease"))}
               {e.label && <span className="text-[var(--color-text-tertiary)]">{e.label}</span>}

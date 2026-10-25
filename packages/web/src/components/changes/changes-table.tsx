@@ -52,7 +52,7 @@ export function ChangesTable({ repoId, rows }: { repoId: string; rows: ChangeLis
           </span>
           <Link
             href={`/repos/${repoId}/changes/${encodeURIComponent(c.id)}`}
-            className="min-w-0 rounded-sm text-xs text-[var(--color-text-primary)] [text-wrap:pretty] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="min-w-0 rounded-sm text-xs text-[var(--color-text-primary)] [text-wrap:pretty] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {c.title}
           </Link>

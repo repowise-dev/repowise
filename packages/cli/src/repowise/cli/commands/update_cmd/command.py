@@ -788,6 +788,11 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
 
     load_dotenv(repo_path)
     run.state = state = load_state(repo_path)
+    # One-time migration: drop informational notices saved into state["degraded"]
+    # by pre-v0.56.0 init runs (#4224, #3272).
+    from repowise.core.index_scope import clean_legacy_degraded_state
+
+    clean_legacy_degraded_state(state)
     run.index_only = _resolve_index_only_mode(
         index_only=opts.index_only, docs_flag=opts.docs_flag, state=state
     )

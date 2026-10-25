@@ -111,7 +111,7 @@ describe("ways in to the model sheet", () => {
 
   it("the chat no-provider state opens it and keeps the settings link", async () => {
     renderFresh(<ChatHarness message="noProvider" />);
-    expect(screen.getByRole("link", { name: "settings" }).getAttribute("href")).toBe("/settings");
+    expect(screen.getByRole("link", { name: "settings" }).getAttribute("href")).toBe("/settings/models");
 
     fireEvent.click(screen.getByRole("button", { name: "Add a model" }));
 

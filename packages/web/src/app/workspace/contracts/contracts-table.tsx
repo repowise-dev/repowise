@@ -42,7 +42,7 @@ const COLUMNS: ResponsiveColumn<ContractRow>[] = [
           }
           e.preventDefault();
         }}
-        className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <ContractIdentity contractId={c.contract_id} />
       </a>

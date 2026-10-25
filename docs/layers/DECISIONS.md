@@ -170,6 +170,9 @@ What gets stored depends on how you add it:
 - Flags (`--title` and `--decision`) store a candidate (`proposed`). A person
   answering the prompts has reviewed the decision; a script or agent inferring
   one has not. Promote it with `repowise decision confirm ID`.
+- After a commit whose message states a choice, a hook asks the agent once a
+  session to record it with `decision add`. On by default;
+  `repowise decision config capture-prompt --off` turns it off.
 - `--agent SLUG` marks a candidate an agent reasoned out itself. Unlike a
   person's manual entry, accepting it needs an evidence reference
   (`--evidence-commit` on add, or `--evidence` on confirm).

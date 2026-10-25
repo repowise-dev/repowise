@@ -31,7 +31,7 @@ export function Slider({
         aria-labelledby={ariaLabelledBy}
         className={cn(
           "block h-4 w-4 rounded-full border border-[var(--color-accent-primary)] bg-[var(--color-bg-surface)] shadow",
-          "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+          "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
           "disabled:pointer-events-none disabled:opacity-50",
         )}
       />

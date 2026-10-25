@@ -13,6 +13,9 @@ _TEXT_START, _TEXT_END = 7, 72
 _COMMENT_INDICATORS = frozenset("*/$Dd")
 # Compiler options before IDENTIFICATION DIVISION (``PROCESS SQL``, ``CBL ...``).
 _COMPILER_DIRECTIVE = re.compile(r"\s*(PROCESS|CBL)\b", re.IGNORECASE)
+# The same when the card starts in column 1: the keyword must end at whitespace
+# or the end of the line, so a data name such as ``CBL-REC`` stays a data name.
+_COMPILER_DIRECTIVE_COLUMN_1 = re.compile(r"\s*(PROCESS|CBL)(?=\s|$)", re.IGNORECASE)
 _FREE_FORMAT = re.compile(r">>\s*SOURCE\s+(FORMAT\s+(IS\s+)?)?FREE|SOURCEFORMAT\W+FREE", re.I)
 
 
@@ -38,7 +41,11 @@ def normalize_fixed_format(text: str) -> str:
         if indicator in _COMMENT_INDICATORS or not body.strip():
             out.append(eol)
             continue
-        if not seen_division and _COMPILER_DIRECTIVE.match(body):
+        if not seen_division and (
+            _COMPILER_DIRECTIVE.match(body) or _COMPILER_DIRECTIVE_COLUMN_1.match(line)
+        ):
+            # A compiler-option card may also start in column 1, where its text
+            # is outside the 8-72 program area (#4475).
             out.append(eol)
             continue
         seen_division = True

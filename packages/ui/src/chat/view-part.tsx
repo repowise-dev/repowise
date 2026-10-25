@@ -816,7 +816,7 @@ function ChartPart({ view, buildRefHref, domId }: PartProps & { view: ChartView 
         aria-expanded={showData}
         aria-controls={tableId}
         onClick={() => setShowData((open) => !open)}
-        className="inline-flex min-h-8 items-center rounded-md text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] print:hidden"
+        className="inline-flex min-h-8 items-center rounded-md text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] print:hidden"
       >
         Data
       </button>
@@ -857,7 +857,7 @@ function SectionPart({
               key={id}
               href={`#${props.domId(id)}`}
               aria-label={`See ${parts.get(id)?.title ?? id}`}
-              className="ml-1 align-super text-[10px] text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="ml-1 align-super text-[10px] text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               {id}
             </a>

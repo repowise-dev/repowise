@@ -157,11 +157,6 @@ function AgentRow({
     }
   }
 
-  async function copyPrompt() {
-    const prompt = t("prompt", { name, command });
-    if (await copyText(prompt)) toast.success(t("promptCopied"));
-  }
-
   const file = firstConfigFile(agent);
   return (
     <li className={ROW}>
@@ -200,7 +195,8 @@ function AgentRow({
         firstCallAt={agent.first_call_at ?? null}
         writesAllowed={writesAllowed}
         busy={busy}
-        onCopyPrompt={() => void copyPrompt()}
+        name={name}
+        buildPrompt={() => t("prompt", { name, command })}
         onConnect={() => void connect()}
       />
     </li>
@@ -215,7 +211,8 @@ function RowAction({
   firstCallAt,
   writesAllowed,
   busy,
-  onCopyPrompt,
+  name,
+  buildPrompt,
   onConnect,
 }: {
   connected: boolean;
@@ -223,7 +220,8 @@ function RowAction({
   firstCallAt: string | null;
   writesAllowed: boolean;
   busy: boolean;
-  onCopyPrompt: () => void;
+  name: string;
+  buildPrompt: () => string;
   onConnect: () => void;
 }) {
   const t = useTranslations("welcome.agent");
@@ -238,7 +236,14 @@ function RowAction({
   }
   return (
     <span className="flex shrink-0 flex-wrap items-center gap-2 pl-3.5 min-[561px]:pl-0">
-      <AiPromptButton label={t("copyPrompt")} onClick={onCopyPrompt} className="max-[560px]:h-11" />
+      <AiPromptButton
+        label={t("copyPrompt")}
+        copiedLabel={t("copied")}
+        failedLabel={t("copyFailed")}
+        ariaLabel={`${t("copyPrompt")}: ${name}`}
+        copyText={buildPrompt}
+        className="max-[560px]:h-11"
+      />
       {writesAllowed && (
         <Button variant="outline" size="sm" className="h-11 min-[561px]:h-8" disabled={busy} onClick={onConnect}>
           {busy ? t("connecting") : t("connect")}

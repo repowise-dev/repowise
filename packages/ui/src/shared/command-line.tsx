@@ -24,7 +24,7 @@ export function CommandLine({ command }: { command: string }) {
         type="button"
         onClick={() => void copy()}
         aria-label={copied ? "Copied" : "Copy command"}
-        className="inline-flex shrink-0 items-center gap-1 rounded text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="inline-flex shrink-0 items-center gap-1 rounded text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
         <span aria-hidden>{copied ? "Copied" : "Copy"}</span>

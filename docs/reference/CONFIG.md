@@ -368,7 +368,7 @@ decisions:
 | `discovery.max_input_tokens` | `30000` | Per discovery pass, 2000-60000. |
 | `harnesses` | `[claude_code]` | Whose transcripts the session lane reads; add `codex`. |
 | `agent_acceptance` | `true` | Whether an agent may grant a decision authority, signed as itself. |
-| `capture_prompt` | `false` | Ask the agent to record what it just committed. |
+| `capture_prompt` | `true` | Ask the agent to record what it just committed. |
 
 ### Sources
 
@@ -415,16 +415,16 @@ Neither is about capture, and no preset changes them.
   agent's with the signing session, on every surface, never as yours. Off: an
   agent can propose and withdraw authority, never grant it. `false` is written
   to the config so it survives a reload.
-- `capture_prompt` on: a successful `git commit` with two or more decision
-  signals prompts the agent, once per session, to run `repowise decision add`;
-  never for a commit a record already cites, and only as a proposal. An agent
-  cannot decline a hook, hence off by default.
-- `repowise decision config capture-prompt --on` also adds a separate
-  `Bash|PowerShell` PostToolUse entry (the shared matcher excludes shell tools:
-  51% of hook invocations for 0.7% of emissions); `--off` removes it.
-- That entry is per install: other repositories pay a process start on shell
-  calls and emit nothing unless enabled, and switching it off here turns it off
-  for all.
+- `capture_prompt` on (default): a successful `git commit` with two or more
+  decision signals prompts the agent, once per session, to run
+  `repowise decision add`; never for a commit a record already cites, and only
+  as a proposal. `false` is written to the config so it survives a reload.
+- It fires from a separate `Bash|PowerShell` PostToolUse entry, which `init`
+  and the Claude Code plugin install. The entry tests the payload for
+  `git commit` in the shell, so other shell calls never start Python.
+- `repowise decision config capture-prompt --off` switches the prompt off for
+  one repository and leaves the per-install entry, which stays silent there.
+  `--on` reinstalls the entry if it is missing.
 
 ### From the CLI
 

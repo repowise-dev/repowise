@@ -52,7 +52,7 @@ export function HostedSetupCard({ onboarding }: { onboarding: OnboardingState })
           onClick={() => void hide("hosted_card_hidden")}
           aria-label={t("hide")}
           title={t("hide")}
-          className="-m-1.5 rounded p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="-m-1.5 rounded p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <X className="h-4 w-4" />
         </button>

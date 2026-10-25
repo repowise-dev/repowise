@@ -144,7 +144,7 @@ export function MapLink({
   return (
     <a
       href={href}
-      className="inline-block rounded text-sm font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="inline-block rounded text-sm font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       Show this cause on the map
     </a>
@@ -169,7 +169,7 @@ function SiblingLink({
     <button
       type="button"
       onClick={() => onSelect(sibling.opportunity_id)}
-      className="rounded font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="rounded font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {label}
     </button>
