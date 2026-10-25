@@ -37,7 +37,7 @@ export function BulkGenerateButton({
         size="sm"
         onClick={bulk.open}
         disabled={bulk.jobId != null}
-        className="h-7 gap-1.5 border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] text-xs text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-accent-hover)]"
+        className="h-7 gap-1.5 text-xs"
       >
         <Sparkles className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">{t("bulk.button")}</span>

@@ -379,7 +379,7 @@ export function CouplingExplorer({
                     className={cn(
                       "h-8 shrink-0 whitespace-nowrap border-r border-[var(--color-border-default)] px-2.5 text-xs last:border-r-0",
                       selected
-                        ? "bg-[var(--color-bg-selected)] font-medium text-[var(--color-text-primary)] shadow-[inset_0_-2px_0_var(--color-accent-primary)]"
+                        ? "bg-[var(--color-bg-selected)] font-medium text-[var(--color-text-primary)] shadow-[inset_0_-2px_0_var(--color-tab-active)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
                     )}
                   >

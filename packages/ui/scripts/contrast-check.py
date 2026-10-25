@@ -218,6 +218,14 @@ CHECKS = [
     ("text-inverse", "accent-primary", 4.5, "Text on accent-primary fill"),
     ("text-on-action", "action-primary", 4.5, "Text on primary action (ink button)"),
     ("text-on-action", "action-primary-hover", 4.5, "Text on primary action hover"),
+    # Neutral state roles: control-selected/-text alias the action pair, the tab
+    # underline is text-primary and bars are text-secondary (non-text, 3:1).
+    ("text-on-action", "action-primary", 4.5, "Text on selected segment or switch"),
+    ("action-primary", "bg-surface", 3.0, "Selected control / tab underline on card"),
+    ("action-primary", "bg-root", 3.0, "Selected control / tab underline on page"),
+    ("text-secondary", "bg-surface", 3.0, "Progress and data bar on card"),
+    ("text-secondary", "bg-inset", 3.0, "Progress and data bar on inset track"),
+    ("text-secondary", "bg-elevated", 3.0, "Progress and data bar on elevated track"),
     ("success", "bg-surface", 4.5, "Success text on card"),
     ("warning", "bg-surface", 4.5, "Warning text on card"),
     ("warning", "bg-root", 4.5, "Warning text on page"),

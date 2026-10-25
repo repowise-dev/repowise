@@ -51,7 +51,7 @@ export function DocsPageActions({
               className={cn(
                 "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
                 persona === p.value
-                  ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                  ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]",
               )}
             >

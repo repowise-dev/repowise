@@ -235,7 +235,7 @@ function buildComponents(
   pre: ({ children }) => <>{children}</>,
   blockquote: ({ children }) => (
     <blockquote
-      className="my-4 border-l-2 border-[var(--color-accent-primary)] pl-4 text-sm italic text-[var(--color-text-tertiary)]"
+      className="my-4 border-l-2 border-[var(--color-border-hover)] pl-4 text-sm italic text-[var(--color-text-tertiary)]"
     >
       {children}
     </blockquote>

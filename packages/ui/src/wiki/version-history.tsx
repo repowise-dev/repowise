@@ -55,7 +55,7 @@ export function VersionHistory({
               className={cn(
                 "flex items-center gap-1 text-xs px-2 py-0.5 rounded border transition-colors",
                 showDiff
-                  ? "bg-[var(--color-accent-primary)]/10 border-[var(--color-accent-primary)]/30 text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] border-[var(--color-selection-border)] text-[var(--color-text-primary)]"
                   : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
               )}
             >
@@ -104,7 +104,7 @@ export function VersionHistory({
       {expanded && (
         <div className="divide-y divide-[var(--color-border-default)]">
           {/* Current version */}
-          <div className="flex items-center justify-between px-4 py-2 bg-[var(--color-accent-primary)]/5">
+          <div className="flex items-center justify-between px-4 py-2 bg-[var(--color-selection-wash)]">
             <div className="flex items-center gap-2">
               <span className="text-xs font-mono text-[var(--color-accent-primary)]">
                 v{currentVersion}

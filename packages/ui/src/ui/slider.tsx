@@ -24,7 +24,7 @@ export function Slider({
       {...props}
     >
       <SliderPrimitive.Track className="relative h-1.5 w-full grow overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">
-        <SliderPrimitive.Range className="absolute h-full bg-[var(--color-accent-primary)]" />
+        <SliderPrimitive.Range className="absolute h-full bg-[var(--color-control-selected)]" />
       </SliderPrimitive.Track>
       <SliderPrimitive.Thumb
         aria-label={ariaLabel}

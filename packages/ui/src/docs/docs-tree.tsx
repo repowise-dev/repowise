@@ -710,7 +710,7 @@ function TreeItem({
           // a distinct block rather than one long list.
           depth === 0 && "mt-2 first:mt-0",
           isSelected
-            ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+            ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
             : "text-[var(--color-text-secondary)]",
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
@@ -793,7 +793,7 @@ function TreeItem({
       className={cn(
         "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
         isSelected
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+          ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
           : "text-[var(--color-text-secondary)]",
       )}
       style={{ paddingLeft: `${depth * 16 + 8 + 16}px` }}
@@ -805,7 +805,7 @@ function TreeItem({
           className={cn(
             "h-3.5 w-3.5 shrink-0",
             isSelected
-              ? "text-[var(--color-accent-primary)]"
+              ? "text-[var(--color-text-primary)]"
               : "text-[var(--color-text-tertiary)]",
           )}
         />
@@ -1053,7 +1053,7 @@ export function DocsTree({
             className={cn(
               "relative rounded-md p-1.5 transition-colors",
               showFilters || activeFilterCount > 0
-                ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                 : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]",
             )}
           >
@@ -1077,7 +1077,7 @@ export function DocsTree({
                   className={cn(
                     "rounded-full px-2 py-0.5 text-[10px] border transition-colors",
                     typeFilter === t
-                      ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                      ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                       : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
                   )}
                 >
@@ -1095,7 +1095,7 @@ export function DocsTree({
                     "rounded-full px-2 py-0.5 text-[10px] border transition-colors",
                     freshnessFilter === f
                       ? f === "all"
-                        ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                        ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                         : statusBadgeClasses(f as FreshnessStatus)
                       : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
                   )}

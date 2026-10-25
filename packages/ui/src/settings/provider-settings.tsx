@@ -251,7 +251,7 @@ function ProviderRow({ provider, isActive, labels, validation, ...props }: RowPr
       className={cn(
         "rounded-md border p-3 transition-colors",
         isActive
-          ? "border-[var(--color-border-active)] bg-[var(--color-accent-muted)]"
+          ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)]"
           : "border-[var(--color-border-default)]",
       )}
     >
