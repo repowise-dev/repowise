@@ -4192,10 +4192,13 @@ export interface SetupResponse {
   index: SetupIndex;
   agents_available: boolean;
   agents?: SetupAgent[];
+  calls_available: boolean;
   calls: SetupCalls;
   sync: SetupSync;
   rewrite_hook: SetupRewriteHook;
+  coverage_available: boolean;
   coverage: SetupCoverage;
+  model_available: boolean;
   model: SetupModel;
   checks_available: boolean;
   checks?: SetupCheck[];

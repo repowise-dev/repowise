@@ -131,17 +131,14 @@ def describe_agents(repo_path: Path | None = None) -> list[dict]:
 def _config_files(target: AgentTarget, repo_path: Path | None) -> dict[str, list[str]]:
     """The files ``agents add`` writes for *target*, per scope it supports.
 
-    Best-effort like the probes above: a scope whose paths cannot be named is
-    left out instead of failing the listing.
+    Not best-effort like the probes above: ``supports_scope`` already skips a
+    scope the target lacks, so an error here is a path bug and should surface.
     """
-    files: dict[str, list[str]] = {}
-    for scope in (Scope.PROJECT, Scope.USER):
-        try:
-            if target.supports_scope(scope):
-                files[scope.value] = list(target.describe_paths(scope, repo_path=repo_path))
-        except Exception:
-            continue
-    return files
+    return {
+        scope.value: list(target.describe_paths(scope, repo_path=repo_path))
+        for scope in (Scope.PROJECT, Scope.USER)
+        if target.supports_scope(scope)
+    }
 
 
 def default_selection(rows: list[dict]) -> set[str]:

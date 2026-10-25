@@ -12,12 +12,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.models import GraphNode, Repository
@@ -65,25 +67,32 @@ async def setup_payload(session: AsyncSession, repo: Repository) -> dict[str, An
 async def _build(session: AsyncSession, repo: Repository) -> dict[str, Any]:
     repo_path = Path(repo.local_path)
     index = await _index_section(session, repo)
-    coverage_ingested_at = await _coverage_ingested_at(session, repo.id)
+    ingest_ok, coverage_ingested_at = await _coverage_ingested_at(session, repo.id)
     doctor, agents, local = await asyncio.gather(
         asyncio.to_thread(setup_cli.doctor_json, repo_path),
         asyncio.to_thread(setup_cli.agents_json, repo_path),
-        asyncio.to_thread(_local_sections_or_empty, repo.id, repo_path),
+        asyncio.to_thread(_local_sections, repo.id, repo_path),
     )
     checks = _checks(doctor)
-    agent_rows, calls = _agents(agents, local.pop("agent_calls"))
+    agent_calls, coverage_files, (model_ok, model) = local
+    agent_rows, calls = _agents(agents, agent_calls or {})
     return {
         "repo_id": repo.id,
         "generated_at": datetime.now(UTC).isoformat(),
         "index": index,
         "agents_available": agents is not None,
         "agents": agent_rows,
+        "calls_available": agent_calls is not None,
         "calls": calls,
         "sync": _sync(checks),
         "rewrite_hook": _rewrite_hook(checks, agent_rows),
-        "coverage": {"ingested_at": coverage_ingested_at, **local.pop("coverage")},
-        "model": local.pop("model"),
+        "coverage_available": ingest_ok and coverage_files is not None,
+        "coverage": {
+            "ingested_at": coverage_ingested_at,
+            **(coverage_files or {"configured_paths": [], "discovered": []}),
+        },
+        "model_available": model_ok,
+        "model": model,
         "checks_available": doctor is not None,
         "checks": checks,
     }
@@ -129,54 +138,51 @@ def _index_state(file_count: int, indexed: str | None, live: str | None) -> str:
     return "up_to_date"
 
 
-async def _coverage_ingested_at(session: AsyncSession, repo_id: str) -> str | None:
+async def _coverage_ingested_at(session: AsyncSession, repo_id: str) -> tuple[bool, str | None]:
+    """``(read ok, newest ingest time)``; an unreadable table is not "never ingested"."""
     from repowise.core.persistence.models import CoverageFile
 
-    stamp = (
-        await session.execute(
-            select(func.max(CoverageFile.ingested_at)).where(
-                CoverageFile.repository_id == repo_id
+    try:
+        stamp = (
+            await session.execute(
+                select(func.max(CoverageFile.ingested_at)).where(
+                    CoverageFile.repository_id == repo_id
+                )
             )
-        )
-    ).scalar_one_or_none()
-    return stamp.isoformat() if isinstance(stamp, datetime) else None
+        ).scalar_one_or_none()
+    except SQLAlchemyError:
+        logger.warning("setup: could not read stored coverage for %s", repo_id, exc_info=True)
+        return False, None
+    return True, stamp.isoformat() if isinstance(stamp, datetime) else None
 
 
 # -- local files: ledger, coverage reports, model -----------------------------
 
 
-def _local_sections(repo_id: str, repo_path: Path) -> dict[str, Any]:
-    """The blocking reads that need no CLI, run together in one thread."""
+def _local_sections(
+    repo_id: str, repo_path: Path
+) -> tuple[dict[str, tuple[str, str]] | None, dict[str, Any] | None, tuple[bool, dict[str, Any]]]:
+    """The blocking reads that need no CLI, run together in one thread.
+
+    Each comes back ``None`` (or flagged) when it could not be read, so the
+    page can say so instead of showing an empty section.
+    """
+    return _agent_calls(repo_path), _coverage_files(repo_path), _model(repo_id, repo_path)
+
+
+def _agent_calls(repo_path: Path) -> dict[str, tuple[str, str]] | None:
+    """Per-agent call times; ``{}`` with no ledger yet, ``None`` when it could not be read."""
     from repowise.core.savings.service import load_agent_calls
 
-    return {
-        "agent_calls": load_agent_calls(repo_path) or {},
-        "coverage": _coverage_files(repo_path),
-        "model": _model(repo_id, repo_path),
-    }
-
-
-def _local_sections_or_empty(repo_id: str, repo_path: Path) -> dict[str, Any]:
-    """:func:`_local_sections`, degraded to empty sections so one bad read
-    never takes the whole page down."""
     try:
-        return _local_sections(repo_id, repo_path)
-    except Exception:
-        logger.warning("setup: local reads failed for %s", repo_path, exc_info=True)
-        return {
-            "agent_calls": {},
-            "coverage": {"configured_paths": [], "discovered": []},
-            "model": {
-                "docs_mode": "none",
-                "active_provider": None,
-                "active_model": None,
-                "configured_providers": [],
-            },
-        }
+        return load_agent_calls(repo_path) or {}
+    except (sqlite3.Error, OSError):
+        logger.warning("setup: could not read the savings ledger in %s", repo_path, exc_info=True)
+        return None
 
 
-def _coverage_files(repo_path: Path) -> dict[str, Any]:
-    """Configured report paths and the reports core discovery finds on disk."""
+def _coverage_files(repo_path: Path) -> dict[str, Any] | None:
+    """Configured report paths and the reports discovery finds; ``None`` when unreadable."""
     from repowise.core.analysis.health.coverage import CoverageConfig, discover_artifacts
     from repowise.core.repo_config import load_repo_config
 
@@ -184,7 +190,9 @@ def _coverage_files(repo_path: Path) -> dict[str, Any]:
         cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
         found = discover_artifacts(repo_path, globs=cfg.artifacts or None)
     except (OSError, ValueError):
-        return {"configured_paths": [], "discovered": []}
+        # ValueError covers an unparsable .repowise/config.yaml (RepoConfigError).
+        logger.warning("setup: could not look for coverage in %s", repo_path, exc_info=True)
+        return None
     now = time.time()
     discovered = []
     for report in found[:_DISCOVERED_REPORTS_LIMIT]:
@@ -202,8 +210,12 @@ def _coverage_files(repo_path: Path) -> dict[str, Any]:
     return {"configured_paths": list(cfg.paths), "discovered": discovered}
 
 
-def _model(repo_id: str, repo_path: Path) -> dict[str, Any]:
-    """Docs mode from state.json, and the provider settings ``/api/providers`` reports."""
+def _model(repo_id: str, repo_path: Path) -> tuple[bool, dict[str, Any]]:
+    """Docs mode from state.json, and the provider settings ``/api/providers`` reports.
+
+    ``(False, ...)`` when the provider settings could not be read; docs mode
+    is still filled in.
+    """
     from repowise.core.docs_mode import resolve_docs_mode
     from repowise.server.provider_config import list_provider_status
 
@@ -219,12 +231,14 @@ def _model(repo_id: str, repo_path: Path) -> dict[str, Any]:
     }
     try:
         status = list_provider_status(repo_id=repo_id, repo_path=repo_path)
-    except Exception:
-        return model
+    except (OSError, ValueError):
+        # ValueError covers an unparsable config.yaml or .env (RepoConfigError).
+        logger.warning("setup: could not read provider settings for %s", repo_path, exc_info=True)
+        return False, model
     model["active_provider"] = status["active"]["provider"]
     model["active_model"] = status["active"]["model"]
     model["configured_providers"] = [p["id"] for p in status["providers"] if p["configured"]]
-    return model
+    return True, model
 
 
 # -- CLI answers --------------------------------------------------------------

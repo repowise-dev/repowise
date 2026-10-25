@@ -150,10 +150,17 @@ class SetupResponse(BaseModel):
     #: ``False`` when ``repowise agents`` could not run; ``agents`` is then empty.
     agents_available: bool
     agents: list[SetupAgent] = Field(default_factory=list)
+    #: ``False`` when the savings ledger could not be read; ``calls`` and the
+    #: agents' call times are then empty, which is not the same as "no calls".
+    calls_available: bool
     calls: SetupCalls
     sync: SetupSync
     rewrite_hook: SetupRewriteHook
+    #: ``False`` when stored coverage or the report search could not be read.
+    coverage_available: bool
     coverage: SetupCoverage
+    #: ``False`` when the provider settings could not be read; ``docs_mode`` still holds.
+    model_available: bool
     model: SetupModel
     #: ``False`` when ``repowise doctor`` could not run; ``checks`` is then empty.
     checks_available: bool
