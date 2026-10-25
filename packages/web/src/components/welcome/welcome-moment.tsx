@@ -83,6 +83,7 @@ export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPat
       if (!next) return;
       setLoaded(next);
       setOpen(true);
+      dropTourParam();
     });
   }, [repoId, search, fileCount, figures, hotspotPath]);
 
@@ -100,6 +101,14 @@ export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPat
       hotspotPath={hotspotPath}
     />
   );
+}
+
+/** Drops `?tour=1` once the tour opens, so a reload does not replay it. */
+function dropTourParam(): void {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("tour")) return;
+  url.searchParams.delete("tour");
+  window.history.replaceState(window.history.state, "", url);
 }
 
 /** Decides whether the welcome opens, stamps what an open records, and

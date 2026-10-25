@@ -103,7 +103,6 @@ export function hasPriorUse(): boolean {
 export function takeUpgradeMoment(current: string, hasHighlights: boolean): UpgradeMoment {
   // "0" stands for "some earlier version": prior use with nothing stored.
   const stored = read(LAST_SEEN_KEY) ?? (hasPriorUse() ? "0" : null);
-  if (stored === null) write(NEW_BROWSER_KEY, "1");
   const moment = upgradeMoment(stored, current, hasHighlights);
   markVersionSeen(current);
   return moment;
@@ -111,6 +110,8 @@ export function takeUpgradeMoment(current: string, hasHighlights: boolean): Upgr
 
 /** Stores `version` as seen, so the release moment stays quiet for it. */
 export function markVersionSeen(version: string): void {
+  // Whichever moment stores the first version records a new browser.
+  if (isNewBrowser()) write(NEW_BROWSER_KEY, "1");
   write(LAST_SEEN_KEY, version);
 }
 

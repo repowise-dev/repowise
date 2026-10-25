@@ -1381,9 +1381,9 @@
       "deadCode": {
         "label": "死代码",
         "unit": "{count, plural, other {个文件}}",
-        "caption": "没有任何代码到达它们。",
+        "caption": "没有任何代码引用它们。",
         "safe": "{count, plural, other {# 项发现}}可以安全删除。",
-        "captionNone": "每个文件都能被到达。",
+        "captionNone": "每个文件都有代码引用。",
         "open": "打开死代码"
       },
       "risk": {
@@ -1408,7 +1408,7 @@
         "label": "测试",
         "measured": "实测",
         "measuredCaption": "来自最新报告的行覆盖率。",
-        "inferredUnit": "/ {total} 个文件，推断",
+        "inferredUnit": "共 {total} 个文件，按推断",
         "inferredCaption": "有测试能到达。添加报告即可实测。",
         "open": "打开测试"
       }

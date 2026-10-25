@@ -29,7 +29,7 @@ type Step = (typeof STEPS)[number];
 
 /** Below 561px the dialog is a full-height sheet; above, a centred dialog. */
 const SHEET =
-  "left-0 top-0 flex h-dvh max-h-none w-full max-w-none translate-x-0 translate-y-0 flex-col overflow-y-auto rounded-none border-0 " +
+  "left-0 top-0 flex h-dvh max-h-none w-full max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none border-0 " +
   "min-[561px]:left-[50%] min-[561px]:top-[50%] min-[561px]:h-auto min-[561px]:max-h-[85vh] min-[561px]:max-w-[720px] min-[561px]:translate-x-[-50%] min-[561px]:translate-y-[-50%] min-[561px]:rounded-[14px] min-[561px]:border";
 
 export interface WelcomeDialogProps {
@@ -78,6 +78,8 @@ export function WelcomeDialog(props: WelcomeDialogProps) {
           heading.current?.focus();
         }}
       >
+        {/* Band and body scroll; the footer and the close button stay put. */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
         <MomentBand tone="welcome" className="max-[560px]:px-[18px] max-[560px]:pb-4 max-[560px]:pt-[18px]">
           <p className={`${MOMENT_MICRO} pr-8`}>{t("eyebrow")}</p>
           <DialogTitle
@@ -102,8 +104,9 @@ export function WelcomeDialog(props: WelcomeDialogProps) {
           )}
           {step === "yours" && <WelcomeStepYours repoId={repoId} setup={props.setup} />}
         </div>
+        </div>
 
-        <footer className="sticky bottom-0 flex flex-col-reverse gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-release-ground)] px-[18px] pb-[18px] pt-3 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between min-[561px]:border-t-0 min-[561px]:px-8 min-[561px]:pb-5 min-[561px]:pt-3.5">
+        <footer className="flex flex-col-reverse gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-release-ground)] px-[18px] pb-[18px] pt-3 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between min-[561px]:border-t-0 min-[561px]:px-8 min-[561px]:pb-5 min-[561px]:pt-3.5">
           <span className="text-center text-xs text-[var(--color-text-tertiary)] min-[561px]:text-left">
             {t("stepOf", { step: index + 1, total: STEPS.length })}
           </span>

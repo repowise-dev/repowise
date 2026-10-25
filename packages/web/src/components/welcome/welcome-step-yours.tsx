@@ -29,7 +29,7 @@ export function WelcomeStepYours({ repoId, setup }: { repoId: string; setup: Set
   const t = useTranslations("welcome.yours");
   return (
     <div>
-      {setup?.model.docs_mode !== "llm" && <ModelBox repoId={repoId} />}
+      {setup && setup.model.docs_mode !== "llm" && <ModelBox repoId={repoId} />}
       <SyncRow repoId={repoId} setup={setup} />
       {showsHostedRow(setup) && (
         <div className={ROW}>

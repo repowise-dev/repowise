@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { cn } from "@repowise-dev/ui/lib/cn";
 
 /**
- * The shared look of the dialogs that present rather than ask: What's new and
+ * The shared look of the dialogs that present instead of asking: What's new and
  * the welcome. A deeper ground than the overlay plane, a glow band behind a
  * display heading, and cards with a series-coloured left edge.
  */

@@ -5,6 +5,7 @@ import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import {
   decideMoment,
   isNewBrowser,
+  markVersionSeen,
   sessionMomentTaken,
   takeSessionMoment,
   takeUpgradeMoment,
@@ -63,6 +64,11 @@ describe("new browser and the session guard", () => {
   it("a first visit counts as new, and stays new after the release moment stores a version", () => {
     expect(isNewBrowser()).toBe(true);
     takeUpgradeMoment("0.59.0", true);
+    expect(isNewBrowser()).toBe(true);
+  });
+
+  it("stays new when the welcome stores the version before the release moment runs", () => {
+    markVersionSeen("0.59.0");
     expect(isNewBrowser()).toBe(true);
   });
 
