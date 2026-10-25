@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from repowise.server.routers._repo_generate import _reject_unknown_style
+from repowise.server.schemas import RepoResponse
 
 
 def stored_settings(raw: str | None) -> dict[str, Any]:
@@ -76,3 +77,32 @@ def save_settings(
             detail=f"Can't write {repo_path / '.repowise' / 'config.yaml'}: {exc.strerror or exc}",
         ) from exc
     return rest
+
+
+def effective_settings(repo: Any) -> dict[str, Any]:
+    """The row's settings with the config.yaml keys read from its checkout.
+
+    A legacy stored value shows until the file sets the key. An unreadable
+    config leaves the stored settings as they are: a listing must not fail on
+    one broken file, and saving those keys reports the parse error.
+    """
+    from repowise.core.repo_config import (
+        FILE_SETTING_KEYS,
+        RepoConfigError,
+        resolve_file_settings,
+    )
+
+    stored = stored_settings(repo.settings_json)
+    if not repo.local_path:
+        return stored
+    try:
+        effective = resolve_file_settings(repo.local_path, stored)
+    except (RepoConfigError, OSError):
+        return stored
+    rest = {k: v for k, v in stored.items() if k not in FILE_SETTING_KEYS}
+    return {**rest, **effective}
+
+
+def repo_response(repo: Any) -> RepoResponse:
+    """:class:`RepoResponse` for *repo*, settings as the CLI sees them."""
+    return RepoResponse.from_orm(repo, settings=effective_settings(repo))

@@ -47,7 +47,7 @@ from repowise.server.routers._repo_pricing import (
     probe_provider,
     resolve_provider,
 )
-from repowise.server.routers._repo_settings import save_settings, stored_settings
+from repowise.server.routers._repo_settings import repo_response, save_settings, stored_settings
 from repowise.server.routers._repo_summary import _freshness_for, _summary_rows_for
 from repowise.server.schemas import (
     JobAcceptedResponse,
@@ -137,7 +137,7 @@ async def create_repo(
             default_branch=branch,
             settings=body.settings,
         )
-        return RepoResponse.from_orm(repo)
+        return repo_response(repo)
 
     from repowise.server.repo_db import ensure_repo_registration, upsert_registry_row
 
@@ -173,7 +173,7 @@ async def create_repo(
                     crud.keep_analysis_ran(repo.settings_json, body.settings)
                 )
             await repo_session.flush()
-            response = RepoResponse.from_orm(repo)
+            response = repo_response(repo)
             stored_url, stored_branch = repo.url, repo.default_branch
         else:  # pragma: no cover — the row was created two lines above
             raise HTTPException(status_code=500, detail="Repository registration failed")
@@ -242,7 +242,7 @@ async def list_repos(
     repos, indexed_repo_ids = await load_repositories(
         session, getattr(app_state, "workspace_sessions", {})
     )
-    responses = [RepoResponse.from_orm(r) for r in repos]
+    responses = [repo_response(r) for r in repos]
     heal_indexed_commits(responses)
     flag_unindexed(responses, indexed_repo_ids)
 
@@ -312,7 +312,7 @@ async def get_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Get a single repository by ID."""
-    return RepoResponse.from_orm(await _get_repo_or_404(session, repo_id))
+    return repo_response(await _get_repo_or_404(session, repo_id))
 
 
 @router.patch("/{repo_id}", response_model=RepoResponse)
@@ -345,7 +345,7 @@ async def update_repo(
     if row_settings is not None:
         repo.settings_json = json.dumps(crud.keep_analysis_ran(repo.settings_json, row_settings))
     await session.flush()
-    return RepoResponse.from_orm(repo)
+    return repo_response(repo)
 
 
 def _forget_workspace_member(app_state: Any, alias: str) -> bool:

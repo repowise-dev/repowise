@@ -204,3 +204,23 @@ async def test_prune_stale_rows_removes_excluded_health_data(session, tmp_path) 
 
     assert [m.file_path for m in metrics] == ["src/app.py"]
     assert [f.file_path for f in findings] == ["src/app.py"]
+
+
+async def test_health_excludes_fall_back_to_saved_settings_on_broken_config(
+    session, tmp_path, caplog
+) -> None:
+    import logging
+
+    from repowise.core.persistence.crud.analysis.health.exclude import health_exclude_spec
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text("- not a mapping\n", encoding="utf-8")
+    repo = await upsert_repository(
+        session, name="repo", local_path=str(tmp_path), settings={"exclude_patterns": ["tools/"]}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        spec = await health_exclude_spec(session, repo.id)
+
+    assert spec.match_file("tools/gen.py")
+    assert "using saved settings" in caplog.text

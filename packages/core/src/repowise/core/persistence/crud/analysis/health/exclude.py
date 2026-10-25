@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....models import Repository
+
+logger = logging.getLogger(__name__)
 
 
 async def health_exclude_spec(
@@ -38,6 +41,11 @@ async def health_exclude_spec(
     try:
         values = resolve_file_settings(Path(repo_path or repo.local_path), stored)
     except Exception:
+        logger.warning(
+            "Could not read config.yaml exclude_patterns for %s; using saved settings",
+            repo_path or repo.local_path,
+            exc_info=True,
+        )
         values = stored
     raw = values.get("exclude_patterns")
     if not isinstance(raw, list):
