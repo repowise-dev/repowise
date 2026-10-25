@@ -43,6 +43,8 @@ export interface SetupRow {
 
 export interface SetupView {
   attention: SetupRow[];
+  /** Doctor could not run, so an empty "Needs attention" proves nothing. */
+  checksUnreadable: boolean;
   essentials: SetupRow[];
   optional: SetupRow[];
   /** Index up to date, an agent has called, sync on. */
@@ -69,6 +71,13 @@ const CHECKS_SHOWN_AS_ROWS = new Set(["post-commit-hook"]);
 
 const msg = (key: string, values?: Record<string, string | number>): SetupMsg =>
   values ? { key, values } : { key };
+
+/** A section the server could not read: say so, never show its empty state. */
+const unreadable = (command: string): Pick<SetupRow, "tone" | "status" | "detail"> => ({
+  tone: "off",
+  status: msg("unreadable.status"),
+  detail: msg("unreadable.detail", { command }),
+});
 
 const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
@@ -163,7 +172,7 @@ function connectCommand(agentId: string | null): string {
 
 /** Registered agents that have not called for a day since they connected. */
 function silentAgents(s: SetupResponse, o: DeriveOptions): SetupAgent[] {
-  if (s.calls.first_call_at || s.calls.unattributed) return [];
+  if (!s.calls_available || s.calls.first_call_at || s.calls.unattributed) return [];
   // The API has no connect time, so "since" is when this browser first saw
   // the agent connected, else when the repo was indexed (init registers
   // agents then). Upgrade path: a registration time in the setup payload.
@@ -212,6 +221,26 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
     fix,
   });
 
+  if (!s.agents_available) {
+    return {
+      ...base,
+      ...unreadable("repowise agents"),
+      action: null,
+      prompt: prompt("repowise could not list the coding agents on this machine.", true),
+    };
+  }
+  if (!s.calls_available && connected.length) {
+    // Calls unreadable: a registered agent is not counted as failing.
+    return {
+      ...base,
+      command: "repowise status",
+      tone: "done",
+      status: msg("agent.statusConnected"),
+      detail: msg("unreadable.detail", { command: "repowise status" }),
+      action: null,
+      prompt: { ...prompt("An agent is registered; its calls could not be read here."), command: "repowise status", verify: "status" },
+    };
+  }
   if (s.calls.first_call_at) {
     const caller = firstCaller(agents);
     const when = o.relative(s.calls.first_call_at);
@@ -241,8 +270,7 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
     };
   }
   let detail = msg("agent.detailNone");
-  if (!s.agents_available) detail = msg("agent.detailUnavailable");
-  else if (offer) detail = msg("agent.detailInstalled", { agent: offer.display_name });
+  if (offer) detail = msg("agent.detailInstalled", { agent: offer.display_name });
   return {
     ...base,
     tone: "off",
@@ -288,10 +316,14 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   let detail = msg("model.detailNone");
   if (s.model.active_provider) detail = msg("model.detailActive", { provider: s.model.active_provider });
   else if (providers.length) detail = msg("model.detailReady", { providers: providers.join(", ") });
+  if (!s.model_available) detail = msg("unreadable.detail", { command: "repowise status" });
+  let status = msg(llm ? "model.statusLlm" : "model.statusBuilt");
+  // Provider settings unreadable: only a written-by-model state still holds.
+  if (!s.model_available && !llm) status = msg("unreadable.status");
   return {
     id: "model",
     tone: "model",
-    status: msg(llm ? "model.statusLlm" : "model.statusBuilt"),
+    status,
     title: msg("model.title"),
     detail,
     action: { kind: "model", hasModel: llm },
@@ -319,6 +351,16 @@ function coverageRow(s: SetupResponse, o: DeriveOptions): SetupRow {
     command,
     verify: "status",
   };
+  if (!s.coverage_available) {
+    return {
+      id: "coverage",
+      ...unreadable("repowise coverage status"),
+      title: msg("coverage.title"),
+      action: null,
+      command: "repowise coverage status",
+      prompt: { ...prompt, command: "repowise coverage status", state: "repowise could not read the stored coverage or search for reports here." },
+    };
+  }
   if (stored) {
     return {
       id: "coverage",
@@ -411,6 +453,12 @@ function checkRow(check: NonNullable<SetupResponse["checks"]>[number], o: Derive
 
 // -- the view ------------------------------------------------------------------
 
+/** An agent has called; with calls unreadable, one being registered is enough. */
+function agentDone(s: SetupResponse): boolean {
+  if (!s.calls_available) return (s.agents ?? []).some((a) => a.connected);
+  return Boolean(s.calls.first_call_at);
+}
+
 export function deriveSetup(s: SetupResponse, o: DeriveOptions): SetupView {
   const attention: SetupRow[] = [];
   const essentials: SetupRow[] = [];
@@ -437,12 +485,13 @@ export function deriveSetup(s: SetupResponse, o: DeriveOptions): SetupView {
 
   const done = [
     s.index.state === "up_to_date",
-    Boolean(s.calls.first_call_at),
+    agentDone(s),
     s.sync.installed === true,
   ].filter(Boolean).length;
 
   return {
     attention,
+    checksUnreadable: !s.checks_available,
     essentials,
     optional: [modelRow(s, o), coverageRow(s, o), rewriteRow(s, o)],
     doneCount: done,
@@ -458,16 +507,18 @@ function configFile(agent: SetupAgent): string | null {
   return (files.project ?? Object.values(files)[0] ?? [])[0] ?? null;
 }
 
-function connectedAgentRow(a: SetupAgent, o: DeriveOptions): SetupRow {
+function connectedAgentRow(a: SetupAgent, o: DeriveOptions & { callsReadable: boolean }): SetupRow {
   const path = a.registrations?.[0]?.config_path ?? configFile(a) ?? "";
+  let detail = a.last_call_at
+    ? msg("agents.detailLastCall", { when: o.relative(a.last_call_at), path })
+    : msg("agents.detailNoCall", { path });
+  if (!o.callsReadable) detail = msg("unreadable.detail", { command: "repowise status" });
   return {
     id: `agent-${a.id}`,
     tone: "done",
     status: msg("agents.statusConnected"),
     title: { text: a.display_name },
-    detail: a.last_call_at
-      ? msg("agents.detailLastCall", { when: o.relative(a.last_call_at), path })
-      : msg("agents.detailNoCall", { path }),
+    detail,
     action: { kind: "disconnect", agentId: a.id, agentName: a.display_name },
     command: `repowise agents remove --target=${a.id}`,
     prompt: {
@@ -505,9 +556,29 @@ function installedAgentRow(a: SetupAgent, o: DeriveOptions): SetupRow {
  * then one row naming the agents that are not installed.
  */
 export function agentListRows(s: SetupResponse, o: DeriveOptions): SetupRow[] {
+  if (!s.agents_available) {
+    return [
+      {
+        id: "agents-unreadable",
+        ...unreadable("repowise agents"),
+        title: msg("agent.title"),
+        action: null,
+        command: "repowise agents",
+        prompt: {
+          repoName: o.repoName,
+          title: "Coding agents",
+          state: "repowise could not list the coding agents on this machine.",
+          command: "repowise agents",
+          verify: "doctor",
+          fix: true,
+        },
+      },
+    ];
+  }
   const agents = s.agents ?? [];
+  const withCalls = { ...o, callsReadable: s.calls_available };
   const rows = [
-    ...agents.filter((a) => a.connected).map((a) => connectedAgentRow(a, o)),
+    ...agents.filter((a) => a.connected).map((a) => connectedAgentRow(a, withCalls)),
     ...agents.filter((a) => a.installed && !a.connected).map((a) => installedAgentRow(a, o)),
   ];
   const absent = agents.filter((a) => !a.installed && !a.connected).map((a) => a.display_name);

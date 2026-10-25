@@ -17,6 +17,9 @@ export function setupFixture(overrides: Partial<SetupResponse> = {}): SetupRespo
       parse_error_files: [],
     },
     agents_available: true,
+    calls_available: true,
+    coverage_available: true,
+    model_available: true,
     agents: [
       {
         id: "claude-code",

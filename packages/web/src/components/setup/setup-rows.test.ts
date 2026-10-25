@@ -118,6 +118,57 @@ describe("deriveSetup", () => {
   });
 });
 
+describe("sections the server could not read", () => {
+  const unreadable = (command: string) => ({ key: "unreadable.detail", values: { command } });
+  const OLD_INDEX = { indexed_at: "2026-10-20T12:00:00Z" };
+
+  it("calls_available false: no silent-agent row, and a registered agent is not failing", () => {
+    const s = setupFixture({ calls_available: false });
+    const view = deriveSetup({ ...s, index: { ...s.index, ...OLD_INDEX } }, OPTS);
+    expect(view.attention).toEqual([]);
+    const agent = view.essentials.find((r) => r.id === "agent")!;
+    expect(agent.tone).toBe("done");
+    expect(agent.detail).toEqual(unreadable("repowise status"));
+    expect(view.doneCount).toBe(3);
+  });
+
+  it("agents_available false: the agent row says it couldn't read, not that none is connected", () => {
+    const agent = deriveSetup(setupFixture({ agents_available: false, agents: [] }), OPTS).essentials[1]!;
+    expect(agent.status).toEqual({ key: "unreadable.status" });
+    expect(agent.detail).toEqual(unreadable("repowise agents"));
+    expect(agent.action).toBeNull();
+  });
+
+  it("model_available false: the model row is not 'built from index'", () => {
+    const model = deriveSetup(setupFixture({ model_available: false }), OPTS).optional[0]!;
+    expect(model.status).toEqual({ key: "unreadable.status" });
+    expect(model.detail).toEqual(unreadable("repowise status"));
+    const llm = setupFixture({ model_available: false });
+    const written = deriveSetup({ ...llm, model: { ...llm.model, docs_mode: "llm" } }, OPTS).optional[0]!;
+    expect(written.status).toEqual({ key: "model.statusLlm" });
+  });
+
+  it("coverage_available false: no 'not found' state and no report action", () => {
+    const coverage = deriveSetup(setupFixture({ coverage_available: false }), OPTS).optional[1]!;
+    expect(coverage.status).toEqual({ key: "unreadable.status" });
+    expect(coverage.detail).toEqual(unreadable("repowise coverage status"));
+    expect(coverage.action).toBeNull();
+  });
+
+  it("checks_available false: flags the empty attention list as unknown", () => {
+    expect(deriveSetup(setupFixture({ checks_available: false, checks: [] }), OPTS).checksUnreadable).toBe(true);
+    expect(deriveSetup(setupFixture(), OPTS).checksUnreadable).toBe(false);
+  });
+
+  it("settings agent rows follow the same flags", () => {
+    expect(agentListRows(setupFixture({ agents_available: false, agents: [] }), OPTS).map((r) => r.id)).toEqual([
+      "agents-unreadable",
+    ]);
+    const rows = agentListRows(setupFixture({ calls_available: false }), OPTS);
+    expect(rows[0]!.detail).toEqual(unreadable("repowise status"));
+  });
+});
+
 describe("agentListRows", () => {
   it("lists connected, then installed, then the agents not installed in one row", () => {
     const rows = agentListRows(setupFixture(), OPTS);

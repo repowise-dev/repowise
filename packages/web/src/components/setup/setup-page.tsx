@@ -10,7 +10,7 @@ import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 import { tourHref } from "@/lib/tour";
 import type { SetupResponse } from "@/lib/api/setup";
 import { HostedSetupCard } from "./hosted-setup-card";
-import { SetupRowView } from "./setup-row";
+import { SetupRowView, useSetupText } from "./setup-row";
 import { firstCallerName, type SetupRow, type SetupView } from "./setup-rows";
 import { useSetupControls } from "./setup-controls";
 import { rememberSetupDone, useSetupData, useSetupView } from "./use-setup";
@@ -64,6 +64,7 @@ function SetupLoaded({ repoId, setup, view }: { repoId: string; setup: SetupResp
   const t = useTranslations("setup");
   const format = useFormatter();
   const controls = useSetupControls(repoId);
+  const text = useSetupText();
 
   const description = view.allDone
     ? t("doneLede", {
@@ -92,8 +93,15 @@ function SetupLoaded({ repoId, setup, view }: { repoId: string; setup: SetupResp
         </Callout>
       )}
       <div>
-        {view.attention.length > 0 && (
-          <RowGroup label={t("attention")}>{rows(view.attention)}</RowGroup>
+        {(view.attention.length > 0 || view.checksUnreadable) && (
+          <RowGroup label={t("attention")}>
+            {view.checksUnreadable && (
+              <p className="border-t border-[var(--color-border-default)] py-3 text-xs text-[var(--color-text-tertiary)]">
+                {text({ key: "unreadable.detail", values: { command: "repowise doctor" } })}
+              </p>
+            )}
+            {rows(view.attention)}
+          </RowGroup>
         )}
         <RowGroup
           label={t("essentials")}

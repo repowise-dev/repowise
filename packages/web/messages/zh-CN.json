@@ -2279,7 +2279,6 @@
         "detailWaitingOther": "{agents} 已注册，首次调用后此项即完成。{other} 已安装，但尚未连接。",
         "detailInstalled": "已安装 {agent}。连接时会写入它的 MCP 配置。",
         "detailNone": "此电脑上没有找到编程智能体。安装一个后，在这里连接即可。",
-        "detailUnavailable": "无法列出此电脑上的智能体。",
         "detailNoCalls": "{agent} 已注册，但还没有访问此索引。如果它打开的是其他文件夹，请在其中打开 {repo}，或在那个文件夹中运行 repowise init。"
       },
       "sync": {
@@ -2334,6 +2333,10 @@
         "hostedTitle": "Claude.ai 和 ChatGPT",
         "hostedDetail": "通过托管版 repowise 的 MCP 地址，也能在这些网页应用中使用此仓库。",
         "hostedLink": "了解托管版"
+      },
+      "unreadable": {
+        "status": "无法检查",
+        "detail": "此处无法读取。请在终端运行 {command} 进行检查。"
       }
     }
   }

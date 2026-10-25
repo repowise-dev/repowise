@@ -113,6 +113,24 @@ describe("SetupPage", () => {
   });
 });
 
+describe("unreadable sections", () => {
+  it("says doctor couldn't run instead of showing an empty Needs attention", async () => {
+    renderPage(setupFixture({ checks_available: false, checks: [] }));
+    expect(await screen.findByText("Needs attention")).toBeTruthy();
+    expect(
+      screen.getByText("Couldn't read this here. Run repowise doctor in a terminal to check."),
+    ).toBeTruthy();
+  });
+
+  it("shows the unreadable line for coverage in place of its empty state", async () => {
+    renderPage(setupFixture({ coverage_available: false }));
+    expect(
+      await screen.findByText("Couldn't read this here. Run repowise coverage status in a terminal to check."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use this report" })).toBeNull();
+  });
+});
+
 describe("hosted card", () => {
   it("appears once the essentials are done, and × hides it on this machine", async () => {
     mocks.updateOnboardingState.mockResolvedValue({ ...doneFixture().onboarding, hosted_card_hidden: true });

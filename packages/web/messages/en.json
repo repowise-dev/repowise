@@ -2279,7 +2279,6 @@
         "detailWaitingOther": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call. {other} is installed, not connected.",
         "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
         "detailNone": "No coding agent found on this machine. Install one, then connect it here.",
-        "detailUnavailable": "Couldn't list the agents on this machine.",
         "detailNoCalls": "{agent} is registered but hasn't reached this index. If it opened a different folder, open {repo} in it or run repowise init there."
       },
       "sync": {
@@ -2334,6 +2333,10 @@
         "hostedTitle": "Claude.ai and ChatGPT",
         "hostedDetail": "Use this repo from the web apps too, through hosted repowise's MCP address.",
         "hostedLink": "See hosted"
+      },
+      "unreadable": {
+        "status": "Couldn't check",
+        "detail": "Couldn't read this here. Run {command} in a terminal to check."
       }
     }
   }
