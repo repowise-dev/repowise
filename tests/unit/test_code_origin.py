@@ -133,7 +133,9 @@ _OWN_HEADER = (
         ("src/pip/_vendor/rich/console.py", "vendored"),
         ("setuptools/_vendor/packaging/version.py", "vendored"),
         ("src/poetry/core/_vendor/lark/lark.py", "vendored"),
-        ("src/app/_vendors.py", "production"),
+        ("src/app/_vendors/client.py", "production"),
+        ("src/app/my_vendor/client.py", "production"),
+        ("src/app/_vendor.py", "production"),
         # the Dart SDK headers a Flutter FFI plugin vendors under dart-sdk/
         ("pedometer/src/dart-sdk/include/dart_tools_api.h", "vendored"),
         ("src/dart-sdk/include/internal/dart_api_dl_impl.h", "vendored"),
