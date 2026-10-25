@@ -337,7 +337,7 @@ def _signed_in_agent() -> tuple[str, str] | None:
 
 
 def _keyed_provider(repo_path: Path) -> tuple[str, str] | None:
-    """``(provider id, source line)`` for the first provider a key or Ollama is set for."""
+    """``(provider id, source line)`` for the first provider a key or local model is set for."""
     from repowise.core.providers.llm.resolve import credentialed_providers
     from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
@@ -345,8 +345,8 @@ def _keyed_provider(repo_path: Path) -> tuple[str, str] | None:
         spec = PROVIDER_SPECS.get(name)
         if spec is None or spec.agent or name == "mock":
             continue
-        if name == "ollama":
-            return name, "Uses Ollama on this machine"
+        if spec.local:
+            return name, f"Uses {spec.label.removesuffix(' (Local)')} on this machine"
         return name, f"Uses your {spec.label} key"
     return None
 
