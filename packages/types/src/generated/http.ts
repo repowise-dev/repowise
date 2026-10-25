@@ -1615,6 +1615,7 @@ export interface DecisionRecordResponse {
   accepter_kind?: string | null;
   accepter_session?: string | null;
   blockers?: string[] | null;
+  decision_text_missing?: boolean;
 }
 
 /** The resolved decision capture policy for one repository. */

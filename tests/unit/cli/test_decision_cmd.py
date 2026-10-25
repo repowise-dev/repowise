@@ -455,6 +455,10 @@ def test_stale_only_counts_stale_rows_past_the_first_page(indexed_repo: Path) ->
         for i in range(100, 104)
     ]
     _seed_wiki_db(indexed_repo, rows)
+    # Stale is a property of accepted decisions only.
+    for i in range(100, 104):
+        confirmed = CliRunner().invoke(cli, ["decision", "confirm", f"{i:032x}", str(indexed_repo)])
+        assert confirmed.exit_code == 0, confirmed.output
 
     data = _list_json(indexed_repo, "--stale-only")
     assert (data["total"], data["truncated"], len(data["decisions"])) == (4, False, 4)
@@ -632,8 +636,8 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
-        assert payload == {"id": "c0ffee01", "status": "active", "action": "accepted"}
+        (only,) = json.loads(result.output)["results"]
+        assert (only["id"], only["status"], only["action"]) == ("c0ffee01", "active", "accepted")
 
     def test_dismiss_does_not_prompt_under_json(self, indexed_repo: Path):
         _seed_wiki_db(indexed_repo, [{"id": "c0ffee02", "title": "T", "status": "proposed"}])
@@ -643,7 +647,7 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["status"] == "dismissed"
+        assert json.loads(result.output)["results"][0]["status"] == "dismissed"
 
     def test_dismiss_yes_skips_the_prompt_for_a_person_too(self, indexed_repo: Path):
         _seed_wiki_db(indexed_repo, [{"id": "c0ffee03", "title": "T", "status": "proposed"}])
@@ -675,10 +679,10 @@ class TestTheLifecycleIsDrivableByAnAgent:
             cli, ["decision", action, "deadbeef", str(indexed_repo), "--format", "json"]
         )
 
-        assert json.loads(result.output) == {
-            "error": "decision_not_found",
-            "decision_id": "deadbeef",
-        }
+        payload = json.loads(result.output)
+        assert (payload["succeeded"], payload["failed"]) == (0, 1)
+        (only,) = payload["results"]
+        assert (only["given"], only["error"]) == ("deadbeef", "decision_not_found")
 
     def test_deprecate_records_the_successor(self, indexed_repo: Path):
         _seed_wiki_db(
@@ -698,7 +702,7 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["status"] == "deprecated"
+        assert json.loads(result.output)["results"][0]["status"] == "deprecated"
 
 
 def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) -> None:
@@ -728,9 +732,9 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
     )
 
     assert result.exit_code == 1, result.output
-    payload = json.loads(result.output)
-    assert payload["error"] == "acceptance_refused"
-    assert any("scope" in blocker for blocker in payload["blockers"])
+    (refused,) = json.loads(result.output)["results"]
+    assert refused["error"] == "acceptance_refused"
+    assert any("scope" in blocker for blocker in refused["blockers"])
 
     # And it is acceptable once the missing parts are supplied.
     fixed = CliRunner().invoke(
@@ -753,7 +757,7 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
         ],
     )
     assert fixed.exit_code == 0, fixed.output
-    assert json.loads(fixed.output)["status"] == "active"
+    assert json.loads(fixed.output)["results"][0]["status"] == "active"
 
 
 # --- a manual entry is embedded like a mined one ---------------------------

@@ -175,9 +175,12 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     "superseded",
     "dismissed",
     "returned_to_review",
+    # A withdrawal like ``dismissed``, stored at the same currency; the action
+    # is what tells a retired decision from a rejected one.
+    "deprecated",
 )
 
-#: Actions that create or renew authority, against the three that withdraw it.
+#: Actions that create or renew authority, against the ones that withdraw it.
 GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
 
 #: Who signed an acceptance. ``person`` is a human, ``agent`` a coding agent

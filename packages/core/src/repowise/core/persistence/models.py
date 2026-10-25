@@ -1472,6 +1472,7 @@ class DecisionAcceptance(Base):
     #: actions land in the same transaction, and the tie decides who governs.
     seq: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     #: accepted | reaffirmed | superseded | dismissed | returned_to_review | merged
+    #: | deprecated
     action: Mapped[str] = mapped_column(String(24), nullable=False, default="accepted")
     currency: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     #: The rationale, or the explicit reason a constraint has none.
@@ -1541,6 +1542,12 @@ class DecisionCandidateMeta(Base):
     #: Set when review folded this candidate into another record.
     merged_into: Mapped[str | None] = mapped_column(String(32), nullable=True)
     dismissed_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Who set ``dismissed_reason`` (a dismissal or a split request), signed
+    #: like an acceptance row. Here, not in the acceptance log, because a row
+    #: there would make the candidate a decision. Null predates the columns.
+    dismissed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dismissed_by_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    dismissed_session: Mapped[str | None] = mapped_column(String(64), nullable=True)
     first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

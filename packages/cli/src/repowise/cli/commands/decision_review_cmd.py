@@ -10,9 +10,21 @@ from __future__ import annotations
 import click
 from rich.table import Table
 
-from repowise.cli.commands.decision_batch import _signer, _signing_options
+from repowise.cli.commands.decision_batch import (
+    _emit_batch,
+    _emit_single,
+    _preview_option,
+    _RefusedError,
+    _require_ids,
+    _resolve_decision_id,
+    _review_batch,
+    _signer,
+    _signing_options,
+    _split_ids_and_path,
+)
 from repowise.cli.helpers import console, get_db_url_for_repo, run_async
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
+from repowise.core.analysis.decisions.lifecycle import AGENT_ACCEPTANCE_REMEDY
 
 __all__ = [
     "candidates_command",
@@ -21,6 +33,7 @@ __all__ = [
     "import_command",
     "merge_command",
     "migrate_command",
+    "reaffirm_command",
     "split_command",
     "status_command",
 ]
@@ -162,6 +175,7 @@ def candidates_command(
                         "needs_split": bool(meta.needs_split) if meta else False,
                         "lane": meta.lane if meta else "",
                         "blockers": record_blockers(rec),
+                        "reviewed_by": _review_signature(meta),
                     }
                     for rec, meta in rows
                 ]
@@ -196,8 +210,20 @@ def candidates_command(
     )
 
 
+def _review_signature(meta) -> dict | None:
+    """Who dismissed the candidate or asked for a split, and why. ``None`` if unrecorded."""
+    if meta is None or not meta.dismissed_by:
+        return None
+    return {
+        "accepter": meta.dismissed_by,
+        "kind": meta.dismissed_by_kind or "unrecorded",
+        "session": meta.dismissed_session or "",
+        "reason": meta.dismissed_reason,
+    }
+
+
 # ---------------------------------------------------------------------------
-# decision merge / split
+# decision merge / reaffirm / split
 # ---------------------------------------------------------------------------
 
 
@@ -206,63 +232,124 @@ def candidates_command(
 @click.argument("into_id")
 @click.argument("path", required=False, default=None)
 @_signing_options
+@_preview_option
 @format_option()
 def merge_command(
-    decision_id: str, into_id: str, path: str | None, agent: str, agent_session: str, fmt: str
+    decision_id: str,
+    into_id: str,
+    path: str | None,
+    agent: str,
+    agent_session: str,
+    preview: bool,
+    fmt: str,
 ) -> None:
     """Fold a candidate into an existing decision instead of accepting a duplicate.
 
-    ``--agent`` signs the merge as that agent, like ``decision confirm``.
+    INTO_ID must already be an accepted decision: merging into a candidate is
+    refused. Accept the target first with ``repowise decision confirm
+    INTO_ID``, or merge the other way. ``--agent`` signs the merge as that
+    agent, like ``decision confirm``.
     """
-    from repowise.cli.commands.decision_cmd import (
-        _load_policy,
-        _resolve_decision_id,
-        _resolve_decision_repo,
-    )
+    from repowise.cli.commands.decision_cmd import _load_policy, _resolve_decision_repo
 
     signer = _signer(agent, agent_session)
     repo_path = _resolve_decision_repo(path, fmt)
     granted = _load_policy(repo_path).agent_acceptance if agent else False
 
-    async def _run():
-        from repowise.core.persistence import get_session
+    async def _merge(session, rec) -> dict:
         from repowise.core.persistence.crud.authority import merge_candidate
-        from repowise.core.persistence.models import DecisionRecord
 
-        engine, sf = await _open(repo_path)
-        try:
-            async with get_session(sf) as session:
-                src = await _resolve_decision_id(session, decision_id)
-                dst = await _resolve_decision_id(session, into_id)
-                if src is None:
-                    emit_refusal("decision_not_found", f"Decision not found: {decision_id}", fmt)
-                if dst is None:
-                    emit_refusal("decision_not_found", f"Decision not found: {into_id}", fmt)
-                rec = await session.get(DecisionRecord, src)
-                try:
-                    await merge_candidate(
-                        session,
-                        rec,
-                        into_id=dst,
-                        accepter=signer.name(repo_path),
-                        kind=signer.kind,
-                        accepter_session=signer.session,
-                        agent_acceptance=granted,
-                    )
-                except ValueError as exc:
-                    emit_refusal("merge_refused", str(exc), fmt, decision_id=src)
-                return {"id": src, "merged_into": dst}
-        finally:
-            await engine.dispose()
+        target = await _resolve_decision_id(session, into_id)
+        if target is None:
+            raise _RefusedError("decision_not_found", f"Decision not found: {into_id}")
+        await merge_candidate(
+            session,
+            rec,
+            into_id=target,
+            accepter=signer.name(repo_path),
+            kind=signer.kind,
+            accepter_session=signer.session,
+            agent_acceptance=granted,
+        )
+        return {"merged_into": target}
 
-    result = run_async(_run())
-    if fmt == "json":
-        emit_json(result)
-        return
-    console.print(
-        f"[green]Candidate {result['id'][:8]} merged into "
-        f"{result['merged_into'][:8]}[/green]  [dim](the old id still resolves)[/dim]"
+    results = run_async(
+        _review_batch(
+            repo_path, [decision_id], action="merged", verb="merge", preview=preview,
+            apply_one=_merge,
+        )
     )
+    remedy = AGENT_ACCEPTANCE_REMEDY if agent and not granted else ""
+    if preview or fmt == "json":
+        _emit_batch(results, "merged", "merge", preview, fmt, remedy)
+        return
+    _emit_single(
+        results[0], decision_id, "merge", fmt,
+        f"into {into_id} [dim](the old id still resolves)[/dim]", remedy,
+    )
+
+
+@click.command("reaffirm")
+@click.argument("decision_ids", nargs=-1)
+@click.option("--reason", default="", help="Why it still holds. Defaults to its rationale.")
+@click.option(
+    "--evidence",
+    multiple=True,
+    help="Commit, file or link the review rests on. Repeatable. Defaults to its evidence.",
+)
+@_signing_options
+@_preview_option
+@format_option()
+def reaffirm_command(
+    decision_ids: tuple[str, ...],
+    reason: str,
+    evidence: tuple[str, ...],
+    agent: str,
+    agent_session: str,
+    preview: bool,
+    fmt: str,
+) -> None:
+    """Re-accept decisions after review, so they govern as active again.
+
+    For a decision marked needs_review because its code moved: read it, then
+    reaffirm it if it still holds. Takes one id or many, and an optional
+    repository path after them. A candidate is refused (accept it with
+    ``confirm``), and so is a withdrawn decision (accept it again with
+    ``confirm``). ``--agent`` signs as that agent, like ``decision confirm``.
+    """
+    from repowise.cli.commands.decision_cmd import _load_policy, _resolve_decision_repo
+
+    ids, path = _split_ids_and_path(decision_ids)
+    _require_ids(ids, "reaffirm", fmt)
+    repo_path = _resolve_decision_repo(path, fmt)
+    signer = _signer(agent, agent_session)
+    granted = _load_policy(repo_path).agent_acceptance if agent else False
+
+    async def _reaffirm(session, rec) -> None:
+        from repowise.core.persistence.crud.authority import reaffirm_decision
+
+        await reaffirm_decision(
+            session,
+            rec,
+            accepter=signer.name(repo_path),
+            kind=signer.kind,
+            accepter_session=signer.session,
+            agent_acceptance=granted,
+            reason=reason,
+            evidence=list(evidence) or None,
+        )
+
+    results = run_async(
+        _review_batch(
+            repo_path, ids, action="reaffirmed", verb="reaffirm", preview=preview,
+            apply_one=_reaffirm,
+        )
+    )
+    remedy = AGENT_ACCEPTANCE_REMEDY if agent and not granted else ""
+    if len(ids) > 1 or preview or fmt == "json":
+        _emit_batch(results, "reaffirmed", "reaffirm", preview, fmt, remedy)
+        return
+    _emit_single(results[0], ids[0], "reaffirm", fmt, "(governing)", remedy)
 
 
 # ---------------------------------------------------------------------------
@@ -383,12 +470,16 @@ def dedupe_command(
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
 @click.option("--reason", default="", help="What the two choices are.")
+@_signing_options
 @format_option()
-def split_command(decision_id: str, path: str | None, reason: str, fmt: str) -> None:
+def split_command(
+    decision_id: str, path: str | None, reason: str, agent: str, agent_session: str, fmt: str
+) -> None:
     """Flag a candidate as bundling two choices. Never splits it for you."""
-    from repowise.cli.commands.decision_cmd import _resolve_decision_id, _resolve_decision_repo
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt)
+    signer = _signer(agent, agent_session)
 
     async def _run():
         from repowise.core.persistence import get_session
@@ -402,7 +493,14 @@ def split_command(decision_id: str, path: str | None, reason: str, fmt: str) -> 
                 if full_id is None:
                     emit_refusal("decision_not_found", f"Decision not found: {decision_id}", fmt)
                 rec = await session.get(DecisionRecord, full_id)
-                await request_split(session, rec, reason=reason)
+                await request_split(
+                    session,
+                    rec,
+                    reason=reason,
+                    accepter=signer.name(repo_path),
+                    kind=signer.kind,
+                    accepter_session=signer.session,
+                )
                 return {"id": full_id, "review_state": "needs_split"}
         finally:
             await engine.dispose()

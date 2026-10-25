@@ -162,6 +162,19 @@ describe("the acceptance contract, mirrored", () => {
     ).toEqual(["no decision text: state what was chosen"]);
   });
 
+  it("reads the server's flag over a decision filled with the title", () => {
+    expect(
+      decisionAcceptanceBlockers({
+        ...accepted,
+        decision: "Keep sessions in Redis",
+        decision_text_missing: true,
+      }),
+    ).toEqual(["no decision text: state what was chosen"]);
+    expect(
+      decisionAcceptanceBlockers({ ...accepted, decision_text_missing: false }),
+    ).toEqual([]);
+  });
+
   it("falls back to the context when there is no rationale", () => {
     expect(
       decisionAcceptanceBlockers({

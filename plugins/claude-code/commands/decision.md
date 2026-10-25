@@ -49,12 +49,21 @@ unless the repository turns it on.
   accept: it signs with `--agent <slug>` (plus `--session <id>` if known), and
   the acceptance is recorded as the agent's, not a person's. A repository that
   ran `repowise decision config agent-acceptance --off` refuses it; then leave
-  acceptance to a person.
+  acceptance to a person. `confirm` refuses a decision that is already
+  accepted; renew that one with `reaffirm`.
+- **reaffirm** — `repowise decision reaffirm <id>...` — after re-reading a
+  `needs_review` decision that still holds, renew it so it counts as current
+  from now. Takes `--reason`, `--evidence`, `--agent <slug>` and `--preview`.
+  A candidate is refused; accept it with `confirm`.
 - **merge** — `repowise decision merge <id> <into-id>` — fold a duplicate
-  candidate into an accepted decision instead of accepting it twice.
-- **deprecate / dismiss** — `repowise decision deprecate <id>` (optionally
-  `--superseded-by <id>`) or `repowise decision dismiss <id> --reason ...`.
-  An agent passes `--agent <slug>` to merge, deprecate and dismiss too.
+  candidate into an accepted decision instead of accepting it twice. The target
+  must already be accepted: confirm it first, or merge the other way.
+  `--preview` shows the result without writing.
+- **deprecate / dismiss** — `repowise decision deprecate <id> --reason ...`
+  (optionally `--superseded-by <id>`, `--preview`) or
+  `repowise decision dismiss <id> --reason ...`. An agent passes
+  `--agent <slug>` to every review command, and the signer is recorded for
+  candidates too.
 
 ## Notes
 
@@ -63,4 +72,7 @@ unless the repository turns it on.
   alignment score. This command is for *managing* the decision records themselves.
 - `add` is interactive unless you pass `--title` and `--decision`; the other
   subcommands take ids and flags and never prompt, except `dismiss` (pass `--yes`).
+- With `--format json`, confirm, reaffirm, merge, deprecate and dismiss always
+  return `{action, preview, results, succeeded, failed}`, even for one id. Read
+  `results[i].ok`, `.error`, `.message` and `.blockers`.
 - If unsure of an exact subcommand or flag, run `repowise decision --help`.

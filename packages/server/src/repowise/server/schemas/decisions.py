@@ -74,11 +74,16 @@ class DecisionRecordResponse(BaseModel):
     # Why a record just created stayed a candidate, in the acceptance
     # contract's words. Set by the create route only.
     blockers: list[str] | None = None
+    # True when the stored ``decision`` is blank and ``decision`` carries the
+    # title fallback. Acceptance reads the stored text, so a review surface
+    # needs this to predict the "no decision text" refusal.
+    decision_text_missing: bool = False
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
         affected_files = json.loads(obj.affected_files_json)  # type: ignore[attr-defined]
         affected_modules = json.loads(obj.affected_modules_json)  # type: ignore[attr-defined]
+        decision_text = (obj.decision or "").strip()  # type: ignore[attr-defined]
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
@@ -92,7 +97,8 @@ class DecisionRecordResponse(BaseModel):
             # (the model's canonical one-line summary, always present) so no read
             # surface emits a body-less decision. New records get this at write
             # time in the harvest path; this covers pre-fix stored records.
-            decision=(obj.decision or "").strip() or obj.title,  # type: ignore[attr-defined]
+            decision=decision_text or obj.title,  # type: ignore[attr-defined]
+            decision_text_missing=not decision_text,
             rationale=obj.rationale,  # type: ignore[attr-defined]
             alternatives=json.loads(obj.alternatives_json),  # type: ignore[attr-defined]
             consequences=json.loads(obj.consequences_json),  # type: ignore[attr-defined]

@@ -136,6 +136,7 @@ def describe_decision_currency(
     created_at: datetime | None,
     nodes: Sequence[str],
     evidence_commits: Sequence[str] = (),
+    accepted_at: datetime | None = None,
 ) -> str | None:
     """One sentence on whether a decision's code has moved since it was made.
 
@@ -151,7 +152,8 @@ def describe_decision_currency(
 
     A record written before its *evidence_commits* landed counts from after
     the commit that landed them, the same anchor the stored staleness score
-    uses, so that commit is not reported as a change to it.
+    uses, so that commit is not reported as a change to it. A later
+    *accepted_at* (the latest reviewed grant) moves the anchor there too.
     """
     scope = [n for n in nodes if n]
     if not scope:
@@ -159,10 +161,8 @@ def describe_decision_currency(
     if created_at is None:
         return None
 
-    since_commit, on = _anchor(root, created_at, evidence_commits)
-    count = commits_since(
-        root, since_commit=since_commit, since_date=created_at, nodes=scope
-    )
+    since_commit, since_date, on = _anchor(root, created_at, evidence_commits, accepted_at)
+    count = commits_since(root, since_commit=since_commit, since_date=since_date, nodes=scope)
     if count is None:
         return None
 
@@ -174,18 +174,26 @@ def describe_decision_currency(
 
 
 def _anchor(
-    root: Path | str, created_at: datetime, evidence_commits: Sequence[str]
-) -> tuple[str | None, str]:
-    """The commit to count from and how to date it: the landing of a record
-    written before it, else no commit and the record's own date."""
+    root: Path | str,
+    created_at: datetime,
+    evidence_commits: Sequence[str],
+    accepted_at: datetime | None = None,
+) -> tuple[str | None, datetime, str]:
+    """The commit or date to count from and how to word it: the latest of the
+    record's own date, the landing of a record written before it, and its
+    latest reviewed acceptance."""
     # Function-local: this module's import budget is the store and nothing heavier.
     from repowise.core.analysis.decisions.landing import evidence_landings, record_landing
+    from repowise.core.analysis.decisions.staleness import _as_aware_utc
 
     landings = evidence_landings(root, evidence_commits, timeout=GIT_TIMEOUT_S)
     landing = record_landing(evidence_commits, landings, created_at)
+    start = _as_aware_utc(landing.at if landing else created_at)
+    if accepted_at is not None and _as_aware_utc(accepted_at) > start:
+        return None, accepted_at, f"{accepted_at:%Y-%m-%d}, when it was last accepted"
     if landing is None:
-        return None, created_at.strftime("%Y-%m-%d")
-    return landing.sha, f"{landing.at:%Y-%m-%d} (landed in {landing.sha[:9]})"
+        return None, created_at, created_at.strftime("%Y-%m-%d")
+    return landing.sha, created_at, f"{landing.at:%Y-%m-%d} (landed in {landing.sha[:9]})"
 
 
 def recorded_on(birth_at: float) -> str:

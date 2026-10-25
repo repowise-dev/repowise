@@ -12,6 +12,7 @@ from sqlalchemy import select
 from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
 from repowise.core.persistence.crud.authority import decision_currencies
+from repowise.core.persistence.crud.decision_staleness import latest_grant_times
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionRecord
 from repowise.core.precedent.currency import describe_decision_currency
@@ -103,7 +104,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
         governing, candidates, retired = _split_by_authority(
             matched, lineage_by_id, currencies, collector
         )
-        await _stamp_still_true(governing, matched, ctx.path)
+        await _stamp_still_true(governing, matched, ctx.path, session, repository.id)
 
         # Every lane: the origin story is evidence, not instruction.
         origin_story = _origin_for(
@@ -234,7 +235,7 @@ def _split_by_authority(
 
 
 async def _stamp_still_true(
-    governing: list[dict], matched: list, repo_path: str | Path
+    governing: list[dict], matched: list, repo_path: str | Path, session: Any, repository_id: str
 ) -> None:
     """Ask git whether the top governing record still holds, and say so on it."""
     # Only the top record: the git query is affordable once per call, and the
@@ -242,12 +243,15 @@ async def _stamp_still_true(
     if not governing:
         return
     top = next(d for d in matched if d.id == governing[0]["id"])
+    # Counted from the latest review, as the stored staleness score is.
+    grants = await latest_grant_times(session, repository_id, [top.id])
     sentence = await asyncio.to_thread(
         describe_decision_currency,
         repo_path,
         created_at=top.created_at,
         nodes=json.loads(top.affected_files_json or "[]"),
         evidence_commits=json.loads(top.evidence_commits_json or "[]"),
+        accepted_at=grants.get(top.id),
     )
     if sentence:
         governing[0]["still_true"] = sentence

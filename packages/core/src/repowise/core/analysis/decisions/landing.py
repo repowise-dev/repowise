@@ -69,8 +69,9 @@ def evidence_landings(
     try:
         own = _commits(repo_path, wanted, timeout)
         line = _first_parent(repo_path, min(c.at for c in own.values()), timeout) if own else {}
-    except (OSError, subprocess.SubprocessError):
-        logger.debug("decision_landing_unreadable", exc_info=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # One line: a git timeout here is routine on a large history, not a crash.
+        logger.debug("decision_landing_unreadable", error=f"{type(exc).__name__}: {exc}")
         return {}
     names = _names(line)
     out: dict[str, Landing] = {}

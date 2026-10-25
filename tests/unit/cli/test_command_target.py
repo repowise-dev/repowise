@@ -313,3 +313,14 @@ def test_narrow_is_silent_for_an_explicit_single_repo(fake_workspace):
     picked, said = _said(resolve_command_target(path=str(fake_workspace / "backend")))
 
     assert picked == fake_workspace / "backend" and said == ""
+
+
+def test_decision_json_skips_the_workspace_line(fake_workspace, chdir, capsys):
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    chdir(fake_workspace)
+    picked = _resolve_decision_repo(None, "json", needs_store=False)
+
+    assert picked == fake_workspace / "backend"
+    out, err = capsys.readouterr()
+    assert "reads one repo" not in out + err

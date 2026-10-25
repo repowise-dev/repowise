@@ -954,8 +954,9 @@ repowise decision add --title T --decision D  # no prompts, lands proposed
 repowise decision add --agent SLUG --title T --decision D --rationale R --affects PATH  # an agent's own record
 repowise decision candidates            # awaiting review; these govern nothing
 repowise decision confirm ID...         # accept: this makes them govern
+repowise decision reaffirm ID...        # renew an accepted decision after re-reading it
 repowise decision dismiss ID...         # tombstone (sticky; never re-proposed)
-repowise decision merge ID INTO_ID      # fold into an existing decision (--agent signs)
+repowise decision merge ID INTO_ID      # fold into an accepted decision (--agent signs)
 repowise decision dedupe                # fold duplicate candidates (dry run unless --apply)
 repowise decision split ID              # flag as bundling two choices; never splits it
 repowise decision deprecate ID          # optionally naming its successor
@@ -1006,19 +1007,24 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--lane` | Extraction lane: `pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`. Not the Decisions page review lanes. | all lanes |
 | `--limit` | Max listed. | `30` |
 
-**`confirm`, `dismiss`, `deprecate`, `merge`, `split`**
+**`confirm`, `reaffirm`, `dismiss`, `deprecate`, `merge`, `split`**
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--reason TEXT` | `confirm`: rationale, or why a constraint needs none; corrects the record. `dismiss`: why. `split`: what the two choices are. | |
+| `--reason TEXT` | `confirm`: rationale, or why a constraint needs none; corrects the record. `reaffirm`: why it still holds. `dismiss`, `deprecate`: why. `split`: what the two choices are. | |
 | `--scope PATH` | `confirm`: file or module governed. Repeatable; replaces the proposed scope. | proposed scope |
-| `--evidence REF` | `confirm`: commit, file or link. Repeatable. | |
+| `--evidence REF` | `confirm`, `reaffirm`: commit, file or link. Repeatable. | |
 | `--as NAME` | `confirm`: accepter other than git identity. | git identity |
 | `--superseded-by ID` | `deprecate`: lineage edge to the replacement; deprecated id keeps resolving. | |
-| `--agent SLUG` | Not `split`: sign as an agent (e.g. `claude_code`). Granting is refused only under `agent-acceptance --off`. | |
-| `--session ID` | Not `split`: signing agent session. | |
+| `--agent SLUG` | Sign as an agent (e.g. `claude_code`). Granting is refused only under `agent-acceptance --off`. | |
+| `--session ID` | Signing agent session. | |
 | `--yes` / `-y` | `dismiss`: skip the prompt (as does `--format json`). | off |
-| `--preview` | `confirm`, `dismiss`: report each id's outcome, write nothing. | off |
+| `--preview` | Not `split`: report each id's outcome, write nothing. | off |
+
+- `confirm` accepts candidates; on an already accepted decision it refuses and points at `reaffirm`. `reaffirm` refuses a candidate.
+- `merge` needs an accepted target: confirm the target first, or merge the other way.
+- A dismissed or deprecated candidate records its signer on its review row.
+- With `--format json`, every verb but `split` returns `{action, preview, results, succeeded, failed}`, even for one id.
 
 **`dedupe`, `migrate`, `export`, `import`**
 
@@ -1037,7 +1043,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all`. | `all` |
 | `--source` | `adr`, `agent`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all`. | `all` |
 | `--proposed` | `--status proposed`. | off |
-| `--stale-only` | Only stale. | off |
+| `--stale-only` | Only accepted decisions at `needs_review`, the set `decision health` counts as stale. | off |
 | `--limit` | Max rows listed. | `100` |
 | `--all` | Every matching row; overrides `--limit`. | off |
 

@@ -15,7 +15,6 @@ from rich.table import Table
 from repowise.cli.commands import _tool_adapters as _ta
 from repowise.cli.commands.decision_batch import (
     _emit_batch,
-    _emit_lifecycle,
     _emit_single,
     _open_store,
     _require_ids,
@@ -51,7 +50,9 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table", *, needs_store:
     """Resolve the repo path for decision subcommands.
 
     Honors workspace auto-detection: in workspace mode without an explicit
-    path, targets the primary repo and prints a transparency notice.
+    path, targets the primary repo and, in human output, prints a one-line
+    notice saying so. JSON callers get none: they are agents calling run
+    after run, for whom a repeated stderr line is only noise.
 
     With ``needs_store`` (the default) the returned path is the checkout whose
     index the command should read and write; see :func:`_checkout_with_index`.
@@ -59,7 +60,10 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table", *, needs_store:
     """
 
     target = resolve_command_target(path=path)
-    repo_path = target.narrow(notice_console(fmt), command="decision", repo_option=False)
+    if fmt == "json":
+        repo_path = target.single_repo_path()
+    else:
+        repo_path = target.narrow(notice_console(fmt), command="decision", repo_option=False)
     return _checkout_with_index(repo_path, fmt) if needs_store else repo_path
 
 
@@ -123,6 +127,17 @@ def _load_policy(repo_path: Path):
 @click.group("decision")
 def decision_group() -> None:
     """Manage architectural decision records."""
+    # Unconfigured, structlog prints every level to stdout, so a routine core
+    # debug line (a git timeout while dating a record) landed in `decision show`.
+    # Scoped to this group: doing it at the CLI root would make light commands
+    # like `expand` import structlog. Warnings still print; --format json
+    # silences further through format_option.
+    import logging
+
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
+        cache_logger_on_first_use=False,
+    )
 
 
 def _register_config_commands() -> None:
@@ -148,6 +163,7 @@ def _register_config_commands() -> None:
         import_command,
         merge_command,
         migrate_command,
+        reaffirm_command,
         split_command,
         status_command,
     )
@@ -155,6 +171,7 @@ def _register_config_commands() -> None:
     for command in (
         migrate_command,
         candidates_command,
+        reaffirm_command,
         merge_command,
         dedupe_command,
         split_command,
@@ -530,7 +547,12 @@ async def _embed_decision(
     default="all",
 )
 @click.option("--proposed", is_flag=True, default=False, help="Show only proposed decisions.")
-@click.option("--stale-only", is_flag=True, default=False, help="Show only stale decisions.")
+@click.option(
+    "--stale-only",
+    is_flag=True,
+    default=False,
+    help="Show only accepted decisions whose code has moved enough to need review.",
+)
 @click.option(
     "--limit",
     type=click.IntRange(min=1),
@@ -557,12 +579,13 @@ def decision_list(
             repo_path,
             status=status if status != "all" else ("proposed" if proposed else None),
             source=source if source != "all" else None,
+            stale_only=stale_only,
         )
     )
 
     # Narrowed before the cut so --stale-only and the total cover every row,
     # not just the first page.
-    decisions = _narrow(decisions, proposed=proposed, stale_only=stale_only)
+    decisions = _narrow(decisions, proposed=proposed)
     total = len(decisions)
     shown = decisions if show_all else decisions[:limit]
 
@@ -590,12 +613,10 @@ def decision_list(
         console.print(f"[dim]{total} decisions.[/dim]")
 
 
-def _narrow(decisions: list, *, proposed: bool, stale_only: bool) -> list:
-    """Apply ``--proposed`` and ``--stale-only`` to what the query returned."""
+def _narrow(decisions: list, *, proposed: bool) -> list:
+    """Apply ``--proposed`` to what the query returned."""
     if proposed:
         decisions = [d for d in decisions if d.status == "proposed"]
-    if stale_only:
-        decisions = [d for d in decisions if d.staleness_score >= 0.5]
     return decisions
 
 
@@ -613,12 +634,19 @@ def _listed_json(d) -> dict:
     }
 
 
-async def _query_decisions(repo_path: Path, *, status: str | None, source: str | None) -> list:
-    from repowise.core.persistence import get_session, list_decisions, upsert_repository
+async def _query_decisions(
+    repo_path: Path, *, status: str | None, source: str | None, stale_only: bool = False
+) -> list:
+    from repowise.core.persistence import (
+        get_session,
+        get_stale_decisions,
+        list_decisions,
+        upsert_repository,
+    )
 
     async with _open_store(repo_path) as sf, get_session(sf) as session:
         repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-        return await list_decisions(
+        rows = await list_decisions(
             session,
             repo.id,
             status=status,
@@ -628,6 +656,8 @@ async def _query_decisions(repo_path: Path, *, status: str | None, source: str |
             # page. Fine at a few thousand records; a COUNT query is the upgrade.
             limit=None,
         )
+        # Stale means what `decision health` counts, so the two agree.
+        return await get_stale_decisions(session, repo.id, rows) if stale_only else rows
 
 
 _STATUS_COLORS = {
@@ -679,7 +709,7 @@ def _print_decision_table(decisions: list) -> None:
 def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     """Show full details of a decision record."""
     repo_path = _resolve_decision_repo(path, fmt)
-    rec, signed = run_async(_load_decision(repo_path, decision_id))
+    rec, signed, accepted_at = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
         notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
         if fmt == "json":
@@ -695,6 +725,7 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         created_at=rec.created_at,
         nodes=json.loads(rec.affected_files_json or "[]"),
         evidence_commits=json.loads(rec.evidence_commits_json or "[]"),
+        accepted_at=accepted_at,
     )
     if fmt == "json":
         emit_json({"query": decision_id, "decision": _decision_json(rec, signed, currency)})
@@ -704,15 +735,43 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
 
 
 async def _load_decision(repo_path: Path, decision_id: str):
-    """The record *decision_id* names and its signature, or ``(None, None)``."""
+    """The record *decision_id* names, its signature and its last grant time.
+
+    ``(None, None, None)`` when nothing resolves.
+    """
     from repowise.core.persistence import get_decision, get_session
     from repowise.core.persistence.crud.authority import latest_acceptance
+    from repowise.core.persistence.crud.decision_staleness import latest_grant_times
+    from repowise.core.persistence.models import DecisionCandidateMeta
 
     async with _open_store(repo_path) as sf, get_session(sf) as session:
         full_id = await _resolve_decision_id(session, decision_id)
         rec = await get_decision(session, full_id) if full_id else None
         acceptance = await latest_acceptance(session, rec.id) if rec else None
-        return rec, _describe_signature(acceptance)
+        signed = _describe_signature(acceptance)
+        if rec is not None and signed is None:
+            # A candidate's dismissal is signed on its review row, not the log.
+            signed = _describe_review(rec, await session.get(DecisionCandidateMeta, rec.id))
+        if rec is None:
+            return None, None, None
+        grants = await latest_grant_times(session, rec.repository_id, [rec.id])
+        return rec, signed, grants.get(rec.id)
+
+
+def _describe_review(rec, meta) -> dict[str, str] | None:
+    """Who dismissed or deprecated a candidate, shaped like :func:`_describe_signature`."""
+    if meta is None or not meta.dismissed_by or rec.status not in ("dismissed", "deprecated"):
+        return None
+    kind = meta.dismissed_by_kind or "unrecorded"
+    session_id = meta.dismissed_session or ""
+    return {
+        "label": f"{meta.dismissed_by} ({kind})" + (f", session {session_id}" if session_id else ""),
+        "verb": rec.status.capitalize(),
+        "accepter": meta.dismissed_by,
+        "kind": kind,
+        "session": session_id,
+        "action": rec.status,
+    }
 
 
 def _decision_json(rec, signed, currency) -> dict:
@@ -860,8 +919,10 @@ def decision_confirm(
     granted = _load_policy(repo_path).agent_acceptance if agent else False
 
     async def _accept(session, rec) -> None:
+        from repowise.cli.commands.decision_batch import _refuse_if_governing
         from repowise.core.persistence.crud.authority import accept_decision
 
+        await _refuse_if_governing(session, rec)
         await accept_decision(
             session,
             rec,
@@ -885,7 +946,7 @@ def decision_confirm(
     remedy = _ACCEPT_REMEDY
     if agent and not granted:
         remedy = f"{AGENT_ACCEPTANCE_REMEDY} {remedy}"
-    if len(ids) > 1 or preview:
+    if len(ids) > 1 or preview or fmt == "json":
         _emit_batch(results, "accepted", "accept", preview, fmt, remedy)
         return
     _emit_single(results[0], ids[0], "accept", fmt, "(governing)", remedy)
@@ -939,7 +1000,7 @@ def decision_dismiss(
             repo_path, ids, action="dismissed", verb="dismiss", preview=preview, apply_one=_dismiss
         )
     )
-    if len(ids) > 1 or preview:
+    if len(ids) > 1 or preview or fmt == "json":
         _emit_batch(results, "dismissed", "dismiss", preview, fmt)
         return
     _emit_single(
@@ -973,14 +1034,20 @@ def _dismissal_confirmed(ids: list[str], *, yes: bool, preview: bool, fmt: str) 
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
 @click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
+@click.option("--reason", default="", help="Why it was retired.")
 @_signing_options
+@click.option(
+    "--preview", is_flag=True, default=False, help="Report what it would do, and write nothing."
+)
 @format_option()
 def decision_deprecate(
     decision_id: str,
     path: str | None,
     superseded_by: str | None,
+    reason: str,
     agent: str,
     agent_session: str,
+    preview: bool,
     fmt: str,
 ) -> None:
     """Retire a decision, optionally naming the one that replaces it.
@@ -989,39 +1056,40 @@ def decision_deprecate(
     retired id resolving to its successor. Similarity never does either: an edge
     exists because somebody named the successor.
     """
+    from repowise.cli.commands.decision_batch import _RefusedError
+
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
 
-    async def _update():
-        from repowise.core.persistence import get_session
-        from repowise.core.persistence.models import DecisionRecord
+    async def _deprecate(session, rec) -> None:
+        successor = await _resolve_decision_id(session, superseded_by) if superseded_by else None
+        if superseded_by and successor is None:
+            raise _RefusedError("decision_not_found", f"Unknown successor: {superseded_by}")
+        await _retire(session, rec, successor, signer=signer, repo_path=repo_path, reason=reason)
 
-        async with _open_store(repo_path) as sf, get_session(sf) as session:
-            full_id = await _resolve_decision_id(session, decision_id)
-            rec = await session.get(DecisionRecord, full_id) if full_id else None
-            if rec is None:
-                return None
-            successor = (
-                await _resolve_decision_id(session, superseded_by) if superseded_by else None
-            )
-            if superseded_by and successor is None:
-                emit_refusal(
-                    "decision_not_found",
-                    f"Unknown successor: {superseded_by}",
-                    fmt,
-                    decision_id=superseded_by,
-                )
-            await _retire(session, rec, successor, signer=signer, repo_path=repo_path, fmt=fmt)
-            return rec
-
-    _emit_lifecycle(run_async(_update()), decision_id, "deprecated", fmt)
+    results = run_async(
+        _review_batch(
+            repo_path,
+            [decision_id],
+            action="deprecated",
+            verb="deprecate",
+            preview=preview,
+            apply_one=_deprecate,
+        )
+    )
+    if preview or fmt == "json":
+        _emit_batch(results, "deprecated", "deprecate", preview, fmt)
+        return
+    _emit_single(results[0], decision_id, "deprecate", fmt, "", "")
 
 
-async def _retire(session, rec, successor, *, signer: _Signer, repo_path: Path, fmt: str) -> None:
+async def _retire(
+    session, rec, successor, *, signer: _Signer, repo_path: Path, reason: str
+) -> None:
     """Supersede an accepted record, or mark any other one deprecated."""
-    from repowise.core.persistence import update_decision_status
+    from repowise.cli.commands.decision_batch import _RefusedError
     from repowise.core.persistence.crud.authority import (
-        AcceptanceRefusedError,
+        deprecate_decision,
         is_accepted,
         supersede_decision,
     )
@@ -1035,20 +1103,23 @@ async def _retire(session, rec, successor, *, signer: _Signer, repo_path: Path, 
                 accepter=signer.name(repo_path),
                 kind=signer.kind,
                 accepter_session=signer.session,
+                note=reason,
             )
-        except (AcceptanceRefusedError, ValueError) as exc:
-            emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)
+        except ValueError as exc:
+            raise _RefusedError("supersede_refused", str(exc)) from exc
         return
-    # A candidate has no authority to retire: a plain status change. An
-    # accepted record reaching here still logs a withdrawal, with its kind.
-    await update_decision_status(
+    # An accepted record logs the withdrawal as ``deprecated``; a candidate,
+    # which has no authority to withdraw, only moves status.
+    await deprecate_decision(
         session,
-        rec.id,
-        "deprecated",
-        superseded_by=successor,
+        rec,
+        reason=reason,
         accepter=signer.name(repo_path),
         kind=signer.kind,
+        accepter_session=signer.session,
     )
+    if successor:
+        rec.superseded_by = successor
 
 
 # ---------------------------------------------------------------------------

@@ -506,7 +506,9 @@ async def update_decision_status(
             await record_acceptance(
                 session,
                 rec,
-                action="superseded" if status == "superseded" else "dismissed",
+                # ``deprecated`` and ``dismissed`` share a currency; the action
+                # keeps which one happened.
+                action=status,
                 currency="superseded" if status == "superseded" else "dismissed",
                 accepter=accepter or "unrecorded",
                 kind=kind,

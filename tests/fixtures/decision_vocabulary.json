@@ -52,7 +52,8 @@
     "merged",
     "superseded",
     "dismissed",
-    "returned_to_review"
+    "returned_to_review",
+    "deprecated"
   ],
   "accepter_kinds": [
     "person",

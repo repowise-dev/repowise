@@ -468,3 +468,90 @@ async def test_seq_retry_keeps_earlier_acceptances(async_session, monkeypatch):
     assert tripped, "the collision never fired, so the retry was not exercised"
     assert await latest_acceptance(async_session, first.id) is not None
     assert await latest_acceptance(async_session, second.id) is not None
+
+
+# ---------------------------------------------------------------------------
+# Review verbs an agent drives
+# ---------------------------------------------------------------------------
+
+
+async def test_a_candidate_cannot_be_reaffirmed(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Never accepted")
+
+    with pytest.raises(AcceptanceRefusedError, match="confirm"):
+        await reaffirm_decision(async_session, rec, accepter="tester")
+    assert not await is_accepted(async_session, rec.id)
+
+
+async def test_a_withdrawn_decision_is_not_reaffirmed_back(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Withdrawn")
+    await accept_decision(async_session, rec, accepter="tester")
+    await dismiss_candidate(async_session, rec, reason="gone", accepter="tester")
+
+    with pytest.raises(AcceptanceRefusedError, match="confirm"):
+        await reaffirm_decision(async_session, rec, accepter="tester")
+
+
+async def test_reaffirm_records_the_reason_and_evidence_given(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Re-read")
+    await accept_decision(async_session, rec, accepter="tester")
+
+    row = await reaffirm_decision(
+        async_session, rec, accepter="tester", reason="still holds", evidence=["abc1234"]
+    )
+
+    assert (row.action, row.reason, json.loads(row.evidence_json)) == (
+        "reaffirmed",
+        "still holds",
+        ["abc1234"],
+    )
+
+
+async def test_dismissing_a_candidate_signs_its_review_row_not_the_log(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Wrong idea")
+
+    meta = await dismiss_candidate(
+        async_session, rec, reason="not ours", accepter="claude_code", kind="agent",
+        accepter_session="s-1",
+    )
+
+    assert (meta.dismissed_by, meta.dismissed_by_kind, meta.dismissed_session) == (
+        "claude_code",
+        "agent",
+        "s-1",
+    )
+    # An acceptance row would make it a decision.
+    assert not await is_accepted(async_session, rec.id)
+
+
+async def test_a_deprecation_is_logged_as_one(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Retired")
+    await accept_decision(async_session, rec, accepter="tester")
+
+    await update_decision_status(async_session, rec.id, "deprecated", accepter="tester")
+
+    latest = await latest_acceptance(async_session, rec.id)
+    assert (latest.action, latest.currency) == ("deprecated", "dismissed")
+    assert rec.status == "deprecated"
+
+
+async def test_a_superseded_candidate_is_not_open_for_review(async_session):
+    """A later commit can retire a candidate nobody reviewed; the queue and
+    the lane counts must both drop it."""
+    from repowise.core.persistence.crud.authority import count_decisions_by_lane
+
+    repo = await insert_repo(async_session)
+    live, retired = await _seed(async_session, repo.id, "Still open", "Reverted")
+    retired.status = "superseded"
+    await async_session.flush()
+
+    open_ids = {r.id for r, _ in await list_candidates(async_session, repo.id)}
+    lanes = await count_decisions_by_lane(async_session, repo.id)
+
+    assert open_ids == {live.id}
+    assert (lanes["candidates"], lanes["total"]) == (1, 1)

@@ -302,6 +302,12 @@ export interface DecisionRecord {
   accepter_session?: string | null;
   /** Why a record just created stayed a candidate. Create endpoint only. */
   blockers?: string[] | null;
+  /**
+   * True when the stored decision text is blank and `decision` carries the
+   * title fallback. Acceptance reads the stored text, so this is what predicts
+   * the "no decision text" refusal. Optional for back-compat.
+   */
+  decision_text_missing?: boolean;
   /** Number of evidence rows backing the record. List endpoint only. */
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
@@ -510,11 +516,14 @@ export const DECISION_PRESETS = [
  * what forced the choice, `decision` is the choice itself, and letting the what
  * stand in for the why is what marked empty records acceptable. Every record
  * needs its `decision`, typed or mined: one that never says what was chosen
- * binds nobody to anything.
+ * binds nobody to anything. A server response fills a blank `decision` with the
+ * title for readers, so `decision_text_missing` is what says the stored text is
+ * blank.
  */
 export function decisionAcceptanceBlockers(record: {
   // Required so a caller cannot leave it out and have every record refused.
   decision: string;
+  decision_text_missing?: boolean;
   rationale?: string;
   context?: string;
   affected_files?: string[];
@@ -529,7 +538,7 @@ export function decisionAcceptanceBlockers(record: {
     values.some((v) => (v ?? "").trim().length > 0);
 
   const selfAuthored = record.source === "cli";
-  if (!nonBlank([record.decision])) {
+  if (record.decision_text_missing || !nonBlank([record.decision])) {
     blockers.push("no decision text: state what was chosen");
   }
   if (!nonBlank([record.rationale, record.context])) {

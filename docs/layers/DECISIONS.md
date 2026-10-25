@@ -63,9 +63,13 @@ $ repowise decision confirm 4b6ddc58 --scope src/ingestion
 Decision 4b6ddc58 accepted (governing)
 ```
 
-The acceptance log is append-only. Accepting, re-accepting, withdrawing,
-superseding and dismissing each add a row, so the history of who granted and
-withdrew authority survives.
+The acceptance log is append-only. Accepting, reaffirming, merging,
+withdrawing, superseding, deprecating and dismissing each add a row, so the
+history of who granted and withdrew authority survives. Only accepted
+decisions have rows: dismissing or deprecating a candidate records its signer
+(`dismissed_by`, `dismissed_by_kind`, `dismissed_session`) on the candidate's
+review row instead. A `deprecated` row withdraws authority like `dismissed`
+and is counted as deprecated by `decision health`.
 
 ## Where decisions come from
 
@@ -99,7 +103,7 @@ currency, which says whether it still describes the code:
 | Currency | Meaning | Still governs? |
 |----------|---------|----------------|
 | `active` | Accepted, and still describes the code | Yes |
-| `needs_review` | Accepted, but at least half of the files it names have changed since it was recorded | Yes |
+| `needs_review` | Accepted, but at least half of the files it names have changed since it was recorded or last accepted | Yes |
 | `uncheckable` | Accepted, but names no file or module, so it cannot be checked against the code | Agents editing a file are not given it |
 | `stale` | Accepted, but every file it names is gone at HEAD (renames followed) | No |
 | `superseded` | Replaced by a later decision the person named | No |
@@ -111,13 +115,16 @@ on every read. `superseded` and `dismissed` are set by a person.
 - Staleness score: each record carries `staleness_score` between 0 and 1, the
   fraction of its governed files committed to since the decision was recorded.
   A record written before its evidence commits landed counts from the commit
-  (or squash) that landed them. A file the repository does not track counts
-  as changed. At 0.5 or above a record is stale for `decision list --stale-only`,
-  the health summary and the `needs_review` currency. A record that names no
+  (or squash) that landed them. A later accept, reaffirm or merge by a person
+  or agent moves the start to that moment, so reviewing a decision clears
+  `needs_review` at once. A file the repository does not track counts as
+  changed. At 0.5 or above an accepted decision is `needs_review`, and that is
+  what `decision list --stale-only` and the health summary count as stale. A record that names no
   file scores 0.0 and is counted separately as unscoped. `repowise decision show` and `get_why` on a
   path also ask git directly for one record and print what changed.
 - Sticky review: a dismissed candidate is kept as a tombstone, so re-indexing
-  never proposes it again. A later extraction never walks an accepted decision
+  never proposes it again. Retired candidates (dismissed, deprecated,
+  superseded) stay out of the candidate queue and the lane totals. A later extraction never walks an accepted decision
   back to `proposed`.
 - Supersession: `repowise decision deprecate ID --superseded-by ID2` records
   the successor, and `repowise update` marks a decision that a new commit
