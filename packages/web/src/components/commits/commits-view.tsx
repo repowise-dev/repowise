@@ -139,7 +139,7 @@ export async function CommitsView({
         title={t("scoreBehaviourTitle")}
         description={t("scoreBehaviourDescription")}
         action={
-          <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={Link}>
+          <SectionLink href={`${base}/code-health?tab=map`} LinkComponent={Link}>
             {t("changeRisk")}
           </SectionLink>
         }
