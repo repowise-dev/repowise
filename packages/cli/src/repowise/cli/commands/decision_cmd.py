@@ -443,7 +443,6 @@ async def _persist_decision(
 ) -> tuple[str, str]:
     """Write the record, accept it when the prompts earned that; return id and status."""
     from repowise.core.persistence import get_session, upsert_decision, upsert_repository
-    from repowise.core.persistence.crud.authority import upsert_candidate_meta
 
     async with _open_store(repo_path) as sf:
         async with get_session(sf) as session:
@@ -471,14 +470,7 @@ async def _persist_decision(
                 source="agent" if signer.agent else "cli",
                 # No confidence: upsert_decision scores a manual entry.
             )
-            # A restated record keeps its first source, so only on an agent's own.
-            if signer.agent and rec.source == "agent":
-                # Who proposed it, for the reviewer: the record has no column for it.
-                await upsert_candidate_meta(
-                    session,
-                    rec,
-                    grounding={"agent": signer.agent, "session": signer.session},
-                )
+            await _note_agent_signer(session, rec, signer)
             # An architectural decision needs files to govern, so without them
             # it stays a candidate for ``confirm --scope``. An agreement names no
             # file by definition; its scope is the repository.
@@ -492,6 +484,19 @@ async def _persist_decision(
         # transaction or vectors an uncommitted record.
         await _embed_decision(repo_path, *embed)
     return embed[0], stored_status
+
+
+async def _note_agent_signer(session, rec, signer: _Signer) -> None:
+    """Keep who proposed an agent's record in its review row; the record has no column for it.
+
+    A restated record keeps its first source, so only an agent's own is noted.
+    """
+    from repowise.core.persistence.crud.authority import upsert_candidate_meta
+
+    if signer.agent and rec.source == "agent":
+        await upsert_candidate_meta(
+            session, rec, grounding={"agent": signer.agent, "session": signer.session}
+        )
 
 
 async def _accept_answered_prompts(session, rec, repo_path: Path) -> None:
