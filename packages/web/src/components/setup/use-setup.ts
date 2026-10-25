@@ -23,7 +23,7 @@ import { deriveSetup, type SetupHook, type SetupView } from "./setup-rows";
 export const setupKey = (repoId: string) => ["setup", repoId] as const;
 export const ONBOARDING_KEY = "setup-onboarding";
 
-/** First load runs doctor (about 20s), so nothing here refetches on its own. */
+/** First load runs the quick doctor (a few seconds), so nothing here refetches on its own. */
 const QUIET = {
   revalidateOnFocus: false,
   revalidateOnReconnect: false,

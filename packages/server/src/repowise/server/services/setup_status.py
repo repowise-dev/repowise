@@ -3,8 +3,14 @@
 Agent, hook and doctor state come from the CLI's own JSON (see
 :mod:`.setup_cli`); the rest is read here from the index, the savings ledger,
 the coverage discovery and the provider settings the other routes already use.
-The payload is cached for a few seconds per repo, because doctor starts the MCP
-server once and a page load must not do that on every request.
+
+The index and stored-coverage reads hit the database on every request. The
+rest (the CLI runs and the file reads, a few seconds) is a cached *probe* per
+repo: a fresh one is served as is, an older one is served at once while a new
+one builds in the background, and only a repo with none waits for the build.
+The probe runs ``doctor --quick``; the full doctor (it starts the MCP server and
+reconciles the stores, tens of seconds) runs in the background after it, and
+its extra rows join the checks once it lands. Every write drops both.
 """
 
 from __future__ import annotations
@@ -14,6 +20,8 @@ import json
 import logging
 import sqlite3
 import time
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,60 +35,144 @@ from repowise.server.services import setup_cli
 
 logger = logging.getLogger(__name__)
 
-#: How long one payload answers repeat requests for the same repo.
-SETUP_CACHE_SECONDS = 5.0
+#: A probe this young is served without a rebuild; an older one is served
+#: while a rebuild runs.
+SETUP_CACHE_SECONDS = 60.0
+#: How often the full doctor runs again for the same repo.
+FULL_CHECK_SECONDS = 300.0
 
 #: Bounds on the lists the payload carries.
 _PARSE_ERROR_FILES_LIMIT = 50
 _DISCOVERED_REPORTS_LIMIT = 10
 
-_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_locks: dict[str, asyncio.Lock] = {}
+
+@dataclass(frozen=True)
+class _Probe:
+    """The CLI answers and file reads behind one payload."""
+
+    built_at: float
+    generated_at: str
+    doctor: dict | None
+    agents: dict | None
+    local: tuple[Any, Any, tuple[bool, dict[str, Any]]]
+
+
+_probes: dict[str, _Probe] = {}
+#: Rows from the last full doctor, by repo: ``(monotonic time, rows)``.
+_full_checks: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+#: Builds in flight, by ``(kind, repo_id)``, so concurrent loads share one.
+_inflight: dict[tuple[str, str], asyncio.Task] = {}
+#: Strong references until each task ends; the loop keeps only weak ones.
+_running: set[asyncio.Task] = set()
 #: Bumped by every write, so a build that started before it is not cached.
 _generation = 0
 
 
 def invalidate(repo_id: str | None = None) -> None:
-    """Drop the cached payload for *repo_id*, or every one when ``None``."""
+    """Drop the cached answers for *repo_id*, or every one when ``None``.
+
+    A build already running started before the write: it finishes uncached,
+    and the next request starts a new one.
+    """
     global _generation
     _generation += 1
-    if repo_id is None:
-        _cache.clear()
-    else:
-        _cache.pop(repo_id, None)
+    for cache in (_probes, _full_checks):
+        if repo_id is None:
+            cache.clear()
+        else:
+            cache.pop(repo_id, None)
+    for key in [k for k in _inflight if repo_id is None or k[1] == repo_id]:
+        del _inflight[key]
 
 
 async def setup_payload(session: AsyncSession, repo: Repository) -> dict[str, Any]:
-    """The cached payload for *repo*, built once per window even under concurrent loads."""
-    lock = _locks.setdefault(repo.id, asyncio.Lock())
-    async with lock:
-        hit = _cache.get(repo.id)
-        if hit is not None and time.monotonic() - hit[0] < SETUP_CACHE_SECONDS:
-            return hit[1]
-        started = _generation
-        payload = await _build(session, repo)
-        if started == _generation:
-            _cache[repo.id] = (time.monotonic(), payload)
-        return payload
-
-
-async def _build(session: AsyncSession, repo: Repository) -> dict[str, Any]:
-    repo_path = Path(repo.local_path)
+    """The payload for *repo*; only a repo with no probe yet waits for one."""
+    probe = await _current_probe(repo.id, Path(repo.local_path))
     index = await _index_section(session, repo)
-    ingest_ok, coverage_ingested_at = await _coverage_ingested_at(session, repo.id)
+    coverage_stored = await _coverage_ingested_at(session, repo.id)
+    full = _full_checks.get(repo.id)
+    return _assemble(repo.id, probe, index, coverage_stored, full[1] if full else None)
+
+
+def _start(kind: str, repo_id: str, make: Callable[[], Coroutine[Any, Any, Any]]) -> asyncio.Task:
+    """The build of *kind* for *repo_id* in flight, started if there is none."""
+    key = (kind, repo_id)
+    task = _inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(make())
+        _inflight[key] = task
+        _running.add(task)
+        task.add_done_callback(lambda t: _finished(key, t))
+    return task
+
+
+def _finished(key: tuple[str, str], task: asyncio.Task) -> None:
+    _running.discard(task)
+    if _inflight.get(key) is task:
+        del _inflight[key]
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("setup: %s build for %s failed", *key, exc_info=task.exception())
+
+
+async def _current_probe(repo_id: str, repo_path: Path) -> _Probe:
+    def build() -> Coroutine[Any, Any, _Probe]:
+        return _build_probe(repo_id, repo_path)
+
+    hit = _probes.get(repo_id)
+    if hit is None:
+        # Shielded: a request that gives up must not cancel the build that
+        # the other loads are waiting on.
+        return await asyncio.shield(_start("probe", repo_id, build))
+    if time.monotonic() - hit.built_at >= SETUP_CACHE_SECONDS:
+        _start("probe", repo_id, build)
+    return hit
+
+
+async def _build_probe(repo_id: str, repo_path: Path) -> _Probe:
+    started = _generation
     doctor, agents, local = await asyncio.gather(
-        asyncio.to_thread(setup_cli.doctor_json, repo_path),
+        asyncio.to_thread(setup_cli.doctor_json, repo_path, quick=True),
         asyncio.to_thread(setup_cli.agents_json, repo_path),
-        asyncio.to_thread(_local_sections, repo.id, repo_path),
+        asyncio.to_thread(_local_sections, repo_id, repo_path),
     )
-    checks = _checks(doctor)
-    agent_calls, coverage_files, (model_ok, model) = local
-    agent_rows, calls = _agents(agents, agent_calls or {})
+    probe = _Probe(time.monotonic(), datetime.now(UTC).isoformat(), doctor, agents, local)
+    if started == _generation:
+        _probes[repo_id] = probe
+        # After the probe, not beside it: on a cold load the two would
+        # compete for the same CPU and the page would wait longer.
+        full = _full_checks.get(repo_id)
+        if full is None or time.monotonic() - full[0] >= FULL_CHECK_SECONDS:
+            _start("full", repo_id, lambda: _build_full_checks(repo_id, repo_path))
+    return probe
+
+
+async def _build_full_checks(repo_id: str, repo_path: Path) -> None:
+    started = _generation
+    doctor = await asyncio.to_thread(setup_cli.doctor_json, repo_path)
+    if doctor is not None and started == _generation:
+        _full_checks[repo_id] = (time.monotonic(), _checks(doctor))
+
+
+def _assemble(
+    repo_id: str,
+    probe: _Probe,
+    index: dict[str, Any],
+    coverage_stored: tuple[bool, str | None],
+    full_checks: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    checks = _checks(probe.doctor)
+    if full_checks:
+        # Only the rows the quick run skips; the quick rows are as new or newer.
+        quick_ids = {c["id"] for c in checks}
+        checks += [c for c in full_checks if c["id"] not in quick_ids]
+    agent_calls, coverage_files, (model_ok, model) = probe.local
+    agent_rows, calls = _agents(probe.agents, agent_calls or {})
+    ingest_ok, coverage_ingested_at = coverage_stored
     return {
-        "repo_id": repo.id,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "repo_id": repo_id,
+        "generated_at": probe.generated_at,
         "index": index,
-        "agents_available": agents is not None,
+        "agents_available": probe.agents is not None,
         "agents": agent_rows,
         "calls_available": agent_calls is not None,
         "calls": calls,
@@ -93,7 +185,7 @@ async def _build(session: AsyncSession, repo: Repository) -> dict[str, Any]:
         },
         "model_available": model_ok,
         "model": model,
-        "checks_available": doctor is not None,
+        "checks_available": probe.doctor is not None or full_checks is not None,
         "checks": checks,
     }
 

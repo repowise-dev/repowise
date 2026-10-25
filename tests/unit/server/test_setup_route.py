@@ -117,6 +117,15 @@ async def local(app, home: Path) -> AsyncClient:
     async with AsyncClient(transport=transport, base_url="http://localhost:7337") as c:
         yield c
     setup_status.invalidate()
+    await _settle()
+
+
+async def _settle() -> None:
+    """Let the background builds a request started finish."""
+    import asyncio
+
+    while setup_status._running:
+        await asyncio.gather(*setup_status._running, return_exceptions=True)
 
 
 @pytest.fixture
@@ -195,7 +204,91 @@ async def test_setup_payload_is_cached_between_page_loads(
 ) -> None:
     await local.get(f"/api/repos/{repo['id']}/setup")
     await local.get(f"/api/repos/{repo['id']}/setup")
-    assert sum(1 for c in cli.calls if c[0] == "doctor") == 1
+    await _settle()
+    doctors = [c for c in cli.calls if c[0] == "doctor"]
+    # One quick run for the page, one full run behind it.
+    assert [("--quick" in c) for c in doctors] == [True, False]
+
+
+@pytest.mark.anyio
+async def test_a_stale_payload_is_served_at_once_and_rebuilt_behind_it(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    await _settle()
+    monkeypatch.setattr(setup_status, "SETUP_CACHE_SECONDS", 0.0)
+    calls_before = len(cli.calls)
+
+    stale = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    assert stale["generated_at"] == first["generated_at"]  # served without waiting
+    await _settle()
+    fresh = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    assert fresh["generated_at"] != first["generated_at"]
+    assert any("--quick" in c for c in cli.calls[calls_before:])
+
+
+@pytest.mark.anyio
+async def test_a_write_makes_the_next_load_wait_for_a_new_probe(
+    local: AsyncClient, repo: dict, cli: FakeCli
+) -> None:
+    first = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    await _settle()
+    setup_status.invalidate(repo["id"])
+    after = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    assert after["generated_at"] != first["generated_at"]
+
+
+@pytest.mark.anyio
+async def test_the_full_doctor_rows_join_the_quick_ones(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp = {"name": "MCP server responds", "ok": False, "detail": "server exited with code 1",
+           "id": "mcp-responds", "level": "fail", "fix": None}
+    stale_hook = {**_DOCTOR["checks"][0], "detail": "not installed", "level": "warn"}
+    original = cli.__call__
+
+    def answer(args, *, cwd, timeout):
+        if args[0] == "doctor" and "--quick" not in args:
+            full = {"ok": False, "checks": [stale_hook, *_DOCTOR["checks"][1:], mcp]}
+            return setup_cli.CliRun(1, json.dumps(full), "")
+        return original(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(setup_cli, "run_cli", answer)
+    await local.get(f"/api/repos/{repo['id']}/setup")
+    await _settle()
+    body = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    ids = [c["id"] for c in body["checks"]]
+    assert ids == ["post-commit-hook", "distill-rewrite-hook", "database", "mcp-responds"]
+    # A row both runs report comes from the quick one.
+    assert body["sync"]["installed"] is True
+
+
+@pytest.mark.anyio
+async def test_concurrent_cold_loads_share_one_build_that_survives_a_dropped_request(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import threading
+
+    gate = threading.Event()
+    original = cli.__call__
+
+    def slow(args, *, cwd, timeout):
+        if args[0] == "doctor":
+            gate.wait(10)
+        return original(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(setup_cli, "run_cli", slow)
+    url = f"/api/repos/{repo['id']}/setup"
+    dropped = asyncio.create_task(local.get(url))
+    waiting = [asyncio.create_task(local.get(url)) for _ in range(2)]
+    await asyncio.sleep(0.2)
+    dropped.cancel()  # the proxy gave up on this one
+    await asyncio.sleep(0.05)
+    gate.set()
+    bodies = [(await t).json() for t in waiting]
+    assert bodies[0]["generated_at"] == bodies[1]["generated_at"]
+    assert sum(1 for c in cli.calls if "--quick" in c) == 1
 
 
 @pytest.mark.anyio
@@ -536,16 +629,17 @@ async def test_onboarding_write_never_replaces_a_file_it_cannot_read(
 async def test_a_write_during_a_build_keeps_the_old_payload_out_of_the_cache(
     local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    real_build = setup_status._build
+    def doctor_then_write(args, **kw):
+        run = cli(args, **kw)
+        if args[0] == "doctor" and "--quick" in args:
+            setup_status.invalidate(repo["id"])  # a write lands while this build runs
+        return run
 
-    async def build_then_write(session, row):
-        payload = await real_build(session, row)
-        setup_status.invalidate(row.id)  # a write lands while this build runs
-        return payload
-
-    monkeypatch.setattr(setup_status, "_build", build_then_write)
+    monkeypatch.setattr(setup_cli, "run_cli", doctor_then_write)
     await local.get(f"/api/repos/{repo['id']}/setup")
-    assert repo["id"] not in setup_status._cache
+    await _settle()
+    assert repo["id"] not in setup_status._probes
+    assert repo["id"] not in setup_status._full_checks
 
 
 @pytest.mark.anyio
@@ -566,7 +660,7 @@ async def test_onboarding_rejects_a_malformed_repo_id(local: AsyncClient) -> Non
 @pytest.mark.parametrize(
     ("command", "flags"),
     [
-        (["doctor"], ["--no-workspace", "--format"]),
+        (["doctor"], ["--no-workspace", "--format", "--quick"]),
         (["agents", "add"], ["--target", "--format", "--yes"]),
         (["agents", "remove"], ["--target", "--format"]),
         (["hook", "install"], ["--no-workspace"]),

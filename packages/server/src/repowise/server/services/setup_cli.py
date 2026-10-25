@@ -78,19 +78,16 @@ def run_cli(args: list[str], *, cwd: Path, timeout: float) -> CliRun:
 # -- reads -------------------------------------------------------------------
 
 
-def doctor_json(repo_path: Path) -> dict | None:
-    """``repowise doctor --format json`` for this repo; it exits 1 on a failed check."""
-    run = run_cli(
-        [
-            "doctor",
-            str(repo_path),
-            "--no-workspace",
-            "--format",
-            "json",
-        ],
-        cwd=repo_path,
-        timeout=_READ_TIMEOUT_SECONDS,
-    )
+def doctor_json(repo_path: Path, *, quick: bool = False) -> dict | None:
+    """``repowise doctor --format json`` for this repo; it exits 1 on a failed check.
+
+    *quick* adds ``--quick``, which skips starting the MCP server and
+    reconciling the stores: seconds instead of tens of seconds.
+    """
+    args = ["doctor", str(repo_path), "--no-workspace", "--format", "json"]
+    if quick:
+        args.append("--quick")
+    run = run_cli(args, cwd=repo_path, timeout=_READ_TIMEOUT_SECONDS)
     payload = run.json()
     return payload if isinstance(payload, dict) else None
 

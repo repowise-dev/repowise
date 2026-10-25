@@ -284,7 +284,7 @@ async def get_setup(
     repo: Repository = Depends(resolve_local_repo),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """Everything the Setup page shows for one repo, cached for a few seconds."""
+    """Everything the Setup page shows for one repo; see ``setup_status`` for the caching."""
     payload = await setup_status.setup_payload(session, repo)
     return {
         **payload,
