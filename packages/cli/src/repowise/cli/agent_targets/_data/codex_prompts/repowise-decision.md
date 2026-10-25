@@ -44,12 +44,16 @@ unless the repository turns it on.
   awaiting review, each with its id and the `blockers` that stop it being accepted.
 - **confirm** — `repowise decision confirm <id>...` — accept candidates so they
   govern. `--decision`, `--reason`, `--scope <path>` and
-  `--evidence <commit|file|link>` fill the blockers. An agent signs with `--agent <slug>`, which works only where
-  the repository has run `repowise decision config agent-acceptance --on`;
-  otherwise leave acceptance to a person.
+  `--evidence <commit|file|link>` fill the blockers. An agent may review and
+  accept: it signs with `--agent <slug>` (plus `--session <id>` if known), and
+  the acceptance is recorded as the agent's, not a person's. A repository that
+  ran `repowise decision config agent-acceptance --off` refuses it; then leave
+  acceptance to a person.
+- **merge** — `repowise decision merge <id> <into-id>` — fold a duplicate
+  candidate into an accepted decision instead of accepting it twice.
 - **deprecate / dismiss** — `repowise decision deprecate <id>` (optionally
   `--superseded-by <id>`) or `repowise decision dismiss <id> --reason ...`.
-  An agent passes `--agent <slug>` here too.
+  An agent passes `--agent <slug>` to merge, deprecate and dismiss too.
 
 ## Notes
 

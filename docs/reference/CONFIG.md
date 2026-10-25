@@ -367,7 +367,7 @@ decisions:
 | `discovery.max_sessions` | `12` | Per discovery pass, 1-24. |
 | `discovery.max_input_tokens` | `30000` | Per discovery pass, 2000-60000. |
 | `harnesses` | `[claude_code]` | Whose transcripts the session lane reads; add `codex`. |
-| `agent_acceptance` | `false` | Whether an agent may grant a decision authority. |
+| `agent_acceptance` | `true` | Whether an agent may grant a decision authority, signed as itself. |
 | `capture_prompt` | `false` | Ask the agent to record what it just committed. |
 
 ### Sources
@@ -409,11 +409,12 @@ is the one switch proving no extraction reaches a model.
 
 ### `agent_acceptance` and `capture_prompt`
 
-Neither is about capture; both ship off and no preset enables them.
+Neither is about capture, and no preset changes them.
 
-- `agent_acceptance` off: an agent can propose and withdraw authority, never
-  grant it. On: it may accept, recorded as an agent's with the signing
-  session, on every surface, never as yours.
+- `agent_acceptance` on (default): an agent may accept, recorded as an
+  agent's with the signing session, on every surface, never as yours. Off: an
+  agent can propose and withdraw authority, never grant it. `false` is written
+  to the config so it survives a reload.
 - `capture_prompt` on: a successful `git commit` with two or more decision
   signals prompts the agent, once per session, to run `repowise decision add`;
   never for a commit a record already cites, and only as a proposal. An agent

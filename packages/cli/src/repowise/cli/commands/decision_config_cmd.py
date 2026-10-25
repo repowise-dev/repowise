@@ -112,11 +112,14 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     console.print(f"  [dim]Harnesses read: {', '.join(policy.harnesses)}.[/dim]")
     if policy.agent_acceptance:
         console.print(
-            "  [yellow]Agent acceptance is ON: an agent may grant a decision "
-            "authority. Its acceptances are signed as an agent's, not yours.[/yellow]"
+            "  [dim]Agent acceptance: on. An agent may accept a decision, signed as "
+            "the agent's, never yours.[/dim]"
         )
     else:
-        console.print("  [dim]Agent acceptance: off. Agents withdraw authority, never grant it.[/dim]")
+        console.print(
+            "  [yellow]Agent acceptance: off. Agents withdraw authority; only a "
+            "person grants it.[/yellow]"
+        )
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             claude_code_capture_hook_installed,
@@ -346,9 +349,9 @@ def config_agent_acceptance(
 ) -> None:
     """Allow, or forbid, an agent granting a decision authority.
 
-    Off by default, and off is complete: an agent still withdraws authority,
-    proposes candidates and reads what governs. On, its acceptances are
-    recorded as an agent's, with the session that signed, on every surface.
+    On by default: an agent's acceptances are recorded as an agent's, with the
+    session that signed, on every surface. Off is complete: an agent still
+    withdraws authority, proposes candidates and reads what governs.
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 

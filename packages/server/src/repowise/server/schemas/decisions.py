@@ -349,9 +349,9 @@ class DecisionSettings(BaseModel):
     #: default | off | local_only | balanced | full | custom
     preset: str = "default"
     #: Whether an agent may grant a decision authority, as against withdrawing
-    #: it. False is the shipped posture, so a settings form that omits this
-    #: field is reporting the default rather than hiding a grant.
-    agent_acceptance: bool = False
+    #: it. True is the shipped posture; every agent grant is signed as the
+    #: agent's, so a person-only gate is the opt-out.
+    agent_acceptance: bool = True
     discovery: DecisionDiscoveryBudget = DecisionDiscoveryBudget()
     sources: list[DecisionSourceState] = []
     provider_available: bool = True

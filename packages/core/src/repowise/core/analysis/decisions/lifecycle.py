@@ -195,11 +195,11 @@ UNRECORDED_ACCEPTER_KIND = ""
 #: a longer id rather than hand Postgres a truncation error.
 ACCEPTER_SESSION_MAX = 64
 
-#: What fixes a :func:`machine_grant_blocker` refusal. Addressed to a person,
-#: because the party reading it is the agent that was just refused.
+#: What fixes a :func:`machine_grant_blocker` refusal. The agent reading it
+#: cannot fix it alone: the repository switched agent grants off on purpose.
 AGENT_ACCEPTANCE_REMEDY = (
-    "Someone who owns this repository can allow it with "
-    "`repowise decision config agent-acceptance --on`, or accept it themselves."
+    "Agent acceptance is off for this repository. Ask a person to accept it, or to "
+    "turn agent acceptance back on with `repowise decision config agent-acceptance --on`."
 )
 
 
@@ -215,15 +215,16 @@ def accepter_kind_blocker(kind: str) -> str | None:
 def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | None:
     """Why an agent may not take *action*, or ``None``.
 
-    A machine revokes but does not grant: withdrawing narrows what a record
-    claims and re-accepting undoes it, while granting mints a constraint
-    nobody agreed to. Stated rather than left true by omission.
+    Agents grant by default, signed as themselves. *granted* is ``False`` only
+    where the repository turned agent acceptance off: then an agent still
+    withdraws authority, since withdrawing narrows what a record claims and
+    re-accepting undoes it, but granting waits for a person.
     """
     if kind != "agent" or action not in GRANTING_ACTIONS or granted:
         return None
     return (
-        f"an agent may not record a {action!r} acceptance: machines withdraw "
-        "authority but do not grant it"
+        f"an agent may not record a {action!r} acceptance here: agent acceptance "
+        "is off for this repository"
     )
 
 

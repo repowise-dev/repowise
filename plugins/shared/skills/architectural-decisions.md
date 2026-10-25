@@ -69,6 +69,10 @@ When you settle an architectural choice yourself (you weighed options and picked
 
 `repowise decision add --agent <your slug> --title "..." --decision "..." --rationale "<why, and what you rejected>" --affects <path>`
 
-Add `--evidence-commit <sha>` once it is committed. The record lands as a candidate: it never governs until accepted, so recording is safe. Accept it yourself with `repowise decision confirm <id> --agent <your slug>` only if the repository allows agent acceptance; otherwise leave it for a person and mention it.
+Add `--evidence-commit <sha>` once it is committed. The record lands as a candidate: it never governs until accepted, so recording is safe.
+
+## Reviewing candidates
+
+You may review and accept candidates yourself. `repowise decision candidates --format json` lists each with its `blockers`. Accept one with `repowise decision confirm <id> --agent <your slug>`, adding `--reason`, `--scope <path>`, `--evidence <commit|file|link>` or `--decision` for whatever a blocker names. Dismiss a wrong one with `repowise decision dismiss <id> --agent <your slug> --reason ... --yes`, fold a duplicate with `repowise decision merge <id> <into-id> --agent <your slug>`, and retire one with `repowise decision deprecate <id> --agent <your slug>`. Your acceptances are recorded as yours, never a person's. If the repository turned agent acceptance off, the confirm is refused; leave it for a person and mention it.
 
 If the user states a decision, offer to record it the same way without `--agent`.

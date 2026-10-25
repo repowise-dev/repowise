@@ -955,7 +955,7 @@ repowise decision add --agent SLUG --title T --decision D --rationale R --affect
 repowise decision candidates            # awaiting review; these govern nothing
 repowise decision confirm ID...         # accept: this makes them govern
 repowise decision dismiss ID...         # tombstone (sticky; never re-proposed)
-repowise decision merge ID INTO_ID      # fold into an existing decision
+repowise decision merge ID INTO_ID      # fold into an existing decision (--agent signs)
 repowise decision dedupe                # fold duplicate candidates (dry run unless --apply)
 repowise decision split ID              # flag as bundling two choices; never splits it
 repowise decision deprecate ID          # optionally naming its successor
@@ -967,7 +967,7 @@ repowise decision migrate               # classify pre-split rows (dry run unles
 repowise decision config show                   # resolved capture policy
 repowise decision config preset NAME            # default | off | local_only | balanced | full
 repowise decision config discovery              # broad discovery call budget
-repowise decision config agent-acceptance --on|--off  # may an agent grant authority? (off)
+repowise decision config agent-acceptance --on|--off  # may an agent grant authority? (on)
 repowise decision config capture-prompt --on|--off    # agent records what it committed (off);
                                                       # --on installs the shell hook
 repowise decision source list                   # source registry and state
@@ -1006,7 +1006,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--lane` | Extraction lane: `pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`. Not the Decisions page review lanes. | all lanes |
 | `--limit` | Max listed. | `30` |
 
-**`confirm`, `dismiss`, `deprecate`, `split`**
+**`confirm`, `dismiss`, `deprecate`, `merge`, `split`**
 
 | Flag | What it does | Default |
 |------|--------------|---------|
@@ -1015,7 +1015,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--evidence REF` | `confirm`: commit, file or link. Repeatable. | |
 | `--as NAME` | `confirm`: accepter other than git identity. | git identity |
 | `--superseded-by ID` | `deprecate`: lineage edge to the replacement; deprecated id keeps resolving. | |
-| `--agent SLUG` | Not `split`: sign as an agent (e.g. `claude_code`). | |
+| `--agent SLUG` | Not `split`: sign as an agent (e.g. `claude_code`). Granting is refused only under `agent-acceptance --off`. | |
 | `--session ID` | Not `split`: signing agent session. | |
 | `--yes` / `-y` | `dismiss`: skip the prompt (as does `--format json`). | off |
 | `--preview` | `confirm`, `dismiss`: report each id's outcome, write nothing. | off |

@@ -344,10 +344,10 @@ class DecisionPolicy:
     sources: dict[str, SourceSetting]
     discovery: DiscoveryBudget = _DEFAULT_DISCOVERY
     harnesses: tuple[str, ...] = DEFAULT_HARNESSES
-    #: Whether an agent may grant authority, not merely withdraw it. The only
-    #: setting here that lets something other than a person create a
-    #: constraint, so it ships off and no preset turns it on.
-    agent_acceptance: bool = False
+    #: Whether an agent may grant authority, not merely withdraw it. On by
+    #: default: agents do most of the reviewing, and every grant is signed
+    #: as the agent's, never a person's. ``--off`` restores a person-only gate.
+    agent_acceptance: bool = True
     #: Whether the commit hook asks the agent to record a decision. An agent
     #: cannot decline a hook, so this ships off and no preset turns it on.
     capture_prompt: bool = False
@@ -497,8 +497,8 @@ class DecisionPolicy:
             block["discovery"] = self.discovery.to_dict()
         if self.harnesses != DEFAULT_HARNESSES:
             block["harnesses"] = list(self.harnesses)
-        if self.agent_acceptance:
-            block["agent_acceptance"] = True
+        if not self.agent_acceptance:
+            block["agent_acceptance"] = False
         if self.capture_prompt:
             block["capture_prompt"] = True
         return block
@@ -782,13 +782,11 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     discovery = _resolve_discovery(raw.get("discovery"), warnings)
     harnesses = _resolve_harnesses(raw.get("harnesses"), warnings)
 
-    # A non-boolean warns rather than grants: the failure this must not have
-    # is reading as on.
     agent_acceptance = _as_bool(raw.get("agent_acceptance"))
     if agent_acceptance is None:
         if "agent_acceptance" in raw:
             warnings.append("`decisions.agent_acceptance` is not a boolean; ignoring it.")
-        agent_acceptance = False
+        agent_acceptance = True
 
     capture_prompt = _as_bool(raw.get("capture_prompt"))
     if capture_prompt is None:

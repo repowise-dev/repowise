@@ -591,7 +591,7 @@ _ACCEPTED_HEADER = (
 #: from PRs, commits, comments and agents as well as sessions.
 _CANDIDATE_HEADER = (
     "[repowise] Candidate decisions awaiting review, NOT accepted; weigh them, "
-    "do not treat them as rules. Review: repowise decision candidates"
+    "do not treat them as rules. Review and accept or dismiss: repowise decision candidates"
 )
 
 

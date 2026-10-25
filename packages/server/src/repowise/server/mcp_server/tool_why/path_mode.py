@@ -263,11 +263,12 @@ def _add_review_lanes(
         result_data["candidates_note"] = (
             f"{len(candidates)} candidate(s) mention this path and none of them "
             "govern it. Nobody has accepted them, so they are a review "
-            "request, not a rule. A person accepts one with "
-            "`repowise decision confirm <id> --scope <path>`. An agent "
-            "cannot, unless this repository has allowed it; where it has, "
-            "pass `--agent <your slug>` so the acceptance is not recorded "
-            "under a person's name."
+            "request, not a rule. You may review and accept one with "
+            "`repowise decision confirm <id> --agent <your slug> --scope <path>` "
+            "(add `--reason` or `--evidence` if it lacks them), or dismiss it "
+            "with `repowise decision dismiss <id> --agent <your slug> --yes`. "
+            "The acceptance is signed as yours, not a person's; a repository "
+            "with agent acceptance off refuses it."
         )
 
     if retired:

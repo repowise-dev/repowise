@@ -21,6 +21,9 @@ from repowise.cli.commands.decision_batch import (
     _require_ids,
     _resolve_decision_id,
     _review_batch,
+    _Signer,
+    _signer,
+    _signing_options,
     _split_ids_and_path,
 )
 from repowise.cli.helpers import (
@@ -31,9 +34,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 from repowise.cli.worktree import detect_worktree_base
-from repowise.core.agents.identity import is_agent_slug
 from repowise.core.analysis.decisions.lifecycle import (
-    ACCEPTER_SESSION_MAX,
     AGENT_ACCEPTANCE_REMEDY,
     AGREEMENT_KIND,
     ARCHITECTURAL_KIND,
@@ -110,60 +111,6 @@ def _describe_signature(acceptance) -> dict[str, str] | None:
         "session": acceptance.accepter_session,
         "action": acceptance.action,
     }
-
-
-@dataclass(frozen=True)
-class _Signer:
-    """Who signs an acceptance-log row: an agent by slug, or the repository's person."""
-
-    agent: str
-    kind: str
-    session: str
-
-    def name(self, repo_path: Path, override: str = "") -> str:
-        from repowise.core.analysis.decisions.accepter import resolve_accepter
-
-        return self.agent or resolve_accepter(repo_path, override=override)
-
-
-def _signer(agent: str, agent_session: str, *, accepter: str = "") -> _Signer:
-    """Validate the signing flags and return who they sign as.
-
-    Shared by every verb that appends to the acceptance log, so an agent can
-    say it is one wherever it can act.
-    """
-    _check_agent_flag(agent, accepter)
-    _check_session_flag(agent_session, agent)
-    return _Signer(agent=agent, kind="agent" if agent else "person", session=agent_session)
-
-
-def _check_agent_flag(agent: str, accepter: str) -> None:
-    if agent and accepter:
-        raise click.ClickException("Pass --agent or --as, not both: they name different signers.")
-    if agent and not is_agent_slug(agent):
-        raise click.ClickException(
-            f"{agent!r} is not a well-formed agent slug (lowercase, digits and underscores)."
-        )
-
-
-def _check_session_flag(agent_session: str, agent: str) -> None:
-    if agent_session and not agent:
-        raise click.ClickException("--session names the agent signing; pass --agent too.")
-    if len(agent_session) > ACCEPTER_SESSION_MAX:
-        raise click.ClickException(f"--session is at most {ACCEPTER_SESSION_MAX} characters.")
-
-
-#: The two flags an agent signs with, on every verb that writes an authority
-#: row: withdrawing needs no switch, so it is the likeliest to go unsigned.
-def _signing_options(command):
-    command = click.option(
-        "--session", "agent_session", default="", help="The agent session signing."
-    )(command)
-    return click.option(
-        "--agent",
-        default="",
-        help="Sign as this agent (e.g. claude_code) rather than as a person.",
-    )(command)
 
 
 def _load_policy(repo_path: Path):
@@ -893,8 +840,9 @@ def decision_confirm(
 
     ``--agent`` is how an agent signs as itself. Without it the acceptance is
     recorded as a person's, because without it the identity resolves to the
-    repository's git name and a person's is what it would be. It is refused
-    unless ``decision config agent-acceptance`` is on for this repository.
+    repository's git name and a person's is what it would be. An agent's
+    acceptance is refused only where ``decision config agent-acceptance --off``
+    is set for this repository.
     """
     ids, path = _split_ids_and_path(decision_ids)
     _require_ids(ids, "accept", fmt)

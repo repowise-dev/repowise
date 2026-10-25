@@ -6,8 +6,8 @@ you make in coding-agent sessions. Each record is tied to the files it governs,
 backed by a verbatim quote, checked for staleness against the code, and handed
 to your agent when it is about to edit those files.
 
-It does not decide anything for you. A machine can propose a candidate; only a
-person (or a committed ADR) makes it a decision that governs.
+It does not decide anything for you. Extraction only proposes candidates; a
+person, a signed agent, or a committed ADR makes one a decision that governs.
 
 Cost: capture runs inside `repowise init` and `repowise update`. ADR files,
 inline markers, manual entry and conventions need no LLM key. Commit, pull
@@ -183,13 +183,16 @@ What gets stored depends on how you add it:
 
 Each acceptance records who signed it and what kind of signer: `person`,
 `agent`, or `import` (the committed manifest or an ADR). The person defaults to
-`git config user.name`; `--as` records a different identity. An agent may
-withdraw authority (`dismiss`, `deprecate`) by signing as itself with
-`--agent SLUG`. Granting authority is refused for an agent unless the
-repository allows it with `repowise decision config agent-acceptance --on` (off
-by default); the agent then signs with, for example,
-`decision confirm ID --agent claude_code --session "$SESSION_ID"`. The dashboard badges any authority record a person did not sign, and
+`git config user.name`; `--as` records a different identity. An agent reviews
+and accepts by signing as itself, for example
+`decision confirm ID --agent claude_code --session "$SESSION_ID"`; `merge`,
+`dismiss` and `deprecate` take `--agent` too. The acceptance contract is the
+same for every signer, and an agent's own record also needs evidence. The
+dashboard badges any authority record a person did not sign, the generated
+`CLAUDE.md` marks it `[accepted by SLUG, not a person]`, and
 `decision show --format json` returns the signature.
+`repowise decision config agent-acceptance --off` keeps granting to people:
+agents still propose and withdraw.
 
 ### The tracked manifest
 
