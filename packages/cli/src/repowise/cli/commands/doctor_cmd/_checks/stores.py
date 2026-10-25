@@ -380,6 +380,8 @@ def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
 def store_checks(ctx: CheckContext) -> list[DoctorCheck]:
     """Checks 8-10, in order. Fills ``ctx.drift`` and the drift highlight."""
     checks: list[DoctorCheck] = []
+    if ctx.quick:
+        return checks
     if ctx.db_ok and ctx.page_count > 0:
         checks.extend(_consistency_rows(ctx))
     if ctx.db_ok:

@@ -2056,6 +2056,7 @@ repowise doctor --workspace --repair
 | `--repair` | Rebuild FTS, re-embed missing pages, sync workspace drift, drop dead workspace entries. | off |
 | `--workspace` / `-w`, `--no-workspace` | Workspace table (dir exists, git repo, state.json ↔ config drift) then per-repo checks / single repo. | auto-detect |
 | `--format` | `table` or `json`. | `table` |
+| `--quick` | Skip the slow checks: starting the MCP server (`mcp-responds`) and reconciling the vector and full-text stores (`vector-store-sync`, `fts-index-sync`, `coordinator-drift`). Not with `--repair`. | off |
 
 - **`--format json`** prints `{"ok": bool, "checks": [...]}`. Each check carries a stable `id` (kebab case, such as
   `post-commit-hook` or `mcp-responds`), a display `name`, a `level` (`ok`, `warn` or `fail`), `ok` (false only for

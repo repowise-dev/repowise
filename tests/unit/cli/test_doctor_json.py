@@ -78,7 +78,7 @@ class TestDoctorTableExitCode:
         _git_init(tmp_path)
         monkeypatch.setattr(
             "repowise.cli.commands.doctor_cmd.command._run_repo_checks",
-            lambda repo_path, repair, fmt="table": (True, []),
+            lambda repo_path, repair, fmt="table", quick=False: (True, []),
         )
 
         result = CliRunner().invoke(doctor_command, [str(tmp_path), "--no-workspace"])

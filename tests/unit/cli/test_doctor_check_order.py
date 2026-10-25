@@ -187,6 +187,32 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
     assert env["printed"] == []
 
 
+def test_quick_skips_the_store_reconciliation_and_the_mcp_launch(
+    env, monkeypatch, tmp_path
+) -> None:
+    from repowise.cli.commands.doctor_cmd._checks import stores
+
+    def fail(*_a, **_k):
+        raise AssertionError("--quick must not open the stores")
+
+    monkeypatch.setattr(stores, "_reconcile", fail)
+    monkeypatch.setattr(stores, "_coordinator_health", fail)
+    repo = asyncio.run(_build(tmp_path))
+    _ok, checks = repo_checks._run_repo_checks(repo, repair=False, fmt="json", quick=True)
+    slow = {"SQL ↔ Vector Store", "SQL ↔ FTS Index", "Coordinator drift", "<mcp>"}
+    assert [c.name for c in checks] == [n for n in HEALTHY_ORDER if n not in slow]
+
+
+def test_quick_and_repair_is_a_usage_error(tmp_path) -> None:
+    from click.testing import CliRunner
+
+    from repowise.cli.commands.doctor_cmd import doctor_command
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path), "--quick", "--repair"])
+    assert result.exit_code == 2
+    assert "--quick" in result.output
+
+
 def test_optional_rows_slot_in_after_the_hook(env, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         core, "_attribution_notes_check", lambda _p: _check("<notes>", True, "", check_id="notes")

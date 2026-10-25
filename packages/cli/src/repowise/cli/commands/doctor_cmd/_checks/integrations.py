@@ -17,7 +17,8 @@ def integration_checks(ctx: CheckContext) -> list[DoctorCheck]:
     checks.append(registration_check)
     # 12b. Does that registration actually start? Separate row: a wired-up
     # server that dies on every invocation has a different fix than none.
-    checks.append(_mcp_responds_check())
+    if not ctx.quick:
+        checks.append(_mcp_responds_check())
     # 13. Per-agent health, reported by each agent's own descriptor.
     agent_checks, ctx.agents_need_refresh = _agent_target_checks(ctx.repo_path)
     checks.extend(agent_checks)
