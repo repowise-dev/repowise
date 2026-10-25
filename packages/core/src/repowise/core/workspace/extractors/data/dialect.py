@@ -87,27 +87,34 @@ _EMBEDDED_ENGINES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-#: Tokens naming a server database: a driver, a dialect or a URL scheme. A repo
-#: that names one may run its tables on a shared server, so only the file that
-#: opens an embedded engine is read as embedded (see :func:`repo_embedded_engine`).
+#: Tokens naming a server database: a driver, a dialect or a URL scheme, in
+#: lower case (matched against the lower-cased file). A repo that names one may
+#: run its tables on a shared server, so only the file that opens an embedded
+#: engine is read as embedded (see :func:`repo_embedded_engine`). A stray hit
+#: (a comment) only keeps that per-file reading.
 _SERVER_ENGINE_TOKENS: tuple[str, ...] = (
     "postgres",
-    "Postgres",
-    "POSTGRES",
+    "pgsql",
     "psycopg",
     "asyncpg",
+    "npgsql",
     "lib/pq",
     "jackc/pgx",
-    "Npgsql",
+    "'pg'",
+    '"pg"',
+    "pg-promise",
+    "pg::",
     "mysql",
-    "MySql",
-    "MySQL",
     "mariadb",
     "sqlserver",
-    "SqlServer",
+    "sqlsrv",
     "mssql",
+    "tedious",
     "oracle",
     "cockroach",
+    "redshift",
+    "snowflake",
+    "clickhouse",
 )
 
 
@@ -131,7 +138,8 @@ def repo_embedded_engine(contents: Iterable[str]) -> str | None:
     """
     found = None
     for content in contents:
-        if any(token in content for token in _SERVER_ENGINE_TOKENS):
+        lowered = content.lower()
+        if any(token in lowered for token in _SERVER_ENGINE_TOKENS):
             return None
         if found is None:
             found = next(

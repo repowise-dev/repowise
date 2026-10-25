@@ -448,6 +448,16 @@ class TestDataMatching:
         contracts = DataExtractor().extract(app, "app") + DataExtractor().extract(backend, "backend")
         assert len(match_contracts(contracts)) == 1
 
+    def test_repo_engine_reads_server_tokens_in_any_case(self) -> None:
+        from repowise.core.workspace.extractors.data.dialect import repo_embedded_engine
+
+        db = "import sqlite3\n"
+        assert repo_embedded_engine([db, "x = 1\n"]) == "sqlite"
+        assert repo_embedded_engine([db, "'driver' => 'pgsql',\n"]) is None
+        assert repo_embedded_engine([db, "const { Pool } = require('pg');\n"]) is None
+        assert repo_embedded_engine([db, "# Works with MariaDB too\n"]) is None
+        assert repo_embedded_engine(["x = 1\n"]) is None
+
     def test_embedded_model_not_shared_with_another_repos_schema(self, tmp_path: Path) -> None:
         _write(tmp_path / "api", "db/schema.sql", "CREATE TABLE refunds (id INT);")
         _write(tmp_path / "admin", "config.php", "<?php\n$db = new PDO('sqlite:app.db');\n")
