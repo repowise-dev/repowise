@@ -553,5 +553,10 @@ async def test_a_superseded_candidate_is_not_open_for_review(async_session):
     open_ids = {r.id for r, _ in await list_candidates(async_session, repo.id)}
     lanes = await count_decisions_by_lane(async_session, repo.id)
 
+    from repowise.core.persistence.crud import list_decisions
+
+    page = await list_decisions(async_session, repo.id, accepted=False)
+
     assert open_ids == {live.id}
     assert (lanes["candidates"], lanes["total"]) == (1, 1)
+    assert [r.id for r in page] == [live.id]

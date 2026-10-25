@@ -5,6 +5,7 @@ Shared by the ``decision`` commands in ``decision_cmd``.
 
 from __future__ import annotations
 
+import json
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -232,6 +233,9 @@ async def _apply_in_savepoint(
         }
     except ValueError as exc:
         # The verb's own refusal, e.g. a merge target that is not a decision.
+        # A corrupt stored JSON column is a fault, not a refusal.
+        if isinstance(exc, json.JSONDecodeError):
+            raise
         error = exc.error if isinstance(exc, _RefusedError) else f"{verb}_refused"
         return {**entry, "ok": False, "error": error, "message": str(exc)}
     return {**entry, "ok": True, "action": action, "status": rec.status, **extra}
