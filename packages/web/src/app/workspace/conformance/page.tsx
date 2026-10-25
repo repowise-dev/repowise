@@ -230,7 +230,9 @@ export default async function ConformancePage() {
         title={
           undetermined
             ? t("cyclesTitleUndetermined")
-            : t(cycleCountCapped ? "cyclesTitleAtLeast" : "cyclesTitle", { count: cycleCount })
+            : cycleCountCapped
+              ? t("cyclesTitleAtLeast", { count: cycleCount })
+              : t("cyclesTitle", { count: cycleCount })
         }
         description={t("cyclesDescription")}
       >
@@ -245,10 +247,9 @@ export default async function ConformancePage() {
             className="p-6"
             title={
               cycleCount > 0
-                ? t(
-                    cycleCountCapped ? "cyclesDetectedNotListedAtLeast" : "cyclesDetectedNotListed",
-                    { count: cycleCount },
-                  )
+                ? cycleCountCapped
+                  ? t("cyclesDetectedNotListedAtLeast", { count: cycleCount })
+                  : t("cyclesDetectedNotListed", { count: cycleCount })
                 : t("noCyclesTitle")
             }
             description={
