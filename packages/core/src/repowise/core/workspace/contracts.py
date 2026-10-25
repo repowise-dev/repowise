@@ -77,8 +77,9 @@ CONTRACTS_FILENAME = "contracts.json"
 # Go routes from chi, fiber, gorilla/mux and Go 1.22 method patterns are read.
 # Next.js route handlers exported from a brace list are read, and the probe
 # skips tooling and build files.
-# A data consumer in a file that opens SQLite carries ``meta['embedded']`` and
-# links only within its repo.
+# A data contract in a file that opens SQLite, or in a repo that names SQLite
+# and no server database, carries ``meta['embedded']`` and links only within
+# its repo, on either side.
 # An HTTP or gRPC consumer whose id two or more repos serve, with nothing
 # placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
 CONTRACTS_VERSION = 15

@@ -61,6 +61,7 @@ const SOURCE_LABEL: Record<string, string> = {
   adr: "ADR",
   changelog: "Changelog",
   session: "Session",
+  agent: "Agent",
   conventions: "Convention",
 };
 
