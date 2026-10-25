@@ -733,9 +733,9 @@ def _runtime_contracts(
     A script polling a dev server is not a call of the running system, so it is
     left out of every count here, as the network probe leaves those files out
     of its own. One that linked stays: the link shows it reaches a service.
-    Ceiling: the origin is path-only, so a product folder named ``tools/`` or
-    ``scripts/`` reads as tooling too; a classifier that reads the package
-    layout would narrow it, and it belongs in ``code_origin`` when it comes.
+    Ceiling: the origin is path-only, so a product folder named ``scripts/``
+    reads as tooling too; a classifier that reads the package layout would
+    narrow it, and it belongs in ``code_origin`` when it comes.
     """
     return [
         c
