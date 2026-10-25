@@ -376,7 +376,7 @@ function RowOverflow({
               }}
               className="block w-full px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
             >
-              Copy prompt for an agent
+              Copy prompt
             </button>
           ) : null}
           {href ? (

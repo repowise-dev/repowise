@@ -17,6 +17,7 @@ import { memo, useMemo, useState, type ElementType } from "react";
 import type { OrphanProvider, UnmatchedConsumer } from "@repowise-dev/types/workspace";
 
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { RowPromptAction } from "../health/row-prompt-action";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import type { AiPromptFlavor } from "../health/ai-prompt-builder";
 import { formatNumber } from "../lib/format";
@@ -195,7 +196,7 @@ function UnmatchedGroup({
             {copy.meaning}
           </p>
         </div>
-        <AiPromptButton onClick={onPrompt} label="AI prompt" />
+        <AiPromptButton onClick={onPrompt} />
       </div>
 
       {shown > 0 ? (
@@ -277,7 +278,7 @@ function OrphanTable({
         </thead>
         <tbody>
           {shown.map((g) => (
-            <tr key={`${g.repo}|${g.contractType}`} className="border-t border-[var(--color-border-default)]">
+            <tr key={`${g.repo}|${g.contractType}`} className="group/row border-t border-[var(--color-border-default)]">
               <td className="py-2 pr-3 text-xs font-medium text-[var(--color-text-primary)]">
                 {g.repo}
               </td>
@@ -295,10 +296,10 @@ function OrphanTable({
                   >
                     Browse
                   </A>
-                  <AiPromptButton
+                  <RowPromptAction
                     variant="icon"
                     onClick={() => onPrompt(g)}
-                    label={`AI prompt for ${g.repo} ${providerNoun(g.contractType, 2)} with no caller`}
+                    label={`Copy prompt for ${g.repo} ${providerNoun(g.contractType, 2)} with no caller`}
                   />
                 </div>
               </td>

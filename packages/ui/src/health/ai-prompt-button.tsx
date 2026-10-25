@@ -1,18 +1,29 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { Check, ClipboardCopy } from "lucide-react";
 import { cn } from "../lib/cn";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 
 export interface AiPromptButtonProps {
-  onClick: () => void;
-  /** Visible label for the default variant; also used as the title/aria-label. */
-  label?: string;
+  /** Runs on click, after the copy when `copyText` is given. */
+  onClick?: () => void;
   /**
-   * `default` shows the green sparkles pill with a label (cards, headers).
-   * `icon` is a compact icon-only button for dense table rows; the label
-   * still rides along as the tooltip / accessible name.
-   * `ghost` is icon + label with no fill, for a per-row action that should
-   * not repeat a filled pill down every row (see `RowPromptAction`).
+   * The prompt itself, built on demand. When given, a click copies it, the
+   * button says "Copied" for a moment, and hover or focus previews its
+   * first lines. Without it the button only calls `onClick`, which usually
+   * opens the prompt modal.
+   */
+  copyText?: () => string;
+  /** Visible label; also the accessible name unless `ariaLabel` is given. */
+  label?: string;
+  /** The label shown for a moment after a copy. */
+  copiedLabel?: string;
+  /**
+   * `default` is a neutral outlined button for a detail view or a header.
+   * `ghost` is icon + label with no border, for a per-row action (see
+   * `RowPromptAction`). `icon` is icon-only for dense table rows; the label
+   * rides along as the tooltip and accessible name.
    */
   variant?: "default" | "icon" | "ghost";
   /** Accessible name when the visible label repeats down a list, e.g. naming the row. */
@@ -20,70 +31,119 @@ export interface AiPromptButtonProps {
   className?: string;
 }
 
+const COPIED_MS = 1600;
+const PEEK_LINES = 4;
+
+const BASE =
+  "inline-flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
+
+const VARIANT: Record<NonNullable<AiPromptButtonProps["variant"]>, string> = {
+  default:
+    "border border-[var(--color-border-default)] px-2.5 py-1 text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]",
+  ghost:
+    "px-2 py-1 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+  icon: "h-6 w-6 justify-center p-0 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+};
+
+/** The first few non-empty lines of a prompt, for the hover preview. */
+export function promptPeek(prompt: string, lines = PEEK_LINES): string {
+  const kept = prompt.split("\n").filter((line) => line.trim() !== "");
+  const head = kept.slice(0, lines).join("\n");
+  return kept.length > lines ? `${head}\n...` : head;
+}
+
+async function writeClipboard(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    // Clipboard blocked (insecure origin, denied permission): no "Copied".
+    return false;
+  }
+}
+
+/** Mounted only while the tooltip is open, so the prompt is built on demand. */
+function PromptPeek({ build }: { build: () => string }) {
+  return (
+    <span className="block max-w-xs whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+      {promptPeek(build())}
+    </span>
+  );
+}
+
+/** "Copied" for a moment after a successful copy; cleared on unmount. */
+function useCopiedFlag(): [boolean, () => void] {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const flag = () => {
+    setCopied(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), COPIED_MS);
+  };
+  return [copied, flag];
+}
+
 /**
- * Canonical "hand this to an AI agent" affordance. One button, used everywhere
- * an AI prompt can be generated (refactor, coverage, dead code, security,
- * hotspots) so the action reads the same on every screen. The host owns the
- * click — typically opening the shared AiPromptModal.
+ * Canonical "hand this to your agent" affordance, used everywhere a prompt
+ * can be generated so the action reads the same on every screen. Quiet on
+ * purpose: neutral ink, a copy icon, no fill. The host owns the click
+ * (typically opening the shared AiPromptModal), or passes `copyText` to copy
+ * straight away.
  */
 export function AiPromptButton({
   onClick,
-  label = "AI fix prompt",
+  copyText,
+  label = "Copy prompt",
+  copiedLabel = "Copied",
   variant = "default",
   ariaLabel,
   className,
 }: AiPromptButtonProps) {
-  const base =
-    "group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] font-semibold text-[var(--color-model)] transition-colors hover:bg-[var(--color-model)]/20 hover:border-[var(--color-model)]/60";
-  if (variant === "icon") {
-    return (
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClick();
-        }}
-        title={label}
-        aria-label={ariaLabel ?? label}
-        className={cn(base, "h-6 w-6 justify-center p-0", className)}
-      >
-        <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
-      </button>
-    );
+  const [copied, flagCopied] = useCopiedFlag();
+
+  function handleClick(e: MouseEvent<HTMLButtonElement>) {
+    e.stopPropagation();
+    if (copyText) void writeClipboard(copyText()).then((ok) => ok && flagCopied());
+    onClick?.();
   }
-  if (variant === "ghost") {
-    return (
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClick();
-        }}
-        title={label}
-        aria-label={ariaLabel}
-        className={cn(
-          "group/ai inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-model-muted)] hover:text-[var(--color-model)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
-          className,
-        )}
-      >
-        <Sparkles className="h-3.5 w-3.5 text-[var(--color-model)] transition-transform group-hover/ai:rotate-12" />
-        {label}
-      </button>
-    );
-  }
-  return (
+
+  const Icon = copied ? Check : ClipboardCopy;
+  const button = (
     <button
       type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      title={label}
-      aria-label={ariaLabel}
-      className={cn(base, "px-2.5 py-1 text-xs", className)}
+      onClick={handleClick}
+      // A native title only where nothing else names the button on hover.
+      title={variant === "icon" && !copyText ? label : undefined}
+      aria-label={variant === "icon" ? (ariaLabel ?? label) : ariaLabel}
+      className={cn(BASE, VARIANT[variant], className)}
     >
-      <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
-      {label}
+      <Icon
+        aria-hidden
+        className={cn("h-3.5 w-3.5 shrink-0", copied && "text-[var(--color-success)]")}
+      />
+      {variant !== "icon" && (copied ? copiedLabel : label)}
     </button>
+  );
+  if (!copyText) return button;
+  return (
+    <>
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>{button}</TooltipTrigger>
+          <TooltipContent side="bottom" align="end">
+            <PromptPeek build={copyText} />
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <span aria-live="polite" className="sr-only">
+        {copied ? copiedLabel : ""}
+      </span>
+    </>
   );
 }

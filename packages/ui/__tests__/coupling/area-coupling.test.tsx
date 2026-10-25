@@ -85,7 +85,7 @@ describe("CouplingAreaPairList", () => {
     expect(screen.getAllByText("No import link between the areas")).toHaveLength(1);
     expect(screen.getByText("9 file pairs with no direct import (90%)")).toBeTruthy();
     expect(screen.getByText("All explained")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: /^Copy prompt for your agent/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^Copy prompt: / })).toHaveLength(1);
     expect(screen.getByText(/Showing the top 3 of 6 area pairs/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("packages/server/ ↔ packages/ui/"));

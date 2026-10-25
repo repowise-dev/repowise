@@ -125,11 +125,6 @@ function AgentRow({
     }
   }
 
-  async function copyPrompt() {
-    const prompt = t("prompt", { name, command });
-    if (await copyText(prompt)) toast.success(t("promptCopied"));
-  }
-
   const file = firstConfigFile(agent);
   return (
     <div className={ROW}>
@@ -161,7 +156,12 @@ function AgentRow({
         )
       ) : (
         <span className="flex flex-wrap items-center justify-end gap-1.5 max-[560px]:justify-start">
-          <AiPromptButton label={t("copyPrompt")} onClick={() => void copyPrompt()} />
+          <AiPromptButton
+            label={t("copyPrompt")}
+            copiedLabel={t("copied")}
+            ariaLabel={`${t("copyPrompt")}: ${name}`}
+            copyText={() => t("prompt", { name, command })}
+          />
           {writesAllowed && (
             <Button variant="outline" size="sm" disabled={busy} onClick={() => void connect()}>
               {busy ? t("connecting") : t("connect")}

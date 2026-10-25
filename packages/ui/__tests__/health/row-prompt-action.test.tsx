@@ -12,18 +12,32 @@ describe("RowPromptAction", () => {
         <RowPromptAction subject="src/a.ts" onClick={onClick} />
       </div>,
     );
-    const button = screen.getByRole("button", { name: "Copy prompt for your agent: src/a.ts" });
-    expect(button).toHaveTextContent("Copy prompt for your agent");
+    const button = screen.getByRole("button", { name: "Copy prompt: src/a.ts" });
+    expect(button).toHaveTextContent("Copy prompt");
     expect(button.className).toMatch(/opacity-0/);
     expect(button.className).toMatch(/group-hover\/row:opacity-100/);
     expect(button.className).toMatch(/group-focus-within\/row:opacity-100/);
     expect(button.className).toMatch(/focus-visible:opacity-100/);
-    // No resting fill: the model tint appears on hover only.
-    expect(button.className.split(" ")).not.toContain("bg-[var(--color-model-muted)]");
+    expect(button.className).toMatch(/\[@media\(hover:none\)\]:opacity-100/);
+    // Neutral ink: plum is kept for model work.
+    expect(button.className).not.toMatch(/color-model/);
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledOnce();
     // The row's own click (open the file) does not fire as well.
     expect(onRow).not.toHaveBeenCalled();
+  });
+});
+
+describe("RowPromptAction icon variant", () => {
+  it("drops the visible label and keeps the row's name as the accessible name", () => {
+    render(
+      <div className="group/row">
+        <RowPromptAction variant="icon" label="Fix a.ts:3" onClick={vi.fn()} />
+      </div>,
+    );
+    const button = screen.getByRole("button", { name: "Fix a.ts:3" });
+    expect(button).toHaveTextContent("");
+    expect(button.className).toMatch(/opacity-0/);
   });
 });
 

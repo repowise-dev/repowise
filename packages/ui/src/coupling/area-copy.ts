@@ -31,7 +31,7 @@ export const DEFAULT_AREA_COUPLING_COPY = {
   unexplained: (n: number, pct: number) =>
     `${plural(n, "file pair", "file pairs")} with no direct import (${pct}%)`,
   allExplained: "All explained",
-  promptLabel: "Copy prompt for your agent",
+  promptLabel: "Copy prompt",
   bulkPromptLabel: (n: number) => `Copy prompt for these ${fmt(n)}`,
   promptTitle: "Decouple prompt",
   promptDescription:

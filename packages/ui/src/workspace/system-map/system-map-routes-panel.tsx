@@ -94,7 +94,7 @@ export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
           </p>
         )}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <AiPromptButton label="Copy prompt for an agent" onClick={() => setPrompting(true)} />
+          <AiPromptButton onClick={() => setPrompting(true)} />
           {props.contractsHref &&
             repos.map((repo) => {
               const A = props.LinkComponent ?? "a";

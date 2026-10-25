@@ -125,7 +125,7 @@ describe("WorkspaceNextActions", () => {
         loadPrompt={loadPrompt}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Copy prompt for your agent: Clean up/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt: Clean up/ }));
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("Row prompt")).toBeInTheDocument();
     expect(loadPrompt).toHaveBeenCalledWith("f1", expect.objectContaining({ id: "y" }), expect.any(String));
