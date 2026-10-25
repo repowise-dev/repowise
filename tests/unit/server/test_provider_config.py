@@ -416,6 +416,7 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
             "requires_key",
             "accepts_base_url",
             "local_server",
+            "local_model",
             "env_vars",
             "setup_hint",
             "detected",
