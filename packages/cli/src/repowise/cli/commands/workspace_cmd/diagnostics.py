@@ -250,12 +250,14 @@ _HTTP_REASON_SHORT = {
     "no_provider": "match no declared route",
     "unlinked": "match a route that did not link",
     "external_host": "call a third-party host",
+    "ambiguous_provider": "match a route two or more repos serve",
 }
 
 _REASON_LABELS = {
     "no_provider": "dangling: no repo declares the route, service, topic or table they use",
     "unlinked": "matching provider exists but no link formed",
     "external_host": "call a third-party host, outside the workspace",
+    "ambiguous_provider": "ambiguous: two or more repos serve the route, nothing names one",
 }
 
 #: Reasons in reading order: dangling calls first, any other reason next,

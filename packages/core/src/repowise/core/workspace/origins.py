@@ -89,7 +89,8 @@ class LinkStrategy(StrEnum):
     GATEWAY_ROUTE = "gateway_route"
     #: The consumer's base is unread and exactly one service serves the path.
     UNIQUE_PATH = "unique_path"
-    #: The consumer's base is unread and several services serve the path; linked to each.
+    #: The consumer's base is unread and several services of one repo serve the path;
+    #: linked to each. Services in two or more repos are not linked at all.
     AMBIGUOUS_PATH = "ambiguous_path"
     #: Matched only after stripping mount, version or base prefixes from both paths.
     PREFIX_STRIPPED = "prefix_stripped"

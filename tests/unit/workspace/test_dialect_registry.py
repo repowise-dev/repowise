@@ -88,15 +88,18 @@ class _CountingText(str):
 
 
 def test_a_token_is_searched_for_once_per_file_however_many_dialects_name_it() -> None:
-    # `producer` gates the kafka dialect and two of its rows; `publish` gates
-    # NATS and one of its rows. Each is looked for once.
+    # `producer` gates the kafka dialect and two of its rows; `'nats'` gates
+    # NATS and both of its rows. Each is looked for once.
     counts: dict[str, int] = {}
-    text = _CountingText("producer.send({ topic: 'orders' })\nnc.publish('audit', x)\n", counts)
+    text = _CountingText(
+        "import { connect } from 'nats';\nproducer.send({ topic: 'orders' })\nnc.publish('audit', x)\n",
+        counts,
+    )
     ctx = ScanContext("svc", "src/a.ts", ".ts", text)
     for dialect in topic.DIALECTS:
         run_dialect(dialect, ctx)
     assert counts.get("producer") == 1
-    assert counts.get("publish") == 1
+    assert counts.get("'nats'") == 1
 
 
 def test_a_dialect_is_not_run_on_a_file_without_its_tokens() -> None:

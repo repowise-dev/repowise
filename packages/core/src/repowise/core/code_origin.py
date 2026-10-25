@@ -784,11 +784,19 @@ def is_migration_path(path: str) -> bool:
 # folder), not developer tooling.
 _SERVED_DIRS = frozenset({"static", "public", "assets", "_static"})
 _SERVED_SCRIPTS_DIR = "scripts"
+# ``tools/`` is developer tooling at the repository root or under an engineering
+# folder (``eng/tools``, ``hack/tools``). Deeper it is as often the product's own
+# code: AI SDK tools in ``lib/ai/tools``, ``src/tools``, ``pkg/tools``. Ceiling:
+# path-only, so a monorepo member's own ``tools/`` reads as production.
+_TOOLS_DIR = "tools"
+_TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
 
 
 def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
     if d not in _TOOLING_DIR_TOKENS:
         return False
+    if d == _TOOLS_DIR:
+        return i == 0 or dirs[i - 1] in _TOOLS_PARENT_DIRS
     return d != _SERVED_SCRIPTS_DIR or _SERVED_DIRS.isdisjoint(dirs[:i])
 
 

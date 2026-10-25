@@ -30,7 +30,7 @@ from repowise.core.workspace.contracts import (
     same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
-from repowise.core.workspace.matching.common import shared_idl
+from repowise.core.workspace.matching.common import AMBIGUOUS_PROVIDER, shared_idl
 from repowise.core.workspace.network_probe import UNRECOGNISED_CALL_FILES_STAT, outside_runtime
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
@@ -61,6 +61,9 @@ class UnmatchedReason:
     #: The call targets a literal third-party host (Stripe, Formspree, …) that is
     #: not a workspace service, so it is intentionally excluded from matching.
     EXTERNAL_HOST = "external_host"
+    #: Two or more repos serve the call's route and neither its host nor its
+    #: base says which one it reaches, so it links to none of them.
+    AMBIGUOUS_PROVIDER = "ambiguous_provider"
 
 
 #: The closed set, for the wire copies that have to agree with it.
@@ -69,6 +72,7 @@ UNMATCHED_REASON_VALUES = (
     UnmatchedReason.INTERNAL_ONLY,
     UnmatchedReason.UNLINKED,
     UnmatchedReason.EXTERNAL_HOST,
+    UnmatchedReason.AMBIGUOUS_PROVIDER,
 )
 
 
@@ -548,6 +552,8 @@ def _classify_unmatched(
     """Return the :class:`UnmatchedReason` for an unmatched *consumer*."""
     if consumer.meta.get("external"):
         return UnmatchedReason.EXTERNAL_HOST
+    if consumer.meta.get(AMBIGUOUS_PROVIDER):
+        return UnmatchedReason.AMBIGUOUS_PROVIDER
     candidates = providers_by_norm_id.get(normalize_contract_id(consumer.contract_id))
     if not candidates:
         return UnmatchedReason.NO_PROVIDER
@@ -733,9 +739,9 @@ def _runtime_contracts(
     A script polling a dev server is not a call of the running system, so it is
     left out of every count here, as the network probe leaves those files out
     of its own. One that linked stays: the link shows it reaches a service.
-    Ceiling: the origin is path-only, so a product folder named ``tools/`` or
-    ``scripts/`` reads as tooling too; a classifier that reads the package
-    layout would narrow it, and it belongs in ``code_origin`` when it comes.
+    Ceiling: the origin is path-only, so a product folder named ``scripts/``
+    reads as tooling too; a classifier that reads the package layout would
+    narrow it, and it belongs in ``code_origin`` when it comes.
     """
     return [
         c

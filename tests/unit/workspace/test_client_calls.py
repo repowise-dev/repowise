@@ -43,6 +43,7 @@ class TestLiterals:
         [
             (JS_SYNTAX, "'/api/users'", "/api/users"),
             (JS_SYNTAX, "`${BASE}/users/${id}`", "${BASE}/users/${id}"),
+            (JS_SYNTAX, '`/a/${id}${q ? `?${q}` : ""}`', '/a/${id}${q ? `?${q}` : ""}'),
             (PYTHON_SYNTAX, '"/api/users"', "/api/users"),
             (PYTHON_SYNTAX, 'f"{base}/users/{uid}"', "${base}/users/${uid}"),
             (PYTHON_SYNTAX, 'r"/raw"', "/raw"),
@@ -73,6 +74,7 @@ class TestLiterals:
             (JS_SYNTAX, "path"),
             (JS_SYNTAX, '"/a" + buildPath(id)'),
             (JS_SYNTAX, "buildPath(id)"),
+            (JS_SYNTAX, "`/a` || `/b`"),
             (PYTHON_SYNTAX, 'b"/bytes"'),
             (PYTHON_SYNTAX, 'f"/x/{{literal}}"'),
             (RUST_SYNTAX, "&url"),
@@ -281,13 +283,25 @@ class TestArgumentScanning:
 
 
 class TestLiteralSpan:
-    def test_a_capture_cut_at_an_inner_quote_keeps_its_prefix(self):
+    def test_a_capture_cut_at_an_inner_quote_reads_the_whole_template(self):
         from repowise.core.workspace.extractors.http.js_clients import fetch_calls
 
         content = "fetch(`https://h/v1/links?${new URLSearchParams({ a: 'x' })}`)"
         (row,) = fetch_calls(content)
-        assert row.url == "`https://h/v1/links?${new URLSearchParams({ a: `"
-        assert resolve_string(row.url, JS_SYNTAX) == "https://h/v1/links?${new URLSearchParams({ a: "
+        assert row.url == "`https://h/v1/links?${new URLSearchParams({ a: 'x' })}`"
+        assert resolve_string(row.url, JS_SYNTAX) == row.url[1:-1]
+
+    def test_a_nested_template_keeps_the_fetch_method(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls, wrapper_calls
+
+        content = (
+            'fetch(`${API}/repos${q ? `?${q}` : ""}`, { method: "POST" });\n'
+            'apiCall(`/wins${q ? `?${q}` : ""}`, { method: "DELETE" });\n'
+        )
+        (row,) = fetch_calls(content)
+        assert (row.url, row.method) == ('`${API}/repos${q ? `?${q}` : ""}`', "POST")
+        (row,) = wrapper_calls(content, frozenset())
+        assert (row.url, row.method) == ('`/wins${q ? `?${q}` : ""}`', "DELETE")
 
 
 class TestConsumerContracts:
@@ -326,6 +340,14 @@ class TestConsumerUrlShapes:
         assert flatten_interpolations("/rate/${format(d, F, { in: utc })}/x") == "/rate/${expr}/x"
         assert flatten_interpolations("/a/${id}/b") == "/a/${id}/b"
         assert flatten_interpolations("/a/${broken") == "/a/${broken"
+
+    def test_a_query_hole_ends_the_path(self):
+        assert flatten_interpolations('/a/${id}${q ? `?${q}` : ""}') == "/a/${id}"
+        assert flatten_interpolations("/a/${id}${qs ? '?' + qs : ''}") == "/a/${id}"
+        assert flatten_interpolations("/a/${b ? `/${c}` : ''}/d") == "/a/${expr}/d"
+        assert flatten_interpolations('/a/${k=="x"?id:0}/d') == '/a/${k=="x"?id:0}/d'
+        # Only a last hole is a query suffix; a mid-path one keeps the tail.
+        assert flatten_interpolations('/a/${c ? `?a` : `/b`}/z') == "/a/${c ? `?a` : `/b`}/z"
 
     def test_a_scheme_inside_an_interpolation_is_not_the_host(self):
         url = "${prod ? 'https://x.io' : ''}/api/status"

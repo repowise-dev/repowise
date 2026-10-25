@@ -184,6 +184,7 @@ const REASON_TITLE_KEYS: Record<string, string> = {
   unlinked: "detail.reasonTitle.unlinked",
   internal_only: "detail.reasonTitle.internal_only",
   external_host: "detail.reasonTitle.external_host",
+  ambiguous_provider: "detail.reasonTitle.ambiguous_provider",
 };
 
 /**
@@ -224,6 +225,8 @@ function unmatchedConsumerDescription(
       });
     case "unlinked":
       return t("detail.prose.unmatchedUnlinked");
+    case "ambiguous_provider":
+      return t("detail.prose.unmatchedAmbiguousProvider");
     default:
       return t("detail.prose.unmatchedDefault");
   }

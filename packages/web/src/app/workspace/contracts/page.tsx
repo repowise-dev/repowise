@@ -283,6 +283,7 @@ const REASON_KEYS: Record<string, string> = {
   unlinked: "reasons.unlinked",
   internal_only: "reasons.internal_only",
   external_host: "reasons.external_host",
+  ambiguous_provider: "reasons.ambiguous_provider",
 };
 
 /** Name why consumers went unmatched, since the count alone invites the wrong read. */
