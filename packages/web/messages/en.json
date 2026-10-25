@@ -536,7 +536,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Some files now count as a different kind of code. A tools/ folder below the repo root is product code, so it is scored; only a root-level or engineering tools/ folder stays tooling. Python _vendor/ folders and Salesforce static-resource libraries count as vendored code, and prefixed migration folders under db/ count as migrations, so they leave the score. Repos with those folders can move either way; other repos keep their scores.",
+      "coChangeNoticeBody": "Some files now count as a different kind of code. A tools/ folder below the repo root is product code, so it is scored; only a root-level or engineering tools/ folder stays tooling. Python _vendor/ folders and Salesforce static-resource libraries count as vendored code, and prefixed migration folders under db/ count as migrations, so they leave the score. A tests/ folder inside a JavaScript or TypeScript src tree is product code, so its files are scored. Apex and COBOL files are scored, Scala gets dataflow findings, and comments inside a switch block do not count against its function. Repos with these files can move either way; other repos keep their scores.",
       "tabs": {
         "performance": "Performance",
         "findings": "Findings",

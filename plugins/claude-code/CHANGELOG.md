@@ -2,6 +2,22 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.59.0
+
+### Added
+- Agents record the decision a commit made by default: a `git commit` hook
+  asks for one, and `repowise decision add --agent <slug>` records it signed
+  as the agent (#4689, #4672).
+- The architectural-decisions skill and `/repowise:decision` show how an agent
+  records and accepts decisions as itself, each acceptance carrying its
+  decision text (#4688).
+
+### Changed
+- `/repowise:health` and `/repowise:coverage` explain that a `.coverage` file
+  builds only the per-test map, with the export command for per-file numbers
+  (#4320).
+- `/repowise:coverage` reads Apex coverage reports (#4413).
+
 ## 0.58.0
 
 ### Changed

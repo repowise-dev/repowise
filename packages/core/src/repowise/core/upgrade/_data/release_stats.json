@@ -58,5 +58,25 @@
     "test_files_touched": 462,
     "test_files_new": 181,
     "issues_closed": 58
+  },
+  "0.59.0": {
+    "since": "0.58.0",
+    "days": 4,
+    "prs": 251,
+    "contributors": 37,
+    "first_time_contributors": 26,
+    "files_changed": 1720,
+    "lines_added": 117289,
+    "lines_removed": 16849,
+    "types": {
+      "fixes": 110,
+      "features": 116,
+      "perf": 13,
+      "refactors": 0,
+      "docs": 4
+    },
+    "test_files_touched": 552,
+    "test_files_new": 207,
+    "issues_closed": 42
   }
 }
