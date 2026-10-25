@@ -21,6 +21,12 @@ export interface SystemMapNodeData {
   overlay: NodeOverlayState | null;
   /** Architecture role label ("Core", "Shared"...), named in text on the node. */
   role: string | null;
+  /** Focus level: connectors join card sides, since its columns read left to right. */
+  horizontal?: boolean;
+  /** Focus level: the links to the neighbour column ("8 · HTTP 2, Event 6"), in place of the contract counts. */
+  focusLinks?: string | null;
+  /** Between level: one of the two services compared. */
+  endpoint?: boolean;
   [key: string]: unknown;
 }
 
@@ -101,8 +107,14 @@ export function resolveEdgeOverlay(
   return { highlighted, dimmed, ...(badge ? { badge } : {}) };
 }
 
-/** Either a node or an edge selected in the map (drives the inspector). */
+/**
+ * What the map has selected (drives the rail). `node` is a service id and
+ * `edge` a system edge id, so a host can put either in its URL; `group` is a
+ * group id and `band` the id of a band drawn at the current level.
+ */
 export type SystemMapSelection =
   | { type: "node"; id: string }
   | { type: "edge"; id: string }
+  | { type: "group"; id: string }
+  | { type: "band"; id: string }
   | null;

@@ -78,3 +78,13 @@ def test_a_fetch_method_declaration_is_not_a_call_but_real_calls_are():
 def test_files_with_no_network_token_or_language_are_ignored():
     files = {"util.js": "export const add = (a, b) => a + b;\n", "schema.sql": "SELECT 1;\n"}
     assert _count(files) == 0
+
+
+def test_tooling_and_build_files_are_not_counted():
+    # A script polling a dev server, or a build config, is no missed service call.
+    files = {
+        "scripts/warm_cache.py": "import httpx\nhttpx.get(url)\n",
+        ".github/scripts/notify.js": "fetch(url);\n",
+        "src/client.js": "fetch(url);\n",
+    }
+    assert _count(files) == 1

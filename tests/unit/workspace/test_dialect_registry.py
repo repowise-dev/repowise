@@ -54,6 +54,9 @@ def test_every_table_row_declares_a_gate_and_an_origin(dialect) -> None:
     for row in rows:
         assert row.requires, f"{dialect.name}: a row with head {row.head.pattern!r} has no gate"
         assert isinstance(row.origin, ContractOrigin), f"{dialect.name}: {row.head.pattern!r}"
+    for row in getattr(dialect, "receivers", ()):  # rows read on a typed receiver
+        assert row.requires, f"{dialect.name}: receiver row {row.label!r} has no gate"
+        assert isinstance(row.origin, ContractOrigin), f"{dialect.name}: {row.label!r}"
     language = getattr(dialect, "_lang", None)  # a gRPC stub table
     for rule in getattr(language, "rules", ()):
         assert isinstance(rule.origin, ContractOrigin), f"{dialect.name}: {rule.pattern.pattern!r}"
@@ -85,15 +88,18 @@ class _CountingText(str):
 
 
 def test_a_token_is_searched_for_once_per_file_however_many_dialects_name_it() -> None:
-    # `producer` gates the kafka dialect and two of its rows; `publish` gates
-    # NATS and one of its rows. Each is looked for once.
+    # `producer` gates the kafka dialect and two of its rows; `'nats'` gates
+    # NATS and both of its rows. Each is looked for once.
     counts: dict[str, int] = {}
-    text = _CountingText("producer.send({ topic: 'orders' })\nnc.publish('audit', x)\n", counts)
+    text = _CountingText(
+        "import { connect } from 'nats';\nproducer.send({ topic: 'orders' })\nnc.publish('audit', x)\n",
+        counts,
+    )
     ctx = ScanContext("svc", "src/a.ts", ".ts", text)
     for dialect in topic.DIALECTS:
         run_dialect(dialect, ctx)
     assert counts.get("producer") == 1
-    assert counts.get("publish") == 1
+    assert counts.get("'nats'") == 1
 
 
 def test_a_dialect_is_not_run_on_a_file_without_its_tokens() -> None:

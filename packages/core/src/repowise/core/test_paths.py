@@ -221,6 +221,10 @@ _SUPPORT_NAME_WORDS: frozenset[str] = frozenset(
     {"harness", "support", "helper", "helpers", "mock", "mocks", "fixture", "fixtures", "setup"}
 )
 
+# ``utils`` reads as support only when a dot ties it to a module
+# (``foo.test-utils.ts``), which no published ``test-utils`` entry is named.
+_QUALIFIED_SUPPORT_NAME_WORDS: frozenset[str] = frozenset({"utils", "util"})
+
 
 @dataclass(frozen=True, slots=True)
 class _Conventions:
@@ -384,7 +388,10 @@ def _is_support_compound(filename: str) -> bool:
     return (
         len(words) >= 2
         and words[-2] == "test"
-        and words[-1] in _SUPPORT_NAME_WORDS
+        and (
+            words[-1] in _SUPPORT_NAME_WORDS
+            or (words[-1] in _QUALIFIED_SUPPORT_NAME_WORDS and "." in lowered.stem)
+        )
         and lowered.suffix in _conventions().source_exts
         and not _is_test_name(filename)
     )

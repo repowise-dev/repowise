@@ -267,42 +267,65 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     if not metadata_list:
         return
 
-    # Sort by temporal_hotspot_score (primary) then commit_count_90d (tiebreak)
-    sorted_by_churn = sorted(
-        range(len(metadata_list)),
-        key=lambda i: (
-            metadata_list[i].get("temporal_hotspot_score") or 0.0,
-            metadata_list[i].get("commit_count_90d", 0),
-        ),
-    )
+    # Non-code history-tier files do not participate in code churn rankings.
+    code_metas = [m for m in metadata_list if not m.get("history_only")]
+    for meta in metadata_list:
+        if meta.get("history_only"):
+            meta["churn_percentile"] = 0.0
+            meta["is_hotspot"] = False
+            meta.setdefault("change_entropy_pct", 0.0)
+            meta.setdefault("co_change_scatter_pct", 0.0)
+            meta.setdefault("prior_defect_pct", 0.0)
 
-    total = len(metadata_list)
-    for rank, idx in enumerate(sorted_by_churn):
-        meta = metadata_list[idx]
-        churn_pct = rank / total if total > 0 else 0.0
-        meta["churn_percentile"] = churn_pct
-        # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
-        # activity floors — without the floors, a quiet repo's top quartile is
-        # just "every file touched in 90 days" (issue #361). Folded into the
-        # rank loop so the list is scanned once.
-        if churn_pct >= 0.75 and meets_hotspot_floors(meta):
-            meta["is_hotspot"] = True
+    if not code_metas:
+        return
+
+    total = len(code_metas)
+    if total < 2:
+        for meta in code_metas:
+            meta["churn_percentile"] = 0.0
+    else:
+        # Group keys to mirror SQL PERCENT_RANK() with tie-awareness:
+        # (RANK() - 1) / (total - 1)
+        keys = [
+            (
+                float(m.get("temporal_hotspot_score") or 0.0),
+                int(m.get("commit_count_90d") or 0),
+            )
+            for m in code_metas
+        ]
+        key_counts = Counter(keys)
+        rank_lookup: dict[tuple[float, int], float] = {}
+        running = 0
+        for key in sorted(key_counts):
+            rank_lookup[key] = running / (total - 1)
+            running += key_counts[key]
+
+        for meta, key in zip(code_metas, keys, strict=True):
+            churn_pct = min(rank_lookup[key], 1.0)
+            meta["churn_percentile"] = churn_pct
+            # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
+            # activity floors — without the floors, a quiet repo's top quartile is
+            # just "every file touched in 90 days" (issue #361). Folded into the
+            # rank loop so the list is scanned once.
+            if churn_pct >= 0.75 and meets_hotspot_floors(meta):
+                meta["is_hotspot"] = True
 
     # Files with zero entropy — every file on the ESSENTIAL tier, plus
     # FULL-tier files that only ever changed alone — stay at 0.0 so the
     # change_entropy biomarker is silent for them.
     _rank_within_eligible(
-        metadata_list, source_key="change_entropy", target_key="change_entropy_pct"
+        code_metas, source_key="change_entropy", target_key="change_entropy_pct"
     )
 
     # Ranked on the decayed partner mass, not the count: a count saturates at
     # the storage cap and never retires, so it can only ever ratchet up.
     _rank_within_eligible(
-        metadata_list, source_key="co_change_mass", target_key="co_change_scatter_pct"
+        code_metas, source_key="co_change_mass", target_key="co_change_scatter_pct"
     )
 
     # Bug-fix history, ranked over every file: a file with no fixes in the
     # window is a measured zero, not a missing signal.
     _rank_over_population(
-        metadata_list, source_key="prior_defect_count", target_key="prior_defect_pct"
+        code_metas, source_key="prior_defect_count", target_key="prior_defect_pct"
     )

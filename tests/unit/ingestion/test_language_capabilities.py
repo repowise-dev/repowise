@@ -216,6 +216,9 @@ _PARTIAL = {
     # import QtQuick / import "components": module specs via the qmldir
     # index, quoted references relative to the importing file (#727).
     "qml",
+    # Ansible playbook/role wiring via the lightweight tier: real edges
+    # inside Ansible projects, nothing claimed for plain YAML config (#4397).
+    "yaml",
 }
 
 

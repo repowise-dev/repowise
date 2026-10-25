@@ -61,6 +61,16 @@ jobs:
           COVERAGE_CORE: sysmon
         run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile -v --tb=short --durations=25 --cov=packages --cov-report=xml
 
+      # The Repowise coverage job below gates the pull request on this report.
+      - name: Keep coverage.xml for the coverage gate
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 1
+          if-no-files-found: ignore
+
       - name: Upload coverage to Repowise
         if: always() && matrix.python-version == '3.12'
         continue-on-error: true
@@ -166,6 +176,59 @@ jobs:
 
       - name: Check documentation drift
         run: uv run repowise doc-drift --check --baseline .github/doc-drift-baseline.json --format github
+
+  # ---------------------------------------------------------------------------
+  # Repowise gates from this tree's action (uses: ./). Git only, no index: fails
+  # on high-severity health findings the change introduces and new high
+  # security findings. A PR editing action.yml edits its own gate, so
+  # CODEOWNERS review covers it.
+  # ---------------------------------------------------------------------------
+  repowise-gates:
+    name: Repowise gates
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./
+        with:
+          checks: health,security
+          health-fail-on: introduced
+          health-fail-at: high
+          security-fail-on: high
+
+  # ---------------------------------------------------------------------------
+  # Patch coverage on the Python 3.12 leg's report. Its own job so the gates
+  # above do not wait for the test matrix.
+  # ---------------------------------------------------------------------------
+  repowise-coverage:
+    name: Repowise coverage
+    runs-on: ubuntu-latest
+    needs: test-python
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+
+      - uses: ./
+        with:
+          checks: coverage
+          coverage-report: coverage.xml
+          coverage-fail-under: 70
+          coverage-min-coverable-lines: 10
 
   # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)

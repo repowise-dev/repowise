@@ -24,6 +24,7 @@
     "./events": "./src/events.ts",
     "./views": "./src/views.ts",
     "./workspace": "./src/workspace.ts",
+    "./estate": "./src/estate.ts",
     "./blast-radius": "./src/blast-radius.ts",
     "./risk-semantics": "./src/risk-semantics.ts",
     "./jobs": "./src/jobs.ts",

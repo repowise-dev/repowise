@@ -146,6 +146,11 @@ def _redaction(val: str) -> str:
 # (``=``, ``:``, ``=>``, ``??``, ``||``) or plain whitespace (a Dockerfile
 # ``ENV NAME value``), then the value, quoted or not.
 _PUBLIC_VALUE = re.compile(r"""\A['"\]]*(?:\s*[:=>?|]+\s*|\s+)(['"`]?)(?=[^\s;,)])""")
+# Blank template lines (``VITE_API_TOKEN=``, ``NEXT_PUBLIC_KEY=""``, or with
+# trailing comment) in .env or config files carry no secret.
+_PUBLIC_EMPTY_ASSIGNMENT = re.compile(
+    r"""\A['"\]]*\s*(?:=(?!=)|:=|:|=>)\s*(?:""|'')?\s*(?:[,;])?\s*(?:#.*)?\Z"""
+)
 
 _SECRET_PATTERNS = [(p, kind) for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
 _PUBLIC_ENV_PATTERN = next(p for p, kind, _ in _PATTERNS if kind == "public_env_secret")
@@ -201,9 +206,15 @@ def _public_env_value(line: str, name_end: int) -> tuple[int, int] | None:
         return None
     start = name_end + value.end()
     if value.group(1):
-        return start, _string_end(line, start)
+        end = _string_end(line, start)
+        return (start, end) if end > start else None
     stop = next((i for i in range(start, len(line)) if line[i].isspace()), len(line))
-    return start, stop
+    return (start, stop) if stop > start else None
+
+
+def _is_empty_public_env_assignment(line: str, name_end: int) -> bool:
+    """Whether the public env name ending at *name_end* is followed by an empty assignment."""
+    return _PUBLIC_EMPTY_ASSIGNMENT.search(line[name_end:]) is not None
 
 
 def _secret_spans(line: str) -> list[tuple[int, int]]:

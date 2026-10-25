@@ -150,6 +150,7 @@
     "conformance": "一致性",
     "contracts": "契约",
     "coChanges": "共变分析",
+    "estateReport": "全局报告",
     "groupPeopleAndHistory": "人员与历史",
     "groupSettings": "设置",
     "groupUnderstand": "理解",
@@ -1611,6 +1612,153 @@
       "description": "一段可直接粘贴的提示词，让你的 AI 代理通过移除不被允许的依赖来解决这些架构规则违规。"
     }
   },
+  "estate": {
+    "indexBehind": "索引已过旧，请运行 repowise update",
+    "indexUnreadable": "索引无法读取",
+    "indexBehindLabel": "索引过旧",
+    "indexBehindSentence": "{count, plural, other {# 个仓库的索引由旧版 repowise 生成，因此未被读取}}。请在每个仓库中运行 repowise update 进行更新。",
+    "title": "全局报告",
+    "description": "一次读完工作区内的每个仓库：系统地图及其依据、契约与未找到提供方的调用、各仓库的健康度与变更热度、风险最高的服务接缝，以及从哪里入手。",
+    "unavailableTitle": "全局报告不可用",
+    "unavailableDescription": "服务器无法生成该报告（{error}）。比此页面旧的服务器不提供该报告；请升级 repowise 并重启 repowise serve。",
+    "noGraphLabel": "无系统图",
+    "noGraphSentence": "此工作区尚未保存系统图，因此系统地图、契约、服务接缝和服务影响范围均无法确定。至少两个成员仓库建立索引后，运行 repowise update --workspace。健康度、变更热度和建议优先阅读的文件仍从各仓库索引读取。",
+    "evidencePartial": "部分依据",
+    "evidencePartialSentence": "以下数据是在部分系统不可见的情况下计算的：{reason}。",
+    "evidenceInsufficient": "无法确定",
+    "evidenceInsufficientSentence": "架构评分、循环判断、服务接缝和服务影响范围无法确定：{reason}。",
+    "staleLabel": "已过期",
+    "staleSentence": "{count, plural, other {# 个仓库的契约读取提交与其索引提交不一致}}。运行 repowise update --workspace 重新读取。",
+    "failedLabel": "失败",
+    "failedSentence": "此部分生成失败，报告将其标记为无法得出结论。",
+    "generated": "由 repowise {version} 于 {when} 根据已保存的工作区产物和各成员索引生成。",
+    "shownOf": "显示 {shown} / {total}。repowise report estate --format json 会列出全部。",
+    "notIndexed": "未索引",
+    "notRead": "未读取",
+    "noSnapshot": "无快照",
+    "notMeasured": "未测量",
+    "notMeasuredNote": "短横线表示未测量：没有健康度快照、已索引的历史过短，或仓库未索引。下方的说明会指出具体原因。",
+    "none": "无",
+    "contractsBehind": "落后于索引",
+    "snapshotBehind": "早于索引",
+    "dependsOn": "依赖",
+    "targetUnresolved": "目标未解析",
+    "undocumented": "无文档",
+    "docWords": "{count, plural, other {# 个文档词}}",
+    "behindContract": "有契约约束",
+    "coChangeOnly": "仅共同变更",
+    "coChangeUnexplained": "{value}，无契约",
+    "scoreFloor": "至少 {score}",
+    "serviceLinksNote": "{count, plural, other {# 条服务级链接指向某个工作区仓库，但该仓库的路由不提供对应路径。}}",
+    "orphanNote": "{count, plural, other {# 个提供方没有被工作区内任何消费方调用；可能由工作区外部调用。}}",
+    "externalNote": "{count, plural, other {# 次对工作区外公共主机的调用未计入。}}",
+    "ribbon": {
+      "repos": "仓库",
+      "reposSub": "{total} 个中 {indexed} 个已索引",
+      "services": "服务",
+      "servicesSub": "位于系统图中",
+      "links": "跨仓库链接",
+      "linksSub": "仓库之间匹配的契约",
+      "dangling": "悬空调用",
+      "danglingSub": "未匹配到其他服务的提供方",
+      "architecture": "架构评分",
+      "architectureSub": "满分 10，按固定公式计算",
+      "notDetermined": "无法确定"
+    },
+    "section": {
+      "summary": {
+        "title": "全局概览",
+        "description": "仓库、服务，以及系统图所依据的证据有多少。"
+      },
+      "map": {
+        "title": "系统地图与架构",
+        "description": "服务之间如何相互依赖，以及该结构的评分。"
+      },
+      "contracts": {
+        "title": "契约与悬空调用",
+        "description": "跨仓库读取和链接的契约，以及每个未找到提供方的调用。"
+      },
+      "health": {
+        "title": "各仓库的健康度、变更热点与缺陷磁铁",
+        "description": "每个仓库单独评估，从不合并平均。健康度最低的排在最前。"
+      },
+      "seams": {
+        "title": "风险最高的服务接缝",
+        "description": "按链接置信度、影响范围以及无契约解释的共同变更对服务对排序。这是固定的启发式规则，不是经过校准的风险值。"
+      },
+      "start": {
+        "title": "从哪里入手",
+        "description": "被最多其他服务依赖的服务，以及每个仓库中最核心、文档最少的文件。"
+      }
+    },
+    "check": {
+      "estate": "系统图",
+      "repositories": "仓库",
+      "services": "服务",
+      "evidence": "依据",
+      "dependencies": "依赖",
+      "architecture": "架构",
+      "contracts": "契约",
+      "http-calls": "HTTP 调用",
+      "dangling-calls": "悬空调用",
+      "health": "健康度",
+      "churn-hotspots": "变更热点",
+      "bug-magnets": "缺陷磁铁",
+      "seams": "服务接缝",
+      "start-services": "优先阅读的服务",
+      "start-files": "优先阅读的文件",
+      "system-map": "系统地图"
+    },
+    "basis": {
+      "measured": "实测",
+      "inferred": "推断",
+      "declared": "声明",
+      "unresolved": "无法确定",
+      "gated": "暂不提供"
+    },
+    "band": {
+      "healthy": "健康",
+      "warning": "警告",
+      "alert": "告警"
+    },
+    "danglingReason": {
+      "no_provider": "工作区内没有提供方",
+      "unlinked": "存在提供方，但未形成链接"
+    },
+    "col": {
+      "repo": "仓库",
+      "indexedAt": "索引提交",
+      "contractsAt": "契约读取提交",
+      "services": "服务",
+      "dependency": "依赖",
+      "kind": "类型",
+      "links": "链接",
+      "strategy": "链接方式",
+      "confidence": "置信度",
+      "type": "类型",
+      "providers": "提供方",
+      "consumers": "消费方",
+      "consumer": "消费方",
+      "file": "文件",
+      "target": "目标",
+      "contract": "契约",
+      "why": "原因",
+      "health": "健康度",
+      "maintainability": "可维护性",
+      "hotspotHealth": "热点健康度",
+      "churnHotspots": "变更热点",
+      "bugMagnets": "缺陷磁铁",
+      "snapshot": "快照",
+      "pair": "服务",
+      "edge": "边",
+      "reach": "影响范围",
+      "coChange": "共同变更",
+      "seamScore": "接缝评分",
+      "service": "服务",
+      "reaches": "变更可波及的服务数",
+      "docs": "文档"
+    }
+  },
   "contracts": {
     "links": {
       "title": "匹配链接",
@@ -1656,7 +1804,7 @@
       "unmatched": "未匹配的消费方",
       "orphans": "没有调用方的提供方",
       "orphansSub": "仅限本工作区；与「未使用」不同",
-      "httpResolved": "已解析的 HTTP 调用",
+      "httpRead": "已读取的 HTTP 调用",
       "httpUnresolved": "定位到 {count} 个但无法解析",
       "httpSub": "占提取定位到的客户端调用"
     },
@@ -1665,6 +1813,7 @@
       "unlinked": "未建立链接",
       "internal_only": "仅限同一服务内部",
       "external_host": "外部主机",
+      "ambiguous_provider": "多个仓库提供",
       "unknown": "未记录原因",
       "everyMatched": "每个消费方都匹配到了提供方"
     },
@@ -1721,11 +1870,26 @@
       "col": {
         "match": "匹配方式"
       },
+      "strategy": {
+        "exact_id": "按名称精确匹配",
+        "pattern_matched": "按订阅模式匹配",
+        "binding_routed": "经队列绑定路由",
+        "shared_table": "共享数据表",
+        "service_mapped": "按服务名匹配",
+        "host_only": "仅主机",
+        "gateway_route": "经网关路由",
+        "unique_path": "仅按路径匹配",
+        "ambiguous_path": "路径由多个服务提供",
+        "prefix_stripped": "去除前缀后匹配",
+        "manual": "手动声明",
+        "manifest": "在清单中声明"
+      },
       "reasonTitle": {
         "no_provider": "未找到提供方",
         "unlinked": "未建立链接",
         "internal_only": "不是跨仓库链接",
         "external_host": "不在本工作区内",
+        "ambiguous_provider": "多个仓库提供该路由",
         "unknown": "未找到提供方"
       },
       "prose": {
@@ -1738,6 +1902,7 @@
         "unmatchedExternalHostGeneric": "该调用发往第三方主机，而它不是本工作区中的服务。发往字面外部主机的调用按设计不参与匹配，因此没有可建立的链接。如果该主机是你自己的服务之一，请把它的仓库加入工作区。",
         "unmatchedInternalOnly": "与该调用匹配的声明都位于同一仓库、同一服务内，因此它从未跨越边界。服务内部的调用按设计不进入链接集合：一条链接意味着两个服务互相依赖。",
         "unmatchedNoProvider": "本工作区内没有任何内容声明 {contract}。请检查路径是否有拼写错误、端点是否被重命名或删除、该服务是否在这些仓库之外，或者路由是否以提取无法识别的方式声明。",
+        "unmatchedAmbiguousProvider": "有两个或更多仓库提供该路由，而该调用的主机和基础地址都没有指明它调用的是哪一个，因此不会与其中任何一个建立链接。如需确定目标，请为其主机或基础地址添加 contracts.service_bases 条目，或添加手动链接。",
         "unmatchedUnlinked": "另一个服务中存在具有该 id 的声明，但两者之间没有建立链接。这种情况很少见，它指向匹配器的缺口，而不是代码的问题。",
         "unmatchedDefault": "该调用没有匹配到任何声明，也没有记录原因。原因来自系统图，因此尚未构建系统图的工作区只能报告数量，而无法给出解释。"
       },
@@ -1821,27 +1986,29 @@
     }
   },
   "systemMap": {
+    "estate": "服务全景",
     "title": "系统地图",
     "description": "服务及它们之间的带类型关系，每次工作区更新都会从代码与 git 历史重建。",
     "section": {
-      "title": "服务与关系",
-      "description": "每个方块是一个服务；每条连线是两者之间的契约、导入或共同变更。选择一个视角，一次向这张图提一个问题。"
+      "title": "服务与关系"
+    },
+    "evidence": {
+      "partial": "证据不完整",
+      "insufficient": "无法确定"
     },
     "lede": {
-      "label": "架构评分",
-      "labelHint": "对影响范围、循环核心规模、依赖循环与规则违反的 1 到 10 综合评分，仅统计结构边。分数越高表示耦合越低。",
-      "unit": "满分 10",
-      "notDetermined": "无法确定：{reason}。",
-      "partialEvidence": "证据不完整：{reason}。",
-      "counts": "{services} 个服务分布在 {repos} 个仓库中，由 {relationships} 条关系相连：{structural} 条结构关系（代码中的契约或导入）与 {behavioral} 条共同变更关系（在同一批提交中一起改动的文件，而非调用）。",
-      "cycleMore": "另有 {count} 个循环列在「需要注意」下。",
-      "cycleOne": "它列在「需要注意」下，并附有一段打破它的提示词。",
-      "noCycles": "没有依赖循环：每个服务都可以在不形成回环的情况下变更。",
-      "reachAndScore": "平均而言，一个服务通过依赖可触达其他服务的 {pct}%，并且{core}。这两个数字决定了评分。",
-      "coreForms": "{count} 个服务构成循环核心",
-      "noCore": "不存在循环核心",
-      "cycleDepend": "{names} 互相依赖",
-      "cycleTail": "，形成一个依赖循环：其中任何一个都无法单独变更契约、构建或部署。"
+      "estate": "{services} 个服务，分布在 {repos} 个仓库中。",
+      "pair": "{estate}{rest}",
+      "familyCount": "{count} 条{family}",
+      "family": {
+        "runtime": "运行时",
+        "data": "数据",
+        "build": "构建",
+        "history": "历史"
+      },
+      "drawn": "边筛选显示 {families}关系。",
+      "drawnAndHidden": "边筛选显示 {drawn}关系，隐藏 {hidden}关系。",
+      "allHidden": "边筛选隐藏了全部 {families}关系。"
     },
     "lens": {
       "none": {
@@ -1880,17 +2047,65 @@
       "services": "服务",
       "servicesSub": "分布在 {count} 个仓库中",
       "relationships": "关系",
-      "relationshipsSub": "{structural} 条结构关系，{behavioral} 条共同变更",
-      "propagationCost": "影响范围",
-      "propagationCostSub": "平均每个服务可触达的其他服务比例",
-      "propagationCostHint": "平均每个服务通过结构依赖可触达的其他服务的比例。0% 表示完全解耦，100% 表示一切都互相触达。",
+      "score": "架构评分",
+      "scoreUnit": "满分 10",
+      "scoreSub": "满分 10；平均每个服务可触达其他服务的 {pct}%",
+      "scoreHint": "对影响范围、循环核心规模、依赖循环与规则违反的 1 到 10 综合评分，仅统计结构边。分数越高表示耦合越低。影响范围指平均每个服务通过结构依赖可触达的其他服务比例。",
       "contractLinks": "契约链接",
       "contractLinksSub": "来自 {providers} 个提供方、{consumers} 个消费方",
       "contractLinksHint": "跨服务匹配到对应提供方的消费方调用。",
       "unmatched": "未匹配的消费方",
       "unmatchedSub": "工作区内没有提供方的调用",
-      "unmatchedHint": "没有匹配到提供方的消费方契约：缺失、属于第三方主机，或位于同一服务内。"
+      "unmatchedHint": "没有匹配到提供方的消费方契约：缺失，或属于第三方主机。仓库对自身服务的调用已有提供方，不计入。"
+    },
+    "nav": {
+      "searchLabel": "搜索服务、分组和路由",
+      "searchPlaceholder": "搜索地图",
+      "searchServices": "服务",
+      "searchGroups": "分组",
+      "searchRoutes": "路由",
+      "searchNone": "没有匹配项",
+      "searchRoutesLoading": "正在搜索路由",
+      "routeCaller": "{consumer} 调用它",
+      "routeCallers": "{consumer} 和另外 {others} 个服务调用它",
+      "routeProvider": "由 {provider} 提供",
+      "displayLabel": "显示",
+      "displayMap": "地图",
+      "displayList": "列表",
+      "helpOpen": "键盘快捷键",
+      "helpTitle": "系统地图键盘快捷键",
+      "keySearch": "搜索服务、分组和路由",
+      "keyBack": "关闭详情，然后返回上一层",
+      "keyFocus": "聚焦所选服务",
+      "keyBetween": "比较两个服务，从所选服务开始",
+      "keyList": "在地图和列表之间切换",
+      "keyHelp": "显示或隐藏此帮助",
+      "keySteps": "逐个浏览搜索结果",
+      "keyPick": "前往高亮的结果",
+      "listCaption": "工作区中的服务，每行一个",
+      "colService": "服务",
+      "colGroup": "分组",
+      "colHealth": "健康度",
+      "colIn": "运行时调入",
+      "colOut": "运行时调出",
+      "colContracts": "契约",
+      "noScore": "无评分",
+      "contractsCell": "提供 {provided} · 使用 {consumed}",
+      "announceEstate": "服务全景：{services, plural, other {# 个服务}}",
+      "announceEstateGrouped": "服务全景：{groups, plural, other {# 个分组}}，{services, plural, other {# 个服务}}",
+      "announceGroup": "已展开 {label}：{services, plural, other {# 个服务}}",
+      "announceFocus": "聚焦于 {name}：{callers, plural, other {# 个调用方}}，{dependencies, plural, other {# 个依赖}}",
+      "announceBetween": "显示 {a} 与 {b} 之间的链接",
+      "announceList": "列表视图：{services, plural, other {# 个服务}}",
+      "announcePick": "再选择一个服务，与 {name} 比较"
     }
+  },
+  "linkCoverage": {
+    "label": "关联到其他服务",
+    "sub": "{seen} 个 HTTP 调用中 {linked} 个已关联；已读取 {read} 个",
+    "hint": "匹配到其他服务所提供路由的 HTTP 调用，占所见全部调用的比例；通过任何方言都无法读取的代码对外调用的文件，每个计为一次。在已读取的调用中，{readNotLinked} 个没有匹配到工作区内的其他服务，{inService} 个是仓库对自身服务的调用，无需关联。",
+    "unmatchedHint": "在工作区内没有匹配到提供方的消费方：缺失，或属于第三方主机。",
+    "inServiceHint": "{count, plural, other {仓库对自身服务的 # 个调用已有提供方，不计入此处。}}"
   },
   "loading": {
     "workspace": "正在加载工作区",

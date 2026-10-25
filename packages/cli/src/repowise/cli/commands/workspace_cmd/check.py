@@ -96,7 +96,7 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
     tail = f", {len(breaking_changes)} breaking contract change(s)" if bc_ran else ""
     console.print(
         f"\n[red]Architecture check failed:[/red] {len(report.violations)} violation(s), "
-        f"{len(report.cycles)} cycle(s){tail}."
+        f"{_cycle_count(report)} cycle(s){tail}."
     )
     sys.exit(1)
 
@@ -188,7 +188,12 @@ def _print_violations(report: ConformanceReport) -> None:
 def _print_cycles(report: ConformanceReport) -> None:
     if not report.cycles:
         return
-    console.print(f"\n[red]✗ {len(report.cycles)} dependency cycle(s):[/red]")
+    shown = (
+        f" (the {len(report.cycles)} shortest listed)"
+        if report.total_cycles > len(report.cycles)
+        else ""
+    )
+    console.print(f"\n[red]✗ {_cycle_count(report)} dependency cycle(s){shown}:[/red]")
     console.print(
         "  [dim]a -\\[kind]-> b: a depends on b (a subscriber depends on its publisher).[/dim]"
     )
@@ -199,6 +204,13 @@ def _print_cycles(report: ConformanceReport) -> None:
                 f"      [dim]{c.async_legs} of {len(c.leg_kinds)} leg(s) only an event "
                 "joins; the loop still couples schemas and deploy order.[/dim]"
             )
+
+
+def _cycle_count(report: ConformanceReport) -> str:
+    """How many cycles exist, past the listed cap; "at least N" when the budget stopped it."""
+    from repowise.core.workspace.cycles import cycle_total
+
+    return cycle_total(max(report.total_cycles, len(report.cycles)), report.total_capped)
 
 
 def _cycle_path(cycle: DependencyCycle) -> str:

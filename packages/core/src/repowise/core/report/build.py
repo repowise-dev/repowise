@@ -2,14 +2,17 @@
 
 The caller opens each repository's index (the CLI does it per repo, single
 or workspace) and passes a :class:`ReportContext`; this runs the sections
-and assembles one versioned document. Paths in the document are relative to
-each repository; no local absolute path is written.
+and assembles one versioned document. Over a whole workspace, its
+workspace-scope sections then run once on a :class:`WorkspaceReportContext`.
+Paths are relative to each repository (or the workspace root); no local
+absolute path is written.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +22,7 @@ from repowise.core.report.model import (
     SCHEMA_VERSION,
     ReportContext,
     Section,
+    WorkspaceReportContext,
     check,
     report_sections,
 )
@@ -65,45 +69,83 @@ async def _index_entry(ctx: ReportContext) -> dict[str, Any]:
     }
 
 
+async def _collect(
+    ctx: ReportContext | WorkspaceReportContext,
+    name: str,
+    section: Section,
+    *,
+    repo: str | None,
+    root: Path,
+    url: str,
+) -> dict[str, Any] | None:
+    """One section's entry, ``None`` when it does not apply; a failure is inconclusive."""
+    try:
+        checks = await section.collect(ctx)
+    except Exception as exc:  # one broken section must not lose the rest
+        logger.warning("report section %s failed: %s", name, exc)
+        if isinstance(ctx, ReportContext):
+            await ctx.session.rollback()  # a failed read leaves the session unusable
+        checks = [
+            check(
+                name,
+                reason=f"the section failed to collect ({type(exc).__name__})",
+                details=[str(exc)],
+                method=section.summary,
+                basis="unresolved",
+            )
+        ]
+        failed = True
+    else:
+        failed = False
+    if checks is None:
+        return None
+    doc = {"url": url, "short": section.summary}
+    for item in checks:
+        item.setdefault("documentation", doc)
+    entry = {
+        "id": name,
+        "title": section.title,
+        "summary": section.summary,
+        "repo": repo,
+        "checks": checks,
+    }
+    if failed:
+        entry["failed"] = True
+    return scrub(entry, root)
+
+
 async def collect_repo(
     ctx: ReportContext, sections: list[tuple[str, Section]]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """``(repos entry, sections)`` for one repository."""
+    """``(repos entry, sections)`` for one repository; workspace sections are skipped."""
     out: list[dict[str, Any]] = []
     for name, section in sections:
-        try:
-            checks = await section.collect(ctx)
-        except Exception as exc:  # one broken section must not lose the rest
-            logger.warning("report section %s failed: %s", name, exc)
-            await ctx.session.rollback()  # a failed read leaves the session unusable
-            checks = [
-                check(
-                    name,
-                    reason=f"the section failed to collect ({type(exc).__name__})",
-                    details=[str(exc)],
-                    method=section.summary,
-                    basis="unresolved",
-                )
-            ]
-            failed = True
-        else:
-            failed = False
-        if checks is None:
+        if section.scope != "repo":
             continue
-        doc = {"url": DOCS_URL, "short": section.summary}
-        for item in checks:
-            item.setdefault("documentation", doc)
-        entry = {
-            "id": name,
-            "title": section.title,
-            "summary": section.summary,
-            "repo": ctx.alias,
-            "checks": checks,
-        }
-        if failed:
-            entry["failed"] = True
-        out.append(scrub(entry, ctx.repo_root))
+        entry = await _collect(
+            ctx, name, section, repo=ctx.alias, root=ctx.repo_root, url=DOCS_URL
+        )
+        if entry is not None:
+            out.append(entry)
     return await _index_entry(ctx), out
+
+
+async def collect_workspace(
+    ctx: WorkspaceReportContext, sections: list[tuple[str, Section]]
+) -> list[dict[str, Any]]:
+    """The workspace-scope sections of *sections*, each run once over the workspace.
+
+    Their entries carry ``repo: None`` and paths relative to the workspace root.
+    """
+    out: list[dict[str, Any]] = []
+    for name, section in sections:
+        if section.scope != "workspace":
+            continue
+        url = f"{DOCS_URL.split('#')[0]}#repowise-report-{section.report}-path"
+        entry = await _collect(ctx, name, section, repo=None, root=ctx.ws_root, url=url)
+        if entry is not None:
+            out.append(entry)
+    return out
 
 
 #: Absolute paths that are not the repository's own: a drive path, a UNC
@@ -147,9 +189,14 @@ def assemble(
     scope: dict[str, Any],
     parts: list[tuple[dict[str, Any], list[dict[str, Any]]]],
     *,
+    workspace: Sequence[dict[str, Any]] = (),
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """The canonical document. *scope* is ``{"kind": "repo"|"workspace", "name": ...}``."""
+    """The canonical document. *scope* is ``{"kind": "repo"|"workspace", "name": ...}``.
+
+    *workspace* holds the entries of :func:`collect_workspace`, appended once
+    after every repository's own sections.
+    """
     from repowise.core import __version__
     from repowise.core.events.snapshot import current_stamp
 
@@ -161,8 +208,15 @@ def assemble(
         "scope": scope,
         "notice": NOTICE,
         "repos": [entry for entry, _ in parts],
-        "sections": [s for _, sections in parts for s in sections],
+        "sections": [*(s for _, sections in parts for s in sections), *workspace],
     }
 
 
-__all__ = ["NOTICE", "assemble", "available_sections", "collect_repo", "scrub"]
+__all__ = [
+    "NOTICE",
+    "assemble",
+    "available_sections",
+    "collect_repo",
+    "collect_workspace",
+    "scrub",
+]

@@ -55,6 +55,7 @@ from .graph import (
 )
 from .health import (
     _analyzed_commit,
+    _analyzed_repo_path,
     refresh_governance_findings,
     save_full_health_report,
     snapshot_health_from_store,

@@ -310,6 +310,12 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/media-understanding/runner.test-mocks.ts", None, "support"),
     ("extensions/comfy/test-helpers.ts", None, "support"),
     ("src/cron/isolated-agent.test-setup.ts", None, "support"),
+    # #3269: a module's own ``.test-*`` companion, beside it in src/.
+    ("src/foo.test-support.ts", None, "support"),
+    ("src/foo.test-helpers.ts", None, "support"),
+    ("src/foo.test-utils.ts", None, "support"),
+    ("src/foo.test-utils.js", None, "support"),
+    ("src/test-supporter.ts", None, ""),
     # ``test-utils`` is a published entry in React and Preact; ``setup`` alone
     # is a build script or an app's bootstrap.
     ("src/test-utils.ts", None, ""),

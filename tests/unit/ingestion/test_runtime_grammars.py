@@ -133,3 +133,61 @@ def test_doctor_counts_untracked_files_ingestion_would_index(
 
     assert [(r.name, r.ok) for r in rows] == [("COBOL grammar", False)]
     assert "1 files would index without symbols" in rows[0].detail
+
+
+def test_fetch_requests_every_runtime_grammar_into_the_given_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import tree_sitter_language_pack as pack
+
+    configured: list[object] = []
+    requested: list[str] = []
+    monkeypatch.setattr(pack, "configure", configured.append)
+    monkeypatch.setattr(pack, "get_language", requested.append)
+    monkeypatch.setattr(pack, "downloaded_languages", lambda: ["cobol"])
+    monkeypatch.setenv(grammars.GRAMMAR_DIR_ENV, "/elsewhere")
+
+    result = grammars.fetch_runtime_grammars(str(tmp_path))
+
+    assert [c.cache_dir for c in configured] == [str(tmp_path)]
+    assert sorted(requested) == ["apex", "cobol"]
+    assert sorted(result) == [("apex", False, ""), ("cobol", True, "")]
+
+
+def test_fetch_reports_a_grammar_that_fails_to_load_even_when_its_file_is_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import tree_sitter_language_pack as pack
+
+    def get_language(name: str) -> None:
+        if name == "cobol":
+            raise OSError("bad ELF header")
+        raise RuntimeError
+
+    monkeypatch.setattr(pack, "configure", lambda config: None)
+    monkeypatch.setattr(pack, "get_language", get_language)
+    monkeypatch.setattr(pack, "downloaded_languages", lambda: ["apex", "cobol"])
+
+    result = grammars.fetch_runtime_grammars(str(tmp_path))
+
+    assert sorted(result) == [("apex", False, "RuntimeError"), ("cobol", False, "bad ELF header")]
+
+
+def test_the_fetch_command_names_each_grammar_and_fails_when_one_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from click.testing import CliRunner
+
+    from repowise.cli.main import cli
+
+    monkeypatch.setattr(
+        grammars,
+        "fetch_runtime_grammars",
+        lambda cache_dir: [("cobol", True, ""), ("apex", False, "Download error")],
+    )
+
+    result = CliRunner().invoke(cli, ["grammars", "fetch", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert f"COBOL: cached in {tmp_path}" in result.output
+    assert "Apex: Download error" in result.output

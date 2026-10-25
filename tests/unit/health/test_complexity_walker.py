@@ -1133,3 +1133,37 @@ def test_apex_assertions_and_test_cases():
         assert by_name[case].is_test_case, case
     for helper in ("makeData", "compute"):
         assert not by_name[helper].is_test_case, helper
+
+
+
+def test_java_switch_arm_comment_does_not_increase_ccn():
+    _require_language("java")
+
+    def get_ccn(arm: str) -> int:
+        source = f"""
+        class Example {{
+            String f(int x) {{
+                switch (x) {{
+                    case 0 -> {{ return "a"; }}
+                    case 1 -> {{ {arm} }}
+                    default -> {{ return "z"; }}
+                }}
+                return "";
+            }}
+        }}
+        """
+        results = walk_file_complexity(
+            "/tmp/example.java", "java", source.encode()
+        )
+        result = _find(results, "f")
+        assert result is not None
+        return result.ccn
+
+    plain = get_ccn('return "b";')
+    commented = get_ccn('// explanatory comment\nreturn "b";')
+    multiple_statements = get_ccn(
+        'String value = "b"; return value;'
+    )
+
+    assert commented == plain
+    assert multiple_statements > plain

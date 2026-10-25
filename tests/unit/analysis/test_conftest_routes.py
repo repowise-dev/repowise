@@ -95,6 +95,72 @@ def test_a_requested_fixture_that_only_patches_the_route_still_reaches_its_users
     assert use.fixtures == {"quiet"}
 
 
+@pytest.mark.parametrize(
+    "imports, line",
+    [
+        ("from app.store import clear_store_cache", "clear_store_cache()"),
+        ("from app import store", "store.reset_caches()"),
+        ("from app import store", "store.Lookup.invalidate_cache()"),
+    ],
+)
+def test_an_autouse_fixture_resetting_a_cache_is_import_time_only(imports: str, line: str) -> None:
+    """Emptying a cache changes no value; a test that sees it imports the owner itself."""
+    use = _use(
+        f"""
+        import pytest
+
+        @pytest.fixture(autouse=True)
+        def fresh():
+            {imports}
+            {line}
+            yield
+            {line}
+        """
+    )
+    assert use.run_all is None
+    assert use.fixtures == frozenset()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "store.reset()",  # not named as a cache
+        "store.clear_cache(1)",  # arguments
+        "x = store.clear_cache()",  # result used
+        "store.clear_cache",  # read, not called
+        "assert store.clear_cache() is None",
+    ],
+)
+def test_anything_but_a_bare_cache_reset_in_an_autouse_fixture_keeps_every_test(
+    line: str,
+) -> None:
+    use = _use(
+        f"""
+        import pytest
+        from app import store
+
+        @pytest.fixture(autouse=True)
+        def fresh():
+            {line}
+        """
+    )
+    assert use.run_all and "autouse fixture fresh uses store" in use.run_all
+
+
+def test_a_requested_fixture_resetting_a_cache_still_reaches_its_users() -> None:
+    use = _use(
+        """
+        import pytest
+        from app import store
+
+        @pytest.fixture
+        def fresh():
+            store.clear_cache()
+        """
+    )
+    assert use.fixtures == {"fresh"}
+
+
 def test_a_class_body_or_a_fixture_in_a_class_using_the_route_keeps_every_test() -> None:
     body = _use(
         """

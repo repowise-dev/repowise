@@ -12,7 +12,9 @@ from ..dialect import ContractDialect, DialectExtractor
 from .asyncapi import ASYNCAPI
 from .aws import SNS, SQS
 from .bullmq import BULLMQ
+from .csharp_events import CSHARP_EVENTS
 from .dialect import topic_identity
+from .jms import JMS
 from .kafka import KAFKA
 from .laravel import LARAVEL_QUEUES
 from .nats import NATS
@@ -21,8 +23,8 @@ from .rabbitmq import RABBITMQ
 from .redis import REDIS
 
 # Order settles which broker names a call two dialects read alike: the first
-# contract per file, id and role is kept, so Redis (read only where a Redis
-# client is imported) precedes NATS (read on any `client.publish`).
+# contract per file, id and role is kept, so in a file importing both a Redis
+# and a NATS client a `client.publish` is Redis.
 DIALECTS: tuple[ContractDialect, ...] = (
     KAFKA,
     RABBITMQ,
@@ -34,6 +36,8 @@ DIALECTS: tuple[ContractDialect, ...] = (
     NESTJS,
     LARAVEL_QUEUES,
     ASYNCAPI,
+    CSHARP_EVENTS,
+    JMS,
 )
 
 

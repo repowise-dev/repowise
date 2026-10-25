@@ -1,3 +1,5 @@
+import type { ContractOriginWire, LinkStrategyWire } from "@repowise-dev/types/workspace";
+
 // ---------------------------------------------------------------------------
 // Workspace
 // ---------------------------------------------------------------------------
@@ -89,7 +91,7 @@ export interface WorkspaceContractEntry {
    */
   symbol_id: string | null;
   /** What established the contract (`route_registration`, `client_call`, ...). */
-  origin?: string | null;
+  origin?: ContractOriginWire | null;
   /**
    * Extractor-supplied detail (`extraction_layer`, `framework`, `method`,
    * `path`, `table`, `package`...). Keys vary by contract type.
@@ -102,7 +104,7 @@ export interface WorkspaceContractLinkEntry {
   contract_type: string;
   match_type: string;
   /** The matching rule that made the link (`exact_id`, `binding_routed`, ...); `match_type` derives from it. */
-  strategy?: string | null;
+  strategy?: LinkStrategyWire | null;
   confidence: number;
   provider_repo: string;
   provider_file: string;
@@ -241,6 +243,11 @@ export type {
   SystemGraph,
   SystemEdgeKind,
   SystemEdgeMatchType,
+  ServiceLinkDirection,
+  ServiceLinkEntry,
+  ServiceLinkEvidence,
+  ServiceLinksTotal,
+  ServiceLinksBetween,
   ExtractionDiagnostics,
   RepoDiagnostics,
   UnmatchedConsumer,
@@ -275,14 +282,18 @@ export type {
 
 import type {
   SystemGraph,
+  ServiceLinksBetween,
   CrossRepoBlastRadius,
   BreakingChangeReport,
   ConformanceReport,
   ArchitectureMetrics,
 } from "@repowise-dev/types";
 
-/** `GET /api/workspace/system-graph` — the full service-granular system graph. */
+/** `GET /api/workspace/system-graph` — the service-granular system graph (`?view=map`: its lean view). */
 export type WorkspaceSystemGraphResponse = SystemGraph;
+
+/** `GET /api/workspace/system-graph/links` — one page of links between two services. */
+export type WorkspaceLinksBetweenResponse = ServiceLinksBetween;
 
 /** `GET /api/workspace/blast-radius` — cross-repo downstream impact set. */
 export type WorkspaceBlastRadiusResponse = CrossRepoBlastRadius;
@@ -295,3 +306,6 @@ export type WorkspaceConformanceResponse = ConformanceReport;
 
 /** `GET /api/workspace/architecture` — architecture-complexity metrics + roles. */
 export type WorkspaceArchitectureResponse = ArchitectureMetrics;
+
+/** `GET /api/workspace/estate` — the estate report `repowise report estate` prints. */
+export type { EstateReport as WorkspaceEstateResponse } from "@repowise-dev/types";

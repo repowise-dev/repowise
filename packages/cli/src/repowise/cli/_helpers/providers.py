@@ -264,8 +264,10 @@ def validate_provider_config(
             return warnings
 
         # Validate specific provider
-        if provider_name not in provider_env_vars:
+        if provider_name not in PROVIDER_SPECS:
             warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")
+            return warnings
+        if provider_name not in provider_env_vars:
             return warnings
 
         # Any one of a provider's env vars satisfies it (GEMINI_API_KEY or

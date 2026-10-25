@@ -693,6 +693,13 @@ _TOOLING_ROOT_DIRS = frozenset(
 # directory with another name is recognised only by its sibling ``env.py``,
 # which a path-only classifier cannot see.
 _MIGRATION_DIR = "migrations"
+# Rails also keeps migration-like scripts in ``db/`` directories named with a
+# prefix: retired one-shot scripts in ``db/old_migrations/``, data migrations in
+# ``db/data_migrations/``. Only directly under ``db/``: elsewhere a name ending
+# in ``_migrations`` is as likely a package's own source
+# (``src/django_test_migrations/``).
+_MIGRATION_DB_DIR = "db"
+_MIGRATION_DB_SUBDIR_SUFFIX = "_migrations"
 _MIGRATION_DIR_PAIRS = frozenset({("db", "migrate"), ("alembic", "versions")})
 _TOOLING_ROOT_NAMES = frozenset({"fabfile.py"})
 # Benchmarks kept beside the code they measure (abseil's
@@ -755,7 +762,14 @@ def is_vendored_or_generated_path(path: str) -> bool:
 
 
 def _is_migration_dir(dirs: list[str]) -> bool:
-    return _MIGRATION_DIR in dirs or any(pair in _MIGRATION_DIR_PAIRS for pair in pairwise(dirs))
+    return (
+        _MIGRATION_DIR in dirs
+        or any(pair in _MIGRATION_DIR_PAIRS for pair in pairwise(dirs))
+        or any(
+            parent == _MIGRATION_DB_DIR and child.endswith(_MIGRATION_DB_SUBDIR_SUFFIX)
+            for parent, child in pairwise(dirs)
+        )
+    )
 
 
 def is_migration_path(path: str) -> bool:
@@ -765,9 +779,30 @@ def is_migration_path(path: str) -> bool:
     return split is not None and _is_migration_dir(split[2])
 
 
+# A ``scripts/`` folder inside a served static tree holds the browser scripts
+# the product ships (Spring Boot's ``resources/static/scripts``, a ``public/``
+# folder), not developer tooling.
+_SERVED_DIRS = frozenset({"static", "public", "assets", "_static"})
+_SERVED_SCRIPTS_DIR = "scripts"
+# ``tools/`` is developer tooling at the repository root or under an engineering
+# folder (``eng/tools``, ``hack/tools``). Deeper it is as often the product's own
+# code: AI SDK tools in ``lib/ai/tools``, ``src/tools``, ``pkg/tools``. Ceiling:
+# path-only, so a monorepo member's own ``tools/`` reads as production.
+_TOOLS_DIR = "tools"
+_TOOLS_PARENT_DIRS = frozenset({"eng", "hack", "ci", "dev"})
+
+
+def _is_tooling_dir(i: int, d: str, dirs: list[str]) -> bool:
+    if d not in _TOOLING_DIR_TOKENS:
+        return False
+    if d == _TOOLS_DIR:
+        return i == 0 or dirs[i - 1] in _TOOLS_PARENT_DIRS
+    return d != _SERVED_SCRIPTS_DIR or _SERVED_DIRS.isdisjoint(dirs[:i])
+
+
 def _is_tooling(name: str, dirs: list[str]) -> bool:
     return (
-        any(d in _TOOLING_DIR_TOKENS for d in dirs)
+        any(_is_tooling_dir(i, d, dirs) for i, d in enumerate(dirs))
         or bool(dirs and dirs[0] in _TOOLING_ROOT_DIRS)
         or _is_migration_dir(dirs)
         or (not dirs and name in _TOOLING_ROOT_NAMES)

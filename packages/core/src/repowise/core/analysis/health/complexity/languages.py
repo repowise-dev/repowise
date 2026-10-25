@@ -257,6 +257,16 @@ class LanguageNodeMap:
     #     segment. The slicer treats them as jumps for the same reason. A user
     #     macro of the same name that does not exit only hides a span.
     yield_kinds: frozenset[str] = frozenset()
+    #   * ``lambda_exit_kinds`` -- exit kinds that, written inside a lambda,
+    #     leave the *enclosing function*, not the lambda (Scala ``return`` in
+    #     ``xs.foreach(x => return x)`` unwinds the surrounding ``def``). A
+    #     lambda's own jumps are otherwise its own, so without this a span
+    #     holding such a lambda looks liftable and the helper would return from
+    #     itself. The slicer counts a hit as a jump, looking through lambda
+    #     bodies only and stopping at ``function_kinds`` (a ``return`` in a
+    #     nested ``def`` is that def's own). Empty for languages whose lambda
+    #     ``return`` is local to the lambda.
+    lambda_exit_kinds: frozenset[str] = frozenset()
     #   * ``await_kinds`` -- tokens that suspend the function (Python ``await`` /
     #     ``async with`` / ``async for``, TS/JS ``await`` / ``for await``, Rust
     #     ``.await``, C++ ``co_await``). Matched on the anonymous keyword token,
@@ -1124,6 +1134,35 @@ _SCALA = LanguageNodeMap(
     call_kinds=frozenset({"call_expression", "instance_expression"}),
     # Scala has no async syntax; the perf dialect's ``is_async_fn`` sniffs a
     # declared ``Future[...]`` return type instead.
+    #
+    # Dataflow (Extract Method). ``x = e`` is an ``assignment_expression``;
+    # ``val`` / ``var`` (``lazy val`` too) are the declarations. Compound
+    # assignment (``x += 1``) is NOT an assignment node: it is an
+    # ``infix_expression`` whose operator text ends in ``=``, the same node as
+    # ``a + b``, so it cannot be an ``augmented_assign_kinds`` member (the
+    # slicer would read every infix as a write) and that set stays empty; the
+    # dialect finds the write by the operator text instead. ``if`` / ``match`` /
+    # ``try`` / ``return`` / ``throw`` are expressions, mapped to their
+    # statement-level kinds. ``break_kinds`` / ``continue_kinds`` stay empty:
+    # Scala has no such keywords (``break()`` is a library call).
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"val_definition", "var_definition"}),
+    if_kinds=frozenset({"if_expression"}),
+    # ``indented_block`` is the Scala 3 brace-less ``block``.
+    block_kinds=frozenset({"block", "indented_block"}),
+    return_kinds=frozenset({"return_expression"}),
+    raise_kinds=frozenset({"throw_expression"}),
+    # Scala is expression-oriented: a block's last expression is its value, so
+    # a span ending on it would drop that value when lifted. A non-empty
+    # ``statement_wrapper_kinds`` is the slicer's marker for such a grammar and
+    # makes it refuse those spans. tree-sitter-scala wraps no statement, so the
+    # kind named here is one it never emits, which keeps the CFG builder's
+    # unwrapping inert. Ceiling: any block whose last statement is not a
+    # ``val`` / ``var`` is taken to carry a value (a ``Unit`` loop included).
+    statement_wrapper_kinds=frozenset({"expression_statement"}),
+    # A ``return`` inside a lambda is a non-local return: it exits the
+    # enclosing ``def``, so it keeps the span from being lifted.
+    lambda_exit_kinds=frozenset({"return_expression"}),
 )
 
 

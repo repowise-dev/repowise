@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import weakref
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
@@ -197,6 +198,64 @@ def _query_embedder():
 #: itself is TTL-cached on disk for a day and shared with the CLI advisory, so
 #: this bounds only the in-process refresh, never the network.
 _RELEASE_RECHECK_S = 6 * 3600
+
+
+def _share_lifespan(server: Any) -> None:
+    """Keep process-scoped MCP resources alive while any session is active.
+
+    Streamable HTTP enters the low-level server lifespan once per session,
+    while the state it publishes is process-wide. Share one underlying
+    lifespan per event loop so one session cannot tear down another's state.
+    """
+    original = server.lifespan
+    managers: weakref.WeakKeyDictionary[Any, dict[str, Any]] = weakref.WeakKeyDictionary()
+
+    @asynccontextmanager
+    async def shared(app: Any):
+        loop = asyncio.get_running_loop()
+        manager = managers.get(loop)
+        if manager is None:
+            manager = {"lock": asyncio.Lock(), "active": 0, "context": None, "state": None}
+            managers[loop] = manager
+
+        async with manager["lock"]:
+            if manager["active"] == 0:
+                context = original(app)
+                try:
+                    state = await context.__aenter__()
+                except BaseException:
+                    manager["context"] = None
+                    manager["state"] = None
+                    raise
+                manager["context"] = context
+                manager["state"] = state
+            manager["active"] += 1
+            state = manager["state"]
+
+        error: BaseException | None = None
+        try:
+            yield state
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            async with manager["lock"]:
+                manager["active"] -= 1
+                if manager["active"] == 0:
+                    context = manager["context"]
+                    manager["context"] = None
+                    manager["state"] = None
+                    if context is not None:
+                        teardown_error = (
+                            None if isinstance(error, asyncio.CancelledError) else error
+                        )
+                        await context.__aexit__(
+                            type(teardown_error) if teardown_error is not None else None,
+                            teardown_error,
+                            teardown_error.__traceback__ if teardown_error is not None else None,
+                        )
+
+    server.lifespan = shared
 
 
 async def _poll_release_check() -> None:
@@ -692,6 +751,7 @@ mcp = _RepowiseMCP(
     ),
     lifespan=_lifespan,
 )
+_share_lifespan(mcp._mcp_server)
 # FastMCP takes no version argument, and without one the handshake's
 # serverInfo.version reports the installed ``mcp`` SDK's version.
 mcp._mcp_server.version = __version__

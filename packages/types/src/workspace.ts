@@ -32,12 +32,56 @@ export interface WorkspaceContractSummary {
   by_type: Record<string, number>;
 }
 
+/**
+ * How a cross-repo link was matched. Closed vocabulary owned by
+ * `core/workspace/origins.py::LinkStrategy`; the two are edited together.
+ * Render via `linkStrategyCopy` (`@repowise-dev/ui/workspace/link-provenance`).
+ */
+export type LinkStrategy =
+  | "exact_id"
+  | "pattern_matched"
+  | "binding_routed"
+  | "shared_table"
+  | "service_mapped"
+  | "host_only"
+  | "gateway_route"
+  | "unique_path"
+  | "ambiguous_path"
+  | "prefix_stripped"
+  | "manual"
+  | "manifest";
+
+/** A strategy as received: a newer index can stamp a value this build predates. */
+export type LinkStrategyWire = LinkStrategy | (string & {});
+
+/**
+ * What established a contract. Closed vocabulary owned by
+ * `core/workspace/origins.py::ContractOrigin`; the two are edited together.
+ * Render via `contractOriginCopy` (`@repowise-dev/ui/workspace/link-provenance`).
+ */
+export type ContractOrigin =
+  | "idl"
+  | "package_export"
+  | "route_registration"
+  | "typed_client"
+  | "ddl"
+  | "explicit_table"
+  | "client_call"
+  | "instance_base"
+  | "dataflow"
+  | "sql_string"
+  | "name_heuristic"
+  | "name_convention";
+
+/** An origin as received. See `LinkStrategyWire`. */
+export type ContractOriginWire = ContractOrigin | (string & {});
+
 export interface WorkspaceContractLinkEntry {
   contract_id: string;
   contract_type: string;
   match_type: string;
   /** The matching rule that made the link (`exact_id`, `binding_routed`, ...); `match_type` derives from it. */
-  strategy?: string | null;
+  strategy?: LinkStrategyWire | null;
   confidence: number;
   provider_repo: string;
   provider_file: string;
@@ -65,6 +109,59 @@ export interface WorkspaceContractLinkEntry {
    * matched across case, a wildcard method or a mount prefix); null otherwise.
    */
   consumer_contract_id?: string | null;
+}
+
+/**
+ * Which way a link between two services runs: `a_to_b` when `a` is the consumer
+ * or dependent, `both` for a co-change (it has no direction).
+ */
+export type ServiceLinkDirection = "a_to_b" | "b_to_a" | "both";
+
+/** What a row between two services is: which of its payload fields is set. */
+export type ServiceLinkEvidence = "contract" | "package" | "co_change";
+
+/**
+ * One piece of evidence behind an edge between two services, each end resolved
+ * to its service the way the system graph was built. Mirrors
+ * `repowise.core.workspace.links_between`.
+ */
+export interface ServiceLinkEntry {
+  /** The system-graph edge kind it folds into. */
+  kind: SystemEdgeKind | (string & {});
+  direction: ServiceLinkDirection;
+  evidence: ServiceLinkEvidence;
+  /** Set when `evidence` is `contract`: a contract link or service link. */
+  link?: WorkspaceContractLinkEntry | null;
+  /** What established each end's contract; null when unknown. */
+  provider_origin?: ContractOriginWire | null;
+  consumer_origin?: ContractOriginWire | null;
+  /** Set when `evidence` is `package`. */
+  package_dep?: WorkspacePackageDepEntry | null;
+  /** Set when `evidence` is `co_change`. */
+  co_change?: WorkspaceCoChangeEntry | null;
+}
+
+export interface ServiceLinksTotal {
+  kind: SystemEdgeKind | (string & {});
+  direction: ServiceLinkDirection;
+  count: number;
+}
+
+/** `GET /api/workspace/system-graph/links`: one page of rows between `a` and `b`. */
+export interface ServiceLinksBetween {
+  a: string;
+  b: string;
+  /** The graph and the contracts record different repo heads; rows may be missing. */
+  stale_graph?: boolean;
+  /** Ordered by direction, kind, evidence, then ids and files. */
+  links: ServiceLinkEntry[];
+  /** Rows matching every filter; the page is cut from these. */
+  total: number;
+  /**
+   * Rows per edge kind and direction, for every kind present, under `q` but not
+   * `kind`. Not grouped: a view showing kind families sums them itself.
+   */
+  totals: ServiceLinksTotal[];
 }
 
 export interface WorkspaceCoChangeEntry {
@@ -107,6 +204,13 @@ export type SystemEdgeKind =
   | "co_change"
   | "db";
 
+/**
+ * What an edge kind means at the system level. Mirrors core's
+ * `EDGE_KIND_FAMILY` (`repowise.core.workspace.system_graph`), the one owner of
+ * kind-to-family; read `SystemEdge.family` rather than mapping kinds here.
+ */
+export type SystemEdgeFamily = "runtime" | "data" | "build" | "history";
+
 /** How confidently an edge was matched. Behavioral co-change edges are `inferred`. */
 export type SystemEdgeMatchType = "exact" | "candidate" | "manual" | "inferred";
 
@@ -130,6 +234,25 @@ export interface SystemNode {
   is_orphan_consumer: boolean;
   /** Participates in no edges. */
   is_isolated: boolean;
+  /** Id of the `ServiceGroup` this service belongs to; absent or null when ungrouped. */
+  group?: string | null;
+}
+
+/** Where a service group came from: a declared repo tag, a shared alias prefix, or linkage. */
+export type ServiceGroupSource = "tag" | "name" | "linked";
+
+/**
+ * A group of services the map can draw as one card. Mirrors
+ * `repowise.core.workspace.grouping.ServiceGroup`. Core alone decides when to
+ * group (`MIN_SERVICES_TO_GROUP`, `MIN_GROUPS`): a non-empty `groups` list is
+ * the answer, so a view never re-derives the gate.
+ */
+export interface ServiceGroup {
+  /** `tag:<name>`, `name:<prefix>` or `linked:<smallest member id>`. */
+  id: string;
+  label: string;
+  source: ServiceGroupSource;
+  member_count: number;
 }
 
 /** A typed, directed relationship between two services (`source` → `target`). */
@@ -144,10 +267,17 @@ export interface SystemEdge {
   weight: number;
   /** True for contract/package edges, false for behavioral co-change edges. */
   structural: boolean;
-  /** Back-pointers to the underlying evidence, for drill-down (bounded). */
-  contract_refs: string[];
+  /**
+   * Back-pointers to the underlying evidence, for drill-down (bounded). The
+   * map's lean view (`?view=map`) sends null on structural edges.
+   */
+  contract_refs?: string[] | null;
+  /** Distinct refs the full edge keeps; set by the lean view in place of the list. */
+  ref_count?: number;
   /** Strategy of the link that gave the edge its confidence; null on a co-change edge. */
-  strategy?: string | null;
+  strategy?: LinkStrategyWire | null;
+  /** The kind's family, set by core (an unknown kind is `history`). */
+  family?: SystemEdgeFamily | null;
 }
 
 export interface SystemGraph {
@@ -155,7 +285,10 @@ export interface SystemGraph {
   generated_at: string;
   nodes: SystemNode[];
   edges: SystemEdge[];
-  diagnostics: ExtractionDiagnostics;
+  /** Absent from the map's lean view, which reads `/api/workspace/diagnostics`. */
+  diagnostics?: ExtractionDiagnostics;
+  /** Service groups; absent or empty when the estate is too small to group. */
+  groups?: ServiceGroup[];
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +302,8 @@ export type UnmatchedReason =
   | "no_provider"
   | "internal_only"
   | "unlinked"
-  | "external_host";
+  | "external_host"
+  | "ambiguous_provider";
 
 export interface RepoDiagnostics {
   repo: string;
@@ -197,6 +331,8 @@ export interface OrphanProvider {
   file_path: string;
   contract_id: string;
   contract_type: string;
+  /** Other files of the same repo and service declaring the same id. */
+  other_files?: string[];
 }
 
 export interface ExtractionDiagnostics {
@@ -208,6 +344,8 @@ export interface ExtractionDiagnostics {
   unmatched_consumers: UnmatchedConsumer[];
   unmatched_by_reason: Record<string, number>;
   orphan_providers: OrphanProvider[];
+  /** Consumers served by their own repo + service, kept out of `unmatched_consumers`. */
+  in_service_consumers?: UnmatchedConsumer[];
   /** Workspace-wide rollup of the per-repo `index` / `regex` split. */
   providers_by_layer: Record<string, number>;
   consumers_by_layer: Record<string, number>;
@@ -219,6 +357,9 @@ export interface ExtractionDiagnostics {
    * seen (0/0 is not 100%) or the artifact predates that count.
    */
   http_consumer_coverage: number | null;
+  /** HTTP consumers that linked to another service, and their share of the same denominator. */
+  http_consumers_linked?: number | null;
+  http_link_coverage?: number | null;
   /** Per repo, files with a network-call token and no consumer contract; `null` before the count existed. */
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;
@@ -481,6 +622,8 @@ export interface ConformanceReport {
   cycle_count: number;
   /** How many cycles exist. Above `cycle_count` when the list was cut. */
   total_cycles: number;
+  /** True when the enumeration budget stopped the count: `total_cycles` is "at least". */
+  total_capped?: boolean;
   /** Distinct repos participating in a violation. */
   violating_repos: string[];
   /** False when the graph had too little evidence for "no cycles" to mean anything. */
@@ -565,6 +708,8 @@ export interface ArchitectureMetrics {
   core_members: string[];
   /** Elementary dependency cycles (matches the conformance report's count). */
   cycle_count: number | null;
+  /** True when the enumeration budget stopped the count: `cycle_count` is "at least". */
+  cycle_count_capped?: boolean;
   /** Declared-rule violations folded into the score (0 when no rules). */
   conformance_violations: number;
   architecture_type: ArchitectureType;

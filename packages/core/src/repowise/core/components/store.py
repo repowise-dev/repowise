@@ -18,6 +18,7 @@ from repowise.core.components.resolve import (
     derive_from_directories,
     derive_from_modules,
     derive_from_services,
+    repo_wide_when_flat,
     resolve_components,
 )
 from repowise.core.components.rollup import rollup_component
@@ -104,9 +105,10 @@ async def load_repo_components(
                 )
             )
         ).all()
-        derived = derive_from_modules((m[0], m[1]) for m in modules)
-    if not derived:
-        derived = derive_from_directories(files)
+        derived = derive_from_modules((m[0], m[1]) for m in modules) or derive_from_directories(
+            files
+        )
+        derived = repo_wide_when_flat(derived, files, Path(repo_root).resolve().name)
     return RepoComponents(
         catalog=catalog,
         resolved=resolve_components(catalog.components, derived, files),

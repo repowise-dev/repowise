@@ -70,7 +70,19 @@ def test_github_format_annotates_and_fills_the_step_summary(repo, tmp_path):
     result = check(repo, "--format", "github", env={"GITHUB_STEP_SUMMARY": str(summary)})
     assert result.exit_code == 1
     assert result.stdout.startswith("::error file=app.py,")
-    assert "fails the gate" in summary.read_text(encoding="utf-8")
+    command = "repowise health check main...HEAD --fail-on introduced --fail-at high"
+    assert result.stdout.splitlines()[-1].endswith(f"then {command}")
+    text = summary.read_text(encoding="utf-8")
+    assert "fails the gate" in text and f"`{command}`" in text
+
+
+def test_github_format_on_a_passing_change_prints_no_reproduce_line(repo, tmp_path):
+    repo.commit("docs", {"README.md": "# hi\n"})
+    summary = tmp_path / "summary.md"
+    result = check(repo, "--format", "github", env={"GITHUB_STEP_SUMMARY": str(summary)})
+    assert result.exit_code == 0, result.output
+    assert "Reproduce" not in result.stdout
+    assert "Reproduce" not in summary.read_text(encoding="utf-8")
 
 
 def test_sarif_and_gitlab_are_valid_documents(repo):

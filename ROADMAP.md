@@ -53,7 +53,7 @@ ladder covers **42 languages, 28 of them parsed to a full AST**.
 |---|---|---|
 | COBOL | Planned | Copybook resolution, source-format normalization, broader dialect coverage, and health markers |
 | Vue, Svelte | In development | Options-API members, `{#each}` and `v-for` head bindings, `.svelte.ts` rune modules |
-| C#, Scala, Ruby | Planned | Dataflow dialects, which is what Extract Method needs in order to lift a span safely |
+| Ruby | Planned | Dataflow dialects, which is what Extract Method needs in order to lift a span safely |
 | Kotlin | Exploring | Dataflow is blocked on the grammar and needs either a grammar upgrade or a text-based jump seam. We would rather say blocked than planned. |
 | C | Planned | It shares the C++ grammar for parsing but reaches no health walker map, so it gets graph coverage without markers |
 | SQL / dbt | Planned | Column-level blast radius |

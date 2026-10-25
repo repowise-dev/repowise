@@ -23,6 +23,7 @@ from ..extractors.visibility import (
     refine_csharp_visibility,
     refine_java_visibility,
     refine_py_visibility,
+    refine_ruby_visibility,
     refine_rust_visibility,
     refine_ts_visibility,
 )
@@ -399,6 +400,10 @@ def _refine_visibility(
     # trait's modifier is the only place their visibility is stated.
     if language == "rust":
         return refine_rust_visibility(def_node, visibility, src), False
+    # Ruby: ``private`` / ``protected`` are calls in the class body, so the
+    # def's own text says nothing; what precedes and follows it does.
+    if language == "ruby":
+        return refine_ruby_visibility(def_node, visibility, src), False
     return visibility, False
 
 

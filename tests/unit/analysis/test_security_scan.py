@@ -995,6 +995,32 @@ class TestScanSource:
         (hit,) = [f for f in scan_source("config.ts", source) if f["kind"] == "public_env_secret"]
         assert hit["snippet"] == source.strip()
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "VITE_API_TOKEN=\n",
+            'NEXT_PUBLIC_API_SECRET=""\n',
+            "VITE_AUTH_TOKEN=''\n",
+            "VITE_API_TOKEN= # set in .env.local\n",
+        ],
+    )
+    def test_empty_public_env_secret_is_dropped(self, source: str) -> None:
+        assert [f for f in scan_source(".env", source) if f["kind"] == "public_env_secret"] == []
+
+    def test_public_env_secret_with_value_still_fires(self) -> None:
+        hits = [f for f in scan_source(".env", "VITE_API_TOKEN=abc123\n") if f["kind"] == "public_env_secret"]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "VITE_API_TOKEN=abc1****"
+
+    def test_public_env_secret_code_read_still_fires(self) -> None:
+        hits = [
+            f
+            for f in scan_source("app.ts", "const t = import.meta.env.VITE_API_TOKEN;\n")
+            if f["kind"] == "public_env_secret"
+        ]
+        assert len(hits) == 1
+        assert hits[0]["snippet"] == "const t = import.meta.env.VITE_API_TOKEN;"
+
     def test_secret_kinds_and_history_gate_are_unchanged(self) -> None:
         from repowise.core.analysis.history_scan import HistorySecurityScanner
         from repowise.core.analysis.security_scan import SECRET_KINDS

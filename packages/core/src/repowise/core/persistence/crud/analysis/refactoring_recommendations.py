@@ -55,6 +55,7 @@ from repowise.core.analysis.test_reachability import (
 from repowise.core.ingestion.package_roots import scan_package_manifests
 
 from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
+from .._shared import _BATCH_SIZE
 from ..graph import get_graph_metrics
 from .coverage_map import tests_covering_files
 from .function_facts import tests_in_files
@@ -285,18 +286,25 @@ async def _test_runs(checkout: str | None, test_files: set[str]) -> TestRuns:
 async def _symbol_spans(
     session: AsyncSession, repository_id: str, files: Sequence[str]
 ) -> dict[str, list[SymbolSpan]]:
-    """Each file's symbol ids with their line spans, in one statement."""
+    """Each file's symbol ids with their line spans, in bounded statements."""
     if not files:
         return {}
-    rows = await session.execute(
-        select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
-        .where(GraphNode.repository_id == repository_id)
-        .where(GraphNode.node_type == "symbol")
-        .where(GraphNode.file_path.in_(list(files)))
-    )
     spans: dict[str, list[SymbolSpan]] = {}
-    for file_path, node_id, start, end in rows:
-        spans.setdefault(file_path, []).append((node_id, int(start or 0), int(end or 0)))
+    # The finalize ranks every plan at once, so *files* can be the whole
+    # repository. The statement is issued in fixed-size pieces to stay under the
+    # bound-parameter cap; a file appears in one piece, so its order is kept.
+    paths = sorted(set(files))
+    for start in range(0, len(paths), _BATCH_SIZE):
+        rows = await session.execute(
+            select(GraphNode.file_path, GraphNode.node_id, GraphNode.start_line, GraphNode.end_line)
+            .where(GraphNode.repository_id == repository_id)
+            .where(GraphNode.node_type == "symbol")
+            .where(GraphNode.file_path.in_(paths[start : start + _BATCH_SIZE]))
+        )
+        for file_path, node_id, start_line, end_line in rows:
+            spans.setdefault(file_path, []).append(
+                (node_id, int(start_line or 0), int(end_line or 0))
+            )
     return spans
 
 

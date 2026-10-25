@@ -94,6 +94,7 @@ _PHASE_LABELS: dict[str, str] = {
     "graph.dotnet_index": "  ↳ Indexing .NET projects",
     "graph.go_index": "  ↳ Indexing Go packages",
     "graph.rust_targets": "  ↳ Reading Rust crate targets",
+    "graph.ruby_gems": "  ↳ Finding Ruby gem entry points",
     "graph.cpp_index": "  ↳ Indexing C and C++ includes",
     "graph.swift_entry": "  ↳ Finding Swift entry points",
     "graph.composer_files": "  ↳ Reading Composer autoload rules",

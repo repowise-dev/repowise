@@ -17,7 +17,12 @@ from repowise.core.analysis.health.coverage import (
     resolve_reports,
     resolve_test_reports,
 )
-from repowise.core.analysis.health.coverage.model import CoverageReport, FileCoverage
+from repowise.core.analysis.health.coverage.discovery import _merge_into
+from repowise.core.analysis.health.coverage.model import (
+    CoverageReport,
+    FileCoverage,
+    file_coverage,
+)
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "coverage"
 CLASSES = "force-app/main/default/classes"
@@ -90,21 +95,71 @@ def test_per_test_records() -> None:
     assert not parse_apex_contexts(_read("sample.apex-codecoverage.json")).has_contexts
 
 
-@pytest.mark.parametrize("name", ["sample.apex.json", "sample.apex-codecoverage.json"])
+@pytest.mark.parametrize(
+    "name", ["sample.apex.json", "sample.apex-codecoverage.json", "sample.apex-deploy.json"]
+)
 def test_detect_and_dispatch(name: str) -> None:
     assert detect_format(_read(name)) == "apex"
-    assert detect_format("﻿" + _read(name)) == "apex"
-    assert parse("﻿" + _read(name)).source_format == "apex"
+    assert detect_format("\ufeff" + _read(name)) == "apex"
+    assert parse("\ufeff" + _read(name)).source_format == "apex"
 
 
 def test_detect_needs_the_cli_markers() -> None:
     assert detect_format('{"result": {"summary": {"outcome": "Passed"}}}') is None
     assert detect_format('[{"name": "x", "lines": {}}]') is None
+    assert detect_format('{"result": {"details": {"componentSuccesses": []}}}') is None
+
+
+def test_deploy_result_percentages_and_extensions() -> None:
+    report = parse(_read("sample.apex-deploy.json"))
+    assert report.source_format == "apex"
+    by_path = {f.file_path: f for f in report.files}
+    # The zero-location interface is skipped, not stored as 0%.
+    assert set(by_path) == {"AccountService.cls", "AccountTrigger.trigger", "FullyCovered.cls"}
+    svc = by_path["AccountService.cls"]
+    assert svc.line_coverage_pct == pytest.approx(78.57)
+    assert (svc.total_coverable_lines, svc.covered_line_count) == (28, 22)
+    assert by_path["AccountTrigger.trigger"].line_coverage_pct == pytest.approx(60.0)
+    assert by_path["FullyCovered.cls"].line_coverage_pct == pytest.approx(100.0)
+
+
+def test_deploy_result_states_counts_only() -> None:
+    for fc in parse_apex(_read("sample.apex-deploy.json")).files:
+        # No covered-line list in the payload: left empty, never invented.
+        assert fc.covered_lines == [] and fc.coverable_lines == []
+        assert fc.branch_coverage_pct is None
+
+
+def test_deploy_single_object_entry() -> None:
+    text = (
+        '{"result": {"details": {"runTestResult": {"codeCoverage": '
+        '{"name": "Solo", "type": "Class", "numLocations": "4", "numLocationsNotCovered": "1"}'
+        "}}}}"
+    )
+    assert detect_format(text) == "apex"
+    report = parse(text)
+    assert [(f.file_path, f.line_coverage_pct) for f in report.files] == [("Solo.cls", 75.0)]
+
+
+def test_deploy_bad_counts_are_skipped() -> None:
+    text = (
+        '{"result": {"details": {"runTestResult": {"codeCoverage": ['
+        '{"name": "A", "type": "Class", "numLocations": "x", "numLocationsNotCovered": "1"},'
+        '{"name": "B", "type": "Class", "numLocations": "5"},'
+        '{"name": "C", "type": "Class", "numLocations": "5", "numLocationsNotCovered": "9"}'
+        "]}}}}"
+    )
+    # C is clamped to 0% rather than going negative.
+    assert [(f.file_path, f.line_coverage_pct) for f in parse_apex(text).files] == [("C.cls", 0.0)]
+
+
+def test_deploy_result_has_no_per_test_records() -> None:
+    assert not parse_apex_contexts(_read("sample.apex-deploy.json")).has_contexts
 
 
 def test_parse_contexts_file_reads_apex(tmp_path: Path) -> None:
     path = tmp_path / "test-result-7070000000ABCDE.json"
-    path.write_text("﻿" + _read("sample.apex.json"), encoding="utf-8")
+    path.write_text("\ufeff" + _read("sample.apex.json"), encoding="utf-8")
     report = parse_contexts_file(path)
     assert report.source_format == "apex"
     assert len(report.records) == 2
@@ -202,3 +257,44 @@ def test_test_file_stays_unset_when_the_test_class_does_not_resolve() -> None:
     res = resolve_test_reports(parse_apex_contexts(text), KEYS)
     assert [r.test_file for r in res.records] == [None, None]
     assert res.test_files_resolved == 0
+
+
+def test_merge_two_counts_only_entries_keeps_stated_count() -> None:
+    a = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    b = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    _merge_into(a, b)
+    assert a.covered_line_count == 22
+    assert a.line_coverage_pct == pytest.approx(78.57)
+
+
+def test_merge_counts_only_with_line_sets_does_not_lose_hits() -> None:
+    counts = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    lines = file_coverage("AccountService.cls", [1, 2, 3], list(range(1, 29)))
+    _merge_into(lines, counts)
+    assert lines.covered_line_count == 22
+    assert lines.total_coverable_lines == 28
+
+
+def test_merge_order_does_not_matter() -> None:
+    counts = file_coverage("AccountService.cls", [], [], total=28, hit=22)
+    lines = file_coverage("AccountService.cls", [1, 2, 3], list(range(1, 29)))
+    _merge_into(counts, lines)
+    assert counts.covered_line_count == 22
+    assert counts.line_coverage_pct == pytest.approx(78.57)
+
+
+def test_merge_with_percentage_only_source_still_works() -> None:
+    a = file_coverage("A.cls", [1, 2], [1, 2, 3, 4])
+    b = file_coverage("A.cls", [], [], total=4)
+    # A percentage-only source states no hit count at all.
+    b.covered_line_count = None
+    _merge_into(a, b)
+    assert a.covered_line_count == 2
+
+
+def test_two_deploy_reports_for_one_class_keep_their_percentage() -> None:
+    keys = {"force-app/main/default/classes/AccountService.cls"}
+    text = _read("sample.apex-deploy.json")
+    res = resolve_reports([parse_apex(text), parse_apex(text)], keys)
+    entry = res.coverage_map["force-app/main/default/classes/AccountService.cls"]
+    assert entry["line_coverage_pct"] == pytest.approx(78.57)

@@ -68,6 +68,7 @@
     "core_ratio": null,
     "core_size": null,
     "cycle_count": null,
+    "cycle_count_capped": null,
     "node_count": null,
     "propagation_cost_pct": null,
     "role_breakdown": {
@@ -291,6 +292,7 @@
     "rules_evaluated": null,
     "summary": null,
     "total_cycles": null,
+    "total_capped": null,
     "violation_count": null,
     "violations": [],
     "violations_truncated": null

@@ -124,6 +124,26 @@ class TestDefaultBase:
     def test_a_non_repository_is_head(self, tmp_path: Path) -> None:
         assert default_base(str(tmp_path / "nowhere_at_all")) == "HEAD"
 
+    def test_a_local_branch_named_like_the_remote_one_does_not_change_the_answer(self, repo: Path) -> None:
+        _run(repo, "update-ref", "refs/remotes/origin/trunk", "main")
+        _run(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        _run(repo, "branch", "origin/trunk", "main")
+        assert default_base(str(repo)) == "origin/trunk"
+
+    def test_a_tag_named_like_a_trunk_is_not_a_base(self, tmp_path: Path) -> None:
+        root = tmp_path / "tagged"
+        root.mkdir()
+        _run(root, "init", "-b", "topic")
+        _commit(root, "a.txt", "a\n", "a")
+        _run(root, "tag", "main")
+        assert default_base(str(root)) == "HEAD"
+
+    def test_falls_back_to_a_remote_trunk_when_there_is_no_local_one(self, repo: Path) -> None:
+        _run(repo, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+        _run(repo, "checkout", "-q", "feat")
+        _run(repo, "branch", "-D", "main")
+        assert default_base(str(repo)) == "origin/main"
+
 
 class TestDefaultBranch:
     def test_is_the_origin_head_target_without_the_remote(self, repo: Path) -> None:

@@ -249,7 +249,7 @@ function ConformanceResults({ conformance, graph, onSelect, onPrompt, conformanc
     conformance.cycles_determined === false && conformance.cycle_count === 0
       ? `Dependency cycles not determined: ${conformance.evidence?.summary ?? "too little evidence"}.`
       : total > conformance.cycle_count
-      ? `${conformance.cycle_count} of ${plural(total, "dependency cycle", "dependency cycles")} listed.`
+      ? `${conformance.cycle_count} of ${conformance.total_capped ? "at least " : ""}${plural(total, "dependency cycle", "dependency cycles")} listed.`
       : `${plural(conformance.cycle_count, "dependency cycle", "dependency cycles")}.`;
 
   return (

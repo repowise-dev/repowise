@@ -29,7 +29,9 @@ is chosen when any of these hold:
    missing from the checkout.
 
 Otherwise the subset is the covering tests, the tests the graph shows reaching
-the changed files (a changed test, the call graph, the import graph) and
+the changed files (a changed test, the call graph, the import graph, and a
+test importing any module under a package whose ``__init__.py`` reaches them,
+which Python runs first: ``package-init``) and
 ``tests.always_run``, plus every test the graph cannot see into: one not
 indexed or with no resolved edge, and one the indexer found listing and reading
 files under a source directory or running the project's own command or module
@@ -279,7 +281,9 @@ class Selection:
     names, per changed or deleted file, what decided it: ``full-run``,
     ``no-tests-needed``, ``deleted-test``, ``test-tree``, ``test-package``,
     ``conftest``, ``helper-importers``, ``coverage``,
-    ``changed-test``, ``call-graph``, ``import-graph``, ``conftest-fixture``
+    ``changed-test``, ``call-graph``, ``import-graph``, ``package-init`` (a test
+    importing a module under a package whose ``__init__.py`` reaches the change),
+    ``conftest-fixture``
     (a test using a conftest fixture that reaches the change),
     ``conftest-import-check`` (one test that loads a conftest the change reaches
     only through its imports), ``conftest-broadcast`` (a test only a conftest
@@ -765,6 +769,9 @@ def _why(
 #: The via of a test that runs only because a conftest on the route keeps every
 #: test under it (``conftest_routes``): selected, not reached by the change.
 BROADCAST_VIA = "conftest-broadcast"
+#: The via of a test that imports a module under a package whose ``__init__.py``
+#: reaches the change: Python runs that file first (``ImportGraph.with_package_inits``).
+PACKAGE_INIT_VIA = "package-init"
 
 # Past this many hops, a test the change reaches only through imports is counted
 # apart from the headline; it still runs (an import error breaks it, though
@@ -778,7 +785,7 @@ IMPORT_CLOSURE_HOPS = 1
 #: How :attr:`Selection.why` names a test counted apart by :data:`IMPORT_CLOSURE_HOPS`.
 IMPORT_CLOSURE_VIA = "import-closure"
 # The vias that put a test in by imports alone (a conftest broadcast included).
-_IMPORT_ONLY = frozenset({"import-graph", BROADCAST_VIA})
+_IMPORT_ONLY = frozenset({"import-graph", PACKAGE_INIT_VIA, BROADCAST_VIA})
 
 # The vias a conftest route adds (``conftest_routes``), spelled out.
 _VIA_WHY = {
@@ -791,6 +798,10 @@ _VIA_WHY = {
     "conftest-import-check": (
         "conftest-import-check: the change reaches a conftest above it only through the "
         "conftest's imports, and this test is that conftest's import check"
+    ),
+    PACKAGE_INIT_VIA: (
+        f"{PACKAGE_INIT_VIA}: it imports a module under a package whose __init__.py, "
+        "which Python runs first, reaches the change"
     ),
 }
 
@@ -1400,6 +1411,7 @@ _VIAS = (
     "changed-test",
     "call-graph",
     "import-graph",
+    PACKAGE_INIT_VIA,
     "conftest-fixture",
     "conftest-import-check",
     BROADCAST_VIA,

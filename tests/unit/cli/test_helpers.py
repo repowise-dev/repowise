@@ -590,6 +590,14 @@ class TestValidateProviderConfig:
 
         assert validate_provider_config() == []
 
+    def test_mock_provider_needs_no_key_and_is_not_unknown(self):
+        assert validate_provider_config("mock") == []
+
+    def test_unregistered_provider_still_warns_unknown(self):
+        warnings = validate_provider_config("nope")
+        assert len(warnings) == 1
+        assert "Unknown provider 'nope'" in warnings[0]
+
     def test_gemini_with_gemini_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         monkeypatch.setenv("REPOWISE_PROVIDER", "gemini")

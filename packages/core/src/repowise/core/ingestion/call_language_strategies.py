@@ -794,20 +794,50 @@ class LanguageStrategiesMixin:
         call: CallSite,
         caller_id: str,
     ) -> ResolvedCall | None:
-        """``Foo.named(..)``: the class, when its body declares that constructor.
+        """``Foo.named(..)`` or ``p.Foo.named(..)``: the class, when its body declares it.
 
         A Dart named or factory constructor is no symbol, so the call binds to
         its class, as ``Foo(..)`` does. A static member of the name is a symbol
-        and is left to the member tiers. Ceiling: a prefixed ``p.Foo.named(..)``
-        is not captured with ``Foo`` as its receiver, so it binds nothing.
+        and is left to the member tiers. Through an import prefix the class is
+        the one the prefixed library declares, and the edge is a
+        ``module_alias`` one, as ``p.Foo(..)`` draws.
         """
-        class_name = call.receiver_name or ""
+        prefix, _, class_name = (call.receiver_name or "").rpartition(".")
+        if prefix:
+            return self._resolve_dart_prefixed_constructor(
+                file_path, call, caller_id, prefix, class_name
+            )
         if class_name not in self._known_type_names:
             return None
         hit = self._class_seen_from(file_path, caller_id, class_name, call.line)
         if hit is None or self._declares(hit.callee_id, call.target_name) is not None:
             return None
         return hit if call.target_name in self._dart_constructors_of(hit.callee_id) else None
+
+    def _resolve_dart_prefixed_constructor(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        prefix: str,
+        class_name: str,
+    ) -> ResolvedCall | None:
+        """``p.Foo.named(..)``: *prefix* must be an import prefix of the caller's file.
+
+        Only ``prefix.Class`` is read: a longer path is a field chain, not a
+        library qualifier. The class is looked up in the prefixed library and
+        what it re-exports, and must declare the constructor.
+        """
+        module_file = self._module_aliases.get(file_path, {}).get(prefix)
+        if module_file is None or "." in prefix or class_name not in self._known_type_names:
+            return None
+        declaring = self._barrel_origins.get(module_file, {}).get(class_name) or module_file
+        class_id = self._only_type_in(declaring, class_name)
+        if class_id is None or self._declares(class_id, call.target_name) is not None:
+            return None
+        if call.target_name not in self._dart_constructors_of(class_id):
+            return None
+        return ResolvedCall(caller_id, class_id, 0.88, call.line, "module_alias")
 
     def _dart_constructors_of(self, class_id: str) -> frozenset[str]:
         """The named constructors the Dart class *class_id* declares, scanned once."""

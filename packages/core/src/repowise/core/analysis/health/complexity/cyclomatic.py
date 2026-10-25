@@ -346,7 +346,11 @@ def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> 
             return True
         # A block with multiple named children (statements) is complex.
         if cur.type == "block":
-            named_children = [c for c in cur.children if c.is_named]
+            named_children = [
+                c
+                for c in cur.children
+                if c.is_named and "comment" not in c.type
+            ]
             if len(named_children) > 1:
                 return True
         for child in cur.children:

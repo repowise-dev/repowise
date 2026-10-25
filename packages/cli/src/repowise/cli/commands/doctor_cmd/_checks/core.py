@@ -270,8 +270,8 @@ def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
                     name,
                     False,
                     f"not downloaded; {count:,} files would index without symbols. "
-                    "Re-run 'repowise init' with network access, or set "
-                    "REPOWISE_GRAMMAR_DIR to a pre-staged grammar cache first",
+                    "Re-run 'repowise init' with network access, or stage a cache with "
+                    "'repowise grammars fetch <dir>' and set REPOWISE_GRAMMAR_DIR to it",
                 )
             )
     return rows

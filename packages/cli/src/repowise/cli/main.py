@@ -99,6 +99,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("status", "status_cmd:status_command"),
     ("next", "next_cmd:next_command"),
     ("doctor", "doctor_cmd:doctor_command"),
+    ("grammars", "grammars_cmd:grammars_group"),
     ("watch", "watch_cmd:watch_command"),
     ("serve", "serve_cmd:serve_command"),
     ("mcp", "mcp_cmd:mcp_command"),

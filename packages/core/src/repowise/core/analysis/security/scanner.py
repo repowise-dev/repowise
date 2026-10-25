@@ -14,6 +14,7 @@ from .credentials import (
     _PEM_BODY_LINE,
     _PEM_HEADER_LINE,
     _assignment_name,
+    _is_empty_public_env_assignment,
     _is_secret_value,
     _redaction,
     _snippet,
@@ -124,6 +125,8 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 # alone: the name is often quoted (``ENV["NEXT_PUBLIC_KEY"]``).
                 uncommented = masked_line(lineno, line, strings=False)
                 match = _match_starting_in(pattern, line, uncommented)
+                if match and _is_empty_public_env_assignment(line, match.end()):
+                    match = None
             else:
                 # Vendor key shapes are real wherever they sit, comments included.
                 match = pattern.search(line)

@@ -1222,7 +1222,7 @@ class DecisionRecord(Base):
     # Provenance
     source: Mapped[str] = mapped_column(
         String(32), nullable=False, default=DEFAULT_DECISION_SOURCE
-    )  # git_archaeology | inline_marker | adr | pr | comment | session | cli
+    )  # git_archaeology | inline_marker | adr | pr | comment | session | agent | cli
     evidence_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: The verbatim span this record's identity is keyed on, written once

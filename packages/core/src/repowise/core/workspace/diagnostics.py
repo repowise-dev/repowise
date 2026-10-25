@@ -30,7 +30,8 @@ from repowise.core.workspace.contracts import (
     same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
-from repowise.core.workspace.network_probe import UNRECOGNISED_CALL_FILES_STAT
+from repowise.core.workspace.matching.common import AMBIGUOUS_PROVIDER, shared_idl
+from repowise.core.workspace.network_probe import UNRECOGNISED_CALL_FILES_STAT, outside_runtime
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,8 @@ class UnmatchedReason:
     NO_PROVIDER = "no_provider"
     #: The only matching provider(s) live in the same repo + service, so the
     #: call is intra-service and intentionally not surfaced as a cross-repo link.
+    #: Such a consumer is served, so it goes to ``in_service_consumers``, never
+    #: to the unmatched list.
     INTERNAL_ONLY = "internal_only"
     #: A cross-service provider with a matching id exists, but no link was
     #: formed (e.g. an HTTP path that only the candidate pass could bridge and
@@ -58,6 +61,9 @@ class UnmatchedReason:
     #: The call targets a literal third-party host (Stripe, Formspree, …) that is
     #: not a workspace service, so it is intentionally excluded from matching.
     EXTERNAL_HOST = "external_host"
+    #: Two or more repos serve the call's route and neither its host nor its
+    #: base says which one it reaches, so it links to none of them.
+    AMBIGUOUS_PROVIDER = "ambiguous_provider"
 
 
 #: The closed set, for the wire copies that have to agree with it.
@@ -66,6 +72,7 @@ UNMATCHED_REASON_VALUES = (
     UnmatchedReason.INTERNAL_ONLY,
     UnmatchedReason.UNLINKED,
     UnmatchedReason.EXTERNAL_HOST,
+    UnmatchedReason.AMBIGUOUS_PROVIDER,
 )
 
 
@@ -118,6 +125,9 @@ class OrphanProvider:
     file_path: str
     contract_id: str
     contract_type: str
+    #: Other files of the same repo and service declaring the same id, such as
+    #: a table's model and its migration. One orphan, not one per file.
+    other_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -315,6 +325,10 @@ class ExtractionDiagnostics:
     unmatched_consumers: list[UnmatchedConsumer] = field(default_factory=list)
     unmatched_by_reason: dict[str, int] = field(default_factory=dict)
     orphan_providers: list[OrphanProvider] = field(default_factory=list)
+    #: Consumers whose only provider is their own repo + service: served, not
+    #: cross-repo, so kept out of ``unmatched_consumers``. Reason is always
+    #: :attr:`UnmatchedReason.INTERNAL_ONLY`.
+    in_service_consumers: list[UnmatchedConsumer] = field(default_factory=list)
     #: Workspace-wide rollups of the per-repo layer split.
     providers_by_layer: dict[str, int] = field(default_factory=dict)
     consumers_by_layer: dict[str, int] = field(default_factory=dict)
@@ -335,6 +349,9 @@ class ExtractionDiagnostics:
     #: contract (:mod:`.network_probe`): calls no dialect recognised. None when
     #: no repo was probed (an artifact older than the probe).
     unrecognised_call_files: dict[str, int] | None = None
+    #: HTTP consumers that formed a cross-repo link. None on an artifact
+    #: written before this count, which only knew which calls were read.
+    http_consumers_linked: int | None = None
 
     @property
     def unrecognised_call_file_count(self) -> int | None:
@@ -354,16 +371,57 @@ class ExtractionDiagnostics:
         artifact predates the probe, since a ratio over located calls alone
         reads 100% whatever was missed.
         """
+        seen = self.http_calls_seen
+        if seen is None:
+            return None
+        return self.http_consumers_read / seen
+
+    @property
+    def http_consumers_read(self) -> int:
+        """HTTP consumer contracts read, linked or not."""
+        return sum(r.consumers_by_type.get("http", 0) for r in self.repo_breakdown)
+
+    @property
+    def http_calls_seen(self) -> int | None:
+        """The coverage denominator: calls read, calls located, unread files.
+
+        None when it is zero or the artifact predates the network probe.
+        """
         missed = self.unrecognised_call_file_count
         if missed is None:
             return None
-        http_consumers = sum(
-            r.consumers_by_type.get("http", 0) for r in self.repo_breakdown
+        seen = self.http_consumers_read + self.http_consumers_unresolved + missed
+        return seen or None
+
+    def http_unlinked(self, repo: str | None = None) -> tuple[dict[str, int], int]:
+        """Read HTTP calls that linked to no other service: per reason, and in-service.
+
+        A call served inside its own repo and service is counted apart, never as
+        unmatched. *repo* narrows both counts to one member.
+        """
+        by_reason: dict[str, int] = defaultdict(int)
+        for u in self.unmatched_consumers:
+            if u.contract_type == "http" and repo in (None, u.repo):
+                by_reason[u.reason] += 1
+        in_service = sum(
+            1
+            for u in self.in_service_consumers
+            if u.contract_type == "http" and repo in (None, u.repo)
         )
-        denominator = http_consumers + self.http_consumers_unresolved + missed
-        if denominator == 0:
+        return dict(by_reason), in_service
+
+    @property
+    def http_link_coverage(self) -> float | None:
+        """Share of the calls seen that linked to another service's provider.
+
+        Same denominator as :attr:`http_consumer_coverage`, so a call that was
+        read but matched nothing counts against it. None where that one is
+        None, or when the artifact predates the linked count.
+        """
+        seen = self.http_calls_seen
+        if seen is None or self.http_consumers_linked is None:
             return None
-        return http_consumers / denominator
+        return self.http_consumers_linked / seen
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -375,10 +433,13 @@ class ExtractionDiagnostics:
             "unmatched_consumers": [u.to_dict() for u in self.unmatched_consumers],
             "unmatched_by_reason": self.unmatched_by_reason,
             "orphan_providers": [o.to_dict() for o in self.orphan_providers],
+            "in_service_consumers": [u.to_dict() for u in self.in_service_consumers],
             "providers_by_layer": self.providers_by_layer,
             "consumers_by_layer": self.consumers_by_layer,
             "http_consumers_unresolved": self.http_consumers_unresolved,
             "http_consumer_coverage": self.http_consumer_coverage,
+            "http_consumers_linked": self.http_consumers_linked,
+            "http_link_coverage": self.http_link_coverage,
             "symbol_identity": {r: v.to_dict() for r, v in sorted(self.symbol_identity.items())},
             "schema_coverage": self.schema_coverage.to_dict(),
             "code_api": self.code_api.to_dict(),
@@ -392,6 +453,14 @@ class ExtractionDiagnostics:
         schema = data.get("schema_coverage") or {}
         code = data.get("code_api") or {}
         openapi = data.get("openapi") or {}
+        unmatched = [_unmatched_from_dict(u) for u in data.get("unmatched_consumers", [])]
+        in_service = [_unmatched_from_dict(u) for u in data.get("in_service_consumers", [])]
+        by_reason = dict(data.get("unmatched_by_reason", {}))
+        # An artifact written before in-service consumers were split out lists
+        # them as unmatched; move them so every reader sees one shape.
+        in_service += [u for u in unmatched if u.reason == UnmatchedReason.INTERNAL_ONLY]
+        unmatched = [u for u in unmatched if u.reason != UnmatchedReason.INTERNAL_ONLY]
+        by_reason.pop(UnmatchedReason.INTERNAL_ONLY, None)
         return cls(
             total_providers=data.get("total_providers", 0),
             total_consumers=data.get("total_consumers", 0),
@@ -410,26 +479,19 @@ class ExtractionDiagnostics:
                 )
                 for r in data.get("repo_breakdown", [])
             ],
-            unmatched_consumers=[
-                UnmatchedConsumer(
-                    repo=u.get("repo", ""),
-                    file_path=u.get("file_path", ""),
-                    contract_id=u.get("contract_id", ""),
-                    contract_type=u.get("contract_type", ""),
-                    reason=u.get("reason", UnmatchedReason.NO_PROVIDER),
-                )
-                for u in data.get("unmatched_consumers", [])
-            ],
-            unmatched_by_reason=data.get("unmatched_by_reason", {}),
+            unmatched_consumers=unmatched,
+            unmatched_by_reason=by_reason,
             orphan_providers=[
                 OrphanProvider(
                     repo=o.get("repo", ""),
                     file_path=o.get("file_path", ""),
                     contract_id=o.get("contract_id", ""),
                     contract_type=o.get("contract_type", ""),
+                    other_files=list(o.get("other_files", [])),
                 )
                 for o in data.get("orphan_providers", [])
             ],
+            in_service_consumers=in_service,
             providers_by_layer=data.get("providers_by_layer", {}),
             consumers_by_layer=data.get("consumers_by_layer", {}),
             http_consumers_unresolved=data.get("http_consumers_unresolved", 0),
@@ -459,7 +521,18 @@ class ExtractionDiagnostics:
             ),
             openapi=OpenApiCoverage.from_dict(openapi),
             unrecognised_call_files=data.get("unrecognised_call_files"),
+            http_consumers_linked=data.get("http_consumers_linked"),
         )
+
+
+def _unmatched_from_dict(u: dict[str, Any]) -> UnmatchedConsumer:
+    return UnmatchedConsumer(
+        repo=u.get("repo", ""),
+        file_path=u.get("file_path", ""),
+        contract_id=u.get("contract_id", ""),
+        contract_type=u.get("contract_type", ""),
+        reason=u.get("reason", UnmatchedReason.NO_PROVIDER),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +552,8 @@ def _classify_unmatched(
     """Return the :class:`UnmatchedReason` for an unmatched *consumer*."""
     if consumer.meta.get("external"):
         return UnmatchedReason.EXTERNAL_HOST
+    if consumer.meta.get(AMBIGUOUS_PROVIDER):
+        return UnmatchedReason.AMBIGUOUS_PROVIDER
     candidates = providers_by_norm_id.get(normalize_contract_id(consumer.contract_id))
     if not candidates:
         return UnmatchedReason.NO_PROVIDER
@@ -506,7 +581,11 @@ def build_diagnostics(
     contract. Omitting it costs the coverage figures, not the rest.
     """
     stats_by_repo = extraction_stats or {}
-    providers = [c for c in contracts if c.role == "provider"]
+    matched_consumers, matched_providers, weak_links = _matched_endpoints(links)
+    contracts = _runtime_contracts(contracts, matched_consumers)
+    # A vendored proto copy is counted with its repo's rows, never as an orphan.
+    vendored = shared_idl(contracts)
+    providers = [c for c in contracts if c.role == "provider" and id(c) not in vendored]
     consumers = [c for c in contracts if c.role == "consumer"]
 
     # Per-repo breakdown ----------------------------------------------------
@@ -546,55 +625,17 @@ def build_diagnostics(
             )
         )
 
-    # Matched endpoint sets (normalized) ------------------------------------
-    matched_consumers: set[tuple[str, str, str]] = set()
-    matched_providers: set[tuple[str, str, str]] = set()
-    weak_links = 0
-    for lk in links:
-        consumer_id = lk.consumer_contract_id or lk.contract_id
-        matched_consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, consumer_id))
-        matched_providers.add(_contract_key(lk.provider_repo, lk.provider_file, lk.contract_id))
-        if lk.confidence <= WEAK_LINK_CONFIDENCE_THRESHOLD:
-            weak_links += 1
-
     providers_by_norm_id: dict[str, list[Contract]] = defaultdict(list)
     for p in providers:
         providers_by_norm_id[normalize_contract_id(p.contract_id)].append(p)
 
-    # Unmatched consumers, grouped by reason --------------------------------
-    unmatched: list[UnmatchedConsumer] = []
+    unmatched, in_service = _unmatched_consumers(
+        consumers, matched_consumers, providers_by_norm_id
+    )
     by_reason: dict[str, int] = defaultdict(int)
-    for c in consumers:
-        key = _contract_key(c.repo, c.file_path, c.contract_id)
-        # A binding is wiring its queue's consumers are matched through, not a call.
-        if key in matched_consumers or c.meta.get("kind") == TOPIC_KIND_BINDING:
-            continue
-        reason = _classify_unmatched(c, providers_by_norm_id)
-        by_reason[reason] += 1
-        unmatched.append(
-            UnmatchedConsumer(
-                repo=c.repo,
-                file_path=c.file_path,
-                contract_id=c.contract_id,
-                contract_type=c.contract_type,
-                reason=reason,
-            )
-        )
-
-    # Orphan providers — declared but never consumed ------------------------
-    orphans: list[OrphanProvider] = []
-    for p in providers:
-        key = _contract_key(p.repo, p.file_path, p.contract_id)
-        if key in matched_providers:
-            continue
-        orphans.append(
-            OrphanProvider(
-                repo=p.repo,
-                file_path=p.file_path,
-                contract_id=p.contract_id,
-                contract_type=p.contract_type,
-            )
-        )
+    for u in unmatched:
+        by_reason[u.reason] += 1
+    orphans = _orphan_providers(providers, matched_providers)
 
     identity = {
         role: SymbolIdentity(
@@ -651,6 +692,7 @@ def build_diagnostics(
         unmatched_consumers=unmatched,
         unmatched_by_reason=dict(sorted(by_reason.items())),
         orphan_providers=orphans,
+        in_service_consumers=in_service,
         providers_by_layer=dict(sorted(prov_by_layer_all.items())),
         consumers_by_layer=dict(sorted(cons_by_layer_all.items())),
         # Summed from the stats, not from the per-repo breakdown: a repo whose
@@ -664,7 +706,108 @@ def build_diagnostics(
         code_api=code_api,
         openapi=OpenApiCoverage.from_stats(stats_by_repo),
         unrecognised_call_files=_unrecognised_call_files(stats_by_repo),
+        http_consumers_linked=sum(
+            1
+            for c in consumers
+            if c.contract_type == "http"
+            and _contract_key(c.repo, c.file_path, c.contract_id) in matched_consumers
+        ),
     )
+
+
+def _matched_endpoints(
+    links: list[ContractLink],
+) -> tuple[set[tuple[str, str, str]], set[tuple[str, str, str]], int]:
+    """Normalized (consumer, provider) endpoint keys the links reach, and the weak count."""
+    consumers: set[tuple[str, str, str]] = set()
+    providers: set[tuple[str, str, str]] = set()
+    weak = 0
+    for lk in links:
+        consumer_id = lk.consumer_contract_id or lk.contract_id
+        consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, consumer_id))
+        providers.add(_contract_key(lk.provider_repo, lk.provider_file, lk.contract_id))
+        if lk.confidence <= WEAK_LINK_CONFIDENCE_THRESHOLD:
+            weak += 1
+    return consumers, providers, weak
+
+
+def _runtime_contracts(
+    contracts: list[Contract], matched_consumers: set[tuple[str, str, str]]
+) -> list[Contract]:
+    """*contracts* less the unlinked consumers in tooling and build files.
+
+    A script polling a dev server is not a call of the running system, so it is
+    left out of every count here, as the network probe leaves those files out
+    of its own. One that linked stays: the link shows it reaches a service.
+    Ceiling: the origin is path-only, so a product folder named ``scripts/``
+    reads as tooling too; a classifier that reads the package layout would
+    narrow it, and it belongs in ``code_origin`` when it comes.
+    """
+    return [
+        c
+        for c in contracts
+        if c.role != "consumer"
+        or _contract_key(c.repo, c.file_path, c.contract_id) in matched_consumers
+        or not outside_runtime(c.file_path)
+    ]
+
+
+def _unmatched_consumers(
+    consumers: list[Contract],
+    matched_consumers: set[tuple[str, str, str]],
+    providers_by_norm_id: dict[str, list[Contract]],
+) -> tuple[list[UnmatchedConsumer], list[UnmatchedConsumer]]:
+    """Consumers that formed no link: (unmatched, served in their own service)."""
+    unmatched: list[UnmatchedConsumer] = []
+    in_service: list[UnmatchedConsumer] = []
+    for c in consumers:
+        key = _contract_key(c.repo, c.file_path, c.contract_id)
+        # A binding is wiring its queue's consumers are matched through, not a call.
+        if key in matched_consumers or c.meta.get("kind") == TOPIC_KIND_BINDING:
+            continue
+        reason = _classify_unmatched(c, providers_by_norm_id)
+        row = UnmatchedConsumer(
+            repo=c.repo,
+            file_path=c.file_path,
+            contract_id=c.contract_id,
+            contract_type=c.contract_type,
+            reason=reason,
+        )
+        (in_service if reason == UnmatchedReason.INTERNAL_ONLY else unmatched).append(row)
+    return unmatched, in_service
+
+
+def _orphan_providers(
+    providers: list[Contract], matched_providers: set[tuple[str, str, str]]
+) -> list[OrphanProvider]:
+    """Providers no consumer reaches, one row per repo, service and id.
+
+    A table declared in a model and again in its migration is one endpoint, so
+    the copies fold into ``other_files``. A group any consumer reached is not
+    an orphan, whichever copy the link landed on.
+    """
+    groups: dict[tuple[str, str | None, str], list[Contract]] = {}
+    for p in providers:
+        key = (p.repo, p.service, normalize_contract_id(p.contract_id))
+        groups.setdefault(key, []).append(p)
+    orphans: list[OrphanProvider] = []
+    for members in groups.values():
+        if any(
+            _contract_key(p.repo, p.file_path, p.contract_id) in matched_providers
+            for p in members
+        ):
+            continue
+        first = members[0]
+        orphans.append(
+            OrphanProvider(
+                repo=first.repo,
+                file_path=first.file_path,
+                contract_id=first.contract_id,
+                contract_type=first.contract_type,
+                other_files=sorted({p.file_path for p in members} - {first.file_path}),
+            )
+        )
+    return orphans
 
 
 def _unrecognised_call_files(

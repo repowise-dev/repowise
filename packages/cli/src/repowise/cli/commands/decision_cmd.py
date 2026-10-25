@@ -8,6 +8,7 @@ from pathlib import Path
 
 import click
 import structlog
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -56,15 +57,7 @@ def _resolve_decision_repo(path: str | None, fmt: str = "table", *, needs_store:
     """
 
     target = resolve_command_target(path=path)
-    target.notice(notice_console(fmt), command="decision")
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        repo_path = primary
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
+    repo_path = target.narrow(notice_console(fmt), command="decision", repo_option=False)
     return _checkout_with_index(repo_path, fmt) if needs_store else repo_path
 
 
@@ -1138,7 +1131,7 @@ def _print_health_lists(health: dict) -> None:
         "Stale decisions",
         health["stale_decisions"],
         5,
-        lambda d: f"{d.id[:8]}  {d.title[:50]}  (staleness: {d.staleness_score:.2f})",
+        lambda d: f"{d.id[:8]}  {escape(d.title)}  (staleness: {d.staleness_score:.2f})",
     )
     _print_capped("yellow", "Ungoverned hotspots", health["ungoverned_hotspots"], 10, str)
     _print_capped(
@@ -1146,7 +1139,7 @@ def _print_health_lists(health: dict) -> None:
         "Proposed decisions",
         health["proposed_awaiting_review"],
         5,
-        lambda d: f"{d.id[:8]}  {d.title[:50]}  (source: {d.source})",
+        lambda d: f"{d.id[:8]}  {escape(d.title)}  (source: {d.source})",
     )
 
 

@@ -563,6 +563,9 @@ health-fail-at: medium
 | `health-fail-at` | `REPOWISE_HEALTH_FAIL_AT` | `--fail-at` | Lowest failing severity: `medium`, `high` (default), `critical`. |
 
 Findings that do not fail warn. On GitLab, set `REPOWISE_HEALTH: "true"`.
+With `--format github`, each failing finding's annotation ends in a one-line
+fix hint, and a failing run names the `repowise health check` command that
+reproduces it locally, in the job log and the summary.
 
 ### Before an agent commits or pushes
 
@@ -798,6 +801,9 @@ These run, but the summary counts them apart and JSON lists them:
 | `selected.basis` | what drove each selection |
 | `selected.why` | the `--explain` answer per selected test |
 
+- Importing `pkg.a.b` counts as importing `pkg/__init__.py` and
+  `pkg/a/__init__.py`, since Python runs them first (basis `package-init`).
+
 ### Conftest changes
 
 A change reaching a `conftest.py` only through imports selects tests asking for
@@ -808,13 +814,21 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
   module-level code uses the change, or the conftest imports it only for side
   effects (`selected.broadcast`).
 - Everything runs when a fixture request is unreadable (computed name, mark in
-  a variable, config `usefixtures`), the conftest loads plugins or is
+  a variable, a request name in a string, `exec`/`eval`/`compile`, config
+  `usefixtures`), the conftest loads plugins or is
   unreadable, or the index predates this; the reasons name the cause.
 
 <details><summary>Edge cases and ceilings</summary>
 
 - `monkeypatch.setattr(mod.Cls, "name", ...)` on an imported module or its
   class in an autouse fixture is left to the import check.
+- So is a bare cache reset there (`clear_*cache*()`, `reset_*cache*()`,
+  `invalidate_*cache*()`, no arguments, result unused). Ceiling: the name is
+  trusted, so a "reset" that also reconfigures shared state reaches tests
+  without their own import of it only through the import check.
+- `request.getfixturevalue(name)` is read when `name` is a test parameter that
+  one `parametrize` supplies from a literal list of names, or from a module
+  constant bound once to one.
 - Reading an imported module's literal constant, or calling its function that
   uses nothing it imports beyond standard modules that cannot load code by name
   (emptying a `functools` cache or standard container counts), reaches only a

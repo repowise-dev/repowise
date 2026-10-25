@@ -75,7 +75,7 @@ def _run(monkeypatch, *args: str) -> tuple[str, str]:
             patch.object(health_module, "console", console),
         ):
             resolve.return_value = SimpleNamespace(
-                is_workspace=False, repo_path=Path("."), notice=lambda *a, **k: None
+                is_workspace=False, repo_path=Path("."), narrow=lambda *a, **k: Path(".")
             )
             result = runner.invoke(cli, ["health", *args])
     assert result.exit_code == 0, result.output

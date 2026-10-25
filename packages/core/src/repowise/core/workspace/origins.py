@@ -83,9 +83,14 @@ class LinkStrategy(StrEnum):
     #: The consumer's host or base token maps to a service, but no route there serves
     #: its path: a service-level dependency, not a route link.
     HOST_ONLY = "host_only"
+    #: A gateway's config forwards a path prefix to the service: the gateway's
+    #: own edge to it, and a call through the gateway linked on the path the
+    #: route forwards (see :mod:`.service_names.spring_gateway`).
+    GATEWAY_ROUTE = "gateway_route"
     #: The consumer's base is unread and exactly one service serves the path.
     UNIQUE_PATH = "unique_path"
-    #: The consumer's base is unread and several services serve the path; linked to each.
+    #: The consumer's base is unread and several services of one repo serve the path;
+    #: linked to each. Services in two or more repos are not linked at all.
     AMBIGUOUS_PATH = "ambiguous_path"
     #: Matched only after stripping mount, version or base prefixes from both paths.
     PREFIX_STRIPPED = "prefix_stripped"
@@ -102,6 +107,7 @@ STRATEGY_CONFIDENCE: dict[LinkStrategy, float] = {
     LinkStrategy.SHARED_TABLE: 1.0,
     LinkStrategy.SERVICE_MAPPED: 1.0,
     LinkStrategy.HOST_ONLY: 0.5,
+    LinkStrategy.GATEWAY_ROUTE: 1.0,
     LinkStrategy.UNIQUE_PATH: 1.0,
     LinkStrategy.AMBIGUOUS_PATH: 0.6,
     LinkStrategy.PREFIX_STRIPPED: 0.6,

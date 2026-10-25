@@ -255,3 +255,61 @@ def test_single_repo_path_refuses_an_unknown_alias(fake_workspace, chdir):
 
     with pytest.raises(click.ClickException):
         target.single_repo_path()
+
+
+# ---------------------------------------------------------------------------
+# narrow: the one repo, with the scope said in one line
+# ---------------------------------------------------------------------------
+
+
+def _said(target, **kwargs) -> tuple[Path, str]:
+    from io import StringIO
+
+    from rich.console import Console
+
+    buf = StringIO()
+    picked = target.narrow(Console(file=buf, width=300), command="health", **kwargs)
+    return picked, buf.getvalue()
+
+
+def test_narrow_from_the_root_names_the_primary_not_the_workspace(fake_workspace, chdir):
+    chdir(fake_workspace)
+    picked, said = _said(resolve_command_target())
+
+    assert picked == fake_workspace / "backend"
+    assert said.strip() == (
+        f"[workspace] health reads one repo: backend (primary) of 2 in {fake_workspace.name}; "
+        "pass --repo <alias> for another"
+    )
+
+
+def test_narrow_names_the_picked_alias(fake_workspace, chdir):
+    chdir(fake_workspace)
+    picked, said = _said(resolve_command_target(repo_alias="frontend"))
+
+    assert picked == fake_workspace / "frontend"
+    assert "reads one repo: frontend of 2" in said and "--repo" not in said
+
+
+def test_narrow_hint_matches_a_command_without_repo_option(fake_workspace, chdir):
+    chdir(fake_workspace)
+    _, said = _said(resolve_command_target(), repo_option=False)
+
+    assert "--repo" not in said and "run it inside another member repo" in said
+
+
+def test_narrow_inside_a_member_repo_says_so(fake_workspace, chdir):
+    chdir(fake_workspace / "backend")
+    picked, said = _said(resolve_command_target())
+
+    assert picked == fake_workspace / "backend"
+    # The tag survives Rich markup, and no --workspace promise is made.
+    assert said.strip() == (
+        f"[single-repo] health reads backend, a repo inside workspace {fake_workspace.name}"
+    )
+
+
+def test_narrow_is_silent_for_an_explicit_single_repo(fake_workspace):
+    picked, said = _said(resolve_command_target(path=str(fake_workspace / "backend")))
+
+    assert picked == fake_workspace / "backend" and said == ""

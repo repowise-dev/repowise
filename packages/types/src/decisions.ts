@@ -82,6 +82,7 @@ export function decisionStatusRank(status: string): number {
  */
 export const DECISION_SOURCES = [
   "adr",
+  "agent",
   "cli",
   "comment",
   "commit",
@@ -122,6 +123,7 @@ export const DECISION_SOURCE_LABELS: Record<
   string
 > = {
   adr: "ADR",
+  agent: "Agent",
   cli: "Manual",
   comment: "Comment",
   commit: "Commit",

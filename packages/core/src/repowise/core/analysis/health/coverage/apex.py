@@ -23,6 +23,15 @@ is one test method's coverage of one class or trigger (``ApexCodeCoverage``)::
      "ApexClassOrTrigger": {"Id": "01p...", "Name": "AccountService"},
      "Coverage": {"coveredLines": [3, 4], "uncoveredLines": [8]}}
 
+- a deploy or validation result (``sf project deploy start --test-level ...
+  --json``), whose ``result.details.runTestResult.codeCoverage`` is a list, or
+  one object when a single class was covered, of counts only::
+
+    {"name": "AccountService", "type": "Class",
+     "numLocations": "28", "numLocationsNotCovered": "6"}
+
+  Counts may be strings. No line sets are stated, so none are reported.
+
 Names are API names, never file paths: the file path is the name plus
 ``.cls`` for an ``ApexClass`` id (``01p`` prefix) or ``.trigger`` for an
 ``ApexTrigger`` id (``01q``), and the resolver maps that to the one file of
@@ -35,7 +44,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .model import ContextCoverageReport, CoverageReport, TestCoverage, file_coverage
+from .model import (
+    ContextCoverageReport,
+    CoverageReport,
+    FileCoverage,
+    TestCoverage,
+    file_coverage,
+)
 
 #: Salesforce key prefixes of the two Apex metadata types coverage names.
 _EXT_BY_ID_PREFIX = {"01p": ".cls", "01q": ".trigger"}
@@ -47,6 +62,14 @@ def _dicts(value: Any) -> list[dict]:
     return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
+def _deploy_entries(result: dict) -> list[dict]:
+    """``details.runTestResult.codeCoverage`` of a deploy result: a list, or one object."""
+    details = result.get("details")
+    run = details.get("runTestResult") if isinstance(details, dict) else None
+    cc = run.get("codeCoverage") if isinstance(run, dict) else None
+    return _dicts([cc] if isinstance(cc, dict) else cc)
+
+
 def _load(text: str) -> tuple[list[dict], list[dict]]:
     """``(entries, records)`` from any of the CLI's JSON shapes, empty when unreadable."""
     try:
@@ -56,10 +79,13 @@ def _load(text: str) -> tuple[list[dict], list[dict]]:
     if isinstance(data, list):
         return _dicts(data), []
     result = data.get("result", data) if isinstance(data, dict) else None
-    coverage = result.get("coverage") if isinstance(result, dict) else None
-    if not isinstance(coverage, dict):
+    if not isinstance(result, dict):
         return [], []
-    return _dicts(coverage.get("coverage")), _dicts(coverage.get("records"))
+    deploy = _deploy_entries(result)
+    coverage = result.get("coverage")
+    if not isinstance(coverage, dict):
+        return deploy, []
+    return _dicts(coverage.get("coverage")) + deploy, _dicts(coverage.get("records"))
 
 
 def _apex_path(name: Any, sf_id: Any) -> str | None:
@@ -76,11 +102,58 @@ def _lines(raw: Any) -> list[int]:
     return [n for n in raw if isinstance(n, int) and not isinstance(n, bool) and n > 0]
 
 
+def _count(value: Any) -> int | None:
+    """A Salesforce count, which the metadata API sends as a string or a number."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _deploy_path(entry: dict) -> str | None:
+    """``Name.trigger`` for a ``Trigger`` entry, ``Name.cls`` for a class."""
+    name = entry.get("name")
+    kind = entry.get("type")
+    if not isinstance(kind, str):
+        return _apex_path(name, entry.get("id"))
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name.strip() + (".trigger" if kind.strip().lower() == "trigger" else ".cls")
+
+
+def parse_deploy_entry(entry: dict) -> FileCoverage | None:
+    """One deploy ``codeCoverage`` entry as counts only, ``None`` when nothing is measurable.
+
+    The payload states ``numLocations`` and ``numLocationsNotCovered`` and no
+    covered-line list, so the line sets stay empty ("not stated", see
+    ``FileCoverage``) rather than being invented.
+    """
+    path = _deploy_path(entry)
+    total = _count(entry.get("numLocations"))
+    missed = _count(entry.get("numLocationsNotCovered"))
+    # Zero locations (an interface, say) has nothing to measure.
+    if path is None or total is None or missed is None or total <= 0:
+        return None
+    missed = min(max(missed, 0), total)
+    return file_coverage(path, [], [], total=total, hit=total - missed)
+
+
 def parse_apex(text: str) -> CoverageReport:
     """Per-class aggregate coverage from Salesforce CLI JSON."""
     entries, _ = _load(text)
     files = []
     for entry in entries:
+        if "numLocations" in entry:
+            deployed = parse_deploy_entry(entry)
+            if deployed is not None:
+                files.append(deployed)
+            continue
         path = _apex_path(entry.get("name"), entry.get("id"))
         lines = entry.get("lines")
         if path is None or not isinstance(lines, dict):

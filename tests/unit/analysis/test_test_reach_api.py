@@ -61,7 +61,12 @@ def test_maps_drop_name_guessed_calls_and_the_legacy_conftest_hint() -> None:
         {"tests/test_a.py": True, "tests/conftest.py": True, "src/a.py": False},
         [
             *_call("tests/test_a.py", "src/a.py", origin="global_unique"),
-            ("tests/conftest.py", "tests/test_a.py", "dynamic_uses", {"hint_source": "pytest_conftest"}),
+            (
+                "tests/conftest.py",
+                "tests/test_a.py",
+                "dynamic_uses",
+                {"hint_source": "pytest_conftest"},
+            ),
         ],
     )
     maps = build_walk_maps(g)
@@ -119,7 +124,10 @@ def test_the_import_tier_answers_where_calls_are_silent() -> None:
 def test_the_helper_hop_passes_through_a_module_only_tests_import() -> None:
     g = _graph(
         {"tests/test_a.py": True, "tests/support.py": False, "src/a.py": False},
-        [("tests/test_a.py", "tests/support.py", "imports"), ("tests/support.py", "src/a.py", "imports")],
+        [
+            ("tests/test_a.py", "tests/support.py", "imports"),
+            ("tests/support.py", "src/a.py", "imports"),
+        ],
     )
     maps = build_walk_maps(g)
     assert "src/a.py" not in reaching_by_tier(maps, ["src/a.py"], helpers=False)
@@ -233,14 +241,21 @@ def test_a_file_the_index_lacks_is_new_and_an_index_without_tests_says_nothing()
 
 def test_a_types_only_file_is_type_only_whatever_reaches_it() -> None:
     maps = build_walk_maps(_graph({"src/types.py": False, "tests/test_x.py": True}, []))
-    content = "from typing import Protocol\n\nclass Store(Protocol):\n    def get(self) -> int: ...\n"
+    content = (
+        "from typing import Protocol\n\nclass Store(Protocol):\n    def get(self) -> int: ...\n"
+    )
     rows = reach_states(maps, ["src/types.py"], contents={"src/types.py": content})
     assert rows["src/types.py"].state == "type_only"
 
 
 def test_a_test_the_change_touches_is_evidence_for_the_file_it_names_or_imports() -> None:
     g = _graph(
-        {"tests/test_other.py": True, "tests/test_imports.py": True, "src/a.py": False, "src/b.py": False},
+        {
+            "tests/test_other.py": True,
+            "tests/test_imports.py": True,
+            "src/a.py": False,
+            "src/b.py": False,
+        },
         [("tests/test_imports.py", "src/b.py", "imports")],
     )
     maps = build_walk_maps(g)
@@ -248,7 +263,12 @@ def test_a_test_the_change_touches_is_evidence_for_the_file_it_names_or_imports(
         maps,
         ["src/a.py", "src/b.py", "src/new.py"],
         # test_a.py is new to the index; conftest.py is support, never evidence.
-        changed_tests=["tests/test_a.py", "tests/test_imports.py", "tests/conftest.py", "tests/test_new.py"],
+        changed_tests=[
+            "tests/test_a.py",
+            "tests/test_imports.py",
+            "tests/conftest.py",
+            "tests/test_new.py",
+        ],
     )
     assert rows["src/a.py"].reached.via == "changed-test"
     assert rows["src/a.py"].reached.tests == ["tests/test_a.py"]
@@ -261,7 +281,12 @@ def test_a_test_the_change_touches_is_evidence_for_the_file_it_names_or_imports(
 
 def test_inline_tests_reach_their_own_file() -> None:
     g = _graph(
-        {"src/lib.rs": False, "pkg/store.go": False, "pkg/store_test.go": True, "other/x.go": False},
+        {
+            "src/lib.rs": False,
+            "pkg/store.go": False,
+            "pkg/store_test.go": True,
+            "other/x.go": False,
+        },
         [],
     )
     rows = reach_states(
@@ -298,8 +323,16 @@ def test_go_inline_tests_are_the_test_files_of_the_same_directory() -> None:
     ("path", "content", "expected"),
     [
         ("src/api.d.ts", "export const x: number;", True),
-        ("src/t.ts", "import type {A} from './a';\nexport type B = A;\nexport interface C {}\n", True),
-        ("src/t.ts", "import {A} from './a';\ndeclare const v: A;\nexport type {Q} from './q';\n", True),
+        (
+            "src/t.ts",
+            "import type {A} from './a';\nexport type B = A;\nexport interface C {}\n",
+            True,
+        ),
+        (
+            "src/t.ts",
+            "import {A} from './a';\ndeclare const v: A;\nexport type {Q} from './q';\n",
+            True,
+        ),
         ("src/t.ts", "export type B = string;\nexport const k = 1;\n", False),
         ("src/t.ts", "import './polyfill';\nexport type B = string;\n", False),
         ("src/t.ts", "export enum E { a }\n", False),
@@ -313,7 +346,11 @@ def test_go_inline_tests_are_the_test_files_of_the_same_directory() -> None:
             "__all__ = ['Row']\n",
             True,
         ),
-        ("src/types.py", "from typing import Protocol\nclass P(Protocol):\n    x: int\nLIMIT = 3\n", False),
+        (
+            "src/types.py",
+            "from typing import Protocol\nclass P(Protocol):\n    x: int\nLIMIT = 3\n",
+            False,
+        ),
         ("src/types.py", "def f():\n    return 1\n", False),
         ("src/types.py", "class P(Protocol\n", False),
         ("src/c.go", "package c\n", False),
@@ -324,7 +361,9 @@ def test_type_only_files(path: str, content: str, expected: bool) -> None:
 
 
 def test_a_test_file_is_never_type_only() -> None:
-    assert not is_type_only("tests/test_types.py", "from typing import TypedDict\nclass R(TypedDict): ...\n")
+    assert not is_type_only(
+        "tests/test_types.py", "from typing import TypedDict\nclass R(TypedDict): ...\n"
+    )
     assert not is_type_only("src/types.py", "class R(TypedDict): ...\n", is_test=True)
 
 
@@ -464,3 +503,64 @@ def test_read_under_stays_inside_the_checkout(tmp_path) -> None:
     assert read("../secret.ts") is None
     assert read(str(tmp_path / "secret.ts").replace("\\", "/")) is None
     assert read("missing.ts") is None
+
+
+def test_helper_and_closure_rankings_identical() -> None:
+    """Helper and closure walks rank tests consistently without recomputing edited sets."""
+    g = _graph(
+        {
+            "tests/test_h1.py": True,
+            "tests/test_h2.py": True,
+            "tests/helper.py": False,
+            "src/target.py": False,
+            "tests/test_c1.py": True,
+            "src/m1.py": False,
+            "src/m2.py": False,
+            "src/leaf.py": False,
+        },
+        [
+            ("tests/test_h1.py", "tests/helper.py", "imports"),
+            ("tests/test_h2.py", "tests/helper.py", "imports"),
+            ("tests/helper.py", "src/target.py", "imports"),
+            ("tests/test_c1.py", "src/m1.py", "imports"),
+            ("src/m1.py", "src/m2.py", "imports"),
+            ("src/m2.py", "src/leaf.py", "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    rows = reach_states(maps, ["src/target.py", "src/leaf.py"])
+    assert rows["src/target.py"].state == "reached"
+    assert rows["src/target.py"].reached.via == "import-graph"
+    assert rows["src/target.py"].reached.tests == ["tests/test_h1.py", "tests/test_h2.py"]
+
+    assert rows["src/leaf.py"].state == "reached"
+    assert rows["src/leaf.py"].reached.via == "import-graph"
+    assert rows["src/leaf.py"].reached.tests == ["tests/test_c1.py"]
+
+
+def test_rank_free_reached_ness_returns_same_keys_as_reach_states() -> None:
+    """Rank-free reach states returns the same reached keys without paying for ranking."""
+    g = _graph(
+        {
+            "tests/test_a.py": True,
+            "tests/test_b.py": True,
+            "src/a.py": False,
+            "src/b.py": False,
+            "src/unreached.py": False,
+        },
+        [
+            *_call("tests/test_a.py", "src/a.py"),
+            ("tests/test_b.py", "src/b.py", "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    targets = ["src/a.py", "src/b.py", "src/unreached.py"]
+    ranked = reach_states(maps, targets, rank=True)
+    unranked = reach_states(maps, targets, rank=False)
+
+    assert ranked.keys() == unranked.keys()
+    for k in targets:
+        assert ranked[k].state == unranked[k].state
+    assert {k for k, r in ranked.items() if r.state == "reached"} == {
+        k for k, r in unranked.items() if r.state == "reached"
+    }

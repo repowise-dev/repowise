@@ -13,10 +13,19 @@ from repowise.core.workspace.contracts import (
 )
 from repowise.core.workspace.origins import LinkStrategy, link_confidence, match_type_for
 
+#: ``meta`` key on a consumer two or more repos could serve, none of them
+#: placed by its host or base: it links to none of them (see :meth:`MatchState.refuse`).
+AMBIGUOUS_PROVIDER = "ambiguous_provider"
+
 
 def internal(provider: Contract, consumer: Contract) -> bool:
     """One program calling itself, which no pass links."""
     return same_service(provider.repo, provider.service, consumer.repo, consumer.service)
+
+
+def spans_repos(providers: list[Contract]) -> bool:
+    """Whether *providers* sit in two or more repos, so the route alone cannot pick one."""
+    return len({p.repo for p in providers}) > 1
 
 
 @dataclass
@@ -38,14 +47,22 @@ class MatchState:
 
     @classmethod
     def build(cls, contracts: list[Contract]) -> MatchState:
-        """Index providers by normalized id; consumers resolved to a third party are dropped."""
+        """Index providers by normalized id; consumers resolved to a third party are dropped.
+
+        A vendored ``.proto`` copy (see :func:`shared_idl`) is not indexed.
+        """
         provider_index: dict[str, list[Contract]] = defaultdict(list)
         consumers: list[Contract] = []
+        vendored = shared_idl(contracts)
         for c in contracts:
             if c.role == "provider":
-                provider_index[normalize_contract_id(c.contract_id)].append(c)
-            elif not c.meta.get("external"):
-                consumers.append(c)
+                if id(c) not in vendored:
+                    provider_index[normalize_contract_id(c.contract_id)].append(c)
+            else:
+                # Stamped by this run's passes, never carried from a stored row.
+                c.meta.pop(AMBIGUOUS_PROVIDER, None)
+                if not c.meta.get("external"):
+                    consumers.append(c)
         return cls(provider_index, consumers)
 
     def unmatched(self, contract_type: str) -> list[Contract]:
@@ -58,6 +75,14 @@ class MatchState:
 
     def mark_served(self, consumer: Contract) -> None:
         """Mark *consumer* as served internally so later matching passes skip it."""
+        self.matched.add(id(consumer))
+
+    def refuse(self, consumer: Contract) -> None:
+        """Link *consumer* to nothing: its route is served by two or more repos and
+        neither its host nor its base says which one it calls. Later passes skip
+        it, and diagnostics count it as an ambiguous provider, also when its own
+        service declares the route too."""
+        consumer.meta[AMBIGUOUS_PROVIDER] = True
         self.matched.add(id(consumer))
 
     def add(
@@ -92,6 +117,9 @@ class MatchState:
             normalize_contract_id(provider.contract_id) if via_alias else "",
         )
         if dedup_key in self.seen:
+            # The same call written twice in one file: already linked, so later
+            # passes must not place it again.
+            self.matched.add(id(consumer))
             return False
         self.seen.add(dedup_key)
         self.links.append(
@@ -147,12 +175,89 @@ def find_matching_keys(consumer_id: str, provider_index: dict[str, list[Contract
             if wildcard_key in provider_index:
                 return [wildcard_key]
 
-    # gRPC wildcard: grpc::service/* matches grpc::service/Method
+    if normalized.startswith("grpc::"):
+        return _grpc_keys(normalized, provider_index)
+
+    # Any other wildcard: kind::name/* matches kind::name/Member
     if normalized.endswith("/*"):
         prefix = normalized[:-1]  # "grpc::service/"
         return [k for k in provider_index if k.startswith(prefix)]
 
     return []
+
+
+def _same_grpc_service(provider: str, consumer: str) -> bool:
+    """Whether two lower-cased service names are one service.
+
+    A generated stub often names its service without the proto package
+    (``CurrencyService``) while the ``.proto`` names it with one
+    (``hipstershop.CurrencyService``): a bare name meets a qualified one on its
+    last segment. Two different packages are two services.
+    """
+    if provider == consumer:
+        return True
+    if "." in provider and "." in consumer:
+        return False
+    return provider.rpartition(".")[2] == consumer.rpartition(".")[2]
+
+
+def _grpc_keys(normalized: str, provider_index: dict[str, list[Contract]]) -> list[str]:
+    """gRPC index keys *normalized* reaches: the same method, or any for ``/*``."""
+    service, _, method = normalized[len("grpc::") :].rpartition("/")
+    if not service:
+        return []
+    keys = []
+    for k in provider_index:
+        if not k.startswith("grpc::"):
+            continue
+        k_service, _, k_method = k[len("grpc::") :].rpartition("/")
+        if (method == "*" or k_method == method) and _same_grpc_service(k_service, service):
+            keys.append(k)
+    return keys
+
+
+def _grpc_service(contract: Contract) -> str:
+    """The lower-cased service segment of a gRPC contract id."""
+    return normalize_contract_id(contract.contract_id)[len("grpc::") :].rpartition("/")[0]
+
+
+def shared_idl(contracts: list[Contract]) -> set[int]:
+    """The ``id()`` of each ``.proto`` provider row that is a vendored copy, not the server.
+
+    Services keep a copy of the protos they call (often the whole estate's
+    file), so a service declared in 2+ repos is served by whichever of them
+    registers it in code. With no code server anywhere, the one copy outside
+    the repos that call the service stands; when that is not exactly one,
+    no copy is trusted. A service declared in one repo is untouched.
+    """
+    copies: dict[str, list[Contract]] = defaultdict(list)
+    servers: dict[str, set[str]] = defaultdict(set)
+    callers: dict[str, set[str]] = defaultdict(set)
+    for c in contracts:
+        if c.contract_type != "grpc":
+            continue
+        service = _grpc_service(c)
+        bare = service.rpartition(".")[2]
+        if c.role == "provider" and c.meta.get("source") == "proto":
+            copies[service].append(c)
+        elif c.role == "provider":
+            servers[bare].add(c.repo)
+        elif c.role == "consumer":
+            callers[bare].add(c.repo)
+    vendored: set[int] = set()
+    for service, rows in copies.items():
+        repos = {c.repo for c in rows}
+        if len(repos) < 2:
+            continue
+        bare = service.rpartition(".")[2]
+        if servers.get(bare):
+            keep = repos & servers[bare]
+        else:
+            keep = repos - callers.get(bare, set())
+            if len(keep) != 1:
+                keep = set()
+        vendored.update(id(c) for c in rows if c.repo not in keep)
+    return vendored
 
 
 def prefer_target_repo(providers: list[Contract], consumer: Contract) -> list[Contract]:
@@ -177,8 +282,10 @@ def prefer_target_repo(providers: list[Contract], consumer: Contract) -> list[Co
 
 
 __all__ = [
+    "AMBIGUOUS_PROVIDER",
     "MatchState",
     "find_matching_keys",
     "internal",
     "prefer_target_repo",
+    "spans_repos",
 ]

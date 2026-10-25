@@ -63,17 +63,18 @@ async def run_cross_repo_hooks(
 
     timings = PhaseTimingRecorder()
 
-    # One read connection per repo serves all five phases; only the HTTP
-    # extractor reads it, so nothing is opened when that is off. Deferred:
+    # One read connection per repo serves all five phases; the HTTP and code
+    # extractors read it, so nothing is opened when both are off. Deferred:
     # extraction opens only the repos it re-extracts and the packages they
     # import, so a run with one repo changed loads one repo's symbols.
+    contracts = ws_config.contracts
     workspace_index = (
         await open_workspace_index(ws_config, workspace_root, deferred=True)
-        if ws_config.contracts.detect_http
+        if contracts.detect_http or contracts.detect_code_api
         else WorkspaceIndex({})
     )
     try:
-        settled = await _run_phases(
+        settled, consumers_moved = await _run_phases(
             ws_config, workspace_root, changed_repos, timings, workspace_index
         )
     finally:
@@ -96,8 +97,10 @@ async def run_cross_repo_hooks(
         stamp_analysis_config(ws_config, workspace_root)
 
     # Each updated repo snapshotted its components before contracts were
-    # extracted at its new commit; measure them now.
-    for alias in changed_repos:
+    # extracted at its new commit; measure them now. An unchanged provider
+    # whose cross-repo consumers moved is measured too; no other member's
+    # store is opened.
+    for alias in dict.fromkeys([*changed_repos, *sorted(consumers_moved)]):
         entry = ws_config.get_repo(alias)
         if entry is not None:
             await _refresh_contract_facts((workspace_root / entry.path).resolve())
@@ -167,10 +170,12 @@ async def _run_phases(
     changed_repos: list[str],
     timings: PhaseTimingRecorder,
     workspace_index: WorkspaceIndex,
-) -> bool:
+) -> tuple[bool, set[str]]:
     """The five cross-repo phases, over an already-open workspace index.
 
-    True when extraction and the system graph both succeeded.
+    Returns whether extraction and the system graph both succeeded, and the
+    repos whose provided contracts or their cross-repo consumer links differ
+    from the previous extraction.
     """
     from ..contracts import ContractStore, load_contract_store
 
@@ -203,7 +208,21 @@ async def _run_phases(
         _conformance_phase(ws_config, workspace_root, timings, system_graph)
 
     _log.info("Cross-repo phase timings (seconds): %s", timings.timings)
-    return extraction_ok and system_graph is not None
+    moved = _contract_counts_moved(previous_store, store) if extraction_ok else set()
+    return extraction_ok and system_graph is not None, moved
+
+
+def _contract_counts_moved(previous: ContractStore, store: ContractStore) -> set[str]:
+    """Repos whose provided contracts or consumer-link counts differ between the stores.
+
+    Exactly what each repo's component snapshot measures
+    (:func:`~repowise.core.events.snapshot.contract_consumer_counts`), so a
+    member outside this set has nothing to re-measure.
+    """
+    from ...events.snapshot import contract_consumer_counts
+
+    before, after = contract_consumer_counts(previous), contract_consumer_counts(store)
+    return {alias for alias in {*before, *after} if before.get(alias) != after.get(alias)}
 
 
 async def _boundaries_phase(
@@ -428,4 +447,5 @@ def _conformance_phase(
         # The true total, not the capped list — a workspace with 500 cycles
         # must not report the same number as one with 50.
         cycles=conformance.total_cycles if conformance else 0,
+        cycles_capped=conformance.total_capped if conformance else False,
     )

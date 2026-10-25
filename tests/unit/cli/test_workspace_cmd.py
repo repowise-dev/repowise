@@ -582,6 +582,7 @@ class TestWorkspaceDiagnosticsReport:
             consumers_by_layer={} if clean else {"regex": 12},
             http_consumers_unresolved=3,
             unrecognised_call_files={"web": 0},
+            http_consumers_linked=4,
         )
         if not clean:
             diag.unmatched_consumers = [
@@ -589,6 +590,9 @@ class TestWorkspaceDiagnosticsReport:
                 UnmatchedConsumer("web", "b.ts", "http::GET::/y", "http", "mystery"),
             ]
             diag.unmatched_by_reason = {"no_provider": 1, "mystery": 1}
+            diag.in_service_consumers = [
+                UnmatchedConsumer("api", "s.py", "data::t", "data", "internal_only"),
+            ]
             diag.orphan_providers = [
                 OrphanProvider("api", f"r{i}.py", f"http::GET::/o{i}", "http")
                 for i in range(orphans)
@@ -608,11 +612,13 @@ class TestWorkspaceDiagnosticsReport:
         assert "Extraction coverage" in out
         assert "Providers   30 (20 index, 10 regex)" in out
         assert "Consumers   12 (12 regex)" in out
-        assert "HTTP calls  9 of 12 resolved" in out
-        assert "75%" in out
+        assert "HTTP calls  4 of 12 linked to another service (33%); 9 read (75%)" in out
+        assert "read, not linked: 1 match no declared route, 1 mystery" in out
         assert "2 unmatched consumer(s)" in out
-        assert "no matching provider found" in out
+        assert "dangling: no repo declares" in out
+        assert "web http::GET::/x (a.ts)" in out
         assert "mystery" in out
+        assert "1 consumer(s) served inside their own service, not cross-repo (1 data)" in out
         assert "23 orphan provider(s)" in out
         assert "http::GET::/o19" in out
         assert "http::GET::/o20" not in out
@@ -650,6 +656,9 @@ class TestWorkspaceDiagnosticsReport:
         assert [r["repo"] for r in data["repo_breakdown"]] == ["web"]
         assert len(data["unmatched_consumers"]) == 2
         assert data["orphan_providers"] == []
+        assert data["in_service_consumers"] == []
+        assert data["http_consumers_linked"] == 4
+        assert data["http_link_coverage"] == pytest.approx(4 / 12)
         # Totals and roll-ups are workspace-wide, not filtered.
         assert data["total_providers"] == 30
         assert data["unmatched_by_reason"] == {"no_provider": 1, "mystery": 1}
@@ -674,8 +683,70 @@ class TestWorkspaceDiagnosticsReport:
         )
         assert result.exit_code == 0, result.output
         assert "2 unmatched consumer(s)" in result.output
-        # Reason counts follow the filtered list, not the workspace roll-up.
-        assert "intra-service" not in result.output
+        # An old artifact's in-service row is read as in-service, and the
+        # repo filter drops it with the rest of api's rows.
+        assert "served inside their own service, not cross-repo" not in result.output
+
+    def test_read_not_linked_split_adds_up(self, runner, tmp_path):
+        """Read minus linked equals the split, built from real diagnostics."""
+        from repowise.core.workspace.contracts import Contract, ContractLink
+        from repowise.core.workspace.diagnostics import build_diagnostics
+        from repowise.core.workspace.system_graph import SystemGraph, save_system_graph
+
+        _write_workspace_config(
+            tmp_path,
+            repos=[{"path": "api", "alias": "api"}, {"path": "web", "alias": "web"}],
+        )
+
+        def c(repo, cid, role, file):
+            return Contract(repo=repo, contract_id=cid, contract_type="http", role=role,
+                            file_path=file, symbol_name="f", confidence=0.8)
+
+        contracts = [
+            c("api", "http::GET::/u", "provider", "h.py"),
+            c("api", "http::GET::/own", "provider", "h.py"),
+            c("api", "http::GET::/own", "consumer", "self.py"),
+            c("web", "http::GET::/u", "consumer", "a.ts"),
+            c("web", "http::GET::/none", "consumer", "b.ts"),
+        ]
+        links = [
+            ContractLink(contract_id="http::GET::/u", contract_type="http", match_type="exact",
+                         confidence=0.9, provider_repo="api", provider_file="h.py",
+                         provider_symbol="f", provider_service=None, consumer_repo="web",
+                         consumer_file="a.ts", consumer_symbol="f", consumer_service=None),
+        ]
+        diag = build_diagnostics(contracts, links, {"web": {"call_files_unrecognised": 1}})
+        save_system_graph(SystemGraph(diagnostics=diag, generated_at="t"), tmp_path)
+
+        out = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path)]).output
+        assert "HTTP calls  1 of 4 linked to another service (25%); 3 read (75%)" in out
+        assert "read, not linked: 1 match no declared route, 1 served inside their own service" in out
+        assert "web http::GET::/none (b.ts)" in out
+
+    def test_tables_collapse_to_one_line_per_repo(self, runner, tmp_path):
+        from repowise.core.workspace.diagnostics import OrphanProvider, UnmatchedConsumer
+        from repowise.core.workspace.system_graph import load_system_graph, save_system_graph
+
+        self._save(tmp_path, orphans=1)
+        graph = load_system_graph(tmp_path)
+        diag = graph.diagnostics
+        diag.unmatched_consumers = [
+            UnmatchedConsumer("web", f"q{i}.ts", f"data::t{i % 2}", "data", "no_provider")
+            for i in range(4)
+        ] + [UnmatchedConsumer("web", "g.ts", "grpc::S/M", "grpc", "no_provider")]
+        diag.orphan_providers += [
+            OrphanProvider("api", "m.py", "data::users", "data", ["mig.py"]),
+            OrphanProvider("api", "n.py", "data::zones", "data"),
+        ]
+        save_system_graph(graph, tmp_path)
+
+        out = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path)]).output
+        assert "5 unmatched consumer(s)" in out
+        assert "web grpc::S/M (g.ts)" in out
+        assert "web reads 2 table(s): t0, t1" in out
+        assert "3 orphan provider(s)" in out
+        assert "api http::GET::/o0 (r0.py)" in out
+        assert "api declares 2 table(s) nothing reads: users, zones" in out
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +805,20 @@ class TestWorkspaceCheck:
         assert "violation" in result.output.lower()
         assert "cycle" in result.output.lower()
         assert "frontend !-> db" in result.output
+
+    def test_a_tangle_past_the_budget_reads_at_least(self, runner, tmp_path, monkeypatch):
+        import repowise.core.workspace.cycles as cy
+
+        self._write_config_with_rule(tmp_path, [])
+        names = [f"s{i}" for i in range(5)]
+        self._save_graph(tmp_path, [(s, t) for s in names for t in names if s != t])
+        monkeypatch.setattr(cy, "MAX_ENUMERATED_CYCLES", 60)
+        check = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        metrics = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert check.exit_code == 1, check.output
+        assert "at least 60 dependency cycle(s) (the 50 shortest listed)" in check.output
+        assert "at least 60 cycle(s)" in check.output
+        assert "at least 60" in metrics.output, metrics.output
 
     def test_a_cycle_closed_by_an_event_fails_and_names_each_leg(self, runner, tmp_path):
         from repowise.core.workspace.system_graph import (

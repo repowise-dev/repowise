@@ -39,6 +39,7 @@ def _declared_rows() -> list[object]:
     rows: list[object] = list(_HANDLERS)
     for dialect in (*topic.DIALECTS, *socket.DIALECTS):
         rows.extend(getattr(dialect, "calls", ()))
+        rows.extend(getattr(dialect, "receivers", ()))
     for lang in grpc.LANGUAGES:
         rows.extend(lang.rules)
     return rows
@@ -127,6 +128,13 @@ def _consumer(path: str, **meta) -> Contract:
     return _http("web", "consumer", path, ContractOrigin.NAME_HEURISTIC, **meta)
 
 
+def _in_service(contract: Contract, service: str) -> Contract:
+    """*contract* in *service* of its repo, in a file of its own."""
+    contract.service = service
+    contract.file_path = f"{service}/{contract.file_path}"
+    return contract
+
+
 @pytest.mark.parametrize(
     ("contracts", "service_bases", "strategy"),
     [
@@ -148,8 +156,8 @@ def _consumer(path: str, **meta) -> Contract:
         ),
         (
             [
-                _provider("users", "/users"),
-                _provider("admin", "/users"),
+                _in_service(_provider("api", "/users"), "users"),
+                _in_service(_provider("api", "/users"), "admin"),
                 _consumer("/users", base_stripped=True),
             ],
             {},

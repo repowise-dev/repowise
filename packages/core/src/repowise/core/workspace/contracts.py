@@ -72,7 +72,16 @@ CONTRACTS_FILENAME = "contracts.json"
 # service-name map (:mod:`.service_names`), and ``service_links`` holds the
 # service-level edges for calls whose host is known but whose route is not;
 # each repo also counts the files whose network calls produced no contract
-# (see :mod:`.network_probe`).
+# (see :mod:`.network_probe`). Gateway routes (Spring Cloud Gateway, Zuul)
+# rewrite the calls they forward and add gateway-to-service service links.
+# Go routes from chi, fiber, gorilla/mux and Go 1.22 method patterns are read.
+# Next.js route handlers exported from a brace list are read, and the probe
+# skips tooling and build files.
+# A data contract in a file that opens SQLite, or in a repo that names SQLite
+# and no server database, carries ``meta['embedded']`` and links only within
+# its repo, on either side.
+# An HTTP or gRPC consumer whose id two or more repos serve, with nothing
+# placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -256,8 +265,11 @@ class ContractStore:
     #: run and must be re-extracted rather than trusted.
     repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
     #: Service-level edges (:attr:`.origins.LinkStrategy.HOST_ONLY`): a consumer
-    #: whose host names a workspace repo while no route there serves its path.
-    #: Kept out of ``contract_links``, which only ever pairs two contracts.
+    #: whose host names a workspace repo while no route there serves its path;
+    #: and a gateway's edge to each service it routes to
+    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). Kept
+    #: out of ``contract_links``, which pairs two contracts; a call linked
+    #: through a gateway on its forwarded path is a ``gateway_route`` link there.
     service_links: list[ContractLink] = field(default_factory=list)
     #: The service-name map matching used (:mod:`.service_names`): each name, its
     #: repo, and the source and file that placed it, plus the fingerprint that
@@ -587,6 +599,8 @@ async def run_contract_extraction(
     from .extractors.base import make_exclude_predicate
     from .extractors.masstransit import MessageTypeIndex
     from .matching import annotate_consumer_targets, run_matching
+    from .matching.base_paths import apply_base_paths
+    from .matching.third_party import mark_third_party_calls
     from .service_names import ServiceNameMap, build_service_name_map, service_names_fingerprint
 
     contract_config = ws_config.contracts
@@ -668,8 +682,10 @@ async def run_contract_extraction(
         names = ServiceNameMap.from_dict(prior.service_names)
     else:
         names = await asyncio.to_thread(build_service_name_map, repo_paths, workspace_root)
+    apply_base_paths(all_contracts, names.base_paths)
     annotate_consumer_targets(all_contracts, contract_config.service_bases, names)
-    matched = run_matching(all_contracts)
+    mark_third_party_calls(all_contracts)
+    matched = run_matching(all_contracts, names.routes)
     links = matched.links
 
     # Merge manual links

@@ -33,7 +33,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   [`impacted-tests`](#repowise-impacted-tests-revspec), [`coverage`](#repowise-coverage),
   [`components`](#repowise-components), [`packages`](#repowise-packages), [`changes`](#repowise-changes),
   [`suspects`](#repowise-suspects), [`events`](#repowise-events), [`report
-  assessment`](#repowise-report-assessment-path)
+  assessment`](#repowise-report-assessment-path), [`report estate`](#repowise-report-estate-path)
 - **Decisions:** [`decision`](#repowise-decision)
 - **Agent wiring:** [`agents`](#repowise-agents), [`generate-claude-md`](#repowise-generate-claude-md-path), [`AGENTS.md`](#agentsmd), [`attribution`](#repowise-attribution)
 - **Hooks and distill:** [`distill`](#repowise-distill-command), [`expand`](#repowise-expand-ref),
@@ -49,7 +49,7 @@ Grouped by task; `PATH` and flags are in each command's section.
   set-default`](#repowise-workspace-set-default-alias), [`workspace diagnostics`](#repowise-workspace-diagnostics),
   [`workspace check`](#repowise-workspace-check), [`workspace metrics`](#repowise-workspace-metrics-path), [`workspace
   impacted-tests`](#repowise-workspace-impacted-tests-repopath)
-- **Maintenance:** [`doctor`](#repowise-doctor-path), [`whats-new`](#repowise-whats-new),
+- **Maintenance:** [`doctor`](#repowise-doctor-path), [`grammars fetch`](#repowise-grammars-fetch-dir), [`whats-new`](#repowise-whats-new),
   [`telemetry`](#repowise-telemetry), [`plugins`](#repowise-plugins), [`config hints`](#repowise-config-hints-onoff),
   [`login`](#repowise-login), [`logout`](#repowise-logout), [`whoami`](#repowise-whoami),
   [`publish`](#repowise-publish-path), [`delete`](#repowise-delete-repo_id), [`uninstall`](#repowise-uninstall-path),
@@ -60,6 +60,9 @@ Grouped by task; `PATH` and flags are in each command's section.
 ## Workspace auto-detect (cross-cutting)
 
 Most commands detect a workspace root and route to it, with a one-line `[workspace] …` notice.
+A command that reads one repo (`health`, `dead-code`, `events`, `next`, `doc-drift`, `coverage`,
+`decision`, `impacted-tests`, `costs` without `--all`) names it: `[workspace] health reads one repo:
+carts (primary) of 5 in sockshop; pass --repo <alias> for another`.
 
 | Flag | What it does | Default |
 |------|--------------|---------|
@@ -1028,7 +1031,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all`. | `all` |
-| `--source` | `adr`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all`. | `all` |
+| `--source` | `adr`, `agent`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all`. | `all` |
 | `--proposed` | `--status proposed`. | off |
 | `--stale-only` | Only stale. | off |
 | `--limit` | Max rows listed. | `100` |
@@ -1418,6 +1421,8 @@ repowise events --since 7d --kind bus_factor_drop
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--path` | Repo path. | cwd |
+| `--repo` | One workspace repo (implies workspace mode). | primary repo |
+| `--no-workspace` | Force single-repo mode. | auto-detect |
 | `--since` | `7d`, `12h` or ISO date. | |
 | `--kind` | Only this kind. Repeatable. | all kinds |
 | `--limit` | 1 to 10000. | `200` |
@@ -1528,6 +1533,37 @@ lists components with no owner team.
   naming.
 - A period summary and a method appendix (what git alone cannot attest) both state the window. Unknown counts apart, never as failure; people counted, never named.
 - Shares the `changes export` evidence pass: missing checklists are built and stored a few at a time, after stderr says how many and how long.
+
+---
+
+### `repowise report estate [PATH]`
+
+One document for a whole workspace, read from what `repowise update --workspace` stored; nothing is extracted again.
+
+```bash
+repowise report estate --format html --out estate.html
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--sections`, `--format`, `--out` | As `assessment`. | all, `markdown`, stdout |
+
+| Section | Holds | Basis |
+|---|---|---|
+| `estate-summary` | Repos configured, indexed, read and in the graph; contracts read at an older commit than the index; services; the graph's evidence state with its reasons | `measured`; services `inferred`; `unresolved` when evidence is insufficient |
+| `estate-map` | Service dependency edges by kind with strategy and confidence; architecture score, propagation cost, core, cycles, roles | `inferred`; score `unresolved` when evidence is insufficient, and named partial beside it when partial |
+| `estate-contracts` | Providers, consumers and links by type and repo pair; HTTP calls read, located but unresolved, and files calling out through code no extractor reads; each consumer that matched no provider in another service (consumer, file, target, contract id), capped with a count of the rest; calls to public hosts counted apart | `measured` |
+| `estate-health` | Per repo: average file health from the workspace store's newest snapshot; churn hotspots (recent commit churn, not defects) and bug magnets from each index, with their top files; a repo with fewer than 2 commits indexed is listed as not measured | `measured`; `unresolved` without the store or any history |
+| `estate-seams` | Service pairs joined by an edge, ranked by link confidence x reach x (1 + co-change no contract explains), every input shown per pair; a fixed heuristic, not a calibrated risk | `inferred`; `unresolved` when evidence is insufficient |
+| `estate-start` | Services ranked by how many others a change to them reaches; per repo, the most central production files with the least written documentation | `inferred` |
+
+Outside a workspace it exits 1. A member with no index is listed as not indexed; one whose index was
+written by an older repowise is listed as behind (run `repowise update` there), and one whose index
+cannot be opened as unreadable. A section is a `Section(scope="workspace", report="estate")` in
+`repowise/core/report/sections/`; it runs once with a `WorkspaceReportContext`.
+
+The local server returns the same document as JSON at `GET /api/workspace/estate`, and the web UI
+shows it on the workspace **Estate report** page. Both call `report/estate.py::build_estate_document`.
 
 ---
 
@@ -2025,6 +2061,15 @@ repowise doctor --workspace --repair
   offline. After upgrading, **restart Claude/Codex/Cursor or any MCP client**.
 - **Distill:** validates `distill:` (unknown keys, bad permission values, unknown filters, non-positive store sizing);
   shows omission store size vs cap and whether the opt-in rewrite hook is installed (absence passes).
+
+### `repowise grammars fetch DIR`
+
+Download the grammars that otherwise download on first use (COBOL, Apex) into `DIR`, printing each with its cache
+state. Exits 1 if any fails. Copy `DIR` to the offline machine and set `REPOWISE_GRAMMAR_DIR` to it.
+
+```bash
+repowise grammars fetch ./grammars
+```
 
 ### `repowise whats-new`
 

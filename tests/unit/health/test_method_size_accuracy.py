@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from repowise.core.analysis.health.biomarkers import FileContext
+from repowise.core.analysis.health.biomarkers.brain_method import BrainMethodDetector
 from repowise.core.analysis.health.biomarkers.complex_method import ComplexMethodDetector
 from repowise.core.analysis.health.biomarkers.large_method import LargeMethodDetector
 from repowise.core.analysis.health.complexity.models import FunctionComplexity
@@ -49,6 +52,32 @@ def test_complex_method_prints_the_judged_ccn_beside_the_raw_one() -> None:
 def test_complex_method_reason_is_unchanged_without_a_dominant_dispatch() -> None:
     [finding] = ComplexMethodDetector().detect(_ctx(_fn(ccn=12)))
     assert finding.reason == "tokenize has cyclomatic complexity 12"
+    assert "judged_ccn" not in finding.details
+
+
+def _central(*functions: FunctionComplexity) -> FileContext:
+    """A file that clears brain_method's centrality gate (floor defaults to 8)."""
+    return replace(_ctx(*functions), dependents_count=10)
+
+
+def test_brain_method_prints_the_judged_ccn_beside_the_raw_one() -> None:
+    # The severity is graded on judged_ccn(fn), so the reason quotes it too.
+    fn = _fn(ccn=30, dispatch_share=0.6, dispatch_arm=2)
+    [finding] = BrainMethodDetector().detect(_central(fn))
+    assert finding.severity == "high"
+    assert finding.reason == (
+        "Brain Method: tokenize is 80 lines, CCN 15 "
+        "(30 counting every arm of its dispatch), in a file imported by 10 others"
+    )
+    assert finding.details["ccn"] == 30
+    assert finding.details["judged_ccn"] == 15
+
+
+def test_brain_method_reason_is_unchanged_without_a_dominant_dispatch() -> None:
+    [finding] = BrainMethodDetector().detect(_central(_fn(ccn=12)))
+    assert finding.reason == (
+        "Brain Method: tokenize is 80 lines, CCN 12, in a file imported by 10 others"
+    )
     assert "judged_ccn" not in finding.details
 
 
