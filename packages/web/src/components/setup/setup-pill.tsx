@@ -88,7 +88,7 @@ export function SetupPill({ repoId, compact = false }: { repoId: string; compact
         href={setupHref(repoId)}
         aria-label={label}
         title={label}
-        className="flex items-center justify-center rounded-md p-2 transition-colors hover:bg-[var(--color-bg-elevated)]"
+        className="flex items-center justify-center rounded-md p-2 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
       >
         <SetupRing done={done} />
       </Link>

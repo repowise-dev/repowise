@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import Link from "next/link";
 import { useFormatter, useTranslations } from "next-intl";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
@@ -125,10 +125,13 @@ function RowGroup({
   aside?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const headingId = useId();
   return (
-    <section className="mt-6 first:mt-0" aria-label={label}>
+    <section className="mt-6 first:mt-0" aria-labelledby={headingId}>
       <div className="mb-1 flex items-baseline justify-between gap-3">
-        <h2 className={MICRO}>{label}</h2>
+        <h2 id={headingId} className={MICRO}>
+          {label}
+        </h2>
         {aside}
       </div>
       {children}

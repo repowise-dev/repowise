@@ -30,13 +30,14 @@ export function useSetupControls(repoId: string) {
   const [confirmSyncOff, setConfirmSyncOff] = useState(false);
 
   const writesAllowed = data?.writes_allowed ?? false;
+  // One write at a time: each rolls back to the payload it started from.
   const writesOffTitle = writesAllowed ? undefined : t("writesOffShort");
 
   function hookSwitch(row: SetupRow, action: Extract<SetupAction, { kind: "hook" }>) {
     return (
       <Switch
         checked={action.enabled}
-        disabled={!writesAllowed || action.unavailable || writes.busy === `hook:${action.hook}`}
+        disabled={!writesAllowed || action.unavailable || writes.busy !== null}
         aria-label={text(row.title)}
         title={writesOffTitle}
         className={SWITCH_ON}
@@ -59,7 +60,7 @@ export function useSetupControls(repoId: string) {
           <Button
             variant="outline"
             size="sm"
-            disabled={!writesAllowed || writes.busy === `agent:${action.agentId}`}
+            disabled={!writesAllowed || writes.busy !== null}
             title={writesOffTitle}
             onClick={() => void writes.connect(action.agentId)}
           >
@@ -71,7 +72,7 @@ export function useSetupControls(repoId: string) {
           <Button
             variant="ghost"
             size="sm"
-            disabled={!writesAllowed || writes.busy === `agent:${action.agentId}`}
+            disabled={!writesAllowed || writes.busy !== null}
             title={writesOffTitle}
             aria-label={t("disconnectAgent", { agent: action.agentName })}
             onClick={() => void writes.disconnect(action.agentId)}
@@ -84,7 +85,7 @@ export function useSetupControls(repoId: string) {
           <Button
             variant="outline"
             size="sm"
-            disabled={!writesAllowed || writes.busy === "coverage"}
+            disabled={!writesAllowed || writes.busy !== null}
             title={writesOffTitle}
             onClick={() => void writes.addCoverage(action.path)}
           >

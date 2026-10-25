@@ -234,8 +234,8 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       tone: "waiting",
       status: msg("agent.statusWaiting"),
       detail: offer
-        ? msg("agent.detailWaitingOther", { agents: names, other: offer.display_name })
-        : msg("agent.detailWaiting", { agents: names }),
+        ? msg("agent.detailWaitingOther", { agents: names, count: connected.length, other: offer.display_name })
+        : msg("agent.detailWaiting", { agents: names, count: connected.length }),
       action: connectAction,
       prompt: prompt(`${names} is registered and has not called the index yet.`),
     };
@@ -420,8 +420,8 @@ export function deriveSetup(s: SetupResponse, o: DeriveOptions): SetupView {
     s.index.state === "behind" ? indexBehindRow(s, o) : null,
     (s.index.parse_error_count ?? 0) > 0 ? indexParseRow(s, o) : null,
   ].filter((r): r is SetupRow => r !== null);
-  if (indexProblems.length) attention.push(...indexProblems);
-  else essentials.push(indexRow(s, o));
+  attention.push(...indexProblems);
+  if (!indexProblems.length || s.index.state === "incomplete") essentials.push(indexRow(s, o));
 
   const silent = silentAgents(s, o);
   if (silent.length) attention.push(...silent.map((a) => agentSilentRow(a, o)));

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useFormatter, useTranslations } from "next-intl";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
+import { Button } from "@repowise-dev/ui/ui/button";
 import { hostedLink } from "@/lib/hosted";
 import type { RepoResponse } from "@/lib/api/types";
 import { SetupCommand, SetupRowView, StatusDot } from "./setup-row";
@@ -29,8 +30,19 @@ function SetupRowsBlock({
   label: string;
   rows: SetupRow[];
 }) {
+  const t = useTranslations("setup");
   const controls = useSetupControls(repoId);
-  const { data } = useSetupData(repoId);
+  const { data, error, isLoading, mutate } = useSetupData(repoId);
+  if (!data && error && !isLoading) {
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+        {t("loadFailed")}
+        <Button size="sm" variant="outline" onClick={() => void mutate()}>
+          {t("retry")}
+        </Button>
+      </p>
+    );
+  }
   if (!data) {
     return (
       <SkeletonRegion label={label} className="flex flex-col gap-2">

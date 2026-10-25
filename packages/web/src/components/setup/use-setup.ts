@@ -70,31 +70,38 @@ export function setupRememberedDone(repoId: string): boolean {
 
 const SEEN_KEY = (repoId: string) => `repowise:setup-agent-seen:${repoId}`;
 
-function readSeen(repoId: string): Record<string, string> {
+function readSeen(repoId: string): Record<string, string> | null {
   try {
     const raw = window.localStorage.getItem(SEEN_KEY(repoId));
-    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
   } catch {
-    return {};
+    return null;
   }
 }
 
-/** When this browser first saw each agent connected; feeds the 24h no-call rule. */
+/**
+ * When this browser first saw each agent connected; feeds the 24h no-call
+ * rule. On the first visit for a repo, agents already connected are dated
+ * from the index (init registers them then); one connected later is dated
+ * from when it was first seen here.
+ */
 function useAgentSeenAt(repoId: string, setup: SetupResponse | undefined) {
-  const [seen, setSeen] = useState<Record<string, string>>({});
+  // null until read from storage, so the 24h rule never runs on a guess.
+  const [seen, setSeen] = useState<Record<string, string> | null>(null);
   useEffect(() => {
+    if (!setup) return;
     const known = readSeen(repoId);
-    const next = { ...known };
-    for (const a of setup?.agents ?? []) {
-      if (a.connected && !next[a.id]) next[a.id] = new Date().toISOString();
+    const since = known === null ? setup.index.indexed_at : null;
+    const next = { ...(known ?? {}) };
+    for (const a of setup.agents ?? []) {
+      if (a.connected && !next[a.id]) next[a.id] = since ?? new Date().toISOString();
     }
-    if (Object.keys(next).length !== Object.keys(known).length) {
-      try {
-        window.localStorage.setItem(SEEN_KEY(repoId), JSON.stringify(next));
-      } catch {
-        /* storage blocked: the rule falls back to the index time */
-      }
+    try {
+      window.localStorage.setItem(SEEN_KEY(repoId), JSON.stringify(next));
+    } catch {
+      /* storage blocked: the rule falls back to the index time */
     }
     setSeen(next);
   }, [repoId, setup]);
@@ -106,7 +113,7 @@ export function useSetupView(repoId: string, repoName: string, setup: SetupRespo
   const format = useFormatter();
   const seen = useAgentSeenAt(repoId, setup);
   return useMemo<SetupView | null>(() => {
-    if (!setup) return null;
+    if (!setup || !seen) return null;
     const now = Date.now();
     return deriveSetup(setup, {
       repoName,

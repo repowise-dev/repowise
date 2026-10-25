@@ -20,7 +20,7 @@ describe("deriveSetup", () => {
     expect(agent.tone).toBe("waiting");
     expect(agent.detail).toEqual({
       key: "agent.detailWaitingOther",
-      values: { agents: "Claude Code", other: "Cursor" },
+      values: { agents: "Claude Code", count: 1, other: "Cursor" },
     });
     expect(agent.action).toEqual({ kind: "connect", agentId: "cursor", agentName: "Cursor" });
     expect(agent.command).toBe("repowise agents add --target=cursor");
@@ -51,6 +51,16 @@ describe("deriveSetup", () => {
     expect(row.prompt).toMatchObject({ fix: true, verify: "doctor", items: ["a.py", "b.py"] });
     // Skipped files do not undo a current index.
     expect(view.doneCount).toBe(2);
+  });
+
+  it("keeps the Not indexed row when an incomplete index also skipped files", () => {
+    const s = setupFixture();
+    const view = deriveSetup(
+      { ...s, index: { ...s.index, state: "incomplete", parse_error_count: 1, parse_error_files: ["a.py"] } },
+      OPTS,
+    );
+    expect(ids(view.attention)).toEqual(["index-parse"]);
+    expect(view.essentials[0]!.status).toEqual({ key: "index.statusIncomplete" });
   });
 
   it("flags an index that is behind HEAD", () => {
