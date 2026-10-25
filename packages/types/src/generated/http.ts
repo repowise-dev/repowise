@@ -4749,6 +4749,9 @@ export interface WorkspaceExtractionDiagnostics {
   http_link_coverage?: number | null;
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;
+  topic_names_unresolved?: number;
+  unrecognised_message_files?: Record<string, number> | null;
+  unrecognised_message_file_count?: number | null;
   symbol_identity?: Record<string, WorkspaceSymbolIdentity>;
   schema_coverage?: WorkspaceSchemaCoverage;
   code_api?: WorkspaceCodeApiCoverage;
@@ -4893,6 +4896,7 @@ export interface WorkspaceRepoDiagnostics {
   providers_by_layer?: Record<string, number>;
   consumers_by_layer?: Record<string, number>;
   http_consumers_unresolved?: number;
+  topic_names_unresolved?: number;
 }
 
 export interface WorkspaceRepoEntry {

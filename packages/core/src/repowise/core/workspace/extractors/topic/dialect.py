@@ -149,7 +149,11 @@ def call_contracts(
     offset: int,
     strings: FileStrings,
 ) -> list[Contract]:
-    """The contracts one call site of *call* yields."""
+    """The contracts one call site of *call* yields; *offset* is where its head starts.
+
+    A call whose name is refused is recorded by its opening parenthesis, which
+    every dialect reading the call shares wherever its head begins.
+    """
     keys, key_refused = (
         strings.resolve(args, call.routing_key) if call.routing_key else ([], False)
     )
@@ -161,9 +165,11 @@ def call_contracts(
             queues = call.declared.queues(ctx, args, call.queue, strings)
         if not queues:
             return []  # a binding with no readable queue binds nothing we can name
-    names, _ = strings.resolve(args, call.name, call.normalize)
+    names, refused = strings.resolve(args, call.name, call.normalize)
     if not names and call.declared is not None and call.queue is None:
         names = call.declared.queues(ctx, args, call.name, strings)
+    if refused and not names:
+        ctx.note_unresolved(ctx.content.find("(", offset))
     out: list[Contract] = []
     for name in names:
         kind, key, unresolved = call.kind, routing_key, key_refused

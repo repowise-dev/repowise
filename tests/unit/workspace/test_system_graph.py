@@ -358,6 +358,9 @@ def test_system_graph_json_shape_is_locked():
         "code_api",
         "unrecognised_call_files",
         "unrecognised_call_file_count",
+        "topic_names_unresolved",
+        "unrecognised_message_files",
+        "unrecognised_message_file_count",
     }
 
 

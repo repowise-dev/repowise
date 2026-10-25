@@ -105,7 +105,10 @@ After the dialects, `code_api.py` adds published-package contracts,
 `merge_openapi_providers` folds an OpenAPI operation into the code route it
 describes, `bind_symbol_ids` binds each contract to a symbol in the repo's index,
 and `network_probe.count_unrecognised_call_files` counts the files that call out
-with no consumer contract read from them.
+with no consumer contract read from them. It runs again over `MESSAGE_PROBE_ROWS`
+for files on a messaging SDK with no topic contract, kept apart from the HTTP
+figure. A topic dialect that locates a call but cannot settle its name records it
+with `ScanContext.note_unresolved`, summed into `topic_names_unresolved`.
 
 ### Matching
 

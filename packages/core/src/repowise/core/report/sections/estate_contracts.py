@@ -159,6 +159,40 @@ def _http_coverage(graph: Any) -> dict[str, Any]:
     )
 
 
+def _topic_coverage(graph: Any) -> dict[str, Any] | None:
+    """Topic contracts read beside the broker calls not named and the files on an unread SDK.
+
+    None on an artifact older than the messaging probe, which cannot say what it missed.
+    """
+    diag = graph.diagnostics
+    missed = diag.unrecognised_message_file_count
+    if missed is None:
+        return None
+    read = diag.topic_contracts_read
+    unresolved = diag.topic_names_unresolved
+    by_repo = [
+        f"{repo}: {n} file(s)"
+        for repo, n in sorted((diag.unrecognised_message_files or {}).items())
+        if n
+    ]
+    return check(
+        "topic-calls",
+        reason=(
+            f"{read} topic publish or subscribe call(s) read as contracts, {unresolved} located "
+            f"but the name not resolvable, {missed} file(s) using a messaging SDK no extractor reads"
+            if read or unresolved or missed
+            else "no broker call located, and no file uses a recognisable messaging SDK"
+        ),
+        details=capped(by_repo),
+        method=(
+            "topic contracts read, beside broker calls located whose topic or queue name is not "
+            "settled in the file and files importing a messaging SDK that yielded no topic contract"
+        ),
+        basis="measured",
+        data={"read": read, "unresolved": unresolved, "unrecognised_message_files": missed},
+    )
+
+
 def _dangling(graph: Any, store: Any) -> dict[str, Any]:
     rows = dangling_calls(graph, store)
     external = [r for r in rows if r["external"]]
@@ -198,7 +232,13 @@ async def collect(ctx: WorkspaceReportContext) -> list[dict[str, Any]]:
     if graph is None:
         return missing_graph("contracts", _METHOD)
     store = ctx.contract_store()
-    return [_contracts(graph, store), _http_coverage(graph), _dangling(graph, store)]
+    topics = _topic_coverage(graph)
+    return [
+        _contracts(graph, store),
+        _http_coverage(graph),
+        *([topics] if topics else []),
+        _dangling(graph, store),
+    ]
 
 
 report_sections.register(

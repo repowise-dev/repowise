@@ -372,6 +372,7 @@ class WorkspaceRepoDiagnostics(BaseModel):
     providers_by_layer: dict[str, int] = {}
     consumers_by_layer: dict[str, int] = {}
     http_consumers_unresolved: int = 0
+    topic_names_unresolved: int = 0
 
 
 class WorkspaceUnmatchedConsumer(BaseModel):
@@ -461,6 +462,12 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     #: ``None`` on an artifact written before the count existed.
     unrecognised_call_files: dict[str, int] | None = None
     unrecognised_call_file_count: int | None = None
+    #: Broker calls located whose topic or queue name could not be settled.
+    topic_names_unresolved: int = 0
+    #: Per repo, files using a messaging SDK and no topic contract.
+    #: ``None`` on an artifact written before the count existed.
+    unrecognised_message_files: dict[str, int] | None = None
+    unrecognised_message_file_count: int | None = None
 
     symbol_identity: dict[str, WorkspaceSymbolIdentity] = {}
     schema_coverage: WorkspaceSchemaCoverage = WorkspaceSchemaCoverage()

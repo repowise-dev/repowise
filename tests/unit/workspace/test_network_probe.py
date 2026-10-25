@@ -4,29 +4,36 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from repowise.core.ingestion.languages.registry import REGISTRY
-from repowise.core.workspace.network_probe import PROBE_ROWS, count_unrecognised_call_files
+from repowise.core.workspace.network_probe import (
+    MESSAGE_PROBE_ROWS,
+    PROBE_ROWS,
+    count_unrecognised_call_files,
+)
 
 
-def test_every_row_declares_what_the_probe_needs():
+@pytest.mark.parametrize("rows", [PROBE_ROWS, MESSAGE_PROBE_ROWS], ids=["http", "messaging"])
+def test_every_row_declares_what_the_probe_needs(rows):
     """A new row cannot skip a known language, its extensions or a compiling token."""
-    languages = [row.language for row in PROBE_ROWS]
+    languages = [row.language for row in rows]
     assert languages == sorted(languages)
     assert len(set(languages)) == len(languages)
-    for row in PROBE_ROWS:
+    for row in rows:
         assert REGISTRY.extensions_for([row.language]), row.language
         assert row.extensions, row.language
         assert all(ext.startswith(".") and ext == ext.lower() for ext in row.extensions)
         assert row.tokens, row.language
         for token in row.tokens:
             re.compile(token)
-    claimed = [ext for row in PROBE_ROWS for ext in row.extensions]
+    claimed = [ext for row in rows for ext in row.extensions]
     assert len(claimed) == len(set(claimed)), "one extension, one row"
 
 
-def _count(files: dict[str, str], consumers: set[str] | None = None) -> int:
-    rows = [(path, "." + path.rsplit(".", 1)[1], text) for path, text in files.items()]
-    return count_unrecognised_call_files(rows, consumers or set())
+def _count(files: dict[str, str], consumers: set[str] | None = None, rows=PROBE_ROWS) -> int:
+    walked = [(path, "." + path.rsplit(".", 1)[1], text) for path, text in files.items()]
+    return count_unrecognised_call_files(walked, consumers or set(), rows)
 
 
 def test_a_client_library_no_dialect_reads_is_counted():
@@ -88,3 +95,32 @@ def test_tooling_and_build_files_are_not_counted():
         "src/client.js": "fetch(url);\n",
     }
     assert _count(files) == 1
+
+
+def test_a_messaging_sdk_no_dialect_reads_is_counted_apart_from_http():
+    files = {
+        "photos/index.js": "const { PubSub } = require('@google-cloud/pubsub');\n",
+        "thumbs/main.py": "from google.cloud import pubsub_v1\n",
+        "bus/Sender.cs": "using Azure.Messaging.ServiceBus;\n",
+        "events/pub.go": 'import (\n\t"cloud.google.com/go/pubsub"\n)\n',
+        "Orders.kt": "import org.springframework.cloud.stream.function.StreamBridge\n",
+        "stream.ts": "await redis.xadd('orders', '*', 'id', id);\n",
+        "Kernel.php": "<?php\nuse PhpAmqpLib\\Connection\\AMQPStreamConnection;\n",
+    }
+    assert _count(files, rows=MESSAGE_PROBE_ROWS) == 7
+    assert _count(files) == 0  # never in the HTTP denominator
+
+
+def test_a_messaging_file_a_topic_contract_came_from_is_not_counted():
+    files = {"queue.py": "import pika\n", "worker.py": "from kafka import KafkaConsumer\n"}
+    assert _count(files, {"queue.py", "worker.py"}, MESSAGE_PROBE_ROWS) == 0
+
+
+def test_messaging_words_in_prose_comments_or_caches_are_not_counted():
+    files = {
+        "log.py": "# from kafka import KafkaProducer\nprint('read from nats')\n",
+        "cache.js": "const Redis = require('ioredis');\nredis.get('k');\n",
+        "natsy.py": "import natsort\n",
+        "Notes.java": "// import org.apache.kafka.clients.producer.KafkaProducer;\nclass N {}\n",
+    }
+    assert _count(files, rows=MESSAGE_PROBE_ROWS) == 0
