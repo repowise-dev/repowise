@@ -102,6 +102,13 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
+# v43: the code-origin classifier moved for several path shapes: a nested
+# ``tools/`` folder is production (only a repo-root or engineering ``tools/``
+# stays tooling), Python ``_vendor/`` folders and Salesforce static-resource
+# libraries read as vendored, and prefixed migration folders under ``db/`` read
+# as migrations. Stored origins decide health and dead-code scope, so those
+# files re-score.
+#
 # v42: a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
 # is production unless its name or a test directory says otherwise, and the
 # cross-file assertion pass reads the stored test flag, which moves scope and
@@ -407,7 +414,7 @@ log = structlog.get_logger(__name__)
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 42
+HEALTH_ANALYZER_VERSION = 43
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
