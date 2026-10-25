@@ -49,6 +49,8 @@ describe("deriveSetup", () => {
     expect(row.action).toEqual({ kind: "prompt" });
     expect(row.files).toEqual(["a.py", "b.py"]);
     expect(row.prompt).toMatchObject({ fix: true, verify: "doctor", items: ["a.py", "b.py"] });
+    // The doctor command shows the files; it is not a fix, so the prompt names none.
+    expect(row.prompt.command).toBeUndefined();
     // Skipped files do not undo a current index.
     expect(view.doneCount).toBe(2);
   });
@@ -106,6 +108,37 @@ describe("deriveSetup", () => {
       status: { key: "check.statusFail" },
       command: "repowise reindex",
     });
+  });
+
+  it("drops a closing (run X) from doctor text when it repeats the row command", () => {
+    const view = deriveSetup(
+      setupFixture({
+        checks: [
+          { id: "vector-store", name: "Vector store", level: "fail", detail: "missing (run: repowise reindex)", fix: "repowise reindex" },
+          { id: "config", name: "Config", level: "warn", detail: "stale (run repowise doctor --fix)", fix: "repowise init" },
+        ],
+      }),
+      OPTS,
+    );
+    expect(view.attention[0]!.detail).toEqual({ text: "missing" });
+    expect(view.attention[0]!.prompt).toMatchObject({
+      state: "missing",
+      command: "repowise reindex",
+      fromDoctor: true,
+      fix: true,
+    });
+    // A different command in the hint is information, so it stays.
+    expect(view.attention[1]!.detail).toEqual({ text: "stale (run repowise doctor --fix)" });
+  });
+
+  it("gives a doctor check with no fix a prompt with no command", () => {
+    const view = deriveSetup(
+      setupFixture({ checks: [{ id: "database", name: "Database", level: "fail", detail: "locked" }] }),
+      OPTS,
+    );
+    const row = view.attention[0]!;
+    expect(row.command).toBe("repowise doctor --format json");
+    expect(row.prompt.command).toBeUndefined();
   });
 
   it("offers a discovered coverage report and the model sheet", () => {

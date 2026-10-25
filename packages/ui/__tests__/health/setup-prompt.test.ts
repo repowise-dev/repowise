@@ -10,28 +10,45 @@ const SYNC: SetupPromptRow = {
 };
 
 describe("buildSetupAiPrompt", () => {
-  it("carries the repo, the detected state, the exact command and the status check", () => {
+  it("names the repo, what was found, the command and the status check", () => {
     const prompt = buildSetupAiPrompt(SYNC);
-    expect(prompt).toContain("## Setup: Keep the index in sync (`orbit-api`)");
-    expect(prompt).toContain(`What repowise detected: ${SYNC.state}`);
-    expect(prompt).toContain("```\nrepowise hook install\n```");
-    expect(prompt).toContain("`repowise status`");
-    expect(prompt).not.toContain("Confirm with me before changing anything");
+    expect(prompt).toContain(
+      "repowise reports for orbit-api: Keep the index in sync. The post-commit hook is not installed, so the index updates only on `repowise update`.",
+    );
+    expect(prompt).toContain(
+      "Run `repowise hook install` from the repository root, then run `repowise status` and tell me what it reports.",
+    );
+    expect(prompt).not.toContain("once I agree");
   });
 
-  it("asks a fix to confirm before changing anything and verifies with doctor", () => {
+  it("words a doctor finding with a fix as one ask that does not contradict itself", () => {
     const prompt = buildSetupAiPrompt({
-      ...SYNC,
-      title: "Index",
+      repoName: "orbit-api",
+      title: "Post-commit hook",
+      state: "not installed.",
+      command: "repowise hook install",
+      verify: "doctor",
+      fix: true,
+      fromDoctor: true,
+    });
+    expect(prompt).toContain(
+      "`repowise doctor` in orbit-api reports: Post-commit hook, not installed. The fix is `repowise hook install`. Tell me what it changes, run it once I agree, then run `repowise doctor` again to check.",
+    );
+    expect(prompt).not.toMatch(/to confirm|until I confirm/);
+  });
+
+  it("asks for the cause when no single command fixes it, and lists the items", () => {
+    const prompt = buildSetupAiPrompt({
+      repoName: "orbit-api",
+      title: "Files that could not be parsed",
       state: "3 files could not be parsed.",
-      command: "repowise doctor --format json",
       verify: "doctor",
       fix: true,
       items: ["src/legacy/report.py", "scripts/gen.py"],
     });
-    expect(prompt).toContain("Confirm with me before changing anything");
-    expect(prompt).toContain("Find out why first");
-    expect(prompt).toContain("`repowise doctor --format json` afterwards");
+    expect(prompt).toContain("No single command fixes this. Find the cause");
+    expect(prompt).toContain("then run `repowise doctor` to check.");
+    expect(prompt).not.toContain("The fix is");
     expect(prompt).toContain("- `src/legacy/report.py`\n- `scripts/gen.py`");
   });
 

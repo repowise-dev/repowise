@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
-import { Check } from "lucide-react";
 import { AiPromptButton } from "@repowise-dev/ui/health/ai-prompt-button";
 import { RowPromptAction } from "@repowise-dev/ui/health/row-prompt-action";
 import { buildSetupAiPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
@@ -17,6 +16,10 @@ const DOT: Record<SetupTone, string> = {
   found: "bg-[var(--color-info)]",
   model: "bg-[var(--color-model)]",
 };
+
+/** The same quiet underlined toggle as "Show files". */
+const TOGGLE =
+  "text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px]";
 
 /** A `SetupMsg` in the reader's locale; doctor text passes through as is. */
 export function useSetupText() {
@@ -50,97 +53,92 @@ interface Props {
 }
 
 /**
- * One Setup row: status dot and word, title, one line of detail, then the
- * action column: the primary action, "Copy prompt for your agent" and the
- * terminal command. The prompt shows on hover and focus-within, always on
- * touch screens, and on a "Needs attention" row it is the primary action,
- * with the prompt it copies previewed under the row.
+ * One Setup row, the same for every section: a status dot and the title,
+ * one line of detail (the rest behind "Show details"), then the terminal
+ * command; actions sit on the right. The status word is for screen readers;
+ * the dot carries it on screen. A "Needs attention" row's action copies its
+ * prompt; elsewhere the prompt shows on row hover, focus, and on touch.
  */
 export function SetupRowView({ row, action, onOpenPrompt, children }: Props) {
   const text = useSetupText();
   const attention = row.action?.kind === "prompt";
   const title = text(row.title);
-  const [copied, setCopied] = useState(false);
   return (
     <div
       data-row={row.id}
-      className={cn(
-        "group/row grid grid-cols-1 gap-x-4 gap-y-2 border-t border-[var(--color-border-default)] py-3 sm:grid-cols-[124px_minmax(0,1fr)_auto]",
-        attention &&
-          "-mx-2.5 rounded-lg border-transparent bg-[var(--color-warning-muted)] px-2.5 [&+&]:mt-1",
-      )}
+      className="group/row flex flex-col gap-2 border-t border-[var(--color-border-default)] py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
     >
-      <span className="flex items-center gap-1.5 pt-px text-xs text-[var(--color-text-secondary)]">
-        <StatusDot tone={row.tone} />
-        {text(row.status)}
-      </span>
-      <div className="min-w-0">
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</h3>
-        <p className="mt-0.5 text-xs text-[var(--color-text-secondary)] [text-wrap:pretty]">
-          {text(row.detail)}
-        </p>
+      <div className="min-w-0 flex-1">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
+          <StatusDot tone={row.tone} />
+          <span className="min-w-0">{title}</span>
+          <span className="sr-only">: {text(row.status)}</span>
+        </h3>
+        <RowDetail detail={text(row.detail)} />
         {children}
+        <div className="mt-1.5">
+          <SetupCommand command={row.command} />
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2 sm:flex-col sm:flex-nowrap sm:items-end">
-        {attention ? <AttentionPrompt row={row} onCopied={() => setCopied(true)} /> : action}
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        {attention ? <AttentionPrompt row={row} /> : action}
         {!attention && <RowPromptAction onClick={onOpenPrompt} subject={title} />}
-        <SetupCommand command={row.command} />
       </div>
-      {attention && <PromptPreview row={row} copied={copied} />}
     </div>
   );
 }
 
-/** Copies the prompt on click; the preview under the row says it did. */
-function AttentionPrompt({ row, onCopied }: { row: SetupRow; onCopied: () => void }) {
+/**
+ * The detail on one line, with a toggle when it runs longer. Overflow is
+ * measured, so a short line never grows a toggle it does not need.
+ */
+function RowDetail({ detail }: { detail: string }) {
+  const t = useTranslations("setup");
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || open) return;
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [detail, open]);
+
+  if (!detail) return null;
+  return (
+    <>
+      <p
+        ref={ref}
+        className={cn(
+          "mt-0.5 text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere]",
+          !open && "line-clamp-1",
+        )}
+      >
+        {detail}
+      </p>
+      {(overflows || open) && (
+        <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className={cn(TOGGLE, "mt-1")}>
+          {open ? t("hideDetails") : t("showDetails")}
+        </button>
+      )}
+    </>
+  );
+}
+
+/** Copies the row's prompt; the button itself says "Copied". */
+function AttentionPrompt({ row }: { row: SetupRow }) {
   const t = useTranslations("setup");
   return (
     <AiPromptButton
       label={t("copyPrompt")}
+      copiedLabel={t("copied")}
       ariaLabel={`${t("copyPrompt")}: ${row.prompt.title}`}
-      onClick={() => {
-        void copyText(buildSetupAiPrompt(row.prompt)).then((ok) => ok && onCopied());
-      }}
+      copyText={() => buildSetupAiPrompt(row.prompt)}
     />
   );
-}
-
-async function copyText(value: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(value);
-    return true;
-  } catch {
-    // Clipboard blocked: the preview stays selectable.
-    return false;
-  }
-}
-
-function PromptPreview({ row, copied }: { row: SetupRow; copied: boolean }) {
-  const t = useTranslations("setup");
-  return (
-    <div className="col-span-full min-w-0 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-3 py-2.5">
-      <p className="mb-1 flex items-center justify-between gap-2 text-xs font-medium text-[var(--color-text-primary)]">
-        {t("promptPreview")}
-        <span aria-live="polite" className="flex items-center gap-1 font-normal text-[var(--color-text-tertiary)]">
-          {copied && (
-            <>
-              <Check className="h-3 w-3 text-[var(--color-success)]" aria-hidden />
-              {t("copied")}
-            </>
-          )}
-        </span>
-      </p>
-      <p className="line-clamp-4 font-mono text-[11px] leading-relaxed text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
-        {previewText(row)}
-      </p>
-    </div>
-  );
-}
-
-/** The part of the prompt worth reading at a glance: what was found, what to run, the ask. */
-export function previewText(row: SetupRow): string {
-  const { state, items, fix } = row.prompt;
-  const listed = items?.length ? ` ${items.slice(0, 5).join(", ")}${items.length > 5 ? ", ..." : ""}.` : "";
-  const ask = fix ? " Do not change anything until I confirm." : "";
-  return `In ${row.prompt.repoName}: ${state}${listed} Run ${row.command} to confirm.${ask}`;
 }
