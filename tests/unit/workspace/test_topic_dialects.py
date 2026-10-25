@@ -509,6 +509,17 @@ class TestAws:
         assert [c.contract_id for c in rows] == ["topic::orders"]
         assert stats == {"topic_names_unresolved": 2}
 
+    def test_brace_headed_refusals_count_apart(self, tmp_path: Path) -> None:
+        (tmp_path / "main.go").write_text(
+            'import "github.com/segmentio/kafka-go"\n'
+            "w := &kafka.Writer{Topic: os.Getenv(\"A\")}\n"
+            "r := kafka.NewReader(kafka.ReaderConfig{Topic: os.Getenv(\"B\")})\n",
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        assert TopicExtractor().extract(tmp_path, "svc", stats=stats) == []
+        assert stats == {"topic_names_unresolved": 2}
+
     def test_sns_topic_arn_names_its_last_field(self, tmp_path: Path) -> None:
         src = "new PublishCommand({ TopicArn: 'arn:aws:sns:eu-west-1:123:orders', Message: m });\n"
         c = _one(_extract(tmp_path, "p.ts", src), "provider")

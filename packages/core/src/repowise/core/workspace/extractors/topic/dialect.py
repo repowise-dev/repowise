@@ -148,11 +148,12 @@ def call_contracts(
     args: list[str],
     offset: int,
     strings: FileStrings,
+    site: int,
 ) -> list[Contract]:
     """The contracts one call site of *call* yields; *offset* is where its head starts.
 
-    A call whose name is refused is recorded by its opening parenthesis, which
-    every dialect reading the call shares wherever its head begins.
+    A call whose name is refused is recorded by *site*, where its argument list
+    opens, which every dialect reading the call shares wherever its head begins.
     """
     keys, key_refused = (
         strings.resolve(args, call.routing_key) if call.routing_key else ([], False)
@@ -169,7 +170,7 @@ def call_contracts(
     if not names and call.declared is not None and call.queue is None:
         names = call.declared.queues(ctx, args, call.name, strings)
     if refused and not names:
-        ctx.note_unresolved(ctx.content.find("(", offset))
+        ctx.note_unresolved(site)
     out: list[Contract] = []
     for name in names:
         kind, key, unresolved = call.kind, routing_key, key_refused
@@ -239,7 +240,7 @@ class TopicDialect:
         # Typed rows first: a call both read is kept with the typed row's origin.
         calls = [*self._typed_calls(ctx), *self.calls]
         for call, args, m, strings in call_sites(ctx, calls):
-            out.extend(call_contracts(ctx, self.name, call, args, m.start(), strings))
+            out.extend(call_contracts(ctx, self.name, call, args, m.start(), strings, m.end() - 1))
         return out
 
 
