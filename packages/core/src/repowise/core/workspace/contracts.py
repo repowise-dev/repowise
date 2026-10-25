@@ -98,6 +98,9 @@ TOPIC_KIND_BINDING = "binding"
 #: Set on a publish or binding whose routing key the file does not settle; the
 #: topic matcher refuses to route through it rather than read it as match-all.
 TOPIC_ROUTING_KEY_UNRESOLVED = "routing_key_unresolved"
+#: ``extraction_stats`` key: broker calls located whose destination name the
+#: file does not settle (an env var, a constant in another file), so no contract.
+TOPIC_NAMES_UNRESOLVED_STAT = "topic_names_unresolved"
 #: ``meta`` key of a consumer subscribed by pattern (``orders.*``); its value
 #: names the pattern syntax.
 TOPIC_PATTERN = "pattern"
@@ -853,11 +856,11 @@ def _extractor_kwargs(
     extractor: Any, repo_index: RepoIndex | None, stats: dict[str, int], message_types: Any
 ) -> dict[str, Any]:
     """Extra keyword arguments an extractor's ``extract`` takes."""
-    from .extractors import HttpExtractor, MassTransitExtractor, OpenApiExtractor
+    from .extractors import HttpExtractor, MassTransitExtractor, OpenApiExtractor, TopicExtractor
 
     if isinstance(extractor, HttpExtractor):
         return {"repo_index": repo_index, "stats": stats}
-    if isinstance(extractor, OpenApiExtractor):
+    if isinstance(extractor, (OpenApiExtractor, TopicExtractor)):
         return {"stats": stats}
     if isinstance(extractor, MassTransitExtractor):
         return {"message_types": message_types, "stats": stats}
@@ -875,7 +878,6 @@ async def _extract_one_repo(
     from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
     from .extractors.base import iter_source_files
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
-    from .network_probe import UNRECOGNISED_CALL_FILES_STAT, count_unrecognised_call_files
 
     code_surface = extraction.code_surface
     contracts: list[Contract] = []
@@ -934,9 +936,10 @@ async def _extract_one_repo(
     stats.update(attach_signature_schemas(contracts, repo_index))
 
     # The calls no dialect read, the miss half of any coverage figure.
-    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
-    stats[UNRECOGNISED_CALL_FILES_STAT] = await asyncio.to_thread(
-        count_unrecognised_call_files, files, consumer_files
+    stats.update(
+        await asyncio.to_thread(
+            _probe_misses, files, contracts, extraction.contract_config.detect_topics
+        )
     )
 
     unresolved = stats.get("http_consumer_unresolved", 0)
@@ -948,6 +951,28 @@ async def _extract_one_repo(
             unresolved,
         )
     return contracts, stats
+
+
+def _probe_misses(
+    files: list[Any], contracts: list[Contract], detect_topics: bool
+) -> dict[str, int]:
+    """The network probe's counts: HTTP calls, then messaging SDK calls, no dialect read."""
+    from .network_probe import (
+        MESSAGE_PROBE_ROWS,
+        UNRECOGNISED_CALL_FILES_STAT,
+        UNRECOGNISED_MESSAGE_FILES_STAT,
+        count_unrecognised_call_files,
+    )
+
+    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
+    out = {UNRECOGNISED_CALL_FILES_STAT: count_unrecognised_call_files(files, consumer_files)}
+    if detect_topics:
+        # A publish is a provider, so any topic contract excuses a messaging file.
+        topic_files = {c.file_path for c in contracts if c.contract_type == "topic"}
+        out[UNRECOGNISED_MESSAGE_FILES_STAT] = count_unrecognised_call_files(
+            files, topic_files, MESSAGE_PROBE_ROWS
+        )
+    return out
 
 
 def _merge_repo_results(

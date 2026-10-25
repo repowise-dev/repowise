@@ -491,6 +491,35 @@ class TestAws:
         src = "new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: b });\n"
         assert _extract(tmp_path, "q.ts", src) == []
 
+    def test_a_refused_name_is_counted_once_per_call_site(self, tmp_path: Path) -> None:
+        (tmp_path / "q.ts").write_text(
+            "new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: b });\n"
+            "new SendMessageCommand({ QueueUrl: 'https://sqs.x/1/orders', MessageBody: b });\n"
+            "// new SendMessageCommand({ QueueUrl: process.env.OLD_URL });\n",
+            encoding="utf-8",
+        )
+        # One client.publish read alike by Redis and NATS is still one call.
+        (tmp_path / "pub.js").write_text(
+            "const redis = require('redis');\nconst nats = require('nats');\n"
+            "client.publish(channelFor(user), msg);\n",
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        rows = TopicExtractor().extract(tmp_path, "svc", stats=stats)
+        assert [c.contract_id for c in rows] == ["topic::orders"]
+        assert stats == {"topic_names_unresolved": 2}
+
+    def test_brace_headed_refusals_count_apart(self, tmp_path: Path) -> None:
+        (tmp_path / "main.go").write_text(
+            'import "github.com/segmentio/kafka-go"\n'
+            "w := &kafka.Writer{Topic: os.Getenv(\"A\")}\n"
+            "r := kafka.NewReader(kafka.ReaderConfig{Topic: os.Getenv(\"B\")})\n",
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        assert TopicExtractor().extract(tmp_path, "svc", stats=stats) == []
+        assert stats == {"topic_names_unresolved": 2}
+
     def test_sns_topic_arn_names_its_last_field(self, tmp_path: Path) -> None:
         src = "new PublishCommand({ TopicArn: 'arn:aws:sns:eu-west-1:123:orders', Message: m });\n"
         c = _one(_extract(tmp_path, "p.ts", src), "provider")

@@ -1703,6 +1703,7 @@
       "architecture": "架构",
       "contracts": "契约",
       "http-calls": "HTTP 调用",
+      "topic-calls": "主题调用",
       "dangling-calls": "悬空调用",
       "health": "健康度",
       "churn-hotspots": "变更热点",
@@ -1809,7 +1810,9 @@
       "orphansSub": "仅限本工作区；与「未使用」不同",
       "httpRead": "已读取的 HTTP 调用",
       "httpUnresolved": "定位到 {count} 个但无法解析",
-      "httpSub": "占提取定位到的客户端调用"
+      "httpSub": "占提取定位到的客户端调用",
+      "topicRead": "已读取的主题调用",
+      "topicSub": "{unresolved} 个名称无法解析，{files} 个文件使用了无提取器读取的消息 SDK"
     },
     "reasons": {
       "no_provider": "未找到提供方",

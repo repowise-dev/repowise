@@ -316,6 +316,8 @@ export interface RepoDiagnostics {
   consumers_by_layer: Record<string, number>;
   /** Calls that reached a confirmed HTTP wrapper but resolved to no path. */
   http_consumers_unresolved: number;
+  /** Broker calls located whose topic or queue name could not be settled. */
+  topic_names_unresolved?: number;
 }
 
 export interface UnmatchedConsumer {
@@ -363,6 +365,11 @@ export interface ExtractionDiagnostics {
   /** Per repo, files with a network-call token and no consumer contract; `null` before the count existed. */
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;
+  /** Broker calls located whose topic or queue name could not be settled. */
+  topic_names_unresolved?: number;
+  /** Per repo, files using a messaging SDK and no topic contract; `null` before the count existed. */
+  unrecognised_message_files?: Record<string, number> | null;
+  unrecognised_message_file_count?: number | null;
 }
 
 /** One reason a graph's evidence is short of measured. */

@@ -94,15 +94,17 @@ def _comment_mask(suffix: str, content: str) -> str | None:
 
 
 class _FileMemo:
-    """What one file's dialects share: each gate token's presence, and the comment mask."""
+    """What one file's dialects share: each gate token's presence, the comment mask,
+    and the offsets of calls located but not named."""
 
-    __slots__ = ("lines", "mask", "masked", "tokens")
+    __slots__ = ("lines", "mask", "masked", "tokens", "unresolved")
 
     def __init__(self) -> None:
         self.tokens: dict[str, bool] = {}
         self.masked = False
         self.mask: str | None = None
         self.lines: tuple[list[str], list[str]] | None = None
+        self.unresolved: set[int] = set()
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,15 @@ class ScanContext:
             if found:
                 return True
         return False
+
+    def note_unresolved(self, offset: int) -> None:
+        """Record a call at *offset* whose destination this file cannot settle."""
+        self._memo.unresolved.add(offset)
+
+    @property
+    def unresolved_calls(self) -> int:
+        """Calls :meth:`note_unresolved` recorded: one per site, however many dialects read it."""
+        return len(self._memo.unresolved)
 
     def _mask(self) -> str | None:
         memo = self._memo

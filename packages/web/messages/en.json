@@ -1703,6 +1703,7 @@
       "architecture": "Architecture",
       "contracts": "Contracts",
       "http-calls": "HTTP calls",
+      "topic-calls": "Topic calls",
       "dangling-calls": "Dangling calls",
       "health": "Health",
       "churn-hotspots": "Churn hotspots",
@@ -1809,7 +1810,9 @@
       "orphansSub": "in this workspace; not the same as unused",
       "httpRead": "HTTP calls read",
       "httpUnresolved": "{count} located but not resolvable",
-      "httpSub": "of the client calls extraction located"
+      "httpSub": "of the client calls extraction located",
+      "topicRead": "Topic calls read",
+      "topicSub": "{unresolved} names not resolvable, {files} files on a messaging SDK no extractor reads"
     },
     "reasons": {
       "no_provider": "no provider found",

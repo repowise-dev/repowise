@@ -8,6 +8,8 @@ downstream in :mod:`repowise.core.workspace.matching`.
 
 from __future__ import annotations
 
+from repowise.core.workspace.contracts import TOPIC_NAMES_UNRESOLVED_STAT
+
 from ..dialect import ContractDialect, DialectExtractor
 from .aws import SNS, SQS
 from .bullmq import BULLMQ
@@ -44,6 +46,7 @@ class TopicExtractor(DialectExtractor):
 
     dialects = DIALECTS
     identity = staticmethod(topic_identity)
+    unresolved_stat = TOPIC_NAMES_UNRESOLVED_STAT
 
 
 __all__ = ["DIALECTS", "TopicExtractor"]

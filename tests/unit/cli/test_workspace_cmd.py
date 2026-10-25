@@ -722,6 +722,25 @@ class TestWorkspaceDiagnosticsReport:
         assert "HTTP calls  1 of 4 linked to another service (25%); 3 read (75%)" in out
         assert "read, not linked: 1 match no declared route, 1 served inside their own service" in out
         assert "web http::GET::/none (b.ts)" in out
+        assert "Topic calls" not in out  # an artifact before the messaging probe
+
+    def test_topic_calls_line_names_the_unread_messaging_files(self, runner, tmp_path):
+        from repowise.core.workspace.contracts import Contract
+        from repowise.core.workspace.diagnostics import build_diagnostics
+        from repowise.core.workspace.system_graph import SystemGraph, save_system_graph
+
+        _write_workspace_config(tmp_path, repos=[{"path": "orders", "alias": "orders"}])
+        contracts = [
+            Contract(repo="orders", contract_id="topic::orders", contract_type="topic",
+                     role="provider", file_path="p.py", symbol_name="f", confidence=0.8),
+        ]
+        stats = {"orders": {"topic_names_unresolved": 2, "message_files_unrecognised": 3}}
+        diag = build_diagnostics(contracts, [], stats)
+        save_system_graph(SystemGraph(diagnostics=diag, generated_at="t"), tmp_path)
+
+        out = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path)]).output
+        assert "Topic calls 1 read, 2 located but the name not statically resolvable, " in out
+        assert "unread messaging calls: orders 3" in out
 
     def test_tables_collapse_to_one_line_per_repo(self, runner, tmp_path):
         from repowise.core.workspace.diagnostics import OrphanProvider, UnmatchedConsumer

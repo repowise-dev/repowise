@@ -158,6 +158,7 @@ export default async function ContractsPage({ searchParams }: Props) {
           })
         : t("ribbon.httpSub"),
     },
+    ...topicStat(t, diagnostics),
   ];
 
   return (
@@ -298,4 +299,30 @@ function unmatchedReasonSub(
   return reasons
     .map(([reason, n]) => `${n} ${t(REASON_KEYS[reason] ?? "reasons.unknown")}`)
     .join(", ");
+}
+
+/**
+ * Topic calls read, beside the broker calls not named and the files on a
+ * messaging SDK no extractor reads. Counts only, like the CLI line; absent on
+ * an artifact older than the messaging probe and on a workspace with no messaging.
+ */
+function topicStat(t: Translator, diagnostics: ExtractionDiagnostics | null): RibbonStat[] {
+  const files = diagnostics?.unrecognised_message_file_count;
+  if (!diagnostics || files == null) return [];
+  const read = diagnostics.repo_breakdown.reduce(
+    (n, r) => n + (r.providers_by_type.topic ?? 0) + (r.consumers_by_type.topic ?? 0),
+    0,
+  );
+  const unresolved = diagnostics.topic_names_unresolved ?? 0;
+  if (read + unresolved + files === 0) return [];
+  return [
+    {
+      label: t("ribbon.topicRead"),
+      value: formatNumber(read),
+      sub: t("ribbon.topicSub", {
+        unresolved: formatNumber(unresolved),
+        files: formatNumber(files),
+      }),
+    },
+  ];
 }
