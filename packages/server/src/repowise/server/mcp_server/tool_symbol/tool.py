@@ -161,6 +161,9 @@ async def get_symbol(
     t0 = time.perf_counter()
     symbol_id, query = _requested_id(symbol_id, id, query)
     if not symbol_id or not symbol_id.strip():
+        from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+        note_error_reason("invalid_args")
         return {
             "symbol_id": symbol_id,
             "error": 'get_symbol requires `symbol_id`, e.g. "path/to/file.py::Name".',

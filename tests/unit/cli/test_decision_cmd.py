@@ -225,6 +225,18 @@ def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
     assert [d["status"] for d in records if d["title"] == "Interactive title"] == ["active"]
 
 
+def test_decision_add_asks_again_for_a_blank_decision(indexed_repo: Path) -> None:
+    """Acceptance needs the text, so a blank answer is asked again, not stored."""
+    answers = "\nBlank first\ncontext\n   \nthe decision\nwhy\n\n\nsrc/app.py\n\n"
+    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "state what was chosen" in result.output
+    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    records = json.loads(listed.output)["decisions"]
+    assert [d["status"] for d in records if d["title"] == "Blank first"] == ["active"]
+
+
 def test_decision_add_without_a_scope_stays_a_candidate(indexed_repo: Path) -> None:
     """A decision that names no files cannot be checked, so it cannot govern.
 
@@ -728,6 +740,8 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
             "confirm",
             "badbadba",
             str(indexed_repo),
+            "--decision",
+            "Keep the measured faster path",
             "--reason",
             "Because the alternative was measured slower",
             "--scope",

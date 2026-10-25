@@ -1153,7 +1153,8 @@
       "title": "这个代码仓库尚未建立索引",
       "description": "一次点击即可构建代码索引、健康信号与文档。整个过程都能实时查看。",
       "starting": "正在启动…",
-      "action": "为该仓库建立索引"
+      "action": "为该仓库建立索引",
+      "takeTour": "开始导览"
     },
     "coordinator": {
       "status": "状态",
@@ -1343,6 +1344,120 @@
     "badgeLabel": "子系统页面未撰写",
     "badgeAction": "用模型撰写",
     "badgeTitle": "子系统页面仍由代码结构生成。用模型撰写，讲清原理与缘由。"
+  },
+  "welcome": {
+    "eyebrow": "欢迎使用 repowise",
+    "stepsLabel": "导览步骤",
+    "stepDone": "（已完成）",
+    "stepOf": "第 {step} 步，共 {total} 步",
+    "steps": {
+      "repo": "你的仓库",
+      "agent": "你的智能体",
+      "yours": "按你的方式设置"
+    },
+    "skip": "跳过导览",
+    "back": "返回",
+    "nextAgent": "下一步：你的智能体",
+    "nextYours": "下一步：按你的方式设置",
+    "finish": "在设置中完成",
+    "repo": {
+      "title": "我们已为 <em>{name}</em> 绘制地图",
+      "lede": "{files, plural, other {# 个文件}}和 {years, plural, other {# 年}}的历史，都在本机读取，没有任何内容离开本机。",
+      "ledeNoHistory": "{files, plural, other {# 个文件}}，都在本机读取，没有任何内容离开本机。",
+      "standout": "值得关注",
+      "band": {
+        "excellent": "优秀",
+        "good": "良好",
+        "fair": "一般",
+        "needs_work": "需要改进",
+        "at_risk": "有风险"
+      },
+      "health": {
+        "label": "健康度",
+        "caption": "<mono>{path}</mono> 最低，为 {score}。",
+        "captionNone": "按代码文件评分。",
+        "open": "打开健康度"
+      },
+      "deadCode": {
+        "label": "死代码",
+        "unit": "{count, plural, other {个文件}}",
+        "caption": "没有任何代码引用它们。",
+        "safe": "{count, plural, other {# 项发现}}可以安全删除。",
+        "captionNone": "每个文件都有代码引用。",
+        "open": "打开死代码"
+      },
+      "risk": {
+        "label": "风险",
+        "unit": "{count, plural, other {个文件受影响}}",
+        "caption": "来自对 <mono>{path}</mono> 的一次修改。",
+        "open": "打开风险"
+      },
+      "decisions": {
+        "label": "决策",
+        "unit": "待审阅",
+        "caption": "从 PR、提交和注释中挖掘出的候选项。",
+        "open": "审阅"
+      },
+      "docs": {
+        "label": "文档",
+        "unit": "{count, plural, other {页}}",
+        "caption": "基于索引构建。模型可以写出更完整的文档。",
+        "open": "打开文档"
+      },
+      "tests": {
+        "label": "测试",
+        "measured": "实测",
+        "measuredCaption": "来自最新报告的行覆盖率。",
+        "inferredUnit": "共 {total} 个文件，按推断",
+        "inferredCaption": "有测试能到达。添加报告即可实测。",
+        "open": "打开测试"
+      }
+    },
+    "agent": {
+      "title": "你的智能体可以读取<em>这张地图</em>",
+      "lede": "它会先询问 repowise，因此读得更少，猜得更少。",
+      "none": "本机暂未发现智能体。设置页列出了 repowise 支持的全部智能体。",
+      "connected": "已连接。重启它以加载工具。",
+      "waiting": "等待首次调用",
+      "firstCall": "首次调用：{when}",
+      "installed": "已安装在本机。将写入 <mono>{file}</mono>。",
+      "installedNoFile": "已安装在本机。",
+      "connect": "连接",
+      "connecting": "正在连接",
+      "connectFailed": "无法连接 {name}",
+      "copyPrompt": "复制设置提示词",
+      "promptCopied": "已复制设置提示词",
+      "prompt": "为此仓库将 repowise 连接到 {name}。在仓库根目录运行 `{command}`，然后重启 {name}，让它加载 repowise 工具。运行 `repowise doctor` 检查连接。",
+      "askLabel": "问它一个问题",
+      "askRisk": "哪些文件改动风险最高？为什么？",
+      "askHotspot": "为什么 {path} 改动如此频繁？",
+      "askStart": "我应该从哪里开始阅读这个仓库？",
+      "copy": "复制",
+      "copied": "已复制",
+      "copyQuestion": "复制：{question}"
+    },
+    "yours": {
+      "title": "按<em>你的方式</em>设置",
+      "lede": "两项都是可选的。你可以随时在设置中更改。",
+      "modelTitle": "为需要模型的部分添加一个模型",
+      "optional": "可选",
+      "gets": {
+        "docs": "解释原理和原因的文档",
+        "chat": "在此仪表板中对话",
+        "answers": "为你的智能体撰写的回答",
+        "local": "你的密钥或登录信息保留在本机"
+      },
+      "detectedLabel": "在本机找到",
+      "syncTitle": "保持索引同步",
+      "syncBody": "每次提交后通过 git 钩子更新。",
+      "syncFailed": "无法更改同步设置",
+      "syncOffTitle": "关闭同步？",
+      "syncOffBody": "这会移除 post-commit 钩子，同时关闭 pre-commit 安全检查和健康门禁（如果已开启）。",
+      "syncOffConfirm": "关闭",
+      "teamTitle": "为团队运行？",
+      "teamBody": "托管版 repowise 会在每次推送时建立索引、审查拉取请求，并为你的团队提供一个仪表板。",
+      "teamLink": "了解托管版"
+    }
   },
   "chat": {
     "addModel": "添加模型",

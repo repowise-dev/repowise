@@ -322,7 +322,8 @@ class AcceptanceRequirement:
     self_authored: bool = False
     #: What was chosen. ``None`` when the action grants nothing new, so a
     #: record with no text can still be withdrawn or carried over by an import.
-    #: A self-authored record is exempt: its author wrote the title as the claim.
+    #: A self-authored record needs it too: a title names the choice, it does
+    #: not state it.
     decision: str | None = None
 
 
@@ -340,10 +341,11 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     ``decision_acceptances`` CHECK constraints enforce, stated once in prose so
     a caller can explain a refusal instead of surfacing an IntegrityError. The
     decision-text check is enforced here only: a fresh grant of a mined record
-    needs it, because one that never says what was chosen binds nobody to it.
+    needs it, because one that never says what was chosen binds nobody to it,
+    whether it was mined or typed.
     """
     blockers: list[str] = []
-    if req.decision is not None and not req.self_authored and not req.decision.strip():
+    if req.decision is not None and not req.decision.strip():
         blockers.append(NO_DECISION_BLOCKER)
     if not req.reason.strip():
         blockers.append("no rationale or explicit constraint reason")

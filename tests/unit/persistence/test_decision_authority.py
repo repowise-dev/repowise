@@ -164,15 +164,21 @@ async def test_a_mined_candidate_with_no_decision_text_is_refused(async_session)
     assert await is_accepted(async_session, rec.id)
 
 
-async def test_a_typed_record_needs_no_decision_text(async_session):
-    """Its author wrote the title as the claim."""
+async def test_a_typed_record_needs_decision_text_but_no_evidence(async_session):
+    """A title names the choice without stating it; the entry is still its own evidence."""
     repo = await insert_repo(async_session)
     (rec,) = await _seed(async_session, repo.id, "Typed")
     rec.source = "cli"
     rec.decision = ""
+    rec.evidence_commits_json = "[]"
+    rec.evidence_file = None
     await async_session.flush()
 
-    await accept_decision(async_session, rec, accepter="tester")
+    with pytest.raises(AcceptanceRefusedError) as refusal:
+        await accept_decision(async_session, rec, accepter="tester")
+    assert refusal.value.blockers == [NO_DECISION_BLOCKER]
+
+    await accept_decision(async_session, rec, accepter="tester", decision="Use Redis")
     assert await is_accepted(async_session, rec.id)
 
 

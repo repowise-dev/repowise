@@ -12,6 +12,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from repowise.core.analysis.decisions.lifecycle import NO_DECISION_BLOCKER, NO_SCOPE_BLOCKER
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.authority import candidate_review_signals
 from repowise.core.persistence.database import get_session
@@ -62,17 +63,21 @@ async def test_a_file_less_agreement_governs_the_repository(
         repo["id"],
         title="Commit on feature branches",
         kind="agreement",
+        decision="commit on feature branches",
         rationale="main is protected",
     )
     architectural = await _create(
         client,
         repo["id"],
         title="No scope named",
+        decision="d",
         rationale="because",
     )
     assert agreement["status"] == "active"
     assert agreement["currency"] == "active"
     assert architectural["status"] == "proposed"
+    assert architectural["blockers"] == [NO_SCOPE_BLOCKER]
+    assert agreement["blockers"] is None
 
     async with get_session(app.state.session_factory) as session:
         row = (
@@ -97,12 +102,30 @@ async def test_blank_files_fall_through_to_modules(client: AsyncClient) -> None:
         client,
         repo["id"],
         title="Blank file, real module",
+        decision="d",
         rationale="why",
         affected_files=["   "],
         affected_modules=["pkg/core"],
     )
     assert rec["status"] == "active"
     assert rec["currency"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_a_typed_record_with_no_decision_text_says_why_it_stayed_a_candidate(
+    client: AsyncClient,
+) -> None:
+    repo = await create_test_repo(client)
+    rec = await _create(
+        client,
+        repo["id"],
+        title="Title only",
+        rationale="why",
+        affected_files=["src/a.py"],
+    )
+    assert rec["status"] == "proposed"
+    assert rec["currency"] is None
+    assert rec["blockers"] == [NO_DECISION_BLOCKER]
 
 
 @pytest.mark.asyncio

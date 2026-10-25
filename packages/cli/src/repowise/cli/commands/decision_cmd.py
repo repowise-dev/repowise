@@ -331,6 +331,12 @@ def _split_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _non_blank(value: str) -> str:
+    if not value.strip():
+        raise click.BadParameter("state what was chosen")
+    return value
+
+
 def _prompt_decision_fields(kind: str) -> _DecisionFields:
     """Ask for each field in turn; *kind* is the flag's value, offered as default."""
     console.print("[bold]Add Decision[/bold]\n")
@@ -344,7 +350,9 @@ def _prompt_decision_fields(kind: str) -> _DecisionFields:
     )
     title = click.prompt("Decision title (short)")
     context = click.prompt("Context (what forced this decision?)", default="")
-    decision_text = click.prompt("Decision (what was chosen?)")
+    # Asked again on a blank answer: acceptance refuses a record with no
+    # decision text, and that refusal would discard every answer given here.
+    decision_text = click.prompt("Decision (what was chosen?)", value_proc=_non_blank)
     rationale = click.prompt("Rationale (why?)", default="")
     alternatives = _split_csv(
         click.prompt("Rejected alternatives (comma-separated, optional)", default="")

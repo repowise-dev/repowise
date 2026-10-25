@@ -241,6 +241,9 @@ async def search_codebase(
     ignored: list[dict[str, Any]] = []
     query = _query_from_pattern(query, pattern, ignored)
     if not query.strip():
+        from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+        note_error_reason("invalid_args")
         return {
             "results": [],
             "error": "search_codebase requires `query` (or its alias `pattern`).",

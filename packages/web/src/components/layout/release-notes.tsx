@@ -9,17 +9,13 @@ import { seriesColor } from "@repowise-dev/ui/shared/series";
 import type { ChangelogEntry, ChangelogHighlight, ReleaseStats } from "@/lib/api/meta";
 import { linkPullRequests, resolveHighlightHref } from "@/lib/release-moment";
 import { NewMark } from "./new-mark";
-
-const MICRO =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
-
-/** The glow band behind the version: orange into plum at low strength,
- *  fading into the dialog ground. Solid stops, checked by contrast-check.py. */
-const BAND =
-  "linear-gradient(120deg, var(--color-release-glow-1) 0%, var(--color-release-glow-2) 55%, var(--color-release-ground) 100%)";
-
-/** A gentle rise on open; the global reduced-motion rule flattens it. */
-const ENTER = "motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 duration-500";
+import {
+  MOMENT_CARD,
+  MOMENT_DISPLAY,
+  MOMENT_ENTER as ENTER,
+  MOMENT_MICRO as MICRO,
+  MomentBand,
+} from "./moment-shell";
 
 export function releaseName(version: string, nextLabel: string): string {
   return version === "unreleased" ? nextLabel : `v${version}`;
@@ -36,16 +32,13 @@ export function ReleaseHeader({
 }) {
   const t = useTranslations("shell.whatsNewModal");
   return (
-    <header
-      className="border-b border-[var(--color-border-default)] px-6 pb-6 pt-6 sm:px-8"
-      style={{ backgroundImage: BAND }}
-    >
+    <MomentBand tone="release">
       {title}
       <h3
         id={`release-${entry.version}`}
         className={`mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 ${ENTER}`}
       >
-        <span className="font-serif text-4xl font-light tracking-tight text-[var(--color-text-primary)] sm:text-5xl">
+        <span className={`${MOMENT_DISPLAY} font-light`}>
           {releaseName(entry.version, t("nextRelease"))}
         </span>
         {entry.label && (
@@ -55,7 +48,7 @@ export function ReleaseHeader({
       {entry.version === "unreleased" && (
         <p className="mt-2 text-xs text-[var(--color-text-secondary)]">{t("unreleasedNote")}</p>
       )}
-    </header>
+    </MomentBand>
   );
 }
 
@@ -163,7 +156,7 @@ function HighlightItem({
       <Link
         href={href}
         onClick={onNavigate}
-        className="group flex w-full flex-col rounded-lg border border-[var(--color-border-default)] border-l-[3px] bg-[var(--color-release-card)] px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className={`${MOMENT_CARD} group flex w-full flex-col px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]`}
         style={{ borderLeftColor: color }}
       >
         {body}

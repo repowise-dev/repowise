@@ -72,6 +72,10 @@ def _run_api(
     frontend_proc: subprocess.Popen | None,
 ) -> None:
     """Run uvicorn with the discovery lockfile held; clean up on exit."""
+    if ui_port is not None:
+        # The setup routes accept browser writes only from the UI's own origin,
+        # and the UI proxies /api here, so the API has to be told its port.
+        os.environ["REPOWISE_UI_PORT"] = str(ui_port)
     lock_path = _lock._serve_lock_path()
     if lock_path:
         _lock._write_serve_lock(lock_path, host=host, port=port, ui_port=ui_port)
