@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -52,8 +53,6 @@ def query_repo_stats(db_path: Path) -> dict[str, Any]:
     ``health_score`` is None when the repo carries no health metrics, and
     stays None: no other figure here measures code health.
     """
-    from .update import synced_at_iso
-
     result: dict[str, Any] = {
         "repo_id": None,
         "file_count": 0,
@@ -67,64 +66,71 @@ def query_repo_stats(db_path: Path) -> dict[str, Any]:
         "docs_enabled": False,
         "docs_skip_reason": None,
     }
-    # Surface docs lifecycle from state.json so the UI shows a coherent
-    # picture even when only indexing (no docs) ran.
-    try:
-        state_path = db_path.parent / "state.json"
-        if state_path.is_file():
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            result["docs_enabled"] = resolve_docs_mode(state) != "none"
-            result["docs_skip_reason"] = state.get("docs_skip_reason")
-    except Exception:
-        pass
+    _read_docs_state(db_path, result)
     if not db_path.exists():
         if not db_path.parent.parent.is_dir():
             result["status"] = "missing_dir"
         return result
     result["status"] = "indexed"
     try:
-        conn = sqlite3.connect(str(db_path))
-        c = conn.cursor()
-
-        # repo id, and the sync time every other surface reports
-        row = c.execute("SELECT id, updated_at FROM repositories LIMIT 1").fetchone()
-        if row:
-            result["repo_id"] = row[0]
-            result["indexed_at"] = synced_at_iso(row[1])
-
-        # The raw-sqlite form of crud.count_files.
-        row = c.execute(f"SELECT COUNT(*) FROM graph_nodes WHERE {_INDEXED_FILE_SQL}").fetchone()
-        result["file_count"] = row[0] if row else 0
-
-        # The raw-sqlite form of crud.count_symbols: one store per repo here.
-        row = c.execute("SELECT COUNT(*) FROM wiki_symbols").fetchone()
-        result["symbol_count"] = int(row[0]) if row else 0
-
-        # Pages, fresh pages, and mean page confidence * 100. The last is named
-        # doc_coverage_pct on the wire; it is not a share of files documented.
-        pages, fresh, confidence = c.execute(
-            "SELECT COUNT(*), SUM(freshness_status = 'fresh'), AVG(confidence) FROM wiki_pages"
-        ).fetchone()
-        result["page_count"] = pages
-        result["fresh_page_count"] = int(fresh or 0)
-        result["doc_coverage_pct"] = round(float(confidence or 0.0) * 100, 1)
-
-        # hotspot count — use the canonical is_hotspot flag, matching the rest
-        # of the codebase (module_health, extract-demo-data). The earlier
-        # churn_percentile >= 90 predicate never matched: churn_percentile is
-        # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
-        try:
-            row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
-            result["hotspot_count"] = row[0] if row else 0
-        except sqlite3.OperationalError:
-            pass  # table or column may not exist
-
-        conn.close()
+        with closing(sqlite3.connect(str(db_path))) as conn:
+            _read_counts(conn.cursor(), result)
     except Exception:
         _log.debug("Failed to query stats from %s", db_path, exc_info=True)
 
     result["health_score"] = read_repo_health_score(db_path)
     return result
+
+
+def _read_docs_state(db_path: Path, result: dict[str, Any]) -> None:
+    """Surface docs lifecycle from state.json so the UI shows a coherent
+    picture even when only indexing (no docs) ran."""
+    state_path = db_path.parent / "state.json"
+    if not state_path.is_file():
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        result["docs_enabled"] = resolve_docs_mode(state) != "none"
+        result["docs_skip_reason"] = state.get("docs_skip_reason")
+    except Exception:
+        _log.debug("Unreadable %s", state_path, exc_info=True)
+
+
+def _read_counts(c: sqlite3.Cursor, result: dict[str, Any]) -> None:
+    from .update import synced_at_iso
+
+    # repo id, and the sync time every other surface reports
+    row = c.execute("SELECT id, updated_at FROM repositories LIMIT 1").fetchone()
+    if row:
+        result["repo_id"] = row[0]
+        result["indexed_at"] = synced_at_iso(row[1])
+
+    # The raw-sqlite form of crud.count_files.
+    row = c.execute(f"SELECT COUNT(*) FROM graph_nodes WHERE {_INDEXED_FILE_SQL}").fetchone()
+    result["file_count"] = row[0] if row else 0
+
+    # The raw-sqlite form of crud.count_symbols: one store per repo here.
+    row = c.execute("SELECT COUNT(*) FROM wiki_symbols").fetchone()
+    result["symbol_count"] = int(row[0]) if row else 0
+
+    # Pages, fresh pages, and mean page confidence * 100. The last is named
+    # doc_coverage_pct on the wire; it is not a share of files documented.
+    pages, fresh, confidence = c.execute(
+        "SELECT COUNT(*), SUM(freshness_status = 'fresh'), AVG(confidence) FROM wiki_pages"
+    ).fetchone()
+    result["page_count"] = pages
+    result["fresh_page_count"] = int(fresh or 0)
+    result["doc_coverage_pct"] = round(float(confidence or 0.0) * 100, 1)
+
+    # hotspot count — use the canonical is_hotspot flag, matching the rest
+    # of the codebase (module_health, extract-demo-data). The earlier
+    # churn_percentile >= 90 predicate never matched: churn_percentile is
+    # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
+    try:
+        row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
+        result["hotspot_count"] = row[0] if row else 0
+    except sqlite3.OperationalError:
+        _log.debug("No hotspot flags in this index")  # table or column may not exist
 
 
 def read_repo_health_score(db_path: Path) -> float | None:

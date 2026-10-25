@@ -599,11 +599,8 @@ def read_member_stats(path: Path, wanted: dict[str, Path]) -> dict[str, dict[str
     out: dict[str, dict[str, Any]] = {}
     for alias, key, stamp, stats, stats_stamp in rows:
         repo = wanted.get(alias)
-        if (
-            repo is not None
-            and key == str(repo)
-            and stamp == repo_stamp(repo)
-            and stats_stamp == db_stamp(repo_db_path(repo))
-        ):
+        if repo is None or key != str(repo) or stamp != repo_stamp(repo):
+            continue
+        if stats_stamp == db_stamp(repo_db_path(repo)):
             out[alias] = json.loads(stats)
     return out
