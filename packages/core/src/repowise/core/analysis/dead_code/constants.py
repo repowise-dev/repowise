@@ -81,7 +81,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/sitecustomize.py",
     "usercustomize.py",
     "*/usercustomize.py",
-    # Next.js / Remix / SvelteKit framework route files â€” loaded by the
+    # Next.js / Remix / SvelteKit framework route files — loaded by the
     # framework at runtime, never imported via module imports.
     "*/page.tsx",
     "*/page.ts",
@@ -112,7 +112,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.
-    "*GlobalUsings.cs",  # global usings â€” file-implicit, never imported by symbol
+    "*GlobalUsings.cs",  # global usings — file-implicit, never imported by symbol
     "*.xaml.cs",  # XAML code-behind, wired by the source generator
     "*.xaml",
     "*.razor",
@@ -136,7 +136,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # the build packs as the public surface. Nothing imports them, and every
     # type they list is public API.
     "*/ref/*.cs",
-    "*MauiProgram.cs",  # MAUI app entry â€” invoked by host, not imported
+    "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",
     # Aspire / ServiceDefaults host wiring is consumed by AppHost project graph,
@@ -588,7 +588,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.spec.cts",
     "*/__tests__/*",
     "*/__mocks__/*",
-    # Storybook stories â€” loaded by Storybook indexer via glob.
+    # Storybook stories — loaded by Storybook indexer via glob.
     "*.stories.ts",
     "*.stories.tsx",
     "*.stories.js",
@@ -611,7 +611,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.storybook/manager.js",
     "*.storybook/manager.jsx",
     "*.storybook/manager.mdx",
-    # Benchmarks â€” invoked by vitest/tinybench/bench scripts, not imported.
+    # Benchmarks — invoked by vitest/tinybench/bench scripts, not imported.
     "*.bench.ts",
     "*.bench.tsx",
     "*.bench.js",
@@ -666,7 +666,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "proxy.ts",
     "sitemap.ts",
     "robots.ts",
-    # Remix root/entry files â€” invoked by the framework runtime.
+    # Remix root/entry files — invoked by the framework runtime.
     "*/entry.client.ts",
     "*/entry.client.tsx",
     "*/entry.server.ts",
@@ -777,7 +777,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
 _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "pytest.fixture",
     "pytest.mark",
-    # Unqualified ``from pytest import fixture`` form â€” the decorator text is
+    # Unqualified ``from pytest import fixture`` form — the decorator text is
     # bare ``fixture``, which the dotted prefixes above never match.
     "fixture",
     # Flask
@@ -803,7 +803,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.websocket",
     "app.middleware",
     "app.exception_handler",
-    # asynccontextmanager / contextmanager â€” used as values
+    # asynccontextmanager / contextmanager — used as values
     # (e.g. FastAPI(lifespan=...)) rather than imported by name.
     "asynccontextmanager",
     "contextmanager",
@@ -819,10 +819,10 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     # SQLAlchemy, imported bare: stored in the dialect compiler / event registry.
     "compiles",
     "listens_for",
-    # Click CLI commands â€” registered with the parent group/command.
+    # Click CLI commands — registered with the parent group/command.
     "click.command",
     "click.group",
-    # Typer â€” same shape.
+    # Typer — same shape.
     "typer.command",
     "typer.callback",
     # ---- JVM: Spring / Jakarta / Quarkus / Micronaut stereotypes ----
@@ -925,7 +925,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "ArchTest",
     "Container",  # Testcontainers
     "DynamicTest",
-    "JsonCreator",  # Jackson factory method â€” reflectively invoked
+    "JsonCreator",  # Jackson factory method — reflectively invoked
     "JsonProperty",
     "Mojo",  # Maven plugin entry
     "Goal",
