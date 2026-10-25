@@ -81,7 +81,7 @@ def test_findings_come_from_the_run(no_probe):
     assert stood.dead_unreachable == 2
     # A whole file is review-only; the safe count is over every finding.
     assert stood.dead_safe == sum(1 for f in result.dead_code_report.findings if is_safe(f)) == 1
-    assert (stood.riskiest_file, stood.riskiest_commits) == ("auth/session.py", 48)
+    assert (stood.hotspot_file, stood.hotspot_commits) == ("auth/session.py", 48)
     assert stood.decision_candidates == 14
 
 
@@ -89,7 +89,7 @@ def test_unmeasured_findings_stay_none(no_probe):
     result = _result(health_report=None, dead_code_report=None, git_meta_map={})
     stood = reporting._stood_out(result, Path("/r"), reporting._top_hotspot(result))
     assert stood.health_score is None and stood.dead_unreachable is None
-    assert stood.riskiest_file is None
+    assert stood.hotspot_file is None
 
 
 def test_too_little_analysed_keeps_the_score_and_drops_the_word():
@@ -223,8 +223,8 @@ def test_summary_carries_the_findings_and_the_model_command(tmp_path):
             lowest_score=3.12,
             dead_unreachable=38,
             dead_safe=12,
-            riskiest_file="auth/session.py",
-            riskiest_commits=48,
+            hotspot_file="auth/session.py",
+            hotspot_commits=48,
             decision_candidates=14,
         ),
         model_upgrade=ModelUpgrade("repowise generate --provider claude_cli", "x"),
@@ -238,7 +238,7 @@ def test_summary_carries_the_findings_and_the_model_command(tmp_path):
             "lowest_score": 3.12,
         },
         "dead_code": {"unreachable_files": 38, "findings_safe_to_delete": 12},
-        "riskiest": {"file": "auth/session.py", "commits": 48},
+        "hotspot": {"file": "auth/session.py", "commits": 48},
         "decision_candidates": 14,
     }
     assert summary["next"] == [
@@ -254,5 +254,5 @@ def test_summary_findings_are_null_when_nothing_was_measured(tmp_path):
         run_warnings=[], files_written=[], next_steps=[], stood_out=StoodOut(), model_upgrade=None,
     )
     assert run_summary(run, [])["findings"] == {
-        "health": None, "dead_code": None, "riskiest": None, "decision_candidates": None,
+        "health": None, "dead_code": None, "hotspot": None, "decision_candidates": None,
     }

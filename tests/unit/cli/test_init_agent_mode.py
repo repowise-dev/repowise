@@ -200,7 +200,7 @@ def test_json_init_writes_only_events_and_ends_with_a_ready_summary(repo, monkey
     assert summary["spend"] == {"tokens": 0, "usd": 0.0}
     assert summary["next"][:2] == ["repowise serve", "repowise generate"]
     findings = summary["findings"]
-    assert set(findings) == {"health", "dead_code", "riskiest", "decision_candidates"}
+    assert set(findings) == {"health", "dead_code", "hotspot", "decision_candidates"}
     assert isinstance(findings["decision_candidates"], int)
     assert findings["dead_code"]["unreachable_files"] >= 0
     # The human screen still happens, on stderr.

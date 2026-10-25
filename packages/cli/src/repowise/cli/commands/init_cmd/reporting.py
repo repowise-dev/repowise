@@ -214,12 +214,12 @@ def _top_hotspot(result: Any) -> tuple[str, int] | None:
 
 def _stood_out(result: Any, repo_path: Path, hotspot: tuple[str, int] | None) -> StoodOut:
     """The finish panel's findings, each from data this run already has."""
-    riskiest, commits = hotspot or (None, None)
+    path, commits = hotspot or (None, None)
     return StoodOut(
         **_health_finding(result),
         **_dead_finding(result),
-        riskiest_file=riskiest,
-        riskiest_commits=commits,
+        hotspot_file=path,
+        hotspot_commits=commits,
         decision_candidates=_decision_candidates(repo_path),
     )
 

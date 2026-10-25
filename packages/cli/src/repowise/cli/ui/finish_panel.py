@@ -34,8 +34,8 @@ class StoodOut:
     dead_unreachable: int | None = None
     #: Findings of any kind that pass the deletion gate (a whole file never does).
     dead_safe: int | None = None
-    riskiest_file: str | None = None
-    riskiest_commits: int | None = None
+    hotspot_file: str | None = None
+    hotspot_commits: int | None = None
     decision_candidates: int | None = None
 
     def as_summary(self) -> dict[str, Any]:
@@ -54,13 +54,13 @@ class StoodOut:
                 "unreachable_files": self.dead_unreachable,
                 "findings_safe_to_delete": self.dead_safe,
             }
-        riskiest = None
-        if self.riskiest_file:
-            riskiest = {"file": self.riskiest_file, "commits": self.riskiest_commits}
+        hotspot = None
+        if self.hotspot_file:
+            hotspot = {"file": self.hotspot_file, "commits": self.hotspot_commits}
         return {
             "health": health,
             "dead_code": dead,
-            "riskiest": riskiest,
+            "hotspot": hotspot,
             "decision_candidates": self.decision_candidates,
         }
 
@@ -157,10 +157,10 @@ def _dead_value(s: StoodOut) -> str:
     return value
 
 
-def _riskiest_value(s: StoodOut) -> str:
-    value = escape(s.riskiest_file or "")
-    if s.riskiest_commits:
-        value += f", changed in {_n(s.riskiest_commits, 'commit')}"
+def _hotspot_value(s: StoodOut) -> str:
+    value = escape(s.hotspot_file or "")
+    if s.hotspot_commits:
+        value += f", changed in {_n(s.hotspot_commits, 'commit')}"
     return value
 
 
@@ -177,8 +177,8 @@ def stood_out_lines(s: StoodOut) -> list[RenderableType]:
         rows.append(("Health", _health_value(s)))
     if s.dead_unreachable is not None:
         rows.append(("Dead code", _dead_value(s)))
-    if s.riskiest_file:
-        rows.append(("Riskiest", _riskiest_value(s)))
+    if s.hotspot_file:
+        rows.append(("Hotspot", _hotspot_value(s)))
     if s.decision_candidates is not None:
         rows.append(("Decisions", _decisions_value(s)))
     if not rows:

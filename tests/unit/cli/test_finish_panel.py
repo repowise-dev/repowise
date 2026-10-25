@@ -206,8 +206,8 @@ _FOUND = StoodOut(
     lowest_score=3.12,
     dead_unreachable=38,
     dead_safe=12,
-    riskiest_file="auth/session.py",
-    riskiest_commits=48,
+    hotspot_file="auth/session.py",
+    hotspot_commits=48,
     decision_candidates=14,
 )
 
@@ -229,7 +229,7 @@ def test_stood_out_names_the_four_findings():
     assert "What stood out" in text
     assert "7.4/10 Warning  scheduler/planner.py is lowest at 3.1" in text
     assert "38 files nothing reaches, 12 findings safe to delete" in text
-    assert "auth/session.py, changed in 48 commits" in text
+    assert "Hotspot       auth/session.py, changed in 48 commits" in text
     assert "14 candidates to review" in text
     assert "confirmed" not in text and "decisions found" not in text
     # The count rows they replace are gone; the rest stay.
@@ -261,7 +261,7 @@ def test_health_word_and_colour_follow_the_three_bands(score, word, style):
 
 def test_unmeasured_findings_are_left_out():
     text = _panel(StoodOut(dead_unreachable=0, decision_candidates=1))
-    assert "Health" not in text and "Riskiest" not in text
+    assert "Health" not in text and "Hotspot" not in text
     assert "no unreachable files" in text
     assert "1 candidate to review" in text
     assert "What stood out" not in _panel(StoodOut())
