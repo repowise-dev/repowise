@@ -5,6 +5,8 @@ the host ``catalogue``, as a compose ``environment`` entry does; a compose
 ``env_file:`` points at these files. Only values :func:`.base.host_of` reads as
 addresses become claims: every other value (a password, a token) is never kept.
 A sample file's ``localhost`` names no workspace repo, so it resolves to nothing.
+A key an env file and a compose file (or two env files) point at different
+repos is dropped as ambiguous, as for every other source.
 
 Ceiling: an ``env_file:`` with another file name (``api.conf``) is not read;
 following each compose reference is the upgrade if estates use such names.
@@ -12,21 +14,23 @@ following each compose reference is the upgrade if estates use such names.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from .base import ENV, Claim, ServiceNameSource, SourceFile, host_of, with_defaults
 
+_EXPORT_RE = re.compile(r"^export\s+")
+_COMMENT_RE = re.compile(r"\s#")
+
 
 def read(file: SourceFile) -> Iterable[Claim]:
     for line in file.text.splitlines():
-        line = line.strip()
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
+        line = _EXPORT_RE.sub("", line.strip())
         key, sep, value = line.partition("=")
         key = key.strip()
         if not sep or not key or key.startswith("#") or " " in key:
             continue
-        host = host_of(key, with_defaults(value.split(" #", 1)[0]))
+        host = host_of(key, with_defaults(_COMMENT_RE.split(value, maxsplit=1)[0]))
         if host:
             yield Claim(name=key.lower(), kind=ENV, ref=host)
 

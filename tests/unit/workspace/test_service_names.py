@@ -183,7 +183,7 @@ def test_env_files_feed_token_entries_and_keep_only_addresses(tmp_path: Path) ->
     (tmp_path / "web" / ".env").write_text(
         "# local stack\n"
         "CATALOGUE_URL=http://catalogue:8080\n"
-        "export CART_HOST='cart'  # the cart service\n"
+        "export\tCART_HOST='cart'\t# the cart service\r\n"
         "DB_PASSWORD=catalogue\n"
         "API_TOKEN=cart:8080\n"
         "STRIPE_URL=https://api.stripe.com\n"
