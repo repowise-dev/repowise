@@ -218,7 +218,7 @@ export function DecisionCaptureSettings({
                 className={
                   "rounded-md border px-2.5 py-1 text-xs transition-colors disabled:opacity-40 " +
                   (active
-                    ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                    ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                     : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]")
                 }
               >

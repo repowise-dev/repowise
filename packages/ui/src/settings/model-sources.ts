@@ -8,6 +8,8 @@ export interface ModelSourceProvider {
   id: string;
   name: string;
   requires_key?: boolean;
+  /** A model that runs on this machine (not an agent CLI). */
+  local_model?: boolean;
   detected?: ModelSourceDetection | null;
 }
 
@@ -28,10 +30,6 @@ export interface ModelSource {
 
 export const PASTE_SOURCE_ID = "paste";
 export const HOSTED_SOURCE_ID = "hosted";
-
-/** The local model the sheet offers. Other keyless providers (proxies, local
- *  OpenAI-compatible servers) stay in Settings, where their endpoint is set. */
-const LOCAL_PROVIDER_ID = "ollama";
 
 /** "Claude Code (Local CLI)" -> "Claude Code", "Ollama (Local)" -> "Ollama". */
 function shortName(name: string): string {
@@ -70,7 +68,9 @@ const HOSTED_SOURCE: ModelSource = {
 /**
  * The sheet's rows, in order: signed-in agent CLIs, then providers with a key
  * already on this machine (catalog order within each), then the local model,
- * then "Paste a key", then hosted. Providers with nothing set up are left out;
+ * then "Paste a key", then hosted. The local model is the first catalog
+ * provider flagged `local_model`; other keyless providers (proxies, local
+ * OpenAI-compatible servers) stay in Settings, where their endpoint is set. Providers with nothing set up are left out;
  * Settings lists every provider.
  */
 export function orderModelSources(providers: readonly ModelSourceProvider[]): ModelSource[] {
@@ -80,7 +80,7 @@ export function orderModelSources(providers: readonly ModelSourceProvider[]): Mo
   const keyed = providers
     .filter((p) => p.detected === "env" || p.detected === "saved")
     .map((p) => providerSource(p, "key"));
-  const local = providers.find((p) => p.id === LOCAL_PROVIDER_ID);
+  const local = providers.find((p) => p.local_model === true);
   return [
     ...signedIn,
     ...keyed,

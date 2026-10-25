@@ -412,7 +412,7 @@ function RowOverflow({
                     }}
                     className={`block w-full px-3 py-2 text-left text-sm ${
                       current
-                        ? "font-medium text-[var(--color-accent-primary)]"
+                        ? "font-medium text-[var(--color-text-primary)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
                     }`}
                   >

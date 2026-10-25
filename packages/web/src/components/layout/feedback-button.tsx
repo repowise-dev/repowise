@@ -94,7 +94,7 @@ export function FeedbackButton() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label={t("feedback.title")}
-        className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)]/50 hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-text-primary)]"
+        className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
       >
         <MessageSquarePlus className="h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" />
         <span>{t("feedback.title")}</span>
@@ -121,7 +121,7 @@ export function FeedbackButton() {
                     onClick={() => setCategory(option.value)}
                     className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
                       category === option.value
-                        ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                        ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                         : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-tertiary)]"
                     }`}
                   >

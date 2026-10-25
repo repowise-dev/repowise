@@ -71,7 +71,7 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId, onPromp
                 className={cn(
                   "border-t border-[var(--color-border-default)] first:border-t-0",
                   onClick && "hover:bg-[var(--color-bg-elevated)]",
-                  isSelected && "bg-[var(--color-accent-muted)]",
+                  isSelected && "bg-[var(--color-selection-wash)]",
                   onClick && CLICKABLE_ROW_CLS,
                 )}
                 aria-current={isSelected ? "true" : undefined}
@@ -108,7 +108,7 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId, onPromp
                           className={cn(
                             "whitespace-nowrap text-xs max-sm:sr-only",
                             isSelected
-                              ? "font-medium text-[var(--color-accent-primary)]"
+                              ? "font-medium text-[var(--color-text-primary)]"
                               : "text-[var(--color-text-tertiary)]",
                           )}
                         >

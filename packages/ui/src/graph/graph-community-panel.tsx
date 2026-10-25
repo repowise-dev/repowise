@@ -115,7 +115,7 @@ export function GraphCommunityPanel({
         <div className="shrink-0 border-b border-[var(--color-border-default)] px-4 py-2">
           <button
             onClick={onEnterCommunity}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-primary)]/30 bg-[var(--color-accent-primary)]/10 px-2 py-1.5 text-xs font-medium text-[var(--color-accent-primary)] transition-colors hover:bg-[var(--color-accent-primary)]/20"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1.5 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
           >
             <CornerDownRight className="h-3 w-3" />
             Enter this community

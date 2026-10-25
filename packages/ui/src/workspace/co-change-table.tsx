@@ -69,7 +69,7 @@ const CoChangeRow = React.memo(function CoChangeRow({ cc, compact, selected, onS
       className={cn(
         "border-t border-[var(--color-border-default)] align-top",
         interactive && "hover:bg-[var(--color-bg-elevated)]",
-        selected && "bg-[var(--color-accent-muted)]",
+        selected && "bg-[var(--color-selection-wash)]",
         interactive && CLICKABLE_ROW_CLS,
       )}
       aria-current={selected ? "true" : undefined}

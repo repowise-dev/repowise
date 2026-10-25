@@ -154,7 +154,7 @@ const NODE_FILTERS: { id: Overlay | "all"; icon?: typeof Skull; label: string; h
 // type and hairline border. It was a 10px tertiary glyph-and-word, which is
 // the size and tone the contrast audit fails.
 const itemActiveClass =
-  "border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]";
+  "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]";
 const itemIdleClass =
   "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
 const itemClass =
@@ -222,7 +222,7 @@ export function GraphNodeFilter({
             }
             className={`${segmentClass} ${
               isActive
-                ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+                ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
             }`}
           >
@@ -315,7 +315,7 @@ export const GraphToolbar = memo(function GraphToolbar({
                 aria-pressed={showPathFinder}
                 className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
                   showPathFinder
-                    ? "text-[var(--color-accent-primary)]"
+                    ? "bg-[var(--color-selection-wash)] font-medium text-[var(--color-text-primary)]"
                     : "text-[var(--color-text-primary)]"
                 }`}
               >
@@ -332,7 +332,7 @@ export const GraphToolbar = memo(function GraphToolbar({
               aria-pressed={showFlows}
               className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
                 showFlows
-                  ? "text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] font-medium text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-primary)]"
               }`}
             >

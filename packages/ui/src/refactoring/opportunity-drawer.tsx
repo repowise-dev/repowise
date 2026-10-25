@@ -328,7 +328,7 @@ function DrawerBody({
                     onClick={() => void setStatus(option.value)}
                     className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                       current
-                        ? "bg-[var(--color-bg-selected)] text-[var(--color-text-primary)] shadow-[inset_0_-2px_0_var(--color-accent-primary)]"
+                        ? "bg-[var(--color-bg-selected)] text-[var(--color-text-primary)] shadow-[inset_0_-2px_0_var(--color-tab-active)]"
                         : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
                     }`}
                   >

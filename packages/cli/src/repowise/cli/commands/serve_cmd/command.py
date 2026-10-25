@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -11,7 +12,7 @@ import click
 
 from repowise.cli.helpers import console
 
-from . import _advisory, _embedder, _frontend, _lock, _ports
+from . import _advisory, _browser, _embedder, _frontend, _lock, _ports
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
@@ -96,6 +97,21 @@ def _run_api(
             frontend_proc.wait(timeout=5)
 
 
+def _maybe_open_browser(
+    frontend_proc: subprocess.Popen | None, ui_port: int, *, no_open: bool
+) -> None:
+    from repowise.cli.platform.telemetry.environment import is_ci
+
+    if _browser.should_open_browser(
+        ui_started=frontend_proc is not None,
+        no_open=no_open,
+        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+        ci=is_ci(),
+        has_display=_browser.has_display_for_browser(),
+    ):
+        _browser.open_when_ready(ui_port, frontend_proc)
+
+
 @click.command("serve")
 @click.option("--port", default=7337, type=int, help="API server port.", envvar="REPOWISE_PORT")
 @click.option("--host", default="127.0.0.1", help="Host to bind to.")
@@ -108,19 +124,32 @@ def _run_api(
 )
 @click.option("--no-ui", is_flag=True, help="Start API server only, skip the web UI.")
 @click.option(
+    "--no-open",
+    is_flag=True,
+    envvar="REPOWISE_NO_OPEN",
+    help="Don't open the web UI in a browser. Env: REPOWISE_NO_OPEN.",
+)
+@click.option(
     "--refresh-ui",
     is_flag=True,
     help="Force re-download of the web UI tarball, ignoring any cache.",
 )
 def serve_command(
-    port: int, host: str, workers: int, ui_port: int, no_ui: bool, refresh_ui: bool
+    port: int,
+    host: str,
+    workers: int,
+    ui_port: int,
+    no_ui: bool,
+    no_open: bool,
+    refresh_ui: bool,
 ) -> None:
     """Start the repowise server with the web UI.
 
     Starts the API backend and automatically launches the web frontend.
     The web UI is downloaded and cached on first run (~50 MB, one-time).
 
-    Use --no-ui to start only the API server.
+    In an interactive terminal the web UI opens in your browser once it
+    answers. Use --no-open to skip that, --no-ui to start only the API server.
     """
     uvicorn = _import_uvicorn()
     _advisory._start_update_advisory()
@@ -142,6 +171,7 @@ def serve_command(
         # The UI takes the same bind as the API, so probe there.
         ui_port = _ports._find_free_port(host, ui_port, "web UI")
         frontend_proc = _frontend._launch_web_ui(host, port, ui_port, refresh_ui=refresh_ui)
+    _maybe_open_browser(frontend_proc, ui_port, no_open=no_open)
 
     console.print(f"[green]API server starting on http://{host}:{port}[/green]")
     _run_api(

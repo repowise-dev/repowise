@@ -71,6 +71,7 @@ INTERNAL_TAGS = frozenset(
         "owners",
         "platform",
         "providers",
+        "setup",
         "stats",
     }
 )

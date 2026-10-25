@@ -126,6 +126,16 @@
   --color-action-primary-hover: #3b2f45;
   --color-text-on-action: var(--color-text-inverse);
 
+  /* Neutral roles for state that used to be painted orange. Named by job so a
+     palette change is one edit here. Each aliases a themed token, so none
+     needs a dark override. */
+  --color-control-selected: var(--color-action-primary);
+  --color-control-selected-text: var(--color-text-on-action);
+  --color-tab-active: var(--color-text-primary);
+  --color-selection-wash: var(--color-bg-selected);
+  --color-selection-border: var(--color-text-tertiary);
+  --color-progress-fill: var(--color-text-secondary);
+
   /* Series — the one categorical palette for every chart (seriesColor in
      shared/series.ts): orange, plum, blue, olive, rose, gold, brick, slate,
      ordered so neighbours stay apart. The community hues' values, set here

@@ -397,7 +397,7 @@ class FileTraverser:
         extra_ignore_filename: Name of an additional gitignore-syntax file.
             Defaults to ``.repowiseIgnore``.
         extra_exclude_patterns: Additional gitignore-style patterns to exclude
-            (from CLI ``--exclude`` flags or ``repo.settings["exclude_patterns"]``).
+            (from CLI ``--exclude`` flags or ``.repowise/config.yaml exclude_patterns``).
         include_submodules: When False (default), directories listed in
             ``.gitmodules`` are skipped during traversal.
         include_nested_repos: When False (default), any subdirectory that is
