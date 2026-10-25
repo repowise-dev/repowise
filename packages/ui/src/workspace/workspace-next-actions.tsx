@@ -118,7 +118,7 @@ export function WorkspaceNextActions({
                   <p className="text-[15px] font-semibold leading-snug text-[var(--color-text-primary)]">
                     <Link
                       href={contractsHref}
-                      className="rounded hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      className="rounded hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                     >
                       {renderActionTitle(c.title)}
                     </Link>
@@ -143,7 +143,7 @@ export function WorkspaceNextActions({
                 </h3>
                 <Link
                   href={repoHref(repoId)}
-                  className="rounded text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="rounded text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   {`All ${work(repo, horizon).toLocaleString()} in ${repo.alias}`}
                 </Link>

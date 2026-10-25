@@ -230,7 +230,7 @@ export function ModelCombobox({
         onKeyDown={state.onKeyDown}
         className={cn(
           "box-border flex h-8 w-full min-w-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 font-mono text-xs text-[var(--color-text-primary)]",
-          "placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]",
+          "placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-focus-ring)]",
         )}
       />
       {state.expanded && (

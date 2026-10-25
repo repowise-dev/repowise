@@ -25,7 +25,7 @@ export function RailSection({ title, children }: { title: string; children: Reac
 }
 
 const ROW =
-  "flex w-full min-w-0 items-baseline gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "flex w-full min-w-0 items-baseline gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 function Score({ score }: { score: number | null }) {
   return (

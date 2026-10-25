@@ -266,7 +266,7 @@ function RelatedRow({
                 }
               : (e) => e.stopPropagation()
           }
-          className="flex items-baseline gap-2 rounded text-[var(--color-text-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex items-baseline gap-2 rounded text-[var(--color-text-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-focus-ring)]"
         >
           {text}
         </a>

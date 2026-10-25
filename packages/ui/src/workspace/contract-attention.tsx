@@ -207,7 +207,7 @@ function UnmatchedGroup({
                 onClick={() =>
                   onSelect({ repo: u.repo, file_path: u.file_path, contract_id: u.contract_id })
                 }
-                className="grid w-full grid-cols-1 gap-x-4 gap-y-0.5 rounded-md px-2 py-1.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)] md:grid-cols-[minmax(0,5fr)_minmax(0,1fr)_minmax(0,5fr)]"
+                className="grid w-full grid-cols-1 gap-x-4 gap-y-0.5 rounded-md px-2 py-1.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)] md:grid-cols-[minmax(0,5fr)_minmax(0,1fr)_minmax(0,5fr)]"
               >
                 <ContractIdentity contractId={u.contract_id} />
                 <span className="text-xs text-[var(--color-text-secondary)]">{u.repo}</span>

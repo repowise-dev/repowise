@@ -503,7 +503,7 @@ export function ExternalDependenciesTable({
               value={state.query}
               onChange={(event) => onStateChange(updateState(state, { query: event.target.value }))}
               placeholder="Search packages or versions"
-              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-9 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-9 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:ring-1 focus:ring-[var(--color-focus-ring)]"
             />
           </label>
           <Select value={state.ecosystem} onValueChange={(ecosystem) => onStateChange(updateState(state, { ecosystem }))}>

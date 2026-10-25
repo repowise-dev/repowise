@@ -231,7 +231,7 @@ export function ImpactEffortQuadrant({
           aria-label={`Impact and effort plot of ${fmt(data.plotted)} files. Arrow keys step through them, largest gain first. Enter finds the file in the list.`}
           onKeyDown={onKeyDown}
           onBlur={() => setActive(null)}
-          className="rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+          className="rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
         >
           <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true" className="block">
             {/* Axes */}

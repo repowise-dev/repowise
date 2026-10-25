@@ -66,7 +66,7 @@ const SheetContent = React.forwardRef<
       <DialogPrimitive.Close
         className={cn(
           "absolute right-4 top-4 rounded-sm opacity-70 transition-opacity",
-          "hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]",
+          "hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)]",
           "disabled:pointer-events-none",
         )}
         aria-label={closeLabel}

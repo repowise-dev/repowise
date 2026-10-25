@@ -185,7 +185,7 @@ function CopyQuestion({ text }: { text: string }) {
         window.setTimeout(() => setCopied(false), 1600);
       }}
       aria-label={copied ? t("copied") : t("copyQuestion", { question: text })}
-      className="shrink-0 rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="shrink-0 rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {copied ? t("copied") : t("copy")}
     </button>

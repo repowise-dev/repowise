@@ -129,7 +129,7 @@ export function clickableRowProps<E extends HTMLElement>(activate: () => void) {
 }
 
 export const CLICKABLE_ROW_CLS =
-  "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)]";
+  "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)]";
 
 const NOOP_MEASURE = () => {};
 
@@ -249,7 +249,7 @@ export function ResponsiveTable<T>({
                   {c.sortable && onSort ? (
                     <button
                       type="button"
-                      className="inline-flex cursor-pointer select-none items-center font-medium uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
+                      className="inline-flex cursor-pointer select-none items-center font-medium uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded"
                       onClick={() => onSort(c.key)}
                     >
                       {label}

@@ -17,7 +17,7 @@ interface MessageActionsProps {
 }
 
 const ICON_BUTTON =
-  "inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 /**
  * Copy, retry and edit under a turn. Revealed on hover or focus with a fine
@@ -123,20 +123,20 @@ function MessageEditForm({
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         aria-label="Edit message"
-        className="min-h-20 w-full resize-y rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-2.5 text-base leading-relaxed text-[var(--color-text-primary)] !outline-none focus:border-[var(--color-border-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="min-h-20 w-full resize-y rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-2.5 text-base leading-relaxed text-[var(--color-text-primary)] !outline-none focus:border-[var(--color-border-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       />
       <div className="flex justify-end gap-2">
         <button
           type="button"
           onClick={onCancel}
-          className="inline-flex h-8 items-center rounded-full px-3 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="inline-flex h-8 items-center rounded-full px-3 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           Cancel
         </button>
         <button
           type="submit"
           aria-label="Fork and resend"
-          className="inline-flex h-8 items-center rounded-full bg-[var(--color-action-primary)] px-3 text-xs font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-root)]"
+          className="inline-flex h-8 items-center rounded-full bg-[var(--color-action-primary)] px-3 text-xs font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-root)]"
         >
           Send
         </button>
@@ -160,7 +160,7 @@ function ErrorNotice({
         <button
           type="button"
           onClick={() => void onRetry()}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <RotateCcw aria-hidden className="h-3.5 w-3.5" />
           Retry

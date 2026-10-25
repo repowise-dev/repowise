@@ -269,7 +269,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter files by path…"
-              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)]"
+              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-focus-ring)]"
             />
           </div>
           <Segmented<TestFilter>
@@ -285,7 +285,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
             <select
               value={langFilter}
               onChange={(e) => setLangFilter(e.target.value)}
-              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-accent-primary)]"
+              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-focus-ring)]"
             >
               <option value="">All languages</option>
               {languages.map((l) => (

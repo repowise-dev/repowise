@@ -24,7 +24,7 @@ const STRONG = "border-[var(--color-border-hover)]";
 const VARIANT: Record<HairlineCardVariant, string> = {
   static: REST,
   group: `${REST} transition-colors hover:border-[var(--color-border-hover)] focus-within:border-[var(--color-border-hover)]`,
-  link: `${REST} transition-colors hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]`,
+  link: `${REST} transition-colors hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`,
 };
 
 export function hairlineCardClass(

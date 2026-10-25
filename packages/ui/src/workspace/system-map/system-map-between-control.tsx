@@ -60,7 +60,7 @@ export function SystemMapBetweenControl({ graph, families, open, onOpenChange, f
         <button
           type="button"
           aria-expanded={open}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--color-border-hover)] px-2.5 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--color-border-hover)] px-2.5 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <Route size={14} aria-hidden />
           Between

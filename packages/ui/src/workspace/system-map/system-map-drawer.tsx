@@ -156,7 +156,7 @@ export function SystemMapRailFrame({
           type="button"
           onClick={onClose}
           aria-label="Close details"
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <X size={14} aria-hidden />
         </button>
@@ -262,7 +262,7 @@ function SelectButton({ onClick, children, title }: { onClick: () => void; child
       type="button"
       onClick={onClick}
       title={title}
-      className="cursor-pointer text-left font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="cursor-pointer text-left font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {children}
     </button>
@@ -276,7 +276,7 @@ function VerbButton({ onClick, children, title }: { onClick: () => void; childre
       type="button"
       onClick={onClick}
       title={title}
-      className="rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {children}
     </button>
@@ -601,7 +601,7 @@ function NeighbourList({
                   <button
                     type="button"
                     onClick={() => onSelect({ type: "node", id: pick(e) })}
-                    className="flex w-full cursor-pointer items-baseline justify-between gap-3 rounded px-1.5 py-1 text-left text-[15px] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    className="flex w-full cursor-pointer items-baseline justify-between gap-3 rounded px-1.5 py-1 text-left text-[15px] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                   >
                     <span className="min-w-0 [overflow-wrap:anywhere]">{name(pick(e))}</span>
                     <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">

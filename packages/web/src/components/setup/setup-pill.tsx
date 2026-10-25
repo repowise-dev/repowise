@@ -88,7 +88,7 @@ export function SetupPill({ repoId, compact = false }: { repoId: string; compact
         href={setupHref(repoId)}
         aria-label={label}
         title={label}
-        className="flex items-center justify-center rounded-md p-2 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="flex items-center justify-center rounded-md p-2 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <SetupRing done={done} />
       </Link>
@@ -99,7 +99,7 @@ export function SetupPill({ repoId, compact = false }: { repoId: string; compact
       <Link
         href={setupHref(repoId)}
         aria-label={label}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-full py-1.5 pl-2.5 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-full py-1.5 pl-2.5 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <SetupRing done={done} />
         <span className="truncate">{t("label")}</span>
@@ -112,7 +112,7 @@ export function SetupPill({ repoId, compact = false }: { repoId: string; compact
         onClick={() => void hide("setup_pill_hidden")}
         aria-label={t("hide")}
         title={t("hide")}
-        className="shrink-0 rounded-full p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="shrink-0 rounded-full p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <X className="h-3.5 w-3.5" />
       </button>

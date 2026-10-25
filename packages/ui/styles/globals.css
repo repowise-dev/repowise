@@ -119,12 +119,17 @@
   --color-model-hover: var(--color-plum-600);
   --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
 
-  /* Primary action: a solid ink button. Orange stays for links, focus,
+  /* Primary action: a solid ink button. Orange stays for links,
      selection, indexing, "New" marks and the brand. Ground and text alias the
      ink pair so they flip with the theme; hover steps toward the page. */
   --color-action-primary: var(--color-text-primary);
   --color-action-primary-hover: #3b2f45;
   --color-text-on-action: var(--color-text-inverse);
+
+  /* Keyboard focus ring: neutral ink, so focus never reads as an alert or
+     a brand mark. Aliases text-secondary, which clears 3:1 against every
+     ground in both themes (contrast-check.py), so it needs no dark override. */
+  --color-focus-ring: var(--color-text-secondary);
 
   /* Neutral roles for state that used to be painted orange. Named by job so a
      palette change is one edit here. Each aliases a themed token, so none
@@ -768,7 +773,7 @@ body {
 /* -------------------------------------------------------------------- */
 
 :focus-visible {
-  outline: 2px solid var(--color-accent-fill);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
 }
 

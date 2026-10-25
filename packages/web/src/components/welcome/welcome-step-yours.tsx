@@ -44,7 +44,7 @@ export function WelcomeStepYours({ repoId, setup }: { repoId: string; setup: Set
             href={hostedLink("welcome", "team")}
             target="_blank"
             rel="noreferrer"
-            className="rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {t("teamLink")}
           </a>
