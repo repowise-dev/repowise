@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console
+from sqlalchemy.exc import OperationalError
 
 from repowise.cli.commands.init_cmd import reporting
 from repowise.cli.commands.init_cmd._agent_summary import run_summary
@@ -256,3 +257,32 @@ def test_summary_findings_are_null_when_nothing_was_measured(tmp_path):
     assert run_summary(run, [])["findings"] == {
         "health": None, "dead_code": None, "hotspot": None, "decision_candidates": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("error", "logged_as_bug"),
+    [
+        (OperationalError("SELECT", {}, Exception("no such table")), False),
+        (RuntimeError("a bug in the count"), True),
+    ],
+    ids=["unreadable-store", "unexpected"],
+)
+def test_a_failed_candidate_count_drops_the_row_and_is_null(
+    monkeypatch, tmp_path, error, logged_as_bug
+):
+    async def _raise(_repo):
+        raise error
+
+    monkeypatch.setattr(reporting, "_count_candidates", _raise)
+    monkeypatch.setattr(reporting, "_signed_in_agent", lambda: None)
+    monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
+    logged: list[str] = []
+    monkeypatch.setattr(reporting.logger, "exception", lambda event, **_kw: logged.append(event))
+
+    completion, out, _ = _complete(monkeypatch, tmp_path, index_only=True)
+
+    assert completion.stood_out.decision_candidates is None
+    assert "candidates to review" not in out and "Decisions" not in out
+    assert completion.stood_out.as_summary()["decision_candidates"] is None
+    # Only an error a store cannot explain is logged as a bug.
+    assert logged == (["decision_candidate_count_failed"] if logged_as_bug else [])

@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import structlog
+
 from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
     build_contextual_next_steps,
@@ -29,6 +31,8 @@ from repowise.cli.ui.workspace_finish import (
     WorkspaceFacts,
     print_workspace_finish_panel,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 def _dead_counts(result: Any) -> tuple[int, int]:
@@ -262,12 +266,19 @@ def _dead_finding(result: Any) -> dict[str, Any]:
 
 def _decision_candidates(repo_path: Path) -> int | None:
     """The decision layer's own candidate count from the store; None when it cannot be read."""
+    from sqlalchemy.exc import SQLAlchemyError
+
     from repowise.cli.helpers import run_async
 
     try:
         return run_async(_count_candidates(repo_path))
+    except (SQLAlchemyError, OSError):
+        # A missing or unreadable store: the row is left out, never shown as 0.
+        return None
     except Exception:
-        # The row is left out; the finish panel never fails on a store read.
+        # Anything else is a bug in the count. Logged, and the row is still
+        # left out so the finish panel never fails on it.
+        logger.exception("decision_candidate_count_failed", repo=str(repo_path))
         return None
 
 
