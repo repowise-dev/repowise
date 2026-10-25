@@ -77,8 +77,9 @@ CONTRACTS_FILENAME = "contracts.json"
 # Go routes from chi, fiber, gorilla/mux and Go 1.22 method patterns are read.
 # Next.js route handlers exported from a brace list are read, and the probe
 # skips tooling and build files.
-# A data consumer in a file that opens SQLite carries ``meta['embedded']`` and
-# links only within its repo.
+# A data contract in a file that opens SQLite, or in a repo that names SQLite
+# and no server database, carries ``meta['embedded']`` and links only within
+# its repo, on either side.
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -264,7 +265,9 @@ class ContractStore:
     #: Service-level edges (:attr:`.origins.LinkStrategy.HOST_ONLY`): a consumer
     #: whose host names a workspace repo while no route there serves its path;
     #: and a gateway's edge to each service it routes to
-    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). Kept out of ``contract_links``, which only ever pairs two contracts.
+    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). A
+    #: call the gateway rewrites to a served route is a ``gateway_route`` link
+    #: in ``contract_links``, which only ever pairs two contracts.
     service_links: list[ContractLink] = field(default_factory=list)
     #: The service-name map matching used (:mod:`.service_names`): each name, its
     #: repo, and the source and file that placed it, plus the fingerprint that

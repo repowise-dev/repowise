@@ -415,6 +415,47 @@ class TestDataMatching:
         contracts += DataExtractor().extract(worker, "worker")
         assert len(match_contracts(contracts)) == 1
 
+    def test_repo_that_opens_sqlite_in_one_module_keeps_its_tables(self, tmp_path: Path) -> None:
+        # The Flask tutorial shape: db.py opens SQLite, auth.py queries it,
+        # schema.sql declares it. No other repo reads or owns those tables.
+        app = tmp_path / "app"
+        server = tmp_path / "server"
+        _write(app, "app/db.py", "import sqlite3\n")
+        _write(app, "app/auth.py", 'q = "SELECT id FROM user WHERE x = 1"\n')
+        _write(app, "app/schema.sql", "CREATE TABLE post (id INT);")
+        _write(server, "db/database.sql", "CREATE TABLE user (id INT);")
+        _write(server, "db/db.go", 'import _ "github.com/lib/pq"\n')
+        _write(server, "models/post.go", 'const q = "SELECT id FROM post WHERE x = 1"\n')
+        app_contracts = DataExtractor().extract(app, "app")
+        assert {c.meta.get("embedded") for c in app_contracts} == {"sqlite"}
+        server_contracts = DataExtractor().extract(server, "server")
+        assert len(server_contracts) == 2
+        assert all("embedded" not in c.meta for c in server_contracts)
+        assert match_contracts(app_contracts + server_contracts) == []
+
+    def test_repo_naming_a_server_database_keeps_the_file_tag(self, tmp_path: Path) -> None:
+        # SQLite only as a fallback to DATABASE_URL: the app may run on a shared server.
+        app = tmp_path / "app"
+        backend = tmp_path / "backend"
+        _write(
+            app,
+            "config.py",
+            "URI = os.environ.get('DATABASE_URL', '').replace('postgres://', 'postgresql://')"
+            " or 'sqlite:///app.db'\n",
+        )
+        _write(app, "routes.py", 'q = "SELECT id FROM repos WHERE x = 1"\n')
+        _write(backend, "migrations/001.sql", "CREATE TABLE repos (id INT);")
+        contracts = DataExtractor().extract(app, "app") + DataExtractor().extract(backend, "backend")
+        assert len(match_contracts(contracts)) == 1
+
+    def test_embedded_model_not_shared_with_another_repos_schema(self, tmp_path: Path) -> None:
+        _write(tmp_path / "api", "db/schema.sql", "CREATE TABLE refunds (id INT);")
+        _write(tmp_path / "admin", "config.php", "<?php\n$db = new PDO('sqlite:app.db');\n")
+        _write(tmp_path / "admin", "app/Models/Refund.php", _ELOQUENT_HEAD + "class Refund extends Model {}\n")
+        contracts = DataExtractor().extract(tmp_path / "api", "api")
+        contracts += DataExtractor().extract(tmp_path / "admin", "admin")
+        assert match_contracts(contracts) == []
+
 
 _ELOQUENT_HEAD = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\n"
 

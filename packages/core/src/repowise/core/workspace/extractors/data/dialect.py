@@ -10,7 +10,7 @@ scheme (``data::<normalized table>``) and the normalization rules stay in
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.origins import ContractOrigin
@@ -53,7 +53,12 @@ def build_table_provider(
         symbol_name=f"{framework}:{table_raw}",
         origin=origin,
         line=line,
-        meta={"table": table, "framework": framework, **({"schema": schema} if schema else {})},
+        meta={
+            "table": table,
+            "framework": framework,
+            **({"schema": schema} if schema else {}),
+            **_embedded_meta(ctx),
+        },
     )
 
 
@@ -82,12 +87,64 @@ _EMBEDDED_ENGINES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+#: Tokens naming a server database: a driver, a dialect or a URL scheme. A repo
+#: that names one may run its tables on a shared server, so only the file that
+#: opens an embedded engine is read as embedded (see :func:`repo_embedded_engine`).
+_SERVER_ENGINE_TOKENS: tuple[str, ...] = (
+    "postgres",
+    "Postgres",
+    "POSTGRES",
+    "psycopg",
+    "asyncpg",
+    "lib/pq",
+    "jackc/pgx",
+    "Npgsql",
+    "mysql",
+    "MySql",
+    "MySQL",
+    "mariadb",
+    "sqlserver",
+    "SqlServer",
+    "mssql",
+    "oracle",
+    "cockroach",
+)
+
+
 def embedded_engine(ctx: ScanContext) -> str | None:
     """The embedded engine *ctx*'s file opens (``sqlite``), or ``None``."""
     for engine, tokens in _EMBEDDED_ENGINES:
         if ctx.has_any(tokens):
             return engine
     return None
+
+
+def repo_embedded_engine(contents: Iterable[str]) -> str | None:
+    """The embedded engine a repo runs on, when it names one and no server database.
+
+    Apps open SQLite in one module (``db.py``, ``config.py``) and query it in
+    others, so the file-level tag misses most readers. A repo whose files name
+    an embedded engine and no server driver keeps all its tables in that file.
+    Deliberate ceiling: one engine per repo; a monorepo naming both a server
+    and an embedded engine keeps the per-file tag. Upgrade path: the same test
+    per package directory.
+    """
+    found = None
+    for content in contents:
+        if any(token in content for token in _SERVER_ENGINE_TOKENS):
+            return None
+        if found is None:
+            found = next(
+                (e for e, tokens in _EMBEDDED_ENGINES if any(t in content for t in tokens)),
+                None,
+            )
+    return found
+
+
+def _embedded_meta(ctx: ScanContext) -> dict[str, str]:
+    """``{"embedded": engine}`` when *ctx*'s file opens an embedded engine."""
+    engine = embedded_engine(ctx)
+    return {"embedded": engine} if engine else {}
 
 
 def build_table_consumer(
@@ -109,7 +166,6 @@ def build_table_consumer(
     table = normalize_table_name(table_raw)
     if table is None or is_system_table(table):
         return None
-    engine = embedded_engine(ctx)
     return build_contract(
         ctx,
         contract_id=f"data::{table}",
@@ -122,7 +178,7 @@ def build_table_consumer(
             "table": table,
             "verb": verb,
             "client": client,
-            **({"embedded": engine} if engine else {}),
+            **_embedded_meta(ctx),
         },
     )
 
