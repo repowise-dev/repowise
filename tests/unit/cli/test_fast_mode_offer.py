@@ -42,19 +42,15 @@ def test_should_offer_fast_mode_large_repo():
 
 
 def test_next_steps_serve_is_the_headline_in_every_mode():
-    """`repowise serve` (the dashboard) leads in fast, index-only and full — the
-    one place the graph, hotspots, dead code, decisions and wiki all live."""
-    for kwargs in (
-        {"index_only": True, "fast_mode": True},
-        {"index_only": True, "fast_mode": False},
-        {"index_only": False},
-    ):
+    """`repowise serve` leads in fast and full, glossed as the guided tour."""
+    for kwargs in ({"fast_mode": True}, {}):
         steps = build_contextual_next_steps(**kwargs)
         assert steps[0][0] == "repowise serve"
+        assert steps[0][1].startswith("a guided tour of all this in your browser\n")
 
 
 def test_next_steps_fast_mode_second_row_is_full_upgrade():
-    steps = build_contextual_next_steps(index_only=True, fast_mode=True)
+    steps = build_contextual_next_steps(fast_mode=True)
     cmds = [c for c, _ in steps]
     descs = " ".join(d for _, d in steps).lower()
     # After serve, fast mode points at the one fast-to-full command, keyless.
@@ -62,15 +58,14 @@ def test_next_steps_fast_mode_second_row_is_full_upgrade():
     assert "documentation" in descs and "no key" in descs
 
 
-def test_next_steps_index_only_upgrades_via_generate_not_update_full():
-    steps = build_contextual_next_steps(index_only=True, fast_mode=False)
-    cmds = [c for c, _ in steps]
-    assert any(c == "repowise generate" for c in cmds)  # the scoped upgrade path
-    assert not any("update --full" in c for c in cmds)  # never the all-or-nothing path
+def test_next_steps_leave_the_model_command_to_the_model_block():
+    cmds = [c for c, _ in build_contextual_next_steps()]
+    assert not any(c.startswith("repowise generate") for c in cmds)
+    assert not any("update --full" in c for c in cmds)
 
 
 def test_next_steps_full_mode():
-    steps = build_contextual_next_steps(index_only=False)
+    steps = build_contextual_next_steps()
     cmds = [c for c, _ in steps]
     assert any("search" in c for c in cmds)
 
@@ -78,12 +73,11 @@ def test_next_steps_full_mode():
 def test_next_steps_are_serve_and_at_most_two_more():
     """The panel names the dashboard and at most two moves, never a pile."""
     for kwargs in (
-        {"index_only": True, "fast_mode": True},
-        {"index_only": True, "fast_mode": False},
-        {"index_only": False},
-        {"index_only": False, "dead_unreachable": 12, "dead_unused": 30},
-        {"index_only": False, "hotspot_count": 4, "top_hotspot": "a.py"},
-        {"index_only": False, "decision_count": 9},
+        {"fast_mode": True},
+        {},
+        {"dead_unreachable": 12, "dead_unused": 30},
+        {"hotspot_count": 4, "top_hotspot": "a.py"},
+        {"decision_count": 9},
     ):
         steps = build_contextual_next_steps(**kwargs)
         assert steps[0][0] == "repowise serve"
@@ -92,20 +86,18 @@ def test_next_steps_are_serve_and_at_most_two_more():
 
 def test_next_steps_findings_rank_below_finishing_the_index():
     """A partial index is a worse problem than an unexplored finding."""
-    steps = build_contextual_next_steps(
-        index_only=True, fast_mode=False, dead_unreachable=40, decision_count=9
-    )
-    assert steps[1][0] == "repowise generate"
+    steps = build_contextual_next_steps(fast_mode=True, dead_unreachable=40, decision_count=9)
+    assert steps[1][0] == "repowise update --full"
 
     # With the index complete, the largest finding gets the row.
     found = build_contextual_next_steps(
-        index_only=False, dead_unreachable=12, dead_unused=30, decision_count=9
+        dead_unreachable=12, dead_unused=30, decision_count=9
     )
     assert found[1][0] == "repowise dead-code"
 
 
 def test_next_steps_fall_back_to_search_when_nothing_was_found():
-    steps = build_contextual_next_steps(index_only=False)
+    steps = build_contextual_next_steps()
     assert steps[1][0].startswith("repowise search")
 
 
@@ -113,7 +105,7 @@ def test_next_steps_headless_run_gets_manual_mcp_row():
     """A skipped-setup run (CI/headless) can't auto-wire a client, so the panel
     offers the manual connect command naming the real clients."""
     setup = EditorSetupOutcome(editor_setup_disabled=True, claude_code_connected=False)
-    cmds = [c for c, _ in build_contextual_next_steps(index_only=True, setup=setup)]
+    cmds = [c for c, _ in build_contextual_next_steps(setup=setup)]
     assert "repowise mcp ." in cmds
     # It outranks the index-only upgrade row: `--no-editor-setup --index-only`
     # is the CI shape, and the Connected lines carry no command for a disabled run,
@@ -123,7 +115,7 @@ def test_next_steps_headless_run_gets_manual_mcp_row():
     # Fast mode too, for the same reason.
     fast = [
         c
-        for c, _ in build_contextual_next_steps(index_only=True, fast_mode=True, setup=setup)
+        for c, _ in build_contextual_next_steps(fast_mode=True, setup=setup)
     ]
     assert fast[1] == "repowise mcp ."
     # A skip-setup run opted out of all wiring, so it is never nagged to install
@@ -132,7 +124,7 @@ def test_next_steps_headless_run_gets_manual_mcp_row():
 
     # A normally-wired run never shows the manual MCP command row.
     wired = EditorSetupOutcome(claude_code_connected=True, interactive=True)
-    cmds_wired = [c for c, _ in build_contextual_next_steps(index_only=True, setup=wired)]
+    cmds_wired = [c for c, _ in build_contextual_next_steps(setup=wired)]
     assert "repowise mcp ." not in cmds_wired
 
 
@@ -148,7 +140,7 @@ def test_next_steps_non_interactive_surfaces_missing_hooks():
     notes = " ".join(build_status_notes(setup))
     assert "repowise hook rewrite install" in notes
     # ...and they are notes, not command rows.
-    cmds = [c for c, _ in build_contextual_next_steps(index_only=True, setup=setup)]
+    cmds = [c for c, _ in build_contextual_next_steps(setup=setup)]
     assert not any(c.startswith("repowise hook") for c in cmds)
 
     # Already installed → not re-suggested.

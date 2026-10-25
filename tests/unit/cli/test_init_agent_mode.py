@@ -31,6 +31,7 @@ _SUMMARY_KEYS = {
     "warnings",
     "files_written",
     "next",
+    "findings",
 }
 
 _KEYS = (
@@ -183,7 +184,9 @@ def test_a_piped_init_stays_within_the_line_width(repo):
     assert "╭" not in result.stdout
 
 
-def test_json_init_writes_only_events_and_ends_with_a_ready_summary(repo):
+def test_json_init_writes_only_events_and_ends_with_a_ready_summary(repo, monkeypatch):
+    # No agent CLI probe: the model command is then the same on every machine.
+    monkeypatch.setenv("REPOWISE_OFFLINE", "1")
     result = _init(repo, "--no-editor-setup", "--progress", "json")
 
     assert result.exit_code == 0, result.stderr
@@ -195,7 +198,11 @@ def test_json_init_writes_only_events_and_ends_with_a_ready_summary(repo):
     assert summary["mode"] == {"key": "template", "label": "Built from code", "run_mode": "standard"}
     assert summary["restart_required"] is False
     assert summary["spend"] == {"tokens": 0, "usd": 0.0}
-    assert summary["next"][0] == "repowise serve"
+    assert summary["next"][:2] == ["repowise serve", "repowise generate"]
+    findings = summary["findings"]
+    assert set(findings) == {"health", "dead_code", "riskiest", "decision_candidates"}
+    assert isinstance(findings["decision_candidates"], int)
+    assert findings["dead_code"]["unreachable_files"] >= 0
     # The human screen still happens, on stderr.
     assert TITLE_BUILT_FROM_CODE in result.stderr
 

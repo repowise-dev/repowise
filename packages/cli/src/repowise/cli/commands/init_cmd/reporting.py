@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from repowise.cli.helpers import console, load_config, load_state
 from repowise.cli.ui import (
@@ -17,7 +17,12 @@ from repowise.cli.ui import (
     format_elapsed,
     mascot,
 )
-from repowise.cli.ui.finish_panel import FinishFacts, print_finish_panel
+from repowise.cli.ui.finish_panel import (
+    FinishFacts,
+    ModelUpgrade,
+    StoodOut,
+    print_finish_panel,
+)
 from repowise.cli.ui.mode_names import pages, provider_model
 from repowise.cli.ui.workspace_finish import (
     RepoOutcome,
@@ -93,9 +98,23 @@ def _render_defect_accuracy(result: Any) -> None:
 _LARGE_REPO_FILES = 1000
 
 
-def completion_hint(run_mode: str, file_count: int) -> str:
-    """Which hint a finished init earns: big repos hear about freshness."""
-    return "large_repo" if run_mode == "fast" or file_count >= _LARGE_REPO_FILES else "init_success"
+def completion_hint(run_mode: str, file_count: int, first_index: bool = False) -> str | None:
+    """Which hint a finished init earns: big repos hear about freshness.
+
+    A first index ends on its own findings and tour, so it earns no
+    ``init_success`` hint.
+    """
+    if run_mode == "fast" or file_count >= _LARGE_REPO_FILES:
+        return "large_repo"
+    return None if first_index else "init_success"
+
+
+class Completion(NamedTuple):
+    """What the finish panel showed, for the ``--progress json`` summary."""
+
+    steps: list[tuple[str, str]]
+    stood_out: StoodOut
+    model_upgrade: ModelUpgrade | None
 
 
 def show_completion(
@@ -110,23 +129,28 @@ def show_completion(
     files_written: list[Path] | None = None,
     verbose: bool = False,
     owl: str = mascot.DONE,
-) -> list[tuple[str, str]]:
-    """Render the one finish panel and return its next steps; generation checks only under ``-v``.
+) -> Completion:
+    """Render the one finish panel and return what it showed; generation checks only under ``-v``.
 
     *owl* is the mini owl state on the panel title: how the run finished.
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot and *files_written* what editor setup put in the working tree,
-    so the panel reports what setup actually did.
+    so the panel reports what setup actually did. Its ``first_index`` also
+    keeps the ``init_success`` hint off a first index.
     """
     from repowise.core.index_scope import resolve_index_scope
 
-    scope = resolve_index_scope(load_state(Path(repo_path)), load_config(Path(repo_path)))
+    repo_path = Path(repo_path)
+    scope = resolve_index_scope(load_state(repo_path), load_config(repo_path))
     graph = result.graph_builder.graph()
     dead_unreachable, dead_unused = _dead_counts(result)
-    decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
     # A most-committed file is only worth naming when git analysis calls it a hotspot.
-    top_hotspot = _top_hotspot(result) if _hotspots(result) else ""
+    hotspot = _top_hotspot(result) if _hotspots(result) else None
+    top_hotspot = hotspot[0].rsplit("/", 1)[-1] if hotspot else ""
+    stood_out = _stood_out(result, repo_path, hotspot)
+    # Fast mode has its own keyless next step: the full index, before any model.
+    keyless_docs = effective_index_only and run_mode != "fast"
     documentation, spend = (
         _template_pages(result) if effective_index_only else _model_pages(result)
     )
@@ -138,23 +162,19 @@ def show_completion(
         graph_nodes=graph.number_of_nodes(),
         graph_edges=graph.number_of_edges(),
         elapsed=format_elapsed(time.monotonic() - start),
-        dead_unreachable=dead_unreachable,
-        dead_unused=dead_unused,
-        decisions=decisions,
-        git_files=result.git_summary.files_indexed if result.git_summary else None,
-        hotspots=_hotspots(result),
         top_hotspot=top_hotspot,
         pages=documentation,
         spend=spend,
         embed_failed=getattr(result, "embed_failed_pages", 0),
+        stood_out=stood_out,
+        model_upgrade=_model_upgrade(repo_path) if keyless_docs else None,
     )
     steps = build_contextual_next_steps(
-        index_only=effective_index_only,
         fast_mode=(run_mode == "fast"),
         dead_unreachable=dead_unreachable,
         dead_unused=dead_unused,
-        hotspot_count=facts.hotspots,
-        decision_count=decisions,
+        hotspot_count=_hotspots(result),
+        decision_count=stood_out.decision_candidates or 0,
         top_hotspot=top_hotspot,
         setup=setup,
     )
@@ -164,7 +184,7 @@ def show_completion(
         facts,
         steps=steps,
         setup=setup,
-        repo_path=Path(repo_path),
+        repo_path=repo_path,
         files_written=files_written,
         owl=owl,
     )
@@ -175,19 +195,149 @@ def show_completion(
     # shown); a big repo hears about staying fresh instead.
     from repowise.cli.hints import maybe_hint
 
-    maybe_hint(completion_hint(run_mode, result.file_count))
+    hint = completion_hint(run_mode, result.file_count, bool(getattr(setup, "first_index", False)))
+    if hint:
+        maybe_hint(hint)
 
     if verbose:
         _show_generation_checks(result)
-    return steps
+    return Completion(steps, stood_out, facts.model_upgrade)
 
 
-def _top_hotspot(result: Any) -> str:
-    """Basename of the most-committed file, for the risk step and the agent question."""
+def _top_hotspot(result: Any) -> tuple[str, int] | None:
+    """The most-committed file and its commit count, for the findings, risk step and question."""
     if not result.git_meta_map:
-        return ""
-    path = max(result.git_meta_map.items(), key=lambda x: x[1].get("commit_count", 0))[0]
-    return path.rsplit("/", 1)[-1]
+        return None
+    path, meta = max(result.git_meta_map.items(), key=lambda x: x[1].get("commit_count", 0))
+    return path, int(meta.get("commit_count", 0) or 0)
+
+
+def _stood_out(result: Any, repo_path: Path, hotspot: tuple[str, int] | None) -> StoodOut:
+    """The finish panel's findings, each from data this run already has."""
+    riskiest, commits = hotspot or (None, None)
+    return StoodOut(
+        **_health_finding(result),
+        **_dead_finding(result),
+        riskiest_file=riskiest,
+        riskiest_commits=commits,
+        decision_candidates=_decision_candidates(repo_path),
+    )
+
+
+def _health_finding(result: Any) -> dict[str, Any]:
+    """Repo score, its mark (withheld when too little was analysed), and the lowest file."""
+    report = getattr(result, "health_report", None)
+    kpis = getattr(report, "kpis", None) or {}
+    score = kpis.get("average_health")
+    if not isinstance(score, (int, float)):
+        return {}
+    from repowise.core.analysis.health.grading import headline_band, mark_for
+
+    graded = headline_band(float(score), kpis.get("analysed_share")) is not None
+    return {
+        "health_score": float(score),
+        "health_mark": mark_for(float(score)) if graded else None,
+        "lowest_file": kpis.get("worst_performer_path"),
+        "lowest_score": kpis.get("worst_performer_score"),
+    }
+
+
+def _dead_finding(result: Any) -> dict[str, Any]:
+    """Unreachable files, and the findings that pass the deletion gate.
+
+    A whole unreachable file is review-only and never passes the gate, so the
+    safe count is over every finding, not over those files.
+    """
+    report = getattr(result, "dead_code_report", None)
+    if report is None:
+        return {}
+    from repowise.core.analysis.dead_code.serving import is_safe
+
+    findings = report.findings
+    return {
+        "dead_unreachable": sum(1 for f in findings if f.kind.value == "unreachable_file"),
+        "dead_safe": sum(1 for f in findings if is_safe(f)),
+    }
+
+
+def _decision_candidates(repo_path: Path) -> int | None:
+    """The decision layer's own candidate count from the store; None when it cannot be read."""
+    from repowise.cli.helpers import run_async
+
+    try:
+        return run_async(_count_candidates(repo_path))
+    except Exception:
+        # The row is left out; the finish panel never fails on a store read.
+        return None
+
+
+async def _count_candidates(repo_path: Path) -> int | None:
+    from sqlalchemy import select
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud.authority import count_decisions_by_lane
+    from repowise.core.persistence.models import Repository
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo_id = (
+                await session.execute(
+                    select(Repository.id).where(Repository.local_path == str(repo_path))
+                )
+            ).scalar_one_or_none()
+            if repo_id is None:
+                return None
+            return (await count_decisions_by_lane(session, repo_id))["candidates"]
+    finally:
+        await engine.dispose()
+
+
+def _model_upgrade(repo_path: Path) -> ModelUpgrade:
+    """The command that adds a model, for the source this machine already has.
+
+    A signed-in agent CLI first, then a key, else the bare command. A sign-in
+    is never called free: it does not prove a plan.
+    """
+    from repowise.core.index_scope import MODEL_COMMAND
+
+    source = _signed_in_agent() or _keyed_provider(repo_path)
+    if source is None:
+        return ModelUpgrade(MODEL_COMMAND)
+    name, line = source
+    return ModelUpgrade(f"{MODEL_COMMAND} --provider {name}", line)
+
+
+def _signed_in_agent() -> tuple[str, str] | None:
+    """``(provider id, source line)`` for the first signed-in agent CLI worth offering."""
+    from repowise.core.platform.telemetry import network_disabled
+
+    if network_disabled():  # the probe spawns third-party CLIs that phone home
+        return None
+    from repowise.cli.ui.subscription import logged_in_agent_providers
+    from repowise.core.agents.identity import identity_for_provider
+
+    for name, auth in logged_in_agent_providers().items():
+        agent = identity_for_provider(name)
+        if auth.offer and agent is not None:
+            return name, f"Uses your {agent.display_name} sign-in"
+    return None
+
+
+def _keyed_provider(repo_path: Path) -> tuple[str, str] | None:
+    """``(provider id, source line)`` for the first provider a key or Ollama is set for."""
+    from repowise.core.providers.llm.resolve import credentialed_providers
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    for name in credentialed_providers(repo_path):
+        spec = PROVIDER_SPECS.get(name)
+        if spec is None or spec.agent or name == "mock":
+            continue
+        if name == "ollama":
+            return name, "Uses Ollama on this machine"
+        return name, f"Uses your {spec.label} key"
+    return None
 
 
 def _template_pages(result: Any) -> tuple[str | None, None]:

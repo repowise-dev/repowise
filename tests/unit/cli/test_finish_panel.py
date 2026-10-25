@@ -12,7 +12,7 @@ from repowise.cli.commands.serve_cmd._web_assets import _NODE_MIN_MAJOR
 from repowise.cli.editor_setup import EditorSetupOutcome
 from repowise.cli.ui import build_contextual_next_steps
 from repowise.cli.ui.brand import THEME
-from repowise.cli.ui.finish_panel import FinishFacts, build_finish_panel
+from repowise.cli.ui.finish_panel import FinishFacts, ModelUpgrade, StoodOut, build_finish_panel
 from repowise.cli.ui.mode_names import completion_title, scope_line
 from repowise.cli.ui.result_panels import serve_step
 
@@ -43,15 +43,11 @@ def _render(mode: str, setup=None, files_written=None) -> str:
         graph_nodes=400,
         graph_edges=900,
         elapsed="12.3s",
-        dead_unused=4,
-        git_files=50,
-        hotspots=3,
         top_hotspot="serializer.py",
         pages=None if mode == "fast" else "42 pages",
         spend="$0.12 (40,000 tokens)" if mode == "written_by_model" else None,
     )
     steps = build_contextual_next_steps(
-        index_only=mode != "written_by_model",
         fast_mode=mode == "fast",
         dead_unused=4,
         hotspot_count=3,
@@ -160,11 +156,9 @@ def test_bracketed_file_names_render_literally():
     scope = {"content_provenance": "template", "search": {"semantic": "available"}}
     facts = FinishFacts(
         scope=scope, files=1, symbols=1, languages="TypeScript 100%", graph_nodes=1,
-        graph_edges=0, elapsed="1.0s", hotspots=1, top_hotspot="[id].tsx", pages="1 page",
+        graph_edges=0, elapsed="1.0s", top_hotspot="[id].tsx", pages="1 page",
     )
-    steps = build_contextual_next_steps(
-        index_only=False, hotspot_count=1, top_hotspot="[id].tsx", setup=setup
-    )
+    steps = build_contextual_next_steps(hotspot_count=1, top_hotspot="[id].tsx", setup=setup)
     console = Console(record=True, width=100, theme=THEME)
     console.print(
         build_finish_panel(
@@ -201,3 +195,122 @@ def test_semantic_search_line_names_who_pays_for_the_embedder(command, tail, abs
     assert f"{command} turns it on {tail}" in line
     assert absent not in line
 
+
+
+# -- What stood out and the model block ------------------------------------------
+
+_FOUND = StoodOut(
+    health_score=7.43,
+    health_mark="warning",
+    lowest_file="scheduler/planner.py",
+    lowest_score=3.12,
+    dead_unreachable=38,
+    dead_safe=12,
+    riskiest_file="auth/session.py",
+    riskiest_commits=48,
+    decision_candidates=14,
+)
+
+
+def _panel(stood_out: StoodOut | None = None, model_upgrade=None, mode="built_from_code") -> str:
+    scope = {"search": {"semantic": "available"}, **_SCOPES[mode]}
+    facts = FinishFacts(
+        scope=scope, files=1284, symbols=9812, languages="Python 70%, TypeScript 30%",
+        graph_nodes=1, graph_edges=0, elapsed="1.0s", pages="412 pages",
+        stood_out=stood_out or StoodOut(), model_upgrade=model_upgrade,
+    )
+    console = Console(record=True, width=100, theme=THEME)
+    console.print(build_finish_panel(facts, steps=build_contextual_next_steps()))
+    return console.export_text()
+
+
+def test_stood_out_names_the_four_findings():
+    text = _panel(_FOUND)
+    assert "What stood out" in text
+    assert "7.4/10 Warning  scheduler/planner.py is lowest at 3.1" in text
+    assert "38 files nothing reaches, 12 findings safe to delete" in text
+    assert "auth/session.py, changed in 48 commits" in text
+    assert "14 candidates to review" in text
+    assert "confirmed" not in text and "decisions found" not in text
+    # The count rows they replace are gone; the rest stay.
+    assert "Git history" not in text and "unused export" not in text
+    assert text.count("Dead code") == 1 and text.count("Decisions") == 1
+    assert "Indexed" in text and "Documentation" in text and "Elapsed" in text
+
+
+@pytest.mark.parametrize(
+    ("score", "word", "style"),
+    [(8.0, "Healthy", "green"), (7.99, "Warning", "yellow"), (3.99, "Alert", "red")],
+)
+def test_health_word_and_colour_follow_the_three_bands(score, word, style):
+    from repowise.core.analysis.health.grading import mark_for
+
+    stood = StoodOut(health_score=score, health_mark=mark_for(score))
+    console = Console(record=True, width=100, theme=THEME, color_system="truecolor")
+    facts = FinishFacts(
+        scope={}, files=1, symbols=1, languages="Python", graph_nodes=1, graph_edges=0,
+        elapsed="1s", stood_out=stood,
+    )
+    console.print(build_finish_panel(facts, steps=[serve_step()]))
+    assert f"/10 {word}" in console.export_text(clear=False)
+    from rich.color import Color
+
+    html = console.export_html(inline_styles=True)
+    assert f"color: {Color.parse(style).get_truecolor().hex}" in html
+
+
+def test_unmeasured_findings_are_left_out():
+    text = _panel(StoodOut(dead_unreachable=0, decision_candidates=1))
+    assert "Health" not in text and "Riskiest" not in text
+    assert "no unreachable files" in text
+    assert "1 candidate to review" in text
+    assert "What stood out" not in _panel(StoodOut())
+
+
+def test_ungraded_health_shows_the_score_without_a_word():
+    text = _panel(StoodOut(health_score=9.0))
+    assert "9.0/10" in text
+    assert "Healthy" not in text
+
+
+@pytest.mark.parametrize(
+    ("upgrade", "line"),
+    [
+        (
+            ModelUpgrade("repowise generate --provider claude_cli", "Uses your Claude Code sign-in"),
+            "Uses your Claude Code sign-in: repowise generate --provider claude_cli",
+        ),
+        (
+            ModelUpgrade("repowise generate --provider openai", "Uses your OpenAI key"),
+            "Uses your OpenAI key: repowise generate --provider openai",
+        ),
+        (
+            ModelUpgrade("repowise generate"),
+            "repowise generate needs a key, or --provider ollama for a local model.",
+        ),
+    ],
+)
+def test_keyless_run_names_what_a_model_adds_and_the_detected_source(upgrade, line):
+    text = _panel(model_upgrade=upgrade)
+    assert "Add a model when you want more" in text
+    assert "Docs that explain how and why, chat in the dashboard," in text
+    assert line in text
+    assert "Or press m next time on the plan screen." in text
+    block = text[text.index("Add a model") : text.index("Try asking")]
+    assert "free" not in block.lower()
+
+
+def test_a_model_run_has_no_model_block():
+    assert "Add a model" not in _panel(_FOUND, mode="written_by_model")
+
+
+def test_new_lines_stay_ascii_for_a_cp1252_console(monkeypatch):
+    from repowise.cli import _stdio
+
+    monkeypatch.setattr(_stdio, "original_stdout_encoding", lambda: "cp1252")
+    text = _panel(_FOUND, ModelUpgrade("repowise generate"))
+    start = text.index("What stood out")
+    block = text[start : text.index("What's next:")]
+    body = "\n".join(line.strip("│ ") for line in block.splitlines())
+    body.encode("ascii")
+    assert "Index ready" in text and "a guided tour of all this in your browser" in text

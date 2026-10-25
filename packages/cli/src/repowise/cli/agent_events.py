@@ -53,6 +53,7 @@ def summary_fields(
     files_written: list[str] | None = None,
     next_commands: list[str] | None = None,
     error: str | None = None,
+    findings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Every summary key, always present, so a consumer never probes for one."""
     fields: dict[str, Any] = {
@@ -63,6 +64,8 @@ def summary_fields(
         "warnings": list(warnings or []),
         "files_written": list(files_written or []),
         "next": list(next_commands or []),
+        # What the finish panel's "What stood out" showed; null before it rendered.
+        "findings": findings,
     }
     if error is not None:
         fields["error"] = error

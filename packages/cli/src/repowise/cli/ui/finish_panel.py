@@ -7,7 +7,7 @@ what do I ask it, what do I run next, and what did init leave in my repo.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +17,61 @@ from rich.padding import Padding
 from rich.text import Text
 
 from repowise.cli.ui import mascot
-from repowise.cli.ui.brand import BRAND, WARN, key_value_table
+from repowise.cli.ui.brand import BRAND, ERR, INFO, MODEL, OK, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
 from repowise.cli.ui.result_panels import build_completion_panel, print_completion_panel
+
+
+@dataclass(frozen=True)
+class StoodOut:
+    """What the run measured that is worth a look; ``None`` means not measured."""
+
+    health_score: float | None = None
+    #: ``grading.mark_for`` of the score; None when too little was analysed to grade.
+    health_mark: str | None = None
+    lowest_file: str | None = None
+    lowest_score: float | None = None
+    dead_unreachable: int | None = None
+    #: Findings of any kind that pass the deletion gate (a whole file never does).
+    dead_safe: int | None = None
+    riskiest_file: str | None = None
+    riskiest_commits: int | None = None
+    decision_candidates: int | None = None
+
+    def as_summary(self) -> dict[str, Any]:
+        """The same findings for ``--progress json``, one key each, null when not measured."""
+        health = None
+        if self.health_score is not None:
+            health = {
+                "score": self.health_score,
+                "band": self.health_mark,
+                "lowest_file": self.lowest_file,
+                "lowest_score": self.lowest_score,
+            }
+        dead = None
+        if self.dead_unreachable is not None:
+            dead = {
+                "unreachable_files": self.dead_unreachable,
+                "findings_safe_to_delete": self.dead_safe,
+            }
+        riskiest = None
+        if self.riskiest_file:
+            riskiest = {"file": self.riskiest_file, "commits": self.riskiest_commits}
+        return {
+            "health": health,
+            "dead_code": dead,
+            "riskiest": riskiest,
+            "decision_candidates": self.decision_candidates,
+        }
+
+
+@dataclass(frozen=True)
+class ModelUpgrade:
+    """The command that adds a model, and the source on this machine it uses."""
+
+    command: str
+    #: e.g. "Uses your Claude Code sign-in"; None when nothing was detected.
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -33,18 +85,15 @@ class FinishFacts:
     graph_nodes: int
     graph_edges: int
     elapsed: str
-    dead_unreachable: int = 0
-    dead_unused: int = 0
-    decisions: int = 0
-    #: None when the run read no git history.
-    git_files: int | None = None
-    hotspots: int = 0
     top_hotspot: str = ""
     #: The documentation count, e.g. "42 pages"; None when none was built.
     pages: str | None = None
     #: Model spend, e.g. "$0.12 (40,000 tokens)"; None for a keyless run.
     spend: str | None = None
     embed_failed: int = 0
+    stood_out: StoodOut = field(default_factory=StoodOut)
+    #: The "add a model" block of a run whose documentation was built from the index.
+    model_upgrade: ModelUpgrade | None = None
 
 
 def _n(count: int, noun: str) -> str:
@@ -78,19 +127,84 @@ def _metrics(facts: FinishFacts) -> list[tuple[str, str]]:
         rows.append(("Search", _search_label(facts)))
     rows += [
         ("Graph", f"{_n(facts.graph_nodes, 'node')} · {_n(facts.graph_edges, 'edge')}"),
-        (
-            "Dead code",
-            f"{_n(facts.dead_unreachable, 'unreachable file')} · "
-            f"{_n(facts.dead_unused, 'unused export')}",
-        ),
-        ("Decisions", _n(facts.decisions, "decision")),
+        ("Elapsed", facts.elapsed),
     ]
-    if facts.git_files is not None:
-        rows.append(
-            ("Git history", f"{_n(facts.git_files, 'file')} · {_n(facts.hotspots, 'hotspot')}")
-        )
-    rows.append(("Elapsed", facts.elapsed))
     return rows
+
+
+_MARK_STYLE = {"healthy": OK, "warning": WARN, "alert": ERR}
+
+
+def _health_value(s: StoodOut) -> str:
+    from repowise.core.analysis.health.grading import MARK_LABEL, format_score
+
+    figure = f"{format_score(s.health_score)}/10"
+    if s.health_mark:
+        figure = f"[{_MARK_STYLE[s.health_mark]}]{figure} {MARK_LABEL[s.health_mark]}[/]"
+    if s.lowest_file and s.lowest_score is not None:
+        figure += f"  {escape(s.lowest_file)} is lowest at {format_score(s.lowest_score)}"
+    return figure
+
+
+def _dead_value(s: StoodOut) -> str:
+    if s.dead_unreachable:
+        noun = "file" if s.dead_unreachable == 1 else "files"
+        value = f"{s.dead_unreachable:,} {noun} nothing reaches"
+    else:
+        value = "no unreachable files"
+    if s.dead_safe:
+        value += f", {_n(s.dead_safe, 'finding')} safe to delete"
+    return value
+
+
+def _riskiest_value(s: StoodOut) -> str:
+    value = escape(s.riskiest_file or "")
+    if s.riskiest_commits:
+        value += f", changed in {_n(s.riskiest_commits, 'commit')}"
+    return value
+
+
+def _decisions_value(s: StoodOut) -> str:
+    count = s.decision_candidates or 0
+    noun = "candidate" if count == 1 else "candidates"
+    return f"{count:,} {noun} to review"
+
+
+def stood_out_lines(s: StoodOut) -> list[RenderableType]:
+    """Up to four findings from data the run already has; an unmeasured one is left out."""
+    rows: list[tuple[str, str]] = []
+    if s.health_score is not None:
+        rows.append(("Health", _health_value(s)))
+    if s.dead_unreachable is not None:
+        rows.append(("Dead code", _dead_value(s)))
+    if s.riskiest_file:
+        rows.append(("Riskiest", _riskiest_value(s)))
+    if s.decision_candidates is not None:
+        rows.append(("Decisions", _decisions_value(s)))
+    if not rows:
+        return []
+    return [Text(""), line("[bold]What stood out[/bold]"), key_value_table(rows, label_width=10, value_style=INFO)]
+
+
+def model_upgrade_lines(upgrade: ModelUpgrade | None) -> list[RenderableType]:
+    """What a model adds and the exact command for the source this machine has."""
+    if upgrade is None:
+        return []
+    command = f"[{MODEL}]{escape(upgrade.command)}[/]"
+    if upgrade.source:
+        how = f"{escape(upgrade.source)}: {command}"
+    else:
+        how = f"{command} needs a key, or [{MODEL}]--provider ollama[/] for a local model."
+    return [
+        Text(""),
+        line(f"[bold {MODEL}]Add a model when you want more[/]"),
+        line(
+            "Docs that explain how and why, chat in the dashboard, "
+            "written answers for your agent."
+        ),
+        line(how),
+        dim_line("Or press m next time on the plan screen."),
+    ]
 
 
 def line(markup: str, indent: int = 2) -> Padding:
@@ -274,7 +388,10 @@ def _panel_parts(
     repo_path: Path | None,
     files_written: list[Path] | None,
 ) -> tuple[str, list[tuple[str, str]], list[RenderableType], list[RenderableType]]:
-    body: list[RenderableType] = []
+    body: list[RenderableType] = [
+        *stood_out_lines(facts.stood_out),
+        *model_upgrade_lines(facts.model_upgrade),
+    ]
     connected = connected_lines(setup)
     if connected:
         body.append(Text(""))
