@@ -59,9 +59,13 @@ function useGeneralFormState(value: RepoSettingsValue, onSubmit: GeneralFormProp
   const [field, setField] = useState<Field | null>(null);
   const save = useSaveState();
   // Writes are whole-object, so each builds on the newest intended value;
-  // a failure puts every field back to what the server last accepted.
+  // a failure puts its field back to what the server last accepted.
   const saved = useRef<RepoSettingsValue>(withStyle(value));
   const pending = useRef<RepoSettingsValue>(withStyle(value));
+  // Which write the baseline came from, so a slower older success never
+  // replaces a newer one, and a superseded success still counts as saved.
+  const writeSeq = useRef(0);
+  const savedSeq = useRef(0);
 
   const set = <K extends Field>(key: K, next: RepoSettingsValue[K]) =>
     setForm((f) => ({ ...f, [key]: next }));
@@ -72,11 +76,20 @@ function useGeneralFormState(value: RepoSettingsValue, onSubmit: GeneralFormProp
     pending.current = nextValue;
     set(key, next);
     setField(key);
-    const outcome = await save.track(() => onSubmit(nextValue));
-    if (outcome === "saved") saved.current = nextValue;
+    const mine = ++writeSeq.current;
+    const outcome = await save.track(async () => {
+      await onSubmit(nextValue);
+      if (mine > savedSeq.current) {
+        saved.current = nextValue;
+        savedSeq.current = mine;
+      }
+    });
+    // Only the field that failed goes back; an older write still in flight
+    // for another field keeps its value and rolls back itself if it fails.
     if (outcome === "failed") {
-      pending.current = saved.current;
-      setForm(saved.current);
+      const accepted = saved.current[key];
+      pending.current = { ...pending.current, [key]: accepted };
+      set(key, accepted);
     }
   }
 
@@ -101,7 +114,7 @@ function useGeneralFormState(value: RepoSettingsValue, onSubmit: GeneralFormProp
   const rowSave = (key: Field) =>
     field === key ? { saveState: save.state, saveError: save.error } : {};
 
-  return { form, set, commit, submitAll, saving, hasChanges, saved, rowSave };
+  return { form, set, commit, submitAll, saving, hasChanges, saved, pending, rowSave };
 }
 
 export function GeneralForm({
@@ -113,7 +126,7 @@ export function GeneralForm({
   disabledHint = "Editing repository settings is not yet available on this surface.",
 }: GeneralFormProps) {
   const state = useGeneralFormState(value, onSubmit);
-  const { form, set, saved, rowSave } = state;
+  const { form, set, saved, pending, rowSave } = state;
   const readOnly = onSubmit === undefined;
   const live = autosave && !readOnly;
 
@@ -122,7 +135,7 @@ export function GeneralForm({
     if (!live) return;
     const next = form[key].trim();
     if (!next) set(key, saved.current[key]);
-    else if (next !== saved.current[key]) void state.commit(key, next);
+    else if (next !== pending.current[key]) void state.commit(key, next);
   }
 
   function setPatterns(next: string[]) {

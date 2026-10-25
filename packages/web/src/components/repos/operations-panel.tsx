@@ -129,7 +129,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
   );
 }
 
-/** Download this repository's index; rare, so it sits under Sync's Advanced. */
+/** Download this repository's index; rare, so it sits under Models' Advanced. */
 export function ExportDocsRow({ repoId }: { repoId: string }) {
   const t = useTranslations("repos");
   return (

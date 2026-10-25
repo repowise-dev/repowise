@@ -152,11 +152,12 @@ export function DisplaySection() {
       <SettingsRows>
         <SettingsRow
           label={t("display.weekendLabel")}
+          htmlFor="weekend-preset"
           hint={t("display.weekendHint")}
           {...tick("weekend")}
         >
           <Select value={weekend} onValueChange={handleChange}>
-            <SelectTrigger className="w-full sm:w-64">
+            <SelectTrigger id="weekend-preset" className="w-full sm:w-64">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

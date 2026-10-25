@@ -122,6 +122,23 @@ describe("GeneralForm", () => {
       expect(screen.getByText("Could not save")).toBeInTheDocument();
     });
 
+    it("keeps a superseded write that succeeded when a newer one fails", async () => {
+      let releaseFirst: () => void = () => {};
+      const onSubmit = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<void>((r) => (releaseFirst = r)))
+        .mockRejectedValueOnce(new Error("nope"));
+      render(<GeneralForm value={baseValue} onSubmit={onSubmit} autosave />);
+      fireEvent.click(screen.getByRole("radio", { name: /Caveman/i }));
+      fireEvent.click(screen.getByRole("button", { name: "+ vendor/" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+      releaseFirst();
+      await waitFor(() => expect(screen.getByText("Could not save")).toBeInTheDocument());
+      // The style write landed; only the path write rolls back.
+      expect(screen.getByRole("radio", { name: /Caveman/i })).toHaveAttribute("aria-checked", "true");
+      expect(screen.queryByText("vendor/")).not.toBeInTheDocument();
+    });
+
     it("saves an excluded path as soon as it is added", async () => {
       const onSubmit = vi.fn().mockResolvedValue(undefined);
       render(<GeneralForm value={baseValue} onSubmit={onSubmit} autosave />);

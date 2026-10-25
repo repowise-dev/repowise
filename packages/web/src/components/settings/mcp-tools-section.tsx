@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Switch } from "@repowise-dev/ui/ui/switch";
 import { SettingsRow, SettingsRows, useSaveState } from "@repowise-dev/ui/settings";
 import { getMcpToolSurface, updateMcpTools } from "@/lib/api/mcp-tools";
@@ -39,12 +39,16 @@ export function McpToolsSection({ repoId }: { repoId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [savedTool, setSavedTool] = useState<string | null>(null);
   const save = useSaveState();
+  // What the server last accepted, from the newest write that succeeded.
+  const server = useRef<{ surface: McpToolSurface | null; seq: number }>({ surface: null, seq: 0 });
+  const writeSeq = useRef(0);
 
   useEffect(() => {
     setLoading(true);
     setLoadError(null);
     getMcpToolSurface(repoId)
       .then((s) => {
+        server.current = { surface: s, seq: 0 };
         setSurface(s);
         setEnabled(enabledNames(s));
       })
@@ -61,19 +65,18 @@ export function McpToolsSection({ repoId }: { repoId: string }) {
     setSavedTool(name);
 
     const deltas = toDeltas(surface, next);
-    const result: { surface: McpToolSurface | null } = { surface: null };
+    const mine = ++writeSeq.current;
     const outcome = await save.track(
       async () => {
-        result.surface = await updateMcpTools({ repo_id: repoId, tools: deltas.length ? deltas : null });
+        const updated = await updateMcpTools({ repo_id: repoId, tools: deltas.length ? deltas : null });
+        if (mine > server.current.seq) server.current = { surface: updated, seq: mine };
       },
       (e) => toFriendlyMessage(e, "Could not save"),
     );
-    if (outcome === "saved" && result.surface) {
-      setSurface(result.surface);
-      setEnabled(enabledNames(result.surface));
-    }
-    // Put the switch back where the server still has it.
-    if (outcome === "failed") setEnabled(enabledNames(surface));
+    const accepted = server.current.surface;
+    if (outcome === "saved" && accepted) setSurface(accepted);
+    // A failure puts every switch back where the server still has it.
+    if (outcome !== "stale" && accepted) setEnabled(enabledNames(accepted));
   }
 
   const summary = useMemo(() => {

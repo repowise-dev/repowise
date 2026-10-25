@@ -61,12 +61,14 @@ export function SettingsRow({
     >
       <div className={cn("min-w-0", inline ? "flex-1" : "sm:w-[240px] sm:shrink-0")}>
         <div className="flex flex-wrap items-center gap-x-2">
-          <label
-            className="text-sm font-medium text-[var(--color-text-primary)]"
-            {...(htmlFor ? { htmlFor } : {})}
-          >
-            {label}
-          </label>
+          {/* A label only when there is one control to name; a span otherwise. */}
+          {htmlFor ? (
+            <label htmlFor={htmlFor} className="text-sm font-medium text-[var(--color-text-primary)]">
+              {label}
+            </label>
+          ) : (
+            <span className="text-sm font-medium text-[var(--color-text-primary)]">{label}</span>
+          )}
           <SaveIndicator state={saveState} error={saveError ?? null} />
         </div>
         {hint && (
