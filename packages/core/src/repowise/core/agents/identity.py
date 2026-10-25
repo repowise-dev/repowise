@@ -51,7 +51,7 @@ UNKNOWN_AGENT = "unknown"
 
 #: Version of the announced-name mapping, recorded on events that used it so a
 #: later change to the alias rules is legible in stored data.
-CLIENT_IDENTITY_MAPPING_VERSION = "mcp_client_info_v1"
+CLIENT_IDENTITY_MAPPING_VERSION = "mcp_client_info_v2"
 
 #: Storage rule for an agent slug. Syntactic on purpose — see the module
 #: docstring. Bounded so a column value cannot be a payload.
@@ -193,6 +193,8 @@ CLAUDE_CODE = AgentIdentity(
 CODEX = AgentIdentity(
     slug="codex",
     display_name="Codex CLI",
+    #: Codex announces its MCP client (`codex-mcp-client`), not the product.
+    announced_as=frozenset({"codexmcpclient"}),
     hook_adapter="codex",
     session_adapter="codex",
     capture_adapter="codex",
@@ -202,10 +204,16 @@ CODEX = AgentIdentity(
     login_hint="codex login",
     indexing_provider="codex_cli",
 )
-VSCODE = AgentIdentity(slug="vscode", display_name="VS Code", executable="code")
+VSCODE = AgentIdentity(
+    slug="vscode",
+    display_name="VS Code",
+    announced_as=frozenset({"visualstudiocode", "visualstudiocodeinsiders"}),
+    executable="code",
+)
 CURSOR = AgentIdentity(
     slug="cursor",
     display_name="Cursor",
+    announced_as=frozenset({"cursorvscode"}),
     hook_adapter="cursor",
     capture_adapter="cursor",
     executable="cursor",

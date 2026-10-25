@@ -25,6 +25,9 @@ _served_repo_id: str | None = None
 # When set, the server skips workspace auto-detection even if the path is
 # inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
 _force_single_repo: bool = False
+# Set by _lifespan when the directory has no .repowise/ and the server is
+# serving the empty in-memory store. Read by the mcp command for telemetry.
+_serving_no_index: bool = False
 # Set to an asyncio.Event by _lifespan; signals that vector stores are loaded.
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None

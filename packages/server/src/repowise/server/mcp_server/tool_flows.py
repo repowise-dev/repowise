@@ -126,6 +126,9 @@ async def get_execution_flows(
             # Trace from a specific symbol
             node = await _entry_node(session, repo_id, entry_point, exclude_spec)
             if node is None:
+                from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+                note_error_reason("not_found")
                 return {
                     "entry_point": entry_point,
                     "error": f"Symbol not found: {entry_point!r}",

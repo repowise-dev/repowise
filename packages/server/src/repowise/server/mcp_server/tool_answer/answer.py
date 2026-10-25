@@ -391,6 +391,9 @@ class _Ask:
 
 
 def _empty_question_payload(t0: float) -> dict:
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("invalid_args")
     return {
         "answer": "",
         "citations": [],

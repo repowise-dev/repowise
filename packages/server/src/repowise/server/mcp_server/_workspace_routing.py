@@ -130,6 +130,9 @@ def one_repo_refusal(tool: str, routes: list[Route]) -> dict[str, Any]:
             for alias, rs in groups.items()
         )
         error = f"The targets span several workspace repos; {tool} reads one per call: {calls}."
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("not_found" if unresolved else "invalid_args")
     return {
         "error": error,
         "routes": {

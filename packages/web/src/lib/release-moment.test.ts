@@ -21,7 +21,10 @@ import {
 
 const HL = (href: string | null) => ({ id: "x", title: "X", blurb: "", href });
 
-beforeEach(() => window.localStorage.clear());
+beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+});
 
 describe("upgradeMoment", () => {
   it("shows nothing on a first visit, a repeat, or a downgrade", () => {

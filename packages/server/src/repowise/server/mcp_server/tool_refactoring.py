@@ -80,6 +80,9 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
                 None,
             )
         if row is None:
+            from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+            note_error_reason("not_found")
             return {
                 "error": "not_found",
                 "detail": f"No refactoring plan with id {suggestion_id!r} in this repo.",

@@ -1179,7 +1179,8 @@
       "title": "This repo hasn't been indexed yet",
       "description": "One click builds the code index, health signals, and documentation. You can watch it happen live.",
       "starting": "Starting…",
-      "action": "Index this repo"
+      "action": "Index this repo",
+      "takeTour": "Take the tour"
     },
     "coordinator": {
       "status": "Status",
@@ -1369,6 +1370,120 @@
     "badgeLabel": "Subsystem pages unwritten",
     "badgeAction": "Write with a model",
     "badgeTitle": "The subsystem pages are still generated from code structure. Write them with a model for the how and why."
+  },
+  "welcome": {
+    "eyebrow": "Welcome to repowise",
+    "stepsLabel": "Tour steps",
+    "stepDone": "(done)",
+    "stepOf": "Step {step} of {total}",
+    "steps": {
+      "repo": "Your repo",
+      "agent": "Your agent",
+      "yours": "Make it yours"
+    },
+    "skip": "Skip the tour",
+    "back": "Back",
+    "nextAgent": "Next: your agent",
+    "nextYours": "Next: make it yours",
+    "finish": "Finish in Setup",
+    "repo": {
+      "title": "We mapped <em>{name}</em>",
+      "lede": "{files, plural, one {# file} other {# files}} and {years, plural, one {# year} other {# years}} of history, read on this machine. Nothing left it.",
+      "ledeNoHistory": "{files, plural, one {# file} other {# files}}, read on this machine. Nothing left it.",
+      "standout": "What stood out",
+      "band": {
+        "excellent": "Excellent",
+        "good": "Good",
+        "fair": "Fair",
+        "needs_work": "Needs work",
+        "at_risk": "At risk"
+      },
+      "health": {
+        "label": "Health",
+        "caption": "<mono>{path}</mono> is lowest at {score}.",
+        "captionNone": "Scored across the code files.",
+        "open": "Open health"
+      },
+      "deadCode": {
+        "label": "Dead code",
+        "unit": "{count, plural, one {file} other {files}}",
+        "caption": "Nothing reaches them.",
+        "safe": "{count, plural, one {# finding is} other {# findings are}} safe to delete.",
+        "captionNone": "Every file is reached from somewhere.",
+        "open": "Open dead code"
+      },
+      "risk": {
+        "label": "Risk",
+        "unit": "{count, plural, one {file reached} other {files reached}}",
+        "caption": "by a change to <mono>{path}</mono>.",
+        "open": "Open risk"
+      },
+      "decisions": {
+        "label": "Decisions",
+        "unit": "to review",
+        "caption": "Candidates mined from PRs, commits and comments.",
+        "open": "Review"
+      },
+      "docs": {
+        "label": "Documentation",
+        "unit": "{count, plural, one {page} other {pages}}",
+        "caption": "Built from the index. A model can write fuller ones.",
+        "open": "Open docs"
+      },
+      "tests": {
+        "label": "Tests",
+        "measured": "measured",
+        "measuredCaption": "Line coverage from your latest report.",
+        "inferredUnit": "of {total} files, inferred",
+        "inferredCaption": "Reached from a test. Add a report to measure it.",
+        "open": "Open tests"
+      }
+    },
+    "agent": {
+      "title": "Your agent can read <em>this map</em>",
+      "lede": "It asks repowise first, so it reads less and guesses less.",
+      "none": "No agents found on this machine yet. Setup lists every one repowise supports.",
+      "connected": "Connected. Restart it to load the tools.",
+      "waiting": "Waiting for its first call",
+      "firstCall": "First call {when}",
+      "installed": "Installed on this machine. Writes <mono>{file}</mono>.",
+      "installedNoFile": "Installed on this machine.",
+      "connect": "Connect",
+      "connecting": "Connecting",
+      "connectFailed": "Couldn't connect {name}",
+      "copyPrompt": "Copy setup prompt",
+      "promptCopied": "Setup prompt copied",
+      "prompt": "Connect repowise to {name} for this repo. Run `{command}` in the repo root, then restart {name} so it loads the repowise tools. Run `repowise doctor` to check the connection.",
+      "askLabel": "Ask it something",
+      "askRisk": "Which files are riskiest to change, and why?",
+      "askHotspot": "Why does {path} change so often?",
+      "askStart": "Where should I start reading this repo?",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copyQuestion": "Copy: {question}"
+    },
+    "yours": {
+      "title": "Make it <em>yours</em>",
+      "lede": "Both are optional. You can change them any time in Settings.",
+      "modelTitle": "Add a model for the parts that need one",
+      "optional": "Optional",
+      "gets": {
+        "docs": "Docs that explain how and why",
+        "chat": "Chat in this dashboard",
+        "answers": "Written answers for your agent",
+        "local": "Your key or sign-in stays here"
+      },
+      "detectedLabel": "Found on this machine",
+      "syncTitle": "Keep the index in sync",
+      "syncBody": "Updates after each commit through a git hook.",
+      "syncFailed": "Couldn't change sync",
+      "syncOffTitle": "Turn off sync?",
+      "syncOffBody": "This removes the post-commit hook. It also turns off the pre-commit security check and the health gate, if they are on.",
+      "syncOffConfirm": "Turn off",
+      "teamTitle": "Running this for a team?",
+      "teamBody": "Hosted repowise indexes on every push, reviews pull requests and gives your team one dashboard.",
+      "teamLink": "See hosted"
+    }
   },
   "chat": {
     "addModel": "Add a model",
