@@ -309,7 +309,7 @@ export function CodeHealthMap({
         data-matches={model.matches.length}
         data-selected={selectedIdx >= 0 ? (selectedPath ?? undefined) : undefined}
         data-keyboard-cursor={cursorItem?.path}
-        className="relative w-full overflow-hidden rounded-xl border border-[var(--color-border-default)] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--color-accent-primary)]"
+        className="relative w-full overflow-hidden rounded-xl border border-[var(--color-border-default)] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--color-focus-ring)]"
         style={{
           minHeight,
           background: "radial-gradient(ellipse at 50% 42%, var(--color-bg-surface), var(--color-bg-root) 75%)",
