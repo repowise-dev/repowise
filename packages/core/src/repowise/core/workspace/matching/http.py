@@ -429,21 +429,24 @@ def base_resolved_pass(state: MatchState) -> None:
         target = consumer.meta.get("target_repo")
         narrowed = [p for p in providers if p.repo == target] if target else []
         if narrowed:
-            providers = narrowed
-        if narrowed:
-            strategy = LinkStrategy.SERVICE_MAPPED
+            providers, strategy = narrowed, LinkStrategy.SERVICE_MAPPED
         elif spans_repos(providers):
             # A target the workspace's own config placed stays unmatched, so
             # the service pass draws its edge to that repo.
             if not consumer.meta.get("target_evidence"):
                 state.refuse(consumer)
             continue
-        elif len({(p.repo, p.service) for p in providers}) == 1:
-            strategy = LinkStrategy.UNIQUE_PATH
         else:
-            strategy = LinkStrategy.AMBIGUOUS_PATH
+            strategy = _one_repo_strategy(providers)
         for provider in providers:
             state.add(consumer, provider, strategy)
+
+
+def _one_repo_strategy(providers: list[Contract]) -> LinkStrategy:
+    """``unique_path`` for one service of one repo, ``ambiguous_path`` for several."""
+    if len({p.service for p in providers}) == 1:
+        return LinkStrategy.UNIQUE_PATH
+    return LinkStrategy.AMBIGUOUS_PATH
 
 
 def candidate_pass(state: MatchState) -> None:
