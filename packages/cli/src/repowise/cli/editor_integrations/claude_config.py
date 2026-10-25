@@ -175,8 +175,8 @@ def enable_tool_search_in_claude_code() -> Path | None:
 # paid before repowise reads the payload, so no gate inside the handler can
 # avoid it — the only lever is the matcher. Shell commands were also paying it
 # twice, here and again for the ``repowise-rewrite`` PreToolUse hook.
-# SessionStart already carries the freshness line, so what is given up is a
-# mid-session commit going unflagged until the next session.
+# SessionStart already carries the freshness line. A commit still reaches the
+# handler through :data:`_CAPTURE_MATCHER`'s entry, which gates in the shell.
 #
 # Claude Code only. ``_handle_bash_post`` stays in the augment dispatcher:
 # Codex has no Read/Grep/Glob tools and no SessionStart block, so the shell is
@@ -309,10 +309,11 @@ def set_claude_code_capture_hook(enabled: bool) -> Path | None:
     out (and removed), so the hook runs once. Returns the settings file when
     it changed, else ``None``.
 
-    The entry is per *install*, so one repository opting in widens the surface
-    for every repository on this machine. They pay a shell start on shell
-    calls and nothing else, and turning it off here narrows it back for all of
-    them, which is why the caller says so.
+    The entry is per *install* and ships on with the prompt: ``init``, the
+    self-heal and the plugin all put it in place. Every repository on this
+    machine pays a shell start on shell calls and nothing else, since the
+    entry starts Python only for a commit, so a repository that turns the
+    prompt off keeps the entry and stays silent.
     """
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():

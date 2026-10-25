@@ -163,7 +163,7 @@ def test_an_explicit_off_is_written_and_survives_a_reload(tmp_path: Path) -> Non
     assert load_policy(root).policy.capture_prompt is False
 
 
-def test_a_non_boolean_switch_warns_and_keeps_the_default(tmp_path: Path) -> None:
+def test_a_non_boolean_switch_warns_and_reads_as_off(tmp_path: Path) -> None:
     from repowise.core.analysis.decisions.policy_store import load_policy
 
     root = tmp_path / "typo"
@@ -173,7 +173,7 @@ def test_a_non_boolean_switch_warns_and_keeps_the_default(tmp_path: Path) -> Non
     )
 
     resolved = load_policy(root)
-    assert resolved.policy.capture_prompt is True
+    assert resolved.policy.capture_prompt is False
     assert any("capture_prompt" in w for w in resolved.warnings)
 
 
