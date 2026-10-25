@@ -69,9 +69,8 @@ def make_exclude_predicate(
 
 
 #: Where comments are ``//`` and ``/* */`` and ``#`` is code (a C# directive, a
-#: Rust or PHP attribute). Ruby is left out: its ``/.../`` regex literals would
-#: open a comment the masker cannot close. VB and SQL are left out too. A match
-#: in an unmasked file is never treated as commented out.
+#: Rust or PHP attribute). VB and SQL are left out. A match in an unmasked
+#: file is never treated as commented out.
 _SLASH_COMMENT_SUFFIXES = JAVA | KOTLIN | GO | CSHARP | RUST | PHP | APEX | PROTO | {".prisma"}
 
 
@@ -84,6 +83,10 @@ def _comment_mask(suffix: str, content: str) -> str | None:
         return mask_source(content, suffix)
     if suffix in JS_TS:
         return mask_source(content, ".js")
+    if suffix == ".rb":
+        from repowise.core.analysis.security.masking import mask_comments_and_strings
+
+        return mask_comments_and_strings(content, strings=False, hash_comments=True)
     if suffix not in _SLASH_COMMENT_SUFFIXES:
         return None
     from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
