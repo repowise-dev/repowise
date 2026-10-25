@@ -1031,7 +1031,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all`. | `all` |
-| `--source` | `adr`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all`. | `all` |
+| `--source` | `adr`, `agent`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all`. | `all` |
 | `--proposed` | `--status proposed`. | off |
 | `--stale-only` | Only stale. | off |
 | `--limit` | Max rows listed. | `100` |
