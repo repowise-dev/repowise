@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import weakref
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
@@ -744,35 +745,50 @@ class _RepowiseMCP(FastMCP):
             current_principal.reset(reset)
 
 
+# Hosts that defer tool schemas show the model only tool names and this
+# string, so it says when to call; tests pin the key lines and a length cap.
+_INSTRUCTIONS = (
+    "repowise indexes this repository's code graph, git history and "
+    "decisions. One call here often replaces several text searches and "
+    "file reads.\n"
+    "- Use search_codebase(query) to find an identifier or literal: it "
+    "returns `lines` (path, line, kind, text; definitions first) read from "
+    "live files, and `complete: true` means that is every match. Path-like "
+    "and concept queries rank files.\n"
+    '- Use get_context(targets=[symbol], include=["references"]) before a '
+    "rename or an update-all-callers change: it lists the definition, "
+    "imports and calls, and a `complete` list is the whole edit set.\n"
+    "- Use get_answer(question) for a how/where/why question: one cited "
+    "answer.\n"
+    "- Use get_risk before a non-trivial edit to a widely imported file, "
+    "get_change_risk before committing a multi-file change, and get_why "
+    "before changing an established pattern. Skip them for one-line fixes.\n"
+    "- Targets with uncommitted edits are flagged; the index is stale for "
+    "them until `repowise update --working-tree` runs.\n"
+    "If the tools report that the repo has no index, tell the user to run "
+    "'repowise init --yes --no-prose' in the repo root; it needs no API key "
+    "and makes no model calls. Suggest it, "
+    "do not run it yourself."
+)
+
+#: Opt-in workspace tools, named only once the selected surface has them.
+_WORKSPACE_TOOL_LINES = {
+    "get_architecture": "get_architecture for the workspace's coupling and architecture score",
+    "get_blast_radius": "get_blast_radius for the services a change reaches in other repos",
+}
+
+
+def _instructions(enabled: Iterable[str] = ()) -> str:
+    """The server instructions, naming a workspace tool only when it is served."""
+    lines = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in enabled]
+    if not lines:
+        return _INSTRUCTIONS
+    return f"{_INSTRUCTIONS}\nIn this workspace, use {' and '.join(lines)}."
+
+
 mcp = _RepowiseMCP(
     "repowise",
-    # Hosts that defer tool schemas show the model only tool names and this
-    # string, so it says when to call; tests pin the key lines and a length cap.
-    instructions=(
-        "repowise indexes this repository's code graph, git history and "
-        "decisions. One call here often replaces several text searches and "
-        "file reads.\n"
-        "- Use search_codebase(query) to find an identifier or literal: it "
-        "returns `lines` (path, line, kind, text; definitions first) read from "
-        "live files, and `complete: true` means that is every match. Path-like "
-        "and concept queries rank files.\n"
-        '- Use get_context(targets=[symbol], include=["references"]) before a '
-        "rename or an update-all-callers change: it lists the definition, "
-        "imports and calls, and a `complete` list is the whole edit set.\n"
-        "- Use get_answer(question) for a how/where/why question: one cited "
-        "answer.\n"
-        "- Use get_risk before a non-trivial edit to a widely imported file, "
-        "get_change_risk before committing a multi-file change, and get_why "
-        "before changing an established pattern. Skip them for one-line fixes.\n"
-        "- Targets with uncommitted edits are flagged; the index is stale for "
-        "them until `repowise update --working-tree` runs.\n"
-        "In workspace mode, get_architecture and get_blast_radius are also "
-        "available. If the tools "
-        "report that the repo has no index, tell the user to run "
-        "'repowise init --yes --no-prose' in the repo root; it needs no API key "
-        "and makes no model calls. Suggest it, "
-        "do not run it yourself."
-    ),
+    instructions=_instructions(),
     lifespan=_lifespan,
 )
 _share_lifespan(mcp._mcp_server)
@@ -805,7 +821,8 @@ def create_mcp_server(
     # surface before it can advertise (or trim) it.
     ensure_full_surface()
 
-    apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    mcp._mcp_server.instructions = _instructions(enabled)
     return mcp
 
 
@@ -1015,7 +1032,8 @@ def run_mcp(
         from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
         ensure_full_surface()
-        apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        mcp._mcp_server.instructions = _instructions(enabled)
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 
