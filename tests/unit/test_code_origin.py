@@ -129,6 +129,11 @@ _OWN_HEADER = (
         ("x-pack/inference/src/main/java/org/x/external/http/Sender.java", "production"),
         ("src/pkg/external/client.py", "production"),
         ("sdk/llms/src/providers/vendors/openai.ts", "production"),
+        # Python packages that ship copied libraries under _vendor/
+        ("src/pip/_vendor/rich/console.py", "vendored"),
+        ("setuptools/_vendor/packaging/version.py", "vendored"),
+        ("src/poetry/core/_vendor/lark/lark.py", "vendored"),
+        ("src/app/_vendors.py", "production"),
         # the Dart SDK headers a Flutter FFI plugin vendors under dart-sdk/
         ("pedometer/src/dart-sdk/include/dart_tools_api.h", "vendored"),
         ("src/dart-sdk/include/internal/dart_api_dl_impl.h", "vendored"),

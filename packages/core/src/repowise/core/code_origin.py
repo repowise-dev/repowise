@@ -305,6 +305,9 @@ _VENDORED_DIR_TOKENS = frozenset(
         "node_modules",
         "bower_components",
         "site-packages",
+        # Python packages that ship copied libraries inside themselves
+        # (pip's ``src/pip/_vendor/``, setuptools, poetry-core).
+        "_vendor",
         # The Dart SDK's embedding headers that Flutter FFI plugins keep a copy
         # of (``src/dart-sdk/include/dart_api_dl.h``).
         "dart-sdk",
