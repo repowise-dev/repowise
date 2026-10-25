@@ -1575,8 +1575,10 @@
     "violationsDescription": "Dependencies that exist in the graph but are forbidden by a rule you declared.",
     "violationBreaks": "Breaks",
     "cyclesTitle": "Dependency cycles ({count})",
+    "cyclesTitleAtLeast": "Dependency cycles (at least {count})",
     "cyclesDescription": "Groups of services that depend on each other in a loop, so none of them can be changed or deployed independently.",
     "cyclesDetectedNotListed": "{count, plural, one {# cycle detected, but not listed} other {# cycles detected, but not listed}}",
+    "cyclesDetectedNotListedAtLeast": "At least {count, plural, one {# cycle} other {# cycles}} detected, but not listed; counting stopped at the cap",
     "noCyclesTitle": "No circular dependencies",
     "cyclesUnlistedDescription": "The count is recomputed from the system graph, but the services in each cycle are recorded by the conformance check. Run it to see which services are involved.",
     "noCyclesDescription": "Every dependency in the graph runs one way. Nothing has to be changed in lockstep.",
@@ -1604,7 +1606,8 @@
       "coreSizeSubPct": "{pct}% of all services",
       "coreSizeSub": "mutually dependent centre",
       "cycles": "Cycles",
-      "cyclesSub": "circular service dependencies"
+      "cyclesSub": "circular service dependencies",
+      "cyclesAtLeast": "{count}+"
     },
     "aiPrompt": {
       "label": "Fix violations with AI",

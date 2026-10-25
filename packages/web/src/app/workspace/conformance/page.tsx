@@ -70,6 +70,8 @@ export default async function ConformancePage() {
   // graph with no edges would read as "no cycles", which nothing measured.
   const undetermined = metrics != null && metrics.score === null;
   const cycleCount = metrics?.cycle_count ?? cycles.length;
+  // The enumeration budget stopped the count, so it is a floor, not a total.
+  const cycleCountCapped = metrics?.cycle_count_capped === true;
   const notDetermined = t("notDetermined");
   const fixed = (value: number | null | undefined, digits: number) =>
     value == null ? "—" : value.toFixed(digits);
@@ -105,7 +107,12 @@ export default async function ConformancePage() {
     },
     {
       label: t("ribbon.cycles"),
-      value: metrics && !undetermined ? formatNumber(cycleCount) : "—",
+      value:
+        metrics && !undetermined
+          ? cycleCountCapped
+            ? t("ribbon.cyclesAtLeast", { count: formatNumber(cycleCount) })
+            : formatNumber(cycleCount)
+          : "—",
       sub: t("ribbon.cyclesSub"),
     },
   ];
@@ -220,7 +227,11 @@ export default async function ConformancePage() {
       </OverviewSection>
 
       <OverviewSection
-        title={undetermined ? t("cyclesTitleUndetermined") : t("cyclesTitle", { count: cycleCount })}
+        title={
+          undetermined
+            ? t("cyclesTitleUndetermined")
+            : t(cycleCountCapped ? "cyclesTitleAtLeast" : "cyclesTitle", { count: cycleCount })
+        }
         description={t("cyclesDescription")}
       >
         {cycles.length === 0 && undetermined ? (
@@ -234,7 +245,10 @@ export default async function ConformancePage() {
             className="p-6"
             title={
               cycleCount > 0
-                ? t("cyclesDetectedNotListed", { count: cycleCount })
+                ? t(
+                    cycleCountCapped ? "cyclesDetectedNotListedAtLeast" : "cyclesDetectedNotListed",
+                    { count: cycleCount },
+                  )
                 : t("noCyclesTitle")
             }
             description={

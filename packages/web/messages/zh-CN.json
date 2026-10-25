@@ -1575,8 +1575,10 @@
     "violationsDescription": "图中存在、但被你声明的规则禁止的依赖。",
     "violationBreaks": "违反",
     "cyclesTitle": "依赖循环（{count}）",
+    "cyclesTitleAtLeast": "依赖循环（至少 {count}）",
     "cyclesDescription": "互相循环依赖的一组服务，其中任何一个都无法独立变更或部署。",
     "cyclesDetectedNotListed": "检测到 {count} 个循环依赖，但未列出",
+    "cyclesDetectedNotListedAtLeast": "检测到至少 {count} 个循环依赖，但未列出；计数在达到上限时停止",
     "noCyclesTitle": "没有循环依赖",
     "cyclesUnlistedDescription": "该计数由系统图重新计算，但每个循环中的服务由一致性检查记录。运行它即可看到涉及哪些服务。",
     "noCyclesDescription": "图中每条依赖都是单向的，没有任何东西需要同步变更。",
@@ -1604,7 +1606,8 @@
       "coreSizeSubPct": "占全部服务的 {pct}%",
       "coreSizeSub": "相互依赖的中心",
       "cycles": "循环",
-      "cyclesSub": "服务间的循环依赖"
+      "cyclesSub": "服务间的循环依赖",
+      "cyclesAtLeast": "{count}+"
     },
     "aiPrompt": {
       "label": "用 AI 修复违规",
