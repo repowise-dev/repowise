@@ -49,10 +49,12 @@ def _build_dir(build: Any, base: Path) -> Path | None:
         return None
     if not isinstance(context, str) or "$" in context or "://" in context or context.startswith("git@"):
         return None
-    where = join_config_path(base, context)
+    root = join_config_path(base, context)
+    if not _has_files(root):
+        return None
     if isinstance(dockerfile, str) and "$" not in dockerfile and "/" in dockerfile.replace("\\", "/"):
-        where = join_config_path(where, dockerfile).parent
-    return where if _has_files(where) else None
+        return join_config_path(root, dockerfile).parent
+    return root
 
 
 def _has_files(where: Path) -> bool:

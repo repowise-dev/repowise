@@ -165,6 +165,7 @@ def test_compose_defaults_and_an_empty_submodule_context_name_the_image(tmp_path
         "  jobs: {image: '${JOBS_IMAGE:-reportportal/service-jobs}', build: ./service-jobs}\n"
         "  analyzer: {image: reportportal/service-auto-analyzer, build: ./service-auto-analyzer}\n"
         "  built: {image: org/service-jobs, build: ../other}\n"
+        "  split: {image: org/split, build: {context: ../other, dockerfile: deploy/Dockerfile}}\n"
     )
     m = build_service_name_map(
         _repos(tmp_path, "reportportal", "service-api", "service-jobs", "other")
@@ -173,6 +174,7 @@ def test_compose_defaults_and_an_empty_submodule_context_name_the_image(tmp_path
         "api": ("service-api", "compose"),
         "jobs": ("service-jobs", "compose"),
         "built": ("other", "compose"),  # a context with files wins over the image
+        "split": ("other", "compose"),  # the context decides, not the Dockerfile's dir
     }
     assert _mapped(m, ENV) == {"rp_jobs_baseurl": ("service-jobs", "compose")}
 
