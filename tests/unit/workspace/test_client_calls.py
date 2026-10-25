@@ -346,6 +346,8 @@ class TestConsumerUrlShapes:
         assert flatten_interpolations("/a/${id}${qs ? '?' + qs : ''}") == "/a/${id}"
         assert flatten_interpolations("/a/${b ? `/${c}` : ''}/d") == "/a/${expr}/d"
         assert flatten_interpolations('/a/${k=="x"?id:0}/d') == '/a/${k=="x"?id:0}/d'
+        # Only a last hole is a query suffix; a mid-path one keeps the tail.
+        assert flatten_interpolations('/a/${c ? `?a` : `/b`}/z') == "/a/${c ? `?a` : `/b`}/z"
 
     def test_a_scheme_inside_an_interpolation_is_not_the_host(self):
         url = "${prod ? 'https://x.io' : ''}/api/status"

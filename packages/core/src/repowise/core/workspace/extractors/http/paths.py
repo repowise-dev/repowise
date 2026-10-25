@@ -82,8 +82,8 @@ def flatten_interpolations(path: str) -> str:
     ``/rate/${format(d, F, { in: utc })}`` is one parameter segment; the
     brace-free patterns of :func:`normalize_http_path` would stop inside it.
     An unbalanced interpolation is left for :func:`is_unusable_consumer_path`.
-    A hole holding a literal that starts with ``?`` (`` ${q ? `?${q}` : ""} ``)
-    is the query string, so the path ends before it.
+    A last hole holding a literal that starts with ``?``
+    (`` ${q ? `?${q}` : ""} ``) is the query string, so the path ends before it.
     """
     out: list[str] = []
     pos = 0
@@ -93,7 +93,7 @@ def flatten_interpolations(path: str) -> str:
             break
         inner = path[start + 2 : end]
         out.append(path[pos:start])
-        if _QUERY_LITERAL_RE.search(inner):
+        if end == len(path) - 1 and _QUERY_LITERAL_RE.search(inner):
             return "".join(out)
         out.append("${expr}" if "{" in inner else path[start : end + 1])
         pos = end + 1
