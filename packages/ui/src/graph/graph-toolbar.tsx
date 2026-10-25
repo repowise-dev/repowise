@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 /**
  * No "risk" member. There was one, and it painted `pagerank * 3` through
@@ -354,7 +356,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           onKeyDown={onSearchKeyDown}
           placeholder="Search nodes…"
           aria-label="Search graph nodes"
-          className="w-40 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-14 text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-border-hover)] sm:w-36 lg:w-48"
+          className={cn(FIELD_CLASS, "w-40 py-1.5 pl-7 pr-14 text-xs sm:w-36 lg:w-48")}
         />
         <span className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
           {searchQuery && searchMatchCount != null && searchTotalCount != null && (

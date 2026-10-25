@@ -12,6 +12,7 @@ import { fileEntityPath } from "../shared/entity/routes";
 import { cn } from "../lib/cn";
 import { truncatePath } from "../lib/format";
 import type { CouplingEdge, CouplingGraphResponse, CouplingNode } from "@repowise-dev/types/coupling";
+import { FIELD_CLASS } from "../ui/input";
 
 // Stable identities so the `?? []` fallbacks do not invalidate a memo on every
 // render when the payload really is missing its arrays.
@@ -407,7 +408,7 @@ export function CouplingExplorer({
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter by file path…"
               aria-label="Filter the couplings by file path"
-              className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
+              className={cn(FIELD_CLASS, "h-8 w-full pl-8 pr-3 text-xs")}
             />
           </div>
           <div className="flex items-center gap-2">

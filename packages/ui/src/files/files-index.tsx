@@ -12,6 +12,7 @@ import { FilesTable, lineCoverage, type SortKey } from "./files-table";
 // to emphasise a figure identically, and two identical local copies is how that
 // stops being true without anyone noticing.
 import { Fig } from "./file-section";
+import { FIELD_CLASS } from "../ui/input";
 
 interface FilesIndexProps {
   files: FileRow[];
@@ -269,7 +270,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter files by path…"
-              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-focus-ring)]"
+              className={cn(FIELD_CLASS, "h-9 w-full pl-8 pr-3 text-sm")}
             />
           </div>
           <Segmented<TestFilter>

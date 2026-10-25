@@ -30,6 +30,8 @@ import {
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { getWorkspaceCoChangeStructure } from "@/lib/api/workspace";
 import { getGitMetadata } from "@/lib/api/git";
+import { FIELD_CLASS } from "@repowise-dev/ui/ui/input";
+import { cn } from "@/lib/utils/cn";
 
 interface Props {
   coChanges: WorkspaceCoChangeEntry[];
@@ -363,7 +365,7 @@ export function CoChangesExplorer({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("files.searchPlaceholder")}
-              className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 font-mono text-xs text-[var(--color-text-primary)] placeholder:font-sans placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+              className={cn(FIELD_CLASS, "h-8 w-full pl-8 pr-3 font-mono text-xs placeholder:font-sans")}
             />
           </label>
           {selected && (
