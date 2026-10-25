@@ -458,11 +458,21 @@ class TestHttpExtractor:
         contracts = HttpExtractor().extract(tmp_path, "svc")
         assert contracts == []
 
-    def test_truncated_template_literal_dropped(self, tmp_path: Path) -> None:
-        # A nested quote inside the template expression truncates the capture,
-        # leaving an unbalanced ``${`` — this is noise and must not be emitted.
+    def test_quote_inside_a_template_hole_reads_the_whole_literal(self, tmp_path: Path) -> None:
+        # A quote inside the hole stops the regex capture; the literal is read
+        # to its real end and the query hole is dropped.
         self._write_file(tmp_path, "src/api.ts", """
             fetchJSON(`/repos/explore${qs ? '?' + qs : ''}`);
+        """)
+        consumers = [
+            c for c in HttpExtractor().extract(tmp_path, "frontend") if c.role == "consumer"
+        ]
+        assert [c.contract_id for c in consumers] == ["http::GET::/repos/explore"]
+
+    def test_unclosed_template_literal_dropped(self, tmp_path: Path) -> None:
+        # A template that never closes leaves an unbalanced ``${``: noise, not emitted.
+        self._write_file(tmp_path, "src/api.ts", """
+            fetchJSON(`/repos/explore${qs ? '?' + qs
         """)
         consumers = [
             c for c in HttpExtractor().extract(tmp_path, "frontend") if c.role == "consumer"

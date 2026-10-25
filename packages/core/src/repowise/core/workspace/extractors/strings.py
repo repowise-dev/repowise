@@ -238,15 +238,41 @@ def _head_re(heads: tuple[str, ...]) -> re.Pattern[str]:
     return re.compile(rf"^(?:{alts})\s*\(")
 
 
+def _template_end(text: str, open_idx: int) -> int:
+    """Index of the backtick closing the template literal opened at *open_idx*, or -1.
+
+    A backtick inside a ``${...}`` hole opens a nested literal
+    (`` `/a${q ? `?${q}` : ""}` ``), so each hole is skipped whole.
+    """
+    i, end = open_idx + 1, min(len(text), open_idx + SCAN_LIMIT)
+    while i < end:
+        ch = text[i]
+        if ch == "`":
+            return i
+        if ch == "$" and text.startswith("{", i + 1):
+            i = match_paren(text, i + 1, closer="}")
+            if i < 0:
+                return -1
+        elif ch == "\\":
+            i += 1
+        i += 1
+    return -1
+
+
 def _parse_literal(text: str, syntax: StringSyntax) -> tuple[str, str, str] | None:
     """``(lowercased prefix, quote, body)`` when *text* is exactly one string literal."""
-    m = _literal_re(syntax.quotes, syntax.prefixes).match(text.strip())
+    text = text.strip()
+    m = _literal_re(syntax.quotes, syntax.prefixes).match(text)
     if m is None:
         return None
-    body = m.group("body")
-    if m.group("q") in body:
+    body, quote = m.group("body"), m.group("q")
+    if quote in body and not (
+        quote == "`"
+        and quote in syntax.template_quotes
+        and _template_end(text, m.start("q")) == len(text) - 1
+    ):
         return None  # the literal ended and something else followed it
-    return m.group("prefix").lower(), m.group("q"), body
+    return m.group("prefix").lower(), quote, body
 
 
 def _interpolates(prefix: str, quote: str, syntax: StringSyntax) -> bool:
@@ -814,13 +840,16 @@ def literal_span(content: str, m: re.Match[str], group: int) -> str:
 
     For a recogniser whose regex captures the text between the quotes: the
     slice one character wider on each side is the literal as written, which is
-    what :func:`resolve_string` reads. A capture that stopped at a different
-    quote (one inside a ``${...}`` expression) is closed with its own opening
-    quote, so the text read is the prefix the regex saw and the row is kept.
+    what :func:`resolve_string` reads. A template literal whose capture stopped
+    at a quote inside a ``${...}`` hole is read to its real closing backtick.
+    Any other capture that stopped at a different quote is closed with its own
+    opening quote, so the text read is the prefix the regex saw and the row is kept.
     """
-    quote = content[m.start(group) - 1]
-    body = content[m.start(group) : m.end(group)]
-    return quote + body + quote
+    start, end = m.start(group), m.end(group)
+    quote = content[start - 1]
+    if quote == "`" and "${" in content[start:end]:
+        end = max(end, _template_end(content, start - 1))
+    return quote + content[start:end] + quote
 
 
 # ---------------------------------------------------------------------------
