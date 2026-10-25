@@ -366,9 +366,13 @@ class TestPythonClassConstants:
         assert (c.contract_id, c.meta["routing_key"]) == ("topic::robot-shop", "orders")
 
 
+_NATS_GO = 'import "github.com/nats-io/nats.go"\n'
+_NATS_TS = "import { connect } from 'nats';\n"
+
+
 class TestNats:
     def test_subscribe_and_publish(self, tmp_path: Path) -> None:
-        src = 'nc.Subscribe("events.created", h)\nnc.Publish("events.deleted", d)\n'
+        src = _NATS_GO + 'nc.Subscribe("events.created", h)\nnc.Publish("events.deleted", d)\n'
         rows = _extract(tmp_path, "main.go", src)
         assert {(c.role, c.contract_id) for c in rows} == {
             ("consumer", "topic::events.created"),
@@ -379,28 +383,47 @@ class TestNats:
     @pytest.mark.parametrize(
         ("rel", "src", "role"),
         [
-            ("sub.py", 'await nc.subscribe("events.created", cb=h)\n', "consumer"),
-            ("Pub.java", 'nc.publish("events.created", data);', "provider"),
-            ("pub.ts", "nc.publish('events.created', sc.encode(x));", "provider"),
+            ("sub.py", 'import nats\nawait nc.subscribe("events.created", cb=h)\n', "consumer"),
+            ("Pub.java", 'import io.nats.client.Connection;\nnc.publish("events.created", data);', "provider"),
+            ("pub.ts", _NATS_TS + "nc.publish('events.created', sc.encode(x));", "provider"),
+            ("pub.mjs", "import { connect } from '@nats-io/transport-node';\nnc.publish('events.created', x);", "provider"),
+            ("ws.js", 'import { connect } from "nats.ws";\nnc.publish("events.created", x);', "provider"),
+            ("cjs.js", 'const { connect } = require("nats");\nnc.publish("events.created", x);', "provider"),
+            ("aio.py", "from nats.aio.client import Client\nawait nc.publish('events.created', b)\n", "provider"),
+            ("deno.ts", 'import { connect } from "npm:nats@2";\nnc.publish("events.created", x);', "provider"),
         ],
     )
     def test_nats_in_other_languages(self, tmp_path: Path, rel: str, src: str, role: str) -> None:
         c = _one(_extract(tmp_path, rel, src), role)
         assert c.contract_id == "topic::events.created"
 
+    @pytest.mark.parametrize(
+        ("rel", "src"),
+        [
+            ("mqtt.js", "const mqtt = require('mqtt');\nclient.publish('home/kitchen/temp', v);\nclient.subscribe('home/#');\n"),
+            ("paho.py", "import paho.mqtt.client as mqtt\nclient.publish('home/kitchen/temp', v)\nclient.subscribe('home/#')\n"),
+            ("ably.ts", "import * as Ably from 'ably';\nclient.publish('orders', d);\n"),
+            ("main.go", 'nc.Publish("events.created", d)\n'),
+        ],
+    )
+    def test_nothing_without_a_nats_client(self, tmp_path: Path, rel: str, src: str) -> None:
+        assert _extract(tmp_path, rel, src) == []
+
     def test_an_unrelated_receiver_is_not_nats(self, tmp_path: Path) -> None:
-        assert _extract(tmp_path, "x.ts", "store.subscribe('state', h);") == []
+        assert _extract(tmp_path, "x.ts", _NATS_TS + "store.subscribe('state', h);") == []
 
     def test_bare_sub_is_not_a_nats_receiver(self, tmp_path: Path) -> None:
-        assert _extract(tmp_path, "x.ts", "sub.subscribe('events.created', h);") == []
+        assert _extract(tmp_path, "x.ts", _NATS_TS + "sub.subscribe('events.created', h);") == []
 
     @pytest.mark.parametrize("subject", ["events.*", "events.>"])
     def test_a_wildcard_subscription_is_a_pattern(self, tmp_path: Path, subject: str) -> None:
-        c = _one(_extract(tmp_path, "sub.go", f'nc.Subscribe("{subject}", h)\n'), "consumer")
+        src = _NATS_GO + f'nc.Subscribe("{subject}", h)\n'
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
         assert c.meta["pattern"] == "nats"
 
     def test_a_plain_subject_is_not_a_pattern(self, tmp_path: Path) -> None:
-        c = _one(_extract(tmp_path, "sub.go", 'nc.Subscribe("events.created", h)\n'), "consumer")
+        src = _NATS_GO + 'nc.Subscribe("events.created", h)\n'
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
         assert "pattern" not in c.meta
 
 

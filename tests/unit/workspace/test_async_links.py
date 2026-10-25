@@ -76,8 +76,10 @@ def test_a_bullmq_queue_is_not_a_laravel_queue_of_the_same_name(tmp_path: Path) 
 
 
 def test_a_nats_wildcard_subscription(tmp_path: Path) -> None:
-    api = _repo(tmp_path, "api", {"p.go": 'nc.Publish("orders.created", d)\n'})
-    audit = _repo(tmp_path, "audit", {"s.ts": "nc.subscribe('orders.>');\n"})
+    api = _repo(
+        tmp_path, "api", {"p.go": 'import "github.com/nats-io/nats.go"\nnc.Publish("orders.created", d)\n'}
+    )
+    audit = _repo(tmp_path, "audit", {"s.ts": "import { connect } from 'nats';\nnc.subscribe('orders.>');\n"})
     assert _links(api, audit) == {("api", "audit", "topic::orders.created")}
 
 
