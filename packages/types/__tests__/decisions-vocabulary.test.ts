@@ -198,7 +198,7 @@ describe("the acceptance contract, mirrored", () => {
 
   it("names every gap at once rather than the first", () => {
     expect(
-      decisionAcceptanceBlockers({ source: "session" }).length,
+      decisionAcceptanceBlockers({ decision: "", source: "session" }).length,
     ).toBe(4);
   });
 });

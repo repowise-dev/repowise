@@ -335,10 +335,11 @@ NO_DECISION_BLOCKER = "no decision text: state what was chosen"
 def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     """Return the reasons *req* cannot become an acceptance, empty if it can.
 
-    The same four checks the ``decision_acceptances`` CHECK constraints
-    enforce, stated once in prose so a caller can explain a refusal instead of
-    surfacing an IntegrityError. A fresh grant of a mined record also needs
-    decision text: one that never says what was chosen binds nobody to it.
+    Reason, scope, evidence and identity are the checks the
+    ``decision_acceptances`` CHECK constraints enforce, stated once in prose so
+    a caller can explain a refusal instead of surfacing an IntegrityError. The
+    decision-text check is enforced here only: a fresh grant of a mined record
+    needs it, because one that never says what was chosen binds nobody to it.
     """
     blockers: list[str] = []
     if req.decision is not None and not req.self_authored and not req.decision.strip():

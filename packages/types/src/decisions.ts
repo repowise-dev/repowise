@@ -510,7 +510,8 @@ export const DECISION_PRESETS = [
  * to anything. A typed record's title is its claim.
  */
 export function decisionAcceptanceBlockers(record: {
-  decision?: string;
+  // Required so a caller cannot leave it out and have every record refused.
+  decision: string;
   rationale?: string;
   context?: string;
   affected_files?: string[];
