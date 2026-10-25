@@ -2,7 +2,8 @@
 
 A derived SQLite file holding the cross-repo rows a workspace query needs in
 one lookup: which repo has a path or a symbol, each repo's components, recent
-change summaries, health and index freshness. Each repo's own ``wiki.db`` stays
+change summaries, health, index freshness and the headline figures the
+workspace listing shows (:mod:`.repo_stats`). Each repo's own ``wiki.db`` stays
 the source of truth; every row here is rebuilt from it, so the file can be
 deleted at any time. A missing, corrupt or older-schema file is rebuilt.
 
@@ -34,7 +35,7 @@ _log = logging.getLogger("repowise.workspace.store")
 
 STORE_FILENAME = "workspace.db"
 #: Bump on any table change; a file with another version is rebuilt.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _BUSY_TIMEOUT_MS = 5000
 #: Change summaries kept per repo, newest first. Ceiling: older changes stay
 #: in the repo's own ``changes`` table; raise this when a reader needs more.
@@ -54,7 +55,9 @@ CREATE TABLE repos (
     index_updated_at TEXT,
     refreshed_at TEXT NOT NULL,
     health_json TEXT,
-    error TEXT
+    error TEXT,
+    stats_json TEXT,
+    stats_stamp TEXT
 );
 CREATE TABLE files (
     alias TEXT NOT NULL,
@@ -124,6 +127,10 @@ class RepoRows:
     indexed_commit: str | None = None
     index_updated_at: str | None = None
     health: dict[str, Any] | None = None
+    #: :func:`.repo_stats.member_stats` of the repo and the ``wiki.db`` stamp
+    #: it was read at; None when it has no ``wiki.db`` or was written mid-read.
+    stats: dict[str, Any] | None = None
+    stats_stamp: str | None = None
     files: list[str] = field(default_factory=list)
     symbols: list[tuple[str, str, str, str, str]] = field(default_factory=list)
     components: list[tuple[str, str, str | None, str | None, str | None, str, int]] = field(
@@ -187,7 +194,7 @@ class WorkspaceStore:
         with _transaction(conn):
             self._delete(alias)
             conn.execute(
-                "INSERT INTO repos VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO repos VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     path,
@@ -198,6 +205,8 @@ class WorkspaceStore:
                     datetime.now(UTC).isoformat(),
                     json.dumps(rows.health) if rows.health is not None else None,
                     rows.error,
+                    json.dumps(rows.stats) if rows.stats is not None else None,
+                    rows.stats_stamp,
                 ),
             )
             for table, items in (
@@ -257,10 +266,22 @@ def discard(path: Path) -> None:
 
 async def read_repo_rows(alias: str, repo_path: Path, services: list[tuple[str, str]]) -> RepoRows:
     """Read one repo's store rows from its ``wiki.db``; never raises."""
-    from .registry import open_repo_db, repo_db_path
+    from .registry import repo_db_path
+    from .repo_stats import stamped_member_stats
 
-    if not repo_db_path(repo_path).is_file():
+    db_path = repo_db_path(repo_path)
+    if not db_path.is_file():
         return RepoRows()
+    rows = await _read_index(alias, repo_path, services)
+    stamped = await asyncio.to_thread(stamped_member_stats, db_path)
+    if stamped is not None:
+        rows.stats_stamp, rows.stats = stamped
+    return rows
+
+
+async def _read_index(alias: str, repo_path: Path, services: list[tuple[str, str]]) -> RepoRows:
+    from .registry import open_repo_db
+
     try:
         engine, session_factory = await open_repo_db(repo_path)
     except Exception as exc:
@@ -547,3 +568,42 @@ def read_repo_health(path: Path) -> dict[str, dict[str, Any]] | None:
         }
         for alias, indexed, commit, health, error in rows
     }
+
+
+def read_member_stats(path: Path, wanted: dict[str, Path]) -> dict[str, dict[str, Any]]:
+    """``alias -> stored member stats`` for the repos of *wanted* (``alias ->
+    repo path``) whose stored figures are still current: same path, same
+    ``state.json`` stamp and same ``wiki.db`` stamp. A repo missing here is
+    read from its own ``wiki.db`` by the caller, so a write the store has not
+    seen (``repowise health`` persisting scores, say) is never served stale.
+    Empty when the store is absent, unreadable or of another schema version;
+    read only, so a reader never rebuilds it.
+    """
+    from .registry import repo_db_path
+    from .repo_stats import db_stamp
+
+    if not Path(path).is_file():
+        return {}
+    try:
+        uri = f"{Path(path).resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+                return {}
+            rows = conn.execute(
+                "SELECT alias, path, stamp, stats_json, stats_stamp FROM repos "
+                "WHERE stats_json IS NOT NULL"
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for alias, key, stamp, stats, stats_stamp in rows:
+        repo = wanted.get(alias)
+        if (
+            repo is not None
+            and key == str(repo)
+            and stamp == repo_stamp(repo)
+            and stats_stamp == db_stamp(repo_db_path(repo))
+        ):
+            out[alias] = json.loads(stats)
+    return out

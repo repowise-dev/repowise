@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from repowise.core.workspace.cross_repo import MAX_EDGES, MAX_EDGES_PER_REPO_PAIR
 from repowise.core.workspace.diagnostics import ExtractionDiagnostics
+from repowise.core.workspace.repo_stats import query_repo_stats, query_top_language
 from repowise.core.workspace.test_impact import (
     UnresolvedLink,
     WorkspaceTestImpactResult,
@@ -926,7 +927,7 @@ class TestGetWorkspaceGraph:
 
 
 # ---------------------------------------------------------------------------
-# Tests — _query_repo_stats
+# Tests — query_repo_stats
 # ---------------------------------------------------------------------------
 
 
@@ -949,7 +950,7 @@ class TestQueryRepoStats:
         """
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(str(db_path)) as conn:
-            # _query_repo_stats reads several tables before the hotspot count;
+            # query_repo_stats reads several tables before the hotspot count;
             # a missing table aborts the whole block, so create the minimal set.
             conn.executescript(
                 """
@@ -997,7 +998,7 @@ class TestQueryRepoStats:
             rows=[(1, 0.99), (1, 0.95), (0, 0.10)],
         )
 
-        stats = workspace._query_repo_stats(db_path)
+        stats = query_repo_stats(db_path)
 
         assert stats["hotspot_count"] == 2
 
@@ -1006,7 +1007,7 @@ class TestQueryRepoStats:
         the per-file emission counts (5 here)."""
         _create_workspace_repo_db(tmp_path, "backend")
 
-        stats = workspace._query_repo_stats(tmp_path / "backend" / ".repowise" / "wiki.db")
+        stats = query_repo_stats(tmp_path / "backend" / ".repowise" / "wiki.db")
 
         assert stats["symbol_count"] == 3
 
@@ -1014,7 +1015,7 @@ class TestQueryRepoStats:
         db_path = tmp_path / ".repowise" / "wiki.db"
         self._make_wiki_db(db_path, rows=[(0, 0.99), (0, 0.80)])
 
-        stats = workspace._query_repo_stats(db_path)
+        stats = query_repo_stats(db_path)
 
         assert stats["hotspot_count"] == 0
 
@@ -1046,7 +1047,7 @@ class TestQueryRepoStats:
             ],
         )
 
-        stats = workspace._query_repo_stats(db_path)
+        stats = query_repo_stats(db_path)
 
         assert stats["file_count"] == 3
 
@@ -1076,7 +1077,7 @@ class TestQueryRepoStats:
             ],
         )
 
-        top_language = workspace._query_top_language(db_path)
+        top_language = query_top_language(db_path)
 
         assert top_language == "python"
 
@@ -1093,7 +1094,7 @@ class TestQueryRepoStats:
             ],
         )
 
-        assert workspace._query_top_language(db_path) == "python"
+        assert query_top_language(db_path) == "python"
 
 
 # ---------------------------------------------------------------------------
@@ -1717,6 +1718,63 @@ class TestRepoQueryBudget:
         statements, connections = await self._measure(tmp_path, 3)
         assert statements == self.QUERIES_PER_REPO * 3
         assert connections == self.CONNECTIONS_PER_REPO * 3
+
+
+def _store_member_stats(root: Path, aliases: list[str]) -> None:
+    """What a workspace refresh writes for *aliases*: their current stats rows."""
+    from repowise.core.workspace.repo_stats import stamped_member_stats
+    from repowise.core.workspace.store import (
+        RepoRows,
+        WorkspaceStore,
+        repo_stamp,
+        store_path,
+    )
+
+    store = WorkspaceStore(store_path(root))
+    for alias in aliases:
+        repo = (root / alias).resolve()
+        stamp, stats = stamped_member_stats(repo / ".repowise" / "wiki.db")
+        rows = RepoRows(indexed=True, stats=stats, stats_stamp=stamp)
+        store.replace_repo(alias, str(repo), repo_stamp(repo), rows)
+    store.close()
+
+
+class TestMemberStatsFromTheStore:
+    """The listing and graph read a current workspace store instead of every index."""
+
+    async def _get(self, root: Path, url: str) -> dict:
+        app = _make_workspace_app(ws_config=_make_ws_config(), workspace_root=str(root))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get(url)
+        assert resp.status_code == 200
+        return resp.json()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", ["/api/workspace", "/api/workspace/graph"])
+    async def test_store_response_equals_the_per_repo_reads(self, tmp_path: Path, url) -> None:
+        _create_workspace_repo_db(tmp_path, "backend", health_rows=[(2.0, 10), (9.0, 30)])
+        live = await self._get(tmp_path, url)
+        _store_member_stats(tmp_path, ["backend"])
+
+        with patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+            stored = await self._get(tmp_path, url)
+
+        assert stored == live
+        # One connection, the store's; no member index is opened.
+        assert connect.call_count == 1
+        assert "workspace.db" in str(connect.call_args.args[0])
+
+    @pytest.mark.asyncio
+    async def test_a_write_after_the_refresh_is_read_live(self, tmp_path: Path) -> None:
+        _create_workspace_repo_db(tmp_path, "backend")
+        _store_member_stats(tmp_path, ["backend"])
+        with sqlite3.connect(str(tmp_path / "backend" / ".repowise" / "wiki.db")) as conn:
+            conn.execute("INSERT INTO wiki_symbols (id) VALUES ('sym-late')")
+
+        data = await self._get(tmp_path, "/api/workspace")
+
+        backend = next(r for r in data["repos"] if r["alias"] == "backend")
+        assert backend["symbol_count"] == 4
 
 
 class TestGetTestImpact:

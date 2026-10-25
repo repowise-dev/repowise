@@ -237,7 +237,7 @@ Everything lives in `.repowise-workspace/`:
 | `conformance.json` | Violations, cycles, `evidence` | |
 | `analysis_config.json` | The `contracts:` and `conformance:` settings the last analysis ran with | `WorkspaceConfig.analysis_fingerprint()` |
 | `member_refresh.json` | One digest per member repo | `update_cmd/member_refresh.py::member_fingerprint` |
-| `workspace.db` | Path and symbol lookup, components, recent changes, health, freshness | Each repo's `state.json`; safe to delete |
+| `workspace.db` | Path and symbol lookup, components, recent changes, health, freshness, the per-repo figures `GET /api/workspace` and `/graph` serve | Each repo's `state.json`; the figures also by `wiki.db` stat, read live when it moved; safe to delete |
 
 `member_refresh.py` lives in `packages/cli/src/repowise/cli/commands/update_cmd/`.
 Each repo's own `wiki.db` also carries a schema stamp in `PRAGMA user_version`

@@ -16,10 +16,12 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
-from repowise.core.workspace.registry import open_repo_db
+from repowise.core.workspace.registry import open_repo_db, repo_db_path
+from repowise.core.workspace.repo_stats import member_stats
 from repowise.core.workspace.store import (
     SCHEMA_VERSION,
     lookup_symbols,
+    read_member_stats,
     refresh_workspace_store,
     store_path,
 )
@@ -260,3 +262,50 @@ async def test_an_unmoved_workspace_refreshes_without_opening_the_store(tmp_path
 
     monkeypatch.setattr(store_mod, "WorkspaceStore", refuse)
     assert await refresh_workspace_store(config, root) == path
+
+
+def resolved(config: WorkspaceConfig, root: Path) -> dict[str, Path]:
+    return {e.alias: (root / e.path).resolve() for e in config.repos}
+
+
+async def test_stored_member_stats_equal_a_read_of_each_index(tmp_path):
+    config, root = await make_workspace(tmp_path)
+    path = await refresh_workspace_store(config, root)
+    wanted = resolved(config, root)
+
+    stored = read_member_stats(path, wanted)
+
+    assert stored == {a: member_stats(repo_db_path(r)) for a, r in wanted.items()}
+    assert stored["api"]["symbol_count"] == 2 and stored["api"]["status"] == "indexed"
+
+
+async def test_member_stats_written_after_the_refresh_are_not_served(tmp_path):
+    config, root = await make_workspace(tmp_path)
+    path = await refresh_workspace_store(config, root)
+    wanted = resolved(config, root)
+
+    # A write that leaves state.json alone (``repowise health`` persisting scores).
+    await add_symbol(root / "api", "api", "src/app.py", "late")
+    assert set(read_member_stats(path, wanted)) == {"web"}
+
+    touch_state(root / "web")
+    assert read_member_stats(path, wanted) == {}
+
+    # The refresh re-reads repos whose state.json moved; api stays read live
+    # until its next index run.
+    await refresh_workspace_store(config, root)
+    assert set(read_member_stats(path, wanted)) == {"web"}
+    touch_state(root / "api")
+    await refresh_workspace_store(config, root)
+    assert read_member_stats(path, wanted)["api"]["symbol_count"] == 3
+
+
+async def test_member_stats_of_an_unindexed_or_absent_store_are_empty(tmp_path):
+    config, root = await make_workspace(tmp_path)
+    wanted = resolved(config, root)
+    assert read_member_stats(store_path(root), wanted) == {}
+
+    (root / "docs").mkdir()
+    config = make_config("api", "web", "docs")
+    path = await refresh_workspace_store(config, root)
+    assert set(read_member_stats(path, resolved(config, root))) == {"api", "web"}
