@@ -570,7 +570,8 @@ def _compute_alignment(
             if currencies
             else "This index holds no accepted decisions, so no file is governed "
             "yet; review `repowise decision candidates` and accept one with "
-            "`repowise decision confirm <id> --agent <your slug>`."
+            "`repowise decision confirm <id> --agent <your slug>`, adding "
+            "`--evidence <commit|file>` or `--reason` if it lacks them."
         )
         return {
             "score": "none",
