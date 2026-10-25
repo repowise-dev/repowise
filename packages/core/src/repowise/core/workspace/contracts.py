@@ -877,12 +877,6 @@ async def _extract_one_repo(
     from .extractors import assign_service, detect_service_boundaries, merge_openapi_providers
     from .extractors.base import iter_source_files
     from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
-    from .network_probe import (
-        MESSAGE_PROBE_ROWS,
-        UNRECOGNISED_CALL_FILES_STAT,
-        UNRECOGNISED_MESSAGE_FILES_STAT,
-        count_unrecognised_call_files,
-    )
 
     code_surface = extraction.code_surface
     contracts: list[Contract] = []
@@ -941,16 +935,11 @@ async def _extract_one_repo(
     stats.update(attach_signature_schemas(contracts, repo_index))
 
     # The calls no dialect read, the miss half of any coverage figure.
-    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
-    stats[UNRECOGNISED_CALL_FILES_STAT] = await asyncio.to_thread(
-        count_unrecognised_call_files, files, consumer_files
-    )
-    # The same for messaging SDKs, where a publish (a provider) excuses a file too.
-    if extraction.contract_config.detect_topics:
-        topic_files = {c.file_path for c in contracts if c.contract_type == "topic"}
-        stats[UNRECOGNISED_MESSAGE_FILES_STAT] = await asyncio.to_thread(
-            count_unrecognised_call_files, files, topic_files, MESSAGE_PROBE_ROWS
+    stats.update(
+        await asyncio.to_thread(
+            _probe_misses, files, contracts, extraction.contract_config.detect_topics
         )
+    )
 
     unresolved = stats.get("http_consumer_unresolved", 0)
     if unresolved:
@@ -961,6 +950,28 @@ async def _extract_one_repo(
             unresolved,
         )
     return contracts, stats
+
+
+def _probe_misses(
+    files: list[Any], contracts: list[Contract], detect_topics: bool
+) -> dict[str, int]:
+    """The network probe's counts: HTTP calls, then messaging SDK calls, no dialect read."""
+    from .network_probe import (
+        MESSAGE_PROBE_ROWS,
+        UNRECOGNISED_CALL_FILES_STAT,
+        UNRECOGNISED_MESSAGE_FILES_STAT,
+        count_unrecognised_call_files,
+    )
+
+    consumer_files = {c.file_path for c in contracts if c.role == "consumer"}
+    out = {UNRECOGNISED_CALL_FILES_STAT: count_unrecognised_call_files(files, consumer_files)}
+    if detect_topics:
+        # A publish is a provider, so any topic contract excuses a messaging file.
+        topic_files = {c.file_path for c in contracts if c.contract_type == "topic"}
+        out[UNRECOGNISED_MESSAGE_FILES_STAT] = count_unrecognised_call_files(
+            files, topic_files, MESSAGE_PROBE_ROWS
+        )
+    return out
 
 
 def _merge_repo_results(

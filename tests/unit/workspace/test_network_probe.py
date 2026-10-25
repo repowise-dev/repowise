@@ -124,3 +124,20 @@ def test_messaging_words_in_prose_comments_or_caches_are_not_counted():
         "Notes.java": "// import org.apache.kafka.clients.producer.KafkaProducer;\nclass N {}\n",
     }
     assert _count(files, rows=MESSAGE_PROBE_ROWS) == 0
+
+
+def test_the_extraction_counts_both_probes_and_only_messaging_when_topics_are_read():
+    from repowise.core.workspace.contracts import Contract, _probe_misses
+
+    files = [
+        ("pub.py", ".py", "import pika\n"),
+        ("sub.py", ".py", "from kafka import KafkaConsumer\n"),
+        ("api.py", ".py", "import requests\nrequests.get(url)\n"),
+    ]
+    topic = Contract(repo="r", contract_id="topic::orders", contract_type="topic",
+                     role="provider", file_path="pub.py", symbol_name="f", confidence=0.8)
+    assert _probe_misses(files, [topic], True) == {
+        "call_files_unrecognised": 1,
+        "message_files_unrecognised": 1,
+    }
+    assert _probe_misses(files, [topic], False) == {"call_files_unrecognised": 1}
