@@ -16,7 +16,13 @@ import time
 import uuid
 from pathlib import Path
 
-from repowise.cli.helpers import as_commit_id, console, warn
+from repowise.cli.helpers import (
+    UPDATE_LOCK_FILENAME,
+    UPDATE_QUEUED_FILENAME,
+    as_commit_id,
+    console,
+    warn,
+)
 
 _SEED_TEMPDIR_STALENESS_SECS = 3600
 
@@ -77,6 +83,23 @@ def sweep_stale_seed_backups(paths: list[Path]) -> None:
                                 shutil.rmtree(p, ignore_errors=True)
                     except OSError:
                         pass
+
+
+def _seed_commit_refusal(repo: Path, commit: str, *, require_ancestor: bool) -> str | None:
+    """Why *commit* cannot start a seeded index in *repo*, or None when it can."""
+    if as_commit_id(commit) is None:
+        return "is not a commit id"
+    if require_ancestor:
+        args = ["merge-base", "--is-ancestor", "--end-of-options", commit, "HEAD"]
+        refusal = "is not an ancestor of worktree HEAD"
+    else:
+        args = ["cat-file", "-e", f"{commit}^{{commit}}"]
+        refusal = "is not in this repository"
+    try:
+        subprocess.check_call(["git", *args], cwd=repo, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        return refusal
+    return None
 
 
 def _get_initial_commit(p: Path) -> str:
@@ -152,6 +175,7 @@ def seed_index_from_base(
     seed_base: Path,
     include_submodules: bool | None = None,
     dry_run: bool = False,
+    require_ancestor: bool = True,
 ) -> bool:
     """Copy ``.repowise/`` from a base checkout into each target repo.
 
@@ -164,6 +188,11 @@ def seed_index_from_base(
 
     ``include_submodules`` is the caller's CLI flag; pass None to skip the
     conflict warning (update has no such flag).
+
+    ``require_ancestor=False`` accepts any last_sync_commit the target repo
+    has. ``update`` passes it: its catch-up diffs two trees, so a base that
+    moved past the worktree's fork point is still a valid start, and update
+    has no full init to fall back to.
     """
     sweep_stale_seed_backups([root, *repo_paths])
 
@@ -202,19 +231,11 @@ def seed_index_from_base(
             success = False
             break
 
-        try:
-            if as_commit_id(last_sync_commit) is None:
-                raise subprocess.CalledProcessError(1, "git merge-base")
-            subprocess.check_call(
-                ["git", "merge-base", "--is-ancestor", "--end-of-options", last_sync_commit, "HEAD"],
-                cwd=r_path,
-                stderr=subprocess.DEVNULL,
-            )
-        except subprocess.CalledProcessError:
+        refusal = _seed_commit_refusal(r_path, last_sync_commit, require_ancestor=require_ancestor)
+        if refusal is not None:
             console.print(
                 f"[yellow]Seed source {src_repo} last_sync_commit "
-                f"{last_sync_commit[:8]} is not an ancestor of worktree HEAD. "
-                f"Falling back to full init.[/yellow]"
+                f"{last_sync_commit[:8]} {refusal}. Falling back to full init.[/yellow]"
             )
             success = False
             break
@@ -233,7 +254,14 @@ def seed_index_from_base(
             temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
             temp_dirs.append((r_path, temp_dir))
 
-            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
+            # The base's update markers belong to the base: a copied lock
+            # would defer this checkout's update to a run that never covers it.
+            shutil.copytree(
+                src_repo / ".repowise",
+                temp_dir,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(UPDATE_LOCK_FILENAME, UPDATE_QUEUED_FILENAME),
+            )
 
             # Since config.yaml is copied atomically alongside state.json, the
             # config_fingerprint remains valid.
