@@ -29,7 +29,7 @@ function Toggle({
         CONTROL,
         "px-2.5",
         pressed
-          ? "bg-[var(--color-bg-selected)] font-medium shadow-[inset_0_-2px_0_var(--color-accent-primary)]"
+          ? "bg-[var(--color-bg-selected)] font-medium shadow-[inset_0_-2px_0_var(--color-tab-active)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
       )}
     >

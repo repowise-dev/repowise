@@ -32,7 +32,7 @@ export function SlideProgress({
             className={cn(
               "h-1.5 rounded-full transition-all motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
               i === index
-                ? "w-5 bg-[var(--color-accent-primary)]"
+                ? "w-5 bg-[var(--color-control-selected)]"
                 : "w-1.5 bg-[var(--color-border-active)] hover:bg-[var(--color-text-tertiary)]",
             )}
           />

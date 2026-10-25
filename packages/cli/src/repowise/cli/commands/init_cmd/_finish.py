@@ -442,7 +442,7 @@ def complete_setup(run: InitRun) -> None:
         first_index=run.first_index,
         no_editor_setup=not opts.editor_setup,
     )
-    run.next_steps = show_completion(
+    completion = show_completion(
         repo_path=repo_path,
         result=run.result,
         start=run.start,
@@ -454,6 +454,9 @@ def complete_setup(run: InitRun) -> None:
         verbose=opts.verbose,
         owl=_finish_owl(run),
     )
+    run.next_steps = completion.steps
+    run.stood_out = completion.stood_out
+    run.model_upgrade = completion.model_upgrade
 
 
 def _gaps(run: InitRun) -> list[str]:

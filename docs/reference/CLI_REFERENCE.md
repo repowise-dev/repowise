@@ -402,6 +402,7 @@ repowise serve --port 8080 --ui-port 8081
 | `--workers` | Uvicorn workers. | `1` |
 | `--ui-port` | Web UI port. | `3000` |
 | `--no-ui` | API only. | off |
+| `--no-open` | Don't open the UI in a browser. It opens only in an interactive terminal outside CI, once the UI answers. Env `REPOWISE_NO_OPEN`. | off |
 | `--refresh-ui` | Re-download the UI tarball (skips sources 1 and 2). | off |
 
 The UI needs Node >= 20, else API-only. UI sources, in precedence:

@@ -14,9 +14,10 @@ const CATALOG: ModelSourceProvider[] = [
   { id: "gemini", name: "Google Gemini", requires_key: true, detected: null },
   { id: "anthropic", name: "Anthropic", requires_key: true, detected: "saved" },
   { id: "openai", name: "OpenAI", requires_key: true, detected: "env" },
-  { id: "ollama", name: "Ollama (Local)", requires_key: false, detected: null },
+  { id: "ollama", name: "Ollama (Local)", requires_key: false, local_model: true, detected: null },
   { id: "claude_cli", name: "Claude Code (Local CLI)", requires_key: false, detected: "signed_in" },
   { id: "codex_cli", name: "Codex (Local CLI)", requires_key: false, detected: null },
+  { id: "litellm", name: "LiteLLM", requires_key: false, detected: null },
 ];
 
 describe("orderModelSources", () => {
@@ -39,6 +40,7 @@ describe("orderModelSources", () => {
     const ids = orderModelSources(CATALOG).map((s) => s.id);
     expect(ids).not.toContain("gemini");
     expect(ids).not.toContain("codex_cli");
+    expect(ids).not.toContain("litellm");
   });
 
   it("still offers paste and hosted with nothing detected", () => {

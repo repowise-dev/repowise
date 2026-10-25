@@ -20,17 +20,15 @@ async def _merged_repo_excludes(
     repo_path: Path,
     extra_exclude_patterns: list[str] | None = None,
 ) -> list[str]:
-    """Merge config.yaml excludes with the persisted repo settings' excludes.
+    """config.yaml excludes, else a legacy settings copy, plus *extra_exclude_patterns*.
 
-    Local indexes read ``settings_json`` straight from the repo-local
-    ``wiki.db`` (cheaper than an engine for one row); a configured shared
-    database is the source of truth instead.
+    The legacy copy (``settings_json`` from before the web UI wrote
+    config.yaml) applies only while the file lacks the key. Local indexes read
+    it straight from the repo-local ``wiki.db`` (cheaper than an engine for one
+    row); a configured shared database is the source of truth instead.
     """
-    from ...repo_config import load_repo_config
-
-    patterns: list[str] = list(load_repo_config(repo_path).get("exclude_patterns") or [])
-
     from ...persistence.database import get_configured_db_url
+    from ...repo_config import resolve_file_settings
 
     configured_url = get_configured_db_url()
     if configured_url is None:
@@ -38,13 +36,10 @@ async def _merged_repo_excludes(
     else:
         settings_json = await _configured_settings_json(configured_url, repo_path)
 
-    if settings_json:
-        _merge_settings_excludes(patterns, settings_json)
-
-    for pattern in extra_exclude_patterns or []:
-        if pattern not in patterns:
-            patterns.append(pattern)
-    return patterns
+    stored = _settings_excludes(settings_json) if settings_json else {}
+    saved = resolve_file_settings(repo_path, stored).get("exclude_patterns") or []
+    merged = [p for p in saved if isinstance(p, str)] + list(extra_exclude_patterns or [])
+    return list(dict.fromkeys(merged))
 
 
 def _local_settings_json(repo_path: Path) -> str | None:
@@ -93,18 +88,18 @@ async def _configured_settings_json(configured_url: str, repo_path: Path) -> str
     return settings_json
 
 
-def _merge_settings_excludes(patterns: list[str], settings_json: str) -> None:
-    """Append the string ``exclude_patterns`` of *settings_json* not already in *patterns*."""
+def _settings_excludes(settings_json: str) -> dict[str, Any]:
+    """``{"exclude_patterns": ...}`` from *settings_json* when it has them, else ``{}``."""
     try:
         settings = _json.loads(settings_json)
-        if isinstance(settings, dict):
-            for value in settings.get("exclude_patterns") or []:
-                if isinstance(value, str) and value not in patterns:
-                    patterns.append(value)
     except Exception:
         _log.warning(
             "Could not parse settings_json; saved exclude patterns not applied", exc_info=True
         )
+        return {}
+    if isinstance(settings, dict) and "exclude_patterns" in settings:
+        return {"exclude_patterns": settings["exclude_patterns"]}
+    return {}
 
 
 @dataclass

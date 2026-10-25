@@ -763,7 +763,9 @@ def _prepare_repo(repo_path: Path) -> None:
                 f"[dim]\\[worktree][/dim] Unindexed linked worktree of {wt_base}; "
                 f"seeding its index."
             )
-            seed_index_from_base(root=repo_path, repo_paths=[repo_path], seed_base=wt_base)
+            seed_index_from_base(
+                root=repo_path, repo_paths=[repo_path], seed_base=wt_base, require_ancestor=False
+            )
 
     ensure_repowise_dir(repo_path)
 

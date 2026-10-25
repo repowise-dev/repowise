@@ -3458,6 +3458,7 @@ export interface ProviderEntry {
   requires_key?: boolean;
   accepts_base_url?: boolean;
   local_server?: boolean;
+  local_model?: boolean;
   env_vars?: string[];
   setup_hint?: string;
   detected?: "signed_in" | "env" | "saved" | null;

@@ -269,7 +269,7 @@ export function DocsCommandPalette({
                   className={cn(
                     "flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors",
                     i === active
-                      ? "bg-[var(--color-accent-muted)]"
+                      ? "bg-[var(--color-selection-wash)]"
                       : "hover:bg-[var(--color-bg-elevated)]",
                   )}
                 >

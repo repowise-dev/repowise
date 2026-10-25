@@ -109,7 +109,7 @@ export function HotspotToolbar({
               className={cn(
                 "px-2.5 py-1.5 font-medium transition-colors",
                 filter === c.key
-                  ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                  ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
                   : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
               )}
             >

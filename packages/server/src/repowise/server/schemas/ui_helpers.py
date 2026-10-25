@@ -55,6 +55,8 @@ class ProviderEntry(BaseModel):
     accepts_base_url: bool = False
     #: Can point at a local OpenAI-compatible server (LM Studio) with no key.
     local_server: bool = False
+    #: A model that runs on this machine (not an agent CLI).
+    local_model: bool = False
     #: Env vars a user sets to make the provider usable.
     env_vars: list[str] = []
     #: One line on how to install or set it up.

@@ -43,7 +43,7 @@ const PROVIDERS = {
   active: { provider: null, model: null },
   providers: [
     { id: "openai", name: "OpenAI", models: [], default_model: "", configured: true, requires_key: true, detected: "env" },
-    { id: "ollama", name: "Ollama (Local)", models: [], default_model: "", configured: true, requires_key: false, detected: null },
+    { id: "ollama", name: "Ollama (Local)", models: [], default_model: "", configured: true, requires_key: false, local_model: true, detected: null },
     { id: "claude_cli", name: "Claude Code (Local CLI)", models: [], default_model: "", configured: true, requires_key: false, detected: "signed_in" },
   ],
 };
