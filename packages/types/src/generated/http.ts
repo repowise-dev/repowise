@@ -4443,6 +4443,7 @@ export interface WorkspaceArchitectureResponse {
   core_ratio?: number | null;
   core_members?: string[];
   cycle_count?: number | null;
+  cycle_count_capped?: boolean;
   conformance_violations?: number;
   architecture_type?: string;
   score?: number | null;
@@ -4547,6 +4548,7 @@ export interface WorkspaceConformanceResponse {
   violation_count?: number;
   cycle_count?: number;
   total_cycles?: number;
+  total_capped?: boolean;
   violating_repos?: string[];
   cycles_determined?: boolean | null;
   evidence?: WorkspaceGraphEvidence | null;

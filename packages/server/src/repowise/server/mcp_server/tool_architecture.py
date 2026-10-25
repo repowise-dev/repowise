@@ -87,6 +87,8 @@ def architecture_payload(metrics: dict[str, Any]) -> dict[str, Any]:
         "core_members": shown_core,
         "core_members_truncated": max(0, len(core_members) - len(shown_core)),
         "cycle_count": metrics.get("cycle_count", 0),
+        # True when the enumeration budget stopped the count: "at least" cycle_count.
+        "cycle_count_capped": bool(metrics.get("cycle_count_capped", False)),
         "conformance_violations": metrics.get("conformance_violations", 0),
         "role_breakdown": breakdown,
         "evidence": evidence or None,
@@ -98,6 +100,8 @@ def architecture_payload(metrics: dict[str, Any]) -> dict[str, Any]:
 
 def _summary(metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
     """One sentence, which says "not determined" rather than score an unseen graph."""
+    from repowise.core.workspace.cycles import cycle_total
+
     if metrics.get("score") is None:
         return (
             f"Architecture not determined for {metrics.get('node_count', 0)} service(s): "
@@ -115,7 +119,8 @@ def _summary(metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
         f"Architecture score {metrics['score']}/10 "
         f"({metrics.get('architecture_type', 'hierarchical')}): propagation cost "
         f"{metrics.get('propagation_cost_pct', 0)}%, {core_phrase}, "
-        f"{metrics.get('cycle_count', 0)} dependency cycle(s)."
+        f"{cycle_total(metrics.get('cycle_count') or 0, bool(metrics.get('cycle_count_capped')))}"
+        " dependency cycle(s)."
     )
     if evidence.get("state") == "partial":
         summary += f" Partial evidence: {evidence.get('summary')}."

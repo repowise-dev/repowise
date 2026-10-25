@@ -806,6 +806,20 @@ class TestWorkspaceCheck:
         assert "cycle" in result.output.lower()
         assert "frontend !-> db" in result.output
 
+    def test_a_tangle_past_the_budget_reads_at_least(self, runner, tmp_path, monkeypatch):
+        import repowise.core.workspace.cycles as cy
+
+        self._write_config_with_rule(tmp_path, [])
+        names = [f"s{i}" for i in range(5)]
+        self._save_graph(tmp_path, [(s, t) for s in names for t in names if s != t])
+        monkeypatch.setattr(cy, "MAX_ENUMERATED_CYCLES", 60)
+        check = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        metrics = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+        assert check.exit_code == 1, check.output
+        assert "at least 60 dependency cycle(s) (the 50 shortest listed)" in check.output
+        assert "at least 60 cycle(s)" in check.output
+        assert "at least 60" in metrics.output, metrics.output
+
     def test_a_cycle_closed_by_an_event_fails_and_names_each_leg(self, runner, tmp_path):
         from repowise.core.workspace.system_graph import (
             SystemEdge,

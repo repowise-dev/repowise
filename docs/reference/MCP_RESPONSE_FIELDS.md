@@ -727,7 +727,7 @@ Impacted services with `score` (0 to 1 relative path weight, uncalibrated), `dis
 
 ### `get_architecture`
 
-`score` (1 to 10; higher is lower coupling, smaller core), `architecture_type` (`core-periphery`, `hierarchical`), `propagation_cost_pct` (share of other services the average service reaches), `core_size`, `core_ratio`, `core_members`, `cycle_count`, `conformance_violations`, `role_breakdown` (Core, Shared, Control, Peripheral), `evidence`, `http_calls`, `summary`.
+`score` (1 to 10; higher is lower coupling, smaller core), `architecture_type` (`core-periphery`, `hierarchical`), `propagation_cost_pct` (share of other services the average service reaches), `core_size`, `core_ratio`, `core_members`, `cycle_count`, `cycle_count_capped` (true when the enumeration budget stopped the count, so `cycle_count` is a floor), `conformance_violations`, `role_breakdown` (Core, Shared, Control, Peripheral), `evidence`, `http_calls`, `summary`.
 
 ### Cross-repo link rows
 
@@ -737,7 +737,7 @@ A contract link row carries `strategy`, the rule that matched it (`exact_id`, `u
 
 ### `get_conformance`
 
-`violations` (`source`, `target`, `rule_source` / `rule_target`, `edge_kind`), `cycles` (`nodes`, `length`), `violation_count`, `cycle_count`, `rules_evaluated`. A report that never ran says so, not zero counts.
+`violations` (`source`, `target`, `rule_source` / `rule_target`, `edge_kind`), `cycles` (`nodes`, `length`), `violation_count`, `cycle_count`, `total_cycles`, `total_capped` (true when `total_cycles` is "at least"), `rules_evaluated`. A report that never ran says so, not zero counts.
 
 ### `get_dependency_path`
 

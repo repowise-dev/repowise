@@ -621,6 +621,8 @@ export interface ConformanceReport {
   cycle_count: number;
   /** How many cycles exist. Above `cycle_count` when the list was cut. */
   total_cycles: number;
+  /** True when the enumeration budget stopped the count: `total_cycles` is "at least". */
+  total_capped?: boolean;
   /** Distinct repos participating in a violation. */
   violating_repos: string[];
   /** False when the graph had too little evidence for "no cycles" to mean anything. */
@@ -705,6 +707,8 @@ export interface ArchitectureMetrics {
   core_members: string[];
   /** Elementary dependency cycles (matches the conformance report's count). */
   cycle_count: number | null;
+  /** True when the enumeration budget stopped the count: `cycle_count` is "at least". */
+  cycle_count_capped?: boolean;
   /** Declared-rule violations folded into the score (0 when no rules). */
   conformance_violations: number;
   architecture_type: ArchitectureType;

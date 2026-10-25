@@ -657,6 +657,9 @@ class WorkspaceConformanceResponse(BaseModel):
     #: many exist. They differ when MAX_CYCLES truncated the list.
     cycle_count: int = 0
     total_cycles: int = 0
+    #: True when the enumeration budget stopped the count, so ``total_cycles``
+    #: is a lower bound ("at least N").
+    total_capped: bool = False
     violating_repos: list[str] = []
     #: False when the graph had too little evidence for "no cycles" to mean
     #: anything; ``None`` on a report written before evidence was recorded.
@@ -688,6 +691,8 @@ class WorkspaceArchitectureResponse(BaseModel):
     core_ratio: float | None = None
     core_members: list[str] = []
     cycle_count: int | None = None
+    #: True when the enumeration budget stopped the count ("at least N").
+    cycle_count_capped: bool = False
     conformance_violations: int = 0
     architecture_type: str = "undetermined"
     score: float | None = None

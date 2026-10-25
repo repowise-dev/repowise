@@ -178,7 +178,7 @@ both ways).
 
 | Consumer | Reads | Output |
 |----------|-------|--------|
-| `cycles.detect_cycles` | `adjacency()` | Cycles with `leg_kinds` per leg and `async_legs`; an event leg still closes a cycle; capped at `MAX_CYCLES` |
+| `cycles.detect_cycles` | `adjacency()` | Cycles with `leg_kinds` per leg and `async_legs`; an event leg still closes a cycle; capped at `MAX_CYCLES`; enumeration stops at `MAX_ENUMERATED_CYCLES`, then the total is a floor (`total_capped`) and the listed cycles come from a length-bounded pass (up to `MAX_CYCLE_LENGTH`) |
 | `architecture_metrics.compute_architecture_metrics` | `adjacency()`, `detect_cycles` | Propagation cost, core, roles, 1-10 score |
 | `conformance.build_conformance_report` | Structural edges, declared rules | Violations, cycles, `cycles_determined` |
 | `blast_radius.cross_repo_blast_radius` | `adjacency(impact=True)`, co-change at `BEHAVIORAL_EDGE_WEIGHT` | Impacted services by distance, `undetermined_targets` |

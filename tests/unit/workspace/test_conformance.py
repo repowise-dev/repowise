@@ -178,7 +178,7 @@ def test_two_node_cycle():
         [_node("a"), _node("b")],
         [_edge("a", "b"), _edge("b", "a")],
     )
-    cycles, total = detect_cycles(g)
+    cycles, total, _capped = detect_cycles(g)
     assert len(cycles) == 1
     assert total == 1
     assert set(cycles[0].nodes) == {"a", "b"}
@@ -190,7 +190,7 @@ def test_longer_cycle():
         [_node("a"), _node("b"), _node("c")],
         [_edge("a", "b"), _edge("b", "c"), _edge("c", "a")],
     )
-    cycles, total = detect_cycles(g)
+    cycles, total, _capped = detect_cycles(g)
     assert len(cycles) == 1
     assert total == 1
     assert set(cycles[0].nodes) == {"a", "b", "c"}
@@ -211,7 +211,7 @@ def test_cycles_start_at_smallest_node_id():
     )
     for rotation in (["a", "b", "c"], ["b", "c", "a"], ["c", "a", "b"]):
         with patch.object(nx, "simple_cycles", return_value=[rotation]):
-            (cycle,), total = detect_cycles(g)
+            (cycle,), total, _capped = detect_cycles(g)
         assert cycle.nodes == ["a", "b", "c"]
         assert cycle.edge_ids == ["a->b:http", "b->c:http", "c->a:http"]
         assert cycle.leg_kinds == [["http"], ["http"], ["http"]]
@@ -223,7 +223,7 @@ def test_acyclic_graph_has_no_cycles():
         [_node("a"), _node("b"), _node("c")],
         [_edge("a", "b"), _edge("b", "c")],
     )
-    assert detect_cycles(g) == ([], 0)
+    assert detect_cycles(g) == ([], 0, False)
 
 
 def test_a_cycle_closed_by_an_event_counts_and_names_each_legs_kinds():
@@ -231,7 +231,7 @@ def test_a_cycle_closed_by_an_event_counts_and_names_each_legs_kinds():
         [_node("a"), _node("b")],
         [_edge("a", "b", kind="event"), _edge("b", "a"), _edge("b", "a", kind="db")],
     )
-    [cycle], total = detect_cycles(g)
+    [cycle], total, _capped = detect_cycles(g)
     assert total == 1
     legs = dict(zip(cycle.nodes, cycle.leg_kinds, strict=True))
     assert legs == {"a": ["event"], "b": ["db", "http"]}
@@ -246,7 +246,7 @@ def test_cycles_ignore_behavioral_edges():
         [_node("a"), _node("b")],
         [_edge("a", "b"), _edge("b", "a", kind="co_change", structural=False)],
     )
-    assert detect_cycles(g) == ([], 0)
+    assert detect_cycles(g) == ([], 0, False)
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +397,48 @@ def test_report_carries_the_true_cycle_count_past_the_cap():
     assert len(report.cycles) == 2
     assert report.total_cycles > 2
     assert report.to_dict()["total_cycles"] == report.total_cycles
+    assert report.total_capped is False
+
+
+def _complete_graph(n: int):
+    names = [f"s{i:02d}" for i in range(n)]
+    return _graph(
+        [_node(x) for x in names], [_edge(s, t) for s in names for t in names if s != t]
+    )
+
+
+def test_a_dense_tangle_stops_at_the_budget_and_lists_the_shortest_cycles():
+    import repowise.core.workspace.cycles as cy
+
+    # K6 has 409 elementary cycles; a budget of 100 stops the count.
+    g = _complete_graph(6)
+    with patch.object(cy, "MAX_ENUMERATED_CYCLES", 100):
+        cycles, total, capped = detect_cycles(g)
+        report = build_conformance_report(g, [])
+    assert capped is True
+    assert total == 100
+    # The bounded pass lists the 15 two-service loops and then the triangles.
+    assert [c.length for c in cycles] == sorted(c.length for c in cycles)
+    assert cycles[0].length == 2
+    assert sum(1 for c in cycles if c.length == 2) == 15
+    assert len(cycles) == cy.MAX_CYCLES
+    assert report.total_capped is True
+    restored = type(report).from_dict(report.to_dict())
+    assert restored.total_capped is True
+    assert restored.total_cycles == 100
+
+
+def test_cycles_under_the_budget_keep_the_exact_count():
+    import repowise.core.workspace.cycles as cy
+
+    g = _complete_graph(6)
+    with patch.object(cy, "MAX_ENUMERATED_CYCLES", 409):
+        _, total, capped = detect_cycles(g)
+    assert (total, capped) == (409, False)
+
+
+def test_cycle_total_says_at_least_when_capped():
+    from repowise.core.workspace.cycles import cycle_total
+
+    assert cycle_total(7, False) == "7"
+    assert cycle_total(20000, True) == "at least 20000"
