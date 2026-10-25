@@ -128,8 +128,11 @@ def test_a_signed_in_cli_comes_first(monkeypatch, tmp_path):
 def test_no_cli_is_probed_with_the_network_off(monkeypatch, tmp_path, var):
     monkeypatch.setenv(var, "1")
     monkeypatch.setattr(
-        "repowise.cli.ui.subscription.logged_in_agent_providers",
-        lambda: pytest.fail("probed an agent CLI"),
+        "repowise.core.agents.identity.AgentIdentity.which", lambda self: self.executable
+    )
+    monkeypatch.setattr(
+        "repowise.cli.ui.subscription.subprocess.run",
+        lambda *a, **k: pytest.fail("probed an agent CLI"),
     )
     monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
     assert reporting._model_upgrade(tmp_path) == ModelUpgrade("repowise generate")

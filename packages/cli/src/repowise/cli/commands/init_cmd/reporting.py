@@ -322,10 +322,6 @@ def _model_upgrade(repo_path: Path) -> ModelUpgrade:
 
 def _signed_in_agent() -> tuple[str, str] | None:
     """``(provider id, source line)`` for the first signed-in agent CLI worth offering."""
-    from repowise.core.platform.telemetry import network_disabled
-
-    if network_disabled():  # the probe spawns third-party CLIs that phone home
-        return None
     from repowise.cli.ui.subscription import logged_in_agent_providers
     from repowise.core.agents.identity import identity_for_provider
 
