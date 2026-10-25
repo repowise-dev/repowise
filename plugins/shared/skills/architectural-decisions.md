@@ -55,8 +55,9 @@ Call `get_why()` with no arguments to get the decision-health dashboard:
 
 The same signals surface in the CLI via `repowise decision health` /
 `{{cmd:decision}}`, and you can query *why* mid-task with `repowise why` /
-`{{cmd:why}}` (the `get_why` adapter). Review auto-proposed decisions with
-`repowise decision confirm`.
+`{{cmd:why}}` (the `get_why` adapter). `repowise decision candidates --format json`
+lists proposed decisions with what each still needs; `repowise decision confirm <id>`
+accepts one (see `{{cmd:decision}}`).
 
 ## When a file has decision markers
 
@@ -64,4 +65,10 @@ If you see `# WHY:`, `# DECISION:`, `# TRADEOFF:`, or `# ADR:` comments in code,
 
 ## Recording new decisions
 
-If the user makes an architectural decision during the conversation, suggest: "Want to record this decision? Add a `# DECISION:` comment in the relevant code, or run `repowise decision add` to capture it formally."
+When you settle an architectural choice yourself (you weighed options and picked one), record it:
+
+`repowise decision add --agent <your slug> --title "..." --decision "..." --rationale "<why, and what you rejected>" --affects <path>`
+
+Add `--evidence-commit <sha>` once it is committed. The record lands as a candidate: it never governs until accepted, so recording is safe. Accept it yourself with `repowise decision confirm <id> --agent <your slug>` only if the repository allows agent acceptance; otherwise leave it for a person and mention it.
+
+If the user states a decision, offer to record it the same way without `--agent`.

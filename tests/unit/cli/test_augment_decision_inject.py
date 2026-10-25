@@ -456,7 +456,7 @@ async def test_edit_notice_fires_once_per_decision(tmp_path):
     assert "governed by a standing decision" in notice
     assert "Use JWT auth" in notice
     assert "because session cookies broke the mobile clients" in notice
-    assert "confirmed across 2 sessions" in notice
+    assert "seen in 2 sessions" in notice
 
     # Same decision again this session: silence.
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
@@ -1068,7 +1068,7 @@ async def test_the_candidate_lane_prefers_the_better_measured_tier(tmp_path, mon
     _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
     block = decision_inject._session_decision_block(tmp_path, "sess-1")
     assert block is not None
-    lines = [ln for ln in block.splitlines() if "candidate" in ln.lower()]
+    lines = [ln for ln in block.splitlines() if "tier candidate" in ln]
     assert lines and "Better tier candidate" in lines[0]
 
 
