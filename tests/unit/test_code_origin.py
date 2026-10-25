@@ -85,6 +85,8 @@ _OWN_HEADER = (
         ("tools/gen.go", "tooling"),
         ("eng/tools/gen.cs", "tooling"),
         ("hack/tools/main.go", "tooling"),
+        ("ci/tools/lint.py", "tooling"),
+        ("Tools/Gen/Program.cs", "tooling"),
         ("build/tools/gen.py", "tooling"),
         # A ``tools/`` folder inside the product is its own code.
         ("lib/ai/tools/get-weather.ts", "production"),
