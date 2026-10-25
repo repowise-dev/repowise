@@ -154,9 +154,9 @@ none.
 Each repo is walked once per update for these file names; test, example and build-output
 directories are skipped, and so is any file the code-origin classifier calls test, docs or
 example, vendored or generated (a compose file under `docs/`, `demo/` or `e2e-tests/`).
-Files at the workspace root are read too. A name two files
-place in different repos is left unmapped rather than guessed. To override or fill a gap, add
-the host or base token to `service_bases`, which always wins.
+Files at the workspace root are read too. A name two files place in different repos is left
+unmapped rather than guessed. To override or fill a gap, add the host or base token to
+`service_bases`, which always wins.
 
 A gateway source states routes rather than names: a path prefix the gateway forwards to a
 service, and the path it forwards (Spring `StripPrefix`, `PrefixPath` and a

@@ -163,8 +163,10 @@ def test_only_deployed_config_claims_a_name(tmp_path: Path, rel: str) -> None:
     # A docs, demo, test or vendored stack is not the deployed one: its sole
     # claim on a name must not map it, nor a second claim make a real name ambiguous.
     compose = "services:\n  api: {build: .}\n  es01: {build: ./es}\n"
-    (tmp_path / "svc").mkdir()
-    (tmp_path / "svc" / "docker-compose.yml").write_text("services:\n  api: {build: .}\n")
+    (tmp_path / "svc" / "deploy").mkdir(parents=True)  # a deploy/ tree is production
+    (tmp_path / "svc" / "deploy" / "docker-compose.yml").write_text(
+        "services:\n  api: {build: ..}\n"
+    )
     (tmp_path / "other" / rel).parent.mkdir(parents=True)
     (tmp_path / "other" / rel).write_text(compose)
     m = build_service_name_map(_repos(tmp_path, "svc", "other"))
