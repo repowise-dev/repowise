@@ -17,7 +17,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.registry import open_repo_db, repo_db_path
-from repowise.core.workspace.repo_stats import member_stats
+from repowise.core.workspace.repo_stats import db_stamp, member_stats
 from repowise.core.workspace.store import (
     SCHEMA_VERSION,
     lookup_symbols,
@@ -309,3 +309,26 @@ async def test_member_stats_of_an_unindexed_or_absent_store_are_empty(tmp_path):
     config = make_config("api", "web", "docs")
     path = await refresh_workspace_store(config, root)
     assert set(read_member_stats(path, resolved(config, root))) == {"api", "web"}
+
+
+def test_db_stamp_moves_on_a_wal_commit_and_never_on_a_read(tmp_path):
+    db = tmp_path / "wiki.db"
+    holder = sqlite3.connect(db)  # held open, as a running server holds its pool
+    try:
+        holder.execute("PRAGMA journal_mode=WAL")
+        holder.execute("CREATE TABLE t (x)")
+        holder.commit()
+        stamp = db_stamp(db)
+
+        reader = sqlite3.connect(db)
+        reader.execute("SELECT COUNT(*) FROM t").fetchone()
+        reader.close()
+        assert db_stamp(db) == stamp
+
+        writer = sqlite3.connect(db)
+        writer.execute("INSERT INTO t VALUES (1)")
+        writer.commit()
+        writer.close()
+        assert db_stamp(db) != stamp
+    finally:
+        holder.close()

@@ -31,7 +31,7 @@ def query_top_language(db_path: Path) -> str:
     if not db_path.exists():
         return "unknown"
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             row = conn.execute(
                 "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
                 f"WHERE {_INDEXED_FILE_SQL} AND language IS NOT NULL AND language != '' "
@@ -144,7 +144,7 @@ def read_repo_health_score(db_path: Path) -> float | None:
     # `max(int(nloc or 0), 1)` weight, truncation included; verified identical on
     # 109 real databases.
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             row = conn.execute(
                 "SELECT SUM(score * w), SUM(w) FROM ("
                 "  SELECT score, MAX(CAST(COALESCE(nloc, 0) AS INTEGER), 1) AS w"
@@ -183,7 +183,11 @@ def db_stamp(db_path: Path) -> str:
 
 
 def stamped_member_stats(db_path: Path) -> tuple[str, dict[str, Any]] | None:
-    """``(db stamp, member stats)``, or None when a write landed mid-read."""
-    before = db_stamp(db_path)
-    stats = member_stats(db_path)
-    return (before, stats) if db_stamp(db_path) == before else None
+    """``(db stamp, member stats)``, or None when a write landed mid-read twice
+    running (the repo is then read live until its next refresh)."""
+    for _ in range(2):
+        before = db_stamp(db_path)
+        stats = member_stats(db_path)
+        if db_stamp(db_path) == before:
+            return before, stats
+    return None
