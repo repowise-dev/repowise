@@ -495,7 +495,7 @@ export const DECISION_PRESETS = [
  * What `record_acceptance` would refuse this record for, mirrored so a review
  * surface can disable a control it knows will be refused instead of finding out
  * from the error toast. Pinned against the Python contract by the vocabulary
- * tests. The fourth check, accepter-or-artifact identity, is not here: the
+ * tests. The accepter-or-artifact identity check is not here: the
  * reviewer supplies that at the moment they act, so it is never something the
  * record is missing. `record_blockers` on the Python side asks the same way.
  *
@@ -505,9 +505,12 @@ export const DECISION_PRESETS = [
  *
  * The reason reads `rationale` then `context`, never `decision`: `context` is
  * what forced the choice, `decision` is the choice itself, and letting the what
- * stand in for the why is what marked empty records acceptable.
+ * stand in for the why is what marked empty records acceptable. A mined record
+ * still needs its `decision`: one that never says what was chosen binds nobody
+ * to anything. A typed record's title is its claim.
  */
 export function decisionAcceptanceBlockers(record: {
+  decision?: string;
   rationale?: string;
   context?: string;
   affected_files?: string[];
@@ -521,6 +524,10 @@ export function decisionAcceptanceBlockers(record: {
   const nonBlank = (values: (string | null | undefined)[]) =>
     values.some((v) => (v ?? "").trim().length > 0);
 
+  const selfAuthored = record.source === "cli";
+  if (!selfAuthored && !nonBlank([record.decision])) {
+    blockers.push("no decision text: state what was chosen");
+  }
   if (!nonBlank([record.rationale, record.context])) {
     blockers.push("no rationale or explicit constraint reason");
   }
@@ -534,7 +541,6 @@ export function decisionAcceptanceBlockers(record: {
   ) {
     blockers.push("no scope: name the files or modules it governs");
   }
-  const selfAuthored = record.source === "cli";
   if (
     !selfAuthored &&
     !nonBlank(record.evidence_commits ?? []) &&

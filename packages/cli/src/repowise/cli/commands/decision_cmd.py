@@ -813,11 +813,14 @@ def _decision_body_lines(rec) -> list[str]:
 
 #: The remedy printed beside a refused acceptance, naming the flags that
 #: supply what the contract found missing.
-_ACCEPT_REMEDY = "Supply the missing parts with --reason, --scope or --evidence."
+_ACCEPT_REMEDY = "Supply the missing parts with --decision, --reason, --scope or --evidence."
 
 
 @decision_group.command("confirm")
 @click.argument("decision_ids", nargs=-1, required=True)
+@click.option(
+    "--decision", "decision_text", default="", help="What was chosen, if the record does not say."
+)
 @click.option("--reason", default="", help="Rationale, or why the constraint needs none.")
 @click.option(
     "--scope",
@@ -837,6 +840,7 @@ _ACCEPT_REMEDY = "Supply the missing parts with --reason, --scope or --evidence.
 @format_option()
 def decision_confirm(
     decision_ids: tuple[str, ...],
+    decision_text: str,
     reason: str,
     scope: tuple[str, ...],
     evidence: tuple[str, ...],
@@ -851,9 +855,9 @@ def decision_confirm(
     Takes one id or many, and an optional repository path after them. This is
     the acceptance event, and it is the only thing that produces one:
     extraction, recurrence and confidence all stop at a candidate. Acceptance
-    is refused rather than stored blank when the candidate carries no reason,
-    no scope or no evidence; ``--reason``, ``--scope`` and ``--evidence``
-    supply what is missing, and correcting them here corrects the record too.
+    is refused rather than stored blank when the candidate carries no decision
+    text, no reason, no scope or no evidence; ``--decision``, ``--reason``,
+    ``--scope`` and ``--evidence`` supply what is missing, and correcting them here corrects the record too.
     A refused id does not stop the others, and the run exits non-zero if any
     were refused.
 
@@ -881,6 +885,7 @@ def decision_confirm(
             reason=reason,
             scope=list(scope) or None,
             evidence=list(evidence) or None,
+            decision=decision_text,
         )
 
     results = run_async(

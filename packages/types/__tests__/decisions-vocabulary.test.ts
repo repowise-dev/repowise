@@ -127,6 +127,7 @@ describe("lookup helpers", () => {
 
 describe("the acceptance contract, mirrored", () => {
   const accepted = {
+    decision: "Keep sessions in Redis",
     rationale: "sessions did not survive a restart",
     affected_files: ["src/auth/service.py"],
     evidence_commits: ["abc1234"],
@@ -149,6 +150,12 @@ describe("the acceptance contract, mirrored", () => {
     expect(
       decisionAcceptanceBlockers({ ...accepted, affected_files: ["  ", ""] }),
     ).toContain("no scope: name the files or modules it governs");
+  });
+
+  it("refuses a record that never says what was chosen", () => {
+    expect(decisionAcceptanceBlockers({ ...accepted, decision: "  " })).toEqual([
+      "no decision text: state what was chosen",
+    ]);
   });
 
   it("falls back to the context when there is no rationale", () => {
@@ -188,6 +195,6 @@ describe("the acceptance contract, mirrored", () => {
   it("names every gap at once rather than the first", () => {
     expect(
       decisionAcceptanceBlockers({ source: "session" }).length,
-    ).toBe(3);
+    ).toBe(4);
   });
 });

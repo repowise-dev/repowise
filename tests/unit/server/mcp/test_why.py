@@ -851,6 +851,7 @@ async def test_get_why_targets_do_not_bind_a_record_whose_files_are_gone(session
             id=f"gone{flag}",
             repository_id=setup_mcp,
             title=f"Legacy rule {flag}",
+            decision="keep the legacy path",
             rationale="why",
             affected_files_json=json.dumps([path]),
             source="pr",

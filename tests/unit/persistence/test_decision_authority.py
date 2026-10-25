@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import NO_DECISION_BLOCKER
 from repowise.core.persistence.crud import bulk_upsert_decisions, update_decision_status
 from repowise.core.persistence.crud.authority import (
     AcceptanceRefusedError,
@@ -27,6 +28,8 @@ from repowise.core.persistence.crud.authority import (
     list_candidates,
     merge_candidate,
     reaffirm_decision,
+    record_acceptance,
+    record_blockers,
     request_split,
     resolve_decision_id,
     return_to_review,
@@ -125,7 +128,7 @@ async def test_acceptance_requires_reason_scope_evidence_and_identity(async_sess
 
     with pytest.raises(AcceptanceRefusedError) as refusal:
         await accept_decision(async_session, rec, accepter="tester")
-    assert len(refusal.value.blockers) == 3
+    assert len(refusal.value.blockers) == 4
 
     with pytest.raises(AcceptanceRefusedError):
         await accept_decision(
@@ -139,9 +142,61 @@ async def test_acceptance_requires_reason_scope_evidence_and_identity(async_sess
         reason="a reason",
         scope=["src/a.py"],
         evidence=["deadbeef"],
+        decision="do the thing",
     )
     assert acceptance.currency == "active"
     assert rec.status == "active"
+
+
+async def test_a_mined_candidate_with_no_decision_text_is_refused(async_session):
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Says nothing")
+    rec.decision = "   "
+    await async_session.flush()
+
+    assert record_blockers(rec) == [NO_DECISION_BLOCKER]
+    with pytest.raises(AcceptanceRefusedError) as refusal:
+        await accept_decision(async_session, rec, accepter="tester")
+    assert refusal.value.blockers == [NO_DECISION_BLOCKER]
+
+    await accept_decision(async_session, rec, accepter="tester", decision="Use Redis")
+    assert rec.decision == "Use Redis"
+    assert await is_accepted(async_session, rec.id)
+
+
+async def test_a_typed_record_needs_no_decision_text(async_session):
+    """Its author wrote the title as the claim."""
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Typed")
+    rec.source = "cli"
+    rec.decision = ""
+    await async_session.flush()
+
+    await accept_decision(async_session, rec, accepter="tester")
+    assert await is_accepted(async_session, rec.id)
+
+
+async def test_a_decision_with_no_text_can_still_be_withdrawn_or_imported(async_session):
+    """Only a new grant asks for the text; an accepted record is never stranded."""
+    repo = await insert_repo(async_session)
+    kept, withdrawn = await _seed(async_session, repo.id, "Imported", "Withdrawn")
+    await accept_decision(async_session, withdrawn, accepter="tester")
+    for rec in (kept, withdrawn):
+        rec.decision = ""
+    await async_session.flush()
+
+    await record_acceptance(
+        async_session,
+        kept,
+        action="accepted",
+        currency="active",
+        artifact="decisions.yaml",
+        kind="import",
+    )
+    await dismiss_candidate(async_session, withdrawn, reason="gone", accepter="tester")
+
+    assert await is_accepted(async_session, kept.id)
+    assert (await latest_acceptance(async_session, withdrawn.id)).currency == "dismissed"
 
 
 async def test_the_database_refuses_an_acceptance_with_no_scope(async_session):

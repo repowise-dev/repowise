@@ -51,12 +51,13 @@ its source, a confidence, a staleness score, and one or more evidence rows
 
 Acceptance is a recorded event, not a status flag. It carries a reason, a
 scope, an evidence reference and who signed it, and Repowise refuses to store
-an acceptance that is missing any of those:
+an acceptance that is missing any of those. A mined candidate with no decision text
+is refused too; `confirm --decision` supplies it:
 
 ```
 $ repowise decision confirm 4b6ddc58
 Cannot accept 4b6ddc58: no scope: name the files or modules it governs
-Supply the missing parts with --reason, --scope or --evidence.
+Supply the missing parts with --decision, --reason, --scope or --evidence.
 
 $ repowise decision confirm 4b6ddc58 --scope src/ingestion
 Decision 4b6ddc58 accepted (governing)
