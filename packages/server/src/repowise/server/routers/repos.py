@@ -31,7 +31,6 @@ from repowise.server.routers._repo_generate import (
     GenerateRequestBody,
     GenerateSelectionBody,  # noqa: F401 - re-exported beside the body that nests it
     _generate_job_config,
-    _reject_unknown_style,
     _validate_generate_selection,
     _validate_generate_style,
 )
@@ -48,6 +47,7 @@ from repowise.server.routers._repo_pricing import (
     probe_provider,
     resolve_provider,
 )
+from repowise.server.routers._repo_settings import save_settings, stored_settings
 from repowise.server.routers._repo_summary import _freshness_for, _summary_rows_for
 from repowise.server.schemas import (
     JobAcceptedResponse,
@@ -123,6 +123,9 @@ async def create_repo(
     configured — is enqueued immediately; the created job's id is returned
     as ``initial_job_id`` so clients can attach to its progress stream.
     """
+    if body.settings is not None:
+        # A style picked at registration lands in config.yaml like a PATCH.
+        body.settings = save_settings(body.local_path, body.settings, {})
     if not body.index:
         # Metadata-only registration: per-repo storage is created on first index.
         url, branch = _sent_metadata(body)
@@ -318,24 +321,29 @@ async def update_repo(
     body: RepoUpdate,
     session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
-    """Update repository fields."""
+    """Update repository fields.
+
+    ``exclude_patterns`` and ``wiki_style`` in ``settings`` go to the repo's
+    ``.repowise/config.yaml`` (where the CLI reads them), written first so a
+    failed write leaves the row untouched.
+    """
+    import json
+
     repo = await _get_repo_or_404(session, repo_id)
 
+    row_settings = None
+    if body.settings is not None:
+        row_settings = save_settings(
+            repo.local_path, body.settings, stored_settings(repo.settings_json)
+        )
     if body.name is not None:
         repo.name = body.name
     if body.url is not None:
         repo.url = body.url
     if body.default_branch is not None:
         repo.default_branch = body.default_branch
-    if body.settings is not None:
-        import json
-
-        # Validate a wiki_style setting up front so a typo surfaces as a 400 here
-        # rather than silently falling back to the default during generation.
-        style = body.settings.get("wiki_style")
-        if style is not None:
-            _reject_unknown_style(style, "wiki_style")
-        repo.settings_json = json.dumps(crud.keep_analysis_ran(repo.settings_json, body.settings))
+    if row_settings is not None:
+        repo.settings_json = json.dumps(crud.keep_analysis_ran(repo.settings_json, row_settings))
     await session.flush()
     return RepoResponse.from_orm(repo)
 

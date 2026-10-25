@@ -392,7 +392,7 @@ priority order:
    `src/generated/` without affecting other directories with the same name.
 4. **`extra_exclude_patterns`** (constructor param): additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
-   `repo.settings["exclude_patterns"]` (set via Web UI or REST API PATCH). Applied
+   `.repowise/config.yaml exclude_patterns` (also what the Web UI and REST API PATCH write). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
 5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `vendor`,
    `*.lock`, `*.min.js`, generated protobuf files, etc.). `build`, `coverage`,
@@ -425,8 +425,8 @@ FileTraverser(
 |--------|------------------------------|
 | `repowise init -x vendor/ -x 'src/gen/**'` | Merged with `config.yaml exclude_patterns`, passed directly |
 | `repowise update` | Read from `.repowise/config.yaml exclude_patterns` |
-| Web UI Excluded Paths section | Saved to `repo.settings["exclude_patterns"]` via REST API |
-| Server sync job | Read from `repo.settings.get("exclude_patterns", [])` |
+| Web UI Excluded Paths section | Saved to `.repowise/config.yaml exclude_patterns` via REST API PATCH |
+| Server sync job | Read from `.repowise/config.yaml exclude_patterns`; an older `repo.settings` copy applies only while the file lacks the key |
 
 The traverser also detects monorepo structure by looking for multiple
 `pyproject.toml`, `package.json`, `go.mod`, or `Cargo.toml` files at depth 1–2.
@@ -1434,9 +1434,9 @@ a different problem:
 
 3. **`extra_exclude_patterns` (runtime)**: patterns injected without touching any
    file on disk: from `--exclude/-x` CLI flags (dev workflow), from
-   `config.yaml exclude_patterns` (persisted per repo), or from
-   `repo.settings["exclude_patterns"]` (Web UI / REST API). This lets teams configure
-   exclusions through the UI without git access to the target repo.
+   `config.yaml exclude_patterns` (persisted per repo, and written by the Web UI /
+   REST API too). This lets teams configure exclusions through the UI, and the CLI
+   and the UI always show the same list.
 
 All three layers use `pathspec` with `gitwildmatch` semantics, the same library used
 for `.gitignore` parsing, so the full gitignore syntax works everywhere.

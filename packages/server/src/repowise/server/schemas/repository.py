@@ -89,11 +89,34 @@ class RepoResponse(BaseModel):
             local_path=local_path,
             default_branch=obj.default_branch,  # type: ignore[attr-defined]
             head_commit=obj.head_commit,  # type: ignore[attr-defined]
-            settings=json.loads(obj.settings_json),  # type: ignore[attr-defined]
+            settings=_effective_settings(json.loads(obj.settings_json), local_path),  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
             index_scope=scope,
         )
+
+
+def _effective_settings(stored: dict, local_path: str | None) -> dict:
+    """*stored* with the config.yaml-owned keys read from the repo's config.yaml.
+
+    A legacy stored value shows until the file sets the key. An unreadable
+    config leaves *stored* as is: a listing must not fail on one broken file,
+    and saving those keys reports the parse error.
+    """
+    from repowise.core.repo_config import (
+        FILE_SETTING_KEYS,
+        RepoConfigError,
+        resolve_file_settings,
+    )
+
+    if not local_path:
+        return stored
+    try:
+        effective = resolve_file_settings(local_path, stored)
+    except (RepoConfigError, OSError):
+        return stored
+    rest = {k: v for k, v in stored.items() if k not in FILE_SETTING_KEYS}
+    return {**rest, **effective}
 
 
 class RepoDeletedResponse(BaseModel):
