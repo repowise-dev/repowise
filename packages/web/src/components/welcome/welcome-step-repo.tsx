@@ -124,7 +124,7 @@ function useLensText(repoId: string): (lens: WelcomeLens) => CardText {
             lens.files === 0
               ? t("deadCode.captionNone")
               : `${t("deadCode.caption")}${lens.safe > 0 ? ` ${t("deadCode.safe", { count: lens.safe })}` : ""}`,
-          href: `${base}/dead-code`,
+          href: `${base}/code-health?tab=dead-code`,
           open: t("deadCode.open"),
         };
       case "risk":

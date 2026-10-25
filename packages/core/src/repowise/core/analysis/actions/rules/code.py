@@ -372,8 +372,19 @@ def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
         # tests" nor "tests reach it" is a claim the facts support.
         return None
     if cov is None and f.tests_reaching == 0:
+        if f.tests_reaching_via == MOCKED_ONLY_VIA:
+            # Tests reach it but replace it: that is a real gap, stated as one.
+            title = f"Add tests around {code(f.path)} before its next change"
+        else:
+            # The graph cannot see code a framework invokes (URL routes, CLI
+            # commands, registries), so an empty walk is absence of evidence,
+            # not proof the file is untested. Say what the graph found.
+            title = (
+                f"No test reaches {code(f.path)} in the code graph: "
+                "confirm it is tested before its next change"
+            )
         return (
-            f"Add tests around {code(f.path)} before its next change",
+            title,
             "A coverage report includes it at 80% or more.",
             "unknown",
         )
@@ -674,7 +685,9 @@ def _first_step(includes: tuple[str, ...], production: dict[str, FileFacts]) -> 
     for path in includes:
         step = _fragile_step(production[path])
         if step is not None:
-            title = step[0].split(": ", 1)[0]
+            # The unknown variant's title carries its own ask after the colon,
+            # so it stays whole; the others drop their ": tests reach it" tail.
+            title = step[0] if step[2] == "unknown" else step[0].split(": ", 1)[0]
             return title[0].lower() + title[1:]
     return None
 

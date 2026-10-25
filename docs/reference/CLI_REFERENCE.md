@@ -968,7 +968,7 @@ repowise decision config show                   # resolved capture policy
 repowise decision config preset NAME            # default | off | local_only | balanced | full
 repowise decision config discovery              # broad discovery call budget
 repowise decision config agent-acceptance --on|--off  # may an agent grant authority? (on)
-repowise decision config capture-prompt --on|--off    # agent records what it committed (off);
+repowise decision config capture-prompt --on|--off    # agent records what it committed (on);
                                                       # --on installs the shell hook
 repowise decision source list                   # source registry and state
 repowise decision source set SRC --on|--off     # switch one source

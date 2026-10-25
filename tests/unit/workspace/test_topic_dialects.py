@@ -787,3 +787,61 @@ class TestGoKafka:
             'r := kgo.Record{Topic: "c"}\n'
         )
         assert _extract(tmp_path, "main.go", src) == []
+
+
+_SB = "using Azure.Messaging.ServiceBus;\n"
+
+
+class TestAzureServiceBus:
+    def test_a_sender_and_a_processor_meet_on_the_queue(self, tmp_path: Path) -> None:
+        sender = _SB + 'var sender = client.CreateSender("orders");\nawait sender.SendMessageAsync(m);\n'
+        processor = (
+            _SB
+            + 'var processor = client.CreateProcessor("orders", new ServiceBusProcessorOptions());\n'
+            + 'var receiver = client.CreateReceiver("refunds");\n'
+        )
+        _extract(tmp_path, "sender/OrderPublisher.cs", sender)
+        rows = _extract(tmp_path, "billing/OrderWorker.cs", processor)
+        assert {(c.role, c.contract_id, c.meta["broker"], c.meta["kind"]) for c in rows} == {
+            ("provider", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::refunds", "azure_servicebus", "queue"),
+        }
+        assert {c.origin for c in rows} == {ContractOrigin.CLIENT_CALL}
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            'client.CreateProcessor("orders", "billing")',
+            'client.CreateProcessor("orders", "billing", new ServiceBusProcessorOptions())',
+            'client.CreateReceiver("orders", billingSubscription)',
+            'client.CreateSessionProcessor("orders", SubscriptionName, options)',
+            'client.CreateReceiver(topicName: "orders", subscriptionName: "billing")',
+        ],
+    )
+    def test_a_receive_naming_a_subscription_reads_a_topic(self, tmp_path: Path, call: str) -> None:
+        c = _one(_extract(tmp_path, "Worker.cs", _SB + f"var r = {call};\n"), "consumer")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::orders", "topic")
+
+    def test_functions_triggers_are_route_registrations(self, tmp_path: Path) -> None:
+        src = (
+            "public static class RefundFunction {\n"
+            '    [Function("Refund")]\n'
+            '    public static void Run([ServiceBusTrigger("refunds", Connection = "SB")] string msg) { }\n'
+            '    [FunctionName("Audit")]\n'
+            '    public static void Audit([ServiceBusTrigger("orders", "audit")] string msg) { }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "RefundFunction.cs", src)
+        assert {(c.role, c.contract_id, c.meta["kind"], c.origin) for c in rows} == {
+            ("consumer", "topic::refunds", "queue", ContractOrigin.ROUTE_REGISTRATION),
+            ("consumer", "topic::orders", "topic", ContractOrigin.ROUTE_REGISTRATION),
+        }
+
+    def test_a_commented_out_call_is_not_read(self, tmp_path: Path) -> None:
+        src = _SB + '// var sender = client.CreateSender("old-orders");\n/* client.CreateProcessor("x"); */\n'
+        assert _extract(tmp_path, "Old.cs", src) == []
+
+    def test_client_calls_need_the_library_import(self, tmp_path: Path) -> None:
+        src = 'var s = factory.CreateSender("orders");\nvar p = pool.CreateProcessor("jobs");\n'
+        assert _extract(tmp_path, "Other.cs", src) == []

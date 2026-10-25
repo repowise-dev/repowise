@@ -44,6 +44,27 @@ def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
     return bool(g.nodes[u].get("is_test") and g.nodes[v].get("is_test"))
 
 
+def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
+    """Score a directed symbol graph exactly, skipping isolated nodes."""
+    from ._betweenness import betweenness_centrality_fast
+
+    n = g.number_of_nodes()
+    connected = [node for node, degree in g.degree() if degree]
+    if not connected or n <= 2:
+        return dict.fromkeys(g, 0.0)
+    if len(connected) == n:
+        return betweenness_centrality_fast(g, normalized=True)
+
+    # Isolates lie on no shortest path, so removing them leaves raw scores
+    # unchanged. Keep the full symbol population in the normalization factor.
+    raw = betweenness_centrality_fast(g.subgraph(connected).copy(), normalized=False)
+    scale = 1 / ((n - 1) * (n - 2))
+    values = dict.fromkeys(g, 0.0)
+    for node, score in raw.items():
+        values[node] = score * scale
+    return values
+
+
 class MetricsMixin:
     """Centrality + community + degree metrics for :class:`GraphBuilder`."""
 
@@ -478,6 +499,8 @@ class MetricsMixin:
             ordered.add_nodes_from(sorted(g.nodes()))
             ordered.add_edges_from(g.edges())
             values = nx.betweenness_centrality(ordered, k=k, normalized=True, seed=42)
+        elif kind == "symbol":
+            values = _exact_symbol_betweenness(g)
         else:
             from ._betweenness import betweenness_centrality_fast
 

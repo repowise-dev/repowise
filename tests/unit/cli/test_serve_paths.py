@@ -361,6 +361,15 @@ def test_local_build_ignores_skipped_dirs(tmp_path) -> None:
     assert serve_cmd._local_build_is_stale(web) is False
 
 
+@pytest.mark.parametrize("parent", ["dist", ".git"])
+def test_local_build_stale_inside_skipped_parent_dir(tmp_path, parent) -> None:
+    repo = tmp_path / parent / "repo"
+    web, _ = _make_web_tree(repo)
+    assert serve_cmd._local_build_is_stale(web) is False
+    os.utime(repo / "packages" / "web" / "src" / "page.tsx", (3_000_000, 3_000_000))
+    assert serve_cmd._local_build_is_stale(web) is True
+
+
 def _tarball(files: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:

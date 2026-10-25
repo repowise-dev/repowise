@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server import _edit_sites, _line_hits, _meta, _state
 from repowise.server.mcp_server._budget import enforce_response_budget
 from repowise.server.mcp_server.tool_search import search_codebase
@@ -26,6 +26,7 @@ _FILES = {
         "    print('hello there')\n"
         "    return backend_of('m')\n"
         "x = 147821\n"
+        'USER_AGENT = "acme-cli/0.1.0"\n'
     ),
 }
 
@@ -135,6 +136,60 @@ async def test_literal_number_is_scanned_with_definition_first(tree):
     ]
     assert out["lines"][1]["text"] == "PORT = 47821"
     assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_slash_literal_falls_back_from_path_mode(tree):
+    out = await search_codebase("acme-cli/0.1.0")
+
+    assert _rows(out) == [("app/widget.py", 8, "definition")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_slash_literal_is_scanned_in_hybrid_mode(tree):
+    out = await search_codebase("acme-cli/0.1.0", mode="hybrid")
+
+    assert _rows(out) == [("app/widget.py", 8, "definition")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_matching_path_query_does_not_add_line_hits(tree, session, setup_mcp):
+    # Path mode matches indexed file pages, so the file needs one to be found.
+    session.add(
+        Page(
+            id="file_page:app/widget.py",
+            repository_id=setup_mcp,
+            page_type="file_page",
+            title="Widget",
+            content="# Widget",
+            target_path="app/widget.py",
+            source_hash="widget",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=2,
+            confidence=0.8,
+            freshness_status="fresh",
+            metadata_json="{}",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+    )
+    await session.commit()
+    out = await search_codebase("app/widget.py", mode="path")
+
+    assert any(result["path"] == "app/widget.py" for result in out["results"])
+    assert "lines" not in out
+
+
+@pytest.mark.parametrize("query", ["SomeName", "./", "../"])
+@pytest.mark.asyncio
+async def test_unmatched_path_query_only_falls_back_for_slash_literals(tree, query):
+    out = await search_codebase(query, mode="path")
+
+    assert out["results"] == []
+    assert "lines" not in out
 
 
 @pytest.mark.asyncio
