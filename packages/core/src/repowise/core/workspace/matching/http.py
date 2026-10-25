@@ -433,7 +433,10 @@ def base_resolved_pass(state: MatchState) -> None:
         if narrowed:
             strategy = LinkStrategy.SERVICE_MAPPED
         elif spans_repos(providers):
-            state.refuse(consumer)
+            # A target the workspace's own config placed stays unmatched, so
+            # the service pass draws its edge to that repo.
+            if not consumer.meta.get("target_evidence"):
+                state.refuse(consumer)
             continue
         elif len({(p.repo, p.service) for p in providers}) == 1:
             strategy = LinkStrategy.UNIQUE_PATH

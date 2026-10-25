@@ -100,3 +100,18 @@ def test_the_mark_is_recomputed_on_every_run() -> None:
     links = _match(contracts)
     assert [lk.provider_repo for lk in links] == ["shop-a"]
     assert AMBIGUOUS_PROVIDER not in contracts[1].meta
+
+
+def test_a_mapped_target_serving_nothing_keeps_its_service_edge() -> None:
+    contracts = [
+        _c("shop-a", "provider", "http::GET::/cart"),
+        _c("shop-b", "provider", "http::GET::/cart"),
+        _c("cart", "provider", "http::GET::/other"),
+        _c("web", "consumer", "http::GET::/cart", base_stripped=True, base_token="CART_URL"),
+    ]
+    annotate_consumer_targets(contracts)
+    contracts[3].meta.update(target_repo="cart", target_via="compose", target_evidence="cart/compose.yml")
+    state = run_matching(contracts)
+    assert state.links == []
+    assert AMBIGUOUS_PROVIDER not in contracts[3].meta
+    assert [lk.provider_repo for lk in state.service_links] == ["cart"]
