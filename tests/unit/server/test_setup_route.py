@@ -186,6 +186,7 @@ async def test_setup_payload_shape(
         "hints_enabled": True, "signed_in": False,
     }
     assert body["writes_allowed"] is True
+    assert body["calls_available"] and body["coverage_available"] and body["model_available"]
 
 
 @pytest.mark.anyio
@@ -227,6 +228,40 @@ async def test_setup_degrades_when_the_cli_cannot_run(
     assert body["checks_available"] is False and body["checks"] == []
     assert body["sync"]["installed"] is None
     assert body["rewrite_hook"]["state"] == "unknown"
+
+
+@pytest.mark.anyio
+async def test_setup_flags_sections_it_could_not_read(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    from repowise.core.analysis.health import coverage
+    from repowise.core.savings import service
+    from repowise.server import provider_config
+
+    def ledger_locked(root):
+        raise sqlite3.OperationalError("database is locked")
+
+    def bad_config(**kwargs):
+        raise ValueError("Could not parse config.yaml")
+
+    def unreadable_dir(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(service, "load_agent_calls", ledger_locked)
+    monkeypatch.setattr(provider_config, "list_provider_status", bad_config)
+    monkeypatch.setattr(coverage, "discover_artifacts", unreadable_dir)
+
+    resp = await local.get(f"/api/repos/{repo['id']}/setup")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["calls_available"] is False
+    assert body["coverage_available"] is False
+    assert body["model_available"] is False
+    assert body["model"]["docs_mode"] == "none"
+    # The CLI-backed sections are unaffected.
+    assert body["agents_available"] is True and body["checks_available"] is True
 
 
 # -- writes ----------------------------------------------------------------------

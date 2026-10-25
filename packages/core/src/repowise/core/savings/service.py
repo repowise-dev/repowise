@@ -1,4 +1,8 @@
-"""The one savings report every first-party surface reads.
+"""The read side of the savings ledger: the one report, and per-agent call times.
+
+``load_agent_calls`` answers a narrower question from the same sidecar (when
+did each agent last read the index), so it shares the read-only handle below
+and adds no second aggregation of savings.
 
 Before this, three consumers each aggregated and priced the ledger themselves:
 the costs endpoint, the repository overview headline and ``repowise saved``.
