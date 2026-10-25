@@ -3,11 +3,11 @@
 import { useEffect, useId, useState } from "react";
 import Link from "next/link";
 import { useFormatter, useTranslations } from "next-intl";
-import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { Callout } from "@repowise-dev/ui/shared/callout";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 import { tourHref } from "@/lib/tour";
+import { SETTINGS_LINK, SettingsGroup, repoSettingsHref, type SettingsGroupId } from "@/components/settings/settings-groups";
 import type { SetupResponse } from "@/lib/api/setup";
 import { HostedSetupCard } from "./hosted-setup-card";
 import { SetupRowView, useSetupText } from "./setup-row";
@@ -16,6 +16,29 @@ import { useSetupControls } from "./setup-controls";
 import { rememberSetupDone, useSetupData, useSetupView } from "./use-setup";
 
 const MICRO = "font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--color-text-tertiary)]";
+
+/**
+ * Where each row's control lives. Setup shows status and fixes; the switch or
+ * button itself is on the settings page for its group, so it exists once.
+ * The model row keeps its own button: it opens the model sheet, a flow that
+ * also writes the docs, not a setting.
+ */
+const ROW_GROUP: Record<string, SettingsGroupId> = {
+  agent: "agents",
+  sync: "sync",
+  rewrite: "sync",
+  coverage: "coverage",
+};
+
+function SettingsLink({ repoId, group }: { repoId: string; group: SettingsGroupId }) {
+  const t = useTranslations("setup");
+  const tg = useTranslations("settings.groups");
+  return (
+    <Link href={repoSettingsHref(repoId, group)} className={SETTINGS_LINK}>
+      {t("changeIn", { group: tg(`${group}.title`) })}
+    </Link>
+  );
+}
 
 /** The Setup page: what is set up for one repo, with one action per row. */
 export function SetupPage({ repoId, repoName }: { repoId: string; repoName: string }) {
@@ -29,7 +52,7 @@ export function SetupPage({ repoId, repoName }: { repoId: string; repoName: stri
 
   if (!data || !view) {
     return (
-      <PageShell title={t("title")} description={t("loading")} maxWidth="narrow">
+      <SettingsGroup title={t("title")} description={t("loading")}>
         {error && !isLoading ? (
           <Callout tone="error" label={t("loadFailedLabel")} action={<Button size="sm" variant="outline" onClick={() => void mutate()}>{t("retry")}</Button>}>
             {t("loadFailed")}
@@ -37,7 +60,7 @@ export function SetupPage({ repoId, repoName }: { repoId: string; repoName: stri
         ) : (
           <SetupSkeleton label={t("loading")} />
         )}
-      </PageShell>
+      </SettingsGroup>
     );
   }
   return <SetupLoaded repoId={repoId} setup={data} view={view} />;
@@ -78,7 +101,13 @@ function SetupLoaded({ repoId, setup, view }: { repoId: string; setup: SetupResp
       <SetupRowView
         key={row.id}
         row={row}
-        action={controls.actionFor(row)}
+        action={
+          ROW_GROUP[row.id] ? (
+            <SettingsLink repoId={repoId} group={ROW_GROUP[row.id]!} />
+          ) : (
+            controls.actionFor(row)
+          )
+        }
         onOpenPrompt={() => controls.openRowPrompt(row)}
       >
         {row.files?.length ? <SkippedFiles files={row.files} /> : null}
@@ -86,7 +115,7 @@ function SetupLoaded({ repoId, setup, view }: { repoId: string; setup: SetupResp
     ));
 
   return (
-    <PageShell title={view.allDone ? t("doneTitle") : t("title")} description={description} maxWidth="narrow">
+    <SettingsGroup title={view.allDone ? t("doneTitle") : t("title")} description={description}>
       {!setup.writes_allowed && (
         <Callout tone="info" label={t("writesOffLabel")}>
           {t("writesOff")}
@@ -120,7 +149,7 @@ function SetupLoaded({ repoId, setup, view }: { repoId: string; setup: SetupResp
         <RowGroup label={t("optional")}>{rows(view.optional)}</RowGroup>
       </div>
       {controls.dialogs}
-    </PageShell>
+    </SettingsGroup>
   );
 }
 

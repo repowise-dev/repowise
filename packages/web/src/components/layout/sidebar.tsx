@@ -149,7 +149,7 @@ export function Sidebar({
               <SidebarNavItem
                 key={item.href}
                 item={item}
-                isActive={pathname === item.href}
+                isActive={isNavItemActive(item, pathname)}
                 iconOnly={isIconOnly}
               />
             ))}

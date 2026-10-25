@@ -70,11 +70,11 @@ describe("GenerateConfirmDialog (bulk overrides)", () => {
       <GenerateConfirmDialog
         {...base}
         noProvider
-        settingsHref="/repos/r1/settings#provider"
+        settingsHref="/repos/r1/settings/models"
       />,
     );
     const link = screen.getByRole("link", { name: /Add a provider key/ });
-    expect(link).toHaveAttribute("href", "/repos/r1/settings#provider");
+    expect(link).toHaveAttribute("href", "/repos/r1/settings/models");
   });
 
   it("never renders a coverage bucket picker", () => {
