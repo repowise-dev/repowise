@@ -9,6 +9,7 @@
 
 import { useId, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Check } from "lucide-react";
+import { FIELD_CLASS } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 import { cn } from "../lib/cn";
 
@@ -229,8 +230,8 @@ export function ModelCombobox({
         onBlur={state.hide}
         onKeyDown={state.onKeyDown}
         className={cn(
-          "box-border flex h-8 w-full min-w-0 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 font-mono text-xs text-[var(--color-text-primary)]",
-          "placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-focus-ring)]",
+          FIELD_CLASS,
+          "box-border flex h-8 w-full min-w-0 px-2.5 font-mono text-xs",
         )}
       />
       {state.expanded && (

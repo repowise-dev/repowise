@@ -107,6 +107,7 @@ LIGHT = {
     "text-primary": "#241B2C",
     "text-secondary": "#5E5360",
     "focus-ring": "#5E5360",  # --color-focus-ring → var(--color-text-secondary)
+    "field-bg": "#F5F1ED",
     "text-tertiary": "#8C7F88",
     "text-inverse": "#FFFFFF",
     "text-on-accent": "#241B2C",
@@ -162,6 +163,7 @@ DARK = {
     "text-primary": "#EEEAF4",
     "text-secondary": "#A79DB3",
     "focus-ring": "#A79DB3",  # --color-focus-ring → var(--color-text-secondary)
+    "field-bg": "#101012",
     "text-tertiary": "#786F84",
     "text-inverse": "#17131D",
     "text-on-accent": "#17131D",
@@ -232,6 +234,10 @@ CHECKS = [
     ("text-secondary", "bg-elevated", 3.0, "Progress and data bar on elevated track"),
     # Keyboard focus ring (non-text, 3:1) on every ground a control sits on.
     *[("focus-ring", bg, 3.0, f"Focus ring on {bg}") for bg in ("bg-root", "bg-surface", "bg-elevated", "bg-inset")],
+    # Form fields: the value, a disabled value and the placeholder on the well.
+    ("text-primary", "field-bg", 7.0, "Field value"),
+    ("text-secondary", "field-bg", 4.5, "Disabled field value"),
+    ("text-tertiary", "field-bg", 3.0, "Field placeholder"),
     ("success", "bg-surface", 4.5, "Success text on card"),
     ("warning", "bg-surface", 4.5, "Warning text on card"),
     ("warning", "bg-root", 4.5, "Warning text on page"),

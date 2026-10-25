@@ -131,6 +131,12 @@
      ground in both themes (contrast-check.py), so it needs no dark override. */
   --color-focus-ring: var(--color-text-secondary);
 
+  /* Form fields: a recessed well a notch below the card, so a value reads
+     as something you can edit. On focus the well lifts to the surface. */
+  --color-field-bg: #f5f1ed;
+  --color-field-border: rgba(88, 67, 108, 0.16);
+  --color-field-border-hover: rgba(88, 67, 108, 0.28);
+
   /* Neutral roles for state that used to be painted orange. Named by job so a
      palette change is one edit here. Each aliases a themed token, so none
      needs a dark override. */
@@ -536,6 +542,10 @@
      and need no override; see the light block for the family. */
   --color-model-hover: var(--color-plum-200);
   --color-action-primary-hover: #d6d6d9;
+  /* Form fields: a notch below the card, see the light block. */
+  --color-field-bg: #101012;
+  --color-field-border: rgba(255, 255, 255, 0.10);
+  --color-field-border-hover: rgba(255, 255, 255, 0.18);
 
   /* Series, the tail and heat steps — see the light block. */
   --color-series-1: #f59520;
