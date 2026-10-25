@@ -12,7 +12,6 @@ function input(over: Partial<DocsMenuInput> = {}): DocsMenuInput {
     exporting: false,
     zipHref: "/api/repos/r1/export",
     onPresent: vi.fn(),
-    writeAll: { open: vi.fn(), running: false },
     reader: null,
     ...over,
   };
@@ -22,27 +21,8 @@ const keys = (over: Partial<DocsMenuInput> = {}) =>
   buildDocsMenuGroups(input(over)).flatMap((g) => g.items.map((i) => i.key));
 
 describe("buildDocsMenuGroups", () => {
-  it("holds export, present and the bulk write", () => {
-    expect(keys()).toEqual(["export-page", "export-all", "export-zip", "present", "write-all"]);
-  });
-
-  it("labels the bulk write distinctly and marks it as model work", () => {
-    const item = buildDocsMenuGroups(input())
-      .flatMap((g) => g.items)
-      .find((i) => i.key === "write-all");
-    expect(item?.label).toBe("bulk.button");
-    expect(item?.tone).toBe("model");
-  });
-
-  it("drops the bulk write once no subsystem page is left to write", () => {
-    expect(keys({ writeAll: null })).not.toContain("write-all");
-  });
-
-  it("disables the bulk write while a run is going", () => {
-    const item = buildDocsMenuGroups(input({ writeAll: { open: vi.fn(), running: true } }))
-      .flatMap((g) => g.items)
-      .find((i) => i.key === "write-all");
-    expect(item?.disabled).toBe(true);
+  it("holds export and present, and leaves the bulk write to the bar", () => {
+    expect(keys()).toEqual(["export-page", "export-all", "export-zip", "present"]);
   });
 
   it("holds the exports while one is running", () => {

@@ -1269,7 +1269,8 @@
       }
     },
     "bulk": {
-      "button": "撰写全部子系统页面",
+      "button": "用 AI 撰写 {count} 个页面",
+      "buttonShort": "用 AI 撰写",
       "title": "撰写子系统页面",
       "writing": "正在撰写子系统页面"
     },

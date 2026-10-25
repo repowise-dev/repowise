@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useRef, useState, type ElementType, type KeyboardEvent, type ReactNode } from "react";
 import { MoreHorizontal, type LucideIcon } from "lucide-react";
 import { Spinner } from "../ui/spinner";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -20,7 +20,20 @@ export interface DocsMenuItem {
   tone?: "model";
   /** Set on a choice within a group; the item renders as a radio item. */
   checked?: boolean;
+  /** A link to the view on screen: marked `aria-current="page"`, and the
+   *  trigger reads as active so the way back is visible from the bar. */
+  current?: boolean;
 }
+
+/** Router-aware anchor for in-app link items (Next's `Link`, say). */
+export type DocsMenuLinkComponent = ElementType<{
+  href: string;
+  role: string;
+  className?: string;
+  onClick?: () => void;
+  "aria-current"?: "page";
+  children: ReactNode;
+}>;
 
 export interface DocsMenuGroup {
   key: string;
@@ -55,29 +68,66 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
 const ITEM_CLASS =
   "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)] disabled:pointer-events-none disabled:opacity-50";
 
-function MenuItem({ item, close }: { item: DocsMenuItem; close: (selected?: boolean) => void }) {
-  const Icon = item.icon;
+/** Base, tone and selected-state classes for one item. */
+function itemClass(item: DocsMenuItem): string {
   const tone =
     item.tone === "model"
       ? "text-[var(--color-model)] hover:text-[var(--color-model-hover)]"
       : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]";
-  const content = (
+  const selected = item.current || item.checked;
+  return cn(ITEM_CLASS, tone, selected && "font-medium text-[var(--color-text-primary)]");
+}
+
+function ItemContent({ item }: { item: DocsMenuItem }) {
+  const Icon = item.icon;
+  return (
     <>
       {Icon ? <Icon aria-hidden className="h-3.5 w-3.5 shrink-0" /> : null}
       <span className="min-w-0 flex-1 truncate">{item.label}</span>
     </>
   );
+}
+
+/** A link item: router-aware for an in-app view, a plain anchor for a download. */
+function LinkItem({
+  item,
+  href,
+  close,
+  LinkComponent,
+}: {
+  item: DocsMenuItem;
+  href: string;
+  close: () => void;
+  LinkComponent?: DocsMenuLinkComponent | undefined;
+}) {
+  const shared = {
+    role: "menuitem",
+    href,
+    className: itemClass(item),
+    onClick: close,
+    ...(item.current ? { "aria-current": "page" as const } : {}),
+  };
+  const Anchor: DocsMenuLinkComponent =
+    LinkComponent && !item.download ? LinkComponent : "a";
+  return (
+    <Anchor {...shared} {...(item.download ? { download: true } : {})}>
+      <ItemContent item={item} />
+    </Anchor>
+  );
+}
+
+function MenuItem({
+  item,
+  close,
+  LinkComponent,
+}: {
+  item: DocsMenuItem;
+  close: (selected?: boolean) => void;
+  LinkComponent?: DocsMenuLinkComponent | undefined;
+}) {
   if (item.href) {
     return (
-      <a
-        role="menuitem"
-        href={item.href}
-        {...(item.download ? { download: true } : {})}
-        className={cn(ITEM_CLASS, tone)}
-        onClick={() => close()}
-      >
-        {content}
-      </a>
+      <LinkItem item={item} href={item.href} close={() => close()} LinkComponent={LinkComponent} />
     );
   }
   const isChoice = item.checked !== undefined;
@@ -87,17 +137,13 @@ function MenuItem({ item, close }: { item: DocsMenuItem; close: (selected?: bool
       role={isChoice ? "menuitemradio" : "menuitem"}
       {...(isChoice ? { "aria-checked": item.checked } : {})}
       disabled={item.disabled}
-      className={cn(
-        ITEM_CLASS,
-        tone,
-        item.checked && "font-medium text-[var(--color-text-primary)]",
-      )}
+      className={itemClass(item)}
       onClick={() => {
         close(true);
         item.onSelect?.();
       }}
     >
-      {content}
+      <ItemContent item={item} />
     </button>
   );
 }
@@ -115,8 +161,11 @@ export function DocsMoreMenu({
   groups,
   label = "More",
   busy = false,
+  LinkComponent,
 }: {
   groups: DocsMenuGroup[];
+  /** Renders in-app link items; without it they are plain anchors. */
+  LinkComponent?: DocsMenuLinkComponent;
   /** Trigger label, and its accessible name on a phone where it is an icon. */
   label?: string;
   /** Shows a spinner on the trigger while a menu action runs (an export). */
@@ -128,6 +177,7 @@ export function DocsMoreMenu({
   const selectedRef = useRef(false);
   const visible = groups.filter((g) => g.items.length > 0);
   if (visible.length === 0) return null;
+  const current = visible.some((g) => g.items.some((i) => i.current));
   const close = (selected = false) => {
     selectedRef.current = selected;
     setOpen(false);
@@ -141,7 +191,14 @@ export function DocsMoreMenu({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={label}
-          className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] sm:px-2.5"
+          className={cn(
+            "flex h-7 shrink-0 items-center gap-1.5 rounded-md border bg-[var(--color-bg-elevated)] px-2 text-xs transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] sm:px-2.5",
+            // A view inside the menu is on screen: the trigger takes the
+            // active-tab look, so the bar still says where the reader is.
+            current
+              ? "border-[var(--color-border-hover)] bg-[var(--color-bg-surface)] font-medium text-[var(--color-text-primary)] shadow-sm"
+              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)]",
+          )}
         >
           {busy ? (
             <Spinner size="sm" />
@@ -178,7 +235,7 @@ export function DocsMoreMenu({
               </p>
             ) : null}
             {group.items.map((item) => (
-              <MenuItem key={item.key} item={item} close={close} />
+              <MenuItem key={item.key} item={item} close={close} LinkComponent={LinkComponent} />
             ))}
           </div>
         ))}

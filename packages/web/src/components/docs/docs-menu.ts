@@ -1,4 +1,4 @@
-import { Download, FileText, FolderArchive, Presentation, Sparkles } from "lucide-react";
+import { Download, FileText, FolderArchive, Presentation } from "lucide-react";
 import type { DocsMenuGroup } from "@repowise-dev/ui/docs/docs-more-menu";
 import { READER_PERSONAS, type ReaderPersona } from "@repowise-dev/ui/docs/reader-persona";
 
@@ -15,19 +15,17 @@ export interface DocsMenuInput {
   zipHref: string;
   /** Present opens only when the deck has pages to draw on. */
   onPresent: (() => void) | null;
-  /** The bulk write, offered only while a subsystem page is still unwritten. */
-  writeAll: { open: () => void; running: boolean } | null;
   /** The reader-level choice, for a phone where the bar hides its control. */
   reader: { persona: ReaderPersona; setPersona: (next: ReaderPersona) => void } | null;
 }
 
 /**
- * The docs bar's More menu: export, present and the one bulk model action,
- * grouped by kind. The reader-level group is phone-only and last, since the
+ * The explorer's More items: export and present, grouped by kind. The bulk
+ * model action sits in the bar itself, and the view links come from the header. The reader-level group is phone-only and last, since the
  * bar shows that control itself from `sm` up.
  */
 export function buildDocsMenuGroups(input: DocsMenuInput): DocsMenuGroup[] {
-  const { t, writeAll, onPresent, reader } = input;
+  const { t, onPresent, reader } = input;
   return [
     {
       key: "export",
@@ -43,19 +41,6 @@ export function buildDocsMenuGroups(input: DocsMenuInput): DocsMenuGroup[] {
       key: "present",
       items: onPresent
         ? [{ key: "present", label: t("explorer.menu.present"), icon: Presentation, onSelect: onPresent }]
-        : [],
-    },
-    {
-      key: "model",
-      items: writeAll
-        ? [{
-            key: "write-all",
-            label: t("bulk.button"),
-            icon: Sparkles,
-            tone: "model" as const,
-            onSelect: writeAll.open,
-            disabled: writeAll.running,
-          }]
         : [],
     },
     {

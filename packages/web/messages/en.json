@@ -1269,7 +1269,8 @@
       }
     },
     "bulk": {
-      "button": "Write all subsystem pages",
+      "button": "Write {count, plural, one {# page} other {# pages}} with AI",
+      "buttonShort": "Write with AI",
       "title": "Write the subsystem pages",
       "writing": "Writing the subsystem pages"
     },

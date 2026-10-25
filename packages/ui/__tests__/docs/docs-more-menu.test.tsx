@@ -97,6 +97,21 @@ describe("DocsMoreMenu", () => {
     expect(screen.getByRole("group", { name: "Reader level" }).className).toContain("sm:hidden");
   });
 
+  it("marks the view on screen and makes the trigger read as active", () => {
+    render(
+      <DocsMoreMenu
+        groups={[{ key: "views", items: [{ key: "f", label: "Doc freshness", href: "/coverage", current: true }] }]}
+        LinkComponent={({ children, ...rest }) => <a data-router="" {...rest}>{children}</a>}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "More" });
+    expect(trigger.className).toContain("font-medium");
+    fireEvent.click(trigger);
+    const item = screen.getByRole("menuitem", { name: "Doc freshness" });
+    expect(item).toHaveAttribute("aria-current", "page");
+    expect(item).toHaveAttribute("data-router");
+  });
+
   it("renders nothing when every group is empty", () => {
     const { container } = render(
       <DocsMoreMenu groups={[{ key: "x", items: [] }]} />,

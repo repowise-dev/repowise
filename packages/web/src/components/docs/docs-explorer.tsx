@@ -27,8 +27,7 @@ import {
   ReaderLevelControl,
   SidebarToggle,
 } from "@repowise-dev/ui/docs/docs-page-actions";
-import { DocsMoreMenu } from "@repowise-dev/ui/docs/docs-more-menu";
-import { BulkGenerateDialogs } from "./bulk-generate-dialogs";
+import { BulkGenerateDialogs, BulkWriteButton } from "./bulk-generate-dialogs";
 import { buildDocsMenuGroups } from "./docs-menu";
 import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 import { HostedNudgeSlot } from "@/components/hosted/hosted-nudge-slot";
@@ -105,12 +104,13 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     [selectedPage],
   );
 
-  // The More menu offers one bulk "write all subsystem pages" action, shown
-  // only while concept pages are still stubs. A structural page is never a stub.
-  const hasStubs = useMemo(
-    () => pages.some((p) => isStubPage(p)),
+  // The bar's one bulk model action, shown only while concept pages are still
+  // stubs, with how many. A structural page is never a stub.
+  const stubCount = useMemo(
+    () => pages.filter((p) => isStubPage(p)).length,
     [pages],
   );
+  const hasStubs = stubCount > 0;
   const bulk = useBulkGenerate(repoId);
 
   // Keep the selected page in sync with the ?page= URL param. This fires on
@@ -252,7 +252,6 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     exporting: isExporting,
     zipHref: `/api/repos/${repoId}/export`,
     onPresent: presentable ? () => setPresent(true) : null,
-    writeAll: hasStubs ? { open: bulk.open, running: bulk.jobId != null } : null,
     reader: personaHasEffect ? { persona, setPersona } : null,
   });
 
@@ -384,10 +383,10 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       </button>
 
       <div className="flex flex-1 min-w-0 flex-col">
-        {/* Reading and searching stay in the bar; everything else is in
-            More. The page's own model action and its freshness live in the
-            reader's metadata row, under the title they act on. */}
-        <DocsHeader>
+        {/* Reading, searching and the one bulk model action stay in the bar;
+            the rest is in More. The page's own model action and its freshness
+            live in the reader's metadata row, under the title they act on. */}
+        <DocsHeader menuGroups={menuGroups} menuBusy={isExporting}>
           {personaHasEffect && (
             <ReaderLevelControl
               persona={persona}
@@ -408,6 +407,11 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
               className="shrink-0"
             />
           )}
+          <BulkWriteButton
+            count={stubCount}
+            running={bulk.jobId != null}
+            onClick={bulk.open}
+          />
           <button
             onClick={() => setSearchOpen(true)}
             aria-label={tc("search")}
@@ -419,11 +423,6 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
               ⌘K
             </kbd>
           </button>
-          <DocsMoreMenu
-            label={t("explorer.more")}
-            busy={isExporting}
-            groups={menuGroups}
-          />
           {selectedPage && (
             <SidebarToggle
               open={sidebarOpen}
