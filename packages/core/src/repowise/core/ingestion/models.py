@@ -380,6 +380,10 @@ class CallSite:
     spawned: bool = False
     # COBOL ``CALL`` / ``LINK`` / ``XCTL``: names a PROGRAM-ID, never a paragraph.
     program_call: bool = False
+    # Apex ``new Foo(..)`` / ``new Outer.Inner(..)``: the site is an object creation,
+    # so the name is a type, never a method. Apex is case-insensitive, so the
+    # spelling of the name cannot say this.
+    constructor: bool = False
     # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
     # ``"null"``), else None; None overall when no argument is one.
     argument_types: tuple[str | None, ...] | None = None

@@ -698,8 +698,11 @@ class LanguageStrategiesMixin:
 
         A bare Apex name reaches no other class's method, so only a type is
         looked up. The class and its constructors share the name, which is
-        why the uniqueness-gated global tier refuses this call.
+        why the uniqueness-gated global tier refuses this call. A call the
+        parser did not read as a ``new`` stays on the member path.
         """
+        if not call.constructor:
+            return None
         type_id = self._apex_head_type(file_path, caller_id, call.target_name)
         # Only the type's own spelling: ``execute()`` inherited from a platform
         # class is not ``new Execute()``.
