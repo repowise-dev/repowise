@@ -218,7 +218,7 @@ def test_the_capture_hook_starts_nothing_for_a_shell_call_that_is_not_a_commit(
     a call that is not a commit must never reach the console script.
     """
     shells = _shells()
-    if not shells:  # pragma: no cover - hooks need a shell to run at all
+    if not shells:
         pytest.skip("no POSIX shell available to execute a hook command")
     marker = tmp_path / "ran.json"
     _fake_augment(tmp_path, marker)
@@ -230,7 +230,7 @@ def test_the_capture_hook_starts_nothing_for_a_shell_call_that_is_not_a_commit(
 
 def test_the_capture_hook_hands_a_commit_to_augment_intact(tmp_path: Path) -> None:
     shells = _shells()
-    if not shells:  # pragma: no cover - hooks need a shell to run at all
+    if not shells:
         pytest.skip("no POSIX shell available to execute a hook command")
     marker = tmp_path / "ran.json"
     _fake_augment(tmp_path, marker)
@@ -244,7 +244,7 @@ def test_the_capture_hook_hands_a_commit_to_augment_intact(tmp_path: Path) -> No
 
 def test_the_capture_hook_is_silent_when_the_console_script_is_absent(tmp_path: Path) -> None:
     bash = _posix_bash()
-    if bash is None:  # pragma: no cover - hooks need a shell to run at all
+    if bash is None:
         pytest.skip("no POSIX bash available to execute a hook command")
     import shutil
     import subprocess

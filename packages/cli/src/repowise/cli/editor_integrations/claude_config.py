@@ -271,7 +271,7 @@ def _repowise_plugin_paths() -> list[Path]:
         enabled = settings.get("enabledPlugins") or {}
         keys = [k for k, on in enabled.items() if on and str(k).startswith("repowise@")]
         return [Path(i["installPath"]) for k in keys for i in installed.get(k) or []]
-    except Exception:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return []
 
 
@@ -287,7 +287,7 @@ def _plugin_ships_capture_hook() -> bool:
         try:
             hooks = json.loads((path / "hooks" / "hooks.json").read_text(encoding="utf-8"))
             entries = hooks["hooks"]["PostToolUse"]
-        except Exception:
+        except (OSError, ValueError, KeyError, TypeError):
             continue
         if isinstance(entries, list) and any(_is_capture_entry(e) for e in entries):
             return True
