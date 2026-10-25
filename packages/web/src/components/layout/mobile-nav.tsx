@@ -25,7 +25,7 @@ import { LanguageSwitcher } from "./language-switcher";
 import { FooterSetupPill } from "@/components/setup/setup-pill";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
-import { GLOBAL_NAV, WORKSPACE_NAV, repoNavGroups } from "./nav-items";
+import { GLOBAL_NAV, WORKSPACE_NAV, isNavItemActive, repoNavGroups } from "./nav-items";
 import { NAV_ROW_ACTIVE, NAV_ROW_IDLE, NavGroupList } from "./nav-group-list";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
@@ -114,7 +114,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
               <nav className="space-y-1">
                 {GLOBAL_NAV.map((item) => {
                   const Icon = item.icon;
-                  const isActive = pathname === item.href;
+                  const isActive = isNavItemActive(item, pathname);
                   return (
                     <Link
                       key={item.href}

@@ -1,35 +1,59 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import Link from "next/link";
 import { useFormatter, useTranslations } from "next-intl";
-import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 import { Button } from "@repowise-dev/ui/ui/button";
+import { RowPromptAction } from "@repowise-dev/ui/health/row-prompt-action";
+import { CopyLine, SettingsRow, SettingsRows } from "@repowise-dev/ui/settings";
 import { hostedLink } from "@/lib/hosted";
 import type { RepoResponse } from "@/lib/api/types";
-import { SetupCommand, SetupRowView, StatusDot } from "./setup-row";
+import { SETTINGS_LINK, repoSettingsHref } from "@/components/settings/settings-groups";
+import { StatusDot, useSetupText } from "./setup-row";
 import { agentListRows, type SetupRow } from "./setup-rows";
 import { useSetupControls } from "./setup-controls";
-import { setupHref } from "./setup-pill";
 import { useSetupData, useSetupView } from "./use-setup";
 
-const LINK =
-  "text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] hover:decoration-[var(--color-text-primary)]";
-
-const ROW_GRID =
-  "grid grid-cols-1 gap-x-4 gap-y-2 border-t border-[var(--color-border-default)] py-3 sm:grid-cols-[124px_minmax(0,1fr)_auto]";
-
-/** Settings rows built from the Setup payload, with the Setup page's own controls. */
-function SetupRowsBlock({
-  repoId,
-  label,
-  rows,
+/**
+ * One Setup row as a settings row: what it is, its status and one line of
+ * detail on the left; its control and the agent prompt on the right.
+ */
+function SetupSettingRow({
+  row,
+  action,
+  onOpenPrompt,
 }: {
-  repoId: string;
-  label: string;
-  rows: SetupRow[];
+  row: SetupRow;
+  action: ReactNode;
+  onOpenPrompt: () => void;
 }) {
+  const text = useSetupText();
+  const title = text(row.title);
+  return (
+    <SettingsRow
+      className="group/row"
+      label={title}
+      hint={
+        <>
+          <span className="mr-1.5 inline-flex items-center gap-1.5 text-[var(--color-text-secondary)]">
+            <StatusDot tone={row.tone} />
+            {text(row.status)}
+          </span>
+          {text(row.detail)}
+        </>
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+        {action}
+        <RowPromptAction onClick={onOpenPrompt} subject={title} />
+      </div>
+    </SettingsRow>
+  );
+}
+
+/** Settings rows built from the Setup payload, with the Setup controls. */
+function SetupRowsBlock({ repoId, rows }: { repoId: string; rows: SetupRow[] }) {
   const t = useTranslations("setup");
   const controls = useSetupControls(repoId);
   const { data, error, isLoading, mutate } = useSetupData(repoId);
@@ -45,16 +69,16 @@ function SetupRowsBlock({
   }
   if (!data) {
     return (
-      <SkeletonRegion label={label} className="flex flex-col gap-2">
+      <SkeletonRegion label={t("loading")} className="flex flex-col gap-2">
         <Skeleton className="h-12 w-full" />
         <Skeleton className="h-12 w-full" />
       </SkeletonRegion>
     );
   }
   return (
-    <div>
+    <>
       {rows.map((row) => (
-        <SetupRowView
+        <SetupSettingRow
           key={row.id}
           row={row}
           action={controls.actionFor(row)}
@@ -62,7 +86,7 @@ function SetupRowsBlock({
         />
       ))}
       {controls.dialogs}
-    </div>
+    </>
   );
 }
 
@@ -76,19 +100,17 @@ export function RepoSetupRows({
   repoName: string;
   ids: string[];
 }) {
-  const t = useTranslations("setup");
   const { data } = useSetupData(repoId);
   const view = useSetupView(repoId, repoName, data);
   const rows = useMemo(() => {
     const all = view ? [...view.attention, ...view.essentials, ...view.optional] : [];
     return ids.flatMap((id) => all.filter((r) => r.id === id));
   }, [view, ids]);
-  return <SetupRowsBlock repoId={repoId} label={t("loading")} rows={rows} />;
+  return <SetupRowsBlock repoId={repoId} rows={rows} />;
 }
 
-/** "Agents & editors" for one repo: the Setup page's agent rows, then hosted. */
+/** "Agents & editors" for one repo: one row per agent, then hosted. */
 export function RepoAgentRows({ repoId, repoName }: { repoId: string; repoName: string }) {
-  const t = useTranslations("setup");
   const format = useFormatter();
   const { data } = useSetupData(repoId);
   const rows = useMemo(() => {
@@ -101,10 +123,10 @@ export function RepoAgentRows({ repoId, repoName }: { repoId: string; repoName: 
     });
   }, [data, repoName, format]);
   return (
-    <div>
-      <SetupRowsBlock repoId={repoId} label={t("loading")} rows={rows} />
+    <SettingsRows>
+      <SetupRowsBlock repoId={repoId} rows={rows} />
       <HostedAgentsRow />
-    </div>
+    </SettingsRows>
   );
 }
 
@@ -112,67 +134,76 @@ export function RepoAgentRows({ repoId, repoName }: { repoId: string; repoName: 
 export function HostedAgentsRow() {
   const t = useTranslations("setup.row.agents");
   return (
-    <div className={ROW_GRID}>
-      <span className="flex items-center gap-1.5 pt-px text-xs text-[var(--color-text-secondary)]">
-        <StatusDot tone="found" />
-        {t("statusHosted")}
-      </span>
-      <div className="min-w-0">
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{t("hostedTitle")}</h3>
-        <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">{t("hostedDetail")}</p>
-      </div>
-      <div className="flex items-center sm:justify-end">
-        <a
-          href={hostedLink("settings_agents", "mcp")}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={LINK}
-        >
+    <SettingsRow label={t("hostedTitle")} hint={t("hostedDetail")}>
+      <div className="flex sm:justify-end">
+        <a href={hostedLink("settings_agents", "mcp")} target="_blank" rel="noopener noreferrer" className={SETTINGS_LINK}>
           {t("hostedLink")}
         </a>
       </div>
-    </div>
+    </SettingsRow>
   );
 }
 
-/** Repo settings' Setup group lead: where the full checklist lives. */
-export function SetupLinkRow({ repoId }: { repoId: string }) {
-  const t = useTranslations("setup.settings");
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <p className="text-xs text-[var(--color-text-secondary)]">{t("repoLead")}</p>
-      <Link href={setupHref(repoId)} className={LINK}>
-        {t("openSetup")}
-      </Link>
-    </div>
-  );
-}
-
-/** Global settings' Setup group: Setup is per repository, so link to each. */
-export function GlobalSetupLinks({ repos }: { repos: RepoResponse[] }) {
+/**
+ * Indexed repositories, each with a link into its own settings: global
+ * settings lists them where an option is set per repository.
+ */
+function RepoLinkRows({
+  repos,
+  hrefFor,
+  linkLabel,
+  linkAria,
+}: {
+  repos: RepoResponse[];
+  hrefFor: (repoId: string) => string;
+  linkLabel: string;
+  linkAria: (repo: string) => string;
+}) {
   const t = useTranslations("setup.settings");
   const indexed = repos.filter((r) => !r.id.startsWith("ws:") && r.workspace_status !== "needs_index");
+  if (indexed.length === 0) {
+    return <p className="text-xs text-[var(--color-text-tertiary)]">{t("noRepos")}</p>;
+  }
   return (
-    <div className="flex flex-col gap-2">
-      <p className="text-xs text-[var(--color-text-secondary)]">{t("globalLead")}</p>
-      {indexed.length === 0 ? (
-        <p className="text-xs text-[var(--color-text-tertiary)]">{t("noRepos")}</p>
-      ) : (
-        <ul className="flex flex-col">
-          {indexed.map((repo) => (
-            <li
-              key={repo.id}
-              className="flex items-center justify-between gap-3 border-t border-[var(--color-border-default)] py-2"
-            >
-              <span className="min-w-0 truncate text-sm text-[var(--color-text-primary)]">{repo.name}</span>
-              <Link href={setupHref(repo.id)} className={LINK} aria-label={t("openSetupFor", { repo: repo.name })}>
-                {t("openSetup")}
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <ul className="flex flex-col">
+      {indexed.map((repo) => (
+        <li
+          key={repo.id}
+          className="flex items-center justify-between gap-3 border-b border-[var(--color-border-default)] py-2.5 last:border-b-0"
+        >
+          <span className="min-w-0 truncate text-sm text-[var(--color-text-primary)]">{repo.name}</span>
+          <Link href={hrefFor(repo.id)} className={SETTINGS_LINK} aria-label={linkAria(repo.name)}>
+            {linkLabel}
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Global Setup: each repository's Setup page. */
+export function SetupRepoLinks({ repos }: { repos: RepoResponse[] }) {
+  const t = useTranslations("setup.settings");
+  return (
+    <RepoLinkRows
+      repos={repos}
+      hrefFor={(id) => repoSettingsHref(id, "setup")}
+      linkLabel={t("openSetup")}
+      linkAria={(repo) => t("openSetupFor", { repo })}
+    />
+  );
+}
+
+/** Global Agents: MCP tools are chosen in each repository's Agents settings. */
+export function McpToolsRepoLinks({ repos }: { repos: RepoResponse[] }) {
+  const t = useTranslations("settings.mcpTools");
+  return (
+    <RepoLinkRows
+      repos={repos}
+      hrefFor={(id) => repoSettingsHref(id, "agents")}
+      linkLabel={t("chooseTools")}
+      linkAria={(repo) => t("chooseToolsFor", { repo })}
+    />
   );
 }
 
@@ -180,18 +211,16 @@ export function GlobalSetupLinks({ repos }: { repos: RepoResponse[] }) {
  * Privacy holds the telemetry status. The dashboard has no switch for it, so
  * it says how to check and change it from the terminal.
  */
-export function TelemetryRow() {
+export function TelemetryRows() {
   const t = useTranslations("setup.settings");
   return (
-    <OverviewSection title={t("telemetryTitle")} description={t("telemetryDescription")}>
-      <div className="flex flex-col gap-1.5 text-xs text-[var(--color-text-secondary)]">
-        <span className="flex flex-wrap items-center gap-2">
-          {t("telemetryCheck")} <SetupCommand command="repowise telemetry status" />
-        </span>
-        <span className="flex flex-wrap items-center gap-2">
-          {t("telemetryOff")} <SetupCommand command="repowise telemetry disable" />
-        </span>
-      </div>
-    </OverviewSection>
+    <SettingsRows>
+      <SettingsRow label={t("telemetryCheckLabel")}>
+        <CopyLine value="repowise telemetry status" copyLabel={t("telemetryCheckLabel")} />
+      </SettingsRow>
+      <SettingsRow label={t("telemetryOffLabel")} hint={t("telemetryOffHint")}>
+        <CopyLine value="repowise telemetry disable" copyLabel={t("telemetryOffLabel")} />
+      </SettingsRow>
+    </SettingsRows>
   );
 }

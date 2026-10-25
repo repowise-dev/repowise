@@ -384,7 +384,7 @@ describe("RefactoringDrawer with no model configured", () => {
         modelSetting={{
           value: { enabled: true, provider: null, model: null },
           onToggle: async () => {},
-          setupHref: "/repos/r1/settings#provider",
+          setupHref: "/repos/r1/settings/models",
         }}
       />,
     );

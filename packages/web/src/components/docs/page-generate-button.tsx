@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { providerSetupHref } from "@/lib/utils/page-href";
 import { toast } from "sonner";
 import {
   RegenerateButton,
@@ -41,7 +42,7 @@ export function PageGenerateButton({
   // page awaiting its first prose, never a structural file page.
   const t = useTranslations("docs");
   const mode = isStubPage(page) ? "write" : "regenerate";
-  const settingsHref = `/repos/${repoId}/settings#provider`;
+  const settingsHref = providerSetupHref(repoId);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cascade, setCascade] = useState<RegenerateCascade>("none");
