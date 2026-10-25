@@ -380,16 +380,23 @@ export function DocsViewer({
       buildFileHref={buildFileHref}
       missingPageId={missingPageId}
       LinkComponent={Link}
-      upgradeSlot={
+      // The page's own model action sits in its metadata row, on the page
+      // types a model writes. Not passed as `upgradeSlot` as well: one action
+      // per page, not a second copy at the foot.
+      pageActionSlot={
         page && isModelWrittenType(page.page_type) ? (
           <PageGenerateButton
             page={page}
             repoId={repoId}
             onGenerated={onGenerated}
-            variant="inline"
           />
         ) : undefined
       }
+      freshnessHref={`/repos/${repoId}/docs/drift`}
+      freshnessLabels={{
+        stale: t("viewer.freshness.stale"),
+        outdated: t("viewer.freshness.outdated"),
+      }}
       versionHistorySlot={
         page ? (
           <VersionHistoryWrapper

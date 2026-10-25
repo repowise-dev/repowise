@@ -20,6 +20,17 @@ describe("RegenerateButton", () => {
     expect(onRegenerate).toHaveBeenCalledTimes(1);
   });
 
+  it("names the page in the quiet metadata-row trigger", () => {
+    const { rerender } = render(
+      <RegenerateButton mode="write" quiet onRegenerate={vi.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: "Write this page with AI" })).toBeInTheDocument();
+    rerender(<RegenerateButton mode="regenerate" quiet onRegenerate={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Rewrite with AI" })).toBeInTheDocument();
+    rerender(<RegenerateButton quiet label="Translated" onRegenerate={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Translated" })).toBeInTheDocument();
+  });
+
   it("disables the button while loading", () => {
     render(<RegenerateButton onRegenerate={vi.fn()} isLoading />);
     expect(screen.getByRole("button", { name: /regenerate/i })).toBeDisabled();

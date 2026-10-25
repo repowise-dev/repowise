@@ -1246,7 +1246,11 @@
       "agentAuthored": "智能体撰写",
       "renamedFrom": "重命名自",
       "historyCapped": "索引时历史记录已截断，因此更早的提交未计入上方统计。",
-      "signals": "信号"
+      "signals": "信号",
+      "freshness": {
+        "stale": "可能已过时",
+        "outdated": "已过时"
+      }
     },
     "explorer": {
       "emptyTitle": "还没有文档",
@@ -1254,10 +1258,18 @@
       "hideTree": "隐藏页面树",
       "showTree": "显示页面树",
       "askQuestion": "结合源码解释「{title}」，并列出它所依赖的文件。",
-      "askLabel": "就 {title} 提问"
+      "askLabel": "就 {title} 提问",
+      "more": "更多",
+      "menu": {
+        "exportPage": "导出此页面（Markdown）",
+        "exportAll": "导出全部页面（Markdown）",
+        "exportZip": "下载 ZIP 压缩包",
+        "present": "演示",
+        "readerLevel": "阅读深度"
+      }
     },
     "bulk": {
-      "button": "撰写子系统页面",
+      "button": "撰写全部子系统页面",
       "title": "撰写子系统页面",
       "writing": "正在撰写子系统页面"
     },
@@ -1267,7 +1279,9 @@
       "writeWithAi": "用 AI 撰写"
     },
     "pageGenerate": {
-      "failed": "无法启动生成"
+      "failed": "无法启动生成",
+      "write": "用 AI 撰写此页面",
+      "rewrite": "用 AI 重写"
     }
   },
   "zoom": {

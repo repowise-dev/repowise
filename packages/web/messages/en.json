@@ -1246,7 +1246,11 @@
       "agentAuthored": "Agent-authored",
       "renamedFrom": "Renamed from",
       "historyCapped": "History capped during indexing, so older commits are not counted above.",
-      "signals": "Signals"
+      "signals": "Signals",
+      "freshness": {
+        "stale": "May be out of date",
+        "outdated": "Out of date"
+      }
     },
     "explorer": {
       "emptyTitle": "No documentation yet",
@@ -1254,10 +1258,18 @@
       "hideTree": "Hide pages tree",
       "showTree": "Show pages tree",
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
-      "askLabel": "Ask about {title}"
+      "askLabel": "Ask about {title}",
+      "more": "More",
+      "menu": {
+        "exportPage": "Export this page (Markdown)",
+        "exportAll": "Export all pages (Markdown)",
+        "exportZip": "Download ZIP archive",
+        "present": "Present",
+        "readerLevel": "Reader level"
+      }
     },
     "bulk": {
-      "button": "Write subsystem pages",
+      "button": "Write all subsystem pages",
       "title": "Write the subsystem pages",
       "writing": "Writing the subsystem pages"
     },
@@ -1267,7 +1279,9 @@
       "writeWithAi": "Write with AI"
     },
     "pageGenerate": {
-      "failed": "Couldn't start generation"
+      "failed": "Couldn't start generation",
+      "write": "Write this page with AI",
+      "rewrite": "Rewrite with AI"
     }
   },
   "zoom": {
