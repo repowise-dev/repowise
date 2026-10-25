@@ -103,7 +103,7 @@ def _maybe_open_browser(
         no_open=no_open,
         interactive=sys.stdin.isatty() and sys.stdout.isatty(),
         ci=is_ci(),
-        has_display=_browser._has_display(),
+        has_display=_browser.has_display_for_browser(),
     ):
         _browser.open_when_ready(ui_port, frontend_proc)
 

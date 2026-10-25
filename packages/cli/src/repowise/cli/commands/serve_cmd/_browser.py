@@ -26,7 +26,7 @@ _POLL_INTERVAL_S = 0.5
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _has_display() -> bool:
+def has_display_for_browser() -> bool:
     """False on a Linux box with no graphical session.
 
     There ``webbrowser`` falls back to a text browser that would take over the
@@ -59,6 +59,22 @@ def _ui_answers(url: str) -> bool:
         return False
 
 
+def _wait_until_up(
+    url: str,
+    proc: subprocess.Popen | None,
+    probe: Callable[[str], bool],
+    timeout_s: float,
+    interval_s: float,
+) -> bool:
+    """Poll *url*; False once the UI process exits or the timeout passes."""
+    deadline = time.monotonic() + timeout_s
+    while not probe(url):
+        if (proc is not None and proc.poll() is not None) or time.monotonic() > deadline:
+            return False
+        time.sleep(interval_s)
+    return True
+
+
 def _wait_and_open(
     url: str,
     proc: subprocess.Popen | None,
@@ -68,22 +84,17 @@ def _wait_and_open(
     timeout_s: float = _READY_TIMEOUT_S,
     interval_s: float = _POLL_INTERVAL_S,
 ) -> bool:
-    """Poll *url* until it answers, then open it once. Never raises."""
-    probe = probe or _ui_answers
-    opener = opener or webbrowser.open
+    """Open *url* once it answers. Never raises: the server must not notice."""
     try:
-        deadline = time.monotonic() + timeout_s
-        while not probe(url):
-            if (proc is not None and proc.poll() is not None) or time.monotonic() > deadline:
-                logger.debug("web UI at %s never answered, not opening a browser", url)
-                return False
-            time.sleep(interval_s)
-        if not opener(url):
+        if not _wait_until_up(url, proc, probe or _ui_answers, timeout_s, interval_s):
+            logger.debug("web UI at %s never answered, not opening a browser", url)
+            return False
+        if not (opener or webbrowser.open)(url):
             logger.debug("no browser available to open %s", url)
             return False
         console.print(f"[dim]Opening {url} in your browser[/dim]")
         return True
-    except Exception:
+    except Exception:  # a browser failure must never reach the server
         logger.debug("could not open %s in a browser", url, exc_info=True)
         return False
 

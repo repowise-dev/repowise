@@ -144,7 +144,21 @@ def test_serve_wires_the_flag_and_terminal_into_the_decision(
     monkeypatch.setattr(sys, "stdin", _Tty())
     monkeypatch.setattr(sys, "stdout", _Tty())
     monkeypatch.setattr(environment, "is_ci", lambda: False)
-    monkeypatch.setattr(_browser, "_has_display", lambda: True)
+    monkeypatch.setattr(_browser, "has_display_for_browser", lambda: True)
     monkeypatch.setattr(_browser, "open_when_ready", lambda port, proc: calls.append((port, proc)))
     command._maybe_open_browser("proc", 3000, no_open=no_open)  # type: ignore[arg-type]
     assert calls == expected
+
+
+@pytest.mark.parametrize(("env", "args", "expected"), [(None, [], False), ("1", [], True), (None, ["--no-open"], True)])
+def test_no_open_reads_the_flag_and_env(
+    monkeypatch: pytest.MonkeyPatch, env: str | None, args: list[str], expected: bool
+) -> None:
+    from repowise.cli.commands.serve_cmd import serve_command
+
+    if env is None:
+        monkeypatch.delenv("REPOWISE_NO_OPEN", raising=False)
+    else:
+        monkeypatch.setenv("REPOWISE_NO_OPEN", env)
+    ctx = serve_command.make_context("serve", list(args))
+    assert ctx.params["no_open"] is expected
