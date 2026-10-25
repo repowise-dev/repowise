@@ -392,7 +392,8 @@ priority order:
    `src/generated/` without affecting other directories with the same name.
 4. **`extra_exclude_patterns`** (constructor param): additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
-   `.repowise/config.yaml exclude_patterns` (also what the Web UI and REST API PATCH write). Applied
+   `.repowise/config.yaml exclude_patterns` (also written by the Web UI and REST API
+   PATCH). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
 5. Hardcoded blocklist (`node_modules`, `.git`, `__pycache__`, `vendor`,
    `*.lock`, `*.min.js`, generated protobuf files, etc.). `build`, `coverage`,

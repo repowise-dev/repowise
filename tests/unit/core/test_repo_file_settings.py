@@ -61,7 +61,15 @@ def test_save_of_unchanged_or_default_values_leaves_file_alone(tmp_path: Path) -
     save_file_settings(tmp_path, {"exclude_patterns": [], "wiki_style": "comprehensive"}, {})
 
     assert path.read_bytes() == before
-    assert not (tmp_path / ".repowise" / "config.yaml.tmp").exists()
+    assert list((tmp_path / ".repowise").glob("*.tmp")) == []
+
+
+def test_null_in_file_counts_as_unset(tmp_path: Path) -> None:
+    _write_config(tmp_path, "exclude_patterns:\nwiki_style:\n")
+    stored = {"wiki_style": "tutorial"}
+
+    assert resolve_file_settings(tmp_path, stored) == {"wiki_style": "tutorial"}
+    assert save_file_settings(tmp_path, {}, stored) == {"wiki_style": "tutorial"}
 
 
 def test_save_default_or_empty_removes_key(tmp_path: Path) -> None:

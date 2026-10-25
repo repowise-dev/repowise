@@ -194,3 +194,20 @@ async def test_create_writes_registration_style_to_config_yaml(
     assert resp.json()["settings"] == {"wiki_style": "caveman"}
     assert load_repo_config(repo_dir) == {"wiki_style": "caveman"}
     assert await _row_settings(session_factory, resp.json()["id"]) == {}
+
+
+@pytest.mark.asyncio
+async def test_unchanged_save_leaves_config_bytes_alone(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    path = _config_path(repo)
+    path.parent.mkdir(parents=True)
+    path.write_text("provider: openai\nexclude_patterns:\n- dist/\n", encoding="utf-8")
+    before = path.read_bytes()
+
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}",
+        json={"settings": {"exclude_patterns": ["dist/"], "wiki_style": "comprehensive"}},
+    )
+
+    assert resp.status_code == 200
+    assert path.read_bytes() == before

@@ -11,6 +11,23 @@ from repowise.core.persistence.crud import (
 from repowise.core.pipeline.persist import _prune_stale_file_rows
 
 
+async def test_health_excludes_follow_config_yaml_over_legacy_settings(session, tmp_path) -> None:
+    from repowise.core.persistence.crud.analysis.health.exclude import health_exclude_spec
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "exclude_patterns:\n- vendor/\n", encoding="utf-8"
+    )
+    repo = await upsert_repository(
+        session, name="repo", local_path=str(tmp_path), settings={"exclude_patterns": ["tools/"]}
+    )
+
+    spec = await health_exclude_spec(session, repo.id)
+
+    assert spec.match_file("vendor/a.py")
+    assert not spec.match_file("tools/gen.py")
+
+
 async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> None:
     repo = await upsert_repository(
         session,

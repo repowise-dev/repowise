@@ -181,14 +181,18 @@ def resolve_file_settings(repo_path: Path | str, stored: dict[str, Any]) -> dict
     """The effective :data:`FILE_SETTING_KEYS` values: config.yaml's, else *stored*'s.
 
     *stored* is the legacy server copy (``settings_json``). Keys neither source
-    sets are left out. Raises :class:`RepoConfigError` for a broken config file.
+    sets are left out; a bare ``key:`` (null) in the file counts as unset.
+    Raises :class:`RepoConfigError` for a broken config file.
     """
     config = load_repo_config(repo_path)
-    return {
-        key: config[key] if key in config else stored[key]
-        for key in FILE_SETTING_KEYS
-        if key in config or key in stored
-    }
+    resolved = {}
+    for key in FILE_SETTING_KEYS:
+        value = config.get(key)
+        if value is None:
+            value = stored.get(key)
+        if value is not None:
+            resolved[key] = value
+    return resolved
 
 
 def save_file_settings(
@@ -206,20 +210,25 @@ def save_file_settings(
     before = dict(config)
     for key in FILE_SETTING_KEYS:
         default = _file_setting_default(key)
-        if key not in config and stored.get(key) not in (None, default):
+        if config.get(key) is None and stored.get(key) not in (None, default):
             config[key] = stored[key]
-        if key not in updates:
-            continue
-        value = default if updates[key] is None else updates[key]
-        if value == config.get(key, default):
-            continue
-        if value == default:
-            config.pop(key, None)
-        else:
-            config[key] = value
+        if key in updates:
+            _set_file_setting(config, key, updates[key], default)
     if config != before:
         save_repo_config(repo_path, config)
-    return {key: config[key] for key in FILE_SETTING_KEYS if key in config}
+    return {key: config[key] for key in FILE_SETTING_KEYS if config.get(key) is not None}
+
+
+def _set_file_setting(config: dict[str, Any], key: str, value: Any, default: Any) -> None:
+    """Set *key* to *value* in *config*; the default (or ``None``) removes it."""
+    value = default if value is None else value
+    current = config.get(key)
+    if value == (default if current is None else current):
+        return
+    if value == default:
+        config.pop(key, None)
+    else:
+        config[key] = value
 
 
 def config_fingerprint(repo_path: Path | str) -> str:

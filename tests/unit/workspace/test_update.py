@@ -1269,12 +1269,10 @@ class TestSavedExcludeSources:
     def test_unparseable_settings_json_logs_a_warning(self, caplog) -> None:
         import logging
 
-        from repowise.core.workspace.update.repo import _merge_settings_excludes
+        from repowise.core.workspace.update.repo import _settings_excludes
 
         caplog.set_level(logging.WARNING, logger="repowise.workspace.update")
-        patterns = ["dist/**"]
-        _merge_settings_excludes(patterns, "{not json")
-        assert patterns == ["dist/**"]
+        assert _settings_excludes("{not json") == {}
         assert "saved exclude patterns not applied" in caplog.text
 
 

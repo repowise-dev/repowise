@@ -26,32 +26,23 @@ async def health_exclude_spec(
     if repo is None:
         return None
 
-    patterns: list[str] = []
-    seen: set[str] = set()
-
-    def _add(values: Any) -> None:
-        if not isinstance(values, list):
-            return
-        for value in values:
-            if isinstance(value, str) and value not in seen:
-                seen.add(value)
-                patterns.append(value)
+    from repowise.core.repo_config import resolve_file_settings
 
     try:
-        settings = json.loads(getattr(repo, "settings_json", "") or "{}")
-        if isinstance(settings, dict):
-            _add(settings.get("exclude_patterns"))
+        stored = json.loads(getattr(repo, "settings_json", "") or "{}")
     except (TypeError, ValueError):
-        pass
-
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    # config.yaml first; a legacy settings copy only while the file lacks the key.
     try:
-        from repowise.core.repo_config import load_repo_config
-
-        cfg = load_repo_config(Path(repo_path or repo.local_path))
-        if isinstance(cfg, dict):
-            _add(cfg.get("exclude_patterns"))
+        values = resolve_file_settings(Path(repo_path or repo.local_path), stored)
     except Exception:
-        pass
+        values = stored
+    raw = values.get("exclude_patterns")
+    if not isinstance(raw, list):
+        raw = []
+    patterns = list(dict.fromkeys(v for v in raw if isinstance(v, str)))
 
     if not patterns:
         return None
