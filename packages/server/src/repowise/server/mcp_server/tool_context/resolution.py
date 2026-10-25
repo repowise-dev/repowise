@@ -169,8 +169,8 @@ def _excluded_error(q: TargetQuery) -> Resolution:
 
 async def _file_page_by_id(q: TargetQuery) -> Resolution | None:
     """A file page, the most common target."""
-    page = await q.session.get(Page, f"file_page:{q.target}")
-    if page and page.repository_id == q.repo_id:
+    page = await q.session.get(Page, {"id": f"file_page:{q.target}", "repository_id": q.repo_id})
+    if page:
         return ResolvedTarget("file", page=page, file_path=q.target)
     return None
 

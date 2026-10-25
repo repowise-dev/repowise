@@ -14,7 +14,7 @@ import json
 import pytest
 from sqlalchemy import select
 
-from repowise.core.persistence.crud import upsert_page
+from repowise.core.persistence.crud import get_page, upsert_page
 from repowise.core.persistence.models import Page
 from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
 from tests.unit.persistence.helpers import insert_repo
@@ -142,7 +142,8 @@ class TestAddRemoveRename:
 
     async def test_a_tombstoned_page_leaves_the_tree(self, async_session, wiki):
         """A deleted file must not keep showing up in the navigation."""
-        page = await async_session.get(Page, "file_page:src/ingest/b.py")
+        page = await get_page(async_session, "file_page:src/ingest/b.py", repository_id=wiki)
+        assert page is not None
         page.freshness_status = "tombstone"
         page.metadata_json = json.dumps({"successor_paths": []})
         await async_session.commit()
@@ -162,7 +163,8 @@ class TestAddRemoveRename:
         successor_paths, so the old page is simply unplaced and the new one is
         placed on its own merits. That is what this pins.
         """
-        old = await async_session.get(Page, "file_page:src/ingest/b.py")
+        old = await get_page(async_session, "file_page:src/ingest/b.py", repository_id=wiki)
+        assert old is not None
         old.freshness_status = "tombstone"
         old.metadata_json = json.dumps({"successor_paths": ["src/web/b.py"]})
         await _add(async_session, wiki, "module_page", "src/web", file_paths=["src/web/b.py"])
@@ -191,7 +193,8 @@ class TestAddRemoveRename:
     async def test_removing_the_module_reparents_its_files(self, async_session, wiki):
         """The sweep deletes module pages whose key moved. Their files must
         find a new home rather than point at a row that is gone."""
-        module = await async_session.get(Page, "module_page:src/ingest")
+        module = await get_page(async_session, "module_page:src/ingest", repository_id=wiki)
+        assert module is not None
         await async_session.delete(module)
         await async_session.commit()
 
