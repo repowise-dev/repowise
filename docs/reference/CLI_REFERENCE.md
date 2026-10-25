@@ -402,6 +402,7 @@ repowise serve --port 8080 --ui-port 8081
 | `--workers` | Uvicorn workers. | `1` |
 | `--ui-port` | Web UI port. | `3000` |
 | `--no-ui` | API only. | off |
+| `--no-open` | Don't open the UI in a browser. It opens only in an interactive terminal outside CI, once the UI answers. Env `REPOWISE_NO_OPEN`. | off |
 | `--refresh-ui` | Re-download the UI tarball (skips sources 1 and 2). | off |
 
 The UI needs Node >= 20, else API-only. UI sources, in precedence:
@@ -950,6 +951,7 @@ repowise decision list
 repowise decision show ID
 repowise decision add                   # interactive
 repowise decision add --title T --decision D  # no prompts, lands proposed
+repowise decision add --agent SLUG --title T --decision D --rationale R --affects PATH  # an agent's own record
 repowise decision candidates            # awaiting review; these govern nothing
 repowise decision confirm ID...         # accept: this makes them govern
 repowise decision dismiss ID...         # tombstone (sticky; never re-proposed)
@@ -990,6 +992,8 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--tag` | Tag. Repeatable. | |
 | `--evidence-commit` | Commit it was made in. Repeatable. | |
 | `--kind` | `architectural` governs code; `agreement` governs how work is done (no files, never checked against code). | `architectural` |
+| `--agent` | Record as this agent's (source `agent`, e.g. `claude_code`); acceptance then needs evidence. | |
+| `--session` | The agent session recording it. Needs `--agent`. | |
 
 - `--title` plus `--decision`: no prompts, prints the new id. Any flag, or `--format json`, without both is refused.
 - Flag-driven records land `proposed`, interactive `active`; promote with `repowise decision confirm <id>`.
@@ -2053,6 +2057,11 @@ repowise doctor --workspace --repair
 | `--workspace` / `-w`, `--no-workspace` | Workspace table (dir exists, git repo, state.json ↔ config drift) then per-repo checks / single repo. | auto-detect |
 | `--format` | `table` or `json`. | `table` |
 
+- **`--format json`** prints `{"ok": bool, "checks": [...]}`. Each check carries a stable `id` (kebab case, such as
+  `post-commit-hook` or `mcp-responds`), a display `name`, a `level` (`ok`, `warn` or `fail`), `ok` (false only for
+  `fail`), a `detail` and a `fix`: the exact command that resolves it, or `null`. Match on `id`; names can change.
+  A `warn` never changes the exit code. With `--workspace`, ids repeat once per repo and `name` starts with the
+  repo's alias.
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.

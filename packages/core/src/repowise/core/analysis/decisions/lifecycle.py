@@ -31,6 +31,7 @@ __all__ = [
     "GRANTING_ACTIONS",
     "HISTORY_CURRENCIES",
     "NEEDS_REVIEW_STALENESS",
+    "NO_DECISION_BLOCKER",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
@@ -318,21 +319,31 @@ class AcceptanceRequirement:
     #: inferred. Then the entry itself is the provenance, and demanding a
     #: separate reference would make manual capture impossible.
     self_authored: bool = False
+    #: What was chosen. ``None`` when the action grants nothing new, so a
+    #: record with no text can still be withdrawn or carried over by an import.
+    #: A self-authored record is exempt: its author wrote the title as the claim.
+    decision: str | None = None
 
 
 #: Named because the review row's ``scope_unresolved`` flag is this exact
 #: verdict, and re-deriving it would be a second opinion about scope.
 NO_SCOPE_BLOCKER = "no scope: name the files or modules it governs"
 
+NO_DECISION_BLOCKER = "no decision text: state what was chosen"
+
 
 def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     """Return the reasons *req* cannot become an acceptance, empty if it can.
 
-    The same four checks the ``decision_acceptances`` CHECK constraints
-    enforce, stated once in prose so a caller can explain a refusal instead of
-    surfacing an IntegrityError.
+    Reason, scope, evidence and identity are the checks the
+    ``decision_acceptances`` CHECK constraints enforce, stated once in prose so
+    a caller can explain a refusal instead of surfacing an IntegrityError. The
+    decision-text check is enforced here only: a fresh grant of a mined record
+    needs it, because one that never says what was chosen binds nobody to it.
     """
     blockers: list[str] = []
+    if req.decision is not None and not req.self_authored and not req.decision.strip():
+        blockers.append(NO_DECISION_BLOCKER)
     if not req.reason.strip():
         blockers.append("no rationale or explicit constraint reason")
     if not [s for s in req.scope if s and s.strip()]:
@@ -345,7 +356,7 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
 
 
 # The readers below take a mapping keyed ``affected_files``, ``affected_modules``,
-# ``kind``, ``rationale``, ``context``, ``source``, ``evidence_commits``,
+# ``kind``, ``rationale``, ``context``, ``decision``, ``source``, ``evidence_commits``,
 # ``evidence_file``; list fields may be stored JSON text. ORM rows go through
 # ``crud.authority.decision_fields``.
 
@@ -419,8 +430,12 @@ def requirement(
     evidence: list[str] | None = None,
     accepter: str = "",
     artifact: str = "",
+    grant: bool = False,
 ) -> AcceptanceRequirement:
-    """What the acceptance contract would be asked to take for *rec*."""
+    """What the acceptance contract would be asked to take for *rec*.
+
+    *grant* asks for the decision text too: it is what a new acceptance binds.
+    """
     # A record somebody typed is its own provenance: the accepter did not read
     # an inference, they wrote the claim. Everything mined from a transcript, a
     # commit or a document still has to say what it rests on.
@@ -437,6 +452,7 @@ def requirement(
         accepter=accepter,
         artifact=artifact,
         self_authored=self_authored,
+        decision=(rec.get("decision") or "") if grant else None,
     )
 
 
@@ -447,7 +463,7 @@ def record_blockers(rec: Mapping[str, Any]) -> list[str]:
     act, so this asks with an identity in hand: what is left is what a person
     has to go and fill in first.
     """
-    return acceptance_blockers(requirement(rec, accepter="reviewer"))
+    return acceptance_blockers(requirement(rec, accepter="reviewer", grant=True))
 
 
 #: How the pre-split ``decision_records.status`` column maps onto currency, and

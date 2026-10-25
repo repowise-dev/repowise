@@ -114,23 +114,29 @@ async def test_execute_job_no_excludes_passes_none(session_factory, tmp_path):
     assert run_pipeline_mock.await_args.kwargs["exclude_patterns"] is None
 
 
-def test_repo_exclude_patterns_merges_settings_and_config(tmp_path):
-    """DB settings + .repowise/config.yaml merge, order-preserved & de-duped."""
+def test_repo_exclude_patterns_config_yaml_wins_over_stored(tmp_path):
+    """config.yaml is the one source; a legacy DB copy cannot re-add a removed pattern."""
     import json
 
     config_dir = tmp_path / ".repowise"
     config_dir.mkdir()
     (config_dir / "config.yaml").write_text(
-        "exclude_patterns:\n  - node_modules/\n  - vendor/\n", encoding="utf-8"
+        "exclude_patterns:\n  - node_modules/\n  - vendor/\n  - vendor/\n", encoding="utf-8"
     )
 
     repo = SimpleNamespace(
         settings_json=json.dumps({"exclude_patterns": ["tools/", "node_modules/"]})
     )
 
-    patterns = _repo_exclude_patterns(repo, str(tmp_path))
+    assert _repo_exclude_patterns(repo, str(tmp_path)) == ["node_modules/", "vendor/"]
 
-    assert patterns == ["tools/", "node_modules/", "vendor/"]
+
+def test_repo_exclude_patterns_legacy_stored_value_applies_without_config(tmp_path):
+    """A repo whose patterns predate config.yaml keeps them until a save moves them."""
+    import json
+
+    repo = SimpleNamespace(settings_json=json.dumps({"exclude_patterns": ["tools/"]}))
+    assert _repo_exclude_patterns(repo, str(tmp_path)) == ["tools/"]
 
 
 def test_repo_exclude_patterns_ignores_malformed_sources(tmp_path):
@@ -165,8 +171,8 @@ async def test_execute_job_passes_wiki_style_from_settings(session_factory, tmp_
     assert run_pipeline_mock.await_args.kwargs["wiki_style"] == "caveman"
 
 
-def test_repo_wiki_style_settings_precedence(tmp_path):
-    """DB settings (web) win over .repowise/config.yaml (CLI) for wiki_style."""
+def test_repo_wiki_style_config_yaml_precedence(tmp_path):
+    """.repowise/config.yaml wins over a legacy DB copy for wiki_style."""
     import json
 
     from repowise.server.job_executor import _repo_wiki_style
@@ -176,7 +182,7 @@ def test_repo_wiki_style_settings_precedence(tmp_path):
     (config_dir / "config.yaml").write_text("wiki_style: reference\n", encoding="utf-8")
 
     repo = SimpleNamespace(settings_json=json.dumps({"wiki_style": "caveman"}))
-    assert _repo_wiki_style(repo, str(tmp_path)) == "caveman"
+    assert _repo_wiki_style(repo, str(tmp_path)) == "reference"
 
 
 def test_repo_wiki_style_falls_back_to_config(tmp_path):

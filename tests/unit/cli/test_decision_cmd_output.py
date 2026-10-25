@@ -262,7 +262,7 @@ def test_batch_table_counts_and_names_each_outcome(seeded: Path) -> None:
     out = result.output
     assert "Accepted 1 of 3" in out
     assert "Decision not found: 9999" in out
-    assert "Supply the missing parts with --reason, --scope or --evidence." in out
+    assert "Supply the missing parts with --decision, --reason, --scope or --evidence." in out
 
 
 def test_batch_json_summarises_the_run(seeded: Path) -> None:
