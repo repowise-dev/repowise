@@ -48,7 +48,7 @@ export function setupFixture(overrides: Partial<SetupResponse> = {}): SetupRespo
       configured_paths: [],
       discovered: [{ path: "coverage/lcov.info", modified_at: "2026-10-23T00:00:00Z", age_days: 2 }],
     },
-    model: { docs_mode: "deterministic", active_provider: null, configured_providers: ["anthropic"] },
+    model: { docs_mode: "deterministic", active_provider: null, configured_providers: ["provider-a"] },
     checks_available: true,
     checks: [
       { id: "post-commit-hook", name: "Post-commit hook", level: "ok", detail: "installed" },
