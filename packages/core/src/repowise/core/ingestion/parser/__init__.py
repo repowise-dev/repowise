@@ -294,6 +294,7 @@ def _parse_without_grammar(
         docstring=None,
         parse_errors=[],
         content_hash=content_hash,
+        grammar_missing=config is not None and language is None,
     )
 
 

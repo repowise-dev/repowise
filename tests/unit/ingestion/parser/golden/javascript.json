@@ -72,7 +72,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "javascript/route.js": {
     "file_info": {
@@ -502,6 +503,7 @@
         "argument_names": null
       }
     ],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

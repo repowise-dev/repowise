@@ -721,7 +721,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/classes.ts": {
     "file_info": {
@@ -1020,7 +1021,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/conditionals.ts": {
     "file_info": {
@@ -1122,7 +1124,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/nested.ts": {
     "file_info": {
@@ -1200,7 +1203,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/perf_io_in_loop.ts": {
     "file_info": {
@@ -1425,7 +1429,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_class_modifiers.ts": {
     "file_info": {
@@ -1843,7 +1848,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_module_consts.ts": {
     "file_info": {
@@ -2031,7 +2037,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_overload_fn_method.ts": {
     "file_info": {
@@ -2359,6 +2366,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

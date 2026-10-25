@@ -637,7 +637,8 @@
           "Name"
         ]
       }
-    ]
+    ],
+    "grammar_missing": false
   },
   "apex/AccountTrigger.trigger": {
     "file_info": {
@@ -753,7 +754,8 @@
         "line": 1,
         "path": []
       }
-    ]
+    ],
+    "grammar_missing": false
   },
   "apex/assertions.cls": {
     "file_info": {
@@ -1230,7 +1232,8 @@
         "line": 34,
         "path": []
       }
-    ]
+    ],
+    "grammar_missing": false
   },
   "apex/classes.cls": {
     "file_info": {
@@ -1719,7 +1722,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "apex/health_markers.cls": {
     "file_info": {
@@ -2514,7 +2518,8 @@
           "OwnerId"
         ]
       }
-    ]
+    ],
+    "grammar_missing": false
   },
   "apex/HealthMarkersTest.cls": {
     "file_info": {
@@ -2700,7 +2705,8 @@
         "line": 12,
         "path": []
       }
-    ]
+    ],
+    "grammar_missing": false
   },
   "apex/nested.cls": {
     "file_info": {
@@ -2906,7 +2912,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "apex/perf_io_in_loop.cls": {
     "file_info": {
@@ -4125,6 +4132,7 @@
           "Id"
         ]
       }
-    ]
+    ],
+    "grammar_missing": false
   }
 }

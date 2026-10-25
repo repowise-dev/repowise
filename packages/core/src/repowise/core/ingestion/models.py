@@ -797,6 +797,9 @@ class ParsedFile:
     references: list[CallSite] = field(default_factory=list)
     # Salesforce objects and fields this file names (see ``salesforce_schema``).
     schema_refs: list[SchemaReference] = field(default_factory=list)
+    # Parsed without its language's grammar (not installed, or a download
+    # failed): a stand-in the parse cache must not keep once the grammar loads.
+    grammar_missing: bool = False
 
     @property
     def symbol_count(self) -> int:
