@@ -426,7 +426,10 @@ add its case to `test_graph_evidence.py`.
 
 ## Limits
 
-- Ruby, VB and SQL files have no comment mask, so a commented-out match there is
+- Only Python, JS/TS, Java, Kotlin, Go, C#, Rust, PHP, Apex, Proto and
+  `.prisma` files have a comment mask (see [`_SLASH_COMMENT_SUFFIXES` and
+  `_comment_mask`](../../../packages/core/src/repowise/core/workspace/extractors/base.py));
+  every other suffix is read as written, so a commented-out match there is
   read. A Python docstring example is read, because the mask keeps strings.
 - A gate is a substring test: it keeps a dialect off files it can find nothing in,
   not off every file that mentions its token.

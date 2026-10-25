@@ -87,7 +87,7 @@ dependencies = [
     # Retry logic
     "tenacity>=9,<10",
     # Git operations
-    "gitpython>=3.1,<4",
+    "gitpython>=3.2.1,<4",
     # YAML parsing
     "pyyaml>=6.0,<7",
     # Vector search (LanceDB — pure Python wheel)

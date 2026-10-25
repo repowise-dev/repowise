@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, MessageCircleQuestion, Sparkles } from "lucide-react";
+import { Check, ClipboardCopy, Copy, MessageCircleQuestion } from "lucide-react";
 import type { ChatContext } from "@repowise-dev/types/chat";
 import {
   Dialog,
@@ -118,7 +118,7 @@ function FetchedPromptText({ load, pre }: { load: PromptLoad; pre: ReactNode }) 
               pane.current?.focus();
               load.retry();
             }}
-            className="rounded font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="rounded font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             Retry
           </button>
@@ -169,7 +169,7 @@ function AskPromptInChat({
         onAsked?.();
       }}
       disabled={!prompt}
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:opacity-50 motion-reduce:transition-none"
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-50 motion-reduce:transition-none"
     >
       <MessageCircleQuestion className="h-3.5 w-3.5" aria-hidden /> Ask in chat
     </button>
@@ -276,7 +276,7 @@ export function AiPromptBlock({
               "inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
               (copied
                 ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
-                : "bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)]")
+                : "bg-[var(--color-action-primary)] text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)]")
             }
           >
             {copied ? (
@@ -310,7 +310,7 @@ export function AiPromptModal({
       <DialogContent className="min-w-0 w-[calc(100vw-2rem)] max-w-3xl overflow-hidden">
         <DialogHeader className="min-w-0">
           <DialogTitle className="flex min-w-0 items-center gap-2 pr-6">
-            <Sparkles className="h-4 w-4 shrink-0 text-[var(--color-model)]" />
+            <ClipboardCopy aria-hidden className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />
             <span className="min-w-0 truncate">{title}</span>
             {filePath ? (
               <span className="ml-2 min-w-0 max-w-[260px] flex-1 truncate font-mono text-xs font-normal text-[var(--color-text-tertiary)]">

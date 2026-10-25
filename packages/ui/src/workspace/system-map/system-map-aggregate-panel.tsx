@@ -18,7 +18,7 @@ import { SystemMapHealthMark } from "./system-map-health-mark";
 import type { RepoHealth, SystemMapSelection } from "./types";
 
 const ROW =
-  "flex w-full min-w-0 items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "flex w-full min-w-0 items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 interface Lookups {
   nodesById: ReadonlyMap<string, SystemNode>;
@@ -56,7 +56,7 @@ export function GroupPanel({
         <button
           type="button"
           onClick={onOpen}
-          className="self-start text-xs font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="self-start text-xs font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           Open this group on the map
         </button>

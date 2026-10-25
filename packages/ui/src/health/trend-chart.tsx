@@ -494,7 +494,7 @@ function LegendButton({
       onPointerLeave={() => onEmphasis(null)}
       onFocus={emphasise}
       onBlur={() => onEmphasis(null)}
-      className={`inline-flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)] disabled:cursor-default ${
+      className={`inline-flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)] disabled:cursor-default ${
         on ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)] line-through"
       }`}
     >
@@ -655,7 +655,7 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
         role="group"
         aria-label="Health KPI trend. Arrow keys step through snapshots."
         {...box}
-        className="relative rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent-primary)]"
+        className="relative rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-focus-ring)]"
       >
         <svg
           width={g.width}

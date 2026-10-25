@@ -37,7 +37,7 @@ export function SystemMapNavActions({ nav, search, copy, name }: SystemMapNavAct
         onClick={() => nav.setHelp((open) => !open)}
         aria-label={copy.helpOpen}
         title={copy.helpOpen}
-        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <Keyboard aria-hidden className="h-4 w-4" />
       </button>

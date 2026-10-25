@@ -70,7 +70,7 @@ export function RepoBreadcrumb({
         {!onChatPage && (
           <Link
             href={`/repos/${repoId}/chat`}
-            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             <MessageSquare className="h-3.5 w-3.5" aria-hidden />
             {ts("ask")}

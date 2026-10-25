@@ -117,7 +117,7 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
                   <button
                     type="button"
                     onClick={() => setSelected(e.version)}
-                    className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                   >
                     {releaseName(e.version, t("whatsNewModal.nextRelease"))}
                     {e.label && (

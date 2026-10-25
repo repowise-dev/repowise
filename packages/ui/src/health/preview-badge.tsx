@@ -51,7 +51,7 @@ export function PreviewBadge({
             data-preview
             aria-label={label ? `${label}: ${text}` : strings.ariaLabel(text)}
             onClick={(e) => e.stopPropagation()}
-            className="rounded border border-[var(--color-border-default)] px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="rounded border border-[var(--color-border-default)] px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {label ?? strings.label}
           </button>

@@ -255,7 +255,7 @@ function CopyPathButton({ text, label, copiedLabel }: { text: string; label: str
       }}
       aria-label={copied ? copiedLabel : label}
       className={cn(
-        "ml-1 inline-flex shrink-0 items-center self-center rounded-sm hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+        "ml-1 inline-flex shrink-0 items-center self-center rounded-sm hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
         DIM,
       )}
     >

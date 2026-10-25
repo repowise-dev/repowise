@@ -50,7 +50,7 @@ export function ExploreCards({
           >
             <A
               href={c.href}
-              className="flex flex-1 flex-col gap-1.5 rounded-lg px-5 py-4 no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="flex flex-1 flex-col gap-1.5 rounded-lg px-5 py-4 no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               <span className="flex items-center justify-between gap-2 text-xs font-medium text-[var(--color-text-secondary)]">
                 {c.label}

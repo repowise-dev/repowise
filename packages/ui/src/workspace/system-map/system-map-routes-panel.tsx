@@ -53,7 +53,7 @@ export interface SystemMapRoutesPanelProps {
 
 const QUIET = "text-xs text-[var(--color-text-secondary)]";
 const BUTTON =
-  "rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
   const { graph, between, families } = props;
@@ -94,7 +94,7 @@ export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
           </p>
         )}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <AiPromptButton label="Copy prompt for an agent" onClick={() => setPrompting(true)} />
+          <AiPromptButton onClick={() => setPrompting(true)} />
           {props.contractsHref &&
             repos.map((repo) => {
               const A = props.LinkComponent ?? "a";
@@ -111,7 +111,7 @@ export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter routes, files or packages"
           aria-label="Filter routes"
-          className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-2.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]"
+          className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-2.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)]"
         />
         <RoutesBody state={state} q={q} a={a.name} b={b.name} {...props} />
       </SystemMapRailFrame>

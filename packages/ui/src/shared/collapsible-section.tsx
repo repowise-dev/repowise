@@ -49,7 +49,7 @@ export function CollapsibleSection({
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls={bodyId}
-          className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <span aria-hidden="true" className="text-[var(--color-text-tertiary)]">
             {open ? "▾" : "▸"}
@@ -78,7 +78,7 @@ export function CollapsibleSection({
         aria-expanded={open}
         aria-controls={bodyId}
         className={cn(
-          "flex w-full min-w-0 items-center gap-2 rounded-sm text-left font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+          "flex w-full min-w-0 items-center gap-2 rounded-sm text-left font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
           dense ? "py-2 text-xs" : "py-2.5 text-[15px]",
         )}
       >

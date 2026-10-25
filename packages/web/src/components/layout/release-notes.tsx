@@ -156,7 +156,7 @@ function HighlightItem({
       <Link
         href={href}
         onClick={onNavigate}
-        className={`${MOMENT_CARD} group flex w-full flex-col px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]`}
+        className={`${MOMENT_CARD} group flex w-full flex-col px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`}
         style={{ borderLeftColor: color }}
       >
         {body}
@@ -189,7 +189,7 @@ function ChangeSection({ name, items }: { name: string; items: string[] }) {
         if (e.currentTarget.open) setOpened(true);
       }}
     >
-      <summary className="flex cursor-pointer list-none items-baseline gap-2 rounded py-2 text-sm text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+      <summary className="flex cursor-pointer list-none items-baseline gap-2 rounded py-2 text-sm text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
         <span aria-hidden className="text-[var(--color-text-tertiary)] group-open/section:rotate-90 motion-safe:transition-transform">
           ›
         </span>

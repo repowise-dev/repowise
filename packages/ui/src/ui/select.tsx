@@ -4,6 +4,7 @@ import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "../lib/cn";
+import { FIELD_CLASS } from "./input";
 
 const Select = SelectPrimitive.Root;
 const SelectGroup = SelectPrimitive.Group;
@@ -16,7 +17,8 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "box-border min-w-0 flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] ring-offset-[var(--color-bg-root)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
+      FIELD_CLASS,
+      "box-border min-w-0 flex h-9 w-full items-center justify-between whitespace-nowrap px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)] data-[state=open]:bg-[var(--color-bg-surface)] [&>span]:line-clamp-1",
       className,
     )}
     {...props}

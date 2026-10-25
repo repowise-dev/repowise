@@ -423,7 +423,7 @@ function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
         fragile.length > 0 ||
         data.classification) && (
         <details>
-          <summary className="cursor-pointer text-xs text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+          <summary className="cursor-pointer text-xs text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
             More detail
           </summary>
           <div className="mt-2 space-y-2">

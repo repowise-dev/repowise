@@ -1,4 +1,4 @@
-import { bulletList, REPO_ROLE, repoSuffix, type AiPromptFlavor } from "./shared";
+import { bulletList, REPO_ROLE, type AiPromptFlavor } from "./shared";
 
 // ─────────────────────────────────────────────────────────────────────
 // Setup prompt: one Setup page row, handed to the agent to finish or fix
@@ -11,20 +11,21 @@ export interface SetupPromptRow {
   title: string;
   /** What repowise detected, in a sentence or two. */
   state: string;
-  /** The exact command that makes the change. */
-  command: string;
+  /** The exact command that makes the change; omitted when no one command fixes it. */
+  command?: string;
   /** How the agent checks the result. */
   verify: "status" | "doctor";
-  /** Something is wrong: the agent investigates and confirms before changing anything. */
+  /** Something is wrong: the agent says what the fix changes and waits for a yes. */
   fix?: boolean;
   /** Paths or names the state refers to, listed under it. */
   items?: string[];
+  /** The finding is a `repowise doctor` check, so the prompt opens on it. */
+  fromDoctor?: boolean;
 }
 
 const VERIFY: Record<SetupPromptRow["verify"], string> = {
-  status: "Run `repowise status` afterwards and tell me what it reports for this repository.",
-  doctor:
-    "Run `repowise doctor --format json` afterwards and tell me the level and detail of the matching check.",
+  status: "repowise status",
+  doctor: "repowise doctor",
 };
 
 const MAX_ITEMS = 20;
@@ -36,46 +37,48 @@ function itemLines(items: string[] | undefined): string | null {
   return bulletList([...shown, more > 0 ? `and ${more} more` : null]);
 }
 
+/** A sentence that ends in exactly one full stop. */
+function sentence(text: string): string {
+  const trimmed = text.trim().replace(/[.\s]+$/, "");
+  return trimmed ? `${trimmed}.` : "";
+}
+
+/** What was found: a doctor check reads "title, detail"; a Setup row "title. state". */
+function opening(row: SetupPromptRow): string {
+  if (row.fromDoctor) {
+    const detail = row.state.trim() ? `, ${row.state.trim()}` : "";
+    return sentence(`\`repowise doctor\` in ${row.repoName} reports: ${row.title}${detail}`);
+  }
+  return `repowise reports for ${row.repoName}: ${sentence(row.title)} ${sentence(row.state)}`.trim();
+}
+
+/** What to do about it, worded for whether there is a fix and a command. */
+function ask(row: SetupPromptRow): string {
+  const check = `\`${VERIFY[row.verify]}\``;
+  const again = row.fromDoctor && row.verify === "doctor" ? " again" : "";
+  if (row.fix && row.command) {
+    return `The fix is \`${row.command}\`. Tell me what it changes, run it once I agree, then run ${check}${again} to check.`;
+  }
+  if (row.fix) {
+    return `No single command fixes this. Find the cause and tell me what you would change, make the change once I agree, then run ${check}${again} to check.`;
+  }
+  if (row.command) {
+    return `Run \`${row.command}\` from the repository root, then run ${check} and tell me what it reports.`;
+  }
+  return `Run ${check} and tell me what it reports.`;
+}
+
 /**
- * A prompt for one Setup row: the repo, what was detected, the exact command
- * and how to verify it. A fix asks the agent to find the cause and confirm
- * with the person before changing anything.
+ * A prompt for one Setup row: what repowise found in the repo, the command
+ * that fixes it, and how to check. A fix asks the agent to say what the
+ * command changes and to run it once the person agrees.
  */
 export function buildSetupAiPrompt(
   row: SetupPromptRow,
   flavor: AiPromptFlavor = "generic",
 ): string {
-  const task = row.fix
-    ? "Find out why first, then tell me what you found and what you would change. The usual fix is this command, run from the repository root:"
-    : "Run this from the repository root:";
-  const constraints = row.fix
-    ? [
-        "Confirm with me before changing anything: files, config, hooks or the index.",
-        "If the problem is not what repowise reported, say so and stop.",
-      ]
-    : [
-        "Run only the command above and the check below. Do not edit other files.",
-        "If the command fails, show me its output and stop.",
-      ];
-  const expected = row.fix
-    ? "What you found, the change you propose, and, once I confirm and you run it, what the check reports."
-    : "The command's result and what the check reports.";
-  const detected = [`What repowise detected: ${row.state}`, itemLines(row.items)]
+  // Blocks joined by a blank line, so the prompt reads cleanly when pasted.
+  return [REPO_ROLE[flavor], `${opening(row)} ${ask(row)}`, itemLines(row.items)]
     .filter(Boolean)
-    .join("\n");
-
-  // Blocks joined by a blank line, so the prompt reads as sections when pasted.
-  return [
-    REPO_ROLE[flavor],
-    `## Setup: ${row.title}${repoSuffix(row.repoName)}`,
-    detected,
-    "## Do this",
-    `${task}\n\n\`\`\`\n${row.command}\n\`\`\``,
-    "## Verify",
-    VERIFY[row.verify],
-    "## Hard constraints",
-    bulletList(constraints),
-    "## What I expect back",
-    expected,
-  ].join("\n\n");
+    .join("\n\n");
 }

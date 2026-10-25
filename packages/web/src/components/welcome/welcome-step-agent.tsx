@@ -125,11 +125,6 @@ function AgentRow({
     }
   }
 
-  async function copyPrompt() {
-    const prompt = t("prompt", { name, command });
-    if (await copyText(prompt)) toast.success(t("promptCopied"));
-  }
-
   const file = firstConfigFile(agent);
   return (
     <div className={ROW}>
@@ -161,7 +156,13 @@ function AgentRow({
         )
       ) : (
         <span className="flex flex-wrap items-center justify-end gap-1.5 max-[560px]:justify-start">
-          <AiPromptButton label={t("copyPrompt")} onClick={() => void copyPrompt()} />
+          <AiPromptButton
+            label={t("copyPrompt")}
+            copiedLabel={t("copied")}
+            failedLabel={t("copyFailed")}
+            ariaLabel={`${t("copyPrompt")}: ${name}`}
+            copyText={() => t("prompt", { name, command })}
+          />
           {writesAllowed && (
             <Button variant="outline" size="sm" disabled={busy} onClick={() => void connect()}>
               {busy ? t("connecting") : t("connect")}
@@ -185,7 +186,7 @@ function CopyQuestion({ text }: { text: string }) {
         window.setTimeout(() => setCopied(false), 1600);
       }}
       aria-label={copied ? t("copied") : t("copyQuestion", { question: text })}
-      className="shrink-0 rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="shrink-0 rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {copied ? t("copied") : t("copy")}
     </button>
