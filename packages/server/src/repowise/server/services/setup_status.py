@@ -36,8 +36,10 @@ from repowise.server.services import setup_cli
 logger = logging.getLogger(__name__)
 
 #: A probe this young is served without a rebuild; an older one is served
-#: while a rebuild runs.
+#: while a rebuild runs, up to the stale limit. The page fetches once and does
+#: not refetch, so past that limit a load waits for the rebuild (seconds).
 SETUP_CACHE_SECONDS = 60.0
+SETUP_STALE_SECONDS = 300.0
 #: How often the full doctor runs again for the same repo.
 FULL_CHECK_SECONDS = 300.0
 
@@ -58,7 +60,9 @@ class _Probe:
 
 
 _probes: dict[str, _Probe] = {}
-#: Rows from the last full doctor, by repo: ``(monotonic time, rows)``.
+#: Rows from the last full doctor, by repo: ``(monotonic time, rows)``. A
+#: failed run keeps the old rows with a new time, so it is not retried on
+#: every rebuild.
 _full_checks: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 #: Builds in flight, by ``(kind, repo_id)``, so concurrent loads share one.
 _inflight: dict[tuple[str, str], asyncio.Task] = {}
@@ -72,15 +76,19 @@ def invalidate(repo_id: str | None = None) -> None:
     """Drop the cached answers for *repo_id*, or every one when ``None``.
 
     A build already running started before the write: it finishes uncached,
-    and the next request starts a new one.
+    and the next request starts a new one. The full doctor's rows stay until
+    the next full run replaces them, so a failing row does not blink out for
+    the tens of seconds that run takes; they are only marked due.
     """
     global _generation
     _generation += 1
-    for cache in (_probes, _full_checks):
-        if repo_id is None:
-            cache.clear()
-        else:
-            cache.pop(repo_id, None)
+    if repo_id is None:
+        _probes.clear()
+    else:
+        _probes.pop(repo_id, None)
+    for key, (_at, rows) in list(_full_checks.items()):
+        if repo_id is None or key == repo_id:
+            _full_checks[key] = (float("-inf"), rows)
     for key in [k for k in _inflight if repo_id is None or k[1] == repo_id]:
         del _inflight[key]
 
@@ -119,11 +127,12 @@ async def _current_probe(repo_id: str, repo_path: Path) -> _Probe:
         return _build_probe(repo_id, repo_path)
 
     hit = _probes.get(repo_id)
-    if hit is None:
+    age = time.monotonic() - hit.built_at if hit else None
+    if age is None or age >= SETUP_STALE_SECONDS:
         # Shielded: a request that gives up must not cancel the build that
         # the other loads are waiting on.
         return await asyncio.shield(_start("probe", repo_id, build))
-    if time.monotonic() - hit.built_at >= SETUP_CACHE_SECONDS:
+    if age >= SETUP_CACHE_SECONDS:
         _start("probe", repo_id, build)
     return hit
 
@@ -149,8 +158,14 @@ async def _build_probe(repo_id: str, repo_path: Path) -> _Probe:
 async def _build_full_checks(repo_id: str, repo_path: Path) -> None:
     started = _generation
     doctor = await asyncio.to_thread(setup_cli.doctor_json, repo_path)
-    if doctor is not None and started == _generation:
-        _full_checks[repo_id] = (time.monotonic(), _checks(doctor))
+    if started != _generation:
+        return
+    if doctor is None:
+        logger.warning("setup: the full doctor run for %s gave no answer", repo_path)
+        previous = _full_checks.get(repo_id)
+        _full_checks[repo_id] = (time.monotonic(), previous[1] if previous else [])
+        return
+    _full_checks[repo_id] = (time.monotonic(), _checks(doctor))
 
 
 def _assemble(
@@ -185,7 +200,7 @@ def _assemble(
         },
         "model_available": model_ok,
         "model": model,
-        "checks_available": probe.doctor is not None or full_checks is not None,
+        "checks_available": probe.doctor is not None or bool(full_checks),
         "checks": checks,
     }
 

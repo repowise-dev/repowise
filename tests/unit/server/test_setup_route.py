@@ -239,6 +239,74 @@ async def test_a_write_makes_the_next_load_wait_for_a_new_probe(
 
 
 @pytest.mark.anyio
+async def test_a_payload_past_the_stale_limit_waits_for_a_rebuild(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    await _settle()
+    monkeypatch.setattr(setup_status, "SETUP_STALE_SECONDS", 0.0)
+    after = (await local.get(f"/api/repos/{repo['id']}/setup")).json()
+    assert after["generated_at"] != first["generated_at"]
+
+
+_MCP_FAIL = {"name": "MCP server responds", "ok": False, "detail": "server exited with code 1",
+             "id": "mcp-responds", "level": "fail", "fix": None}
+
+
+def _full_doctor_answers(cli: FakeCli, monkeypatch: pytest.MonkeyPatch, answers: list) -> None:
+    """The full (not --quick) doctor runs answer from *answers* in turn."""
+    original = cli.__call__
+
+    def answer(args, *, cwd, timeout):
+        if args[0] == "doctor" and "--quick" not in args:
+            answer = answers.pop(0)
+            return answer() if callable(answer) else answer
+        return original(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(setup_cli, "run_cli", answer)
+
+
+@pytest.mark.anyio
+async def test_full_rows_outlive_a_write_until_the_next_full_run(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failing = setup_cli.CliRun(1, json.dumps({"ok": False, "checks": [_MCP_FAIL]}), "")
+    passing = setup_cli.CliRun(0, json.dumps({"ok": True, "checks": [
+        {**_MCP_FAIL, "ok": True, "level": "ok", "detail": "initialised"}]}), "")
+    import threading
+
+    rerun = threading.Event()
+    _full_doctor_answers(cli, monkeypatch, [failing, lambda: rerun.wait(10) and passing])
+    url = f"/api/repos/{repo['id']}/setup"
+    await local.get(url)
+    await _settle()
+    setup_status.invalidate(repo["id"])
+
+    body = (await local.get(url)).json()  # the full run is due again, not done yet
+    assert [c["level"] for c in body["checks"] if c["id"] == "mcp-responds"] == ["fail"]
+    rerun.set()
+    await _settle()
+    body = (await local.get(url)).json()
+    assert [c["level"] for c in body["checks"] if c["id"] == "mcp-responds"] == ["ok"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_full_run_is_not_retried_on_every_rebuild(
+    local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _full_doctor_answers(cli, monkeypatch, [setup_cli.CliRun(None, "", "timed out")])
+    monkeypatch.setattr(setup_status, "SETUP_CACHE_SECONDS", 0.0)
+    url = f"/api/repos/{repo['id']}/setup"
+    for _ in range(3):
+        await local.get(url)
+        await _settle()
+    # One full run (popping a second answer would raise); the quick rows stand.
+    body = (await local.get(url)).json()
+    assert body["checks_available"] is True
+    assert "mcp-responds" not in {c["id"] for c in body["checks"]}
+
+
+@pytest.mark.anyio
 async def test_the_full_doctor_rows_join_the_quick_ones(
     local: AsyncClient, repo: dict, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -270,11 +338,12 @@ async def test_concurrent_cold_loads_share_one_build_that_survives_a_dropped_req
     import asyncio
     import threading
 
-    gate = threading.Event()
+    gate, entered = threading.Event(), threading.Event()
     original = cli.__call__
 
     def slow(args, *, cwd, timeout):
         if args[0] == "doctor":
+            entered.set()
             gate.wait(10)
         return original(args, cwd=cwd, timeout=timeout)
 
@@ -282,7 +351,8 @@ async def test_concurrent_cold_loads_share_one_build_that_survives_a_dropped_req
     url = f"/api/repos/{repo['id']}/setup"
     dropped = asyncio.create_task(local.get(url))
     waiting = [asyncio.create_task(local.get(url)) for _ in range(2)]
-    await asyncio.sleep(0.2)
+    await asyncio.to_thread(entered.wait, 10)
+    await asyncio.sleep(0.2)  # the other loads reach the shared build
     dropped.cancel()  # the proxy gave up on this one
     await asyncio.sleep(0.05)
     gate.set()
