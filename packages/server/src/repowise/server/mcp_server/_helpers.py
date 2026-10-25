@@ -223,6 +223,9 @@ async def _resolve_repo_context(repo: str | None = None) -> Any:
 
 def _unsupported_repo_all(tool_name: str) -> dict:
     """Return an error dict for tools that don't support ``repo='all'``."""
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("invalid_args")
     registry = _state._registry
     available = registry.get_all_aliases() if registry is not None else []
     return {

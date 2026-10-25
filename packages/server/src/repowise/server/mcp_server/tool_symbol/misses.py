@@ -106,6 +106,10 @@ async def _not_found_response(
             return live
     async with get_session(ctx.session_factory) as session:
         suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    # Both replies below are a miss, with or without suggestions.
+    note_error_reason("not_found")
     if suggestions:
         return {
             "symbol_id": symbol_id,

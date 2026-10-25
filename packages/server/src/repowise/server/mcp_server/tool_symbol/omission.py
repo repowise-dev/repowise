@@ -69,6 +69,9 @@ def _resolve_omission_ref(
             break
 
     if record is None:
+        from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+        note_error_reason("not_found")
         return {
             "symbol_id": symbol_id,
             "ref": canonical_ref,

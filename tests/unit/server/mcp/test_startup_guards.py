@@ -44,6 +44,7 @@ async def test_lifespan_names_the_path_when_the_store_cannot_be_opened(
     message = str(raised.value)
     assert str(tmp_path / ".repowise") in message
     assert "repowise init" in message
+    assert raised.value.reason == "store_open_failed"
     # The failure path never reaches the teardown, so it has to leave the
     # warmup event cleared itself. A leaked event stays bound to this test's
     # loop and makes every later tool call raise inside the failure shield.
@@ -78,6 +79,7 @@ async def test_unindexed_directory_starts_and_reports_no_index(
 
     assert "no repowise index" in result["error"].lower()
     assert "repowise init" in result["remedy"]
+    assert _state._serving_no_index is True
     assert not (tmp_path / ".repowise").exists()
     assert _state._lancedb_ready is None
 
@@ -128,6 +130,7 @@ async def test_configured_database_failure_names_the_url_not_the_directory(
     message = str(raised.value)
     assert "REPOWISE_DB_URL" in message
     assert "repowise init" not in message
+    assert raised.value.reason == "db_url_unreachable"
 
 
 @pytest.mark.asyncio

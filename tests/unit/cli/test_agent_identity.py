@@ -359,3 +359,17 @@ def test_an_unannounced_client_is_stored_as_unknown_not_as_the_fallback() -> Non
     resolved, _ = normalize_mcp_identity(None)
     assert resolved == UNKNOWN_AGENT
     assert resolved != identity_for_target_id("claude-code").slug  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("announced", "slug"),
+    [
+        ("codex-mcp-client", "codex"),
+        ("cursor-vscode", "cursor"),
+        ("Visual Studio Code", "vscode"),
+        ("Visual Studio Code - Insiders", "vscode"),
+        ("claude-code", "claude_code"),
+    ],
+)
+def test_hosts_resolve_from_the_name_they_announce(announced, slug):
+    assert resolve_client_identity(announced) == slug

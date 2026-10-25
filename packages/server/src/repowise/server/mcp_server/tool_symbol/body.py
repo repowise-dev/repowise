@@ -113,6 +113,9 @@ async def _container_outline(
 
 
 def _unreadable_source_response(row: Any, symbol_id: str, repository: Any, t0: float) -> dict:
+    from repowise.server.mcp_server._savings.interaction import note_error_reason
+
+    note_error_reason("index_behind")
     return {
         "symbol_id": symbol_id,
         "file": row.file_path,

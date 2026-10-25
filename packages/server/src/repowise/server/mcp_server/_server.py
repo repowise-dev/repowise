@@ -49,7 +49,15 @@ class StoreUnavailableError(RuntimeError):
     one to respawn, so an unwritable .repowise became a crash loop. Click-free
     because the server does not depend on the CLI; the mcp command turns it
     into a clean non-zero exit.
+
+    ``reason`` is a fixed slug for anonymous telemetry, never message text:
+    ``store_open_failed``, ``db_url_unreachable`` or
+    ``workspace_default_failed``.
     """
+
+    def __init__(self, message: str, *, reason: str = "store_open_failed") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 #: Store served for a directory with no ``.repowise/``: empty, so tools report
@@ -58,20 +66,26 @@ _NO_INDEX_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
 def _store_unavailable(
-    where: str | None, repo_path: str | None, exc: BaseException
+    where: str | None,
+    repo_path: str | None,
+    exc: BaseException,
+    *,
+    reason: str = "store_open_failed",
 ) -> StoreUnavailableError:
     """``where`` is the repo-local directory, or None when an env URL is in use;
     a configured database gets its own remedy, not the directory one."""
     if where is None:
         return StoreUnavailableError(
             f"repowise MCP: cannot open the configured database: {exc}. "
-            "Check REPOWISE_DB_URL and that the database server is reachable."
+            "Check REPOWISE_DB_URL and that the database server is reachable.",
+            reason="db_url_unreachable",
         )
     repo = repo_path or "the repository"
     return StoreUnavailableError(
         f"repowise MCP: cannot open the index store at {where}: {exc}. "
         f"Run 'repowise init' in {repo} to create it, or fix the permissions "
-        "on that directory."
+        "on that directory.",
+        reason=reason,
     )
 
 
@@ -530,7 +544,9 @@ async def _lifespan(server: FastMCP):
             default_ctx = await registry.get_default()
         except (OSError, OperationalError) as exc:
             await _abort_startup(_release_task, _warm_task)
-            raise _store_unavailable(str(ws_root), str(ws_root), exc) from exc
+            raise _store_unavailable(
+                str(ws_root), str(ws_root), exc, reason="workspace_default_failed"
+            ) from exc
         except BaseException:
             await _abort_startup(_release_task, _warm_task)
             raise
@@ -588,6 +604,7 @@ async def _lifespan(server: FastMCP):
     # When repo path is set and no env override, prefer repo-local DB.
     store_location: str | None = None
     db_url: str | None = None
+    _state._serving_no_index = False
     try:
         if _state._repo_path and configured_db_url is None:
             db_path = get_repo_db_path(_state._repo_path)
@@ -604,6 +621,7 @@ async def _lifespan(server: FastMCP):
                     "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
                 )
                 db_url = _NO_INDEX_DB_URL
+                _state._serving_no_index = True
             elif not db_path.exists():
                 _log.warning(
                     "No wiki.db in %s — run 'repowise init' to generate the wiki",
