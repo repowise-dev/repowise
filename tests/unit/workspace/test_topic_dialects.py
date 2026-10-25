@@ -678,6 +678,29 @@ channels:
         c = _one(_extract(tmp_path, "asyncapi.yaml", src), "provider")
         assert c.meta["broker"] == "asyncapi"
 
+    def test_a_null_protocol_is_no_protocol(self, tmp_path: Path) -> None:
+        src = """\
+asyncapi: 2.6.0
+servers:
+  a: {url: k:9092, protocol: kafka}
+  b:
+    url: k2:9092
+    protocol:
+channels:
+  readings:
+    subscribe: {message: {}}
+"""
+        c = _one(_extract(tmp_path / "yaml", "asyncapi.yaml", src), "provider")
+        assert c.meta["broker"] == "kafka"
+
+        doc = {
+            "asyncapi": "2.6.0",
+            "servers": {"a": {"url": "x", "protocol": None}},
+            "channels": {"readings": {"subscribe": {}}},
+        }
+        c = _one(_extract(tmp_path / "json", "asyncapi.json", json.dumps(doc)), "provider")
+        assert c.meta["broker"] == "asyncapi"
+
     def test_a_v2_channel_with_a_parameter_is_refused(self, tmp_path: Path) -> None:
         src = "asyncapi: 2.6.0\nchannels:\n  'user/{id}/signedup':\n    subscribe: {message: {}}\n"
         assert _extract(tmp_path, "asyncapi.yaml", src) == []

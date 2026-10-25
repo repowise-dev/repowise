@@ -104,9 +104,9 @@ def _broker(doc: Mapping[str, Any], channel: Mapping[str, Any]) -> str:
     """The broker of *channel*'s servers, when they speak one protocol."""
     servers = _mapping(doc.get("servers"))
     names = _server_names(channel) or list(servers)
-    protocols = {
-        str(_mapping(servers.get(n)).get("protocol", "")).lower() for n in names if n in servers
-    }
+    raw = [_mapping(servers.get(n)).get("protocol") for n in names if n in servers]
+    # A null or non-string protocol says nothing about the broker.
+    protocols = {p.strip().lower() for p in raw if isinstance(p, str)}
     protocols.discard("")
     if len(protocols) != 1:
         return ASYNCAPI_BROKER
