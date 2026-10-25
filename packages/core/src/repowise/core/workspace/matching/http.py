@@ -28,7 +28,7 @@ from repowise.core.workspace.service_names import (
     ServiceNameMap,
 )
 
-from .common import find_matching_keys, internal, prefer_target_repo
+from .common import find_matching_keys, internal, prefer_target_repo, spans_repos
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -335,6 +335,12 @@ def _methods_compatible(consumer_method: str, provider_method: str) -> bool:
     return consumer_method == provider_method or consumer_method == "*" or provider_method == "*"
 
 
+def _method_fits(method: str, provider: Contract) -> bool:
+    """Whether *provider*'s method serves a call made with *method*."""
+    split = _split_http_id(normalize_contract_id(provider.contract_id))
+    return split is not None and _methods_compatible(method, split[0])
+
+
 def is_deferred(consumer: Contract) -> bool:
     """A base-stripped or gateway-routed consumer skips the exact pass; its own pass owns it."""
     return bool(consumer.meta.get("base_stripped") or "route_path" in consumer.meta)
@@ -401,7 +407,9 @@ def base_resolved_pass(state: MatchState) -> None:
     The strategy names how the target service was settled: a host or
     ``service_bases`` target that narrows to a provider (``service_mapped``),
     the only service serving the path (``unique_path``), or neither, linking
-    every service that serves it (``ambiguous_path``, a candidate).
+    every service that serves it (``ambiguous_path``, a candidate) when they
+    share one repo. Services in two or more repos link to none
+    (:meth:`.common.MatchState.refuse`).
     """
     for consumer in state.unmatched("http"):
         if not consumer.meta.get("base_stripped") or "route_path" in consumer.meta:
@@ -421,19 +429,31 @@ def base_resolved_pass(state: MatchState) -> None:
         target = consumer.meta.get("target_repo")
         narrowed = [p for p in providers if p.repo == target] if target else []
         if narrowed:
-            providers = narrowed
-        if narrowed:
-            strategy = LinkStrategy.SERVICE_MAPPED
-        elif len({(p.repo, p.service) for p in providers}) == 1:
-            strategy = LinkStrategy.UNIQUE_PATH
+            providers, strategy = narrowed, LinkStrategy.SERVICE_MAPPED
+        elif spans_repos(providers):
+            # A target the workspace's own config placed stays unmatched, so
+            # the service pass draws its edge to that repo.
+            if not consumer.meta.get("target_evidence"):
+                state.refuse(consumer)
+            continue
         else:
-            strategy = LinkStrategy.AMBIGUOUS_PATH
+            strategy = _one_repo_strategy(providers)
         for provider in providers:
             state.add(consumer, provider, strategy)
 
 
+def _one_repo_strategy(providers: list[Contract]) -> LinkStrategy:
+    """``unique_path`` for one service of one repo, ``ambiguous_path`` for several."""
+    if len({p.service for p in providers}) == 1:
+        return LinkStrategy.UNIQUE_PATH
+    return LinkStrategy.AMBIGUOUS_PATH
+
+
 def candidate_pass(state: MatchState) -> None:
-    """Retry unmatched consumers after collapsing mount/version/base prefixes on both sides."""
+    """Retry unmatched consumers after collapsing mount/version/base prefixes on both sides.
+
+    A collapsed path two or more repos serve links to none of them.
+    """
     candidate_index: dict[str, list[Contract]] = defaultdict(list)
     for key, providers in state.provider_index.items():
         split = _split_http_id(key)
@@ -456,12 +476,15 @@ def candidate_pass(state: MatchState) -> None:
         if core in ("", "/"):
             continue
 
-        for provider in prefer_target_repo(candidate_index.get(core, []), consumer):
-            if internal(provider, consumer) or not accepts(provider, consumer):
-                continue
-            psplit = _split_http_id(normalize_contract_id(provider.contract_id))
-            if psplit is None or not _methods_compatible(method, psplit[0]):
-                continue
+        servers = [
+            p
+            for p in prefer_target_repo(candidate_index.get(core, []), consumer)
+            if not internal(p, consumer) and accepts(p, consumer) and _method_fits(method, p)
+        ]
+        if spans_repos(servers):
+            state.refuse(consumer)
+            continue
+        for provider in servers:
             state.add(consumer, provider, LinkStrategy.PREFIX_STRIPPED)
 
 

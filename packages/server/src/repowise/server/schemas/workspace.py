@@ -172,7 +172,8 @@ class WorkspaceContractDetail(BaseModel):
     #: Links this contract participates in, on whichever side it plays.
     links: list[WorkspaceContractLinkEntry] = []
     #: Why this consumer matched no provider (``external_host``,
-    #: ``internal_only``, ``no_provider``), from the system graph's diagnostics.
+    #: ``internal_only``, ``no_provider``, ``ambiguous_provider``), from the
+    #: system graph's diagnostics.
     #: None for providers, for linked consumers, and when no graph is built.
     unmatched_reason: str | None = None
 
@@ -378,7 +379,7 @@ class WorkspaceUnmatchedConsumer(BaseModel):
     file_path: str
     contract_id: str
     contract_type: str
-    reason: str  # no_provider | internal_only | unlinked
+    reason: str  # no_provider | internal_only | unlinked | external_host | ambiguous_provider
 
 
 class WorkspaceOrphanProvider(BaseModel):

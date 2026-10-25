@@ -1813,6 +1813,7 @@
       "unlinked": "unlinked",
       "internal_only": "internal to one service",
       "external_host": "external host",
+      "ambiguous_provider": "several repos serve it",
       "unknown": "no reason recorded",
       "everyMatched": "every consumer matched a provider"
     },
@@ -1888,6 +1889,7 @@
         "unlinked": "No link formed",
         "internal_only": "Not a cross-repo link",
         "external_host": "Outside this workspace",
+        "ambiguous_provider": "Several repos serve this route",
         "unknown": "No provider found"
       },
       "prose": {
@@ -1900,6 +1902,7 @@
         "unmatchedExternalHostGeneric": "This call goes to a third-party host, which is not a service in this workspace. Calls to a literal external host are left out of matching on purpose, so there is nothing to link. If that host is one of your own services, add its repository to the workspace.",
         "unmatchedInternalOnly": "The only declarations matching this call live in the same repository and the same service as the call itself, so it never crosses a boundary. Intra-service calls are left out of the link set on purpose: a link is a claim that two services depend on each other.",
         "unmatchedNoProvider": "Nothing in this workspace declares {contract}. Check for a typo in the path, an endpoint that was renamed or removed, a service outside these repositories, or a route declared in a form extraction does not recognise.",
+        "unmatchedAmbiguousProvider": "Two or more repositories serve this route, and neither the host nor the base of the call says which one it reaches, so no link is drawn to any of them. To place it, add a contracts.service_bases entry for its host or base, or a manual link.",
         "unmatchedUnlinked": "A declaration with this id exists in another service, but no link was formed between the two. That is rare, and it points at a gap in the matcher rather than at the code.",
         "unmatchedDefault": "This call matched no declaration, and no reason was recorded for it. Reasons come from the system graph, so a workspace that has not built one reports the count without the explanation."
       },

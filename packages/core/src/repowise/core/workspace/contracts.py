@@ -79,6 +79,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # skips tooling and build files.
 # A data consumer in a file that opens SQLite carries ``meta['embedded']`` and
 # links only within its repo.
+# An HTTP or gRPC consumer whose id two or more repos serve, with nothing
+# placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
 CONTRACTS_VERSION = 15
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
@@ -264,7 +266,9 @@ class ContractStore:
     #: Service-level edges (:attr:`.origins.LinkStrategy.HOST_ONLY`): a consumer
     #: whose host names a workspace repo while no route there serves its path;
     #: and a gateway's edge to each service it routes to
-    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). Kept out of ``contract_links``, which only ever pairs two contracts.
+    #: (:attr:`.origins.LinkStrategy.GATEWAY_ROUTE`, no consumer contract). Kept
+    #: out of ``contract_links``, which pairs two contracts; a call linked
+    #: through a gateway on its forwarded path is a ``gateway_route`` link there.
     service_links: list[ContractLink] = field(default_factory=list)
     #: The service-name map matching used (:mod:`.service_names`): each name, its
     #: repo, and the source and file that placed it, plus the fingerprint that

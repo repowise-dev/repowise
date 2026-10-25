@@ -39,7 +39,7 @@ follows from the strategy.
 | 1.0 | `shared_table` | exact | A service that only models a table, to the one service defining its schema |
 | 1.0 | `service_mapped` | exact | The consumer's host or base token maps to the providing service |
 | 1.0 | `unique_path` | exact | The consumer's base is unread and one service serves the path |
-| 0.6 | `ambiguous_path` | candidate | The base is unread and several services serve the path; linked to each |
+| 0.6 | `ambiguous_path` | candidate | The base is unread and several services of one repo serve the path; linked to each |
 | 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes |
 | 0.5 | `host_only` | candidate | The host names a workspace service, but no route there serves the path; a service-level edge |
 | 1.0 | `gateway_route` | exact | A gateway's config forwards the path to the service: the gateway's own edge, and a call through it linked on the forwarded path |
@@ -117,8 +117,10 @@ method whose body sends its string parameter through `HttpClient` is read with t
 builds. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
-provides that path (`unique_path`) and a lower-confidence **candidate** when the target
-is ambiguous (`ambiguous_path`). A generic operational path (`/health`, `/healthz`, `/ready`,
+provides that path (`unique_path`) and a lower-confidence **candidate** when several
+services of one repo serve it (`ambiguous_path`). A call whose route two or more repos
+serve, with no host or base naming one, links to none of them and is reported as
+`ambiguous_provider`. A generic operational path (`/health`, `/healthz`, `/ready`,
 `/metrics`, `/status`, `/version`, `/actuator/info`, the root) names no service, so it links
 only to the repo its host or base resolves to or, with neither, to a server in the caller's
 own repo; it never links to another repo by path alone.
@@ -153,9 +155,11 @@ under `context-path: /uaa` is `POST /uaa/users`. A module given two different ba
 none.
 
 Each repo is walked once per update for these file names; test, example and build-output
-directories are skipped, and files at the workspace root are read too. A name two files
-place in different repos is left unmapped rather than guessed. To override or fill a gap, add
-the host or base token to `service_bases`, which always wins.
+directories are skipped, and so is any file the code-origin classifier calls test, docs or
+example, vendored or generated (a compose file under `docs/`, `demo/` or `e2e-tests/`).
+Files at the workspace root are read too. A name two files place in different repos is left
+unmapped rather than guessed. To override or fill a gap, add the host or base token to
+`service_bases`, which always wins.
 
 A gateway source states routes rather than names: a path prefix the gateway forwards to a
 service, and the path it forwards (Spring `StripPrefix`, `PrefixPath` and a

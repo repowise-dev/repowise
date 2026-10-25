@@ -114,7 +114,7 @@ def test_compact_view_keeps_three_rows_and_names_unavailable_stores():
             "quarter": {"actions": [], "total": 0, "hidden": 0, "by_tier": {}},
         },
         "summary": {"week": "9 things worth doing this week.", "quarter": "Nothing."},
-        "unavailable": {"security": "why", "performance": "why"},
+        "unavailable": {"security": "not computed", "performance": "read failed"},
     }
 
     block = compact_actions_view(view)
@@ -127,6 +127,10 @@ def test_compact_view_keeps_three_rows_and_names_unavailable_stores():
     assert block["week"]["actions"][0]["target"] == {"kind": "file", "path": "a0.py"}
     assert block["quarter"] == {"total": 0, "by_tier": {}, "actions": []}
     assert block["unavailable"] == ["performance", "security"]
+    assert block["unavailable_reasons"] == {
+        "performance": "read failed",
+        "security": "not computed",
+    }
 
 
 def test_the_default_cut_is_one_horizon_with_one_line_impacts():

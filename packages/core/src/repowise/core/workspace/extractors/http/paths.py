@@ -71,12 +71,19 @@ def _after_authority(url: str) -> str | None:
     return url[scheme + 3 :] if scheme >= 0 else None
 
 
+# A string literal opening with `?` inside an interpolation: a query suffix.
+# The quote must open a literal, so `a=="x"?b:c` (a closing quote) is not one.
+_QUERY_LITERAL_RE = re.compile(r"""(?:^|[\s?:(,=+|&])[`'"]\?""")
+
+
 def flatten_interpolations(path: str) -> str:
     """*path* with each ``${...}`` holding braces of its own reduced to ``${expr}``.
 
     ``/rate/${format(d, F, { in: utc })}`` is one parameter segment; the
     brace-free patterns of :func:`normalize_http_path` would stop inside it.
     An unbalanced interpolation is left for :func:`is_unusable_consumer_path`.
+    A last hole holding a literal that starts with ``?``
+    (`` ${q ? `?${q}` : ""} ``) is the query string, so the path ends before it.
     """
     out: list[str] = []
     pos = 0
@@ -86,6 +93,8 @@ def flatten_interpolations(path: str) -> str:
             break
         inner = path[start + 2 : end]
         out.append(path[pos:start])
+        if end == len(path) - 1 and _QUERY_LITERAL_RE.search(inner):
+            return "".join(out)
         out.append("${expr}" if "{" in inner else path[start : end + 1])
         pos = end + 1
     out.append(path[pos:])

@@ -554,7 +554,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 
 - **`dependencies`:** the ten heaviest package edges (`from`, `to`, `verb`, `weight`), `edges_total` when more; absent in a single-package repo.
 - **`code_health`:** `production_average` when tests are in the reading; `files_scored` when some files have no score.
-- **`next_actions`:** `include=["actions"]` serves both horizons with `done_when` and `by_tier`; `get_health(fix_id="act_...")` opens one.
+- **`next_actions`:** `include=["actions"]` serves both horizons with `done_when` and `by_tier`; `get_health(fix_id="act_...")` opens one. `unavailable` names inputs the list was built without and `unavailable_reasons` gives each one's reason; both are absent when every input was read.
 - **`repo="all"`:** each repo has `summary` (essay's first sentence), `code_files` (its `code_health.code_files`, or graph code files before health runs) and `symbol_count`; `total_code_files` sums them.
 
 Opt-in blocks, computed only when named: `outline` (page tree, two levels), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`), `components`, `changes`, `actions`, `tools` (`tool_surface`), `scope` (whole `_meta.index_scope`).

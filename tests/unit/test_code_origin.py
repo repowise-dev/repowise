@@ -83,6 +83,17 @@ _OWN_HEADER = (
         ("public/scripts/app.js", "production"),
         ("scripts/public/seed.py", "tooling"),
         ("tools/gen.go", "tooling"),
+        ("eng/tools/gen.cs", "tooling"),
+        ("hack/tools/main.go", "tooling"),
+        ("ci/tools/lint.py", "tooling"),
+        ("Tools/Gen/Program.cs", "tooling"),
+        ("build/tools/gen.py", "tooling"),
+        # A ``tools/`` folder inside the product is its own code.
+        ("lib/ai/tools/get-weather.ts", "production"),
+        ("src/tools/search.py", "production"),
+        ("pkg/tools/client.go", "production"),
+        ("src/main/java/com/x/tools/HttpUtil.java", "production"),
+        ("modal_app/security/tools/gitleaks.py", "production"),
         # Dart's ``tool/`` (flutter samples' CI scripts), but not a shipped one.
         ("tool/ci_script.dart", "tooling"),
         ("desktop_photo_search/material/tool/grind.dart", "tooling"),

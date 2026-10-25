@@ -33,6 +33,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repowise.core.code_origin import CodeOrigin, code_origin
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
 from . import (
@@ -88,6 +89,11 @@ _PRUNE = PRUNED_DIRS | {
     "dist",
     "build",
 }
+# The same question asked of each gated file, by the shared classifier: a
+# compose file under ``docs/``, ``demo/`` or ``e2e-tests/`` describes a stack
+# that is not the deployed one. ``_PRUNE`` stays as the walk's prune; it also
+# skips nested ``samples/`` that this first-segment rule does not see.
+_NOT_DEPLOYED: frozenset[CodeOrigin] = frozenset({"test", "docs_example", "vendored", "generated"})
 _MAX_BYTES = 512_000
 
 
@@ -244,9 +250,13 @@ def _walk(alias: str, root: Path) -> list[_Found]:
         rel_dir = dirpath.relative_to(root)
         parents = tuple(p.lower() for p in rel_dir.parts)
         for filename in sorted(filenames):
-            path = dirpath / filename
-            for source, claim in _claims_in(path, parents):
-                found.append(_Found(source, claim, alias, f"{alias}/{(rel_dir / filename).as_posix()}"))
+            claims = _claims_in(dirpath / filename, parents)
+            if not claims:
+                continue
+            rel = (rel_dir / filename).as_posix()
+            if code_origin(rel, repo_root=root) in _NOT_DEPLOYED:
+                continue
+            found.extend(_Found(source, claim, alias, f"{alias}/{rel}") for source, claim in claims)
     return found
 
 

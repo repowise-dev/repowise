@@ -20,7 +20,7 @@ from repowise.core.workspace.contracts import normalize_contract_id
 from repowise.core.workspace.origins import LinkStrategy
 
 from . import data, http, topic
-from .common import MatchState, find_matching_keys, internal, prefer_target_repo
+from .common import MatchState, find_matching_keys, internal, prefer_target_repo, spans_repos
 from .http import annotate_consumer_targets
 
 if TYPE_CHECKING:
@@ -41,12 +41,18 @@ class TypeMatcher:
     accepts: Callable[[Contract, Contract], bool] | None = None
     passes: tuple[Callable[[MatchState], None], ...] = ()
     keys: Callable[[Contract, dict[str, list[Contract]]], list[str]] | None = None
+    #: A consumer of the type reaches one provider: when its host or base does
+    #: not place it and two or more repos serve its id, it links to none of
+    #: them (:meth:`.common.MatchState.refuse`). Off for broadcasts and shared
+    #: tables, where every repo on the id is a true end.
+    one_provider_repo: bool = False
 
 
 MATCHERS: dict[str, TypeMatcher] = {
     "http": TypeMatcher(
         deferred=http.is_deferred,
         accepts=http.accepts,
+        one_provider_repo=True,
         passes=(
             http.gateway_pass,
             http.base_resolved_pass,
@@ -54,6 +60,7 @@ MATCHERS: dict[str, TypeMatcher] = {
             http.service_pass,
         ),
     ),
+    "grpc": TypeMatcher(one_provider_repo=True),
     "topic": TypeMatcher(
         deferred=topic.is_binding,
         accepts=topic.accepts,
@@ -66,25 +73,38 @@ MATCHERS: dict[str, TypeMatcher] = {
 _NO_RULES = TypeMatcher()
 
 
+def _servers(state: MatchState, consumer: Contract, rules: TypeMatcher) -> list[Contract]:
+    """Providers outside *consumer*'s own service that may serve it on its id.
+
+    A provider in its own service marks it served instead.
+    """
+    if rules.keys is not None:
+        keys = rules.keys(consumer, state.provider_index)
+    else:
+        keys = find_matching_keys(consumer.contract_id, state.provider_index)
+    providers = [p for k in keys for p in state.provider_index[k]]
+    servers: list[Contract] = []
+    for provider in prefer_target_repo(providers, consumer):
+        if internal(provider, consumer):
+            state.mark_served(consumer)
+        elif rules.accepts is None or rules.accepts(provider, consumer):
+            servers.append(provider)
+    return servers
+
+
 def _exact_pass(state: MatchState) -> None:
     for consumer in state.consumers:
         rules = MATCHERS.get(consumer.contract_type, _NO_RULES)
         if rules.deferred is not None and rules.deferred(consumer):
             continue
+        servers = _servers(state, consumer, rules)
+        if rules.one_provider_repo and spans_repos(servers):
+            state.refuse(consumer)
+            continue
         own = normalize_contract_id(consumer.contract_id)
-        if rules.keys is not None:
-            keys = rules.keys(consumer, state.provider_index)
-        else:
-            keys = find_matching_keys(consumer.contract_id, state.provider_index)
-        providers = [p for k in keys for p in state.provider_index[k]]
         # A host or base token that names the provider's repo is what joined them.
         target = consumer.meta.get("target_repo") if consumer.meta.get("target_via") else None
-        for provider in prefer_target_repo(providers, consumer):
-            if internal(provider, consumer):
-                state.mark_served(consumer)
-                continue
-            if rules.accepts is not None and not rules.accepts(provider, consumer):
-                continue
+        for provider in servers:
             # A key the type's own rule reached under another name (a pattern
             # subscription, the only `keys` rule today) links under the
             # provider's name. A new `keys` rule with another meaning names its

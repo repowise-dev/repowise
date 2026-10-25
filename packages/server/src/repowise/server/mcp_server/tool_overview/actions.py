@@ -62,9 +62,12 @@ def compact_actions_view(view: dict[str, Any], *, full: bool = True) -> dict[str
                 _compact(a, full=full) for a in horizon.get("actions", [])[:_PER_HORIZON]
             ]
         block[name] = row
-    unavailable = sorted(view.get("unavailable") or {})
-    if unavailable:
-        block["unavailable"] = unavailable
+    # ``unavailable`` stays the sorted name list older readers expect;
+    # ``unavailable_reasons`` says why each one is missing.
+    reasons = view.get("unavailable") or {}
+    if reasons:
+        block["unavailable"] = sorted(reasons)
+        block["unavailable_reasons"] = dict(sorted(reasons.items()))
     return block
 
 
