@@ -17,11 +17,29 @@ _COMPILER_DIRECTIVE = re.compile(r"\s*(PROCESS|CBL)\b", re.IGNORECASE)
 # or the end of the line, so a data name such as ``CBL-REC`` stays a data name.
 _COMPILER_DIRECTIVE_COLUMN_1 = re.compile(r"\s*(PROCESS|CBL)(?=\s|$)", re.IGNORECASE)
 _FREE_FORMAT = re.compile(r">>\s*SOURCE\s+(FORMAT\s+(IS\s+)?)?FREE|SOURCEFORMAT\W+FREE", re.I)
+_FREE_DIRECTIVE = re.compile(r"^\s*>>", re.IGNORECASE)
 
 
 def is_free_format(text: str) -> bool:
     """A ``>>SOURCE FORMAT FREE`` (or Micro Focus ``SOURCEFORMAT"FREE"``) directive."""
     return _FREE_FORMAT.search(text) is not None
+
+
+def normalize_free_format(text: str) -> str:
+    """Move free-format code into columns the grammar expects and blank directives.
+
+    Line numbers are preserved. Compiler directive lines (such as
+    ``>>SOURCE FORMAT FREE``) become blank, and code lines are shifted 7
+    columns right so column 1 lands in Area A (column 8).
+    """
+    out: list[str] = []
+    for raw in text.split("\n"):
+        line, eol = (raw[:-1], "\r") if raw.endswith("\r") else (raw, "")
+        if _FREE_DIRECTIVE.match(line) or _FREE_FORMAT.search(line) or not line.strip():
+            out.append(eol)
+            continue
+        out.append(" " * _TEXT_START + line + eol)
+    return "\n".join(out)
 
 
 def normalize_fixed_format(text: str) -> str:
