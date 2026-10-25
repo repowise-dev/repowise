@@ -1454,6 +1454,8 @@
       "copyPrompt": "Copy setup prompt",
       "promptCopied": "Setup prompt copied",
       "prompt": "Connect repowise to {name} for this repo. Run `{command}` in the repo root, then restart {name} so it loads the repowise tools. Run `repowise doctor` to check the connection.",
+      "listLabel": "Agents on this machine",
+      "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
       "askLabel": "Ask it something",
       "askRisk": "Which files are riskiest to change, and why?",
       "askHotspot": "Why does {path} change so often?",
@@ -1464,16 +1466,15 @@
     },
     "yours": {
       "title": "Make it <em>yours</em>",
-      "lede": "Both are optional. You can change them any time in Settings.",
-      "modelTitle": "Add a model for the parts that need one",
-      "optional": "Optional",
+      "lede": "Every part is optional. Change any of it later in Settings.",
+      "modelTitle": "Add a model where it helps",
       "gets": {
         "docs": "Docs that explain how and why",
         "chat": "Chat in this dashboard",
         "answers": "Written answers for your agent",
         "local": "Your key or sign-in stays here"
       },
-      "detectedLabel": "Found on this machine",
+      "detected": "Found on this machine: {names}.",
       "syncTitle": "Keep the index in sync",
       "syncBody": "Updates after each commit through a git hook.",
       "syncFailed": "Couldn't change sync",

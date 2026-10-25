@@ -7,7 +7,14 @@ import { seriesColor } from "@repowise-dev/ui/shared/series";
 import type { HealthBand } from "@repowise-dev/types/health";
 import { commitsViewHref } from "@/lib/changes";
 import type { WelcomeLens } from "@/lib/welcome-moment";
-import { MOMENT_CARD, MOMENT_ENTER, MOMENT_MICRO } from "@/components/layout/moment-shell";
+import {
+  MOMENT_CAPTION,
+  MOMENT_CARD,
+  MOMENT_FIGURE,
+  MOMENT_LINK,
+  MOMENT_MICRO,
+  MomentLabel,
+} from "@/components/layout/moment-shell";
 
 /** Series index per lens, as the design colours them. */
 const SERIES_OF: Record<WelcomeLens["key"], number> = {
@@ -28,9 +35,6 @@ const BAND_DOT: Record<HealthBand, string> = {
   at_risk: "var(--color-error)",
 };
 
-const LINK =
-  "mt-1.5 self-start rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] hover:decoration-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
-
 interface CardText {
   label: string;
   value: string;
@@ -40,7 +44,8 @@ interface CardText {
   open: string;
 }
 
-/** Step 1: one card per lens the index measured. */
+/** Step 1: one card per lens the index measured. An odd last card spans the
+ *  row, so the grid never ends on a gap. */
 export function WelcomeStepRepo({
   repoId,
   lenses,
@@ -55,29 +60,21 @@ export function WelcomeStepRepo({
   if (lenses.length === 0) return null;
   return (
     <section aria-labelledby="welcome-standout">
-      <h3 id="welcome-standout" className={`${MOMENT_MICRO} mb-2`}>
+      <h3 id="welcome-standout" className={`${MOMENT_MICRO} mb-3`}>
         {t("standout")}
       </h3>
-      <ul className="grid grid-cols-1 gap-2.5 min-[561px]:grid-cols-2">
+      <ul className="grid grid-cols-1 gap-3 min-[561px]:grid-cols-2 min-[561px]:[&>li:last-child:nth-child(odd)]:col-span-2">
         {lenses.map((lens) => {
           const c = text(lens);
           return (
-            <li
-              key={lens.key}
-              className={`${MOMENT_CARD} flex min-w-0 flex-col gap-0.5 px-3 py-2.5 ${MOMENT_ENTER}`}
-              style={{ borderLeftColor: seriesColor(SERIES_OF[lens.key]) }}
-            >
-              <span className={MOMENT_MICRO}>{c.label}</span>
-              <span className="flex items-baseline gap-2 text-[22px] font-semibold tabular-nums tracking-tight text-[var(--color-text-primary)]">
-                {c.value}
-                {c.unit && (
-                  <span className="text-xs font-normal text-[var(--color-text-secondary)]">{c.unit}</span>
-                )}
-              </span>
-              <p className="text-xs text-[var(--color-text-secondary)] [overflow-wrap:anywhere] [text-wrap:pretty]">
-                {c.caption}
+            <li key={lens.key} className={`${MOMENT_CARD} flex min-w-0 flex-col p-4`}>
+              <MomentLabel color={seriesColor(SERIES_OF[lens.key])}>{c.label}</MomentLabel>
+              <p className="mt-2 flex items-baseline gap-2">
+                <span className={MOMENT_FIGURE}>{c.value}</span>
+                {c.unit && <span className="text-xs text-[var(--color-text-secondary)]">{c.unit}</span>}
               </p>
-              <Link href={c.href} onClick={onNavigate} className={LINK}>
+              <p className={`${MOMENT_CAPTION} mt-1 [overflow-wrap:anywhere]`}>{c.caption}</p>
+              <Link href={c.href} onClick={onNavigate} className={`${MOMENT_LINK} mt-auto self-start pt-3`}>
                 {c.open}
               </Link>
             </li>
@@ -88,7 +85,7 @@ export function WelcomeStepRepo({
   );
 }
 
-const mono = (chunks: ReactNode) => <span className="font-mono text-[11.5px]">{chunks}</span>;
+const mono = (chunks: ReactNode) => <span className="font-mono text-[0.95em]">{chunks}</span>;
 
 /** The words and route for each lens. */
 function useLensText(repoId: string): (lens: WelcomeLens) => CardText {
@@ -104,7 +101,7 @@ function useLensText(repoId: string): (lens: WelcomeLens) => CardText {
           value: lens.score.toFixed(1),
           unit: lens.band && (
             <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden className="h-[7px] w-[7px] rounded-full" style={{ background: BAND_DOT[lens.band] }} />
+              <span aria-hidden className="size-1.5 rounded-full" style={{ background: BAND_DOT[lens.band] }} />
               {t(`band.${lens.band}`)}
             </span>
           ),

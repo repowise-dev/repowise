@@ -1454,6 +1454,8 @@
       "copyPrompt": "复制设置提示词",
       "promptCopied": "已复制设置提示词",
       "prompt": "为此仓库将 repowise 连接到 {name}。在仓库根目录运行 `{command}`，然后重启 {name}，让它加载 repowise 工具。运行 `repowise doctor` 检查连接。",
+      "listLabel": "本机上的智能体",
+      "moreAgents": "还找到 {count} 个智能体。设置页列出了全部。",
       "askLabel": "问它一个问题",
       "askRisk": "哪些文件改动风险最高？为什么？",
       "askHotspot": "为什么 {path} 改动如此频繁？",
@@ -1464,16 +1466,15 @@
     },
     "yours": {
       "title": "按<em>你的方式</em>设置",
-      "lede": "两项都是可选的。你可以随时在设置中更改。",
-      "modelTitle": "为需要模型的部分添加一个模型",
-      "optional": "可选",
+      "lede": "每一项都是可选的，之后可在设置中随时更改。",
+      "modelTitle": "在有用的地方添加模型",
       "gets": {
         "docs": "解释原理和原因的文档",
         "chat": "在此仪表板中对话",
         "answers": "为你的智能体撰写的回答",
         "local": "你的密钥或登录信息保留在本机"
       },
-      "detectedLabel": "在本机找到",
+      "detected": "在本机找到：{names}。",
       "syncTitle": "保持索引同步",
       "syncBody": "每次提交后通过 git 钩子更新。",
       "syncFailed": "无法更改同步设置",

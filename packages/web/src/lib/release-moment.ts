@@ -258,7 +258,11 @@ export function decideMoment(
 ): { moment: UpgradeMoment; preview: boolean } {
   const replay = previewMoment(search);
   if (replay) return { moment: replay, preview: true };
-  if (sessionMomentTaken()) return { moment: "none", preview: false };
+  // `?tour=1` opens the welcome on this load: one dialog at a time, and the
+  // upgrade (left unstored) waits for the next session.
+  if (sessionMomentTaken() || new URLSearchParams(search).get("tour") === "1") {
+    return { moment: "none", preview: false };
+  }
   const moment = takeUpgradeMoment(version, highlights.length > 0);
   if (moment !== "none") {
     startNewSurfaces(version, highlights);

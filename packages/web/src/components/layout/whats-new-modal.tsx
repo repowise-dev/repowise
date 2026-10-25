@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
   Dialog,
@@ -12,7 +12,7 @@ import {
 import { useChangelog } from "@/lib/hooks/use-meta-version";
 import { highlightRepoId } from "@/lib/release-moment";
 import { useTranslations } from "next-intl";
-import { MOMENT_GROUND } from "./moment-shell";
+import { MOMENT_GROUND, MOMENT_GUTTER, MOMENT_MICRO, MOMENT_SHEET } from "./moment-shell";
 import { ReleaseHeader, ReleaseNotes, releaseName } from "./release-notes";
 
 /** How many earlier releases the switcher lists. */
@@ -35,6 +35,7 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
   // Only fetch once the modal is opened.
   const { entries, error, isLoading } = useChangelog(open);
   const [selected, setSelected] = useState<string | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
 
   // Each opening starts on the release it was opened for.
   useEffect(() => {
@@ -52,7 +53,7 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
 
   const title = (
     <DialogHeader>
-      <DialogTitle className="font-mono text-[10px] font-normal uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
+      <DialogTitle className={`${MOMENT_MICRO} pr-10`}>
         {t("whatsNewModal.title")}
       </DialogTitle>
       <DialogDescription className="sr-only">{t("whatsNewModal.description")}</DialogDescription>
@@ -61,74 +62,74 @@ export function WhatsNewModal({ open, onOpenChange, version, fresh = false }: Wh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* Its own deeper ground and a glow band: the release moment is the one
-          dialog that presents rather than asks. */}
-      <DialogContent className={`${MOMENT_GROUND} max-h-[85vh] overflow-y-auto sm:max-w-3xl`}>
-        {entry ? (
-          <ReleaseHeader key={`h-${entry.version}`} entry={entry} title={title} />
-        ) : (
-          <div className="px-6 pt-6 sm:px-8">{title}</div>
-        )}
+      {/* Its own deeper ground and a glow band: a moment presents instead of
+          asking. */}
+      <DialogContent
+        data-moment
+        className={`${MOMENT_GROUND} ${MOMENT_SHEET} min-[561px]:h-auto min-[561px]:max-w-3xl`}
+      >
+        {/* One scroll for band and notes; the close button stays put. */}
+        <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {entry ? (
+            <ReleaseHeader key={`h-${entry.version}`} entry={entry} title={title} />
+          ) : (
+            <div className={`${MOMENT_GUTTER} pt-6 min-[561px]:pt-8`}>{title}</div>
+          )}
 
-        <div className="space-y-8 px-6 py-6 sm:px-8">
-        {isLoading && (
-          <p className="text-sm text-[var(--color-text-tertiary)]">
-            {t("whatsNewModal.loading")}
-          </p>
-        )}
-        {error && (
-          <p className="text-sm text-[var(--color-text-tertiary)]">
-            {t.rich("whatsNewModal.unavailable", {
-              link: (chunks) => (
-                <a
-                  href="https://github.com/repowise-dev/repowise/releases"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-[var(--color-accent-primary)] underline"
-                >
-                  {chunks}
-                </a>
-              ),
-            })}
-          </p>
-        )}
+          <div className={`${MOMENT_GUTTER} space-y-10 pb-[max(2rem,env(safe-area-inset-bottom))] pt-6`}>
+            {isLoading && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">{t("whatsNewModal.loading")}</p>
+            )}
+            {error && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                {t.rich("whatsNewModal.unavailable", {
+                  link: (chunks) => (
+                    <a
+                      href="https://github.com/repowise-dev/repowise/releases"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[var(--color-accent-primary)] underline"
+                    >
+                      {chunks}
+                    </a>
+                  ),
+                })}
+              </p>
+            )}
 
-        {entry && (
-          <ReleaseNotes
-            key={entry.version}
-            entry={entry}
-            repoId={highlightRepoId(pathname)}
-            fresh={fresh && entry === fallback}
-            onNavigate={() => onOpenChange(false)}
-          />
-        )}
+            {entry && (
+              <ReleaseNotes
+                key={entry.version}
+                entry={entry}
+                repoId={highlightRepoId(pathname)}
+                fresh={fresh && entry === fallback}
+                onNavigate={() => onOpenChange(false)}
+              />
+            )}
 
-        {earlier.length > 0 && (
-          <nav
-            aria-label={t("whatsNewModal.earlier")}
-            className="space-y-1.5 border-t border-[var(--color-border-default)] pt-4"
-          >
-            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              {t("whatsNewModal.earlier")}
-            </p>
-            <ul className="flex flex-wrap gap-x-4 gap-y-1">
-              {earlier.map((e) => (
-                <li key={e.version}>
-                  <button
-                    type="button"
-                    onClick={() => setSelected(e.version)}
-                    className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-                  >
-                    {releaseName(e.version, t("whatsNewModal.nextRelease"))}
-                    {e.label && (
-                      <span className="ml-1 text-[var(--color-text-tertiary)]">{e.label}</span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </nav>
-        )}
+            {earlier.length > 0 && (
+              <nav aria-label={t("whatsNewModal.earlier")} className="space-y-3">
+                <p className={MOMENT_MICRO}>{t("whatsNewModal.earlier")}</p>
+                <ul className="flex flex-wrap gap-2">
+                  {earlier.map((e) => (
+                    <li key={e.version}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelected(e.version);
+                          scroller.current?.scrollTo?.({ top: 0 });
+                        }}
+                        className="inline-flex h-11 items-center gap-2 rounded-lg border border-[var(--color-border-default)] px-3 font-mono min-[561px]:h-8 text-xs tabular-nums text-[var(--color-text-primary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      >
+                        {releaseName(e.version, t("whatsNewModal.nextRelease"))}
+                        {e.label && <span className="text-[var(--color-text-tertiary)]">{e.label}</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </nav>
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>

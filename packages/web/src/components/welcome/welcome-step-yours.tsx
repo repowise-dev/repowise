@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import useSWR from "swr";
-import { useTranslations } from "next-intl";
+import { useFormatter, useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Switch } from "@repowise-dev/ui/ui/switch";
@@ -14,10 +14,10 @@ import { setSetupHook, type SetupResponse } from "@/lib/api/setup";
 import { getProviders } from "@/lib/api/providers";
 import { hostedLink } from "@/lib/hosted";
 import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
-import { MOMENT_MICRO } from "@/components/layout/moment-shell";
+import { MOMENT_BODY, MOMENT_CAPTION, MOMENT_LINK } from "@/components/layout/moment-shell";
 
-const ROW = "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-[var(--color-border-default)] py-2.5";
-const DOT = "h-[7px] w-[7px] shrink-0 rounded-full";
+const ROW = "flex items-center justify-between gap-4 py-4 last:pb-0";
+const ROW_TITLE = `${MOMENT_BODY} font-medium text-[var(--color-text-primary)]`;
 
 /** Whether to offer hosted: tips on, and not already signed in. */
 export function showsHostedRow(setup: SetupResponse | null): boolean {
@@ -28,28 +28,27 @@ export function showsHostedRow(setup: SetupResponse | null): boolean {
 export function WelcomeStepYours({ repoId, setup }: { repoId: string; setup: SetupResponse | null }) {
   const t = useTranslations("welcome.yours");
   return (
-    <div>
+    <div className="space-y-4">
       {setup && setup.model.docs_mode !== "llm" && <ModelBox repoId={repoId} />}
-      <SyncRow repoId={repoId} setup={setup} />
-      {showsHostedRow(setup) && (
-        <div className={ROW}>
-          <div className="min-w-0">
-            <h4 className="flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text-primary)]">
-              <span aria-hidden className={DOT} style={{ background: "var(--color-info)" }} />
-              {t("teamTitle")}
-            </h4>
-            <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">{t("teamBody")}</p>
-          </div>
-          <a
-            href={hostedLink("welcome", "team")}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded text-xs font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border-hover)] underline-offset-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-          >
-            {t("teamLink")}
-          </a>
-        </div>
-      )}
+      <ul className="divide-y divide-[var(--color-border-default)]">
+        <SyncRow repoId={repoId} setup={setup} />
+        {showsHostedRow(setup) && (
+          <li className={ROW}>
+            <div className="min-w-0">
+              <h4 className={ROW_TITLE}>{t("teamTitle")}</h4>
+              <p className={MOMENT_CAPTION}>{t("teamBody")}</p>
+            </div>
+            <a
+              href={hostedLink("welcome", "team")}
+              target="_blank"
+              rel="noreferrer"
+              className={`${MOMENT_LINK} shrink-0`}
+            >
+              {t("teamLink")}
+            </a>
+          </li>
+        )}
+      </ul>
     </div>
   );
 }
@@ -65,9 +64,11 @@ function useDetectedSources(repoId: string): ModelSource[] {
   return orderModelSources(data?.providers ?? []).filter((s) => s.detected);
 }
 
+/** The model offer: the one plum surface in the welcome. */
 function ModelBox({ repoId }: { repoId: string }) {
   const t = useTranslations("welcome.yours");
   const tm = useTranslations("modelUpgrade");
+  const format = useFormatter();
   const { openSheet, sheet } = useModelUpgrade(repoId);
   const detected = useDetectedSources(repoId);
   const sourceName = (s: ModelSource) =>
@@ -77,42 +78,27 @@ function ModelBox({ repoId }: { repoId: string }) {
   return (
     <section
       aria-labelledby="welcome-model"
-      className="mb-3 rounded-[10px] border border-[color-mix(in_srgb,var(--color-model)_30%,transparent)] bg-[var(--color-model-muted)] p-3.5"
+      className="rounded-lg border border-[color-mix(in_srgb,var(--color-model)_30%,transparent)] bg-[var(--color-model-muted)] p-4"
     >
-      <div className="flex items-baseline justify-between gap-2.5">
-        <h4 id="welcome-model" className="text-[13.5px] font-semibold text-[var(--color-text-primary)]">
-          {t("modelTitle")}
-        </h4>
-        <span className={MOMENT_MICRO}>{t("optional")}</span>
-      </div>
-      <ul className="my-2.5 grid grid-cols-1 gap-x-3.5 gap-y-1.5 text-xs text-[var(--color-text-secondary)] min-[561px]:grid-cols-2">
+      <h4 id="welcome-model" className={ROW_TITLE}>
+        {t("modelTitle")}
+      </h4>
+      <ul className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 text-xs text-[var(--color-text-secondary)] min-[561px]:grid-cols-2">
         {gets.map((g) => (
-          <li key={g} className="flex items-baseline gap-2">
-            <span aria-hidden className={`${DOT} translate-y-[-1px]`} style={{ background: "var(--color-model)" }} />
+          <li key={g} className="flex items-center gap-2">
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-[var(--color-model)]" />
             {g}
           </li>
         ))}
       </ul>
-      {detected.length > 0 && (
-        <div className="mb-3">
-          <p className={`${MOMENT_MICRO} mb-1`}>{t("detectedLabel")}</p>
-          <ul className="flex flex-col gap-1">
-            {detected.map((s) => (
-              <li
-                key={s.id}
-                className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-release-card)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-primary)]"
-              >
-                {sourceName(s)}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <div className="flex justify-end">
+      <div className="mt-4 flex flex-col gap-3 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between">
+        <p className={MOMENT_CAPTION}>
+          {detected.length > 0 &&
+            t("detected", { names: format.list(detected.map(sourceName), { type: "conjunction" }) })}
+        </p>
         <Button
-          size="sm"
           onClick={openSheet}
-          className="h-8 bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)] focus-visible:ring-[var(--color-model)] max-[560px]:w-full"
+          className="h-11 shrink-0 bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)] focus-visible:ring-[var(--color-model)] min-[561px]:h-9"
         >
           {tm("write")}
         </Button>
@@ -151,20 +137,26 @@ function SyncRow({ repoId, setup }: { repoId: string; setup: SetupResponse | nul
   }
 
   return (
-    <div className={ROW}>
+    <li className={ROW}>
       <div className="min-w-0">
-        <h4 id="welcome-sync" className="text-[13px] font-semibold text-[var(--color-text-primary)]">
+        <h4 id="welcome-sync" className={ROW_TITLE}>
           {t("syncTitle")}
         </h4>
-        <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">{t("syncBody")}</p>
-        {!writesAllowed && !installed && <CommandLine command="repowise hook install" />}
+        <p className={MOMENT_CAPTION}>{t("syncBody")}</p>
+        {!writesAllowed && !installed && (
+          <div className="mt-2">
+            <CommandLine command="repowise hook install" />
+          </div>
+        )}
       </div>
+      {/* The unchecked track is drawn in the border tone so it reads on the
+          moment ground. */}
       <Switch
         aria-labelledby="welcome-sync"
         checked={installed}
         disabled={!writesAllowed || busy}
         onCheckedChange={(next) => (next ? void apply(true) : setConfirmOff(true))}
-        className="data-[state=checked]:bg-[var(--color-success)]"
+        className="data-[state=unchecked]:bg-[var(--color-border-hover)]"
       />
       <ConfirmDialog
         open={confirmOff}
@@ -176,6 +168,6 @@ function SyncRow({ repoId, setup }: { repoId: string; setup: SetupResponse | nul
         loading={busy}
         onConfirm={() => apply(false)}
       />
-    </div>
+    </li>
   );
 }

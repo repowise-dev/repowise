@@ -188,6 +188,35 @@ describe("WelcomeDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Write the docs" }));
     expect(mocks.openSheet).toHaveBeenCalled();
   });
+
+  it("moves on with Enter from the heading, but not from a control", () => {
+    renderDialog();
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Back" }), { key: "Enter" });
+    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(screen.getByText("Step 3 of 3")).toBeTruthy();
+    // The last step leaves Enter to the Finish link.
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(screen.getByText("Step 3 of 3")).toBeTruthy();
+  });
+
+  it("lists connected agents first, a few at most, and shortens config paths", () => {
+    const many = ["a", "b", "c", "d", "e"].map((id) => ({
+      id,
+      display_name: `Agent ${id}`,
+      installed: true,
+      connected: id === "e",
+      config_files: { repo: [`C:\\work\\repo\\.${id}\\mcp.json`] },
+    }));
+    renderDialog({ setup: setup({ agents: many }) });
+    fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+    const names = screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
+    expect(names).toEqual(["Agent e", "Agent a", "Agent b", "Agent c"]);
+    expect(screen.getByText("1 more agent found. Setup lists them all.")).toBeTruthy();
+    expect(screen.getByText(".a/mcp.json").getAttribute("title")).toBe("C:\\work\\repo\\.a\\mcp.json");
+  });
 });
 
 describe("hosted row", () => {

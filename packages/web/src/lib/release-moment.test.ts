@@ -128,6 +128,12 @@ describe("decideMoment", () => {
     expect(decideMoment("0.57.0", [HL("/settings")], "")).toEqual({ moment: "dialog", preview: false });
     expect(readNewSurfaces()?.routes).toEqual(["/settings"]);
   });
+
+  it("stays quiet on a tour load and keeps the upgrade for the next session", () => {
+    window.localStorage.setItem("repowise:last-seen-server-version", "0.56.0");
+    expect(decideMoment("0.57.0", [], "?tour=1")).toEqual({ moment: "none", preview: false });
+    expect(window.localStorage.getItem("repowise:last-seen-server-version")).toBe("0.56.0");
+  });
 });
 
 describe("highlight repository", () => {
