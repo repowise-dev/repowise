@@ -13,7 +13,7 @@ describe("Input", () => {
     expect(field.className).toContain("focus-visible:ring-[var(--color-focus-ring)]");
   });
 
-  it("dims a disabled value's text rather than the whole box", () => {
+  it("dims a disabled value's text, not the whole box", () => {
     render(<Input aria-label="Branch" disabled defaultValue="main" />);
     const field = screen.getByRole("textbox", { name: "Branch" });
     expect(field.className).not.toContain("disabled:opacity-50");

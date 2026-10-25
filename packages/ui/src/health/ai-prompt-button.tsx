@@ -6,7 +6,7 @@ import { cn } from "../lib/cn";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 
 export interface AiPromptButtonProps {
-  /** Runs on click, after the copy when `copyText` is given. */
+  /** Runs on click; with `copyText` it runs as the copy starts, whatever its outcome. */
   onClick?: () => void;
   /**
    * The prompt itself, built on demand. When given, a click copies it, the
@@ -19,6 +19,8 @@ export interface AiPromptButtonProps {
   label?: string;
   /** The label shown for a moment after a copy. */
   copiedLabel?: string;
+  /** The label shown for a moment when the clipboard refuses the copy. */
+  failedLabel?: string;
   /**
    * `default` is a neutral outlined button for a detail view or a header.
    * `ghost` is icon + label with no border, for a per-row action (see
@@ -57,7 +59,7 @@ async function writeClipboard(value: string): Promise<boolean> {
     await navigator.clipboard.writeText(value);
     return true;
   } catch {
-    // Clipboard blocked (insecure origin, denied permission): no "Copied".
+    // Clipboard blocked (insecure origin, denied permission).
     return false;
   }
 }
@@ -71,9 +73,11 @@ function PromptPeek({ build }: { build: () => string }) {
   );
 }
 
-/** "Copied" for a moment after a successful copy; cleared on unmount. */
-function useCopiedFlag(): [boolean, () => void] {
-  const [copied, setCopied] = useState(false);
+type CopyResult = "copied" | "failed" | null;
+
+/** The last copy's outcome, for a moment; cleared on unmount. */
+function useCopyResult(): [CopyResult, (result: Exclude<CopyResult, null>) => void] {
+  const [result, setResult] = useState<CopyResult>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -81,12 +85,12 @@ function useCopiedFlag(): [boolean, () => void] {
     },
     [],
   );
-  const flag = () => {
-    setCopied(true);
+  const flag = (next: Exclude<CopyResult, null>) => {
+    setResult(next);
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(false), COPIED_MS);
+    timer.current = setTimeout(() => setResult(null), COPIED_MS);
   };
-  return [copied, flag];
+  return [result, flag];
 }
 
 /**
@@ -101,15 +105,18 @@ export function AiPromptButton({
   copyText,
   label = "Copy prompt",
   copiedLabel = "Copied",
+  failedLabel = "Couldn't copy",
   variant = "default",
   ariaLabel,
   className,
 }: AiPromptButtonProps) {
-  const [copied, flagCopied] = useCopiedFlag();
+  const [result, flagResult] = useCopyResult();
+  const copied = result === "copied";
+  const shown = result === "failed" ? failedLabel : copied ? copiedLabel : label;
 
   function handleClick(e: MouseEvent<HTMLButtonElement>) {
     e.stopPropagation();
-    if (copyText) void writeClipboard(copyText()).then((ok) => ok && flagCopied());
+    if (copyText) void writeClipboard(copyText()).then((ok) => flagResult(ok ? "copied" : "failed"));
     onClick?.();
   }
 
@@ -127,7 +134,7 @@ export function AiPromptButton({
         aria-hidden
         className={cn("h-3.5 w-3.5 shrink-0", copied && "text-[var(--color-success)]")}
       />
-      {variant !== "icon" && (copied ? copiedLabel : label)}
+      {variant !== "icon" && shown}
     </button>
   );
   if (!copyText) return button;
@@ -142,7 +149,7 @@ export function AiPromptButton({
         </Tooltip>
       </TooltipProvider>
       <span aria-live="polite" className="sr-only">
-        {copied ? copiedLabel : ""}
+        {result ? shown : ""}
       </span>
     </>
   );

@@ -175,7 +175,7 @@ describe("the drawer's prompt affordance", () => {
       reason: "Oversized function.",
     };
     render(<HealthFileDrawer open onClose={() => {}} metric={m} findings={[f]} />);
-    fireEvent.click(screen.getByRole("button", { name: /AI prompt/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
     expect(screen.getByText(/AI prompt for this file/i)).toBeInTheDocument();
   });
 

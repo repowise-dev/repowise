@@ -137,6 +137,7 @@ function AttentionPrompt({ row }: { row: SetupRow }) {
     <AiPromptButton
       label={t("copyPrompt")}
       copiedLabel={t("copied")}
+      failedLabel={t("copyFailed")}
       ariaLabel={`${t("copyPrompt")}: ${row.prompt.title}`}
       copyText={() => buildSetupAiPrompt(row.prompt)}
     />

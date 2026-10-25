@@ -1459,6 +1459,7 @@
       "askStart": "Where should I start reading this repo?",
       "copy": "Copy",
       "copied": "Copied",
+      "copyFailed": "Couldn't copy",
       "copyQuestion": "Copy: {question}"
     },
     "yours": {
@@ -2323,6 +2324,7 @@
     "copyPrompt": "Copy prompt",
     "promptDescription": "Hand this to your coding agent. It names the command and how to check the result.",
     "copied": "Copied",
+    "copyFailed": "Couldn't copy",
     "showFiles": "Show files",
     "hideFiles": "Hide files",
     "showDetails": "Show details",

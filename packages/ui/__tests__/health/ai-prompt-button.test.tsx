@@ -37,13 +37,15 @@ describe("AiPromptButton", () => {
     expect(screen.getByRole("button", { name: "Copy prompt: Index" })).toHaveTextContent("Copy prompt");
   });
 
-  it("does not claim a copy when the clipboard is blocked", async () => {
+  it("says the copy failed, never Copied, when the clipboard is blocked", async () => {
     Object.assign(navigator, { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
-    render(<AiPromptButton copyText={() => "x"} />);
+    render(<AiPromptButton ariaLabel="Copy prompt: Index" copyText={() => "x"} />);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy prompt: Index" }));
     });
-    expect(screen.getByRole("button", { name: "Copy prompt" })).toHaveTextContent("Copy prompt");
+    expect(screen.queryByText("Copied")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy prompt: Index" })).toHaveTextContent("Couldn't copy");
+    expect(screen.getByText("Couldn't copy", { selector: "[aria-live='polite']" })).toBeTruthy();
   });
 });
 

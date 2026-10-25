@@ -159,6 +159,7 @@ function AgentRow({
           <AiPromptButton
             label={t("copyPrompt")}
             copiedLabel={t("copied")}
+            failedLabel={t("copyFailed")}
             ariaLabel={`${t("copyPrompt")}: ${name}`}
             copyText={() => t("prompt", { name, command })}
           />
