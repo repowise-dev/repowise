@@ -119,3 +119,17 @@ export function SetupPill({ repoId, compact = false }: { repoId: string; compact
     </div>
   );
 }
+
+/** The pill for the active repo in the sidebar or mobile nav footer; nothing elsewhere. */
+export function FooterSetupPill({
+  repos,
+  activeRepoId,
+  compact = false,
+}: {
+  repos: RepoResponse[];
+  activeRepoId: string | undefined;
+  compact?: boolean;
+}) {
+  const repoId = setupPillRepoId(repos, activeRepoId);
+  return repoId ? <SetupPill repoId={repoId} compact={compact} /> : null;
+}

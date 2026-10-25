@@ -22,7 +22,7 @@ import { NewMark } from "./new-mark";
 import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
-import { SetupPill, setupPillRepoId } from "@/components/setup/setup-pill";
+import { FooterSetupPill } from "@/components/setup/setup-pill";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
 import { GLOBAL_NAV, WORKSPACE_NAV, repoNavGroups } from "./nav-items";
@@ -48,7 +48,6 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
   const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(
     activeRepoId ? new Set([activeRepoId]) : new Set(),
   );
-  const pillRepoId = setupPillRepoId(repos, activeRepoId);
   React.useEffect(() => {
     if (activeRepoId) {
       setExpandedRepos((prev) => {
@@ -247,7 +246,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           </ScrollArea>
 
           <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-4 py-2.5">
-            {pillRepoId && <SetupPill repoId={pillRepoId} />}
+            <FooterSetupPill repos={repos} activeRepoId={activeRepoId} />
             <FeedbackButton />
             {/* Mobile had no theme control anywhere in the shell, so the
                 preference was simply unreachable on a phone. It shares the
