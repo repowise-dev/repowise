@@ -100,7 +100,7 @@ describe("ContractDrawer", () => {
     expect(screen.getByText("92%")).toBeInTheDocument();
     expect(screen.getByText("fastapi")).toBeInTheDocument();
     expect(screen.getByText("Framework registration")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent prompt" })).toBeInTheDocument();
   });
 
   it("links the file and the counterpart code, and swaps to the counterpart", () => {

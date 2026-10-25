@@ -189,7 +189,7 @@ describe("HealthFileDrawer verdict", () => {
     // Ink, not accent: the accent is the primary action's alone (focus rings aside).
     expect(plan.className).toContain("text-[var(--color-text-secondary)]");
     expect(plan.className).not.toMatch(/(^|\s)text-\[var\(--color-accent/);
-    expect(screen.getAllByRole("button", { name: "Copy prompt" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Agent prompt" })).toHaveLength(1);
   });
 });
 
@@ -434,7 +434,7 @@ describe("HealthFileDrawer honest states", () => {
   it("keeps the prompt and makes no all-clear for a low score with nothing loaded", () => {
     render(<HealthFileDrawer open onClose={() => {}} metric={metric({ score: 3.2 })} />);
     expect(screen.queryByText(/Nothing needs fixing/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent prompt" })).toBeInTheDocument();
   });
 
   it("does not call the file clean after its last issue is resolved here", async () => {

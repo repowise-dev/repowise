@@ -97,14 +97,14 @@ function useCopyResult(): [CopyResult, (result: Exclude<CopyResult, null>) => vo
 /**
  * Canonical "hand this to your agent" affordance, used everywhere a prompt
  * can be generated so the action reads the same on every screen. Quiet on
- * purpose: neutral ink, a copy icon, no fill. The host owns the click
- * (typically opening the shared AiPromptModal), or passes `copyText` to copy
- * straight away.
+ * purpose: neutral ink on a soft fill, with a copy icon. The host owns the
+ * click (typically opening the shared AiPromptModal, so the label defaults to
+ * "Agent prompt"), or passes `copyText` to copy straight away ("Copy prompt").
  */
 export function AiPromptButton({
   onClick,
   copyText,
-  label = "Copy prompt",
+  label = copyText ? "Copy prompt" : "Agent prompt",
   copiedLabel = "Copied",
   failedLabel = "Couldn't copy",
   variant = "default",

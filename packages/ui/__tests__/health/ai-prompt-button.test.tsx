@@ -11,7 +11,7 @@ describe("AiPromptButton", () => {
   it("is a soft ink button with a copy icon, never plum", () => {
     const onClick = vi.fn();
     render(<AiPromptButton onClick={onClick} />);
-    const button = screen.getByRole("button", { name: "Copy prompt" });
+    const button = screen.getByRole("button", { name: "Agent prompt" });
     expect(button.className).not.toMatch(/color-model/);
     expect(button.className).toContain("border-[var(--color-border-default)]");
     expect(button.className).toContain("bg-[var(--color-action-soft)]");
