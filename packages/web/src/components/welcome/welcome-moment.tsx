@@ -72,36 +72,19 @@ export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPat
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const decided = useRef<string | null>(null);
 
+  // Once per repo and query: StrictMode runs effects twice in development,
+  // and a second run would stamp again. Not cancelled on cleanup for the
+  // same reason; a late result after unmount is simply never shown.
   useEffect(() => {
     const key = `${repoId}?${search}`;
     if (decided.current === key) return;
     decided.current = key;
-    let cancelled = false;
-    void (async () => {
-      const setup = await getRepoSetup(repoId).catch(() => null);
-      const mode = decideWelcome({
-        search: search ? `?${search}` : "",
-        fileCount,
-        seen: setup ? Boolean(setup.onboarding.welcome_seen?.[repoId]) : null,
-        newBrowser: isNewBrowser(),
-        sessionTaken: sessionMomentTaken(),
-      });
-      if (mode === "none" || cancelled) return;
-      if (mode === "auto") await stampAutoOpen(repoId);
-      // A first look through `?tour=1` (the first-index hand-off) still counts
-      // as seen; a replay from Setup changes nothing.
-      else if (setup && !setup.onboarding.welcome_seen?.[repoId]) await stampRepoSeen(repoId);
-      const { extras, years } = await loadExtras(repoId, hotspotPath, figures.coveragePct == null);
-      if (cancelled) return;
-      setLoaded({ setup, lenses: welcomeLenses(figures, extras), years });
+    void prepareWelcome({ repoId, search, fileCount, figures, hotspotPath }).then((next) => {
+      if (!next) return;
+      setLoaded(next);
       setOpen(true);
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // `figures` comes from the server render with the same repo; the key covers it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoId, search, fileCount]);
+    });
+  }, [repoId, search, fileCount, figures, hotspotPath]);
 
   if (!loaded) return null;
   return (
@@ -117,6 +100,39 @@ export function WelcomeMoment({ repoId, repoName, fileCount, figures, hotspotPat
       hotspotPath={hotspotPath}
     />
   );
+}
+
+/** Decides whether the welcome opens, stamps what an open records, and
+ *  loads its figures. Null when it stays shut. */
+async function prepareWelcome({
+  repoId,
+  search,
+  fileCount,
+  figures,
+  hotspotPath,
+}: {
+  repoId: string;
+  search: string;
+  fileCount: number;
+  figures: WelcomeFigures;
+  hotspotPath: string | null;
+}): Promise<Loaded | null> {
+  const setup = await getRepoSetup(repoId).catch(() => null);
+  const seen = setup ? Boolean(setup.onboarding.welcome_seen?.[repoId]) : null;
+  const mode = decideWelcome({
+    search: search ? `?${search}` : "",
+    fileCount,
+    seen,
+    newBrowser: isNewBrowser(),
+    sessionTaken: sessionMomentTaken(),
+  });
+  if (mode === "none") return null;
+  if (mode === "auto") await stampAutoOpen(repoId);
+  // A first look through `?tour=1` (the first-index hand-off) still counts as
+  // seen; a replay from Setup changes nothing.
+  else if (seen === false) await stampRepoSeen(repoId);
+  const { extras, years } = await loadExtras(repoId, hotspotPath, figures.coveragePct == null);
+  return { setup, lenses: welcomeLenses(figures, extras), years };
 }
 
 /** Marks the repo's welcome seen on this machine. Best-effort: a failed
