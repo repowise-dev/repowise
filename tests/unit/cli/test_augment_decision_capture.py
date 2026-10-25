@@ -476,6 +476,24 @@ def test_init_leaves_it_to_a_plugin_that_ships_it(settings: Path) -> None:
     assert "Bash|PowerShell" not in _post_matchers(settings)
 
 
+def test_the_self_heal_adds_it_to_an_existing_install(settings: Path) -> None:
+    """Existing installs predate the default; the once-per-version heal reaches them."""
+    from repowise.cli.editor_integrations import claude_config
+
+    assert claude_config.migrate_claude_code_hooks() is True
+
+    assert "Bash|PowerShell" in _post_matchers(settings)
+    assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_a_coverage_entry_is_never_taken_for_the_capture_entry() -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    assert not claude_config._is_capture_entry(claude_config._coverage_entry())
+    assert not claude_config._is_capture_entry(claude_config._health_gate_entry())
+    assert claude_config._is_capture_entry(claude_config._capture_entry())
+
+
 def test_switching_off_removes_it(settings: Path) -> None:
     from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
 

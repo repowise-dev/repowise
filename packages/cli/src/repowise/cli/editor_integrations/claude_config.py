@@ -258,7 +258,12 @@ def _is_capture_entry(entry: object) -> bool:
     if not isinstance(entry, dict) or entry.get("matcher") != _CAPTURE_MATCHER:
         return False
     entry_hooks = _hooks_of(entry)
-    return bool(entry_hooks) and all(_is_repowise_hook(h) for h in entry_hooks)
+    # The coverage and health-gate entries share the shell matcher; they are
+    # repo-local today, but a sync here must never take one for this.
+    return bool(entry_hooks) and all(
+        _is_repowise_hook(h) and not _is_coverage_hook(h) and not _is_health_gate_hook(h)
+        for h in entry_hooks
+    )
 
 
 def _repowise_plugin_paths() -> list[Path]:
@@ -1221,6 +1226,10 @@ def migrate_claude_code_hooks() -> bool:
         if _backfill_event(hooks, "SessionStart", _session_start_entry):
             changed = True
         if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
+            changed = True
+        # The capture prompt ships on: add its shell entry, or refresh one an
+        # older release wrote, unless the plugin already runs it.
+        if _sync_capture_entry(post, not _plugin_ships_capture_hook()):
             changed = True
 
     if not changed:

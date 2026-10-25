@@ -732,9 +732,7 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
-    ]
+    assert _post_repowise_entries(saved) == _INSTALLED_POST
 
     # Idempotent: a second run finds nothing to do.
     assert claude_config.migrate_claude_code_hooks() is False
@@ -770,9 +768,7 @@ def test_migrate_claude_code_hooks_widens_legacy_matchers(
 
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
-    ]
+    assert _post_repowise_entries(saved) == _INSTALLED_POST
 
 
 def test_migrate_claude_code_hooks_never_widens_user_matcher(
@@ -799,7 +795,8 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                                 },
                                 {"type": "command", "command": "my-linter"},
                             ],
-                        }
+                        },
+                        claude_config._capture_entry(),
                     ],
                     # SessionStart and PostToolUseFailure already present so
                     # their backfills (separate migrations) can't mask the
@@ -877,7 +874,8 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
                 {
                     "matcher": claude_config._AUGMENT_MATCHER,
                     "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
-                }
+                },
+                claude_config._capture_entry(),
             ],
             "SessionStart": [
                 {
