@@ -21,6 +21,9 @@ describe("RowPromptAction", () => {
     expect(button.className).toMatch(/\[@media\(hover:none\)\]:opacity-100/);
     // Neutral ink: plum is kept for model work.
     expect(button.className).not.toMatch(/color-model/);
+    // Revealed, it reads as an action: ink label, soft fill on hover.
+    expect(button.className).toContain("text-[var(--color-text-primary)]");
+    expect(button.className).toContain("hover:bg-[var(--color-action-soft-hover)]");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledOnce();
     // The row's own click (open the file) does not fire as well.

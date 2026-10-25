@@ -40,11 +40,12 @@ const BASE =
   "inline-flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 const VARIANT: Record<NonNullable<AiPromptButtonProps["variant"]>, string> = {
+  // Soft ink: a tonal fill so the most clicked action reads as one, quieter than the ink button.
   default:
-    "border border-[var(--color-border-default)] px-2.5 py-1 text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]",
+    "h-7 border border-[var(--color-border-default)] bg-[var(--color-action-soft)] px-2.5 text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-action-soft-hover)]",
   ghost:
-    "px-2 py-1 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
-  icon: "h-6 w-6 justify-center p-0 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+    "h-7 px-2 text-[var(--color-text-primary)] hover:bg-[var(--color-action-soft-hover)]",
+  icon: "h-6 w-6 justify-center p-0 text-[var(--color-text-primary)] hover:bg-[var(--color-action-soft-hover)]",
 };
 
 /** The first few non-empty lines of a prompt, for the hover preview. */

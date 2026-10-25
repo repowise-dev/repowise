@@ -516,7 +516,7 @@ function DrawerBody({
           agent an empty plan. */}
       {onAiPrompt && !stepsUnavailable ? (
         <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
-          <AiPromptButton onClick={() => onAiPrompt(detail)} className="px-3.5 py-2 text-sm" />
+          <AiPromptButton onClick={() => onAiPrompt(detail)} />
           <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:block">
             The ordered steps, the evidence, and the id to query it back.
           </span>

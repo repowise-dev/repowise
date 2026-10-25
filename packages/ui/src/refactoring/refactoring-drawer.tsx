@@ -348,7 +348,7 @@ function DrawerBody({
 
       {onAiPrompt ? (
         <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
-          <AiPromptButton onClick={() => onAiPrompt(plan)} className="px-3.5 py-2 text-sm" />
+          <AiPromptButton onClick={() => onAiPrompt(plan)} />
           <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:block">
             The steps, the blast radius, and a completion contract.
           </span>

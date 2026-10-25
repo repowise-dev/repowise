@@ -108,6 +108,8 @@ LIGHT = {
     "text-secondary": "#5E5360",
     "focus-ring": "#5E5360",  # --color-focus-ring → var(--color-text-secondary)
     "field-bg": "#F5F1ED",
+    # --color-action-soft-hover (ink 11%) composited on the page and a card.
+    "action-soft-page": "#E3DEDB", "action-soft-card": "#E7E6E8",
     "text-tertiary": "#8C7F88",
     "text-inverse": "#FFFFFF",
     "text-on-accent": "#241B2C",
@@ -164,6 +166,8 @@ DARK = {
     "text-secondary": "#A79DB3",
     "focus-ring": "#A79DB3",  # --color-focus-ring → var(--color-text-secondary)
     "field-bg": "#101012",
+    # --color-action-soft-hover (white 12%) composited on a card and elevated.
+    "action-soft-page": "#353537", "action-soft-card": "#303032",
     "text-tertiary": "#786F84",
     "text-inverse": "#17131D",
     "text-on-accent": "#17131D",
@@ -238,6 +242,9 @@ CHECKS = [
     ("text-primary", "field-bg", 7.0, "Field value"),
     ("text-secondary", "field-bg", 4.5, "Disabled field value"),
     ("text-tertiary", "field-bg", 3.0, "Field placeholder"),
+    # Soft-ink copy-prompt button: its label at the hovered (strongest) fill.
+    ("text-primary", "action-soft-page", 4.5, "Soft action label on page"),
+    ("text-primary", "action-soft-card", 4.5, "Soft action label on card"),
     ("success", "bg-surface", 4.5, "Success text on card"),
     ("warning", "bg-surface", 4.5, "Warning text on card"),
     ("warning", "bg-root", 4.5, "Warning text on page"),

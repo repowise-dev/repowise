@@ -8,12 +8,15 @@ afterEach(() => {
 });
 
 describe("AiPromptButton", () => {
-  it("is a neutral outlined button with a copy icon, never plum", () => {
+  it("is a soft ink button with a copy icon, never plum", () => {
     const onClick = vi.fn();
     render(<AiPromptButton onClick={onClick} />);
     const button = screen.getByRole("button", { name: "Copy prompt" });
     expect(button.className).not.toMatch(/color-model/);
     expect(button.className).toContain("border-[var(--color-border-default)]");
+    expect(button.className).toContain("bg-[var(--color-action-soft)]");
+    expect(button.className).toContain("hover:bg-[var(--color-action-soft-hover)]");
+    expect(button.className).toContain("text-[var(--color-text-primary)]");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledOnce();
   });
