@@ -403,6 +403,16 @@ def test_rust_fs_in_async_blocks():
     assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", awaited))
 
 
+def test_rust_console_io_in_async_is_not_fs():
+    """``std::io::stdin().read(..)`` roots at ``std`` but is console IO, not ``fs::read``."""
+    stdin = "async fn f(){ let _ = std::io::stdin().read(&mut []); }"
+    stderr = 'async fn f(){ let _ = std::io::stderr().write(b"x"); }'
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stdin))
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", stderr))
+    sleep = "async fn f(d: Duration){ std::thread::sleep(d); }"
+    assert ("blocking_sync_in_async", "thread::sleep") in _hits("rust", sleep)
+
+
 # ---------------------------------------------------------------------------
 # Phase-7c precision fixes (multi-language corpus FP classes)
 # ---------------------------------------------------------------------------
@@ -1393,6 +1403,22 @@ _KOTLIN_CASES = [
         "    for (x in xs) {\n        val r = Regex(pat)\n    }\n}\n",
         [],
         "a dynamic pattern may legitimately vary - not hoistable",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "^a".toRegex()\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "literal.toRegex() recompiled per iteration",
+    ),
+    (
+        "fun m(xs: List<P>) {\n"
+        '    for (x in xs) {\n        val r = "${x.id}.*".toRegex()\n    }\n}\n',
+        [],
+        "an interpolated toRegex() receiver varies per iteration - not hoistable",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = "$x.*".toRegex()\n    }\n}\n',
+        [],
+        "a bare $name template receiver is not hoistable either",
     ),
     (
         "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
