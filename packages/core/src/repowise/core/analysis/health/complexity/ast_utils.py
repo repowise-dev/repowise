@@ -211,7 +211,7 @@ def _declarator_name(decl: Node) -> str:
         # ``EXPORT T* f()`` nests the function declarator under the name.
         while leaf.type not in _DECLARATOR_NAME_KINDS and (inner := _inner_declarator(leaf)):
             leaf = inner
-        head =(decl.text or b"")[: leaf.start_byte - decl.start_byte]
+        head = (decl.text or b"")[: leaf.start_byte - decl.start_byte]
         prefix = head.decode("utf-8", errors="replace")
         return prefix[_scope_start(prefix) :] + _declarator_name(leaf)
     if decl.type == "operator_cast":

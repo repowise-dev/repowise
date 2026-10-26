@@ -723,6 +723,22 @@ def test_cpp_macro_prefixed_definition_is_named_by_its_qualified_identifier(
     assert list(_names_by_line(tmp_path, "cpp", source).values()) == [name]
 
 
+@pytest.mark.parametrize(
+    ("prefix", "scope"),
+    [
+        ("bool ", ""),
+        ("A<B<int>>::", "A<B<int>>::"),
+        ("EXPORT std::vector<int> A<B<int>>::", "A<B<int>>::"),
+        # An unmatched ``>`` ends the scope run there.
+        ("x>::", "::"),
+    ],
+)
+def test_scope_start_keeps_only_the_trailing_scope_run(prefix, scope):
+    from repowise.core.analysis.health.complexity.ast_utils import _scope_start
+
+    assert prefix[_scope_start(prefix) :] == scope
+
+
 def test_c_function_returning_a_function_pointer_is_named(tmp_path):
     source = b"int (*fp(int a))(int) { return 0; }\n"
     assert list(_names_by_line(tmp_path, "c", source).values()) == ["fp"]
