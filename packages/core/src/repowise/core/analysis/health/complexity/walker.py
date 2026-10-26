@@ -233,7 +233,7 @@ def walk_file(
             typed_param_count=typed,
             primitive_param_count=scalar,
             bound_param_count=bound_param_count(params, lmap),
-            keyword_only_param_count=keyword_only_param_count(params),
+            keyword_only_param_count=keyword_only_param_count(params, lmap),
             is_constructor=is_constructor(fn_node, name, lmap),
             signature_fixed=is_signature_fixed(fn_node, lmap),
             complex_conditions=conditions,

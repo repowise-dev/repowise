@@ -347,3 +347,19 @@ def test_python_method_overriding_a_base_in_the_same_file_is_fixed():
         ("walk", 11): False,
         ("run", 14): False,
     }
+
+
+def test_python_fastapi_bound_parameters():
+    fns = _fns(
+        "routes.py",
+        "python",
+        "async def route(repo_id: str, limit: int = Query(200), q: Annotated[str, Query()] = '',\n"
+        "        s: Session = fastapi.Depends(get_db), name: str = 'x', *, h: str = Header(None),\n"
+        "        when: str = default_when()):\n    pass\n",
+    )
+    route = fns["route"]
+    assert route.param_count == 7
+    assert route.bound_param_count == 4
+    # ``h`` is bound, so the keyword-only count leaves it to ``bound_param_count``.
+    assert route.keyword_only_param_count == 1
+    assert (route.typed_param_count, route.primitive_param_count) == (3, 3)

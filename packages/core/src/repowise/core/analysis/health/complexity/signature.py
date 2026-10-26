@@ -293,18 +293,34 @@ def _is_bound(param: Node, lmap: LanguageNodeMap) -> bool:
     prev = param.prev_named_sibling
     if prev is not None and prev.type == "parameter_modifiers":
         words |= _leaf_words([prev])
-    return bool(words & lmap.bound_param_markers)
+    return bool(words & lmap.bound_param_markers) or _bound_by_call(param, lmap)
 
 
-def keyword_only_param_count(params: Node | None) -> int:
-    """Python parameters after a bare ``*`` or ``*args``, ``**kwargs`` included."""
+def _bound_by_call(param: Node, lmap: LanguageNodeMap) -> bool:
+    """A Python parameter a framework fills through a marker call, as its
+    default (``x: int = Query(0)``) or in its ``Annotated[...]`` type."""
+    stack = [n for n in (param.child_by_field_name("value"), param.child_by_field_name("type")) if n]
+    while stack:
+        node = stack.pop()
+        if node.type == "call":
+            callee = _text(node.child_by_field_name("function") or node)
+            if callee.rsplit(".", 1)[-1] in lmap.bound_param_markers:
+                return True
+        if node.type in ("type", "generic_type", "subscript", "type_parameter"):
+            stack.extend(node.named_children)
+    return False
+
+
+def keyword_only_param_count(params: Node | None, lmap: LanguageNodeMap) -> int:
+    """Python parameters after a bare ``*`` or ``*args``, ``**kwargs`` included.
+    A framework-bound one is left out: ``bound_param_count`` has it."""
     if params is None:
         return 0
     count = 0
     seen_star = False
     for param in _parameter_nodes(params):
         if seen_star:
-            count += 1
+            count += not _is_bound(param, lmap)
         elif param.type == "keyword_separator" or _is_args_splat(param):
             seen_star = True
     return count
