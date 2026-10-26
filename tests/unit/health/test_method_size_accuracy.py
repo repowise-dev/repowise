@@ -217,3 +217,18 @@ def test_brain_method_does_not_count_jsx_markup_lines() -> None:
         "in a file imported by 10 others"
     )
     assert finding.details["markup_nloc"] == 40
+
+
+def test_jsx_files_and_as_const_literals_read_the_same() -> None:
+    component = """export function Card({ label }) {
+  const box = {
+    margin: -1,
+  } as const;
+  return <div style={box}>{label}</div>;
+}
+"""
+    assert _code_rows(component).markup_nloc == 3
+    plain = component.replace(" as const", "")
+    fcx = walk_file("src/Card.jsx", "javascript", plain.encode())
+    [card] = [fn for fn in fcx.functions if fn.name == "Card"]
+    assert card.markup_nloc == 3
