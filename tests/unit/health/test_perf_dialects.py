@@ -717,6 +717,33 @@ def test_python_list_insert_zero_vs_variable_index():
     assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", reset))
 
 
+_INSERT_ZERO = "def f(xs, out, ok):\n    for x in xs:\n{body}"
+
+
+@pytest.mark.parametrize(
+    "body,fires",
+    [
+        ("        out.insert(0, x)\n        return\n", False),
+        ("        if ok:\n            out.insert(0, x)\n            return\n", False),
+        ("        out.insert(0, x)\n        log(x)\n        break\n", False),
+        ("        out.insert(0, x)\n        raise ValueError(x)\n", False),
+        # A conditional exit, or a ``continue`` that can skip the exit, still repeats.
+        ("        out.insert(0, x)\n        if ok:\n            break\n", True),
+        ("        out.insert(0, x)\n        if ok:\n            continue\n        break\n", True),
+        # The exit comes before the insert, not after it.
+        ("        if ok:\n            break\n        out.insert(0, x)\n", True),
+        # ``break`` leaves only the inner loop of a nest.
+        ("        for y in x:\n            out.insert(0, y)\n            break\n", True),
+        ("        for y in x:\n            out.insert(0, y)\n            return\n", False),
+        # A flag-driven exit is not followed (click's ``stop = True``).
+        ("        out.insert(0, x)\n        stop = True\n        if stop:\n            break\n", True),
+    ],
+)
+def test_python_list_insert_zero_before_loop_exit(body, fires):
+    kinds = [k for k, _ in _hits("python", _INSERT_ZERO.format(body=body))]
+    assert ("list_insert_zero_in_loop" in kinds) is fires
+
+
 def test_ts_json_parse_only_deep_clone_idiom():
     """Bare ``JSON.parse(x.payload)`` of a distinct per-iteration payload is
     necessary work (Phase-7d: bare parse/stringify was 0% precision)."""

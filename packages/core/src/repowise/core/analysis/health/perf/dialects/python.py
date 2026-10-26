@@ -444,6 +444,7 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             and self._first_arg_is_zero(node)
             and not self._receiver_reset_in_loop(node, root)
             and not self._receiver_bound_to_deque(node, root)
+            and not self._loop_ends_after(node)
         ):
             return "list_insert_zero_in_loop"
         # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
@@ -488,6 +489,30 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
                 continue  # imports do not nest further imports
             stack.extend(n.children)
         return False
+
+    def _loop_ends_after(self, node: Node) -> bool:
+        """A ``return``/``raise`` (or, with one loop around *node*, a ``break``)
+        follows *node*'s statement in its block, so it runs once per call.
+        Ceiling: a flag-driven exit (``stop = True`` then ``if stop: break``) is
+        still reported."""
+        stmt, loops = node, 0
+        while stmt.parent is not None and stmt.parent.type != "block":
+            if stmt.type in self.scope_kinds:  # a lambda body runs elsewhere
+                return False
+            stmt = stmt.parent
+        cur = stmt.parent
+        while cur is not None and cur.type not in self.scope_kinds:
+            loops += cur.type in ("for_statement", "while_statement")
+            cur = cur.parent
+        if not loops:
+            return False
+        # A ``break`` in a loop nest leaves only the inner loop; the outer one re-enters.
+        exits = {"return_statement", "raise_statement"}
+        if loops == 1:
+            exits.add("break_statement")
+        return self._exit_follows(
+            stmt, lambda s: s.type in exits, frozenset({"continue_statement"})
+        )
 
     def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:
         """True if the call's receiver ``name`` is re-assigned (reset to a fresh
