@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.brain_method import BrainMethodDetector
 from repowise.core.analysis.health.biomarkers.complex_method import ComplexMethodDetector
@@ -191,6 +193,21 @@ def test_a_const_data_literal_used_only_as_a_prop_is_markup() -> None:
 """
     )
     # The four lines of ``box`` are markup; the return line holds ``{label}``.
+    assert card.markup_nloc == 4
+
+
+@pytest.mark.parametrize("cast", ["as Palette", "satisfies Palette"])
+def test_a_typed_const_data_literal_used_only_as_a_prop_is_markup(cast: str) -> None:
+    card = _code_rows(
+        f"""export function Card({{ label }}: Props) {{
+  const box = {{
+    padding: 4,
+    color: "red",
+  }} {cast};
+  return <div style={{box}}>{{label}}</div>;
+}}
+"""
+    )
     assert card.markup_nloc == 4
 
 

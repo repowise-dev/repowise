@@ -109,7 +109,7 @@ def _data_literal_name(node: Node) -> Node | None:
     if name is None or value is None or name.type != "identifier":
         return None
     literal = value.named_children[0] if value.type in _TYPED_VALUE else value
-    return name if literal.type in ("object", "array") and _is_data(value) else None
+    return name if literal.type in ("object", "array") and _is_data(literal) else None
 
 
 def _data_declarations(root: Node) -> set[tuple[int, int]]:
