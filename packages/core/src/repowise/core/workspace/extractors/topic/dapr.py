@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 _DAPR = ("Dapr",)
-_TOPIC = Arg(keys=("name",), pos=1)
+_TOPIC = Arg(keys=("name", "topicName"), pos=1)
 
 DAPR = TopicDialect(
     name="dapr",

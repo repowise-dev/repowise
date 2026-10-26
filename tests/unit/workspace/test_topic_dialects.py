@@ -632,6 +632,15 @@ class TestDapr:
         src = '[Topic("pubsub", "orders")]\npublic Task Handle(OrderPlaced e) { }\n'
         assert _extract(tmp_path, "NoDapr.cs", src) == []
 
+    def test_a_named_topic_name_argument_is_read(self, tmp_path: Path) -> None:
+        src = (
+            self. _USING
+            + "private readonly DaprClient dapr;\n"
+            + 'await dapr.PublishEventAsync("pubsub", topicName: "orders", evt);\n'
+        )
+        c = _one(_extract(tmp_path, "Named.cs", src), "provider")
+        assert c.contract_id == "topic::orders"
+
     _SUBSCRIPTION = (
         "apiVersion: dapr.io/v2alpha1\n"
         "kind: Subscription\n"
