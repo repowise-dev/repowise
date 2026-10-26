@@ -332,7 +332,8 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # scoring it charged that function twice; dropping it moved no defect AUC.
     "brain_method": {ADVISORY_DIMENSION},
     # A blind precision study judged 7 of 24 findings real: it fires on short
-    # functions with a few simple loops. Dropping it cost no measurable AUC.
+    # functions with a few simple loops. Dropping it with four other weak markers
+    # cost 0.004 defect AUC.
     "repeated_nesting": {ADVISORY_DIMENSION},
     # Its two inputs already deduct: complexity through complex_method, missing
     # coverage through coverage_gap and coverage_gradient. Uncalibrated; it ranks
