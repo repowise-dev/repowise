@@ -25,6 +25,7 @@ from repowise.core.workspace.contracts import (
     TOPIC_KIND_QUEUE,
     TOPIC_PATTERN,
     TOPIC_PATTERN_GLOB,
+    TOPIC_PATTERN_MQTT,
     TOPIC_PATTERN_NATS,
     TOPIC_PATTERN_REGEX,
     TOPIC_PREFIX,
@@ -83,6 +84,7 @@ def pattern_matches(syntax: str, pattern: str, name: str) -> bool:
     """True when a subscription on *pattern* (in *syntax*) receives topic *name*.
 
     ``nats``: ``*`` is one dot-separated token, a final ``>`` one or more.
+    ``mqtt``: ``+`` is one slash-separated token, ``#`` zero or more.
     ``glob`` (Redis ``PSUBSCRIBE``): shell wildcards over the whole name.
     ``regex`` (Kafka ``topicPattern``): the whole name.
     """
@@ -91,6 +93,9 @@ def pattern_matches(syntax: str, pattern: str, name: str) -> bool:
         if words[-1] == ">":
             words[-1:] = ["*", "#"]
         return _words_match(tuple(words), tuple(name.split(".")))
+    if syntax == TOPIC_PATTERN_MQTT:
+        words = [w if w != "+" else "*" for w in pattern.lower().split("/")]
+        return _words_match(tuple(words), tuple(name.lower().split("/")))
     if syntax == TOPIC_PATTERN_GLOB:
         return fnmatchcase(name, pattern.lower())
     if syntax == TOPIC_PATTERN_REGEX:
