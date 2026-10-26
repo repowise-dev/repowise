@@ -32,6 +32,8 @@ from typing import TYPE_CHECKING
 from .ast_utils import _parameter_nodes
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from tree_sitter import Node
 
     from .languages import LanguageNodeMap
@@ -183,14 +185,16 @@ def _class_of_method(fn_node: Node, lmap: LanguageNodeMap) -> Node | None:
     return body.parent
 
 
+def _undecorated(node: Node, lmap: LanguageNodeMap) -> Node:
+    if node.type in lmap.decorated_definition_kinds:
+        return node.child_by_field_name("definition") or node
+    return node
+
+
 def _defines(cls: Node, name: str, lmap: LanguageNodeMap) -> bool:
     body = cls.child_by_field_name("body")
-    for child in body.named_children if body is not None else ():
-        if child.type in lmap.decorated_definition_kinds:
-            child = child.child_by_field_name("definition") or child
-        if child.type in lmap.function_kinds and _field_text(child, "name") == name:
-            return True
-    return False
+    members = (_undecorated(c, lmap) for c in (body.named_children if body is not None else ()))
+    return any(m.type in lmap.function_kinds and _field_text(m, "name") == name for m in members)
 
 
 def _field_text(node: Node, field: str) -> str | None:
@@ -202,13 +206,22 @@ def _module_classes(node: Node, lmap: LanguageNodeMap) -> dict[str | None, Node]
     root = node
     while root.parent is not None:
         root = root.parent
-    classes: dict[str | None, Node] = {}
-    for child in root.named_children:
-        if child.type in lmap.decorated_definition_kinds:
-            child = child.child_by_field_name("definition") or child
-        if child.type in lmap.class_kinds:
-            classes[_field_text(child, "name")] = child
-    return classes
+    tops = (_undecorated(c, lmap) for c in root.named_children)
+    return {_field_text(c, "name"): c for c in tops if c.type in lmap.class_kinds}
+
+
+def _local_bases(cls: Node, module: dict[str | None, Node]) -> Iterator[Node]:
+    """Every ancestor of *cls* named by a plain identifier and defined in *module*."""
+    seen: set[str] = set()
+    pending = [cls]
+    while pending:
+        bases = pending.pop().child_by_field_name("superclasses")
+        for base in bases.named_children if bases is not None else ():
+            name = _text(base)
+            if base.type == "identifier" and name not in seen and name in module:
+                seen.add(name)
+                pending.append(module[name])
+                yield module[name]
 
 
 def _overrides_local_base(fn_node: Node, lmap: LanguageNodeMap) -> bool:
@@ -222,19 +235,7 @@ def _overrides_local_base(fn_node: Node, lmap: LanguageNodeMap) -> bool:
     if cls is None or name is None or cls.child_by_field_name("superclasses") is None:
         return False
     module = _module_classes(cls, lmap)
-    seen: set[str] = set()
-    pending = [cls]
-    while pending:
-        bases = pending.pop().child_by_field_name("superclasses")
-        for base in bases.named_children if bases is not None else ():
-            base_name = _text(base)
-            if base.type != "identifier" or base_name in seen or base_name not in module:
-                continue
-            seen.add(base_name)
-            if _defines(module[base_name], name, lmap):
-                return True
-            pending.append(module[base_name])
-    return False
+    return any(_defines(base, name, lmap) for base in _local_bases(cls, module))
 
 
 def _param_type(param: Node) -> Node | None:
