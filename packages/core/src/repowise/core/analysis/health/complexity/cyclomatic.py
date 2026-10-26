@@ -255,7 +255,7 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     return "if"
 
 
-def _condition_subtrees(node: Node) -> list[Node]:
+def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     """Best-effort: pull the *condition* parts out of a branch/loop node.
 
     Prefers the tree-sitter ``condition`` named field where exposed
@@ -266,6 +266,11 @@ def _condition_subtrees(node: Node) -> list[Node]:
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
+    # Python's ``X if C else Y`` names no fields: only the middle child is
+    # the condition, so the arms' operators are not counted.
+    named = node.named_children
+    if lmap.ternary_arms_positional and node.type in lmap.flat_ternary_kinds and len(named) == 3:
+        return [named[1]]
     # Switch case value (TS, Java)
     value = node.child_by_field_name("value")
     if value is not None and "case" in node.type:
@@ -468,7 +473,7 @@ def _walk_function_body(
             op_count = 0
             op_kinds: set[str] = set()
             negated = False
-            for sub in _condition_subtrees(node):
+            for sub in _condition_subtrees(node, lmap):
                 sub_count, sub_kinds, sub_negated = _count_boolean_ops_in_condition(sub, lmap)
                 op_count += sub_count
                 op_kinds |= sub_kinds
