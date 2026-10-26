@@ -498,16 +498,12 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
         follows *node*'s statement in its block, so it runs once per call.
         Ceiling: a flag-driven exit (``stop = True`` then ``if stop: break``) is
         still reported."""
-        stmt, loops = node, 0
+        stmt = node
         while stmt.parent is not None and stmt.parent.type != "block":
             if stmt.type in self.scope_kinds:  # a lambda body runs elsewhere
                 return False
             stmt = stmt.parent
-        cur, in_try = stmt.parent, False
-        while cur is not None and cur.type not in self.scope_kinds:
-            loops += cur.type in ("for_statement", "while_statement")
-            in_try = in_try or cur.type == "try_statement"
-            cur = cur.parent
+        loops, in_try = self._enclosing_loops(stmt)
         if not loops:
             return False
         # A ``raise`` inside a ``try`` may be caught and the loop go on, and a
@@ -518,6 +514,15 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
         return self._exit_follows(
             stmt, lambda s: s.type in exits, frozenset({"continue_statement"})
         )
+
+    def _enclosing_loops(self, stmt: Node) -> tuple[int, bool]:
+        """Loops around *stmt* in its scope, and whether a ``try`` sits among them."""
+        loops, in_try, cur = 0, False, stmt.parent
+        while cur is not None and cur.type not in self.scope_kinds:
+            loops += cur.type in ("for_statement", "while_statement")
+            in_try = in_try or cur.type == "try_statement"
+            cur = cur.parent
+        return loops, in_try
 
     def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:
         """True if the call's receiver ``name`` is re-assigned (reset to a fresh
