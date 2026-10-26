@@ -165,6 +165,16 @@ _JAVA_CASES = [
         [],
         "a shared repository verb on a non-repository receiver is not db",
     ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(x){ } x.lock.lock(); }}}",
+        [],
+        "the loop element's own lock is a different lock each pass, nothing to hoist",
+    ),
+    (
+        "class A{void m(java.util.List<X> xs){for(X x:xs){ synchronized(this){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
+    ),
 ]
 
 
@@ -216,6 +226,28 @@ _GO_CASES = [
         "func f(urls []string){ for _, u := range urls { http.Get(u) } }",
         [("io_in_loop", "network")],
         "net/http Get in a range loop",
+    ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tu.mu.RLock()\n\t\tu.mu.RUnlock()\n\t}\n}\n",
+        [],
+        "the range element's own mutex is a different lock each pass",
+    ),
+    (
+        "package p\nfunc f(us []*U) {\n\tfor _, u := range us {\n\t\tmu.Lock()\n\t\tmu.Unlock()\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a shared mutex locked per element still fires",
+    ),
+    (
+        "package p\nfunc f(s *S) {\n\tfor {\n\t\tselect {\n\t\tcase <-s.t.C:\n"
+        "\t\t\tmu.Lock()\n\t\t\tmu.Unlock()\n\t\t}\n\t}\n}\n",
+        [],
+        "a lock per event in a for-select event loop has nothing to hoist",
+    ),
+    (
+        "package p\nfunc f(xs []int) {\n\tfor _, x := range xs {\n\t\tselect {\n"
+        "\t\tcase ch <- x:\n\t\t\tmu.Lock()\n\t\t}\n\t}\n}\n",
+        [("lock_in_loop", "")],
+        "a select inside a range loop still locks per element",
     ),
 ]
 
@@ -289,6 +321,16 @@ _CSHARP_CASES = [
         " System.Threading.Tasks.Task SaveChangesAsync() => null; }",
         [],
         "a bare SaveChangesAsync is the class's own method, not a DbContext call",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(item){ } }}}",
+        [],
+        "locking the foreach element is a different lock each pass",
+    ),
+    (
+        "class A{void M(List<X> xs){foreach(var item in xs){ lock(gate){ } }}}",
+        [("lock_in_loop", "")],
+        "a shared gate locked per element still fires",
     ),
 ]
 
@@ -1409,6 +1451,26 @@ _KOTLIN_CASES = [
         "class A {\n    fun lock(ks: List<Any>) {\n        for (k in ks) {\n            locks[k].lock()\n        }\n    }\n}\n",
         [("lock_in_loop", "")],
         "an iterating lock() is not a retry loop",
+    ),
+    (
+        "fun f(items: List<S>) {\n    items.forEach { it.withLock { } }\n}\n",
+        [],
+        "the forEach element's own lock via implicit it",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    for (s in ss) s.withLock { }\n    ss.forEach { x -> x.lock.lock() }\n}\n",
+        [],
+        "the for element and a named lambda parameter own their locks",
+    ),
+    (
+        "fun f(m: Map<K, S>) {\n    for ((k, s) in m) synchronized(s) { }\n}\n",
+        [],
+        "a destructured element passed to synchronized",
+    ),
+    (
+        "fun f(ss: List<S>) {\n    ss.forEach { lock.withLock { } }\n    for (s in ss) synchronized(this) { }\n}\n",
+        [("lock_in_loop", ""), ("lock_in_loop", "")],
+        "a shared lock taken per element still fires",
     ),
 ]
 
