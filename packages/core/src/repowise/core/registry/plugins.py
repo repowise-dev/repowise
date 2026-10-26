@@ -35,6 +35,7 @@ import importlib
 import logging
 import os
 import re
+import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
@@ -153,9 +154,29 @@ def reset() -> None:
 
 
 def note_registration(kind: str, name: str) -> None:
-    """Record ``kind:name`` against the plugin loading now; a no-op otherwise."""
-    if _current is not None:
+    """Record ``kind:name`` against the plugin loading now; a no-op otherwise.
+
+    A built-in module first imported inside a plugin's ``register()`` registers
+    its own implementations then, so those are skipped: walking out from the
+    registry call, a repowise module body reached before any plugin frame means
+    the registration is built in. The registered object cannot tell, since a
+    plugin's report section or dataset is an instance of a repowise class.
+    """
+    if _current is not None and not _made_by_builtin_import():
         _current.seams.append(f"{kind}:{name}")
+
+
+def _made_by_builtin_import() -> bool:
+    frame = sys._getframe(2)  # the registry method; its callers follow
+    while frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if module == "repowise" or module.startswith("repowise."):
+            if frame.f_code.co_name == "<module>":
+                return True
+        elif not module.startswith("importlib"):
+            return False  # plugin code asked for it
+        frame = frame.f_back
+    return False
 
 
 def seams() -> dict[str, SeamRegistry]:

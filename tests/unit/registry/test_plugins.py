@@ -5,10 +5,12 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
 import uuid
+from pathlib import Path
 
 import click
 import pytest
@@ -42,8 +44,8 @@ def make_module(tmp_path, monkeypatch):
     """Write a uniquely named module onto sys.path and return its name."""
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    def make(body: str) -> str:
-        name = f"rw_test_plugin_{uuid.uuid4().hex[:8]}"
+    def make(body: str, prefix: str = "rw_test_plugin") -> str:
+        name = f"{prefix}_{uuid.uuid4().hex[:8]}"
         (tmp_path / f"{name}.py").write_text(textwrap.dedent(body), encoding="utf-8")
         return name
 
@@ -279,7 +281,7 @@ def test_plugins_command_json_and_table(monkeypatch, make_module):
         (f"{good}:register", "loaded", ["demo:acme"]),
         ("no_such_module_xyz", "failed", []),
     ]
-    assert payload["seams"] == {"demo": {"default": "acme", "implementations": ["local", "acme"]}}
+    assert payload["seams"]["demo"] == {"default": "acme", "implementations": ["local", "acme"]}
 
     table = CliRunner().invoke(plugins_command, [])
     assert table.exit_code == 0, table.output
@@ -388,3 +390,83 @@ def test_a_builtin_provider_never_runs_discovery(isolated_registries):
     llm_providers.get_provider("mock", with_rate_limiter=False)
     embedders.get_embedder("mock")
     assert plugins._records is None
+
+
+_IMPORTS_A_BUILTIN = """
+    from repowise.core.registry import pipeline_hooks
+    from repowise.core.registry.plugins import seams
+
+    def register():
+        import repowise.core.events.sinks as sinks  # first import registers jsonl, stdout
+        from repowise.core.report.model import Section
+
+        sinks.event_sinks.register("acme", object())
+        # An instance of a repowise class, still the plugin's own.
+        seams()["report-section"].register("acme", Section(title="t", summary="s", collect=None))
+        pipeline_hooks.register("parse", lambda phase: None)
+"""
+
+
+def test_builtins_imported_while_a_plugin_loads_are_not_its_own(
+    monkeypatch, make_module, isolated_registries
+):
+    import repowise.core.events as events_pkg
+
+    # Unload the built-in so the plugin's import runs its registrations again.
+    monkeypatch.setattr(events_pkg, "sinks", importlib.import_module("repowise.core.events.sinks"))
+    monkeypatch.delitem(sys.modules, "repowise.core.events.sinks")
+    SeamRegistry("report-section")
+    monkeypatch.setenv(plugins.ENV_VAR, f"{make_module(_IMPORTS_A_BUILTIN)}:register")
+
+    [record] = load_plugins()
+    assert record.status == "loaded", record.error
+    assert record.seams == ["event-sink:acme", "report-section:acme", "pipeline-hook:parse.post"]
+    assert plugins.seams()["event-sink"].names == ["jsonl", "stdout", "acme"]
+
+
+def test_a_plugin_package_named_like_repowise_is_still_recorded(monkeypatch, make_module):
+    SeamRegistry("demo")
+    body = """
+        from repowise.core.registry.plugins import seams
+        seams()["demo"].register("hello", "HELLO")
+    """
+    monkeypatch.setenv(plugins.ENV_VAR, make_module(body, prefix="repowise_hello"))
+
+    [record] = load_plugins()
+    assert record.seams == ["demo:hello"]
+
+
+_REPO = Path(__file__).resolve().parents[3]
+_SEAM_DEFINITION = re.compile(r"=\s*SeamRegistry(?:\[[^\]]*\])?\(\s*[\"']([^\"']+)[\"']")
+
+
+@pytest.fixture(scope="module")
+def plugins_json() -> dict:
+    """``repowise plugins --format json`` in a fresh process with no plugins."""
+    probe = (
+        "from click.testing import CliRunner; "
+        "from repowise.cli.commands.plugins_cmd import plugins_command; "
+        "print(CliRunner().invoke(plugins_command, ['--format', 'json']).output)"
+    )
+    env = {k: v for k, v in os.environ.items() if k != plugins.ENV_VAR}
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, env=env
+    )
+    return json.loads(out.stdout)
+
+
+def test_plugins_command_lists_builtin_implementations(plugins_json):
+    seams = plugins_json["seams"]
+    assert {"bus-factor", "hotspots"} <= set(seams["report-section"]["implementations"])
+    assert seams["event-sink"] == {"default": "jsonl", "implementations": ["jsonl", "stdout"]}
+
+
+def test_plugins_command_imports_every_seam_defined_in_packages(plugins_json):
+    defined = {
+        m.group(1)
+        for path in (_REPO / "packages").glob("*/src/**/*.py")
+        for m in _SEAM_DEFINITION.finditer(path.read_text(encoding="utf-8"))
+    }
+    assert "report-section" in defined
+    missing = defined - set(plugins_json["seams"])
+    assert not missing, f"add the modules defining {sorted(missing)} to BUILTIN_SEAM_MODULES"

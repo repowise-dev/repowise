@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import asdict
 
 import click
 
 from repowise.cli.output import emit_json, format_option
+
+#: Modules that define a seam or register its built-in implementations. A seam
+#: is only listed once its module is imported; a guard test keeps this complete.
+BUILTIN_SEAM_MODULES = (
+    "repowise.core.changes.outcomes",
+    "repowise.core.changes.source",
+    "repowise.core.events.sinks",
+    "repowise.core.inventory.advisories",
+    "repowise.core.ownership.directory",
+    "repowise.core.report.sections",
+    "repowise.core.report.render",
+    "repowise.core.suspects",
+    "repowise.server.auth",
+    "repowise.server.chat_session",
+    "repowise.server.chat_views",
+    "repowise.server.chat_datasets",
+)
+
+
+def _import_builtin_seams() -> None:
+    for name in BUILTIN_SEAM_MODULES:
+        try:
+            module = importlib.import_module(name)
+            if name == "repowise.server.chat_datasets":
+                module.dataset_names()  # imports the built-in dataset families
+        except ImportError:  # server extras not installed: those seams go unlisted
+            continue
 
 
 @click.command("plugins")
@@ -24,6 +52,7 @@ def plugins_command(fmt: str) -> None:
         seams,
     )
 
+    _import_builtin_seams()
     records = load_plugins()
     seam_rows = {
         name: {"default": registry.default, "implementations": registry.names}
