@@ -437,7 +437,8 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
         if method in _PY_LOCK_METHODS and self.callee_is_attribute(node):
             return "lock_in_loop"
         # ``lst.insert(0, x)`` shifts the whole list each pass: a literal ``0``, on a
-        # list not re-created per iteration and not a ``deque`` (O(1) at the front).
+        # list not re-created per iteration, not a ``deque`` (O(1) at the front) and
+        # not followed by an exit that ends the loop.
         if method == "insert" and self._front_insert_repeats(node, root):
             return "list_insert_zero_in_loop"
         # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
