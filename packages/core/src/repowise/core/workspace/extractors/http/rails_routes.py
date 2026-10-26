@@ -89,6 +89,255 @@ def _current_base(stack: list[_Scope]) -> str:
     return "/" + "/".join(parts) if parts else ""
 
 
+def _read_statements(lines: list[str], ctx: ScanContext) -> list[tuple[int, str]]:
+    """Join continued lines and filter empty/comment-only lines."""
+    statements: list[tuple[int, str]] = []
+    buf = ""
+    start_line = 1
+    for line_no, mask_line in enumerate(lines, 1):
+        line = mask_line.strip()
+        if not line or ctx.comment_only_line(line_no):
+            continue
+        if not buf:
+            start_line = line_no
+            buf = line
+        else:
+            buf += " " + line
+        if not buf.endswith(","):
+            statements.append((start_line, buf))
+            buf = ""
+    if buf:
+        statements.append((start_line, buf))
+    return statements
+
+
+def _strip_inline_end(raw: str) -> tuple[str, bool]:
+    clean = raw
+    has_inline_end = False
+    if "; end" in clean:
+        clean = clean.split("; end")[0].strip()
+        has_inline_end = True
+    elif re.search(r"\s+end$", clean):
+        clean = re.sub(r"\s+end$", "", clean).strip()
+        has_inline_end = True
+    return clean, has_inline_end
+
+
+def _pop_if_enclosing(
+    has_inline_end: bool, had_do: bool, stack: list[_Scope]
+) -> None:
+    if has_inline_end and not had_do and stack:
+        stack.pop()
+
+
+def _handle_scope(line: str, push_block: bool, stack: list[_Scope]) -> bool:
+    if "routes.draw" in line:
+        if push_block:
+            stack.append(_Scope(kind="drawer"))
+        return True
+
+    m = _NAMESPACE_RE.search(line)
+    if m:
+        ns = next(g for g in m.groups() if g is not None)
+        if push_block:
+            stack.append(_Scope(kind="namespace", prefix="/" + ns))
+        return True
+
+    m = _SCOPE_RE.search(line)
+    if m:
+        sc = next(g for g in m.groups() if g is not None)
+        prefix = ("/" + sc.strip("/")) if sc else ""
+        if push_block:
+            stack.append(_Scope(kind="scope", prefix=prefix))
+        return True
+
+    if re.search(r"\bmember\b", line):
+        if push_block:
+            stack.append(_Scope(kind="member"))
+        return True
+
+    if re.search(r"\bcollection\b", line):
+        if push_block:
+            stack.append(_Scope(kind="collection"))
+        return True
+
+    return False
+
+
+def _expand_actions(
+    actions: tuple[tuple[str, tuple[str, ...], str], ...],
+    res_names: list[str],
+    base: str,
+    only: set[str] | None,
+    excluded: set[str],
+    line_no: int,
+    ctx: ScanContext,
+) -> list[Contract]:
+    out: list[Contract] = []
+    for name in res_names:
+        for act_name, verbs, suffix in actions:
+            if (only is not None and act_name not in only) or act_name in excluded:
+                continue
+            res_path = f"{base}/{name}{suffix}"
+            for v in verbs:
+                c = build_provider_contract(
+                    ctx,
+                    method=v,
+                    path_raw=res_path,
+                    framework="rails",
+                    line=line_no,
+                )
+                if c is not None:
+                    out.append(c)
+    return out
+
+
+def _handle_resources(
+    line: str,
+    line_no: int,
+    push_block: bool,
+    stack: list[_Scope],
+    ctx: ScanContext,
+) -> list[Contract] | None:
+    m = _RESOURCES_RE.search(line)
+    if not m:
+        return None
+
+    kind = m.group(1)
+    rest = m.group(2)
+    first_arg = rest.split(",")[0]
+    names = re.findall(r":(\w+)|[\"']([^\"']+)[\"']", first_arg)
+    res_names = [g[0] or g[1] for g in names]
+    only, excluded = _parse_options(rest)
+    is_singular = kind == "resource"
+    actions = _SINGULAR_ACTIONS if is_singular else _PLURAL_ACTIONS
+
+    base = _current_base(stack)
+    out = _expand_actions(actions, res_names, base, only, excluded, line_no, ctx)
+    if push_block:
+        for name in res_names:
+            stack.append(_Scope(kind="resource", resource=name, singular=is_singular))
+    return out
+
+
+def _handle_match(
+    line: str,
+    line_no: int,
+    ctx: ScanContext,
+) -> list[Contract] | None:
+    m = _MATCH_RE.search(line)
+    if not m:
+        return None
+
+    path = m.group(1)
+    v_list = next(g for g in m.groups()[1:] if g is not None)
+    if v_list == "all":
+        verbs = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+    else:
+        verbs = [v.upper() for v in re.findall(r"\w+", v_list)]
+
+    out: list[Contract] = []
+    for v in verbs:
+        c = build_provider_contract(
+            ctx,
+            method=v,
+            path_raw=path,
+            framework="rails",
+            line=line_no,
+        )
+        if c is not None:
+            out.append(c)
+    return out
+
+
+def _direct_verb_path(line: str, p: str, stack: list[_Scope]) -> str:
+    if p.startswith("/"):
+        base = "".join(s.prefix for s in stack if s.prefix)
+        return f"{base}{p}"
+
+    in_coll = any(s.kind == "collection" for s in stack) or "on: :collection" in line
+    res = next((s for s in reversed(stack) if s.resource), None)
+    if not res:
+        base = _current_base(stack)
+        return f"{base}/{p}"
+
+    base = "".join(s.prefix for s in stack if s.prefix)
+    suffix = (
+        f"{res.resource}/{p}" if in_coll or res.singular else f"{res.resource}/:id/{p}"
+    )
+    return f"{base}/{suffix}"
+
+
+def _handle_direct_verb(
+    line: str,
+    line_no: int,
+    push_block: bool,
+    stack: list[_Scope],
+    ctx: ScanContext,
+) -> list[Contract] | None:
+    m = _DIRECT_RE.search(line)
+    if not m:
+        return None
+
+    verb = m.group(1).upper()
+    p = m.group(2) or m.group(3)
+    full = _direct_verb_path(line, p, stack)
+
+    out: list[Contract] = []
+    c = build_provider_contract(
+        ctx,
+        method=verb,
+        path_raw=full,
+        framework="rails",
+        line=line_no,
+    )
+    if c is not None:
+        out.append(c)
+    if push_block:
+        stack.append(_Scope(kind="other"))
+    return out
+
+
+def _handle_root(
+    line_no: int,
+    stack: list[_Scope],
+    ctx: ScanContext,
+) -> list[Contract]:
+    base = _current_base(stack) or "/"
+    c = build_provider_contract(
+        ctx,
+        method="GET",
+        path_raw=base,
+        framework="rails",
+        line=line_no,
+    )
+    return [c] if c is not None else []
+
+
+def _process_statement(
+    line: str,
+    line_no: int,
+    push_block: bool,
+    stack: list[_Scope],
+    ctx: ScanContext,
+) -> list[Contract] | None:
+    if _handle_scope(line, push_block, stack):
+        return []
+
+    res_contracts = _handle_resources(line, line_no, push_block, stack, ctx)
+    if res_contracts is not None:
+        return res_contracts
+
+    if _ROOT_RE.search(line):
+        return _handle_root(line_no, stack, ctx)
+
+    match_contracts = _handle_match(line, line_no, ctx)
+    if match_contracts is not None:
+        return match_contracts
+
+    return _handle_direct_verb(line, line_no, push_block, stack, ctx)
+
+
 class RailsRoutesDialect:
     name = "rails"
     extensions = RUBY
@@ -101,173 +350,28 @@ class RailsRoutesDialect:
 
         stack: list[_Scope] = []
         out: list[Contract] = []
+        statements = _read_statements(lines, ctx)
 
-        # Join lines that continue via trailing comma
-        statements: list[tuple[int, str]] = []
-        buf = ""
-        start_line = 1
-        for line_no, mask_line in enumerate(lines, 1):
-            line = mask_line.strip()
-            if not line or ctx.comment_only_line(line_no):
-                continue
-            if not buf:
-                start_line = line_no
-                buf = line
-            else:
-                buf += " " + line
-            if not buf.endswith(","):
-                statements.append((start_line, buf))
-                buf = ""
-        if buf:
-            statements.append((start_line, buf))
-
-        for line_no, line in statements:
-            if (
-                line == "end"
-                or line.startswith("end ")
-                or line.endswith(" end")
-                or "; end" in line
-            ):
+        for line_no, raw in statements:
+            if raw == "end" or raw.startswith("end "):
                 if stack:
                     stack.pop()
                 continue
 
-            has_do = bool(_DO_BLOCK_RE.search(line))
-
-            if "routes.draw" in line:
-                if has_do:
-                    stack.append(_Scope(kind="drawer"))
+            line, has_inline_end = _strip_inline_end(raw)
+            if not line:
+                _pop_if_enclosing(has_inline_end, False, stack)
                 continue
 
-            # namespace :admin do
-            m = _NAMESPACE_RE.search(line)
-            if m:
-                ns = next(g for g in m.groups() if g is not None)
-                if has_do:
-                    stack.append(_Scope(kind="namespace", prefix="/" + ns))
-                continue
+            had_do = bool(_DO_BLOCK_RE.search(line))
+            push_block = had_do and not has_inline_end
 
-            # scope "/api" do / scope path: "/api" do / scope :api do
-            m = _SCOPE_RE.search(line)
-            if m:
-                sc = next(g for g in m.groups() if g is not None)
-                prefix = ("/" + sc.strip("/")) if sc else ""
-                if has_do:
-                    stack.append(_Scope(kind="scope", prefix=prefix))
-                continue
-
-            # member do / collection do
-            if re.search(r"\bmember\b", line) and has_do:
-                stack.append(_Scope(kind="member"))
-                continue
-            if re.search(r"\bcollection\b", line) and has_do:
-                stack.append(_Scope(kind="collection"))
-                continue
-
-            # resources / resource
-            m = _RESOURCES_RE.search(line)
-            if m:
-                kind = m.group(1)
-                rest = m.group(2)
-                first_arg = rest.split(",")[0]
-                names = re.findall(r":(\w+)|[\"']([^\"']+)[\"']", first_arg)
-                res_names = [g[0] or g[1] for g in names]
-                only, excluded = _parse_options(rest)
-                is_singular = kind == "resource"
-                actions = _SINGULAR_ACTIONS if is_singular else _PLURAL_ACTIONS
-                for name in res_names:
-                    base = _current_base(stack)
-                    for act_name, verbs, suffix in actions:
-                        if (only is None or act_name in only) and act_name not in excluded:
-                            res_path = f"{base}/{name}{suffix}"
-                            for v in verbs:
-                                c = build_provider_contract(
-                                    ctx,
-                                    method=v,
-                                    path_raw=res_path,
-                                    framework="rails",
-                                    line=line_no,
-                                )
-                                if c is not None:
-                                    out.append(c)
-                    if has_do:
-                        stack.append(
-                            _Scope(kind="resource", resource=name, singular=is_singular)
-                        )
-                continue
-
-            # root
-            if _ROOT_RE.search(line):
-                base = _current_base(stack) or "/"
-                c = build_provider_contract(
-                    ctx,
-                    method="GET",
-                    path_raw=base,
-                    framework="rails",
-                    line=line_no,
-                )
-                if c is not None:
-                    out.append(c)
-                continue
-
-            # match ... via:
-            m = _MATCH_RE.search(line)
-            if m:
-                path = m.group(1)
-                v_list = next(g for g in m.groups()[1:] if g is not None)
-                if v_list == "all":
-                    verbs = ["GET", "POST", "PUT", "PATCH", "DELETE"]
-                else:
-                    verbs = [v.upper() for v in re.findall(r"\w+", v_list)]
-                for v in verbs:
-                    c = build_provider_contract(
-                        ctx,
-                        method=v,
-                        path_raw=path,
-                        framework="rails",
-                        line=line_no,
-                    )
-                    if c is not None:
-                        out.append(c)
-                continue
-
-            # direct verbs: get, post, etc.
-            m = _DIRECT_RE.search(line)
-            if m:
-                verb = m.group(1).upper()
-                p = m.group(2) or m.group(3)
-                if p.startswith("/"):
-                    base = "".join(s.prefix for s in stack if s.prefix)
-                    full = f"{base}{p}"
-                else:
-                    in_coll = (
-                        any(s.kind == "collection" for s in stack)
-                        or "on: :collection" in line
-                    )
-                    res = next((s for s in reversed(stack) if s.resource), None)
-                    if res:
-                        base = "".join(s.prefix for s in stack if s.prefix)
-                        if in_coll or res.singular:
-                            full = f"{base}/{res.resource}/{p}"
-                        else:
-                            full = f"{base}/{res.resource}/:id/{p}"
-                    else:
-                        base = _current_base(stack)
-                        full = f"{base}/{p}"
-                c = build_provider_contract(
-                    ctx,
-                    method=verb,
-                    path_raw=full,
-                    framework="rails",
-                    line=line_no,
-                )
-                if c is not None:
-                    out.append(c)
-                if has_do:
-                    stack.append(_Scope(kind="other"))
-                continue
-
-            if has_do:
+            contracts = _process_statement(line, line_no, push_block, stack, ctx)
+            if contracts is not None:
+                out.extend(contracts)
+            elif push_block:
                 stack.append(_Scope(kind="other"))
+
+            _pop_if_enclosing(has_inline_end, had_do, stack)
 
         return out
