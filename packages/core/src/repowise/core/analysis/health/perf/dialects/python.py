@@ -503,14 +503,16 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             if stmt.type in self.scope_kinds:  # a lambda body runs elsewhere
                 return False
             stmt = stmt.parent
-        cur = stmt.parent
+        cur, in_try = stmt.parent, False
         while cur is not None and cur.type not in self.scope_kinds:
             loops += cur.type in ("for_statement", "while_statement")
+            in_try = in_try or cur.type == "try_statement"
             cur = cur.parent
         if not loops:
             return False
-        # A ``break`` in a loop nest leaves only the inner loop; the outer one re-enters.
-        exits = {"return_statement", "raise_statement"}
+        # A ``raise`` inside a ``try`` may be caught and the loop go on, and a
+        # ``break`` in a loop nest leaves only the inner loop.
+        exits = {"return_statement"} if in_try else {"return_statement", "raise_statement"}
         if loops == 1:
             exits.add("break_statement")
         return self._exit_follows(

@@ -735,6 +735,12 @@ _INSERT_ZERO = "def f(xs, out, ok):\n    for x in xs:\n{body}"
         # ``break`` leaves only the inner loop of a nest.
         ("        for y in x:\n            out.insert(0, y)\n            break\n", True),
         ("        for y in x:\n            out.insert(0, y)\n            return\n", False),
+        # A ``raise`` an ``except`` in the same iteration can catch.
+        (
+            "        try:\n            out.insert(0, x)\n            raise ValueError\n"
+            "        except ValueError:\n            pass\n",
+            True,
+        ),
         # A flag-driven exit is not followed (click's ``stop = True``).
         ("        out.insert(0, x)\n        stop = True\n        if stop:\n            break\n", True),
     ],
