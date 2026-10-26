@@ -90,6 +90,8 @@ class FileContext:
     # Thin graph view exposing only ``has_edge``. ``None`` on test fixtures
     # that never construct a graph.
     graph_view: HasEdge | None = None
+    # Names of this file's ``partial`` types that have parts in other files.
+    split_partial_types: frozenset[str] = frozenset()
     # Per-line blame index produced by the FULL git tier (see
     # ``ingestion.git_indexer.function_blame``). ``None`` on ESSENTIAL
     # tier until the FULL-tier backfill (``backfill_full_tier()``) runs;

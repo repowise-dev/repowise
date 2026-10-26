@@ -224,6 +224,7 @@ class FileEvaluator:
     active_contributors: int | None = None
     file_scc_index: dict[str, tuple[str, ...]] | None = None
     methods_by_file: dict[str, tuple[str, ...]] | None = None
+    split_partial_types: dict[str, frozenset[str]] | None = None
     dataflow_cache: FileDataflowCache | None = None
     function_tests: FunctionTests | None = None
     #: Test files by file name (``coverage_actions.paired_test_index``).
@@ -303,6 +304,7 @@ class FileEvaluator:
             duplication_pct=dup_pct,
             clone_sources=clone_sources,
             graph_view=self.graph_view,
+            split_partial_types=(self.split_partial_types or {}).get(file_path, frozenset()),
             blame_index=blame_idx_obj if isinstance(blame_idx_obj, BlameIndex) else None,
             repo_function_mod_p80=self.function_mod_p80,
             repo_active_contributors_90d=self.active_contributors,
