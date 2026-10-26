@@ -211,17 +211,23 @@ def _module_classes(node: Node, lmap: LanguageNodeMap) -> dict[str | None, Node]
 
 
 def _local_bases(cls: Node, module: dict[str | None, Node]) -> Iterator[Node]:
-    """Every ancestor of *cls* named by a plain identifier and defined in *module*."""
+    """Every ancestor of *cls* named by a plain identifier and defined in *module*.
+
+    A base must be defined above the class naming it: ``class Foo(Foo)`` that
+    shadows an imported ``Foo`` names the import, not itself.
+    """
     seen: set[str] = set()
     pending = [cls]
     while pending:
-        bases = pending.pop().child_by_field_name("superclasses")
+        current = pending.pop()
+        bases = current.child_by_field_name("superclasses")
         for base in bases.named_children if bases is not None else ():
             name = _text(base)
-            if base.type == "identifier" and name not in seen and name in module:
+            found = module.get(name) if base.type == "identifier" and name not in seen else None
+            if found is not None and found.start_byte < current.start_byte:
                 seen.add(name)
-                pending.append(module[name])
-                yield module[name]
+                pending.append(found)
+                yield found
 
 
 def _overrides_local_base(fn_node: Node, lmap: LanguageNodeMap) -> bool:

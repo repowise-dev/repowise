@@ -46,4 +46,7 @@ def test_keyword_only_parameters_are_not_counted(keyword_only: int, flagged: boo
         file_path="src/app.py", language="python", nloc=80, has_test_file=False, module=None,
         is_test=False, all_functions=(helper, _FILLER),
     )
-    assert bool(PrimitiveObsessionDetector().detect(ctx)) is flagged
+    findings = PrimitiveObsessionDetector().detect(ctx)
+    assert bool(findings) is flagged
+    if findings:
+        assert findings[0].reason.endswith("takes 6 parameters, 1 keyword-only")

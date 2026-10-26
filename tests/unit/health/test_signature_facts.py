@@ -349,6 +349,15 @@ def test_python_method_overriding_a_base_in_the_same_file_is_fixed():
     }
 
 
+def test_python_class_shadowing_an_imported_base_is_not_its_own_base():
+    fns = _fns(
+        "a.py",
+        "python",
+        f"from x import Foo\nclass Foo(Foo):\n    def run(self, {FIVE}):\n        pass\n",
+    )
+    assert not fns["run"].signature_fixed
+
+
 def test_python_fastapi_bound_parameters():
     fns = _fns(
         "routes.py",

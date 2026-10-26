@@ -74,10 +74,12 @@ class PrimitiveObsessionDetector:
                         "typed_param_count": typed,
                         "primitive_param_count": primitive,
                         "bound_param_count": fn.bound_param_count,
+                        "keyword_only_param_count": fn.keyword_only_param_count,
                     },
                     reason=(
                         f"long parameter list: {fn.name} takes {fn.param_count} parameters"
                         + (f", {fn.bound_param_count} bound by the framework" if fn.bound_param_count else "")
+                        + (f", {fn.keyword_only_param_count} keyword-only" if fn.keyword_only_param_count else "")
                         + (f", {primitive} of {typed} typed ones scalars or strings" if typed else "")
                     ),
                 )
