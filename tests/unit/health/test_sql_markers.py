@@ -178,6 +178,10 @@ class TestSelectStar:
         sql = "CREATE VIEW v AS WITH c AS (SELECT * FROM users) SELECT * FROM c"
         assert _smell_kinds(sql) == ["sql_select_star"]
 
+    def test_fires_on_qualified_table_sharing_a_cte_name(self) -> None:
+        sql = "CREATE VIEW v AS WITH users AS (SELECT id FROM t) SELECT * FROM other.users"
+        assert _smell_kinds(sql) == ["sql_select_star"]
+
     def test_fires_when_star_joins_base_table(self) -> None:
         sql = (
             "CREATE VIEW v AS WITH c AS (SELECT id FROM users) "

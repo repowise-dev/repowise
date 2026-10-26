@@ -294,7 +294,7 @@ def _star_reads_base_table(sel: Any, ctes: set[str], exp: Any) -> bool:
     return any(
         isinstance(src, exp.Table)
         and isinstance(src.this, exp.Identifier)
-        and src.name.lower() not in ctes
+        and (src.args.get("db") or src.name.lower() not in ctes)
         for src in sources
     )
 
