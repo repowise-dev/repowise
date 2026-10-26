@@ -2995,10 +2995,12 @@ async def test_what_if_names_the_points_a_fix_recovers(setup_mcp, session, popul
     assert row["ceiling"] == 9.0
     assert "target_out_of_reach" not in row
     top = block["top_fixes"][0]
-    assert (top["biomarker_type"], top["points"]) == ("complex_method", 2.0)
-    # 2.0 structure points also lower history's cap from 2.5 to 2.0: 4.5 -> 7.0,
-    # on 200 of the headline's 500 nloc; the only hotspot carries all of it.
-    assert top["gain"] == {"file": 2.5, "average": 1.0, "hotspot": 2.5}
+    # Points are the file rescored without the finding, not its stored impact:
+    # a high nested_complexity frees 1.45 (its 1.0 impact reads less).
+    assert (top["biomarker_type"], top["points"]) == ("nested_complexity", 1.45)
+    # History's cap stays above 2.5 at 1.55 structure: 4.5 -> 5.95, on 200 of
+    # the headline's 500 nloc; the only hotspot carries all of it.
+    assert top["gain"] == {"file": 1.45, "average": 0.581, "hotspot": 1.452}
     assert row["fix_all_structure"]["file"] == 4.5
 
 

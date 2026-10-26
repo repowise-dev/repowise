@@ -5,9 +5,10 @@ A file's score is ``clamp(10 - structure - history)``, where history is capped b
 deduct. The stored history is already capped, so ``min(history, history_cap(s))``
 is exactly the history left at a lower structure ``s``. With no structure left
 that gives the file's ceiling, the most an edit can reach. A finding's ``points``
-are its ``health_impact``, an upper bound when its category sits at its cap
-(the others scale back up). Headline and hotspot gains weight the file gain by
-the file's nloc share of each average.
+are the structure deduction its removal frees, the file's code-shape findings
+rescored without it (``health.gain``), so a saturated category frees little.
+Headline and hotspot gains weight the file gain by the file's nloc share of
+each average.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+from repowise.core.analysis.health.gain import structure_freed
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.scoring import (
@@ -116,7 +118,7 @@ def _file_row(m: Any, findings: list[Any], weights: _Weights) -> dict[str, Any]:
         history=getattr(m, "history_deduction", None) or 0.0,
     )
     ceiling = halves.at(0.0)
-    fixes = [_fix(m, f, halves, weights) for f in findings]
+    fixes = [_fix(m, f, findings, halves, weights) for f in findings]
     row: dict[str, Any] = {
         "file_path": m.file_path,
         "score": round(m.score, 2),
@@ -134,8 +136,10 @@ def _file_row(m: Any, findings: list[Any], weights: _Weights) -> dict[str, Any]:
     return row
 
 
-def _fix(m: Any, f: Any, halves: _FileScore, weights: _Weights) -> dict[str, Any]:
-    points = min(f.health_impact, halves.structure)
+def _fix(
+    m: Any, f: Any, findings: list[Any], halves: _FileScore, weights: _Weights
+) -> dict[str, Any]:
+    points = min(structure_freed(findings, [(f, 1.0)]), halves.structure)
     file_gain = halves.at(halves.structure - points) - halves.now
     fix: dict[str, Any] = {
         "file_path": m.file_path,

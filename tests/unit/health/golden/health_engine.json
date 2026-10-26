@@ -421,7 +421,7 @@
         "target_symbol": "parseAccount",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.22,
+        "impact_delta": 0.193,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -432,7 +432,7 @@
         "target_symbol": "parseWorkspace",
         "line_start": 15,
         "line_end": 56,
-        "impact_delta": 0.22,
+        "impact_delta": 0.193,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -810,7 +810,7 @@
         "target_symbol": "read_account",
         "line_start": 22,
         "line_end": 48,
-        "impact_delta": 0.171,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -821,7 +821,7 @@
         "target_symbol": "read_project",
         "line_start": 150,
         "line_end": 176,
-        "impact_delta": 0.171,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
@@ -832,7 +832,7 @@
         "target_symbol": "read_workspace",
         "line_start": 86,
         "line_end": 112,
-        "impact_delta": 0.171,
+        "impact_delta": 0.097,
         "effort_bucket": "S",
         "confidence": "high",
         "source_biomarker": "complex_method"
