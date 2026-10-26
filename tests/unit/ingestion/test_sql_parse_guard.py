@@ -121,3 +121,23 @@ def test_backslash_inside_a_string_is_not_a_meta_command() -> None:
 
     statements = parse_sql("INSERT INTO t VALUES ('a\\b');\nCREATE TABLE kept (a int);")
     assert [type(s).__name__ for s in statements] == ["Insert", "Create"]
+
+
+def test_gset_ends_the_statement_like_a_semicolon() -> None:
+    from repowise.core.ingestion.sql_parse import parse_sql
+
+    statements = parse_sql("SELECT 1 AS x \\gset\nCREATE TABLE kept (a int);")
+    assert [type(s).__name__ for s in statements] == ["Select", "Create"]
+
+
+def test_embedded_sql_keeps_a_stray_backslash_an_error() -> None:
+    import sqlglot
+
+    from repowise.core.ingestion.sql_parse import parse_sql
+
+    with pytest.raises(sqlglot.errors.ParseError):
+        parse_sql(
+            "DELETE FROM users \\ WHERE 1",
+            error_level=sqlglot.ErrorLevel.RAISE,
+            psql_meta_commands=False,
+        )

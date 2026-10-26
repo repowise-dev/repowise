@@ -174,6 +174,7 @@ class _Run:
         self.queue: deque[int] = deque(i for i, r in enumerate(results) if r is PENDING)
         # Tasks that were in flight when a worker died, retried one at a time.
         self.suspects: deque[int] = deque()
+        self.pool_has_run = False
 
     def finish(self, idx: int, result: Any) -> None:
         self.results[idx] = result
@@ -228,6 +229,23 @@ class _Run:
             idx = queue.popleft()
             in_flight[pool.submit(self.fn, self.items[idx])] = (idx, time.monotonic())
 
+    def start(self, pool: ProcessPoolExecutor) -> None:
+        """Run a no-op in *pool*; raise when it cannot, so the caller falls back.
+
+        A pool that cannot start (spawn or import failure) is the
+        environment's fault, not a file's. Suspects are the exception: they
+        were in flight when a worker died, so they never go to an in-process
+        fallback, where a native crash would take the whole run down.
+        """
+        try:
+            pool.submit(os.getpid).result(timeout=_STARTUP_TIMEOUT_S)
+        except Exception:
+            if self.pool_has_run:
+                while self.suspects:
+                    self.finish(self.suspects.popleft(), ParseWorkerCrashError("parse worker crashed"))
+            raise
+        self.pool_has_run = True
+
     def round(self, workers: int) -> None:
         """Run tasks in one pool until the queue drains or the pool must go."""
         solo = bool(self.suspects)
@@ -237,9 +255,7 @@ class _Run:
         in_flight: dict[Future, tuple[int, float]] = {}
         clean = False
         try:
-            # A pool that cannot run a no-op (spawn or import failure) is the
-            # environment's fault, not a file's: raise so the caller falls back.
-            pool.submit(os.getpid).result(timeout=_STARTUP_TIMEOUT_S)
+            self.start(pool)
             while queue or in_flight:
                 self.dispatch(pool, queue, in_flight, limit)
                 done, _ = wait(in_flight, self.wait_budget(in_flight), FIRST_COMPLETED)

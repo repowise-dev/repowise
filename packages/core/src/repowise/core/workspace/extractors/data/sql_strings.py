@@ -190,7 +190,9 @@ class SqlStringsDialect:
         from repowise.core.ingestion.sql_parse import parse_sql
 
         try:
-            statements = parse_sql(literal, error_level=sqlglot.ErrorLevel.RAISE)
+            statements = parse_sql(
+                literal, error_level=sqlglot.ErrorLevel.RAISE, psql_meta_commands=False
+            )
         except Exception:
             return None
         found: list[tuple[str, str]] = []

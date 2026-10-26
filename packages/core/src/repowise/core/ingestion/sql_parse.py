@@ -39,8 +39,10 @@ def drop_psql_meta_commands(text: str, tokens: list[Any]) -> list[Any]:
 
     The tokenizer has already read string literals and comments, so a
     backslash inside one is part of that token and never starts a command.
+    ``\\g``, ``\\gset``, ``\\gexec`` and the like send the query buffer, so
+    they end a statement just as ``;`` does.
     """
-    from sqlglot.tokens import TokenType
+    from sqlglot.tokens import Token, TokenType
 
     kept: list[Any] = []
     line_end = -1
@@ -51,6 +53,10 @@ def drop_psql_meta_commands(text: str, tokens: list[Any]) -> list[Any]:
             line_end = text.find("\n", tok.start)
             if line_end == -1:
                 line_end = len(text)
+            if text.startswith("g", tok.start + 1):
+                kept.append(
+                    Token(TokenType.SEMICOLON, ";", tok.line, tok.col, tok.start, tok.start)
+                )
             continue
         kept.append(tok)
     return kept
@@ -91,13 +97,21 @@ def _budgeted(parser_class: type) -> type:
     return BudgetedParser
 
 
-def parse_sql(text: str, *, dialect: str | None = None, error_level: Any = None) -> list[Any]:
-    """``sqlglot.parse`` without psql meta-commands and with a per-statement node budget.
+def parse_sql(
+    text: str,
+    *,
+    dialect: str | None = None,
+    error_level: Any = None,
+    psql_meta_commands: bool = True,
+) -> list[Any]:
+    """``sqlglot.parse`` with a per-statement node budget.
 
     Raises ``ImportError`` when sqlglot is missing and whatever sqlglot raises
     otherwise, so each caller keeps its own degrade path. *error_level*
     defaults to ``ErrorLevel.IGNORE``. A statement over budget comes back as
-    ``None``.
+    ``None``. *psql_meta_commands* drops psql's backslash commands first; it
+    is for ``.sql`` files, not SQL embedded in code, where a stray backslash
+    should still fail the parse.
     """
     import sqlglot
     from sqlglot.dialects.dialect import Dialect
@@ -108,7 +122,7 @@ def parse_sql(text: str, *, dialect: str | None = None, error_level: Any = None)
     level = sqlglot.ErrorLevel.IGNORE if error_level is None else error_level
     sql_dialect = Dialect.get_or_raise(dialect)
     tokens = sql_dialect.tokenize(text)
-    if "\\" in text:
+    if psql_meta_commands and "\\" in text:
         tokens = drop_psql_meta_commands(text, tokens)
     parser = _budgeted(sql_dialect.parser_class)(dialect=sql_dialect, error_level=level)
     return parser.parse(tokens, text)
