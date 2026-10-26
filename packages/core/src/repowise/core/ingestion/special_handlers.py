@@ -393,23 +393,14 @@ def _parse_sql(file_info: FileInfo, source: bytes) -> ParsedFile:
 
 def _extract_sql_symbols(file_info: FileInfo, text: str) -> tuple[list[Symbol], list[str]]:
     try:
-        import sqlglot
         from sqlglot import exp
     except ImportError:
         return [], ["sqlglot not installed"]
 
-    # sqlglot warns per statement it falls back to a generic Command for
-    # (procedural bodies, vendor syntax); routine here, so keep it quiet.
-    import logging
-
-    logging.getLogger("sqlglot").setLevel(logging.ERROR)
+    from .sql_parse import parse_sql
 
     try:
-        statements = sqlglot.parse(
-            text,
-            read=_sql_dialect_for(file_info),
-            error_level=sqlglot.ErrorLevel.IGNORE,
-        )
+        statements = parse_sql(text, dialect=_sql_dialect_for(file_info))
     except Exception as exc:
         # Tokenizer errors and dialect-specific syntax sqlglot can't
         # recover from: degrade the file to passthrough behaviour.

@@ -25,7 +25,6 @@ none of it may move the surfaced defect score.
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any
 
@@ -177,13 +176,13 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
     if "{{" in text or "{%" in text:
         return []
     try:
-        import sqlglot
         from sqlglot import exp
     except ImportError:
         return []
-    logging.getLogger("sqlglot").setLevel(logging.ERROR)
+    from repowise.core.ingestion.sql_parse import parse_sql
+
     try:
-        statements = sqlglot.parse(text, read=dialect, error_level=sqlglot.ErrorLevel.IGNORE)
+        statements = parse_sql(text, dialect=dialect)
     except Exception:
         return []
 
