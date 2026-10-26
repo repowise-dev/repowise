@@ -903,7 +903,7 @@ async def test_sync_job_does_not_run_while_a_cli_update_holds_the_lock(session_f
 
     run_pipeline_mock.assert_not_called()
     job = await _job_row(session_factory, job_id)
-    assert job.status == "failed"
+    assert job.status == "cancelled"
     assert "Another repowise update" in job.error_message
 
 
@@ -953,3 +953,50 @@ async def test_newer_stamp_written_during_the_run_blocks_the_persist(session_fac
 
     persist.assert_not_called()
     assert (await _job_row(session_factory, job_id)).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sync_job_releases_the_update_lock(session_factory, tmp_path):
+    import asyncio
+
+    from repowise.core.update_lock import read_update_lock
+
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    started = asyncio.Event()
+
+    async def pipeline(*_a, **_k):
+        started.set()
+        await asyncio.sleep(60)
+
+    with (
+        patch("repowise.server.job_executor.run_pipeline", side_effect=pipeline),
+        _no_provider(),
+    ):
+        task = asyncio.create_task(execute_job(job_id, app_state))
+        await asyncio.wait_for(started.wait(), 30)
+        assert read_update_lock(tmp_path) is not None
+        task.cancel()
+        await task
+
+    assert read_update_lock(tmp_path) is None
+    assert (await _job_row(session_factory, job_id)).status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_sync_job_without_a_health_report_keeps_the_stored_stamp(session_factory, tmp_path):
+    import json
+
+    _write_state(tmp_path, {"health_analyzer_version": 1})
+    job_id = await _seed_job_with_config(session_factory, tmp_path, {"mode": "sync"})
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=_fake_result())),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch("repowise.server.job_state._read_head_sha", return_value="new"),
+        _no_provider(),
+    ):
+        await execute_job(job_id, app_state)
+
+    state = json.loads((tmp_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert state["health_analyzer_version"] == 1

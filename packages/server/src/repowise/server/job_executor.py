@@ -530,16 +530,6 @@ async def _run_scoped_generation(run: _JobRun) -> None:
     )
 
 
-def _take_update_lock(repo_path: Path) -> None:
-    """Take the per-repo lock `repowise update` holds, or fail the job."""
-    owner = try_acquire_update_lock(repo_path, _read_head_sha(repo_path))
-    if owner is not None:
-        raise RuntimeError(
-            f"Another repowise update (pid {owner.get('pid')}) is running on this "
-            "repository, so this job did not run."
-        )
-
-
 def _refuse_older_analyzer(repo_path: Path) -> None:
     """Fail the job before it writes health rows older than the stored ones."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
@@ -556,12 +546,28 @@ def _refuse_older_analyzer(repo_path: Path) -> None:
 async def _run_index_job(run: _JobRun, app_state: Any) -> None:
     """Index under the CLI's update lock, so the two never write one index at once."""
     repo_path = Path(run.spec.repo_path)
-    await asyncio.to_thread(_take_update_lock, repo_path)
+    head = await asyncio.to_thread(_read_head_sha, repo_path)
+    # Acquired and released without an await, so a cancel cannot leak the lock.
+    owner = try_acquire_update_lock(repo_path, head)
+    if owner is not None:
+        # The holder's run advances the baseline; nothing failed here.
+        await _finalize_job_status(
+            app_state,
+            run.session_factory,
+            run.progress,
+            run.spec.job_id,
+            status="cancelled",
+            error_message=(
+                f"Another repowise update or sync (pid {owner.get('pid')}) is "
+                "running on this repository, so this job did not run."
+            ),
+        )
+        return
     try:
         await asyncio.to_thread(_refuse_older_analyzer, repo_path)
         await _run_locked_index_job(run, app_state)
     finally:
-        await asyncio.to_thread(release_update_lock, repo_path)
+        release_update_lock(repo_path)
 
 
 async def _run_locked_index_job(run: _JobRun, app_state: Any) -> None:
