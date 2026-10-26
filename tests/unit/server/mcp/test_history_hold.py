@@ -203,7 +203,7 @@ async def test_targeted_findings_say_what_the_holds_deduct(setup_mcp, session, h
     assert [f["biomarker_type"] for f in result["findings"]] == ["complex_method"]
     # The two history markers deduct 1.5 + 1.0 points the list does not show.
     assert result["findings_hidden"] == (
-        '2 held-back findings (history 2) deduct 2.50 points not listed here; '
+        '2 held-back findings (history 2) carry 2.50 points of total_deduction not listed here; '
         'include=["unverified"] lists them.'
     )
 

@@ -95,7 +95,7 @@ def _findings_hidden(data: HealthData) -> dict[str, str]:
     points = sum(float(f.health_impact or 0.0) for f in held)
     return {
         "findings_hidden": (
-            f"{len(held)} held-back findings ({kinds}) deduct {points:.2f} points "
+            f"{len(held)} held-back findings ({kinds}) carry {points:.2f} points of total_deduction "
             'not listed here; include=["unverified"] lists them.'
         )
     }
