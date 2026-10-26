@@ -108,12 +108,13 @@ def _renderer(fmt: str) -> Any:
     """The renderer *fmt* names on the ``report-renderer`` seam; a usage error otherwise."""
     from repowise.core.report.render import report_renderers
 
-    if fmt not in report_renderers.names:
+    available = dict(report_renderers.all())  # loads plugins, so plugin formats count
+    if fmt not in available:
         raise click.BadParameter(
-            f"unknown format {fmt!r}; available: {', '.join(report_renderers.names)}",
+            f"unknown format {fmt!r}; available: {', '.join(available)}",
             param_hint="--format",
         )
-    return report_renderers.get(fmt)
+    return available[fmt]
 
 
 def _emit(text: str, fmt: str, out_path: str | None, document: dict) -> None:
