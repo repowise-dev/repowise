@@ -117,13 +117,16 @@ def build_split_partial_types(graph: Any) -> dict[str, frozenset[str]]:
     """Each file's ``partial`` type names that have parts in other files.
 
     Read from the ``partial_class`` edges that link a partial type's files.
+    Both ends count: the linker skips a direction that already had an edge.
     """
     if graph is None:
         return {}
     out: dict[str, set[str]] = {}
-    for u, _v, data in graph.edges(data=True):
+    for u, v, data in graph.edges(data=True):
         if data.get("hint_source") == "partial_class":
-            out.setdefault(u, set()).update(data.get("imported_names") or ())
+            names = data.get("imported_names") or ()
+            out.setdefault(u, set()).update(names)
+            out.setdefault(v, set()).update(names)
     return {path: frozenset(names) for path, names in out.items()}
 
 

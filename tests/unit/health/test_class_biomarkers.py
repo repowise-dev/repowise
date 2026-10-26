@@ -265,8 +265,9 @@ def test_split_partial_types_reads_partial_class_edges():
     )
 
     g = nx.DiGraph()
-    for a, b in (("A.cs", "A.Jobs.cs"), ("A.Jobs.cs", "A.cs")):
-        g.add_edge(a, b, edge_type="imports", imported_names=["A"], hint_source="partial_class")
+    # The reverse direction already had a plain import, so the linker added one edge.
+    g.add_edge("A.Jobs.cs", "A.cs", edge_type="imports", imported_names=["X"])
+    g.add_edge("A.cs", "A.Jobs.cs", edge_type="imports", imported_names=["A"], hint_source="partial_class")
     g.add_edge("A.cs", "B.cs", edge_type="imports", imported_names=["B"])
     assert build_split_partial_types(g) == {
         "A.cs": frozenset({"A"}),
