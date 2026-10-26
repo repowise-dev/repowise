@@ -75,24 +75,41 @@ def _is_data_slot(node: Node) -> bool:
     return parent is not None and parent.type == "jsx_attribute" and _is_data(node)
 
 
-def _used_only_in_data_slots(name: str, declarator: Node, scope: Node) -> bool:
+def _in_data_slot(node: Node, scope: Node) -> bool:
+    """*node* sits in a data attribute value below *scope*."""
+    slot = node.parent
+    while slot is not None and slot != scope and slot.type != _EXPRESSION_SLOT:
+        slot = slot.parent
+    return slot is not None and slot != scope and _is_data_slot(slot)
+
+
+def _used_only_in_data_slots(name: Node, scope: Node) -> bool:
     """Every other mention of *name* in *scope* sits in a data attribute value."""
+    text = name.text
     uses = 0
     stack = [scope]
     while stack:
         node = stack.pop()
-        if node.type in ("identifier", "shorthand_property_identifier") and node != declarator:
-            if node.text.decode("utf-8", "replace") != name:
-                continue
-            slot = node.parent
-            while slot is not None and slot != scope and slot.type != _EXPRESSION_SLOT:
-                slot = slot.parent
-            if slot is None or slot == scope or not _is_data_slot(slot):
+        if node.type not in ("identifier", "shorthand_property_identifier"):
+            stack.extend(node.children)
+        elif node != name and node.text == text:
+            if not _in_data_slot(node, scope):
                 return False
             uses += 1
-        else:
-            stack.extend(node.children)
     return uses > 0
+
+
+def _data_literal_name(node: Node) -> Node | None:
+    """The name of ``const X = {...}`` / ``[...]`` of plain data in a block, else ``None``."""
+    declarators = node.named_children
+    if node.children[0].type != "const" or len(declarators) != 1:
+        return None
+    name = declarators[0].child_by_field_name("name")
+    value = declarators[0].child_by_field_name("value")
+    if name is None or value is None or name.type != "identifier":
+        return None
+    literal = value.named_children[0] if value.type in _TYPED_VALUE else value
+    return name if literal.type in ("object", "array") and _is_data(value) else None
 
 
 def _data_declarations(root: Node) -> set[tuple[int, int]]:
@@ -102,22 +119,25 @@ def _data_declarations(root: Node) -> set[tuple[int, int]]:
     while stack:
         node = stack.pop()
         stack.extend(node.named_children)
-        if node.type != "lexical_declaration" or node.children[0].type != "const":
-            continue
         scope = node.parent
-        declarators = node.named_children
-        if scope is None or scope.type != "statement_block" or len(declarators) != 1:
+        if node.type != "lexical_declaration" or scope is None or scope.type != "statement_block":
             continue
-        name = declarators[0].child_by_field_name("name")
-        value = declarators[0].child_by_field_name("value")
-        if name is None or value is None or name.type != "identifier":
-            continue
-        literal = value.named_children[0] if value.type in _TYPED_VALUE else value
-        if literal.type not in ("object", "array") or not _is_data(value):
-            continue
-        if _used_only_in_data_slots(name.text.decode("utf-8", "replace"), name, scope):
+        name = _data_literal_name(node)
+        if name is not None and _used_only_in_data_slots(name, scope):
             spans.add((node.start_byte, node.end_byte))
     return spans
+
+
+def _opens_markup(node: Node, in_markup: bool, data_decls: set[tuple[int, int]]) -> bool:
+    """Whether *node*'s tokens are markup, given its parent's state."""
+    kind = node.type
+    if kind == _EXPRESSION_SLOT:
+        return in_markup and _is_data_slot(node)
+    if kind.startswith("jsx_"):
+        return True
+    if kind == "lexical_declaration" and (node.start_byte, node.end_byte) in data_decls:
+        return True
+    return in_markup
 
 
 def _token_rows(root: Node) -> tuple[set[int], set[int]]:
@@ -128,15 +148,9 @@ def _token_rows(root: Node) -> tuple[set[int], set[int]]:
     stack: list[tuple[Node, bool]] = [(root, False)]
     while stack:
         node, in_markup = stack.pop()
-        kind = node.type
-        if "comment" in kind:
+        if "comment" in node.type:
             continue
-        if kind == _EXPRESSION_SLOT:
-            in_markup = in_markup and _is_data_slot(node)
-        elif kind.startswith("jsx_") or (
-            kind == "lexical_declaration" and (node.start_byte, node.end_byte) in data_decls
-        ):
-            in_markup = True
+        in_markup = _opens_markup(node, in_markup, data_decls)
         if node.children:
             stack.extend((child, in_markup) for child in node.children)
         elif node.start_byte < node.end_byte:
