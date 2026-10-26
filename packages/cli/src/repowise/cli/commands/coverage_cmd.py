@@ -245,6 +245,8 @@ def coverage_add(
             )
             for path, err in errors:
                 console.print(f"[yellow]  {path.name}: {err}[/yellow]")
+            if stale := resolved.alignment.warning():
+                console.print(f"[yellow]{escape(stale)}[/yellow]")
             # Counted from `resolved`, not from inside the `resolved.files`
             # branch below: total mapping loss leaves `files` empty, so
             # reading the count in there reported 0 report files unmapped
