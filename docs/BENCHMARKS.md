@@ -14,7 +14,7 @@ can rerun it.
 | **Half the work for your agent** | **3.8 tool calls instead of 7.2**, **3.0 files opened instead of 7.2**, **31.6% less** output | An AI agent with repowise reaches the same answer with about half the searching and reading. That is the largest saving of the five context tools we tested. [Details](#2-what-changes-in-a-real-agent-loop) |
 | **Points at the right code** | **88%** of the files a real fix needed, against **61%** for the next tool | Before an agent edits, it has to find the right files. Repowise finds most of them in one call. [Details](#1-finding-the-right-files) |
 | **Up to 99% less noise** | `npm ci` **99.5%**, `git log` **89%**, `git diff` **86%**, test runs **61%** smaller | Command output is trimmed before the agent reads it, and every error line is kept. [Details](#4-command-output-compression) |
-| **Finds the code that will break** | **2.3x** as many later-buggy files as CodeScene, in the same review budget | Its health score flags the files that go on to need bug fixes, across 21 open-source projects. [Details](#5-code-health-predicts-defects) |
+| **Finds the code that will break** | **Popt +0.075** over CodeScene: later-buggy files found with less code read | Its health score flags the files that go on to need bug fixes, across 20 open-source projects. [Details](#5-code-health-predicts-defects) |
 | **A map the compiler agrees with** | **95% to 99.6%** of the calls it draws are confirmed by the language's own compiler | Go, TypeScript, Dart, C and Python, each graded by its own toolchain. [Details](#accuracy-by-language) |
 | **Knows which tests matter** | **97.5%** correct on which tests to run for a change, with no coverage run | Teams can run the tests a change touches instead of the whole suite. [Details](#test-intelligence) |
 | **Runs on a laptop at any size** | **15 million lines** (dotnet/runtime) indexed on one laptop, with no API key | Updates after that take seconds. Building the map uses **10x less memory** than the next tool. [Details](#scale) |
@@ -36,7 +36,7 @@ one local index, and most of it needs no model key.
 
 | Category | Tools teams use today | What repowise does | Evidence |
 |---|---|---|---|
-| Code health | CodeScene, SonarQube maintainability rating | 53 detectors score every file on defect risk, maintainability and performance, then rank what to fix first | [Measured](#5-code-health-predicts-defects): 2.3x CodeScene's recall of later defects at a fixed review budget |
+| Code health | CodeScene, SonarQube maintainability rating | 53 detectors score every file on defect risk, maintainability and performance, then rank what to fix first | [Measured](#5-code-health-predicts-defects): ahead of CodeScene on effort-aware ranking of later defects, Popt +0.075 (p = 0.001) |
 | Code graph and search for agents | Sourcegraph, CodeGraph, Serena | Call graph, hybrid search and answers served to agents over MCP | [Measured](#1-finding-the-right-files): retrieval, agent loop and graph accuracy against CodeGraph and Serena |
 | Change risk and test impact | Codecov gates, test-impact tools | Where a change ranks among the repository's recent commits, which tests to run, coverage gates, all in the GitHub Action | [Measured](#test-intelligence): test selection precision |
 | Dead code | Knip, vulture, ts-prune | Unreachable files, unused exports and unused packages, each with a confidence tier and its evidence, across languages | Capability |
@@ -218,14 +218,13 @@ separates buggy from clean files well (**ROC AUC 0.737**, 95% CI 0.683 to 0.787)
 It beats recent churn by +0.100 and past bugs by +0.117 (DeLong p < 1e-9), and
 holds at 0.76 to 0.78 on PROMISE/jEdit, a dataset it never saw.
 
-**Against CodeScene**, the closest commercial product, on the same **2,770 files**
-with the same bug labels: ranking by repowise finds **2.3x the later-buggy files**
-within the same review budget (the top 20% of lines).
+**Against CodeScene**, the closest commercial product, on the files both tools score
+with the same bug labels: reviewing in repowise's order reaches the later-buggy files
+with less code read (**Popt +0.075**, p = 0.001), significant under all three bug labels.
 
 | Paired test | repowise | CodeScene | |
 |---|---:|---:|---|
-| Recall at a 20%-of-lines review budget | **0.173** | 0.074 | p = 0.003 |
-| Effort-aware ranking (Popt) | **0.607** | 0.462 | p = 0.003 |
+| Effort-aware ranking (Popt), 2,735 files | **+0.075** | baseline | p = 0.001 |
 | Defect density, size-normalized | **2.18x** | 0.56x | p = 0.003 |
 | Discrimination (ROC AUC) | 0.731 | 0.705 | p = 0.054 |
 | Precision at a 20%-of-lines review budget | 0.580 | **0.636** | p = 0.64, a tie |
@@ -238,7 +237,9 @@ precision, for a team that wants to work through it quickly.
 
 **What the score adds over file size.** File size alone discriminates about as
 well (AUC 0.742). The score's advantage is effort-aware ranking, Popt +0.134
-(95% CI +0.080 to +0.198), and that it says why a file is at risk.
+(95% CI +0.080 to +0.198), and that it says why a file is at risk. On a wider
+run of 66 repositories and 17,134 files the score keeps the effort-aware lead
+(Popt 0.552 vs 0.448) and size ranks slightly higher on AUC (0.764 vs 0.744).
 
 **Weights are fitted, not hand-set:** a size-controlled logistic fit on files
 scored before their bug window, so a detector earns weight only for defect lift

@@ -32,6 +32,13 @@ From an agent: `get_change_risk()` scores the working tree or HEAD,
 both revisions and keeps diff shape as supporting context. In the dashboard, the Commits
 page leads its table with review priority.
 
+Each head finding pairs with its base peer, in the same file or on the symbol its code
+moved from. A higher severity or deduction reads as `worsened`; a lower one, or a lower
+`ccn`, `nloc`, `max_nesting` or `params` within the same severity band with none
+rising, reads as `improved`. A metric that rises within one band stays silent, since only a deduction
+change is a regression. A finding whose code moved to another file carries `moved_from`,
+and reads as `moved` when nothing else changed.
+
 ### What gets scored
 
 With no revspec the subject is your uncommitted work (staged, unstaged and untracked)

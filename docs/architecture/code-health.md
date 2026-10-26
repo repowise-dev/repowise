@@ -235,12 +235,16 @@ Notes:
   `co_change_partners_json`), `prior_defect` (Ostrand-Weyuker, Kim's "bug cache";
   `prior_defect_count`). `knowledge_loss` is activity-gated, so abandoned-but-stable files
   (the survivor effect) stay silent.
-- **`prior_defect`** counts non-merge fix commits in the trailing ~6 months, classified by
-  the **same keyword rule the defect benchmark labels with** (`_constants.is_fix_commit`)
-  and anchored to the index's `as_of` (the indexed commit's date), so a T0 checkout never
-  sees post-T0 fixes. Its **neutral 1.0 weight is by design**: correlation ≈ +0.59 with
-  `change_entropy` and +0.38 with churn, coefficient ≈ +0.02, Popt gain within noise. It
-  ships for its **explanatory** value and catches a few files the others miss.
+- **`prior_defect`** counts non-merge fix commits in the trailing ~6 months, anchored to
+  the index's `as_of` (the indexed commit's date), so a T0 checkout never sees post-T0
+  fixes. A commit is a fix by its conventional type first (`fix_rule.is_typed_fix_commit`:
+  `fix` always, `feat`, `refactor`, `perf`, `test`, `docs`, `build`, `ci`, `chore`, `style`
+  never), and an untyped subject falls back to the benchmark's keyword rule
+  (`_constants.is_fix_commit`). Commit rows keep the keyword rule, so their fix totals can
+  differ on a conventional-commit repo. Its **neutral 1.0 weight is by design**: the 21-repo
+  coefficient is positive (+0.13 keyword, CI spans zero; +0.23 SZZ) but correlates ≈ +0.59
+  with `change_entropy` and +0.38 with churn. It ships for its **explanatory** value and
+  catches a few files the others miss.
 - **`coverage_gradient`** makes coverage **continuous**: the binary gates fire only below
   ≈40-60%, blind to the 85-99% files where the uncovered share still predicts defects. Its
   `deduction` override on `BiomarkerResult` keeps it **linear and per-finding
@@ -408,9 +412,12 @@ Headline results (jEdit 4.0 / 4.1 held out with no git history, structural marke
   0.593 / 0.718, with a positive control recovered at power 0.998 to 1.000, so the
   collapse is the score's. A prior-defects baseline beats it on Popt by 0.085 (95% CI
   0.035 to 0.141).
-- **Paired vs the commercial tool:** Popt 0.607 vs 0.462, size-normalized density 2.18x
-  vs 0.56x (both p = 0.003); AUC 0.731 vs 0.705 (p = 0.054); raw density 16.9x vs 14.2x
-  (p = 0.65); precision 0.580 vs 0.636 (p = 0.64); partial rho beyond size -0.148 vs
+- **66 repositories, 17,134 files.** Popt 0.552 vs 0.448 for file size; size ranks
+  slightly higher on AUC (0.764 vs 0.744, keyword gap 0.020, 95% CI -0.005 to 0.044).
+  History adds 0.052 AUC over code shape alone (95% CI 0.034 to 0.074), so it stays.
+- **Paired vs the commercial tool:** Popt lead +0.075 (2,735 files; p = 0.001 on
+  keyword labels, significant under all three); size-normalized density 2.18x vs 0.56x
+  (p = 0.003); AUC 0.731 vs 0.705 (p = 0.054); raw density 16.9x vs 14.2x (p = 0.65); precision 0.580 vs 0.636 (p = 0.64); partial rho beyond size -0.148 vs
   -0.137. It flags 27 files at its most severe level where Repowise flags 132 At risk (a
   more conservative point); its published -0.58 correlation with issue-resolution time
   (proprietary Jira data) was -0.09 (95% CI -0.19 to +0.14) on open GitHub data, and six

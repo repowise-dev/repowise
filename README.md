@@ -321,10 +321,11 @@ Every file gets a 1 to 10 score from **53 deterministic detectors**, read three 
 defect risk, maintainability and performance. Performance findings such as N+1
 queries and I/O in loops are traced across functions and files.
 
-The score is checked against real bugs. On 21 open-source projects, ranking by
-Repowise found **2.3x as many later-buggy files as CodeScene** in the same review
-budget. It also checks itself on your repository after every index: *"16 of the 20
-lowest-health files had a bug fix in the last 6 months, 3.3x the 24% baseline."*
+The score is checked against real bugs. Head to head with CodeScene on 20 open-source
+projects, Repowise's ranking reaches the files that later need bug fixes with less code
+read (**Popt +0.075**, p = 0.001, significant under all three bug labels). It also
+checks itself on your repository after every index: *"16 of the 20 lowest-health files
+had a bug fix in the last 6 months, 3.3x the 24% baseline."*
 
 Then it names the fix: **Extract Method**, **Extract Class**, **Move Method**,
 **Split File** or **Break Cycle**, with the exact symbols that move, ranked so a fix
@@ -390,7 +391,7 @@ advertised surface, against answer keys we did not write.
 | **Finding the right files** | **0.876** of the files a fix needed, against 0.610 for the next tool, on a sealed set. *n=42, p=0.00004* |
 | **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
 | **Call graph the compiler agrees with** | **95% to 99.6%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
-| **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
+| **Health that predicts bugs** | **Popt +0.075** over CodeScene: reviewing in Repowise's order reaches later-buggy files with less code read. *2,735 files, p=0.001* |
 | **Scale** | **15 million lines** (dotnet/runtime) on one laptop. Building the call graph takes **75 MB**, 10x less than the next tool |
 
 **[Every result, in plain English, with the method →](docs/BENCHMARKS.md)** ·
@@ -451,9 +452,8 @@ on 2026-10-03; the other Repowise rows are from `081a59fa`, August 2026.</sub>
 | Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
 | Code health score (1-10) | ✅ 53 detectors, 25 scoring | ✅ 25-30 |
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
-| **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
-| **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
-| **Precision at that budget** *(measured)* | 0.580 | ✅ **0.636**, a shorter list |
+| **Effort-aware ranking, Popt** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,735 files, p=0.001)* | ✅ **+0.075** | baseline |
+| **Precision at a 20% review budget** *(measured)* | 0.580 | ✅ **0.636**, a shorter list |
 | **Discrimination, ROC AUC** *(measured, paired)* | 0.731 | 0.705, *p=0.054, not significant* |
 | Business impact (resolution time) | ❌ *we could not replicate this on open data* | ✅ Code Red study |
 | Git intelligence (hotspots, ownership, co-change) | ✅ | ✅ |
