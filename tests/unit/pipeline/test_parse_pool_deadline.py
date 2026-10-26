@@ -73,6 +73,23 @@ def test_a_crashing_task_is_isolated() -> None:
     assert results[3:] == ["C", "D"]
 
 
+def test_a_pool_that_cannot_start_raises_for_the_fallback(monkeypatch) -> None:
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    def dead_pool(workers: int) -> ProcessPoolExecutor:
+        return ProcessPoolExecutor(
+            max_workers=workers, mp_context=parse_pool.MP_SPAWN, initializer=os._exit, initargs=(1,)
+        )
+
+    monkeypatch.setattr(parse_pool, "_new_pool", dead_pool)
+    results = [PENDING, PENDING]
+    with pytest.raises(BrokenProcessPool):
+        run_with_deadline(_task, ["a", "b"], 2, results, timeout=5.0)
+    # No file is blamed: every slot is left for the in-process fallback.
+    assert results == [PENDING, PENDING]
+
+
 def test_resolved_slots_are_left_alone() -> None:
     results = ["done", PENDING]
     run_with_deadline(_task, ["hang", "x"], 1, results, timeout=5.0)

@@ -60,7 +60,7 @@ def drop_psql_meta_commands(text: str, tokens: list[Any]) -> list[Any]:
 def _budgeted(parser_class: type) -> type:
     """*parser_class* with a per-statement cap on the nodes it may build."""
 
-    class BudgetedParser(parser_class):  # type: ignore[valid-type, misc]
+    class BudgetedParser(parser_class):
         _node_budget = 0
         _in_statement = False
 

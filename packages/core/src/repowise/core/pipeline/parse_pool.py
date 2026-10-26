@@ -62,6 +62,10 @@ _MEMORY_ENV = "REPOWISE_PARSE_WORKER_MEMORY_MB"
 _DEFAULT_MEMORY_MB = 2048
 
 
+# How long a fresh pool may take to run a no-op before it counts as unusable.
+_STARTUP_TIMEOUT_S = 120
+
+
 class ParseTimeoutError(Exception):
     """A file's parse ran past the deadline; its worker was killed."""
 
@@ -118,13 +122,15 @@ def _limit_worker_memory(limit_bytes: int) -> None:
         return
     try:
         import resource
-
+    except ImportError:  # Windows has no rlimits
+        return
+    # Platforms without RLIMIT_DATA, or a hard limit we may not raise, leave
+    # the worker uncapped.
+    with contextlib.suppress(AttributeError, ValueError, OSError):
         _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
         if hard != resource.RLIM_INFINITY:
             limit_bytes = min(limit_bytes, hard)
         resource.setrlimit(resource.RLIMIT_DATA, (limit_bytes, hard))
-    except (ImportError, AttributeError, ValueError, OSError):
-        pass
 
 
 def _new_pool(workers: int) -> ProcessPoolExecutor:
@@ -168,11 +174,9 @@ class _Run:
         self.queue: deque[int] = deque(i for i, r in enumerate(results) if r is PENDING)
         # Tasks that were in flight when a worker died, retried one at a time.
         self.suspects: deque[int] = deque()
-        self.any_finished = False
 
     def finish(self, idx: int, result: Any) -> None:
         self.results[idx] = result
-        self.any_finished = True
         if self.on_done is not None:
             self.on_done(idx, result)
 
@@ -211,6 +215,19 @@ class _Run:
         target.extendleft(sorted((i for i, _s in in_flight.values()), reverse=True))
         in_flight.clear()
 
+    def dispatch(
+        self,
+        pool: ProcessPoolExecutor,
+        queue: deque[int],
+        in_flight: dict[Future, tuple[int, float]],
+        limit: int,
+    ) -> None:
+        # In flight never exceeds the worker count, so every in-flight task is
+        # running and its clock is its own parse time.
+        while queue and len(in_flight) < limit:
+            idx = queue.popleft()
+            in_flight[pool.submit(self.fn, self.items[idx])] = (idx, time.monotonic())
+
     def round(self, workers: int) -> None:
         """Run tasks in one pool until the queue drains or the pool must go."""
         solo = bool(self.suspects)
@@ -220,12 +237,11 @@ class _Run:
         in_flight: dict[Future, tuple[int, float]] = {}
         clean = False
         try:
+            # A pool that cannot run a no-op (spawn or import failure) is the
+            # environment's fault, not a file's: raise so the caller falls back.
+            pool.submit(os.getpid).result(timeout=_STARTUP_TIMEOUT_S)
             while queue or in_flight:
-                # In flight never exceeds the worker count, so every in-flight
-                # task is running and its clock is its own parse time.
-                while queue and len(in_flight) < limit:
-                    idx = queue.popleft()
-                    in_flight[pool.submit(self.fn, self.items[idx])] = (idx, time.monotonic())
+                self.dispatch(pool, queue, in_flight, limit)
                 done, _ = wait(in_flight, self.wait_budget(in_flight), FIRST_COMPLETED)
                 if self.collect(done, in_flight):
                     self.on_broken(in_flight, solo)
@@ -246,10 +262,6 @@ class _Run:
             (idx, _started) = next(iter(in_flight.values()))
             in_flight.clear()
             self.finish(idx, ParseWorkerCrashError("parse worker crashed"))
-        elif not self.any_finished:
-            # Broken before a single task came back: the pool itself cannot
-            # run here (spawn or import failure), so no file is to blame.
-            raise BrokenProcessPool("parse pool workers exited before any task finished")
         else:
             self.requeue(in_flight, suspect=True)
 
