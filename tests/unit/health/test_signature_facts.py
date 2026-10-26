@@ -46,10 +46,8 @@ def test_java_constructor_override_and_scalar_count():
     ("member", "fixed"),
     [
         ("public override void M(int a, int b, int c, int d, int e) {}", True),
-        ('[DllImport("x")] static extern int M(int a, int b, int c, int d, int e);', True),
         ("void IBar.M(int a, int b, int c, int d, int e) {}", True),
         ("[DataRow(1, 2, 3, 4, 5)] public void M(int a, int b, int c, int d, int e) {}", True),
-        ('[LoggerMessage(1, "{a}")] static partial void M(int a, int b, int c, int d, int e);', True),
         ("public void M(int a, int b, int c, int d, int e) {}", True),
         ("protected void M(int a, int b, int c, int d, int e) {}", True),
         ('[Obsolete("override")] void M(int a, int b, int c, int d, int e) {}', False),
@@ -61,6 +59,18 @@ def test_java_constructor_override_and_scalar_count():
 def test_csharp_fixed_signatures(member: str, fixed: bool):
     fns = _fns("A.cs", "csharp", f"public class A {{ {member} }}")
     assert fns["M"].signature_fixed is fixed
+
+
+def test_csharp_bodyless_bindings_are_no_unit():
+    # P/Invoke and source-generated partials declare a signature another
+    # declaration fills in, so there is nothing here to score.
+    fns = _fns(
+        "A.cs",
+        "csharp",
+        'public class A { [DllImport("x")] static extern int M(int a, int b, int c, int d, int e);'
+        ' [LoggerMessage(1, "{a}")] static partial void N(int a, int b, int c, int d, int e); }',
+    )
+    assert fns == {}
 
 
 def test_csharp_public_member_of_internal_type_is_not_api():

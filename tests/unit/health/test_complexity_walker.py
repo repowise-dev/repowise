@@ -1167,3 +1167,55 @@ def test_java_switch_arm_comment_does_not_increase_ccn():
 
     assert commented == plain
     assert multiple_statements > plain
+
+
+_BODYLESS_SOURCES = {
+    "java": (
+        "A.java",
+        b"abstract class A {\n  abstract void f(int x);\n  native void n();\n  void g() { int y = 1; }\n}\n"
+        b"interface I {\n  void h();\n  default int d() { return 1; }\n}\n",
+        {"g", "d"},
+        1,
+    ),
+    "csharp": (
+        "a.cs",
+        b"abstract class A {\n  public abstract void F(int x);\n  static extern int E(int a);\n"
+        b"  partial void P();\n  public void G() { var y = 1; }\n  int M() => 1;\n}\n"
+        b"interface I {\n  void H();\n  int D() { return 1; }\n}\n",
+        {"G", "M", "D"},
+        2,
+    ),
+    "php": (
+        "a.php",
+        b"<?php\nabstract class A {\n  abstract public function f($x);\n  public function g() { return 1; }\n}\n"
+        b"interface I {\n  public function h();\n}\n",
+        {"g"},
+        1,
+    ),
+    "kotlin": (
+        "a.kt",
+        b"abstract class A {\n  abstract fun f(x: Int)\n  fun g(): Int { return 1 }\n  fun e() = 2\n}\n"
+        b"interface I {\n  fun h()\n  fun d(): Int { return 1 }\n}\n",
+        {"g", "e", "d"},
+        2,
+    ),
+    "apex": (
+        "A.cls",
+        b"public abstract class A {\n  public abstract void f(Integer x);\n  public void g() { Integer y = 1; }\n}\n"
+        b"public interface I {\n  void h();\n}\n",
+        {"g"},
+        1,
+    ),
+}
+
+
+@pytest.mark.parametrize("language", sorted(_BODYLESS_SOURCES))
+def test_bodyless_methods_are_not_units(language):
+    """Abstract, interface and extern declarations have no code: no function
+    entry and no class method. Members with a body stay units."""
+    _require_language(language)
+    path, source, units, a_methods = _BODYLESS_SOURCES[language]
+    fcx = walk_file(path, language, source)
+    assert {f.name for f in fcx.functions} == units
+    classes = {c.name: c for c in fcx.classes}
+    assert classes["A"].method_count == a_methods

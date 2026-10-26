@@ -313,8 +313,13 @@ def is_misread_scope(node: Node, lmap: LanguageNodeMap) -> bool:
 
 
 def is_function_node(node: Node, lmap: LanguageNodeMap) -> bool:
-    """True for a function definition, False for a scope the grammar misread as one."""
-    return node.type in lmap.function_kinds and not is_misread_scope(node, lmap)
+    """True for a function definition, False for a scope the grammar misread as
+    one or a declaration with no body (abstract, interface, extern)."""
+    return (
+        node.type in lmap.function_kinds
+        and not is_misread_scope(node, lmap)
+        and not (lmap.bodyless is not None and lmap.bodyless(node))
+    )
 
 
 def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:

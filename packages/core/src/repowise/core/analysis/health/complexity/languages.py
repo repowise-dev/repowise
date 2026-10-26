@@ -356,6 +356,10 @@ class LanguageNodeMap:
     #     class bodies, perf naming); passes that only run inside a collected
     #     function's body never meet one.
     misread_scope: Callable[[Node], object] | None = None
+    #   * ``bodyless`` -- truthy for a ``function_kinds`` node that declares a
+    #     signature with no body (abstract, interface, extern). It is no unit
+    #     and no class method. None means every such node has a body.
+    bodyless: Callable[[Node], object] | None = None
 
     # -- Local bindings ------------------------------------------------------
     #   * ``local_value`` -- truthy for a ``function_kinds`` node that binds a
@@ -540,7 +544,14 @@ _JVM_BOUND_PARAM_MARKERS = frozenset(
     }
 )
 
+def _no_body_field(node: Node) -> object:
+    """Java, C#, PHP and Apex: an abstract, interface or extern member ends in
+    ``;`` with no ``body`` field."""
+    return node.child_by_field_name("body") is None
+
+
 _JAVA = LanguageNodeMap(
+    bodyless=_no_body_field,
     ctor_kinds=frozenset({"constructor_declaration"}),
     fixed_signature_markers=frozenset({"Override"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
@@ -632,6 +643,7 @@ _APEX = LanguageNodeMap(
         {"method_declaration", "constructor_declaration", "trigger_declaration", "accessor_list"}
     ),
     misread_scope=_apex_auto_property,
+    bodyless=lambda node: node.type == "method_declaration" and _no_body_field(node),
     lambda_kinds=frozenset(),
     branch_kinds=frozenset({"if_statement", "ternary_expression"}),
     loop_kinds=frozenset(
@@ -748,6 +760,8 @@ _RUST = LanguageNodeMap(
 
 
 _KOTLIN = LanguageNodeMap(
+    # ``abstract fun``, an interface ``fun`` and ``external fun`` have no ``function_body``.
+    bodyless=lambda node: not any(c.type == "function_body" for c in node.children),
     ctor_kinds=frozenset({"secondary_constructor"}),
     fixed_signature_markers=frozenset({"override"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
@@ -983,6 +997,7 @@ _C = LanguageNodeMap(
 )
 
 _CSHARP = LanguageNodeMap(
+    bodyless=_no_body_field,
     ctor_kinds=frozenset({"constructor_declaration"}),
     # ``override`` and ``extern`` modifiers; P/Invoke and source-generated
     # bindings, whose parameters a native ABI or a message template fixes; and
@@ -1433,6 +1448,7 @@ _OBJC = LanguageNodeMap(
 
 
 _PHP = LanguageNodeMap(
+    bodyless=_no_body_field,
     function_kinds=frozenset({"function_definition", "method_declaration"}),
     lambda_kinds=frozenset({"anonymous_function", "arrow_function"}),
     branch_kinds=frozenset({"if_statement", "else_if_clause", "conditional_expression"}),
