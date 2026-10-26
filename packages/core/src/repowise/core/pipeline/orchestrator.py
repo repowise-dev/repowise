@@ -269,7 +269,11 @@ async def run_pipeline(
     progress = hooked_progress(progress)
     from repowise.core.registry import preprocess_repository
 
-    await asyncio.to_thread(preprocess_repository, repo_path)
+    preprocessed_paths = await asyncio.to_thread(preprocess_repository, repo_path)
+    if preprocessed_paths:
+        # Saved phases cannot establish whether managed outputs have changed.
+        resume = False
+        resume_controller = None
     checkpointer = await start_checkpointer(job_store, repo_path)
     attach_cost_tracker(llm_client, cost_tracker)
     run = PipelineRun(

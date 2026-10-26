@@ -23,6 +23,7 @@ needs the collected entries.
 | `cli_registry` | `cli_registry` | Collect Click commands; `apply(root)` attaches them |
 | `mcp_tool_registry` | `mcp_tool_registry` | Collect MCP tool functions; `apply(mcp)` registers them with FastMCP |
 | `pipeline_hooks` | `pipeline_hooks` | Pre/post phase hooks; wrap a `ProgressCallback` with `HookProgressCallback` to fire them |
+| `preprocessors` | `repository_preprocessors` | Repository-aware, fail-fast preprocessing before file discovery and update detection |
 | `plugins` | `load_plugins()` | Discover plugins (`repowise.plugins` entry points, `REPOWISE_PLUGINS`); `SeamRegistry` maps a seam to named implementations |
 
 The convenience helpers `register_command(...)` and `register_hook(...)`
@@ -57,6 +58,11 @@ record of what loaded, and the seams defined so far.
 - **Adding a pipeline hook:** call `register_hook("parse", callback,
   when="post")`. The orchestrator already wraps its progress callback
   with `HookProgressCallback`, so the hook fires automatically.
+- **Preparing repository documents:** register a named callback with
+  `repository_preprocessors.register("documents", callback)`. It receives the
+  resolved repository path and returns repository-relative managed output paths,
+  including outputs it removed. Errors abort indexing instead of being swallowed.
+  Dry runs and read-only analysis do not invoke preprocessors.
 
 ## Tests
 

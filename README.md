@@ -834,6 +834,20 @@ Authentication, team directories, change metadata and event delivery are named
 plugin seams, so your own identity provider or directory connects without changing
 the open-source code.
 
+Installed plugins can also register repository preprocessors, for example to
+convert PDFs into Markdown before normal `repowise init` file discovery.
+Plain updates detect those generated outputs before checking whether the index
+is current. Conversion errors stop indexing; dry runs do not run converters.
+The contract is documented in
+[pluggable storage and capability seams](docs/architecture/pluggable-storage.md#preparing-documents-automatically).
+
+```mermaid
+flowchart LR
+    Plugins[Installed plugins] --> Prepare[Repository preprocessing]
+    Prepare --> Discover[File discovery or update detection]
+    Discover --> Parse[Existing parsing and graph indexing]
+```
+
 ### Evidence you can hand to someone else
 
 | Who is asking | What Repowise produces |

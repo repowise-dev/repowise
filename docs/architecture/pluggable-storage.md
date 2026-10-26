@@ -45,6 +45,7 @@ concrete implementations bundled with repowise.
 | `cli_registry` | Click commands and groups | At CLI import time, via `cli_registry.apply(cli)` |
 | `mcp_tool_registry` | MCP tool functions | At MCP server boot, via `mcp_tool_registry.apply(mcp)` |
 | `pipeline_hooks` | Pre/post phase callbacks | On every phase transition, via `HookProgressCallback` wrapping the orchestrator's progress callback |
+| `repository_preprocessors` | Named repository-to-generated-files callbacks | Before full-pipeline discovery and incremental update change detection |
 
 ---
 
@@ -212,6 +213,40 @@ broken plugin cannot derail the pipeline.
 ---
 
 ## Loading plugins and choosing a seam
+
+### Preparing documents automatically
+
+A plugin can convert a supported document format into ordinary repository files
+before `repowise init` enumerates paths:
+
+```python
+from pathlib import Path
+from repowise.core.registry import repository_preprocessors
+
+
+def prepare_documents(repo_path: Path) -> list[str]:
+    # Convert supported files and return all managed outputs, including deletions.
+    return ["docs/generated/manual.md"]
+
+
+repository_preprocessors.register("documents", prepare_documents)
+```
+
+Register the callback from the plugin's existing `repowise.plugins` entry point.
+Callbacks are synchronous and receive the resolved repository root. The full
+async pipeline runs them in a worker thread before traversal. Managed paths must
+be repository-relative, cannot escape the repository or use `.git`/`.repowise`,
+and still obey normal traversal exclusions. Plugins own conversion, provenance,
+caching and safe cleanup; the host does not interpret source formats.
+
+Unlike phase observers, a preprocessor failure aborts indexing and names the
+failing plugin. Plain updates include uncommitted generated-file diffs before
+the up-to-date gate, without opting all unrelated working-tree paths into
+change detection. Removed outputs are re-diffed even when they were never
+committed. Workspace update selection carries preprocessing results into the
+actual update so a removed output cannot disappear between those two stages.
+Dry runs and live read-only analyses do not run preprocessors. Installing a
+plugin applies it to every repository using that Python environment.
 
 A distribution declares an entry point in the `repowise.plugins` group (or a
 module is listed in `REPOWISE_PLUGINS` as `module` or `module:attr`), and
