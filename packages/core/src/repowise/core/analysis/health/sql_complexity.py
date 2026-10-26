@@ -187,6 +187,7 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
         return []
 
     hits: list[PerfHit] = []
+    temp_tables: set[str] = set()
     cursor = 0
 
     def _anchor(token: str) -> int:
@@ -198,11 +199,17 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
         if stmt is None:
             continue
 
+        # A temp table created earlier in the file is scratch space: emptying
+        # it whole is the intent, not a missing WHERE.
+        if _is_temp_table(stmt, exp):
+            temp_tables.add((_create_name(stmt, exp) or "").lower())
+
         # -- sql_select_star: bare * projection inside a maintained relation.
         if isinstance(stmt, exp.Create) and (stmt.kind or "").upper() in _STAR_SCOPES:
             name = _create_name(stmt, exp)
+            ctes = {(c.alias or "").lower() for c in stmt.find_all(exp.CTE)}
             for sel in stmt.find_all(exp.Select):
-                if any(isinstance(e, exp.Star) for e in sel.expressions):
+                if _star_reads_base_table(sel, ctes, exp):
                     hits.append(
                         PerfHit(
                             kind="sql_select_star",
@@ -223,7 +230,7 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
             and not stmt.args.get("limit")
         ):
             table = _clean_ident(getattr(stmt.this, "name", "") or "")
-            if table:
+            if table and table.lower() not in temp_tables:
                 hits.append(
                     PerfHit(
                         kind="sql_update_delete_without_where",
@@ -265,6 +272,38 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
                     )
                     break  # one finding per select
     return hits
+
+
+def _star_reads_base_table(sel: Any, ctes: set[str], exp: Any) -> bool:
+    """True when *sel* projects a bare ``*`` straight off a base table.
+
+    Silent for a star under ``EXISTS`` (the projection is ignored) and for a
+    star over only CTEs or subqueries: their column list is explicit, or their
+    own inner ``SELECT *`` is visited and judged on its own.
+    """
+    if not any(isinstance(e, exp.Star) for e in sel.expressions):
+        return False
+    node = sel.parent
+    while node is not None and not isinstance(node, exp.Select):
+        if isinstance(node, exp.Exists):
+            return False
+        node = node.parent
+    from_ = sel.args.get("from")
+    sources = [from_.this] if from_ else []
+    sources += [j.this for j in sel.args.get("joins") or ()]
+    return any(
+        isinstance(src, exp.Table)
+        and isinstance(src.this, exp.Identifier)
+        and src.name.lower() not in ctes
+        for src in sources
+    )
+
+
+def _is_temp_table(stmt: Any, exp: Any) -> bool:
+    if not isinstance(stmt, exp.Create) or (stmt.kind or "").upper() != "TABLE":
+        return False
+    props = stmt.args.get("properties")
+    return bool(props) and any(isinstance(p, exp.TemporaryProperty) for p in props.expressions)
 
 
 def _create_name(stmt: Any, exp: Any) -> str | None:
