@@ -391,7 +391,7 @@ def _recoverable(
     plans carried their share, each step's own gain is summed."""
     steps = [suggestion for suggestion, plan_id in step_rows if plan_id in credited]
     shares = [(s, (s.evidence or {}).get(RECOVERED_SHARE)) for s in steps]
-    if findings is None or any(share is None and s.impact_delta > 0 for s, share in shares):
+    if findings is None or any(share is None and (s.impact_delta or 0) > 0 for s, share in shares):
         return sum(float(s.impact_delta or 0.0) for s in steps)
     removed = [
         (f, float(share))

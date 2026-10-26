@@ -31,7 +31,12 @@ Removal = Iterable[tuple[Any, float]]
 
 
 def removal_gain(findings: Iterable[Any], removed: Removal) -> float:
-    """Defect score the file gains when each removed finding loses its share."""
+    """Defect score the file gains when each removed finding loses its share.
+
+    Scores the file twice per call, so pricing every candidate is quadratic in
+    the file's findings; cheap at real counts (tens). Cache the "before" side
+    per file if a caller ever prices hundreds.
+    """
     before, after = _lifted(findings, removed)
     gain = score_file(after)[0]["defect"] - score_file(before)[0]["defect"]
     return round(max(0.0, gain), 3)
