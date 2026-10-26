@@ -75,6 +75,11 @@ class LanguageNodeMap:
     # the else-arm is the node's last named child, so a chain arm can still be
     # located by position and recognised as flat.
     ternary_arms_positional: bool = False
+    # Loop node kinds that walk a collection (``for x in xs``) and test no
+    # condition: the iterable is a value, so its boolean operators are not a
+    # compound condition. Grammars that share one node for both loop shapes
+    # (Go, Dart, Objective-C) are left out.
+    foreach_kinds: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Class-level analysis (LCOM4 / god-class). All three fields default
@@ -406,6 +411,7 @@ _PY = LanguageNodeMap(
     flat_ternary_kinds=frozenset({"conditional_expression"}),
     ternary_arms_positional=True,
     loop_kinds=frozenset({"for_statement", "while_statement"}),
+    foreach_kinds=frozenset({"for_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"except_clause"}),
     switch_kinds=frozenset({"match_statement"}),
@@ -462,6 +468,7 @@ _TS = LanguageNodeMap(
             "do_statement",
         }
     ),
+    foreach_kinds=frozenset({"for_in_statement", "for_of_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement"}),
@@ -564,6 +571,7 @@ _JAVA = LanguageNodeMap(
             "do_statement",
         }
     ),
+    foreach_kinds=frozenset({"enhanced_for_statement"}),
     try_kinds=frozenset({"try_statement", "try_with_resources_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_expression", "switch_statement"}),
@@ -645,6 +653,7 @@ _APEX = LanguageNodeMap(
     loop_kinds=frozenset(
         {"for_statement", "enhanced_for_statement", "while_statement", "do_statement"}
     ),
+    foreach_kinds=frozenset({"enhanced_for_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_expression"}),
@@ -692,6 +701,7 @@ _RUST = LanguageNodeMap(
     loop_kinds=frozenset(
         {"for_expression", "while_expression", "while_let_expression", "loop_expression"}
     ),
+    foreach_kinds=frozenset({"for_expression"}),
     try_kinds=frozenset(),
     catch_kinds=frozenset(),
     switch_kinds=frozenset({"match_expression"}),
@@ -766,6 +776,7 @@ _KOTLIN = LanguageNodeMap(
     lambda_kinds=frozenset({"lambda_literal", "anonymous_function"}),
     branch_kinds=frozenset({"if_expression"}),
     loop_kinds=frozenset({"for_statement", "while_statement", "do_while_statement"}),
+    foreach_kinds=frozenset({"for_statement"}),
     try_kinds=frozenset({"try_expression"}),
     catch_kinds=frozenset({"catch_block"}),
     switch_kinds=frozenset({"when_expression"}),
@@ -828,6 +839,7 @@ _SWIFT = LanguageNodeMap(
         {"if_statement", "guard_statement", "ternary_expression", "where_clause"}
     ),
     loop_kinds=frozenset({"for_statement", "while_statement", "repeat_while_statement"}),
+    foreach_kinds=frozenset({"for_statement"}),
     # ``do`` opens the guarded region and each ``catch`` is a path out of it.
     # ``try`` / ``try?`` / ``try!`` mark a call that can throw and ``defer``
     # schedules cleanup: neither is a decision.
@@ -903,6 +915,7 @@ _CPP = LanguageNodeMap(
     lambda_kinds=frozenset({"lambda_expression"}),
     branch_kinds=frozenset({"if_statement", "conditional_expression"}),
     loop_kinds=frozenset({"for_statement", "while_statement", "do_statement", "for_range_loop"}),
+    foreach_kinds=frozenset({"for_range_loop"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement"}),
@@ -1023,6 +1036,7 @@ _CSHARP = LanguageNodeMap(
     lambda_kinds=frozenset({"lambda_expression"}),
     branch_kinds=frozenset({"if_statement", "conditional_expression"}),
     loop_kinds=frozenset({"for_statement", "while_statement", "foreach_statement", "do_statement"}),
+    foreach_kinds=frozenset({"foreach_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement", "switch_expression"}),
@@ -1104,6 +1118,7 @@ _SCALA = LanguageNodeMap(
     # A for-comprehension is a loop for nesting/CCN purposes even though it
     # desugars to flatMap: this matches developer intuition.
     loop_kinds=frozenset({"for_expression", "while_expression", "do_while_expression"}),
+    foreach_kinds=frozenset({"for_expression"}),
     try_kinds=frozenset({"try_expression"}),
     # ``catch`` takes a ``case_block``; each handler is a ``case_clause`` that
     # already counts via ``case_kinds`` (per-handler parity with Python's
@@ -1207,6 +1222,7 @@ _RUBY = LanguageNodeMap(
     # for CCN/nesting they roll up like any other block (documented choice:
     # block-heavy Ruby would otherwise nest everything).
     loop_kinds=frozenset({"while", "until", "for", "while_modifier", "until_modifier"}),
+    foreach_kinds=frozenset({"for"}),
     try_kinds=frozenset({"begin"}),
     # A method-level ``rescue`` (no ``begin``) is the same ``rescue`` node
     # nested directly in the method body — counted identically.
@@ -1248,6 +1264,7 @@ _SHELL = LanguageNodeMap(
     # `until ...` parses as `while_statement` in tree-sitter-bash, so it is
     # covered here; `for ((;;))` is `c_style_for_statement`.
     loop_kinds=frozenset({"for_statement", "c_style_for_statement", "while_statement"}),
+    foreach_kinds=frozenset({"for_statement"}),
     # No exceptions in shell (`trap` is not `try`).
     try_kinds=frozenset(),
     catch_kinds=frozenset(),
@@ -1283,6 +1300,7 @@ _PASCAL = LanguageNodeMap(
     # distinct ``for x in collection do`` grammar node (its own node type,
     # not a variant of ``for``) -- both are loops and must both count.
     loop_kinds=frozenset({"for", "foreach", "while", "repeat"}),
+    foreach_kinds=frozenset({"foreach"}),
     try_kinds=frozenset({"try"}),
     # A bound handler (``on E: Exception do``) is an ``exceptionHandler``
     # node; a bare ``except ... end`` with no ``on`` clauses has no such
@@ -1385,6 +1403,7 @@ _FSHARP = LanguageNodeMap(
     local_value=_fsharp_binds_a_value,
     branch_kinds=frozenset({"if_expression"}),
     loop_kinds=frozenset({"for_expression", "while_expression"}),
+    foreach_kinds=frozenset({"for_expression"}),
     try_kinds=frozenset({"try_expression"}),
     # A ``with`` handler and a ``match`` arm are the same node types here, so
     # one field has to serve both. ``case_kinds`` names ``rules``, the wrapper,
@@ -1445,6 +1464,7 @@ _PHP = LanguageNodeMap(
     lambda_kinds=frozenset({"anonymous_function", "arrow_function"}),
     branch_kinds=frozenset({"if_statement", "else_if_clause", "conditional_expression"}),
     loop_kinds=frozenset({"for_statement", "foreach_statement", "while_statement", "do_statement"}),
+    foreach_kinds=frozenset({"foreach_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"catch_clause"}),
     switch_kinds=frozenset({"switch_statement", "match_expression"}),

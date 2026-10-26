@@ -263,6 +263,8 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
     Falls back to all direct children except recognised body fields and
     syntactic punctuation.
     """
+    if node.type in lmap.foreach_kinds:
+        return []
     cond = node.child_by_field_name("condition")
     if cond is not None:
         return [cond]
@@ -288,6 +290,10 @@ def _condition_subtrees(node: Node, lmap: LanguageNodeMap) -> list[Node]:
         if not child.is_named:
             continue
         if child.type in ("block", "compound_statement", "statement_block"):
+            continue
+        # A ``case ... if guard`` guard is its own branch node and counts its
+        # condition there.
+        if child.type in lmap.branch_kinds:
             continue
         out.append(child)
     return out
