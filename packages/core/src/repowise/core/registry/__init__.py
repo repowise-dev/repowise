@@ -42,6 +42,11 @@ from .pipeline_hooks import (
     pipeline_hooks,
     register_hook,
 )
+from .preprocessors import (
+    RepositoryPreprocessors,
+    preprocess_repository,
+    repository_preprocessors,
+)
 
 __all__ = [
     "TOOL_SAFETY_KINDS",
@@ -52,12 +57,15 @@ __all__ = [
     "LazyCommand",
     "MCPToolRegistry",
     "PipelineHookRegistry",
+    "RepositoryPreprocessors",
     "ToolEntry",
     "ToolRecipe",
     "cli_registry",
     "mcp_tool_registry",
     "pipeline_hooks",
+    "preprocess_repository",
     "register_command",
     "register_hook",
     "register_lazy_command",
+    "repository_preprocessors",
 ]

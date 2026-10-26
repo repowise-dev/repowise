@@ -127,6 +127,7 @@ class RepoUpdateResult:
     # tree state has no ``last_sync_commit`` to diff against. None on the
     # commit-anchored path, which leaves the stored list alone.
     working_tree_paths: list[str] | None = None
+    preprocessed_paths: list[str] | None = None
     phase_timings: dict[str, float] | None = None
     # True when this run walked the whole git history and persisted every row,
     # so the caller stamps ``git_history_version``.
@@ -141,6 +142,7 @@ async def _incremental_repo_update(
     exclude_patterns: list[str] | None = None,
     include_working_tree: bool = False,
     force_full_git: bool = False,
+    preprocessed_paths: frozenset[str] | None = None,
 ) -> RepoUpdateResult | None:
     """Refresh an already-indexed repo through the incremental update path.
 
@@ -158,12 +160,15 @@ async def _incremental_repo_update(
 
     alias = repo_path.name
     file_diffs, working_tree_paths = _changed_file_diffs(
-        repo_path, state, base_ref, include_working_tree
+        repo_path, state, base_ref, include_working_tree, preprocessed_paths
     )
     if not file_diffs and not force_full_git:
         # Nothing the index cares about changed: report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
-        return RepoUpdateResult(alias=alias, updated=True, working_tree_paths=working_tree_paths)
+        return RepoUpdateResult(
+            alias=alias, updated=True, working_tree_paths=working_tree_paths,
+            preprocessed_paths=state.get("preprocessed_paths"),
+        )
 
     # Per-repo config; workspace-level ``exclude_patterns`` apply on top.
     from ...repo_config import load_repo_config
@@ -246,12 +251,14 @@ async def _incremental_repo_update(
         symbol_count=sum(pf.symbol_count for pf in parsed_files),
         kg_state=_export_kg_state(repo_path, alias, kg),
         working_tree_paths=working_tree_paths,
+        preprocessed_paths=state.get("preprocessed_paths"),
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
     )
 
 
 def _changed_file_diffs(
-    repo_path: Path, state: dict[str, Any], base_ref: str, include_working_tree: bool
+    repo_path: Path, state: dict[str, Any], base_ref: str, include_working_tree: bool,
+    preprocessed_paths: frozenset[str] | None = None,
 ) -> tuple[list, list[str] | None]:
     """The ``base_ref..HEAD`` diffs, plus working-tree ones when asked.
 
@@ -265,6 +272,12 @@ def _changed_file_diffs(
     detector = ChangeDetector(repo_path)
     working_tree_diffs: list = []
     working_tree_paths: list[str] | None = None
+    from ...pipeline.preprocessing import preprocessed_changes
+    from ...registry import preprocess_repository
+
+    managed = (
+        preprocess_repository(repo_path) if preprocessed_paths is None else preprocessed_paths
+    )
     if include_working_tree:
         working_tree_diffs = detector.get_working_tree_changes()
         dirty = {fd.path for fd in working_tree_diffs}
@@ -274,6 +287,12 @@ def _changed_file_diffs(
             state.get("working_tree_paths") or [], dirty
         )
         working_tree_paths = sorted(dirty)
+    else:
+        working_tree_diffs, dirty = preprocessed_changes(
+            detector, managed, state.get("preprocessed_paths") or []
+        )
+        if managed or state.get("preprocessed_paths"):
+            state["preprocessed_paths"] = dirty
 
     file_diffs = merge_file_diffs(
         detector.get_changed_files(base_ref, head),
@@ -394,6 +413,7 @@ async def update_single_repo_index(
     exclude_patterns: list[str] | None = None,
     include_working_tree: bool = False,
     progress: Any | None = None,
+    preprocessed_paths: frozenset[str] | None = None,
 ) -> RepoUpdateResult:
     """Refresh the index for a single repo.
 
@@ -431,7 +451,8 @@ async def update_single_repo_index(
         and commit_exists(repo_path, str(base_ref))
     ):
         incremental_result = await _try_incremental_update(
-            repo_path, state, str(base_ref), exclude_patterns, include_working_tree
+            repo_path, state, str(base_ref), exclude_patterns, include_working_tree,
+            preprocessed_paths,
         )
         if incremental_result is not None:
             return incremental_result
@@ -514,6 +535,7 @@ async def _try_incremental_update(
     base_ref: str,
     exclude_patterns: list[str] | None,
     include_working_tree: bool,
+    preprocessed_paths: frozenset[str] | None = None,
 ) -> RepoUpdateResult | None:
     """The incremental update's result, or ``None`` to fall back to the full pipeline."""
     try:
@@ -524,6 +546,7 @@ async def _try_incremental_update(
             exclude_patterns=exclude_patterns,
             include_working_tree=include_working_tree,
             force_full_git=git_history_stale(state),
+            preprocessed_paths=preprocessed_paths,
         )
     except Exception:
         _log.warning(

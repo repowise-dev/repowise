@@ -14,6 +14,7 @@ Callers:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -266,6 +267,9 @@ async def run_pipeline(
     repo_path = Path(repo_path).resolve()
     start = time.monotonic()
     progress = hooked_progress(progress)
+    from repowise.core.registry import preprocess_repository
+
+    await asyncio.to_thread(preprocess_repository, repo_path)
     checkpointer = await start_checkpointer(job_store, repo_path)
     attach_cost_tracker(llm_client, cost_tracker)
     run = PipelineRun(
@@ -354,4 +358,3 @@ def _build_result(run: PipelineRun) -> PipelineResult:
         authoritative_page_types=run.authoritative_page_types,
         preserved_page_ids=run.preserved_page_ids,
     )
-

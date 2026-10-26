@@ -873,12 +873,23 @@ def _check_config_and_renderer(run: UpdateRun) -> None:
     )
 
 
-def _collect_working_tree(opts: UpdateOptions, run: UpdateRun) -> None:
+def _collect_working_tree(
+    opts: UpdateOptions, run: UpdateRun, preprocessed_paths: frozenset[str] = frozenset()
+) -> None:
     """Uncommitted work, when asked for; read before the "up to date" gate."""
     from repowise.core.ingestion import ChangeDetector
 
     run.detector = detector = ChangeDetector(run.repo_path)
     if not opts.include_working_tree:
+        if opts.dry_run:
+            return
+        from repowise.core.pipeline.preprocessing import preprocessed_changes
+
+        run.working_tree_diffs, dirty = preprocessed_changes(
+            detector, preprocessed_paths, run.state.get("preprocessed_paths") or []
+        )
+        if preprocessed_paths or run.state.get("preprocessed_paths"):
+            run.state["preprocessed_paths"] = dirty
         return
     run.working_tree_diffs = detector.get_working_tree_changes()
     dirty_paths = {fd.path for fd in run.working_tree_diffs}
@@ -2142,7 +2153,15 @@ def run_update(
         return _full_upgrade(opts, run)
     _load_sync_base(opts, run)
     _check_config_and_renderer(run)
-    _collect_working_tree(opts, run)
+    preprocessed_paths: frozenset[str] = frozenset()
+    if not opts.dry_run:
+        from repowise.core.registry import preprocess_repository
+
+        try:
+            preprocessed_paths = preprocess_repository(run.repo_path)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+    _collect_working_tree(opts, run, preprocessed_paths)
     _repair_before_detection(opts, run)
     _assess_staleness(run)
     if run.git_is_current and not run.stale_db_paths and not run.stale_deterministic_ids:

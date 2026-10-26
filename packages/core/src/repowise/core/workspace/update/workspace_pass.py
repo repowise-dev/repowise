@@ -77,6 +77,7 @@ class _RepoUpdatePass:
     include_working_tree: bool
     on_repo_start: Callable[[str], None] | None
     on_repo_done: Callable[[RepoUpdateResult], None] | None
+    preprocessed_paths: dict[Path, frozenset[str]] | None = None
 
 
 async def update_workspace(
@@ -131,8 +132,10 @@ async def update_workspace(
     # A child repo may have been updated on its own; read its state.json first.
     sync_workspace_state_from_disk(workspace_root, ws_config)
 
+    preprocessed: dict[Path, frozenset[str]] = {}
     stale_repos = await _select_stale_repos(
-        workspace_root, entries, include_working_tree, results, restamp_up_to_date
+        workspace_root, entries, include_working_tree, results, restamp_up_to_date,
+        dry_run=dry_run, preprocessed=preprocessed,
     )
     # An edited contracts: or conformance: block is work too, with no repo stale.
     if dry_run or not (
@@ -159,6 +162,7 @@ async def update_workspace(
             include_working_tree=include_working_tree,
             on_repo_start=on_repo_start,
             on_repo_done=on_repo_done,
+            preprocessed_paths=preprocessed,
         )
         update_results = await asyncio.gather(
             *[_update_stale_repo(update_pass, repo) for repo in stale_repos],
@@ -196,6 +200,9 @@ async def _select_stale_repos(
     include_working_tree: bool,
     results: list[RepoUpdateResult],
     restamp_up_to_date: bool = True,
+    *,
+    dry_run: bool = False,
+    preprocessed: dict[Path, frozenset[str]] | None = None,
 ) -> list[_StaleRepo]:
     """Return the stale entries; append a skipped result for every other one."""
     stale_repos: list[_StaleRepo] = []
@@ -211,7 +218,21 @@ async def _select_stale_repos(
             )
             continue
 
+        generated_diffs = []
+        if not dry_run:
+            from ...ingestion.change_detector import ChangeDetector
+            from ...pipeline.preprocessing import preprocessed_changes
+            from ...registry import preprocess_repository
+
+            managed = await asyncio.to_thread(preprocess_repository, abs_path)
+            if preprocessed is not None:
+                preprocessed[abs_path] = managed
+            generated_diffs, _ = preprocessed_changes(
+                ChangeDetector(abs_path), managed,
+                read_repo_state(abs_path).get("preprocessed_paths") or [],
+            )
         is_stale, current_head = await _repo_is_stale(abs_path, include_working_tree)
+        is_stale = is_stale or bool(generated_diffs)
         if not is_stale:
             # Nothing to regenerate, but the DB freshness stamp can still be
             # behind; reconcile it so the server stops reporting "index behind checkout".
@@ -326,6 +347,7 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
                     commit_depth=update_pass.commit_depth,
                     exclude_patterns=update_pass.exclude_patterns,
                     include_working_tree=update_pass.include_working_tree,
+                    preprocessed_paths=(update_pass.preprocessed_paths or {}).get(path),
                 )
                 if result.updated and result.phase_timings is None:
                     result.phase_timings = {"run": time.monotonic() - update_started}
@@ -417,6 +439,8 @@ def _write_repo_state(
         state["knowledge_graph"] = result.kg_state
     if result.working_tree_paths is not None:
         state["working_tree_paths"] = result.working_tree_paths
+    if result.preprocessed_paths is not None:
+        state["preprocessed_paths"] = result.preprocessed_paths
     if result.phase_timings is not None:
         state["phase_timings"] = result.phase_timings
     if result.git_history_refreshed:
