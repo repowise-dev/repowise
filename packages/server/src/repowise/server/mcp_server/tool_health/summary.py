@@ -16,6 +16,7 @@ from repowise.core.analysis.health.perf.coverage import PerfCoverage
 from repowise.core.analysis.health.ranking import worst_kpis
 from repowise.core.analysis.health.rows import split_tests
 from repowise.core.analysis.health.scoring import (
+    headline_split,
     hotspot_health,
     nloc_weighted_attr,
     nloc_weighted_score,
@@ -194,6 +195,7 @@ def _compute_kpis(
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     share = analysed_share(len(metrics), unanalysed)
     production, tests = split_tests(metrics)
+    structure, history = headline_split(metrics)
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
@@ -225,8 +227,8 @@ def _compute_kpis(
         "maintainability_average": _avg(metrics, "maintainability_score"),
         "performance_average": _avg(metrics, "performance_score"),
         # The headline's code-shape and history halves, in deduction points.
-        "structure_average": _avg(metrics, "structure_deduction"),
-        "history_average": _avg(metrics, "history_deduction"),
+        "structure_average": round(structure, 2) if structure is not None else None,
+        "history_average": round(history, 2) if history is not None else None,
         # Performance leads with the causes worth fixing now and coverage, not the diluted /10.
         **_perf_kpis(performance_causes, coverage),
     }

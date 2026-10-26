@@ -39,7 +39,7 @@ from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.rows import detail_map, split_unscored
 from repowise.core.analysis.health.scope import DEFAULT_SCOPE, SCOPES, parse_scope
-from repowise.core.analysis.health.scoring import compute_kpis
+from repowise.core.analysis.health.scoring import ADVISORY_DIMENSION, compute_kpis
 from repowise.core.analysis.health.signals import HISTORY_MIN_COMMITS
 from repowise.core.persistence.crud.analysis.health import open_finding_count
 
@@ -688,27 +688,38 @@ def _render_files_table(metrics_sorted: list[Any], short_history: set[str]) -> N
         )
 
 
+def _is_advisory(finding: Any) -> bool:
+    return getattr(finding, "dimension", None) == ADVISORY_DIMENSION
+
+
 def _render_findings_table(findings: list[Any]) -> None:
     if not findings:
         return
-    # The total get_overview prints; advisory rows are listed, not counted.
-    console.print(f"\n[bold]{open_finding_count(findings)}[/bold] open findings:")
+    # The total get_overview prints. Advisory rows deduct nothing, so they are
+    # listed after the counted ones and marked, never counted.
+    counted = open_finding_count(findings)
+    advisory = len(findings) - counted
+    header = f"\n[bold]{counted}[/bold] open findings"
+    if advisory:
+        header += f" [dim](+{advisory} advisory, not scored)[/dim]"
+    console.print(header + ":")
+    listed = sorted(findings, key=_is_advisory)[:30]
     f_table = Table()
     f_table.add_column("Severity", style="magenta")
     f_table.add_column("Marker", style="cyan")
     f_table.add_column("File")
     f_table.add_column("Function")
     f_table.add_column("Impact", justify="right")
-    for f in findings[:30]:
+    for f in listed:
         f_table.add_row(
             str(f.severity),
             f.biomarker_type,
             f.file_path,
             f.function_name or "-",
-            f"-{f.health_impact:.2f}",
+            "[dim]advisory[/dim]" if _is_advisory(f) else f"-{f.health_impact:.2f}",
         )
     console.print(f_table)
-    for line in preview_lines("health", findings[:30], kind="biomarker_type"):
+    for line in preview_lines("health", listed, kind="biomarker_type"):
         console.print(f"[dim]{line}[/dim]")
 
 

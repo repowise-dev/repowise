@@ -976,6 +976,33 @@ def nloc_weighted_attr(rows: list[HealthFileMetricData], attr: str) -> float | N
     return sum(float(field(r, attr)) * _weight(r) for r in scored) / total_w
 
 
+def headline_split(rows: Sequence[Any]) -> tuple[float | None, float | None]:
+    """NLOC-weighted ``(structure, history)`` halves of the headline deduction.
+
+    The stored halves are unclamped, so a file under the floor holds more
+    points than its score lost. Each file's halves are scaled to its floored
+    deficit (``SCORE_MAX - score``) so the two always add up to ``SCORE_MAX``
+    minus the headline. ``(None, None)`` until files carry the split.
+    """
+    split = [
+        r
+        for r in scored_rows(rows)
+        if field(r, "structure_deduction", None) is not None
+        or field(r, "history_deduction", None) is not None
+    ]
+    if not split:
+        return None, None
+    structure = history = 0.0
+    for r in split:
+        s = float(field(r, "structure_deduction", 0.0) or 0.0)
+        h = float(field(r, "history_deduction", 0.0) or 0.0)
+        scale = (SCORE_MAX - _row_score(r)) / (s + h) if s + h > 0 else 0.0
+        structure += s * scale * _weight(r)
+        history += h * scale * _weight(r)
+    total_w = sum(_weight(r) for r in split)
+    return structure / total_w, history / total_w
+
+
 def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
     """NLOC-weighted mean of ``score``, weighting each file by ``max(nloc, 1)``.
 
@@ -1084,7 +1111,8 @@ def compute_kpis(
       ``None`` when no file carries a performance score.
     - ``structure_average`` / ``history_average`` and their hotspot pair: the
       headline's two halves, in deduction points, so a surface can say which
-      one is holding the score down. ``None`` until files carry the split.
+      one is holding the score down. They sum to ``SCORE_MAX`` minus the
+      matching headline (``headline_split``). ``None`` until files carry the split.
     - ``production_average``: ``average_health`` over non-test files, weighted
       identically, so a narrowed view and a narrowed trend agree.
     - ``unanalysed_file_count``: files stored with no score because health has
@@ -1111,11 +1139,9 @@ def compute_kpis(
     maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
     perf_avg = nloc_weighted_attr(metrics, "performance_score")
     perf_hotspot = nloc_weighted_attr(hotspots, "performance_score")
-    splits = {
-        f"{half}_{scope}": nloc_weighted_attr(rows, f"{half}_deduction")
-        for half in ("structure", "history")
-        for scope, rows in (("average", metrics), ("hotspot", hotspots))
-    }
+    splits: dict[str, float | None] = {}
+    for scope, rows in (("average", metrics), ("hotspot", hotspots)):
+        splits[f"structure_{scope}"], splits[f"history_{scope}"] = headline_split(rows)
     return {
         "hotspot_health": hotspot_health(metrics, hotspot_paths),
         "average_health": round(nloc_weighted_score(metrics), 2),
