@@ -79,6 +79,16 @@ def test_form_feed_does_not_shift_lines(tmp_path: Path) -> None:
     assert "c.py" in resolved.coverage_map
 
 
+def test_a_file_missing_from_disk_is_kept_unchecked(tmp_path: Path) -> None:
+    # No source to compare with: the report is kept as it was before the check.
+    report = tmp_path / "gone.lcov"
+    report.write_text("SF:gone.py\n" + "".join(f"DA:{n},1\n" for n in (1, 2, 3)))
+    resolved, _ = build_coverage_map(tmp_path, [report], {"gone.py"})
+    assert "gone.py" in resolved.coverage_map
+    assert resolved.alignment.reasons == {}
+    assert resolved.alignment.checked_lines == 0
+
+
 def test_check_can_be_turned_off(tmp_path: Path) -> None:
     resolved = _ingest(tmp_path, (*_ALIGNED, 40, 41, 42), check_alignment=False)
     assert "src/a.py" in resolved.coverage_map

@@ -507,7 +507,8 @@ class _Reports:
             ignore=self.cfg.ignore,
             # The check stores nothing, so a fragment is judged, flagged partial.
             allow_partial=True,
-            # A base report describes another commit than the files on disk.
+            # A base report describes another commit than the files on disk,
+            # so its lines cannot be checked against them.
             check_alignment=False,
         )
 

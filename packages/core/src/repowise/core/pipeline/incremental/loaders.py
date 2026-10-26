@@ -323,5 +323,7 @@ async def _refresh_from_newer_reports(factory: Any, repo_path: Path, log: LogFn)
                 provenance=resolved.provenance,
             )
         log(f"Re-read coverage from {len(reports)} report(s): {len(resolved.files)} file(s) stored")
+        if stale := resolved.alignment.warning():
+            log(f"[yellow]{stale}[/yellow]")
     except Exception as exc:
         log(f"[yellow]Coverage re-read skipped: {exc}[/yellow]")
