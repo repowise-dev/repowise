@@ -1172,18 +1172,18 @@ def test_java_switch_arm_comment_does_not_increase_ccn():
 _BODYLESS_SOURCES = {
     "java": (
         "A.java",
-        b"abstract class A {\n  abstract void f(int x);\n  native void n();\n  void g() { int y = 1; }\n}\n"
+        b"abstract class A {\n  A() { }\n  abstract void f(int x);\n  native void n();\n  void g() { int y = 1; }\n}\n"
         b"interface I {\n  void h();\n  default int d() { return 1; }\n}\n",
-        {"g", "d"},
-        1,
+        {"A", "g", "d"},
+        2,
     ),
     "csharp": (
         "a.cs",
-        b"abstract class A {\n  public abstract void F(int x);\n  static extern int E(int a);\n"
+        b"abstract class A {\n  public A() { }\n  public abstract void F(int x);\n  static extern int E(int a);\n"
         b"  partial void P();\n  public void G() { var y = 1; }\n  int M() => 1;\n}\n"
         b"interface I {\n  void H();\n  int D() { return 1; }\n}\n",
-        {"G", "M", "D"},
-        2,
+        {"A", "G", "M", "D"},
+        3,
     ),
     "php": (
         "a.php",
