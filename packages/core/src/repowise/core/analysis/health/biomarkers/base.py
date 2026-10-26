@@ -31,6 +31,8 @@ class FileContext:
     # ``None`` for a context built without it, which falls back to the path
     # rules; read it through :attr:`is_test_material`.
     is_test: bool | None = None
+    # ``code_origin.code_origin`` for the file; ``None`` when not computed.
+    code_origin: str | None = None
     # Every walked function in this file, in document order. Not keyed by
     # name: a name key drops all but one of a file's anonymous ``it``
     # callbacks, and every same-named method on a second class beside it.
@@ -150,6 +152,12 @@ class FileContext:
         if self.is_test is not None:
             return self.is_test
         return is_test_related_path(self.file_path, self.language)
+
+    @property
+    def outside_coverage_scope(self) -> bool:
+        """Test material, or code that does not ship (tooling, build, vendored,
+        generated, docs examples): no test is owed for its coverage."""
+        return self.is_test_material or self.code_origin not in (None, "production")
 
 
 # A repo whose trailing-90-day window has at most this many active human
