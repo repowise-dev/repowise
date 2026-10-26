@@ -32,7 +32,8 @@ Tree-sitter AST walker. Single AST pass per file computes:
   `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
   JSX (`flat_ternary_kinds`), plus Python conditional-expression chains
   (`1 if a else 2 if b else 3`), add CCN and a flat +1 cognitive but no
-  level.
+  level. A `switch` / `match` / `when` opens one level for its body; its
+  case arms add CCN only, no level and no cognitive.
 - **cognitive complexity** — SonarSource-style weighted nesting cost
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).

@@ -330,10 +330,11 @@ language because it does not transfer:
 
 ### 5.5 Worked example: the dispatch rule
 
-`nested_complexity` adds a level per `if` / `for` / `while` / `try` / `switch`. A
+`nested_complexity` adds a level per `if` / `for` / `while` / `try` / `switch`; a `case`
+arm adds none. A
 function mostly one dispatch on one value (a `switch`, `match` or same-subject `if` chain
 with ≥ 60% of its decision points) is judged by the code around it plus its heaviest arm:
-`nested_complexity` skips the `switch` and `case` levels, and `complex_method`,
+`nested_complexity` skips the dispatch's level and the loop it usually sits in, and `complex_method`,
 `brain_method` and `repeated_nesting` read the outer CCN plus the worst arm's.
 
 <details>
