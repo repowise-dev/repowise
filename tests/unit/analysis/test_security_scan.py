@@ -979,9 +979,9 @@ class TestScanSource:
     @pytest.mark.parametrize(
         ("source", "raw"),
         [
-            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),  # pragma: allowlist secret
+            ("NEXT_PUBLIC_API_KEY=my_dummy_key\n", "my_dummy_key"),
             ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
-            ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
+            ("VITE_API_TOKEN=abc123\n", "abc123"),
         ],
     )
     def test_public_env_secret_value_is_redacted(self, source: str, raw: str) -> None:
@@ -1242,6 +1242,22 @@ class TestVendorShapeEdges:
     def test_vendor_shape_and_keyword_report_one_finding(self) -> None:
         source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]
+
+    def test_public_env_secret_deduped_with_credential_kinds(self) -> None:
+        stripe = "sk_" + "live_" + "4eC39HqLyjWDarjtT1zdp7dc"
+        ghp = "ghp_" + "Kq7mZ2xV9pL4rT8wN3bY6cH1jF5dS0gA2eUo"
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}\n", "web/.env") == ["stripe_key"]
+        assert self._kinds(f"NEXT_PUBLIC_GITHUB_TOKEN={ghp}\n", "web/.env") == ["github_token"]
+        assert self._kinds('const NEXT_PUBLIC_API_SECRET = "Xk9mQ2vLp7zAbc123";\n', "web/env.ts") == [
+            "hardcoded_secret"
+        ]
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}  # pragma: allowlist secret\n", "web/.env") == []
+        assert self._kinds("VITE_API_TOKEN=abc123\n", "web/.env") == ["public_env_secret"]
+        assert self._kinds("const k = process.env.NEXT_PUBLIC_API_KEY;\n", "web/app.ts") == [
+            "public_env_secret"
+        ]
+        multi = f'NEXT_PUBLIC_TOKEN="live"; STRIPE_KEY="{stripe}"\n'
+        assert sorted(self._kinds(multi, "web/.env")) == ["public_env_secret", "stripe_key"]
 
     def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
         source = (

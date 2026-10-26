@@ -16,6 +16,7 @@ from .credentials import (
     _assignment_name,
     _is_empty_public_env_assignment,
     _is_secret_value,
+    _public_env_value,
     _redaction,
     _snippet,
     _value_span,
@@ -46,6 +47,27 @@ from .refinements import (
     _weak_hash_is_an_id,
 )
 from .suppression import IGNORE_TOKEN, _allowlisted_lines, marker_silences
+
+
+def _is_duplicate_secret(
+    rank: int,
+    value: str,
+    secret_hits: list[tuple[dict[str, Any], str, int]],
+) -> bool:
+    if rank == -1:
+        return any(r > rank and o == value for _, o, r in secret_hits)
+    return any(r > rank and (o in value or value in o) for _, o, r in secret_hits)
+
+
+def _deduplicate_line_secrets(
+    findings: list[dict[str, Any]],
+    secret_hits: list[tuple[dict[str, Any], str, int]],
+) -> None:
+    # One secret, one finding: the highest-ranked kind that saw it names it.
+    # Either value can hold the other: a keyword's runs to the closing quote.
+    for finding, value, rank in secret_hits:
+        if _is_duplicate_secret(rank, value, secret_hits):
+            findings.remove(finding)
 
 
 def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
@@ -141,6 +163,10 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                         continue
                     if is_low_sev_file:
                         severity = "low"
+                elif kind == "public_env_secret":
+                    span = _public_env_value(line, match.end())
+                    if span is not None:
+                        value = line[slice(*span)]
                 if snippet is None:
                     snippet = _snippet(line)
                 finding = {
@@ -152,11 +178,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                 findings.append(finding)
                 if kind in SECRET_KINDS:
                     secret_hits.append((finding, value, _SECRET_SPECIFICITY.get(kind, 2)))
-        # One secret, one finding: the highest-ranked kind that saw it names it.
-        # Either value can hold the other: a keyword's runs to the closing quote.
-        for finding, value, rank in secret_hits:
-            if any(r > rank and (o in value or value in o) for _, o, r in secret_hits):
-                findings.remove(finding)
+                elif kind == "public_env_secret" and value:
+                    secret_hits.append((finding, value, -1))
+        _deduplicate_line_secrets(findings, secret_hits)
 
     # Calls that open on one line and set ``shell=True`` on a later one; reported
     # on the opening line, unless the per-line pass already did.
