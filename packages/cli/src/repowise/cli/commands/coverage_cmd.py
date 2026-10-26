@@ -370,6 +370,10 @@ def coverage_add(
                 )
 
             if not agg_matched and not map_records:
+                if resolved.alignment.reasons:
+                    # Every mapped file was dropped as misaligned; the warning above says why.
+                    console.print("[red]Nothing was stored.[/red]")
+                    return False
                 if len(errors) == len(report_paths) and not map_readable:
                     # No report was readable as coverage; the lines above say why.
                     console.print("[red]Nothing was stored.[/red]")

@@ -58,11 +58,27 @@ def test_shifted_report_is_dropped_with_a_reason(tmp_path: Path) -> None:
 
 
 def test_lines_past_eof_are_dropped(tmp_path: Path) -> None:
-    resolved = _ingest(tmp_path, (*_ALIGNED, 40, 41))
+    resolved = _ingest(tmp_path, (*_ALIGNED, 40, 41, 42))
     assert "src/a.py" not in resolved.coverage_map
-    assert resolved.alignment.reasons["src/a.py"].startswith("2 of 8 ")
+    assert resolved.alignment.reasons["src/a.py"].startswith("3 of 9 ")
+
+
+def test_a_stray_line_or_two_is_tolerated(tmp_path: Path) -> None:
+    resolved = _ingest(tmp_path, (*_ALIGNED, 40, 41))
+    assert "src/a.py" in resolved.coverage_map
+    assert resolved.alignment.warning() is None
+
+
+def test_form_feed_does_not_shift_lines(tmp_path: Path) -> None:
+    # Coverage tools count newlines only; a form feed is not a line break.
+    lines = ["a = 1", "x = 2  # \x0c", "b = 3", "", "c = 4", "", "d = 5", "", "e = 6"]
+    (tmp_path / "c.py").write_text("\n".join(lines) + "\n")
+    report = tmp_path / "c.lcov"
+    report.write_text("SF:c.py\n" + "".join(f"DA:{n},1\n" for n in (1, 2, 3, 5, 7, 9)))
+    resolved, _ = build_coverage_map(tmp_path, [report], {"c.py"})
+    assert "c.py" in resolved.coverage_map
 
 
 def test_check_can_be_turned_off(tmp_path: Path) -> None:
-    resolved = _ingest(tmp_path, (*_ALIGNED, 40, 41), check_alignment=False)
+    resolved = _ingest(tmp_path, (*_ALIGNED, 40, 41, 42), check_alignment=False)
     assert "src/a.py" in resolved.coverage_map

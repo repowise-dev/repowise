@@ -16,21 +16,24 @@ from pathlib import Path
 from .model import FileCoverage
 
 #: MISALIGNED_MAX_SHARE: a file whose coverable lines land on a blank line, a
-#: comment or past EOF more often than this is dropped. A report taken from the
-#: current source puts none there, so a small share only absorbs edge cases.
+#: comment or past EOF more often than this, and on at least
+#: MISALIGNED_MIN_LINES of them, is dropped. A report taken from the current
+#: source puts none there, so both only absorb edge cases in small files.
 MISALIGNED_MAX_SHARE = 0.05
+MISALIGNED_MIN_LINES = 3
 
 # Comment prefixes for languages whose coverage tools report statement lines.
 # Ceiling: Go coverprofiles and V8-based JS/TS reports mark every line of a
 # block, blank and comment lines included, and Kotlin inline functions map to
 # lines past EOF, so those files are not checked. Add a language here once its
-# tools are known to report statement lines only.
+# tools are known to report statement lines only. A bare ``*`` (block comment
+# body) and PHP ``#`` are left out: code lines can start with them.
 _COMMENT_PREFIXES: dict[str, tuple[str, ...]] = {
     ".py": ("#",),
     ".rb": ("#",),
-    ".java": ("//", "/*", "*"),
-    ".cs": ("//", "/*", "*"),
-    ".php": ("//", "#", "/*", "*"),
+    ".java": ("//", "/*"),
+    ".cs": ("//", "/*"),
+    ".php": ("//", "/*"),
 }
 
 
@@ -47,15 +50,22 @@ class Alignment:
         return self.misaligned_lines / self.checked_lines if self.checked_lines else 0.0
 
     def warning(self) -> str | None:
-        """One message when the repo-wide share is high, else ``None``."""
-        if self.share <= MISALIGNED_MAX_SHARE:
+        """One message naming the dropped files, ``None`` when none was dropped."""
+        if not self.reasons:
             return None
+        path, reason = next(iter(self.reasons.items()))
+        cause = (
+            "The report is likely older than the source: re-run the tests with "
+            "coverage and add the new report."
+        )
+        if self.share > MISALIGNED_MAX_SHARE:
+            cause = (
+                f"{self.misaligned_lines} of {self.checked_lines} coverable lines "
+                f"({self.share:.0%}) are off. {cause}"
+            )
         return (
-            f"{self.misaligned_lines} of {self.checked_lines} coverable lines "
-            f"({self.share:.0%}) land on blank or comment lines or past the end of "
-            f"the file; coverage for {len(self.reasons)} file(s) was not kept. The "
-            "report is likely older than the source: re-run the tests with coverage "
-            "and add the new report."
+            f"Coverage for {len(self.reasons)} file(s) was not kept because the "
+            f"report's lines no longer match the source (e.g. {path}: {reason}). {cause}"
         )
 
 
@@ -77,7 +87,9 @@ def _check(repo_root: Path, fc: FileCoverage) -> tuple[int, int] | None:
         source = (repo_root / fc.file_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    return _misaligned(lines, source.splitlines(), prefixes), len(lines)
+    # Coverage tools number lines by newline only; ``splitlines`` also breaks
+    # on form feeds and other separators a source file may contain.
+    return _misaligned(lines, source.split("\n"), prefixes), len(lines)
 
 
 def drop_misaligned(
@@ -94,7 +106,7 @@ def drop_misaligned(
         bad, total = counts
         result.misaligned_lines += bad
         result.checked_lines += total
-        if bad / total > MISALIGNED_MAX_SHARE:
+        if bad >= MISALIGNED_MIN_LINES and bad / total > MISALIGNED_MAX_SHARE:
             result.reasons[fc.file_path] = (
                 f"{bad} of {total} coverable lines land on blank or comment "
                 "lines or past the end of the file"
